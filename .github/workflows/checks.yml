@@ -1,0 +1,25 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    # macOS 26 / Xcode 26: Package.swift targets .macOS("26.0"), and the WebKit APIs this
+    # browser is built on (WKWebExtension, isInspectable) do not exist on older images.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build -c release
+
+      # --pure stops before the keychain and WebKit assertions, which need a real signed
+      # bundle and a window server respectively. Those stay a local `vane selfcheck`.
+      - name: Checks
+        run: ./.build/release/vane selfcheck --pure
+
+      - name: Bundle
+        run: ./make-app.sh

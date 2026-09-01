@@ -29,7 +29,6 @@ struct BrowserProfile {
     /// ponytail: newest N urls, not the whole table. Store.record is one INSERT per row on
     /// the main thread, and a heavy Chrome profile has six figures of them. If someone ever
     /// wants the full archive the fix is a batched transaction in Store, not a bigger number.
-    private static let historyLimit = 5000
 
     // MARK: Detection
 
@@ -115,7 +114,7 @@ struct BrowserProfile {
             try query(places, """
                 SELECT url, title, last_visit_date FROM moz_places
                 WHERE last_visit_date IS NOT NULL AND visit_count > 0
-                ORDER BY last_visit_date DESC LIMIT \(historyLimit)
+                ORDER BY last_visit_date DESC
                 """) { visits.append((text($0, 0), text($0, 1), firefoxTime(sqlite3_column_int64($0, 2)))) }
             // type 1 is a bookmark; 2 and 3 are folders and separators.
             try query(places, """
@@ -127,7 +126,7 @@ struct BrowserProfile {
             if p.hasHistory {
                 try query(p.path.appendingPathComponent("History"), """
                     SELECT url, title, last_visit_time FROM urls
-                    WHERE last_visit_time > 0 ORDER BY last_visit_time DESC LIMIT \(historyLimit)
+                    WHERE last_visit_time > 0 ORDER BY last_visit_time DESC
                     """) { visits.append((text($0, 0), text($0, 1), chromiumTime(sqlite3_column_int64($0, 2)))) }
             }
             if p.hasBookmarks {
@@ -148,33 +147,27 @@ struct BrowserProfile {
         return .chromium
     }
 
-    /// Store stamps every imported visit with Date.now, so the *insertion order* is the only
-    /// thing carrying the source browser's recency ranking — hence oldest first.
-    /// ponytail: this loses real visit dates and visit counts, because Store.record takes
-    /// neither. Upgrade path is a `record(_:title:at:)` overload; not worth widening the
-    /// Store API for a one-shot migration.
+    /// Real visit dates go in as-is now, so there is no cap and no reliance on insertion
+    /// order to fake the source browser's recency ranking.
     private static func commit(_ visits: [(url: String, title: String, at: Date)]) -> Int {
-        var n = 0
-        for v in visits.sorted(by: { $0.at < $1.at }) {
-            guard let u = URL(string: v.url), u.scheme == "http" || u.scheme == "https" else { continue }
-            Store.shared.record(u, title: v.title)
-            n += 1
+        let rows = visits.compactMap { v -> (url: URL, title: String, at: Date)? in
+            guard let u = URL(string: v.url), u.scheme == "http" || u.scheme == "https" else { return nil }
+            return (u, v.title, v.at)
         }
-        return n
+        Store.shared.record(rows)
+        return rows.count
     }
 
-    /// toggleBookmark is a toggle, so an already-bookmarked url would be *deleted* by a
-    /// second import. Check first. The Set also collapses urls filed in two folders.
+    /// The Set collapses urls filed in two folders; INSERT OR IGNORE in Store handles the
+    /// already-bookmarked case, so re-importing adds nothing rather than deleting.
     private static func commit(_ marks: [(url: String, title: String)]) -> Int {
         var seen = Set<String>()
-        var n = 0
-        for m in marks {
+        let rows = marks.compactMap { m -> (url: URL, title: String)? in
             guard let u = URL(string: m.url), u.scheme == "http" || u.scheme == "https",
-                  seen.insert(u.absoluteString).inserted, !Store.shared.isBookmarked(u) else { continue }
-            Store.shared.toggleBookmark(u, title: m.title)
-            n += 1
+                  seen.insert(u.absoluteString).inserted else { return nil }
+            return (u, m.title)
         }
-        return n
+        return Store.shared.addBookmarks(rows)
     }
 
     // MARK: Timestamps
@@ -239,7 +232,7 @@ struct BrowserProfile {
         try query(file, """
             SELECT i.url, v.title, MAX(v.visit_time) FROM history_items i
             JOIN history_visits v ON v.history_item = i.id
-            GROUP BY i.id ORDER BY 3 DESC LIMIT \(historyLimit)
+            GROUP BY i.id ORDER BY 3 DESC
             """) { out.append((text($0, 0), text($0, 1), safariTime(sqlite3_column_double($0, 2)))) }
         return out
     }
@@ -339,7 +332,6 @@ struct BrowserProfile {
             let (h, b) = try importAll(from: chosen)
             done.messageText = "Imported \(h) history entr\(h == 1 ? "y" : "ies") "
                 + "and \(b) bookmark\(b == 1 ? "" : "s") from \(chosen.browser)."
-            if h == historyLimit { done.informativeText = "History was capped at the \(historyLimit) most recent pages." }
         } catch {
             done.alertStyle = .warning
             done.messageText = "Could not import from \(chosen.browser)."

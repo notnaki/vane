@@ -78,6 +78,27 @@ struct Suggestion: Identifiable, Equatable {
             [title, url.absoluteString])
     }
 
+    /// Bulk insert in one transaction, keeping each visit's real timestamp.
+    /// ponytail: the single-row `record` above is one implicit transaction — and one fsync
+    /// — per row. That is why importing used to cap at 5000 pages and throw the real dates
+    /// away. One BEGIN and one reused statement makes both limits unnecessary.
+    func record(_ visits: [(url: URL, title: String, at: Date)]) {
+        guard !visits.isEmpty else { return }
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT INTO visits (url, title, at) VALUES (?, ?, ?)",
+                                 -1, &st, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(st) }
+        exec("BEGIN")
+        for v in visits where v.url.scheme == "http" || v.url.scheme == "https" {
+            sqlite3_bind_text(st, 1, v.url.absoluteString, -1, TRANSIENT)
+            sqlite3_bind_text(st, 2, v.title, -1, TRANSIENT)
+            sqlite3_bind_double(st, 3, v.at.timeIntervalSince1970)
+            sqlite3_step(st)
+            sqlite3_reset(st)
+        }
+        exec("COMMIT")
+    }
+
     func recent(limit: Int = 100) -> [Suggestion] {
         var out: [Suggestion] = []
         run("SELECT url, title, MAX(at) FROM visits GROUP BY url ORDER BY MAX(at) DESC LIMIT ?", [limit]) {
@@ -105,6 +126,30 @@ struct Suggestion: Identifiable, Equatable {
         var found = false
         run("SELECT 1 FROM bookmarks WHERE url = ? LIMIT 1", [url.absoluteString]) { _ in found = true }
         return found
+    }
+
+    /// INSERT OR IGNORE against the UNIQUE url, so re-importing is a no-op instead of the
+    /// hazard toggleBookmark would be — a second import would otherwise *delete* every
+    /// bookmark it added the first time. Returns how many were actually new.
+    @discardableResult
+    func addBookmarks(_ marks: [(url: URL, title: String)]) -> Int {
+        guard !marks.isEmpty else { return 0 }
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO bookmarks (url, title, at) VALUES (?, ?, ?)",
+                                 -1, &st, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(st) }
+        exec("BEGIN")
+        var added = 0
+        let now = Date.now.timeIntervalSince1970
+        for m in marks where m.url.scheme == "http" || m.url.scheme == "https" {
+            sqlite3_bind_text(st, 1, m.url.absoluteString, -1, TRANSIENT)
+            sqlite3_bind_text(st, 2, m.title, -1, TRANSIENT)
+            sqlite3_bind_double(st, 3, now)
+            if sqlite3_step(st) == SQLITE_DONE { added += Int(sqlite3_changes(db)) }
+            sqlite3_reset(st)
+        }
+        exec("COMMIT")
+        return added
     }
 
     func bookmarks(limit: Int = 500) -> [Suggestion] {

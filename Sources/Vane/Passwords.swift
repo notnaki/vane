@@ -159,7 +159,10 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
     </script></body>
     """
 
-    static func run() -> Never {
+    /// `--pure` stops before anything that needs a keychain ACL or a window server, so the
+    /// logic can be proved on a headless CI box. The rest still runs locally, where a real
+    /// signed bundle is what makes the keychain assertions meaningful.
+    static func run(pureOnly: Bool = false) -> Never {
         var failures = 0
         func check(_ name: String, _ ok: Bool) {
             print((ok ? "  ok    " : "  FAIL  ") + name)
@@ -189,6 +192,32 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         // A literal % in a stored title must not turn the query into a match-everything wildcard.
         store.record(URL(string: "https://example.com/pct")!, title: "100% pure")
         check("LIKE wildcards in the query are escaped", store.suggest("100%").count == 1)
+        // Bulk path: real timestamps, not insertion order. Clear first — the rows above are
+        // stamped Date.now and would outrank any fixture date.
+        store.clearHistory()
+        let old = Date(timeIntervalSince1970: 1_000_000)
+        let new = Date(timeIntervalSince1970: 2_000_000)
+        store.record([(URL(string: "https://old.example")!, "Old", old),
+                      (URL(string: "https://new.example")!, "New", new)])
+        let ordered = store.recent().prefix(2).map(\.url)
+        check("bulk insert keeps real visit dates, not insertion order",
+              ordered.first == "https://new.example")
+
+        check("bulk bookmarks add", store.addBookmarks([(urlA, "Alpha"), (urlB, "Beta")]) == 2)
+        check("re-importing bookmarks adds nothing and deletes nothing",
+              store.addBookmarks([(urlA, "Alpha"), (urlB, "Beta")]) == 0 && store.bookmarks().count == 2)
+
+        // Guards the transaction. Per-row inserts are one fsync each; 20k of them took
+        // minutes, which is why the importer used to cap at 5000 pages.
+        let many = (0..<20_000).map {
+            (URL(string: "https://bulk.example/\($0)")!, "Page \($0)", Date.now)
+        }
+        let began = Date.now
+        store.record(many)
+        let elapsed = Date.now.timeIntervalSince(began)
+        check("20k visits insert in one transaction (took \(String(format: "%.2f", elapsed))s)",
+              elapsed < 5 && store.recent(limit: 30_000).count > 20_000)
+
         check("clearHistory empties visits", { store.clearHistory(); return store.recent().isEmpty }())
         try? FileManager.default.removeItem(at: dir)
 
@@ -229,6 +258,11 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         var rejected = false
         do { _ = try PasswordImport.parse("a,b,c\n1,2,3\n") } catch { rejected = true }
         check("a file with no password column is rejected, not half-imported", rejected)
+
+        if pureOnly {
+            print(failures == 0 ? "\nPASS (pure)" : "\n\(failures) FAILED")
+            exit(failures == 0 ? 0 : 1)
+        }
 
         print("keychain round-trip")
         Passwords.delete(host: host, account: user)

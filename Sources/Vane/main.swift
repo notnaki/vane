@@ -3,10 +3,12 @@ import SwiftUI
 
 // ponytail: no AppDelegate, no @main App struct — plain top-level bootstrap, same shape
 // as Vesta. Everything below is retained because it is global.
+let args = Array(CommandLine.arguments.dropFirst())
+// Before AppKit is touched at all: the pure checks must not need a window server.
+if args.first == "selfcheck", args.contains("--pure") { SelfCheck.run(pureOnly: true) }
+
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
-
-let args = Array(CommandLine.arguments.dropFirst())
 if args.first == "drmcheck"  { DRMCheck.run(url: args.dropFirst().first) }
 if args.first == "selfcheck" { SelfCheck.run() }
 if args.first == "import", let file = args.dropFirst().first {
