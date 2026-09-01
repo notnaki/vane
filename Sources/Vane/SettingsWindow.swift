@@ -149,6 +149,9 @@ private struct PrivacyPane: View {
     // Blocker's own key. Writing it directly skips Blocker.enabled's setter, so the
     // recompile-and-reattach it would have done is hung off onChange instead.
     @AppStorage("blockerEnabled") private var blocking = true
+    // Absent = off. Deliberately not defaulted on: turning this on sends what you type to
+    // the search engine before you press Return.
+    @AppStorage("searchSuggestions") private var suggestions = false
 
     var body: some View {
         Form {
@@ -159,6 +162,14 @@ private struct PrivacyPane: View {
             } footer: {
                 Text("Filter lists in EasyList syntax — an EasyList, EasyPrivacy or uBlock "
                      + "Origin subscription file.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Search suggestions", isOn: $suggestions)
+            } footer: {
+                Text("Sends what you type in the address bar to your search engine as you "
+                     + "type it, to offer completions. Never in a private window, and never "
+                     + "for anything that looks like an address.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
