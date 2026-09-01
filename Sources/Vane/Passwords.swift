@@ -281,7 +281,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("certificate trust", CertificateTrust.check),
                                ("crash recovery", Crash.check),
                                ("reader", Reader.check),
-                               ("command palette", Palette.check)] {
+                               ("command palette", Palette.check),
+                               ("downloads", Downloads.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }
