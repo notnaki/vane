@@ -533,7 +533,7 @@ private struct DownloadsButton: View {
     @State private var open = false
 
     var body: some View {
-        if !downloads.items.isEmpty {
+        if !downloads.items.isEmpty {   // now includes finished history, not just active
             Button { open.toggle() } label: { Image(systemName: "arrow.down.circle") }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
                 .help("Downloads")
@@ -568,6 +568,19 @@ private struct DownloadRow: View {
                         .help("Show in Finder")
                         // "Show" on its own says nothing once it is out of context.
                         .accessibilityLabel("Show \(item.name) in Finder")
+                } else if Downloads.shared.canResume(item) {
+                    // Item.State stays three cases because UI.swift switches it
+                    // exhaustively, so a paused download arrives as .failed("Paused").
+                    // Without this it reads as a dead row with no way back.
+                    Button("Resume") { _ = Downloads.shared.resume(item) }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.tint)
+                        .help("Resume this download")
+                        .accessibilityLabel("Resume \(item.name)")
+                } else if item.status == .running {
+                    Button("Pause") { Downloads.shared.pause(item) }
+                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .help("Pause this download")
+                        .accessibilityLabel("Pause \(item.name)")
                 }
             }
             switch item.state {
