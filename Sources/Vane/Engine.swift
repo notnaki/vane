@@ -12,7 +12,11 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 @MainActor final class Tab: NSObject, ObservableObject, Identifiable, WKUIDelegate,
                             WKNavigationDelegate, WKScriptMessageHandler {
     let id = UUID()
-    let web: WKWebView
+    /// A `var` only because suspension swaps it: the whole point of suspending a tab is
+    /// dropping the WKWebView so WebKit tears its WebContent process down with it. Every
+    /// reader outside this file keeps working — a suspended tab holds a fresh, unloaded
+    /// WKWebView, which costs no process.
+    private(set) var web: WKWebView
     @Published var title = "New Tab"
     @Published var address = ""          // what the URL field shows
     @Published var progress = 0.0
@@ -27,6 +31,14 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     @Published var favicon: NSImage?
     /// Pinned tabs sit at the head of the strip and survive a relaunch.
     @Published var pinned = false
+    /// True while this tab has no live page — see `suspend()`. Published so anything that
+    /// wants to badge the strip can, but nothing does: suspension is meant to be invisible.
+    @Published private(set) var suspended = false
+    /// Last time the user was looking at this tab. The only input to the idle clock.
+    var lastActive = Date.now
+    /// Where a suspended tab is parked, and the state it comes back with.
+    private(set) var parkedURL: URL?
+    private var parkedState: Data?
     private var suppressHistoryOnce = false
     /// Set when a page is being edited in the URL field, so KVO doesn't fight the user.
     var editing = false
@@ -47,12 +59,26 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
          profileID: UUID = ProfileManager.shared.active.id) {
         self.isPrivate = isPrivate
         self.profileID = profileID
+        web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
+        super.init()
+        attach()
+        if let url { web.load(URLRequest(url: url)) }
+    }
+
+    /// A WKWebView with nothing in it. WebKit does not spawn a WebContent process until
+    /// something is actually loaded, which is what makes a suspended tab free.
+    private static func freshWebView(isPrivate: Bool, profileID: UUID) -> WKWebView {
         let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID)
         cfg.userContentController.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        web = WKWebView(frame: .zero, configuration: cfg)
-        super.init()
-        cfg.userContentController.add(WeakHandler(self), name: "vanepw")
+        return WKWebView(frame: .zero, configuration: cfg)
+    }
+
+    /// Point `web` at this tab: the password bridge, the delegates, the developer settings
+    /// and the KVO that republishes WebKit's state. Runs at init and again on every resume,
+    /// because suspension swaps the web view out from under all of it.
+    private func attach() {
+        web.configuration.userContentController.add(WeakHandler(self), name: "vanepw")
         web.customUserAgent = Settings.userAgent
         web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
         web.allowsBackForwardNavigationGestures = true
@@ -62,7 +88,9 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         obs = [
             web.observe(\.title, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
-                    guard let self else { return }
+                    // A suspended tab keeps the title it was parked with — the strip must
+                    // not flicker back to "New Tab" the moment the page goes away.
+                    guard let self, !self.suspended else { return }
                     self.title = w.title?.isEmpty == false ? w.title! : "New Tab"
                     if !self.isPrivate, let u = w.url { self.history.retitle(u, title: self.title) }
                     self.extensions.sync()
@@ -70,7 +98,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
             },
             web.observe(\.url, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
-                    guard let self, !self.editing else { return }
+                    guard let self, !self.editing, !self.suspended else { return }
                     self.address = w.url?.absoluteString ?? ""
                     self.extensions.sync()
                 }
@@ -88,7 +116,113 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
                 MainActor.assumeIsolated { self?.canGoForward = w.canGoForward }
             },
         ]
-        if let url { web.load(URLRequest(url: url)) }
+    }
+
+    // MARK: Suspension
+
+    /// The url this tab is on, live or parked. Everything that writes a tab down — pins,
+    /// the session, spaces — has to come through here, or a suspended tab quietly vanishes
+    /// from all of them.
+    var currentURL: URL? { web.url ?? parkedURL }
+
+    /// Enough to redraw the strip and to come back exactly where the user left off.
+    var snapshot: Parked {
+        Parked(title: title, state: parkedState ?? web.interactionState as? Data)
+    }
+
+    /// Drop the WKWebView, and with it the WebContent process, keeping only the
+    /// interactionState. The failure mode is one-directional: a state that does not come
+    /// back just means the tab reloads from its url.
+    func suspend() {
+        guard !suspended, let url = web.url else { return }
+        parkedState = web.interactionState as? Data
+        parkedURL = url
+        suspended = true
+
+        let old = web
+        obs = []                       // KVO on a view that is about to die
+        old.stopLoading()
+        old.uiDelegate = nil
+        old.navigationDelegate = nil
+        old.configuration.userContentController.removeScriptMessageHandler(forName: "vanepw")
+        old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
+        // ponytail: `old` is never deallocated — it survives at a high retain count, so
+        // Tab.close() has to use `_close` SPI to give the process back. The retainer was
+        // not found. First place to look is the WKWebExtensionController on the
+        // configuration: it tracks every web view associated with it so extensions can
+        // enumerate tabs, and the standalone harness that deallocated cleanly did not set
+        // one. Test by minting a configuration with webExtensionController nil and seeing
+        // whether the shell drops. The leak is an empty view — no page, no process — and
+        // is bounded per suspend, so it is a wart, not a regression.
+        Tab.close(old)
+        // The replacement is unloaded, so every `tab.web.…` call site elsewhere still has a
+        // real object to talk to and none of them costs a process.
+        web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
+        attach()
+    }
+
+    /// Shut the page down explicitly. Dropping the last Swift reference *ought* to be
+    /// enough, and in a standalone harness it is — but measured inside Vane the web view
+    /// stays alive at a retain count of 26 and its WebContent process with it, so
+    /// suspension reclaimed nothing at all. `-[WKWebView _close]` is what WebKit's own
+    /// clients call and it tears the process down immediately: 8 processes / 632 MB became
+    /// 2 processes / 144 MB in the same run where the plain release changed nothing.
+    ///
+    /// ponytail: SPI, respondsToSelector-guarded exactly like `_inspector` in Develop.swift.
+    /// If it ever disappears, `about:blank` still drops the page's memory and leaves a mostly
+    /// empty process behind, which is a worse suspension rather than a broken browser.
+    /// Ceiling: whatever is really holding the view is still holding it — this closes the
+    /// page, it does not fix the leak. Upgrade path is finding that reference.
+    private static func close(_ web: WKWebView) {
+        let sel = Selector(("_close"))
+        if web.responds(to: sel) { _ = web.perform(sel) }
+        else if let blank = URL(string: "about:blank") { web.load(URLRequest(url: blank)) }
+    }
+
+    /// Rebuild the page. `interactionState` sets url and the back/forward list
+    /// synchronously, so the url check below is a genuine "that state was no good".
+    func resume() {
+        guard suspended else { return }
+        suspended = false
+        if let parkedState { web.interactionState = parkedState }
+        if web.url == nil, let parkedURL { web.load(URLRequest(url: parkedURL)) }
+        parkedState = nil
+        parkedURL = nil
+    }
+
+    /// Come up already suspended, so restoring thirty tabs costs one WebContent process
+    /// instead of thirty. The strip still has a title and a favicon.
+    func park(url: URL, _ p: Parked) {
+        parkedURL = url
+        parkedState = p.state
+        suspended = true
+        if !p.title.isEmpty { title = p.title }
+        address = url.absoluteString
+        favicon = favicons.icon(for: url)      // from the cache, no page needed
+    }
+
+    /// Load it now, or park it if we know enough about it to draw it without loading.
+    func open(_ url: URL, parked p: Parked?) {
+        if let p, Prefs.suspendTabs { park(url: url, p) } else { web.load(URLRequest(url: url)) }
+    }
+
+    func isPlayingMedia() async -> Bool {
+        await web.requestMediaPlaybackState() == .playing
+    }
+
+    /// ponytail: one evaluateJavaScript, main frame only, `value != defaultValue` so a page
+    /// that ships prefilled inputs does not pin itself open forever. Ceiling: nothing inside
+    /// an iframe or a shadow root counts, and a page that stores its draft in JS state
+    /// rather than in the DOM looks empty.
+    func hasUnsubmittedInput() async -> Bool {
+        let js = """
+        (function(){for(const e of document.querySelectorAll('input,textarea')){\
+        const t=(e.type||'').toLowerCase();\
+        if(t==='hidden'||t==='submit'||t==='button'||t==='checkbox'||t==='radio')continue;\
+        if(e.value&&e.value!==e.defaultValue)return true}\
+        return !!document.querySelector('[contenteditable=true],[contenteditable=""]')})()
+        """
+        return (try? await web.evaluateJavaScript(js)) as? Bool ?? false
     }
 
     static func configuration(isPrivate: Bool = false,
@@ -191,12 +325,24 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         }
     }
 
+    /// Without this nothing is ever routed to a download. WebKit only calls
+    /// navigationResponse:didBecome: for a response the app answered `.download` to, so a
+    /// Content-Disposition: attachment link simply navigated and rendered nothing.
+    func webView(_ w: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
+        let http = navigationResponse.response as? HTTPURLResponse
+        let disposition = (http?.value(forHTTPHeaderField: "Content-Disposition") ?? "").lowercased()
+        // The server asked for a save, or WebKit has no way to display it.
+        let save = disposition.hasPrefix("attachment") || !navigationResponse.canShowMIMEType
+        decisionHandler(save ? .download : .allow)
+    }
+
     func webView(_ w: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        Downloads.shared.attach(download)
+        Downloads.manager(for: profileID).attach(download)
     }
 
     func webView(_ w: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        Downloads.shared.attach(download)
+        Downloads.manager(for: profileID).attach(download)
     }
 
     func toggleBookmark() {
@@ -263,7 +409,16 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
 @MainActor final class TabStore: ObservableObject {
     @Published var tabs: [Tab] = []
-    @Published var current: Tab.ID? { didSet { extensions.sync() } }
+    @Published var current: Tab.ID? {
+        didSet {
+            // Selecting a tab is what wakes it, and it has to happen here rather than in a
+            // Task: SwiftUI reads `tab.web` on this same turn of the run loop.
+            if let t = tabs.first(where: { $0.id == current }) { t.lastActive = .now; t.resume() }
+            // The tab being left behind starts its idle clock now, not when it was opened.
+            if let old = tabs.first(where: { $0.id == oldValue }) { old.lastActive = .now }
+            extensions.sync()
+        }
+    }
     /// Bumped to pull focus into the URL field (⌘L, new tab) / open the find bar (⌘F).
     @Published var focusAddress = 0
     @Published var findOpen = false
@@ -275,9 +430,21 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         suggestions.indices.contains(suggestionIndex) ? suggestions[suggestionIndex] : nil
     }
 
+    private var suggestTask: Task<Void, Never>?
+
     func suggest(_ query: String) {
-        suggestions = isPrivate ? [] : history.suggest(query)
+        let local = isPrivate ? [] : history.suggest(query)
+        suggestions = local
         suggestionIndex = -1
+        suggestTask?.cancel()
+        // Remote completions land later and only widen the list; the local half is already
+        // drawn, and suggestionIndex is left alone so a late response cannot move the
+        // user's arrow-key selection out from under them.
+        suggestTask = Task { [isPrivate] in
+            let merged = await SearchSuggestions.merged(query, local: local, isPrivate: isPrivate)
+            guard !Task.isCancelled else { return }
+            suggestions = merged
+        }
     }
 
     func moveSuggestion(_ delta: Int) {
@@ -285,7 +452,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         suggestionIndex = max(-1, min(suggestions.count - 1, suggestionIndex + delta))
     }
 
-    func clearSuggestions() { suggestions = []; suggestionIndex = -1 }
+    func clearSuggestions() { suggestTask?.cancel(); suggestions = []; suggestionIndex = -1 }
 
     let isPrivate: Bool
     /// The profile this window belongs to. A window never changes profile — opening another
@@ -306,12 +473,16 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
     static var home: URL { Prefs.homepage }
 
+    /// `parked` is url → what the session (or a space) knew about that tab: its title and
+    /// its interactionState. A tab we have state for comes up suspended instead of loading.
     init(isPrivate: Bool = false, urls: [URL] = [],
-         profileID: UUID = ProfileManager.shared.active.id, space: Space? = nil) {
+         profileID: UUID = ProfileManager.shared.active.id, space: Space? = nil,
+         parked: [String: Parked] = [:]) {
         self.isPrivate = isPrivate
         self.profileID = profileID
         self.currentSpaceID = space?.id
         TabStore.all.append(self)
+        Suspension.begin()        // idempotent; here so main.swift needs no wiring
         // A space carries its own tabs and pins; otherwise fall back to the profile's pins.
         let urls = space.map { $0.tabURLs } ?? urls
         // Pins belong to the profile, not to a window, so only the first window of that
@@ -320,14 +491,20 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         let firstOfProfile = TabStore.all.filter { $0.profileID == profileID && !$0.isPrivate }.count == 1
         let pins = space?.pinnedURLs
             ?? ((!isPrivate && firstOfProfile) ? TabStore.pinnedURLs(for: profileID) : [])
+        // A space carries its own per-tab state in a sidecar; a window restore is handed one.
+        let parked = space.map { Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory) } ?? parked
         for url in pins {
             let t = newBlankTab()
             t.pinned = true
             t.favicon = favicons.icon(for: url)          // from cache, before the page loads
-            t.web.load(URLRequest(url: url))
+            t.open(url, parked: parked[url.absoluteString])
         }
         let rest = urls.filter { !pins.contains($0) }
-        if rest.isEmpty && pins.isEmpty { newTab(nil) } else { rest.forEach { newTab($0) } }
+        if rest.isEmpty && pins.isEmpty {
+            newTab(nil)
+        } else {
+            rest.forEach { newBlankTab().open($0, parked: parked[$0.absoluteString]) }
+        }
         // Restored pins sit first but are not what the user asked for, so focus lands on
         // the first ordinary tab when there is one.
         current = (tabs.first { !$0.pinned } ?? tabs.first)?.id
@@ -353,7 +530,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
     func close(_ id: Tab.ID) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
-        if !isPrivate { ClosedTabs.push(tabs[i].web.url) }
+        if !isPrivate { ClosedTabs.push(tabs[i].currentURL) }
         let wasPinned = tabs[i].pinned
         tabs.remove(at: i)
         if wasPinned { savePins() }
@@ -414,7 +591,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
     func savePins() {
         guard !isPrivate else { return }
-        let urls = tabs.filter(\.pinned).compactMap { $0.web.url?.absoluteString }
+        let urls = tabs.filter(\.pinned).compactMap { $0.currentURL?.absoluteString }
                        .filter { $0.hasPrefix("http") }
         // Inside a space the pins belong to the space, not to the profile — switching space
         // must not drag the last space's pins along.
@@ -445,18 +622,26 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     func saveCurrentSpace() {
         guard !isPrivate, let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
         else { return }
-        space.tabURLs = tabs.filter { !$0.pinned }.compactMap(\.web.url).filter { $0.scheme?.hasPrefix("http") == true }
-        space.pinnedURLs = tabs.filter(\.pinned).compactMap(\.web.url).filter { $0.scheme?.hasPrefix("http") == true }
+        space.tabURLs = tabs.filter { !$0.pinned }.compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
+        space.pinnedURLs = tabs.filter(\.pinned).compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
         ProfileManager.shared.updateSpace(space)
+        // Scroll position and back/forward list, in a sidecar — `Space` is another file's
+        // Codable struct and is not mine to widen.
+        var parked: [String: Parked] = [:]
+        for t in tabs where t.currentURL?.scheme?.hasPrefix("http") == true {
+            parked[t.currentURL!.absoluteString] = t.snapshot
+        }
+        Suspension.SpaceState.save(parked, space: id, profileID: profileID, in: Store.directory)
     }
 
     /// Save the outgoing space, then rebuild the strip from the incoming one. A window shows
     /// one space at a time.
     ///
-    /// ponytail: the tabs are torn down and reloaded from urls rather than parked alive —
-    /// same trade the session restore already makes. Ceiling: switching back loses scroll
-    /// position and the back/forward list. Upgrade path is keeping the Tab objects in a
-    /// per-space array on the store and swapping the arrays instead of the urls.
+    /// The tabs are still torn down rather than parked alive, but each one's
+    /// interactionState goes into the sidecar on the way out and comes back on the way in,
+    /// so switching back lands on the same page, the same scroll offset and the same
+    /// back/forward list. Ceiling: only the tab that becomes current actually loads — the
+    /// rest come up suspended, which is the point.
     func switchTo(space: Space) {
         // A space's profileID is the only link to its profile, so refusing here is what keeps
         // a window from ever showing another profile's tabs.
@@ -465,13 +650,14 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         // Not close(): that pushes onto the reopen stack and closes the window on the last tab.
         tabs.removeAll()
         currentSpaceID = space.id
+        let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
         for url in space.pinnedURLs {
             let t = newBlankTab()
             t.pinned = true
             t.favicon = favicons.icon(for: url)
-            t.web.load(URLRequest(url: url))
+            t.open(url, parked: parked[url.absoluteString])
         }
-        for url in space.tabURLs { newTab(url) }
+        for url in space.tabURLs { newBlankTab().open(url, parked: parked[url.absoluteString]) }
         if tabs.isEmpty { newTab(nil) }
         current = (tabs.first { !$0.pinned } ?? tabs.first)?.id
         extensions.sync()
@@ -490,11 +676,10 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     func newSpace(named name: String) -> Space? {
         guard !isPrivate else { return nil }
         saveCurrentSpace()
-        var space = ProfileManager.shared.createSpace(name: name, in: profileID)
-        space.tabURLs = tabs.filter { !$0.pinned }.compactMap(\.web.url)
-        space.pinnedURLs = tabs.filter(\.pinned).compactMap(\.web.url)
-        ProfileManager.shared.updateSpace(space)
+        let space = ProfileManager.shared.createSpace(name: name, in: profileID)
+        // Move in first, then save through the one path that also writes the state sidecar.
         currentSpaceID = space.id
-        return space
+        saveCurrentSpace()
+        return spaces.first { $0.id == space.id } ?? space
     }
 }

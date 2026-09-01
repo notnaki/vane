@@ -20,11 +20,13 @@ import SwiftUI
 
     @discardableResult
     static func open(isPrivate: Bool = false, urls: [URL] = [],
-                     profile: Profile? = nil, space: Space? = nil) -> TabStore {
+                     profile: Profile? = nil, space: Space? = nil,
+                     parked: [String: Parked] = [:]) -> TabStore {
         let profile = profile ?? space.flatMap { s in
             ProfileManager.shared.profiles.first { $0.id == s.profileID }
         } ?? ProfileManager.shared.active
-        let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space)
+        let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space,
+                             parked: parked)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -86,20 +88,68 @@ import SwiftUI
         ProfileManager.sessionURL(for: profileID, in: Store.directory)
     }
 
+    /// One tab as the session file remembers it. `state` is a base64 `interactionState`:
+    /// the back/forward list, the current item and its scroll offset.
+    struct Entry: Codable, Equatable {
+        var url: String
+        var title: String?
+        var state: String?
+    }
+
+    private struct Disk: Codable {
+        var version: Int
+        var windows: [[Entry]]
+    }
+
+    /// v2 is a dictionary so it is self-describing. v1 was a bare `[[String]]` of urls and
+    /// is still read, because a session written by the previous build has to come back —
+    /// just without the extra fidelity.
+    /// ponytail: no writer for v1. Downgrading loses the session once, and a browser that
+    /// can be downgraded mid-session is not a thing anyone does twice.
+    static func encode(_ windows: [[Entry]]) -> Data? {
+        try? JSONEncoder().encode(Disk(version: 2, windows: windows))
+    }
+
+    static func decode(_ data: Data) -> [[Entry]] {
+        if let disk = try? JSONDecoder().decode(Disk.self, from: data) { return disk.windows }
+        let legacy = (try? JSONSerialization.jsonObject(with: data)) as? [[String]] ?? []
+        return legacy.map { $0.map { Entry(url: $0) } }
+    }
+
+    /// url → what we knew about it, for `TabStore.init`. Entries with neither a title nor a
+    /// state — i.e. every entry from a v1 file — are left out, so those tabs load eagerly
+    /// exactly as they do today.
+    /// ponytail: keyed by url, so the same page open in two tabs of one window comes back
+    /// twice on the same scroll position. Nobody has ever noticed.
+    static func parked(_ entries: [Entry]) -> [String: Parked] {
+        var out: [String: Parked] = [:]
+        for e in entries where e.title != nil || e.state != nil {
+            out[e.url] = Parked(title: e.title ?? "",
+                                state: e.state.flatMap { Data(base64Encoded: $0) })
+        }
+        return out
+    }
+
     /// Every profile's open windows, each into its own file. A profile whose windows are all
     /// closed keeps the session it already had — only profiles with a live window are
     /// rewritten, so quitting from profile B does not erase profile A's session.
     static func save() {
-        var byProfile: [UUID: [[String]]] = [:]
+        var byProfile: [UUID: [[Entry]]] = [:]
         for store in TabStore.all where !store.isPrivate {
             store.saveCurrentSpace()
-            let urls = store.tabs.compactMap { $0.web.url?.absoluteString }
-                                 .filter { $0.hasPrefix("http") }
-            byProfile[store.profileID, default: []].append(urls)
+            let entries = store.tabs.compactMap { tab -> Entry? in
+                // currentURL, not web.url: a suspended tab has no live page and would
+                // otherwise drop out of its own session.
+                guard let u = tab.currentURL, u.scheme?.hasPrefix("http") == true else { return nil }
+                let snap = tab.snapshot
+                return Entry(url: u.absoluteString, title: snap.title,
+                             state: snap.state?.base64EncodedString())
+            }
+            byProfile[store.profileID, default: []].append(entries)
         }
         for (profileID, windows) in byProfile {
-            let open = windows.filter { !$0.isEmpty }
-            try? JSONSerialization.data(withJSONObject: open).write(to: file(profileID))
+            guard let data = encode(windows.filter { !$0.isEmpty }) else { continue }
+            try? data.write(to: file(profileID))
         }
     }
 
@@ -107,12 +157,12 @@ import SwiftUI
     @discardableResult
     static func restore(profile: Profile? = nil) -> Bool {
         let profile = profile ?? ProfileManager.shared.active
-        guard let data = try? Data(contentsOf: file(profile.id)),
-              let windows = try? JSONSerialization.jsonObject(with: data) as? [[String]],
-              !windows.isEmpty
-        else { return false }
-        for urls in windows {
-            Windows.open(urls: urls.compactMap(URL.init(string:)), profile: profile)
+        guard let data = try? Data(contentsOf: file(profile.id)) else { return false }
+        let windows = decode(data).filter { !$0.isEmpty }
+        guard !windows.isEmpty else { return false }
+        for entries in windows {
+            Windows.open(urls: entries.compactMap { URL(string: $0.url) }, profile: profile,
+                         parked: parked(entries))
         }
         return !TabStore.all.isEmpty
     }
