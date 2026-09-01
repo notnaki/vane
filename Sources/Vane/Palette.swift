@@ -112,10 +112,6 @@ struct PaletteCommand: Identifiable {
     /// A `var`, not a `let`: features that land later append themselves here, so the
     /// palette never grows a compile-time dependency on code that does not exist yet — and
     /// never lists a row that does nothing when activated.
-    ///
-    /// Still to add, once the feature behind each one exists:
-    ///   PaletteCommand("Toggle Reader", icon: "doc.plaintext") { Windows.current?.active?.toggleReader() }
-    ///   PaletteCommand("Open Settings",  icon: "gearshape")    { SettingsWindow.show() }
     @MainActor static var all: [PaletteCommand] = [
         PaletteCommand("New Tab", icon: "plus") { Windows.current?.newTab(nil) },
         PaletteCommand("Close Tab", icon: "xmark") {
