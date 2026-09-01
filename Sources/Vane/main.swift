@@ -17,16 +17,18 @@ if args.first == "import", let file = args.dropFirst().first {
     exit(0)
 }
 
+Crash.begin()
+
 // `vane <url>` beats a restored session; otherwise pick up where the user left off.
 if let first = args.first, first.hasPrefix("http"), let u = URL(string: first) {
     Windows.open(urls: [u])
-} else if !Session.restore() {
+} else if !Prefs.restoreSession || !Crash.offerRestore() {
     Windows.open()
 }
 
 NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
                                        object: nil, queue: .main) { _ in
-    MainActor.assumeIsolated { Session.save() }
+    MainActor.assumeIsolated { Crash.markClean() }
 }
 
 Inspector.configure()

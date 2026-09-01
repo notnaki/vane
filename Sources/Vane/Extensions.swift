@@ -7,12 +7,14 @@ import WebKit
 // created with* names the controller. There is no way to attach one afterwards, so this
 // has to happen inside `Tab.configuration(isPrivate:)`:
 //
-//     cfg.webExtensionController = ExtensionHost.shared.controller
+//     cfg.webExtensionController = ExtensionHost.host(for: profileID).controller
 //
-// One line, and it must run before `WKWebView(frame:configuration:)`. Private tabs get the
-// same controller: WebKit gates them on each context's `hasAccessToPrivateData` (off by
-// default here), and Vane already satisfies the isolation rule WebKit requires — a
-// non-persistent data store plus a fresh WKUserContentController per Tab.
+// One line, and it must run before `WKWebView(frame:configuration:)`. There is one host per
+// *profile*, so an extension loaded in one profile never sees another profile's tabs. Private
+// tabs share their profile's controller: WebKit gates them on each context's
+// `hasAccessToPrivateData` (off by default here), and Vane already satisfies the isolation
+// rule WebKit requires — a non-persistent data store plus a fresh WKUserContentController
+// per Tab.
 //
 // `configuration(for:)` below is the same thing spelled for a call site that has a store.
 //
@@ -26,15 +28,35 @@ import WebKit
 /// Host for Apple's WebExtension API. Owns the one controller, the loaded contexts, and
 /// the adapters that let an extension see Vane's tabs and windows.
 ///
-/// ponytail: one controller for the whole app rather than one per window — WKWebExtension
-/// is modelled that way (windows are things the controller asks *you* about), and a second
-/// controller would need its own persistent store identifier. Upgrade path if private
-/// windows ever need their own extension set: a second host built on
-/// `.nonPersistentConfiguration`.
+/// ponytail: one controller per profile, not per window — WKWebExtension is modelled that
+/// way (windows are things the controller asks *you* about). Profiles are exactly the level
+/// where a separate persistent store identifier is warranted. Upgrade path if private windows
+/// ever need their own extension set: a third host built on `.nonPersistent()`.
 @MainActor final class ExtensionHost: NSObject, ObservableObject, WKWebExtensionControllerDelegate {
-    static let shared = ExtensionHost()
+    /// The active profile's host. One host — one controller, one extension set, one set of
+    /// background pages — per profile, so an extension in one profile cannot see another
+    /// profile's tabs or storage.
+    static var shared: ExtensionHost { host(for: ProfileManager.shared.active.id) }
 
-    let controller = WKWebExtensionController(configuration: .default())
+    private static var hosts: [UUID: ExtensionHost] = [:]
+
+    static func host(for profileID: UUID) -> ExtensionHost {
+        if let hit = hosts[profileID] { return hit }
+        let fresh = ExtensionHost(profileID: profileID)
+        hosts[profileID] = fresh
+        return fresh
+    }
+
+    /// Unload everything and forget the host. Called when a profile is deleted.
+    static func forget(_ profileID: UUID) {
+        guard let host = hosts[profileID] else { return }
+        for context in host.installed { try? host.controller.unload(context) }
+        host.loaded.removeAll()
+        hosts[profileID] = nil
+    }
+
+    let profileID: UUID
+    let controller: WKWebExtensionController
 
     /// Folder path alongside the context, because WKWebExtension does not report the
     /// resource base URL it was built from and uninstall has to erase the stored path.
@@ -42,16 +64,29 @@ import WebKit
 
     var installed: [WKWebExtensionContext] { loaded.map(\.context) }
 
-    private override init() {
+    private init(profileID: UUID) {
+        self.profileID = profileID
+        // A profile-scoped controller configuration is what keeps extension storage and
+        // background state from crossing profiles; the default profile keeps `.default()`
+        // so already-installed extensions keep their storage.
+        let configuration = profileID == ProfileManager.defaultID
+            ? WKWebExtensionController.Configuration.default()
+            : WKWebExtensionController.Configuration(identifier: profileID)
+        configuration.defaultWebsiteDataStore = ProfileManager.dataStore(for: profileID)
+        controller = WKWebExtensionController(configuration: configuration)
         super.init()
         controller.delegate = self
-        for path in Self.stored() { begin(URL(fileURLWithPath: path)) }
+        for path in Self.stored(.standard, key: Self.key(for: profileID)) {
+            begin(URL(fileURLWithPath: path))
+        }
     }
 
-    /// The controller a new WKWebView's configuration must be pointed at. See the wiring
-    /// note at the top of this file — the store is not used yet, it is there so a per-window
-    /// controller can be introduced later without touching the call site.
-    func configuration(for store: TabStore) -> WKWebExtensionController { controller }
+    /// The controller a new WKWebView's configuration must be pointed at. See the wiring note
+    /// at the top of this file. Resolves through the store's *profile*, so calling it on the
+    /// wrong host still returns the right controller.
+    func configuration(for store: TabStore) -> WKWebExtensionController {
+        Self.host(for: store.profileID).controller
+    }
 
     // MARK: Install / remove
 
@@ -69,14 +104,18 @@ import WebKit
     /// thrown error. Upgrade path: make this `async throws` the day the call sites can await.
     func install(folder: URL) throws {
         _ = try Self.validate(folder)
-        Self.store(Self.adding(folder.path, to: Self.stored()))
+        Self.store(Self.adding(folder.path, to: Self.stored(.standard, key: myKey)),
+                   in: .standard, key: myKey)
         begin(folder)
     }
+
+    private var myKey: String { Self.key(for: profileID) }
 
     func remove(_ context: WKWebExtensionContext) {
         try? controller.unload(context)
         if let path = loaded.first(where: { $0.context === context })?.path {
-            Self.store(Self.stored().filter { $0 != path })
+            Self.store(Self.stored(.standard, key: myKey).filter { $0 != path },
+                       in: .standard, key: myKey)
             claimed.remove(path)
         }
         loaded.removeAll { $0.context === context }
@@ -152,13 +191,19 @@ import WebKit
 
     /// ponytail: plain paths, not security-scoped bookmarks — Vane is not sandboxed, so a
     /// path is all the access it needs. Sandbox it and this becomes bookmark data.
-    private static let key = "extensionFolders"
+    static let baseKey = "extensionFolders"
 
-    static func stored(_ defaults: UserDefaults = .standard) -> [String] {
+    /// Per profile, so an extension installed in one profile is not loaded into another.
+    static func key(for profileID: UUID) -> String {
+        ProfileManager.defaultsKey(baseKey, profileID)
+    }
+
+    static func stored(_ defaults: UserDefaults = .standard, key: String = ExtensionHost.baseKey) -> [String] {
         defaults.stringArray(forKey: key) ?? []
     }
 
-    static func store(_ paths: [String], in defaults: UserDefaults = .standard) {
+    static func store(_ paths: [String], in defaults: UserDefaults = .standard,
+                      key: String = ExtensionHost.baseKey) {
         defaults.set(paths, forKey: key)
     }
 
@@ -222,7 +267,7 @@ import WebKit
     }
 
     private func store(holding tab: Tab) -> TabStore? {
-        TabStore.all.first { $0.tabs.contains { $0 === tab } }
+        myStores.first { $0.tabs.contains { $0 === tab } }
     }
 
     // MARK: Change notification
@@ -248,9 +293,17 @@ import WebKit
 
     /// Tell the controller about anything that changed since last time. Safe to call as
     /// often as you like; it does nothing when nothing moved.
+    /// Only this profile's windows exist as far as this host is concerned.
+    private var myStores: [TabStore] { TabStore.all.filter { $0.profileID == profileID } }
+
+    private var myFocusedStore: TabStore? {
+        guard let current = Windows.current, current.profileID == profileID else { return nil }
+        return current
+    }
+
     func sync() {
         guard !loaded.isEmpty else { return }
-        let stores = TabStore.all
+        let stores = myStores
         let liveWindows = Set(stores.map(ObjectIdentifier.init))
 
         for key in announcedWindows.subtracting(liveWindows) {
@@ -297,10 +350,11 @@ import WebKit
             }
         }
 
-        let focused = Windows.current.map(ObjectIdentifier.init)
+        let current = myFocusedStore
+        let focused = current.map(ObjectIdentifier.init)
         if focused != focusedWindow {
             focusedWindow = focused
-            controller.didFocusWindow(Windows.current.map { adapter(for: $0) })
+            controller.didFocusWindow(current.map { adapter(for: $0) })
         }
     }
 
@@ -308,14 +362,14 @@ import WebKit
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openWindowsFor context: WKWebExtensionContext) -> [any WKWebExtensionWindow] {
-        TabStore.all
+        myStores
             .filter { context.hasAccessToPrivateData || !$0.isPrivate }
             .map { adapter(for: $0) }
     }
 
     func webExtensionController(_ controller: WKWebExtensionController,
                                 focusedWindowFor context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
-        guard let store = Windows.current,
+        guard let store = myFocusedStore,
               context.hasAccessToPrivateData || !store.isPrivate else { return nil }
         return adapter(for: store)
     }
@@ -323,7 +377,8 @@ import WebKit
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
-        let store = (configuration.window as? ExtWindow)?.store ?? Windows.current ?? Windows.open()
+        let store = (configuration.window as? ExtWindow)?.store ?? myFocusedStore ?? myStores.last
+            ?? Windows.open(profile: ProfileManager.shared.profiles.first { $0.id == profileID })
         let tab = store.newBlankTab()
         if let url = configuration.url { tab.web.load(URLRequest(url: url)) }
         if !configuration.shouldBeActive, let first = store.tabs.first { store.current = first.id }
@@ -335,7 +390,8 @@ import WebKit
                                 openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionWindow)? {
         let store = Windows.open(isPrivate: configuration.shouldBePrivate,
-                                 urls: configuration.tabURLs)
+                                 urls: configuration.tabURLs,
+                                 profile: ProfileManager.shared.profiles.first { $0.id == profileID })
         if !configuration.frame.isNull, let window = store.window {
             window.setFrame(flip(configuration.frame, into: window), display: true)
         }
@@ -357,7 +413,7 @@ import WebKit
     func webExtensionController(_ controller: WKWebExtensionController,
                                 presentActionPopup action: WKWebExtension.Action,
                                 for context: WKWebExtensionContext) async throws {
-        guard let popover = action.popupPopover, let anchor = Windows.current?.window?.contentView
+        guard let popover = action.popupPopover, let anchor = myFocusedStore?.window?.contentView
         else { return }
         // ponytail: no toolbar button to hang this off yet, so it points at the top-right of
         // the content view. Upgrade path: anchor it to the real button once UI.swift has one.
@@ -507,7 +563,7 @@ import WebKit
     }
 
     func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
-        store.map { ExtensionHost.shared.adapter(for: $0) }
+        store.map { ExtensionHost.host(for: $0.profileID).adapter(for: $0) }
     }
 
     func indexInWindow(for context: WKWebExtensionContext) -> Int {
@@ -538,7 +594,7 @@ import WebKit
         guard let tab, let store else { return }
         store.current = tab.id
         store.window?.makeKeyAndOrderFront(nil)
-        ExtensionHost.shared.sync()
+        ExtensionHost.host(for: store.profileID).sync()
     }
 
     func setSelected(_ selected: Bool, for context: WKWebExtensionContext) async throws {
@@ -550,7 +606,7 @@ import WebKit
     func close(for context: WKWebExtensionContext) async throws {
         guard let tab, let store else { return }
         store.close(tab.id)
-        ExtensionHost.shared.sync()
+        ExtensionHost.host(for: store.profileID).sync()
     }
 
     func duplicate(using configuration: WKWebExtension.TabConfiguration,
@@ -558,8 +614,9 @@ import WebKit
         guard let store, let url = tab?.web.url else { return nil }
         let copy = store.newBlankTab()
         copy.web.load(URLRequest(url: url))
-        ExtensionHost.shared.sync()
-        return ExtensionHost.shared.adapter(for: copy, in: store)
+        let host = ExtensionHost.host(for: store.profileID)
+        host.sync()
+        return host.adapter(for: copy, in: store)
     }
 }
 
@@ -571,12 +628,13 @@ import WebKit
 
     func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] {
         guard let store else { return [] }
-        return store.tabs.map { ExtensionHost.shared.adapter(for: $0, in: store) }
+        let host = ExtensionHost.host(for: store.profileID)
+        return store.tabs.map { host.adapter(for: $0, in: store) }
     }
 
     func activeTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? {
         guard let store, let tab = store.active else { return nil }
-        return ExtensionHost.shared.adapter(for: tab, in: store)
+        return ExtensionHost.host(for: store.profileID).adapter(for: tab, in: store)
     }
 
     // Vane never opens popup windows, so every window is a normal one.
@@ -619,11 +677,11 @@ import WebKit
     func focus(for context: WKWebExtensionContext) async throws {
         store?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        ExtensionHost.shared.sync()
+        store.map { ExtensionHost.host(for: $0.profileID).sync() }
     }
 
     func close(for context: WKWebExtensionContext) async throws {
         store?.window?.performClose(nil)
-        ExtensionHost.shared.sync()
+        store.map { ExtensionHost.host(for: $0.profileID).sync() }
     }
 }

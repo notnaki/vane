@@ -32,10 +32,20 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     var onNewTab: ((URL?) -> Void)?
 
     let isPrivate: Bool
+    /// Which profile's data this tab reads and writes. Never changes for the life of the tab.
+    let profileID: UUID
 
-    init(url: URL? = nil, isPrivate: Bool = false) {
+    /// The profile-scoped singletons this tab must use. `Store.shared` and friends resolve to
+    /// the *active* profile, which is the wrong one for a background window.
+    var history: Store { Store.store(for: profileID) }
+    var favicons: Favicons { Favicons.cache(for: profileID) }
+    var extensions: ExtensionHost { ExtensionHost.host(for: profileID) }
+
+    init(url: URL? = nil, isPrivate: Bool = false,
+         profileID: UUID = ProfileManager.shared.active.id) {
         self.isPrivate = isPrivate
-        let cfg = Tab.configuration(isPrivate: isPrivate)
+        self.profileID = profileID
+        let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID)
         cfg.userContentController.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         web = WKWebView(frame: .zero, configuration: cfg)
@@ -52,15 +62,15 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.title = w.title?.isEmpty == false ? w.title! : "New Tab"
-                    if !self.isPrivate, let u = w.url { Store.shared.retitle(u, title: self.title) }
-                    ExtensionHost.shared.sync()
+                    if !self.isPrivate, let u = w.url { self.history.retitle(u, title: self.title) }
+                    self.extensions.sync()
                 }
             },
             web.observe(\.url, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
                     guard let self, !self.editing else { return }
                     self.address = w.url?.absoluteString ?? ""
-                    ExtensionHost.shared.sync()
+                    self.extensions.sync()
                 }
             },
             web.observe(\.estimatedProgress, options: [.new]) { [weak self] w, _ in
@@ -79,11 +89,13 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         if let url { web.load(URLRequest(url: url)) }
     }
 
-    static func configuration(isPrivate: Bool = false) -> WKWebViewConfiguration {
+    static func configuration(isPrivate: Bool = false,
+                              profileID: UUID = ProfileManager.shared.active.id) -> WKWebViewConfiguration {
         let cfg = WKWebViewConfiguration()
-        // Persistent: cookies, logins, media keys. A private window gets a store that lives
-        // only as long as the window does — that is the whole of private browsing.
-        cfg.websiteDataStore = isPrivate ? .nonPersistent() : .default()
+        // Persistent: cookies, logins, media keys — and one persistent store per profile, via
+        // WKWebsiteDataStore(forIdentifier:). A private window gets a store that lives only as
+        // long as the window does — that is the whole of private browsing.
+        cfg.websiteDataStore = isPrivate ? .nonPersistent() : ProfileManager.dataStore(for: profileID)
         cfg.mediaTypesRequiringUserActionForPlayback = []
         cfg.allowsAirPlayForMediaPlayback = true
         cfg.preferences.isElementFullscreenEnabled = true
@@ -94,25 +106,16 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         // ponytail: KVC on a documented-by-everyone WebKit preference key, wrapped so a
         // rename degrades to "no dev tools" rather than a crash.
         cfg.preferences.setValue(Settings.inspectorEnabled, forKey: "developerExtrasEnabled")
-        cfg.webExtensionController = ExtensionHost.shared.controller
-        Blocker.apply(to: cfg)
+        cfg.webExtensionController = ExtensionHost.host(for: profileID).controller
+        Blocker.apply(to: cfg, profileID: profileID)
         return cfg
     }
 
     /// Address-bar input: a URL if it plausibly is one, otherwise a search.
     func go(_ input: String) {
-        let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !s.isEmpty else { return }
-        var target: URL?
-        if s.contains(" ") || !s.contains(".") {
-            target = URL(string: "https://duckduckgo.com/?q=" +
-                (s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""))
-        } else if s.hasPrefix("http://") || s.hasPrefix("https://") {
-            target = URL(string: s)
-        } else {
-            target = URL(string: "https://" + s)
-        }
-        if let target { editing = false; web.load(URLRequest(url: target)) }
+        guard let target = Search.url(for: input) else { return }
+        editing = false
+        web.load(URLRequest(url: target))
     }
 
     /// Only ever over https — filling a saved password into a plaintext page hands it to
@@ -123,7 +126,8 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     }
 
     func fillPassword() {
-        guard let host = secureHost, let hit = Passwords.lookup(host: host) else { return }
+        guard let host = secureHost,
+              let hit = Passwords.lookup(host: host, profileID: profileID) else { return }
         web.evaluateJavaScript(Autofill.fillJS(account: hit.account, password: hit.password))
     }
 
@@ -158,6 +162,11 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
     // 4: per-site camera/microphone. WebKit owns the geolocation prompt itself, so there
     // is no location equivalent to implement here.
+    func webView(_ w: WKWebView, didReceive challenge: URLAuthenticationChallenge) async
+        -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        await CertificateTrust.handle(challenge: challenge)
+    }
+
     func webView(_ w: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,
                  initiatedBy frame: WKFrameInfo, type: WKMediaCaptureType) async -> WKPermissionDecision {
         await SitePermissions.decide(origin: origin, type: type)
@@ -167,15 +176,15 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         progress = 1
         loading = false
         fillPassword()
-        Favicons.shared.load(for: self)
+        favicons.load(for: self)
         // A pinned tab that navigated somewhere else is still the pin the user wants back.
         if pinned { TabStore.savePins(owning: self) }
         guard let url = w.url else { return }
-        bookmarked = Store.shared.isBookmarked(url)
+        bookmarked = history.isBookmarked(url)
         if suppressHistoryOnce {
             suppressHistoryOnce = false
         } else if !isPrivate {
-            Store.shared.record(url, title: w.title ?? "")
+            history.record(url, title: w.title ?? "")
         }
     }
 
@@ -189,7 +198,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
     func toggleBookmark() {
         guard let url = web.url, url.scheme?.hasPrefix("http") == true else { return }
-        bookmarked = Store.shared.toggleBookmark(url, title: web.title ?? url.absoluteString)
+        bookmarked = history.toggleBookmark(url, title: web.title ?? url.absoluteString)
     }
 
     /// ⌘F. WebKit owns the search itself, including wrapping and highlight.
@@ -207,13 +216,14 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
               let host = secureHost else { return }
         let account = (body["account"] as? String) ?? ""
         // Already stored and unchanged — nothing to ask about.
-        if let hit = Passwords.lookup(host: host), hit.account == account, hit.password == password { return }
+        if let hit = Passwords.lookup(host: host, profileID: profileID),
+           hit.account == account, hit.password == password { return }
         pendingSave = PendingSave(host: host, account: account, password: password)
     }
 
     func confirmSave() {
         guard let p = pendingSave else { return }
-        Passwords.save(host: p.host, account: p.account, password: p.password)
+        Passwords.save(host: p.host, account: p.account, password: p.password, profileID: profileID)
         pendingSave = nil
     }
 
@@ -250,7 +260,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
 @MainActor final class TabStore: ObservableObject {
     @Published var tabs: [Tab] = []
-    @Published var current: Tab.ID? { didSet { ExtensionHost.shared.sync() } }
+    @Published var current: Tab.ID? { didSet { extensions.sync() } }
     /// Bumped to pull focus into the URL field (⌘L, new tab) / open the find bar (⌘F).
     @Published var focusAddress = 0
     @Published var findOpen = false
@@ -263,7 +273,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     }
 
     func suggest(_ query: String) {
-        suggestions = isPrivate ? [] : Store.shared.suggest(query)
+        suggestions = isPrivate ? [] : history.suggest(query)
         suggestionIndex = -1
     }
 
@@ -275,22 +285,42 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     func clearSuggestions() { suggestions = []; suggestionIndex = -1 }
 
     let isPrivate: Bool
+    /// The profile this window belongs to. A window never changes profile — opening another
+    /// profile opens another window.
+    let profileID: UUID
+    /// Which space this window is showing, if any. A window shows one space at a time.
+    @Published private(set) var currentSpaceID: UUID?
     weak var window: NSWindow?
     /// Every live window, oldest first.
     static var all: [TabStore] = []
 
-    static let home = URL(string: "https://duckduckgo.com")!
+    var profile: Profile {
+        ProfileManager.shared.profiles.first { $0.id == profileID } ?? ProfileManager.shared.active
+    }
+    var history: Store { Store.store(for: profileID) }
+    var favicons: Favicons { Favicons.cache(for: profileID) }
+    var extensions: ExtensionHost { ExtensionHost.host(for: profileID) }
 
-    init(isPrivate: Bool = false, urls: [URL] = []) {
+    static var home: URL { Prefs.homepage }
+
+    init(isPrivate: Bool = false, urls: [URL] = [],
+         profileID: UUID = ProfileManager.shared.active.id, space: Space? = nil) {
         self.isPrivate = isPrivate
+        self.profileID = profileID
+        self.currentSpaceID = space?.id
         TabStore.all.append(self)
-        // Pins belong to the app, not to a window, so only the first one gets them back —
-        // and the session's copy of those same urls is dropped so they don't come up twice.
-        let pins = (!isPrivate && TabStore.all.count == 1) ? TabStore.pinnedURLs : []
+        // A space carries its own tabs and pins; otherwise fall back to the profile's pins.
+        let urls = space.map { $0.tabURLs } ?? urls
+        // Pins belong to the profile, not to a window, so only the first window of that
+        // profile gets them back — and the session's copy of those same urls is dropped so
+        // they don't come up twice.
+        let firstOfProfile = TabStore.all.filter { $0.profileID == profileID && !$0.isPrivate }.count == 1
+        let pins = space?.pinnedURLs
+            ?? ((!isPrivate && firstOfProfile) ? TabStore.pinnedURLs(for: profileID) : [])
         for url in pins {
             let t = newBlankTab()
             t.pinned = true
-            t.favicon = Favicons.shared.icon(for: url)   // from cache, before the page loads
+            t.favicon = favicons.icon(for: url)          // from cache, before the page loads
             t.web.load(URLRequest(url: url))
         }
         let rest = urls.filter { !pins.contains($0) }
@@ -310,11 +340,11 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
     @discardableResult
     func newBlankTab() -> Tab {
-        let t = Tab(isPrivate: isPrivate)
+        let t = Tab(isPrivate: isPrivate, profileID: profileID)
         t.onNewTab = { [weak self] u in self?.newTab(u) }
         tabs.append(t)
         current = t.id
-        ExtensionHost.shared.sync()
+        extensions.sync()
         return t
     }
 
@@ -324,7 +354,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         let wasPinned = tabs[i].pinned
         tabs.remove(at: i)
         if wasPinned { savePins() }
-        ExtensionHost.shared.sync()
+        extensions.sync()
         // Last tab closed closes the window, the way every other Mac browser behaves.
         if tabs.isEmpty { window?.performClose(nil); return }
         if current == id { current = tabs[min(i, tabs.count - 1)].id }
@@ -370,20 +400,98 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     /// session is per-window and is rewritten by whichever window closed last, while pins
     /// have to outlive all of them. Ceiling: one shared pin set, so pinning in two windows
     /// at once means last writer wins.
-    static var pinnedURLs: [URL] {
-        (UserDefaults.standard.stringArray(forKey: "pinnedTabs") ?? []).compactMap(URL.init(string:))
+    static var pinnedURLs: [URL] { pinnedURLs(for: ProfileManager.shared.active.id) }
+
+    /// Pins are profile data. The default profile keeps the un-suffixed `pinnedTabs` key, so
+    /// pins from before profiles existed are simply the default profile's pins.
+    static func pinnedURLs(for profileID: UUID) -> [URL] {
+        (UserDefaults.standard.stringArray(forKey: ProfileManager.defaultsKey("pinnedTabs", profileID)) ?? [])
+            .compactMap(URL.init(string:))
     }
 
     func savePins() {
         guard !isPrivate else { return }
-        UserDefaults.standard.set(
-            tabs.filter(\.pinned).compactMap { $0.web.url?.absoluteString }.filter { $0.hasPrefix("http") },
-            forKey: "pinnedTabs")
+        let urls = tabs.filter(\.pinned).compactMap { $0.web.url?.absoluteString }
+                       .filter { $0.hasPrefix("http") }
+        // Inside a space the pins belong to the space, not to the profile — switching space
+        // must not drag the last space's pins along.
+        if let id = currentSpaceID, var space = spaces.first(where: { $0.id == id }) {
+            space.pinnedURLs = urls.compactMap(URL.init(string:))
+            ProfileManager.shared.updateSpace(space)
+            return
+        }
+        UserDefaults.standard.set(urls, forKey: ProfileManager.defaultsKey("pinnedTabs", profileID))
     }
 
     /// Save from whichever store actually owns this tab, so a window with no pins never
     /// overwrites the pins of one that has them.
     static func savePins(owning tab: Tab) {
         all.first { $0.tabs.contains { $0 === tab } }?.savePins()
+    }
+
+    // MARK: Spaces
+
+    /// Every space in this window's profile. A space belongs to exactly one profile, so this
+    /// is the complete list a window can ever switch between.
+    var spaces: [Space] { ProfileManager.shared.spaces(for: profileID) }
+
+    var currentSpace: Space? { spaces.first { $0.id == currentSpaceID } }
+
+    /// Write the open tabs back into whichever space this window is showing. No-op when the
+    /// window is not in a space, and never for a private window — nothing private is written.
+    func saveCurrentSpace() {
+        guard !isPrivate, let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
+        else { return }
+        space.tabURLs = tabs.filter { !$0.pinned }.compactMap(\.web.url).filter { $0.scheme?.hasPrefix("http") == true }
+        space.pinnedURLs = tabs.filter(\.pinned).compactMap(\.web.url).filter { $0.scheme?.hasPrefix("http") == true }
+        ProfileManager.shared.updateSpace(space)
+    }
+
+    /// Save the outgoing space, then rebuild the strip from the incoming one. A window shows
+    /// one space at a time.
+    ///
+    /// ponytail: the tabs are torn down and reloaded from urls rather than parked alive —
+    /// same trade the session restore already makes. Ceiling: switching back loses scroll
+    /// position and the back/forward list. Upgrade path is keeping the Tab objects in a
+    /// per-space array on the store and swapping the arrays instead of the urls.
+    func switchTo(space: Space) {
+        // A space's profileID is the only link to its profile, so refusing here is what keeps
+        // a window from ever showing another profile's tabs.
+        guard space.profileID == profileID, space.id != currentSpaceID else { return }
+        saveCurrentSpace()
+        // Not close(): that pushes onto the reopen stack and closes the window on the last tab.
+        tabs.removeAll()
+        currentSpaceID = space.id
+        for url in space.pinnedURLs {
+            let t = newBlankTab()
+            t.pinned = true
+            t.favicon = favicons.icon(for: url)
+            t.web.load(URLRequest(url: url))
+        }
+        for url in space.tabURLs { newTab(url) }
+        if tabs.isEmpty { newTab(nil) }
+        current = (tabs.first { !$0.pinned } ?? tabs.first)?.id
+        extensions.sync()
+    }
+
+    /// Convenience for a menu that has an id rather than the struct.
+    func switchTo(spaceID: UUID) {
+        guard let space = spaces.first(where: { $0.id == spaceID }) else { return }
+        switchTo(space: space)
+    }
+
+    /// Create a space in this window's profile and move this window into it, carrying the
+    /// tabs that are already open — which is what "new space" means from a window's point of
+    /// view. Returns nil for a private window, which has no profile storage to write to.
+    @discardableResult
+    func newSpace(named name: String) -> Space? {
+        guard !isPrivate else { return nil }
+        saveCurrentSpace()
+        var space = ProfileManager.shared.createSpace(name: name, in: profileID)
+        space.tabURLs = tabs.filter { !$0.pinned }.compactMap(\.web.url)
+        space.pinnedURLs = tabs.filter(\.pinned).compactMap(\.web.url)
+        ProfileManager.shared.updateSpace(space)
+        currentSpaceID = space.id
+        return space
     }
 }

@@ -55,15 +55,28 @@ private struct BlockRule: Encodable, Equatable {
     /// Off is a real choice (some sites break, some users pay for the ads), so it persists.
     /// Defaults on — a browser that ships a blocker and leaves it off ships nothing.
     static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: "blockerEnabled") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "blockerEnabled"); refresh() }
+        get { enabled(for: ProfileManager.shared.active.id) }
+        set { setEnabled(newValue, for: ProfileManager.shared.active.id) }
+    }
+
+    /// Per profile: one profile can browse with the blocker off without turning it off for
+    /// the others. The default profile keeps the un-suffixed key, so an existing preference
+    /// carries over.
+    static func enabled(for profileID: UUID) -> Bool {
+        UserDefaults.standard.object(forKey: ProfileManager.defaultsKey("blockerEnabled", profileID)) as? Bool ?? true
+    }
+
+    static func setEnabled(_ on: Bool, for profileID: UUID) {
+        UserDefaults.standard.set(on, forKey: ProfileManager.defaultsKey("blockerEnabled", profileID))
+        refresh()
     }
 
     /// Attach the compiled list to a web view that is about to be created. Synchronous and
     /// cheap; if the first compile has not finished yet this does nothing and `refresh()`
     /// picks the tab up when it lands.
-    static func apply(to configuration: WKWebViewConfiguration) {
-        guard enabled, let compiled else { return }
+    static func apply(to configuration: WKWebViewConfiguration,
+                      profileID: UUID = ProfileManager.shared.active.id) {
+        guard enabled(for: profileID), let compiled else { return }
         configuration.userContentController.add(compiled)
     }
 
@@ -72,13 +85,17 @@ private struct BlockRule: Encodable, Equatable {
     /// filter set is a store lookup rather than a compile. Call it at startup.
     static func refresh() {
         Task {
-            compiled = enabled ? await build() : nil
+            // One compiled list for the app — the filters are the same everywhere, only
+            // whether they are attached is per profile.
+            let wanted = ProfileManager.shared.profiles.contains { enabled(for: $0.id) }
+            compiled = wanted ? await build() : nil
             for store in TabStore.all {
+                let on = enabled(for: store.profileID)
                 for tab in store.tabs {
                     let controller = tab.web.configuration.userContentController
                     // Vane is the only thing adding rule lists, so a blunt reset is fine.
                     controller.removeAllContentRuleLists()
-                    if let compiled { controller.add(compiled) }
+                    if on, let compiled { controller.add(compiled) }
                 }
             }
         }

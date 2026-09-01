@@ -73,6 +73,82 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     ]
 }
 
+/// One-line text prompt. ponytail: an NSAlert with an accessory field, not a window — a
+/// name is one string and this is not the settings surface.
+@MainActor private func askForName(_ title: String, _ initial: String = "") -> String? {
+    let alert = NSAlert()
+    alert.messageText = title
+    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+    field.stringValue = initial
+    alert.accessoryView = field
+    alert.addButton(withTitle: "OK")
+    alert.addButton(withTitle: "Cancel")
+    guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+    return name.isEmpty ? nil : name
+}
+
+@MainActor private func profileItems() -> [NSMenuItem] {
+    let manager = ProfileManager.shared
+    let switchers = manager.profiles.map { profile in
+        let entry = item(profile.name, "") {
+            _ = Windows.switchTo(profile: profile)
+            rebuild()          // switchTo does not rebuild, and every checkmark below moved
+        }
+        entry.state = manager.active.id == profile.id ? .on : .off
+        return entry
+    }
+    // delete() refuses on the last profile; disable rather than let it fail in an alert.
+    let remove = item("Delete Profile…", "") {
+        let active = manager.active
+        let alert = NSAlert()
+        alert.messageText = "Delete the profile “\(active.name)”?"
+        alert.informativeText = "Its history, bookmarks, saved passwords, cookies and "
+            + "extensions are deleted with it. This cannot be undone."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete")
+        alert.buttons.last?.hasDestructiveAction = true
+        if alert.runModal() == .alertSecondButtonReturn, manager.delete(active.id) {
+            _ = Windows.switchTo(profile: manager.active)
+            rebuild()
+        }
+    }
+    remove.isEnabled = manager.profiles.count > 1
+
+    return switchers + [
+        .separator(),
+        item("New Profile…", "") {
+            guard let name = askForName("Name the new profile") else { return }
+            _ = manager.create(name: name)
+            rebuild()
+        },
+        item("Rename Profile…", "") {
+            guard let name = askForName("Rename profile", manager.active.name) else { return }
+            manager.rename(manager.active.id, to: name)
+            rebuild()
+        },
+        remove,
+    ]
+}
+
+@MainActor private func spaceItems() -> [NSMenuItem] {
+    let store = Windows.current
+    let switchers = (store?.spaces ?? []).map { space in
+        let entry = item(space.name, "") { Windows.current?.switchTo(space: space); rebuild() }
+        entry.state = store?.currentSpaceID == space.id ? .on : .off
+        return entry
+    }
+    return switchers + [
+        .separator(),
+        item("New Space…", "") {
+            guard let name = askForName("Name the new space") else { return }
+            _ = Windows.current?.newSpace(named: name)
+            rebuild()
+        },
+    ]
+}
+
 /// Menus carry live state (checkmarks, the bookmarks and history lists), so they are
 /// rebuilt rather than mutated in place.
 @MainActor func rebuild() { NSApp.mainMenu = buildMenu() }
@@ -81,6 +157,8 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     let root = NSMenu()
     root.addItem(menu("Vane", [
         NSMenuItem(title: "About Vane", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+        .separator(),
+        item("Settings…", ",") { SettingsWindow.show() },
         .separator(),
         NSMenuItem(title: "Hide Vane", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
         NSMenuItem(title: "Quit Vane", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
@@ -137,6 +215,13 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         .separator(),
         makeDefault,
         .separator(),
+        item("Forget Certificate Exceptions…", "") {
+            let a = NSAlert()
+            a.messageText = "Forget every certificate you chose to trust anyway?"
+            a.informativeText = "Those sites will ask again the next time you visit them."
+            a.addButton(withTitle: "Forget"); a.addButton(withTitle: "Cancel")
+            if a.runModal() == .alertFirstButtonReturn { CertificateTrust.forgetAll() }
+        },
         item("Reset Camera & Microphone Permissions…", "") {
             let a = NSAlert()
             a.messageText = "Forget camera and microphone permissions for every site?"
@@ -144,6 +229,8 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
             if a.runModal() == .alertFirstButtonReturn { SitePermissions.resetAll() }
         },
     ]))
+    root.addItem(menu("Profiles", profileItems()))
+    root.addItem(menu("Spaces", spaceItems()))
     root.addItem(menu("Extensions", [
         item("Install Extension…", "") { ExtensionHost.shared.chooseAndInstall(); rebuild() },
         .separator(),

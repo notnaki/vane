@@ -15,8 +15,32 @@ struct Suggestion: Identifiable, Equatable {
 /// connection, used from the main thread — writes are a single row and reads are indexed.
 /// If that ever shows up in a profile the fix is a serial queue, not a different database.
 @MainActor final class Store {
-    static let shared = Store()
-    private var db: OpaquePointer?
+    /// The active profile's store. Still spelled `Store.shared` everywhere; it just resolves
+    /// per profile now, and the default profile's file is still `vane.db`.
+    static var shared: Store { store(for: ProfileManager.shared.active.id) }
+
+    /// One open connection per profile, kept for the life of the process.
+    private static var cache: [UUID: Store] = [:]
+
+    static func store(for profileID: UUID) -> Store {
+        if let hit = cache[profileID] { return hit }
+        let fresh = Store(path: ProfileManager.dbURL(for: profileID, in: directory).path)
+        cache[profileID] = fresh
+        return fresh
+    }
+
+    /// Drop the connection and the files. Called when a profile is deleted.
+    static func forget(_ profileID: UUID) {
+        cache[profileID] = nil
+        let path = ProfileManager.dbURL(for: profileID, in: directory).path
+        for p in [path, path + "-wal", path + "-shm"] {
+            try? FileManager.default.removeItem(atPath: p)
+        }
+    }
+
+    // nonisolated(unsafe) only so deinit can close it — a deinit is never actor-isolated.
+    // Every other access is from the main thread, as it always was.
+    private nonisolated(unsafe) var db: OpaquePointer?
 
     static var directory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -37,6 +61,9 @@ struct Suggestion: Identifiable, Equatable {
             id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '', at REAL NOT NULL);
         """)
     }
+
+    /// Deleting a profile drops its Store; close the file rather than leaking the handle.
+    deinit { sqlite3_close(db) }
 
     private func exec(_ sql: String) { sqlite3_exec(db, sql, nil, nil, nil) }
 

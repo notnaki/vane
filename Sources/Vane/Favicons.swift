@@ -8,7 +8,29 @@ import WebKit
 /// Ceiling: no ETag/Cache-Control handling, so an icon only changes when the LRU sweep
 /// evicts it; the upgrade path is writing the response headers next to the bytes.
 @MainActor final class Favicons: ObservableObject {
-    static let shared = Favicons()
+    /// The active profile's cache. An icon on disk is a record that a host was visited, so
+    /// it is profile data like any other; the default profile still uses the `favicons/`
+    /// folder it always used.
+    static var shared: Favicons { cache(for: ProfileManager.shared.active.id) }
+
+    private static var caches: [UUID: Favicons] = [:]
+
+    static func cache(for profileID: UUID) -> Favicons {
+        if let hit = caches[profileID] { return hit }
+        let fresh = Favicons(profileID: profileID)
+        caches[profileID] = fresh
+        return fresh
+    }
+
+    static func forget(_ profileID: UUID) {
+        caches[profileID] = nil
+        try? FileManager.default.removeItem(
+            at: ProfileManager.faviconDir(for: profileID, in: Store.directory))
+    }
+
+    let profileID: UUID
+
+    init(profileID: UUID = ProfileManager.defaultID) { self.profileID = profileID }
 
     /// Bumped when a fetch lands, so views that asked for a nil icon redraw.
     @Published private(set) var generation = 0
@@ -128,21 +150,21 @@ import WebKit
     /// ponytail: synchronous file IO on the main thread. These are sub-10KB reads on a
     /// local SSD, once per host per launch; if it ever shows up in a trace, move it behind
     /// the same Task the network fetch already uses.
-    private static var dir: URL {
-        let d = Store.directory.appendingPathComponent("favicons", isDirectory: true)
+    private var dir: URL {
+        let d = ProfileManager.faviconDir(for: profileID, in: Store.directory)
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         return d
     }
 
     private func readDisk(_ key: String) -> NSImage? {
-        guard let data = try? Data(contentsOf: Favicons.dir.appendingPathComponent(key)),
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent(key)),
               let img = NSImage(data: data), img.isValid else { return nil }
         img.size = NSSize(width: 16, height: 16)
         return img
     }
 
     private func writeDisk(_ key: String, _ data: Data) {
-        try? data.write(to: Favicons.dir.appendingPathComponent(key))
+        try? data.write(to: dir.appendingPathComponent(key))
         prune()
     }
 
@@ -150,7 +172,7 @@ import WebKit
     /// access record kept, which makes this LRU-by-write rather than true LRU.
     private func prune() {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: Favicons.dir,
+        guard let files = try? fm.contentsOfDirectory(at: dir,
                                                       includingPropertiesForKeys: [.contentModificationDateKey]),
               files.count > Favicons.maxFiles else { return }
         let byAge = files.sorted {

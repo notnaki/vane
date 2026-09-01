@@ -16,7 +16,19 @@ enum Passwords {
     /// business reading.
     private static let creator: NSNumber = 0x5661_6E65
 
-    private static func query(host: String, account: String? = nil) -> [String: Any] {
+    /// The profile discriminator. kSecAttrSecurityDomain is a free-text attribute that is
+    /// part of an Internet password's primary key, so two profiles can hold the same
+    /// host+account without colliding.
+    ///
+    /// The default profile deliberately writes *no* security domain: that is exactly what
+    /// every item saved before profiles existed looks like, so those items keep resolving
+    /// with no migration pass over the keychain.
+    private static func domain(_ profileID: UUID) -> String? {
+        profileID == ProfileManager.defaultID ? nil : "vane-" + profileID.uuidString.lowercased()
+    }
+
+    private static func query(host: String, account: String? = nil,
+                              profileID: UUID) -> [String: Any] {
         var q: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
             kSecAttrServer as String: host,
@@ -24,12 +36,14 @@ enum Passwords {
             kSecAttrCreator as String: creator,
         ]
         if let account { q[kSecAttrAccount as String] = account }
+        if let d = domain(profileID) { q[kSecAttrSecurityDomain as String] = d }
         return q
     }
 
-    static func save(host: String, account: String, password: String) {
-        SecItemDelete(query(host: host, account: account) as CFDictionary)
-        var add = query(host: host, account: account)
+    static func save(host: String, account: String, password: String,
+                     profileID: UUID = ProfileManager.activeProfileID) {
+        SecItemDelete(query(host: host, account: account, profileID: profileID) as CFDictionary)
+        var add = query(host: host, account: account, profileID: profileID)
         add[kSecValueData as String] = Data(password.utf8)
         add[kSecAttrLabel as String] = "\(host) (Vane)"
         SecItemAdd(add as CFDictionary, nil)
@@ -37,8 +51,9 @@ enum Passwords {
 
     /// Nil when nothing is stored. With several accounts for one host this returns the
     /// first; a picker is the upgrade path, not something to build before it is needed.
-    static func lookup(host: String) -> (account: String, password: String)? {
-        var q = query(host: host)
+    static func lookup(host: String,
+                       profileID: UUID = ProfileManager.activeProfileID) -> (account: String, password: String)? {
+        var q = query(host: host, profileID: profileID)
         q[kSecReturnAttributes as String] = true
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -48,12 +63,47 @@ enum Passwords {
               let account = item[kSecAttrAccount as String] as? String,
               let data = item[kSecValueData as String] as? Data
         else { return nil }
+        // The default profile's query carries no security domain, so it would otherwise also
+        // match another profile's item for the same host.
+        if profileID == ProfileManager.defaultID,
+           let d = item[kSecAttrSecurityDomain as String] as? String, !d.isEmpty { return nil }
         return (account, String(decoding: data, as: UTF8.self))
     }
 
     @discardableResult
-    static func delete(host: String, account: String) -> Bool {
-        SecItemDelete(query(host: host, account: account) as CFDictionary) == errSecSuccess
+    static func delete(host: String, account: String,
+                       profileID: UUID = ProfileManager.activeProfileID) -> Bool {
+        SecItemDelete(query(host: host, account: account, profileID: profileID) as CFDictionary) == errSecSuccess
+    }
+
+    /// Every credential belonging to one profile, for when that profile is deleted.
+    /// A non-default profile is one SecItemDelete against its security domain. The default
+    /// profile has no domain to key on, so its items are enumerated and the ones carrying
+    /// somebody else's domain are skipped.
+    static func deleteAll(profileID: UUID) {
+        if let d = domain(profileID) {
+            SecItemDelete([
+                kSecClass as String: kSecClassInternetPassword,
+                kSecAttrCreator as String: creator,
+                kSecAttrSecurityDomain as String: d,
+            ] as CFDictionary)
+            return
+        }
+        var out: CFTypeRef?
+        let all: [String: Any] = [
+            kSecClass as String: kSecClassInternetPassword,
+            kSecAttrCreator as String: creator,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        guard SecItemCopyMatching(all as CFDictionary, &out) == errSecSuccess,
+              let items = out as? [[String: Any]] else { return }
+        for item in items {
+            let d = item[kSecAttrSecurityDomain as String] as? String ?? ""
+            guard d.isEmpty, let host = item[kSecAttrServer as String] as? String,
+                  let account = item[kSecAttrAccount as String] as? String else { continue }
+            delete(host: host, account: account, profileID: profileID)
+        }
     }
 }
 
@@ -224,7 +274,11 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         for (label, block) in [("content blocker", Blocker.check), ("browser import", BrowserImport.check),
                                ("favicons + tabs", Favicons.check), ("url handling", URLHandling.check),
                                ("error pages", ErrorPage.check), ("site permissions", SitePermissions.check),
-                               ("extensions", ExtensionHost.check)] {
+                               ("extensions", ExtensionHost.check),
+                               ("profiles + spaces", ProfileManager.check),
+                               ("search engines", Search.check),
+                               ("certificate trust", CertificateTrust.check),
+                               ("crash recovery", Crash.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }
