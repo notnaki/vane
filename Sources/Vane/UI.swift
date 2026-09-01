@@ -92,26 +92,78 @@ private struct TabChip: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
     @State private var hovering = false
+    @State private var targeted = false
 
     var body: some View {
         let selected = store.current == tab.id
         HStack(spacing: 6) {
-            Text(tab.title).lineLimit(1).font(.system(size: 12))
-                .foregroundStyle(selected ? .primary : .secondary)
-            if hovering || selected {
-                Button { store.close(tab.id) } label: {
-                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+            TabIcon(tab: tab)
+            if !tab.pinned {
+                Text(tab.title).lineLimit(1).font(.system(size: 12))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                // A pinned tab is a permanent fixture — no close button to fat-finger.
+                if hovering || selected {
+                    Button { store.close(tab.id) } label: {
+                        Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 10)
-        .frame(width: 170, height: 26, alignment: .leading)
+        .padding(.horizontal, tab.pinned ? 0 : 10)
+        .frame(width: tab.pinned ? 40 : 170, height: 26, alignment: tab.pinned ? .center : .leading)
         .background(selected ? AnyShapeStyle(.selection.opacity(0.5)) : AnyShapeStyle(.clear),
                     in: .rect(cornerRadius: 7))
+        // The drop target is the whole chip, so the line shows which side it will land on.
+        .overlay(alignment: .leading) {
+            Rectangle().fill(.tint).frame(width: 2).opacity(targeted ? 1 : 0)
+        }
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture { store.current = tab.id }
+        .help(tab.title)
+        .draggable(tab.id.uuidString) {
+            // Drag preview: the chip alone would drag the whole strip's background with it.
+            HStack(spacing: 6) { TabIcon(tab: tab); Text(tab.title).lineLimit(1).font(.system(size: 12)) }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+        }
+        .dropDestination(for: String.self) { ids, _ in drop(ids) } isTargeted: { targeted = $0 }
+        .contextMenu {
+            Button(tab.pinned ? "Unpin Tab" : "Pin Tab") { store.togglePin(tab.id) }
+            Divider()
+            Button("Close Tab") { store.close(tab.id) }
+            Button("Close Other Tabs") {
+                // Pinned tabs are not "other tabs" — closing them would undo the pin.
+                for t in store.tabs where t.id != tab.id && !t.pinned { store.close(t.id) }
+            }
+        }
+    }
+
+    /// The payload is the dragged tab's id; the drop index is this chip's own position.
+    private func drop(_ ids: [String]) -> Bool {
+        guard let id = ids.first,
+              let from = store.tabs.firstIndex(where: { $0.id.uuidString == id }),
+              let to = store.tabs.firstIndex(where: { $0.id == tab.id }) else { return false }
+        store.move(from: from, to: to)
+        return true
+    }
+}
+
+/// The site's own icon, with a globe standing in until it arrives (or forever, for a page
+/// that has none).
+private struct TabIcon: View {
+    @ObservedObject var tab: Tab
+
+    var body: some View {
+        Group {
+            if let icon = tab.favicon {
+                Image(nsImage: icon).resizable().interpolation(.high)
+            } else {
+                Image(systemName: "globe").resizable().foregroundStyle(.tertiary)
+            }
+        }
+        .aspectRatio(contentMode: .fit)
+        .frame(width: 14, height: 14)
     }
 }
 

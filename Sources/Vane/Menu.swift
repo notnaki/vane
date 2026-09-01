@@ -122,10 +122,36 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     root.addItem(menu("Passwords", [
         item("Fill Password", "l", [.command, .shift]) { Windows.current?.active?.fillPassword() },
         item("Import Passwords…", "") { PasswordImport.chooseAndImport() },
+        item("Import History & Bookmarks…", "") { BrowserImport.chooseAndImport() },
         item("Manage Saved Passwords…", "") {
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
         },
     ]))
+    let makeDefault = item("Make Vane the Default Browser", "") { URLHandling.makeDefaultBrowser() }
+    makeDefault.isEnabled = !URLHandling.isDefaultBrowser
+    let blocking = item("Block Ads and Trackers", "") { Blocker.enabled.toggle(); rebuild() }
+    blocking.state = Blocker.enabled ? .on : .off
+    root.addItem(menu("Sites", [
+        blocking,
+        item("Add Filter List…", "") { Blocker.chooseAndAddList() },
+        .separator(),
+        makeDefault,
+        .separator(),
+        item("Reset Camera & Microphone Permissions…", "") {
+            let a = NSAlert()
+            a.messageText = "Forget camera and microphone permissions for every site?"
+            a.addButton(withTitle: "Reset"); a.addButton(withTitle: "Cancel")
+            if a.runModal() == .alertFirstButtonReturn { SitePermissions.resetAll() }
+        },
+    ]))
+    root.addItem(menu("Extensions", [
+        item("Install Extension…", "") { ExtensionHost.shared.chooseAndInstall(); rebuild() },
+        .separator(),
+    ] + ExtensionHost.shared.installed.map { ctx in
+        item("Remove " + (ctx.webExtension.displayName ?? "Extension"), "") {
+            ExtensionHost.shared.remove(ctx); rebuild()
+        }
+    }))
     root.addItem(menu("Develop", developItems()))
     root.addItem(menu("Bookmarks", [
         item("Bookmark This Page", "d") { Windows.current?.active?.toggleBookmark(); rebuild() },

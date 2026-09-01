@@ -22,6 +22,10 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     /// A password the page just submitted, waiting on the user to approve saving it.
     @Published var pendingSave: PendingSave?
     @Published var bookmarked = false
+    @Published var favicon: NSImage?
+    /// Pinned tabs sit at the head of the strip and survive a relaunch.
+    @Published var pinned = false
+    private var suppressHistoryOnce = false
     /// Set when a page is being edited in the URL field, so KVO doesn't fight the user.
     var editing = false
     private var obs: [NSKeyValueObservation] = []
@@ -49,12 +53,14 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
                     guard let self else { return }
                     self.title = w.title?.isEmpty == false ? w.title! : "New Tab"
                     if !self.isPrivate, let u = w.url { Store.shared.retitle(u, title: self.title) }
+                    ExtensionHost.shared.sync()
                 }
             },
             web.observe(\.url, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
                     guard let self, !self.editing else { return }
                     self.address = w.url?.absoluteString ?? ""
+                    ExtensionHost.shared.sync()
                 }
             },
             web.observe(\.estimatedProgress, options: [.new]) { [weak self] w, _ in
@@ -88,6 +94,8 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         // ponytail: KVC on a documented-by-everyone WebKit preference key, wrapped so a
         // rename degrades to "no dev tools" rather than a crash.
         cfg.preferences.setValue(Settings.inspectorEnabled, forKey: "developerExtrasEnabled")
+        cfg.webExtensionController = ExtensionHost.shared.controller
+        Blocker.apply(to: cfg)
         return cfg
     }
 
@@ -126,19 +134,49 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
     func webView(_ w: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         loading = false
+        show(error, in: w)
     }
 
     func webView(_ w: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         loading = false
+        show(error, in: w)
+    }
+
+    /// loadSimulatedRequest, not loadHTMLString: it leaves the failed url in the address bar
+    /// and in `location`, so the page's own Try Again button retries the right thing.
+    private func show(_ error: Error, in w: WKWebView) {
+        guard ErrorPage.shouldShow(error) else { return }
+        let failed = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL
+            ?? URL(string: address)
+        guard let failed else { return }
+        // The simulated load reports success, so without this the failed url lands in
+        // history. ponytail: consumed by the next didFinish, which is always this one.
+        suppressHistoryOnce = true
+        w.loadSimulatedRequest(URLRequest(url: failed),
+                               responseHTML: ErrorPage.html(for: error, url: failed))
+    }
+
+    // 4: per-site camera/microphone. WebKit owns the geolocation prompt itself, so there
+    // is no location equivalent to implement here.
+    func webView(_ w: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,
+                 initiatedBy frame: WKFrameInfo, type: WKMediaCaptureType) async -> WKPermissionDecision {
+        await SitePermissions.decide(origin: origin, type: type)
     }
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
         progress = 1
         loading = false
         fillPassword()
+        Favicons.shared.load(for: self)
+        // A pinned tab that navigated somewhere else is still the pin the user wants back.
+        if pinned { TabStore.savePins(owning: self) }
         guard let url = w.url else { return }
         bookmarked = Store.shared.isBookmarked(url)
-        if !isPrivate { Store.shared.record(url, title: w.title ?? "") }
+        if suppressHistoryOnce {
+            suppressHistoryOnce = false
+        } else if !isPrivate {
+            Store.shared.record(url, title: w.title ?? "")
+        }
     }
 
     func webView(_ w: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
@@ -212,7 +250,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
 @MainActor final class TabStore: ObservableObject {
     @Published var tabs: [Tab] = []
-    @Published var current: Tab.ID?
+    @Published var current: Tab.ID? { didSet { ExtensionHost.shared.sync() } }
     /// Bumped to pull focus into the URL field (⌘L, new tab) / open the find bar (⌘F).
     @Published var focusAddress = 0
     @Published var findOpen = false
@@ -246,8 +284,20 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     init(isPrivate: Bool = false, urls: [URL] = []) {
         self.isPrivate = isPrivate
         TabStore.all.append(self)
-        if urls.isEmpty { newTab(nil) } else { urls.forEach { newTab($0) } }
-        current = tabs.first?.id
+        // Pins belong to the app, not to a window, so only the first one gets them back —
+        // and the session's copy of those same urls is dropped so they don't come up twice.
+        let pins = (!isPrivate && TabStore.all.count == 1) ? TabStore.pinnedURLs : []
+        for url in pins {
+            let t = newBlankTab()
+            t.pinned = true
+            t.favicon = Favicons.shared.icon(for: url)   // from cache, before the page loads
+            t.web.load(URLRequest(url: url))
+        }
+        let rest = urls.filter { !pins.contains($0) }
+        if rest.isEmpty && pins.isEmpty { newTab(nil) } else { rest.forEach { newTab($0) } }
+        // Restored pins sit first but are not what the user asked for, so focus lands on
+        // the first ordinary tab when there is one.
+        current = (tabs.first { !$0.pinned } ?? tabs.first)?.id
     }
 
     var active: Tab? { tabs.first { $0.id == current } }
@@ -264,13 +314,17 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         t.onNewTab = { [weak self] u in self?.newTab(u) }
         tabs.append(t)
         current = t.id
+        ExtensionHost.shared.sync()
         return t
     }
 
     func close(_ id: Tab.ID) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         if !isPrivate { ClosedTabs.push(tabs[i].web.url) }
+        let wasPinned = tabs[i].pinned
         tabs.remove(at: i)
+        if wasPinned { savePins() }
+        ExtensionHost.shared.sync()
         // Last tab closed closes the window, the way every other Mac browser behaves.
         if tabs.isEmpty { window?.performClose(nil); return }
         if current == id { current = tabs[min(i, tabs.count - 1)].id }
@@ -279,5 +333,57 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     func cycle(_ delta: Int) {
         guard let i = tabs.firstIndex(where: { $0.id == current }), tabs.count > 1 else { return }
         current = tabs[(i + delta + tabs.count) % tabs.count].id
+    }
+
+    // MARK: Reorder + pins
+
+    /// The one ordering invariant: every pinned tab sits ahead of every unpinned one. A
+    /// drag that would break it is clamped to the nearest position that doesn't.
+    /// `count` and `pinnedCount` describe the strip *after* the move.
+    static func clampedDestination(count: Int, pinnedCount: Int, movingPinned: Bool, to: Int) -> Int {
+        let low = movingPinned ? 0 : pinnedCount
+        let high = movingPinned ? pinnedCount - 1 : count - 1
+        return min(max(to, low), max(low, high))
+    }
+
+    func move(from: Int, to: Int) {
+        guard tabs.indices.contains(from), from != to else { return }
+        let tab = tabs.remove(at: from)
+        let dest = TabStore.clampedDestination(
+            count: tabs.count + 1,
+            pinnedCount: tabs.filter(\.pinned).count + (tab.pinned ? 1 : 0),
+            movingPinned: tab.pinned, to: to)
+        tabs.insert(tab, at: min(dest, tabs.count))
+        if tab.pinned { savePins() }
+    }
+
+    /// Pinning parks the tab at the end of the pinned run; unpinning at the head of the rest.
+    func togglePin(_ id: Tab.ID) {
+        guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let tab = tabs.remove(at: i)
+        tab.pinned.toggle()
+        tabs.insert(tab, at: tabs.filter(\.pinned).count)
+        savePins()
+    }
+
+    /// ponytail: pinned urls in UserDefaults, deliberately not in session.json — the
+    /// session is per-window and is rewritten by whichever window closed last, while pins
+    /// have to outlive all of them. Ceiling: one shared pin set, so pinning in two windows
+    /// at once means last writer wins.
+    static var pinnedURLs: [URL] {
+        (UserDefaults.standard.stringArray(forKey: "pinnedTabs") ?? []).compactMap(URL.init(string:))
+    }
+
+    func savePins() {
+        guard !isPrivate else { return }
+        UserDefaults.standard.set(
+            tabs.filter(\.pinned).compactMap { $0.web.url?.absoluteString }.filter { $0.hasPrefix("http") },
+            forKey: "pinnedTabs")
+    }
+
+    /// Save from whichever store actually owns this tab, so a window with no pins never
+    /// overwrites the pins of one that has them.
+    static func savePins(owning tab: Tab) {
+        all.first { $0.tabs.contains { $0 === tab } }?.savePins()
     }
 }

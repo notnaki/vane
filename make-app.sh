@@ -38,6 +38,26 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>    <true/>
   <key>NSPrincipalClass</key>           <string>NSApplication</string>
   <key>LSApplicationCategoryType</key>  <string>public.app-category.productivity</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>          <string>Web site URL</string>
+      <key>CFBundleTypeRole</key>         <string>Viewer</string>
+      <key>CFBundleURLSchemes</key>       <array><string>http</string><string>https</string></array>
+    </dict>
+  </array>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>         <string>HTML Document</string>
+      <key>CFBundleTypeRole</key>         <string>Viewer</string>
+      <key>LSHandlerRank</key>            <string>Alternate</string>
+      <key>LSItemContentTypes</key>       <array><string>public.html</string><string>public.xhtml</string></array>
+    </dict>
+  </array>
+  <key>NSCameraUsageDescription</key>     <string>Websites you visit can ask to use your camera.</string>
+  <key>NSMicrophoneUsageDescription</key> <string>Websites you visit can ask to use your microphone.</string>
+  <key>NSLocationWhenInUseUsageDescription</key> <string>Websites you visit can ask for your location.</string>
 </dict>
 </plist>
 PLIST

@@ -9,11 +9,19 @@ import WebKit
 enum Passwords {
     /// ponytail: local items only. Add kSecAttrSynchronizable once the app has a real
     /// Developer ID, and they ride iCloud Keychain to the user's other machines.
+    /// 'Vane' as an OSType. Stamped on save and required on every read, so Vane can only
+    /// ever see credentials Vane created. Without it the query matches any app's item for
+    /// that host — your `gh` login, Safari's, a password manager's — and macOS puts up a
+    /// "vane wants to use your confidential information" panel for a secret we have no
+    /// business reading.
+    private static let creator: NSNumber = 0x5661_6E65
+
     private static func query(host: String, account: String? = nil) -> [String: Any] {
         var q: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
             kSecAttrServer as String: host,
             kSecAttrProtocol as String: kSecAttrProtocolHTTPS,
+            kSecAttrCreator as String: creator,
         ]
         if let account { q[kSecAttrAccount as String] = account }
         return q
@@ -183,6 +191,14 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         check("LIKE wildcards in the query are escaped", store.suggest("100%").count == 1)
         check("clearHistory empties visits", { store.clearHistory(); return store.recent().isEmpty }())
         try? FileManager.default.removeItem(at: dir)
+
+        for (label, block) in [("content blocker", Blocker.check), ("browser import", BrowserImport.check),
+                               ("favicons + tabs", Favicons.check), ("url handling", URLHandling.check),
+                               ("error pages", ErrorPage.check), ("site permissions", SitePermissions.check),
+                               ("extensions", ExtensionHost.check)] {
+            print(label)
+            for (name, ok) in block() { check(name, ok) }
+        }
 
         print("csv import")
         // Chrome's header, a password holding a comma and escaped quotes, and CRLF.

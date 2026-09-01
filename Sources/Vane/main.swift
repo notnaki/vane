@@ -28,6 +28,9 @@ NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotif
 }
 
 Inspector.configure()
+Blocker.refresh()
+URLHandling.registerAppleEventHandler()
 app.mainMenu = buildMenu()
 app.activate(ignoringOtherApps: true)
+URLHandling.promptIfNotDefaultOnce()
 app.run()
