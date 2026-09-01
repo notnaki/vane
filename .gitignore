@@ -3,3 +3,4 @@ vendor/
 *.app/
 .DS_Store
 /tmp/
+.claude/
