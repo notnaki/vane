@@ -277,6 +277,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("extensions", ExtensionHost.check),
                                ("profiles + spaces", ProfileManager.check),
                                ("search engines", Search.check),
+                               ("search suggestions", SearchSuggestions.check),
                                ("certificate trust", CertificateTrust.check),
                                ("crash recovery", Crash.check),
                                ("reader", Reader.check),
