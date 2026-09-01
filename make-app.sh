@@ -63,12 +63,21 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 ENT="$(dirname "$0")/Vane.entitlements"
+# The entitlements carry com.apple.security.app-sandbox, so signing is no longer cosmetic:
+# an unsigned bundle is an *unsandboxed* bundle, and it would write to a different data
+# directory than the sandboxed one. Fail loudly rather than shipping the wrong app.
 if [ -n "${SIGN_ID:-}" ]; then
   codesign --force --options runtime --timestamp --entitlements "$ENT" \
     --sign "$SIGN_ID" "$APP"
   echo "OK: signed with Developer ID ($SIGN_ID)"
 else
-  codesign --force --entitlements "$ENT" --sign - "$APP" >/dev/null 2>&1 \
-    && echo "OK: signed (ad-hoc)" || echo "  (codesign skipped)"
+  codesign --force --entitlements "$ENT" --sign - "$APP"
+  echo "OK: signed (ad-hoc)"
 fi
-echo "OK: built $APP — open with: open $APP"
+
+# Cheap proof the sandbox actually made it into the signature. codesign prints an
+# "Executable=..." banner before the plist, so this greps rather than parses.
+codesign -d --entitlements - --xml "$APP" 2>&1 | grep -q "com.apple.security.app-sandbox" \
+  || { echo "FAIL: com.apple.security.app-sandbox is not in the signature"; exit 1; }
+
+echo "OK: built $APP (sandboxed) — open with: open $APP"

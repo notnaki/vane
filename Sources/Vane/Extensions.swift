@@ -76,9 +76,7 @@ import WebKit
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
         controller.delegate = self
-        for path in Self.stored(.standard, key: Self.key(for: profileID)) {
-            begin(URL(fileURLWithPath: path))
-        }
+        for folder in ScopedPaths.urls(Self.key(for: profileID)) { begin(folder) }
     }
 
     /// The controller a new WKWebView's configuration must be pointed at. See the wiring note
@@ -104,8 +102,12 @@ import WebKit
     /// thrown error. Upgrade path: make this `async throws` the day the call sites can await.
     func install(folder: URL) throws {
         _ = try Self.validate(folder)
-        Self.store(Self.adding(folder.path, to: Self.stored(.standard, key: myKey)),
-                   in: .standard, key: myKey)
+        // A path is not enough under the sandbox: powerbox's grant on a panel selection
+        // dies with the process, so the folder must be kept as a scoped bookmark.
+        guard ScopedPaths.add(folder, to: myKey) else {
+            throw Failure("macOS would not let Vane keep access to \(folder.lastPathComponent) "
+                + "after quitting, so it was not installed.")
+        }
         begin(folder)
     }
 
@@ -114,8 +116,7 @@ import WebKit
     func remove(_ context: WKWebExtensionContext) {
         try? controller.unload(context)
         if let path = loaded.first(where: { $0.context === context })?.path {
-            Self.store(Self.stored(.standard, key: myKey).filter { $0 != path },
-                       in: .standard, key: myKey)
+            ScopedPaths.remove(path: path, from: myKey)
             claimed.remove(path)
         }
         loaded.removeAll { $0.context === context }
@@ -196,19 +197,6 @@ import WebKit
     /// Per profile, so an extension installed in one profile is not loaded into another.
     static func key(for profileID: UUID) -> String {
         ProfileManager.defaultsKey(baseKey, profileID)
-    }
-
-    static func stored(_ defaults: UserDefaults = .standard, key: String = ExtensionHost.baseKey) -> [String] {
-        defaults.stringArray(forKey: key) ?? []
-    }
-
-    static func store(_ paths: [String], in defaults: UserDefaults = .standard,
-                      key: String = ExtensionHost.baseKey) {
-        defaults.set(paths, forKey: key)
-    }
-
-    static func adding(_ path: String, to list: [String]) -> [String] {
-        list.contains(path) ? list : list + [path]
     }
 
     // MARK: UI
@@ -518,17 +506,22 @@ import WebKit
             rejects(root.appendingPathComponent("nope"))
         }
 
-        expect("the same folder is not installed twice") {
-            adding("/a", to: adding("/a", to: ["/b"])) == ["/b", "/a"]
-        }
-
         let suite = "vane-extcheck-\(UUID().uuidString)"
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        expect("installed paths round-trip through UserDefaults") {
+        expect("a bookmarked folder round-trips through UserDefaults") {
             guard let defaults = UserDefaults(suiteName: suite) else { return false }
-            let paths = ["/tmp/one", "/tmp/two"]
-            store(paths, in: defaults)
-            return stored(defaults) == paths
+            return ScopedPaths.add(good, to: "folders", in: defaults)
+                && ScopedPaths.paths("folders", in: defaults).count == 1
+        }
+        expect("the same folder is not bookmarked twice") {
+            guard let defaults = UserDefaults(suiteName: suite) else { return false }
+            _ = ScopedPaths.add(good, to: "folders", in: defaults)
+            return ScopedPaths.paths("folders", in: defaults).count == 1
+        }
+        expect("removing a folder by path actually removes it") {
+            guard let defaults = UserDefaults(suiteName: suite) else { return false }
+            ScopedPaths.remove(path: good.path, from: "folders", in: defaults)
+            return ScopedPaths.paths("folders", in: defaults).isEmpty
         }
 
         // Pure WebKit parsing, no extension and no network — proves the match-pattern type
