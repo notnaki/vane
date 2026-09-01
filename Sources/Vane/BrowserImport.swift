@@ -137,6 +137,36 @@ struct BrowserProfile {
         return (commit(visits), commit(marks))
     }
 
+    /// A folder the user picked in the panel. Its family is sniffed from what is inside it,
+    /// since the path tells us nothing reliable.
+    @MainActor private static func pickProfileFolder() -> BrowserProfile? {
+        let panel = NSOpenPanel()
+        panel.title = "Choose a browser profile folder"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let folder = panel.url else { return nil }
+
+        let fm = FileManager.default
+        let history = fm.fileExists(atPath: folder.appendingPathComponent("History").path)
+        let places = fm.fileExists(atPath: folder.appendingPathComponent("places.sqlite").path)
+        let marks = fm.fileExists(atPath: folder.appendingPathComponent("Bookmarks").path)
+        guard history || places || marks else {
+            let a = NSAlert()
+            a.alertStyle = .warning
+            a.messageText = "That folder doesn't look like a browser profile."
+            a.informativeText = "Vane looked for a History, Bookmarks or places.sqlite file "
+                + "in \(folder.lastPathComponent) and found none."
+            a.runModal()
+            return nil
+        }
+        return BrowserProfile(browser: places ? "Firefox" : "Chromium",
+                              profile: folder.lastPathComponent,
+                              path: folder,
+                              hasHistory: history || places,
+                              hasBookmarks: marks || places)
+    }
+
     private enum Family { case chromium, firefox, safari }
 
     private static func family(of p: BrowserProfile) -> Family {
@@ -300,11 +330,20 @@ struct BrowserProfile {
     static func chooseAndImport() {
         let found = detect()
         guard !found.isEmpty else {
+            // Under the App Sandbox this is the normal case, not an error: scanning
+            // ~/Library/Application Support/Google/Chrome is denied outright, so detect()
+            // finds nothing however many browsers are installed. A folder the user picks
+            // themselves comes with a powerbox grant, which is the way through.
             let a = NSAlert()
-            a.messageText = "No other browsers found."
-            a.informativeText = "Vane looked for Chrome, Edge, Brave, Vivaldi, Opera, Arc, "
-                + "Firefox and Safari profiles in your Library folder."
-            a.runModal()
+            a.messageText = "Vane can't look for browsers on its own."
+            a.informativeText = "macOS only lets Vane read a folder you choose yourself. "
+                + "Pick a browser profile folder — for Chrome that is usually "
+                + "Library/Application Support/Google/Chrome/Default, and for Firefox a "
+                + "folder inside Firefox/Profiles."
+            a.addButton(withTitle: "Choose Folder…")
+            a.addButton(withTitle: "Cancel")
+            guard a.runModal() == .alertFirstButtonReturn, let picked = pickProfileFolder() else { return }
+            report(importing: picked)
             return
         }
 
@@ -326,7 +365,11 @@ struct BrowserProfile {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let chosen = found[max(0, popup.indexOfSelectedItem)]
+        report(importing: found[max(0, popup.indexOfSelectedItem)])
+    }
+
+    /// Shared by the detected-profile path and the pick-a-folder path.
+    @MainActor private static func report(importing chosen: BrowserProfile) {
         let done = NSAlert()
         do {
             let (h, b) = try importAll(from: chosen)

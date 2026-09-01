@@ -2,13 +2,79 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Hardened Runtime entitlements for a WebKit browser (Developer ID, notarized;
-       NOT sandboxed). WebKit runs JS and DRM in Apple-signed XPC services, so the
-       app itself needs very little. -->
-  <key>com.apple.security.cs.allow-jit</key><true/>
+  <!-- App Sandbox. A browser runs untrusted code from every site you visit; WebKit's own
+       process split is the first wall and this is the second. Everything below is the
+       minimum needed to put it back into a working browser. -->
+  <key>com.apple.security.app-sandbox</key><true/>
+
+  <!-- Outbound HTTP(S), and the local sockets WebRTC binds to receive media/data.
+       ponytail: network.server is the one entitlement here NOT proved by a test in this
+       branch — verifying ICE host-candidate gathering needs a real peer. Safari ships it
+       for the same reason. Ceiling: drop it if WebRTC is ever declared out of scope. -->
   <key>com.apple.security.network.client</key><true/>
-  <!-- A hardened-runtime app is denied camera/mic before any site prompt is reached. -->
+  <key>com.apple.security.network.server</key><true/>
+
+  <!-- getUserMedia. A hardened/sandboxed app is denied the device before any site prompt
+       is reached, so SitePermissions would ask and then fail. -->
   <key>com.apple.security.device.camera</key><true/>
   <key>com.apple.security.device.audio-input</key><true/>
+
+  <!-- ⌘P on a page. -->
+  <key>com.apple.security.print</key><true/>
+
+  <!-- WKDownload writes straight to ~/Downloads (Downloads.swift), which is outside the
+       container. -->
+  <key>com.apple.security.files.downloads.read-write</key><true/>
+
+  <!-- The three NSOpenPanel pickers: an unpacked extension folder, a filter list, and a
+       password CSV. All three only ever read, so read-only rather than read-write. -->
+  <key>com.apple.security.files.user-selected.read-only</key><true/>
+
+  <!-- ...and this is what makes those picks survive a relaunch. Without it a folder the
+       user chose is readable for exactly one launch, and every extension silently fails to
+       load on the next one. See `ScopedPaths` in Profiles.swift. -->
+  <key>com.apple.security.files.bookmarks.app-scope</key><true/>
+
+  <!-- One-shot read of the pre-sandbox data at ~/Library/Application Support/Vane, which
+       sandboxing would otherwise strand: the history/bookmarks database, the profile list,
+       the saved session and the favicon cache. macOS auto-migrates anything named after the
+       *bundle id* into the container (verified: ~/Library/Preferences/io.github.notnaki.vane
+       .plist moves by itself) but this folder is named after the app, so nothing moves it.
+       `LegacyData.migrateIfNeeded` copies it in on first sandboxed launch and never reads it
+       again.
+       ponytail: a temporary exception is exactly what it says — delete this key (and the
+       migration) a release after everyone has launched once. Read-only and scoped to the
+       one folder, so it grants nothing else. Not usable for the Mac App Store without
+       review justification; fine for Developer ID. -->
+  <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+  <array>
+    <string>/Library/Application Support/Vane/</string>
+  </array>
+
+  <!-- Safe Browsing. WebKit asks Safari's service whether a URL is a known phishing or
+       malware site; the sandbox denies the lookup by name
+       ("deny(1) mach-lookup com.apple.Safari.SafeBrowsing.Service") and the deceptive-site
+       interstitial silently stops appearing. Sandboxing a browser must not cost it a
+       security feature, so this is granted back explicitly. -->
+  <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+  <array>
+    <string>com.apple.Safari.SafeBrowsing.Service</string>
+  </array>
+
+  <!-- Hardened Runtime (only enforced on the Developer ID branch of make-app.sh). WebKit's
+       JIT lives in an Apple-signed XPC service, but keep it: it costs nothing and the day
+       anything JITs in-process this is the difference between running and crashing. -->
+  <key>com.apple.security.cs.allow-jit</key><true/>
+
+  <!-- Deliberately NOT here:
+       * keychain-access-groups — needs $(AppIdentifierPrefix), i.e. a Team ID, which this
+         ad-hoc-signed build does not have. A sandboxed app reaches its OWN keychain items
+         without it; the entitlement is only for sharing a group between apps. Add
+         "$(AppIdentifierPrefix)io.github.notnaki.vane" the day a Developer ID exists.
+       * personal-information.location — Info.plist advertises geolocation but nothing in
+         the app implements it, so the entitlement would grant access to a feature that
+         does not exist.
+       * files.user-selected.read-write, downloads read beyond ~/Downloads, home-relative
+         exceptions for other browsers' profile folders (see BrowserImport in the report). -->
 </dict>
 </plist>

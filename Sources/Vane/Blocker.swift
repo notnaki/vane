@@ -131,9 +131,13 @@ private struct BlockRule: Encodable, Equatable {
         // ponytail: the path is remembered, not the file. Move or delete the list and it
         // silently stops applying. Copying it into Application Support is the fix if that
         // ever bites; not worth the code until it does.
-        var paths = listPaths
-        if !paths.contains(file.path) { paths.append(file.path) }
-        listPaths = paths
+        guard ScopedPaths.add(file, to: "blockerLists") else {
+            alert.alertStyle = .warning
+            alert.messageText = "Couldn’t remember that file."
+            alert.informativeText = "macOS would not let Vane keep access to it after quitting."
+            alert.runModal()
+            return
+        }
         refresh()
 
         alert.messageText = "Added \(result.rules) rule\(result.rules == 1 ? "" : "s")."
@@ -148,10 +152,9 @@ private struct BlockRule: Encodable, Equatable {
     private static var compiled: WKContentRuleList?
 
     /// Extra lists the user added, by path. The built-in list is always on top of these.
-    private static var listPaths: [String] {
-        get { UserDefaults.standard.stringArray(forKey: "blockerLists") ?? [] }
-        set { UserDefaults.standard.set(newValue, forKey: "blockerLists") }
-    }
+    /// Security-scoped bookmarks, not paths: under the App Sandbox a file picked in the
+    /// panel is readable for that launch only. `paths` starts access before returning.
+    private static var listPaths: [String] { ScopedPaths.paths("blockerLists") }
 
     private static func sources() -> String {
         var text = builtin
