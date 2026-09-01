@@ -9,6 +9,10 @@ import WebKit
     private static var web: WKWebView?
     private static var holder: NSWindow?
     private static var poller: Timer?
+    // Actor state, not locals: a local captured by the MainActor closure below is
+    // task-isolated, and newer Swift rejects mutating it from inside.
+    private static var tick = 0
+    private static var best = 0.0
 
     /// With a URL: load a real page and report whether a <video> actually advances —
     /// end-to-end proof that a DRM licence was fetched and frames are decrypting.
@@ -57,8 +61,6 @@ import WebKit
         w.load(URLRequest(url: url))
         print("loading \(url.absoluteString) — polling for a playing <video>...")
 
-        var best = 0.0
-        var tick = 0
         poller = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
             MainActor.assumeIsolated {
                 tick += 1
