@@ -88,6 +88,15 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     return name.isEmpty ? nil : name
 }
 
+@MainActor private func readerTypefaceItem() -> NSMenuItem {
+    let entry = item("Reader Uses Serif", "") {
+        Reader.setSerif(!Reader.serif, in: Windows.current?.active)
+        rebuild()
+    }
+    entry.state = Reader.serif ? .on : .off
+    return entry
+}
+
 @MainActor private func profileItems() -> [NSMenuItem] {
     let manager = ProfileManager.shared
     let switchers = manager.profiles.map { profile in
@@ -196,6 +205,11 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         item("Zoom Out", "-") { Windows.current?.active.map { $0.web.pageZoom /= 1.1 } },
         .separator(),
         item("Enter Full Screen", "f", [.command, .control]) { NSApp.keyWindow?.toggleFullScreen(nil) },
+        .separator(),
+        item("Show Reader", "r", [.command, .option]) { Windows.current?.active.map(Reader.toggle) },
+        item("Bigger Reader Text", "") { Reader.adjustFontSize(1, in: Windows.current?.active) },
+        item("Smaller Reader Text", "") { Reader.adjustFontSize(-1, in: Windows.current?.active) },
+        readerTypefaceItem(),
     ]))
     root.addItem(menu("Passwords", [
         item("Fill Password", "l", [.command, .shift]) { Windows.current?.active?.fillPassword() },

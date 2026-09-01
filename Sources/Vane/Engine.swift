@@ -22,6 +22,8 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     /// A password the page just submitted, waiting on the user to approve saving it.
     @Published var pendingSave: PendingSave?
     @Published var bookmarked = false
+    /// Whether this page has an article worth reading — drives the toolbar button.
+    @Published var readerAvailable = false
     @Published var favicon: NSImage?
     /// Pinned tabs sit at the head of the strip and survive a relaunch.
     @Published var pinned = false
@@ -181,6 +183,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         if pinned { TabStore.savePins(owning: self) }
         guard let url = w.url else { return }
         bookmarked = history.isBookmarked(url)
+        Task { readerAvailable = await Reader.isAvailable(in: w) }
         if suppressHistoryOnce {
             suppressHistoryOnce = false
         } else if !isPrivate {
