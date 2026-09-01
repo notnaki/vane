@@ -282,6 +282,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("crash recovery", Crash.check),
                                ("reader", Reader.check),
                                ("command palette", Palette.check),
+                               ("tab suspension", Suspension.check),
                                ("downloads", Downloads.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
