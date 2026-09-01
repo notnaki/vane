@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Hardened Runtime entitlements for a WebKit browser (Developer ID, notarized;
+       NOT sandboxed). WebKit runs JS and DRM in Apple-signed XPC services, so the
+       app itself needs very little. -->
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.network.client</key><true/>
+</dict>
+</plist>

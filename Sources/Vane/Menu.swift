@@ -1,0 +1,160 @@
+import AppKit
+
+/// Menu items whose action is just a closure. NSMenuItem needs an ObjC target, so this is
+/// the smallest thing that gives one; `keepAlive` stops ARC eating them.
+private final class Act: NSObject {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
+    @objc func fire() { run() }
+}
+@MainActor private var keepAlive: [Act] = []
+
+@MainActor private func item(_ title: String, _ key: String,
+                  _ mods: NSEvent.ModifierFlags = .command,
+                  _ run: @escaping () -> Void) -> NSMenuItem {
+    let act = Act(run)
+    keepAlive.append(act)
+    let i = NSMenuItem(title: title, action: #selector(Act.fire), keyEquivalent: key)
+    i.target = act
+    i.keyEquivalentModifierMask = mods
+    return i
+}
+
+private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
+    let m = NSMenu(title: title)
+    items.forEach(m.addItem)
+    let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+    holder.submenu = m
+    return holder
+}
+
+@MainActor private func developItems() -> [NSMenuItem] {
+    let inspector = item("Show Web Inspector", "i", [.command, .option]) {
+        Inspector.show(Windows.current?.active?.web)
+    }
+    let console = item("Show JavaScript Console", "c", [.command, .option]) {
+        Inspector.showConsole(Windows.current?.active?.web)
+    }
+    // The SPI is the only way in from a menu item; without it, say so rather than
+    // offering a item that quietly does nothing.
+    if !Inspector.available || !Settings.inspectorEnabled {
+        for i in [inspector, console] {
+            i.isEnabled = false
+            i.toolTip = Settings.inspectorEnabled
+                ? "Unavailable on this macOS — use right-click → Inspect Element"
+                : "Turn on “Allow Web Inspector” first"
+        }
+    }
+
+    let agents = NSMenu(title: "User Agent")
+    for ua in Settings.userAgents {
+        let entry = item(ua.name, "") { Settings.userAgent = ua.value; rebuild() }
+        entry.state = Settings.userAgent == ua.value ? .on : .off
+        agents.addItem(entry)
+    }
+    let agentHolder = NSMenuItem(title: "User Agent", action: nil, keyEquivalent: "")
+    agentHolder.submenu = agents
+
+    let allow = item("Allow Web Inspector", "") {
+        Settings.inspectorEnabled.toggle(); rebuild()
+    }
+    allow.state = Settings.inspectorEnabled ? .on : .off
+
+    return [
+        inspector,
+        console,
+        item("View Source", "u", [.command, .option]) {
+            if let s = Windows.current { s.active?.viewSource(into: s) }
+        },
+        .separator(),
+        agentHolder,
+        .separator(),
+        allow,
+    ]
+}
+
+/// Menus carry live state (checkmarks, the bookmarks and history lists), so they are
+/// rebuilt rather than mutated in place.
+@MainActor func rebuild() { NSApp.mainMenu = buildMenu() }
+
+@MainActor func buildMenu() -> NSMenu {
+    let root = NSMenu()
+    root.addItem(menu("Vane", [
+        NSMenuItem(title: "About Vane", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+        .separator(),
+        NSMenuItem(title: "Hide Vane", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
+        NSMenuItem(title: "Quit Vane", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
+    ]))
+    root.addItem(menu("File", [
+        item("New Window", "n") { Windows.open() },
+        item("New Private Window", "N", [.command, .shift]) { Windows.open(isPrivate: true) },
+        item("New Tab", "t") { Windows.current?.newTab(nil) },
+        .separator(),
+        item("Reopen Closed Tab", "T", [.command, .shift]) {
+            if let u = ClosedTabs.pop() { (Windows.current ?? Windows.open()).newTab(u) }
+        },
+        item("Close Tab", "w") { if let s = Windows.current, let c = s.current { s.close(c) } },
+        NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "W"),
+        .separator(),
+        NSMenuItem(title: "Print…", action: #selector(NSView.printView(_:)), keyEquivalent: "p"),
+    ]))
+    root.addItem(menu("Edit", [
+        NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"),
+        NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"),
+        .separator(),
+        NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"),
+        NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"),
+        NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"),
+        NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"),
+    ]))
+    root.addItem(menu("View", [
+        item("Reload Page", "r") { Windows.current?.active?.reload() },
+        item("Reload Ignoring Cache", "R", [.command, .shift]) { Windows.current?.active?.hardReload() },
+        item("Open Location…", "l") { Windows.current?.focusAddress += 1 },
+        item("Find…", "f") { Windows.current?.findOpen = true },
+        .separator(),
+        item("Actual Size", "0") { Windows.current?.active?.web.pageZoom = 1 },
+        item("Zoom In", "+") { Windows.current?.active.map { $0.web.pageZoom *= 1.1 } },
+        item("Zoom Out", "-") { Windows.current?.active.map { $0.web.pageZoom /= 1.1 } },
+        .separator(),
+        item("Enter Full Screen", "f", [.command, .control]) { NSApp.keyWindow?.toggleFullScreen(nil) },
+    ]))
+    root.addItem(menu("Passwords", [
+        item("Fill Password", "l", [.command, .shift]) { Windows.current?.active?.fillPassword() },
+        item("Import Passwords…", "") { PasswordImport.chooseAndImport() },
+        item("Manage Saved Passwords…", "") {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
+        },
+    ]))
+    root.addItem(menu("Develop", developItems()))
+    root.addItem(menu("Bookmarks", [
+        item("Bookmark This Page", "d") { Windows.current?.active?.toggleBookmark(); rebuild() },
+        .separator(),
+    ] + Store.shared.bookmarks(limit: 40).map { b in
+        item(b.title.isEmpty ? b.url : b.title, "") {
+            if let u = URL(string: b.url) { Windows.current?.active?.web.load(URLRequest(url: u)) }
+        }
+    }))
+    root.addItem(menu("History", [
+        item("Back", "[") { Windows.current?.active?.back() },
+        item("Forward", "]") { Windows.current?.active?.forward() },
+        .separator(),
+        item("Next Tab", "\u{0019}", [.control, .shift]) { Windows.current?.cycle(1) },
+        item("Previous Tab", "\t", [.control]) { Windows.current?.cycle(-1) },
+        .separator(),
+    ] + Store.shared.recent(limit: 25).map { h in
+        item(h.title.isEmpty ? h.url : h.title, "") {
+            if let u = URL(string: h.url) { Windows.current?.active?.web.load(URLRequest(url: u)) }
+        }
+    } + [
+        .separator(),
+        item("Clear History", "") {
+            let a = NSAlert()
+            a.messageText = "Clear all browsing history?"
+            a.informativeText = "Bookmarks and saved passwords are not affected."
+            a.addButton(withTitle: "Clear"); a.addButton(withTitle: "Cancel")
+            if a.runModal() == .alertFirstButtonReturn { Store.shared.clearHistory() }
+        },
+    ]))
+    return root
+}
