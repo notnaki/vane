@@ -10,7 +10,12 @@ enum Look {
     static let cardRadius: CGFloat = 10
     /// The address pill, favourites tiles, sidebar rows, buttons.
     static let pillRadius: CGFloat = 8
-    static let rowHeight: CGFloat = 30
+    /// The sidebar's three heights, one family: a row, the address pill above it, and a
+    /// favourites tile. They step 34 → 36 → 52 so the sidebar reads as one rhythm rather
+    /// than three unrelated controls.
+    static let rowHeight: CGFloat = 34
+    static let pillHeight: CGFloat = 36
+    static let tileHeight: CGFloat = 52
     /// Gap between the sidebar and the web card, and around the card.
     static let inset: CGFloat = 8
 
@@ -18,10 +23,32 @@ enum Look {
     static let caption = Font.system(size: 11)
     static let heading = Font.system(size: 13, weight: .semibold)
 
-    /// Row fills. Semantic on purpose: `.primary` is white on dark and black on light.
-    static let selected = Color.primary.opacity(0.14)
-    static let hovered = Color.primary.opacity(0.07)
-    static let pillFill = Color.primary.opacity(0.06)
+    /// One surface at four strengths, so the pill, a tile, a hovered row and a selected row
+    /// read as the same material rather than four different greys. Semantic on purpose:
+    /// `.primary` is white on dark and black on light.
+    static let hovered = Color.primary.opacity(0.05)
+    static let pillFill = Color.primary.opacity(0.08)
+    static let selected = Color.primary.opacity(0.11)
+
+    /// The colours a space can be tinted with. The profile palette first, so a space and its
+    /// profile can wear the same colour, then the spread Arc offers.
+    /// @MainActor because `ProfileManager.palette` is; every caller is a view anyway.
+    @MainActor static let themeSwatches = ProfileManager.palette
+        + ["#F2EDE4", "#E48FB1", "#9B6FB0", "#D9564F", "#E08A3C", "#E3C34A", "#4CAF6E", "#5A9BD5"]
+}
+
+extension Color {
+    /// `#RRGGBB` as written in a Profile or a Space. ponytail: no alpha, no short form — the
+    /// only producers of these strings are `Look.themeSwatches` and `ProfileManager.palette`.
+    init?(hex: String) {
+        var v: UInt64 = 0
+        let digits = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard digits.count == 6, Scanner(string: digits).scanHexInt64(&v) else { return nil }
+        self.init(.sRGB,
+                  red: Double((v >> 16) & 0xFF) / 255,
+                  green: Double((v >> 8) & 0xFF) / 255,
+                  blue: Double(v & 0xFF) / 255)
+    }
 }
 
 /// Behind-window blur for the window itself — the desktop shows through the sidebar, which

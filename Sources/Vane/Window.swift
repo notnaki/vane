@@ -38,6 +38,11 @@ import SwiftUI
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.tabbingMode = .disallowed          // Vane draws its own tabs
+        // The window itself draws nothing: `WindowGlass` inside the content view is the
+        // only ground, so the desktop shows through the sidebar and the gap around the page
+        // card. An opaque window would paint over it before SwiftUI ever ran.
+        window.isOpaque = false
+        window.backgroundColor = .clear
         // ProfileManager is in the environment so chrome can show the profile/space it is in
         // and redraw when the list changes; a view that does not want it simply ignores it.
         window.contentView = NSHostingView(rootView: BrowserWindow()

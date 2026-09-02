@@ -13,56 +13,148 @@ import WebKit
                                     .priority: NSAccessibilityPriorityLevel.high.rawValue])
 }
 
+/// ponytail: `sizeThatFits` is the whole reason this is not a two-line representable. A
+/// WKWebView turns its autoresizing mask into constraints, so its fitting size is whatever
+/// it currently is — SwiftUI hands that same size back and the page keeps the width it had
+/// when the sidebar was last shown. Returning the proposal says "I take whatever you give
+/// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
     let web: WKWebView
     func makeNSView(context: Context) -> WKWebView { web }
     func updateNSView(_ v: WKWebView, context: Context) {}
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: WKWebView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? nsView.frame.width,
+               height: proposal.height ?? nsView.frame.height)
+    }
 }
 
+// MARK: - Window
+
+/// The window: a sidebar and the page as a floating card, on a ground of behind-window blur
+/// tinted by the current space. Nothing here is opaque — `WindowGlass` is the only ground,
+/// so the desktop shows through everything the sidebar does not cover.
 struct BrowserWindow: View {
     @EnvironmentObject var store: TabStore
-    @FocusState private var addressFocused: Bool
-    /// Per window, not global: two windows can each have their own palette open.
-    @State private var palette: PaletteMode?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The sidebar sliding in over the page because the pointer went to the window's edge.
+    @State private var peeking = false
+    @State private var peekTask: Task<Void, Never>?
+
+    private var chrome: Bool { store.sidebarShown || peeking }
 
     var body: some View {
-        VStack(spacing: 0) {
-            TabStrip(palette: $palette)
-            Divider().opacity(0.5)
-            Toolbar(addressFocused: $addressFocused)
-            ZStack(alignment: .top) {
-                if let tab = store.active {
-                    WebView(web: tab.web).id(tab.id)
-                } else {
-                    Color(nsColor: .textBackgroundColor)
-                }
-                if let tab = store.active { LoadingBar(tab: tab) }
-                // Everything that floats over the page. Declared after the web view so it
-                // composites above it.
-                VStack(spacing: 8) {
-                    if store.findOpen, let tab = store.active {
-                        FindBar(tab: tab).frame(maxWidth: .infinity, alignment: .trailing)
-                    }
-                    if let tab = store.active, tab.pendingSave != nil { SavePrompt(tab: tab) }
-                }
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                if !store.suggestions.isEmpty && addressFocused { Suggestions() }
-                // Last, so it composites over the suggestions too.
-                if let mode = palette {
-                    PaletteView(mode: mode) { palette = nil }
-                }
+        ZStack(alignment: .leading) {
+            WindowGlass()
+            ThemeTint()
+            HStack(spacing: 0) {
+                if store.sidebarShown { Sidebar().frame(width: Look.sidebarWidth) }
+                WebCard()
+            }
+            edgeStrip
+            floatingSidebar
+            // Last, so the search bar composites over the sidebar as well as the page.
+            if let mode = store.palette {
+                PaletteView(mode: mode) { dismissPalette() }
             }
         }
-        .onChange(of: store.focusAddress) { addressFocused = true }
+        // The window is `.fullSizeContentView`, but SwiftUI still keeps a titlebar-sized
+        // safe area at the top. Without this the sidebar's first row sits *below* the
+        // traffic lights instead of beside them, and the card loses its top inset.
+        .ignoresSafeArea()
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.sidebarShown)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: peeking)
+        // Arc hides the traffic lights along with the sidebar: a collapsed window is the
+        // page and nothing else. They come back the moment either sidebar does.
+        .onChange(of: chrome, initial: true) { showTrafficLights(chrome) }
+        .onAppear { store.applySpaceAppearance() }
         // In .background so it costs no layout: the buttons are still in the view tree and
         // in the responder chain, which is all .keyboardShortcut needs.
-        .background { Shortcuts(palette: $palette) }
+        .background { Shortcuts() }
+    }
+
+    /// The 6pt of window edge that brings the sidebar back. Only live while it is away.
+    @ViewBuilder private var edgeStrip: some View {
+        if !store.sidebarShown {
+            Color.clear
+                .frame(width: 6)
+                .frame(maxHeight: .infinity)
+                .contentShape(.rect)
+                .onHover { if $0 { peekTask?.cancel(); peeking = true } }
+                .accessibilityHidden(true)      // ⌘S is the accessible route back
+        }
+    }
+
+    @ViewBuilder private var floatingSidebar: some View {
+        if !store.sidebarShown && peeking {
+            Sidebar()
+                .frame(width: Look.sidebarWidth)
+                .glass(radius: Look.cardRadius)
+                .shadow(radius: 24, y: 6)
+                .padding(Look.inset)
+                .transition(.move(edge: .leading).combined(with: .opacity))
+                .onHover { $0 ? peekTask?.cancel() : endPeek() }
+        }
+    }
+
+    /// A small delay on the way out, so crossing the gap between the strip and the panel
+    /// does not slam it shut under the pointer.
+    private func endPeek() {
+        peekTask?.cancel()
+        peekTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            peeking = false
+        }
+    }
+
+    private func showTrafficLights(_ visible: Bool) {
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            store.window?.standardWindowButton(kind)?.isHidden = !visible
+        }
+    }
+
+    /// A new tab loads nothing until the search bar says where to go, so dismissing the bar
+    /// over one leaves an empty tab nobody asked for. Closing it is the undo.
+    /// ponytail: only when it is not the last tab — closing that one closes the window, and
+    /// Escape on a fresh window's first tab must not quit it.
+    private func dismissPalette() {
+        if store.tabs.count > 1, let t = store.active, t.currentURL == nil {
+            store.close(t.id)
+        }
+        store.palette = nil
+    }
+}
+
+/// The current space's colour washed down the window, behind the sidebar *and* behind the
+/// gap around the card, which is what makes the card read as floating on something rather
+/// than sitting in a grey box. Falls back to the profile's colour at a whisper, then to
+/// nothing at all.
+private struct ThemeTint: View {
+    @EnvironmentObject var store: TabStore
+    @EnvironmentObject var profiles: ProfileManager
+
+    var body: some View {
+        if let (color, strength) = tint {
+            // Bottom-weighted, the way Arc's glow pools under the sidebar rather than
+            // sitting on the titlebar.
+            LinearGradient(colors: [color.opacity(strength * 0.45), color.opacity(strength)],
+                           startPoint: .top, endPoint: .bottom)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var tint: (Color, Double)? {
+        if let space = store.currentSpace, let hex = space.colorHex, let c = Color(hex: hex) {
+            return (c, space.tint ?? 0.35)
+        }
+        if let c = Color(hex: store.profile.colorHex) { return (c, 0.10) }
+        return nil
     }
 }
 
 /// ⌘1–⌘8 select tab N and ⌘9 selects the last one, the way Safari and Chrome do; ⌘⇧P and
-/// ⌘⇧A open the palette.
+/// ⌘⇧A open the search bar.
 /// ponytail: hidden buttons rather than menu items — Menu.swift is built in AppKit and is
 /// not this view's to extend, and a Button with a shortcut is the SwiftUI equivalent. They
 /// are zero-size and transparent, *not* .hidden(), which would take them out of the
@@ -74,7 +166,6 @@ struct BrowserWindow: View {
 
 private struct Shortcuts: View {
     @EnvironmentObject var store: TabStore
-    @Binding var palette: PaletteMode?
 
     var body: some View {
         ZStack {
@@ -82,15 +173,15 @@ private struct Shortcuts: View {
                 Button("Select Tab \(n)") { select(n) }
                     .keyboardShortcut(Keybindings.binding(for: tabCommand(n)).keyboardShortcut)
             }
-            Button("Command Palette") { palette = .all }
+            Button("Search") { store.palette = .all }
                 .keyboardShortcut(Keybindings.binding(for: .commandPalette).keyboardShortcut)
-            Button("Search Tabs") { palette = .tabs }
+            Button("Search Tabs") { store.palette = .tabs }
                 .keyboardShortcut(Keybindings.binding(for: .searchTabs).keyboardShortcut)
         }
         .frame(width: 0, height: 0)
         .opacity(0)
-        // The tab strip already exposes selecting a tab and searching tabs as real
-        // elements and actions. A pile of zero-size buttons on top of that is noise.
+        // The sidebar already exposes selecting a tab and searching tabs as real elements
+        // and actions. A pile of zero-size buttons on top of that is noise.
         .accessibilityHidden(true)
     }
 
@@ -103,8 +194,40 @@ private struct Shortcuts: View {
     }
 }
 
+// MARK: - The page
+
+/// The web view as a rounded card floating on the window's glass, with everything that
+/// hovers over the page (find, the save-password prompt) inside its clip.
+private struct WebCard: View {
+    @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            if let tab = store.active {
+                WebView(web: tab.web).id(tab.id)
+            } else {
+                Color(nsColor: .textBackgroundColor)
+            }
+            if let tab = store.active { LoadingBar(tab: tab) }
+            VStack(spacing: 8) {
+                if store.findOpen, let tab = store.active {
+                    FindBar(tab: tab).frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                if let tab = store.active, tab.pendingSave != nil { SavePrompt(tab: tab) }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+        }
+        .clipShape(.rect(cornerRadius: Look.cardRadius))
+        // No inset on the leading edge while the sidebar is docked: the sidebar's own
+        // padding already leaves the gap, and doubling it reads as a misaligned card.
+        .padding(.leading, store.sidebarShown ? 0 : Look.inset)
+        .padding([.top, .trailing, .bottom], Look.inset)
+    }
+}
+
 /// ponytail: a rectangle, not ProgressView(.linear) — that style draws its own track and
-/// rounded caps, which at 2pt reads as a stray dash sitting under the toolbar.
+/// rounded caps, which at 2pt reads as a stray dash lying on the page.
 private struct LoadingBar: View {
     @ObservedObject var tab: Tab
     /// Reduce Motion turns the sweep and the fade into plain cuts — the bar still shows
@@ -124,103 +247,733 @@ private struct LoadingBar: View {
         .opacity(tab.loading ? 1 : 0)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: tab.loading)
         .allowsHitTesting(false)
-        // Decoration: the tab chip says "loading" in words, which is the accessible copy
-        // of this. Two elements for one fact is worse than one.
+        // Decoration: the tab row says "loading" in words, which is the accessible copy of
+        // this. Two elements for one fact is worse than one.
         .accessibilityHidden(true)
     }
 }
 
-// MARK: - Tabs
+// MARK: - Sidebar
 
-private struct TabStrip: View {
+private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
-    @Binding var palette: PaletteMode?
 
     var body: some View {
-        HStack(spacing: 4) {
-            Spacer().frame(width: 72)          // traffic lights
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(store.tabs) { TabChip(tab: $0) }
+        VStack(spacing: 8) {
+            TopRow()
+            if let tab = store.active { AddressPill(tab: tab) }
+            ScrollView {
+                VStack(spacing: 0) {
+                    Favorites().padding(.bottom, 8)
+                    SpaceRow()
+                    if let tab = store.active { BookmarkList(tab: tab) }
+                    TidyRow()
+                    NewTabRow()
+                    OpenTabs()
                 }
             }
-            // A container of chips, so VoiceOver reads this as a tab list and steps
-            // through the tabs, instead of announcing an anonymous scroll area.
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Tabs")
-            .accessibilityValue("\(store.tabs.count) open")
-            .accessibilityHint("Command 1 through 8 selects a tab, Command 9 the last one.")
-            .accessibilityAction(named: "Search Tabs") { palette = .tabs }
-            .accessibilityAction(named: "New Tab") { store.newTab(nil) }
-
-            Button { store.newTab(nil) } label: { Image(systemName: "plus") }
-                .buttonStyle(.plain).padding(.horizontal, 6).help("New Tab (⌘T)")
-                .accessibilityLabel("New Tab")
-            Spacer(minLength: 0)
-            if store.isPrivate {
-                Label("Private", systemImage: "eyeglasses")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .help("This window keeps no history, cookies or cache.")
-                    .accessibilityLabel("Private window")
-            }
+            .scrollIndicators(.never)
+            BottomRow()
         }
-        .padding(.horizontal, 8)
-        .frame(height: 38)
-        .background(.bar)
+        .padding(.horizontal, Look.inset)
+        .padding(.bottom, Look.inset)
+        .padding(.top, 6)
+        .frame(width: Look.sidebarWidth, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sidebar")
     }
 }
 
-private struct TabChip: View {
+/// Traffic lights, the sidebar toggle, and the page's own navigation. AppKit owns where the
+/// lights are drawn, so the row is laid out around them.
+private struct TopRow: View {
+    @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Spacer().frame(width: 62)          // traffic lights
+            Button { store.sidebarShown.toggle() } label: { Image(systemName: "sidebar.left") }
+                .help("Toggle Sidebar (\(Keybindings.binding(for: .toggleSidebar).display))")
+                .accessibilityLabel("Toggle Sidebar")
+                .accessibilityValue(store.sidebarShown ? "Shown" : "Hidden")
+            if store.isPrivate {
+                Image(systemName: "eyeglasses")
+                    .help("This window keeps no history, cookies or cache.")
+                    .accessibilityLabel("Private window")
+            }
+            Spacer(minLength: 0)
+            if let tab = store.active { NavButtons(tab: tab) }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 15, weight: .medium))
+        .foregroundStyle(.secondary)
+        .frame(height: 26)
+    }
+}
+
+private struct NavButtons: View {
+    @ObservedObject var tab: Tab
+
+    var body: some View {
+        // Icon-only, so each one carries its own label and tooltip — without them
+        // VoiceOver announces three identical "button"s.
+        HStack(spacing: 14) {
+            Button { tab.back() } label: { Image(systemName: "arrow.left") }
+                .disabled(!tab.canGoBack)
+                .help("Back (⌘[)")
+                .accessibilityLabel("Back")
+            Button { tab.forward() } label: { Image(systemName: "arrow.right") }
+                .disabled(!tab.canGoForward)
+                .help("Forward (⌘])")
+                .accessibilityLabel("Forward")
+            Button { tab.loading ? tab.stop() : tab.reload() } label: {
+                Image(systemName: tab.loading ? "xmark" : "arrow.clockwise")
+            }
+            .help(tab.loading ? "Stop Loading" : "Reload Page (⌘R)")
+            .accessibilityLabel(tab.loading ? "Stop Loading" : "Reload Page")
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Where the address bar used to be. It is a button, not a field: typing happens in the
+/// search bar, which is the one place in Vane a url or a search is entered.
+private struct AddressPill: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
-    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if tab.readerAvailable || Reader.isOn(tab) {
+                Button { Reader.toggle(tab) } label: {
+                    Image(systemName: Reader.isOn(tab) ? "doc.plaintext.fill" : "doc.plaintext")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Reader.isOn(tab) ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .help("Reader (⌥⌘R)")
+                .accessibilityLabel("Reader")
+                .accessibilityValue(Reader.isOn(tab) ? "On" : "Off")
+            }
+            Text(host).font(Look.text).lineLimit(1).foregroundStyle(.primary)
+            Spacer(minLength: 4)
+            // Always there, as in Arc: two quiet glyphs read better than a row that grows
+            // controls under the pointer.
+            Button { copyLink() } label: { Image(systemName: "link") }
+                .help("Copy Link")
+                .accessibilityLabel("Copy Link")
+            Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
+                // ponytail: the whole settings window, not a per-site sheet. Site settings
+                // do not exist yet; when they do, this is the one caller to change.
+                .help("Site Settings")
+                .accessibilityLabel("Site Settings")
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 12))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .frame(height: Look.pillHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+        .glass(radius: Look.pillRadius)
+        .contentShape(.rect)
+        .onTapGesture { store.palette = .address }
+        .help(tab.address.isEmpty ? "Search or Enter URL" : tab.address)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Address and Search")
+        .accessibilityValue(tab.address.isEmpty ? "Empty" : tab.address)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Opens the search bar to type a website address or a search.")
+        .accessibilityAction { store.palette = .address }
+        .accessibilityAction(named: "Copy Link") { copyLink() }
+    }
+
+    /// The host alone, the way Arc shows it — the scheme and `www.` are noise the user has
+    /// never needed to read.
+    private var host: String {
+        guard let h = tab.currentURL?.host() else {
+            return tab.address.isEmpty ? "Search or Enter URL" : tab.address
+        }
+        return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
+    }
+
+    private func copyLink() {
+        guard let u = tab.currentURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(u.absoluteString, forType: .string)
+        axAnnounce("Link copied.")
+    }
+}
+
+// MARK: - Favourites
+
+/// Pinned tabs as a grid of icons. Same targets the old pinned chips were: drag to reorder,
+/// right-click to unpin or close. Two pins make two columns, as in Arc — a lone tile in a
+/// three-column grid looks like something failed to load.
+private struct Favorites: View {
+    @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        let pinned = store.tabs.filter(\.pinned)
+        if !pinned.isEmpty {
+            // Two columns at the least: one pin stretched across the sidebar reads as a
+            // banner, not as a favourite.
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8),
+                                     count: min(max(pinned.count, 2), 3)),
+                      spacing: 8) {
+                ForEach(pinned) { FavoriteTile(tab: $0) }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Favourites")
+            .accessibilityValue("\(pinned.count) pinned")
+        }
+    }
+}
+
+private struct FavoriteTile: View {
+    @EnvironmentObject var store: TabStore
+    @ObservedObject var tab: Tab
     @State private var targeted = false
 
     var body: some View {
         let selected = store.current == tab.id
-        HStack(spacing: 6) {
-            TabIcon(tab: tab)
-            if tab.audible || TabAudio.isMuted(tab) {
-                Button { TabAudio.toggleMute(tab) } label: {
-                    Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 9))
-                }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-                .help(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
-                .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
+        TabIcon(tab: tab, size: 20)
+            .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
+            .background(selected ? Look.selected : Look.pillFill,
+                        in: .rect(cornerRadius: Look.pillRadius))
+            .glass(radius: Look.pillRadius)
+            .overlay(alignment: .leading) {
+                Rectangle().fill(.tint).frame(width: 2).opacity(targeted ? 1 : 0)
             }
-            if !tab.pinned {
-                Text(TidyTitles.title(for: tab)).lineLimit(1).font(.system(size: 12))
-                    .foregroundStyle(selected ? .primary : .secondary)
-                // A pinned tab is a permanent fixture — no close button to fat-finger.
-                if hovering || selected {
-                    Button { store.close(tab.id) } label: {
-                        Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+            .contentShape(.rect)
+            .onTapGesture { store.current = tab.id }
+            .help(tab.title)
+            .draggable(tab.id.uuidString) { TabIcon(tab: tab, size: 20).padding(6) }
+            .dropDestination(for: String.self) { ids, _ in drop(ids, onto: tab, in: store) }
+                isTargeted: { targeted = $0 }
+            .contextMenu {
+                Button("Unpin Tab") { store.togglePin(tab.id) }
+                Divider()
+                Button("Close Tab") { store.close(tab.id) }
+            }
+            // One element per favourite, the way a tab reads: the title is the label, the
+            // state is the value, and unpin/close are actions rather than hidden gestures.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(TidyTitles.title(for: tab))
+            .accessibilityValue(tabState(tab, in: store))
+            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityHint("Shows this tab.")
+            .accessibilityAction(named: "Unpin Tab") { store.togglePin(tab.id) }
+            .accessibilityAction(named: "Close Tab") { store.close(tab.id) }
+    }
+}
+
+/// Everything a tab row says with a picture, a position or a colour instead of words.
+@MainActor private func tabState(_ tab: Tab, in store: TabStore) -> String {
+    var bits: [String] = []
+    if let i = store.tabs.firstIndex(where: { $0.id == tab.id }) {
+        bits.append("tab \(i + 1) of \(store.tabs.count)")
+    }
+    if tab.pinned { bits.append("pinned") }
+    if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
+    bits.append(tab.loading ? "loading" : "loaded")
+    return bits.joined(separator: ", ")
+}
+
+/// The payload is the dragged tab's id; the drop index is the target's own position.
+@MainActor private func drop(_ ids: [String], onto tab: Tab, in store: TabStore) -> Bool {
+    guard let id = ids.first,
+          let from = store.tabs.firstIndex(where: { $0.id.uuidString == id }),
+          let to = store.tabs.firstIndex(where: { $0.id == tab.id }) else { return false }
+    store.move(from: from, to: to)
+    return true
+}
+
+// MARK: - Spaces
+
+/// The space's name at the head of the list, the way Arc labels the tabs below it. Also the
+/// right-click target for everything a space can be: its icon, its name, its colour and the
+/// profile it belongs to.
+private struct SpaceRow: View {
+    @EnvironmentObject var store: TabStore
+    @State private var icons = false
+    @State private var theme = false
+
+    var body: some View {
+        if let space = store.currentSpace {
+            HStack(spacing: 10) {
+                Image(systemName: space.icon ?? "cloud").frame(width: 16)
+                Text(space.name).font(Look.text)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .frame(height: Look.rowHeight)
+            .contentShape(.rect)
+            .contextMenu { SpaceMenu(store: store, space: space, icons: $icons, theme: $theme) }
+            .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
+            .popover(isPresented: $theme) { SpaceTheme(store: store, space: space) }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Space")
+            .accessibilityValue(space.name)
+            .accessibilityHint("Right-click to rename this space or change its icon and colour.")
+            .accessibilityAction(named: "Rename Space") { renameSpace(space, in: store) }
+            .accessibilityAction(named: "Change Space Icon") { icons = true }
+            .accessibilityAction(named: "Edit Theme Color") { theme = true }
+        }
+    }
+}
+
+/// Exactly the items Arc offers, minus the ones Vane has nothing behind.
+/// ponytail: no New Folder, no Live Folders, no Share Space and no Export — folders and
+/// sharing are whole features, not menu items, and an entry that opens an apology is worse
+/// than no entry. They belong above `Manage Spaces…` on the day they exist.
+/// ponytail: `store` is passed in rather than read from the environment. A context menu is
+/// hosted in its own window, and an `@EnvironmentObject` that fails to reach it is a crash,
+/// not a blank menu — not a risk worth taking for a shorter initialiser.
+private struct SpaceMenu: View {
+    let store: TabStore
+    let space: Space
+    @Binding var icons: Bool
+    @Binding var theme: Bool
+
+    var body: some View {
+        Button("Change Space Icon…") { icons = true }
+        Button("Rename Space…") { renameSpace(space, in: store) }
+        Button("Edit Theme Color…") { theme = true }
+        Menu("Set Profile") {
+            ForEach(ProfileManager.shared.profiles) { profile in
+                Button { moveSpace(space, to: profile, from: store) } label: {
+                    if profile.id == space.profileID {
+                        Label(profile.name, systemImage: "checkmark")
+                    } else {
+                        Text(profile.name)
                     }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help("Close Tab (⌘W)")
-                    .accessibilityLabel("Close \(TidyTitles.title(for: tab))")
                 }
             }
         }
-        .padding(.horizontal, tab.pinned ? 0 : 10)
-        .frame(width: tab.pinned ? 40 : 170, height: 26, alignment: tab.pinned ? .center : .leading)
-        .background(selected ? AnyShapeStyle(.selection.opacity(0.5)) : AnyShapeStyle(.clear),
-                    in: .rect(cornerRadius: 7))
-        // The drop target is the whole chip, so the line shows which side it will land on.
-        .overlay(alignment: .leading) {
-            Rectangle().fill(.tint).frame(width: 2).opacity(targeted ? 1 : 0)
+        Divider()
+        // The Profiles pane of Settings is the spaces list; there is no second surface.
+        Button("Manage Spaces…") { SettingsWindow.show() }
+        Divider()
+        Button("Delete Space") { deleteSpace(space, in: store) }
+            .disabled(store.spaces.count < 2)
+    }
+}
+
+@MainActor private func renameSpace(_ space: Space, in store: TabStore) {
+    guard let name = askForName("Rename space", space.name) else { return }
+    var edited = space
+    edited.name = name
+    store.update(space: edited)
+    rebuild()                      // the Spaces menu lists the names
+}
+
+@MainActor private func deleteSpace(_ space: Space, in store: TabStore) {
+    guard store.spaces.count > 1 else { return }
+    let a = NSAlert()
+    a.messageText = "Delete the space “\(space.name)”?"
+    a.informativeText = "Its tabs and pinned tabs go with it. Nothing in your history, "
+        + "bookmarks or saved passwords is affected."
+    a.alertStyle = .critical
+    a.addButton(withTitle: "Cancel")
+    a.addButton(withTitle: "Delete")
+    a.buttons.last?.hasDestructiveAction = true
+    guard a.runModal() == .alertSecondButtonReturn else { return }
+    let survivor = store.spaces.first { $0.id != space.id }
+    ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
+    if let survivor { store.switchTo(space: survivor) }
+    rebuild()
+}
+
+/// ponytail: a window's profile is fixed for its lifetime — the data store, the cookie jar
+/// and the extension host are all built from it in `TabStore.init`. So moving a space to
+/// another profile opens it in a window there and closes this one, rather than trying to
+/// re-home a live WKWebsiteDataStore. Ceiling: the window's position is not carried over.
+@MainActor private func moveSpace(_ space: Space, to profile: Profile, from store: TabStore) {
+    guard profile.id != space.profileID else { return }
+    store.saveCurrentSpace()
+    ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
+    var moved = space
+    moved.profileID = profile.id
+    ProfileManager.shared.updateSpace(moved)
+    Windows.open(profile: profile, space: moved)
+    store.window?.performClose(nil)
+    rebuild()
+}
+
+/// A grid of SF Symbols. ponytail: a fixed list, not a symbol browser — 24 covers what a
+/// space is ever named after, and the alternative is shipping a search field over an API
+/// that cannot enumerate itself.
+private struct SpaceIcons: View {
+    let store: TabStore
+    let space: Space
+    @Environment(\.dismiss) private var dismiss
+
+    private static let symbols = [
+        "cloud", "star", "bolt", "book", "briefcase", "gamecontroller",
+        "music.note", "heart", "leaf", "flame", "house", "cart",
+        "graduationcap", "hammer", "paintbrush", "globe", "camera", "film",
+        "airplane", "car", "cup.and.saucer", "sparkles", "moon", "sun.max",
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 6), count: 6),
+                  spacing: 6) {
+            ForEach(Self.symbols, id: \.self) { name in
+                Button { pick(name) } label: { tile(name) }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(name)
+                    .accessibilityAddTraits(current == name ? [.isButton, .isSelected] : .isButton)
+            }
         }
+        .padding(12)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Space icon")
+    }
+
+    private var current: String { space.icon ?? "cloud" }
+
+    private func tile(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 15))
+            .frame(width: 34, height: 34)
+            .background(current == name ? Look.selected : .clear,
+                        in: .rect(cornerRadius: Look.pillRadius))
+    }
+
+    private func pick(_ name: String) {
+        var edited = space
+        edited.icon = name
+        store.update(space: edited)
+        dismiss()
+    }
+}
+
+/// Arc's theme editor, minus the parts that are a graphics project rather than a control.
+/// ponytail: no 2D gradient picker and no grain dial. One colour, one strength and a
+/// light/dark switch is the whole model behind `ThemeTint`; a second colour and a noise
+/// texture would need a real gradient renderer before they could mean anything.
+private struct SpaceTheme: View {
+    let store: TabStore
+    let space: Space
+
+    var body: some View {
+        VStack(spacing: 14) {
+            appearance
+            swatches
+            strength
+        }
+        .padding(14)
+        .frame(width: 268)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Theme colour")
+    }
+
+    private var appearance: some View {
+        HStack(spacing: 10) {
+            mode(nil, "sparkles", "Automatic")
+            mode("light", "sun.max", "Light")
+            mode("dark", "moon", "Dark")
+        }
+    }
+
+    private func mode(_ value: String?, _ symbol: String, _ label: String) -> some View {
+        Button { edit { $0.appearance = value } } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 14))
+                .frame(width: 40, height: 28)
+                .background(space.appearance == value ? Look.selected : .clear,
+                            in: .rect(cornerRadius: Look.pillRadius))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(label)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(space.appearance == value ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private var swatches: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 7),
+                  spacing: 8) {
+            ForEach(Look.themeSwatches, id: \.self) { hex in
+                swatch(hex)
+            }
+        }
+    }
+
+    private func swatch(_ hex: String) -> some View {
+        Circle()
+            .fill(Color(hex: hex) ?? .gray)
+            .frame(width: 22, height: 22)
+            .overlay {
+                Circle().strokeBorder(.primary, lineWidth: space.colorHex == hex ? 2 : 0)
+            }
+            .contentShape(.circle)
+            .onTapGesture { edit { $0.colorHex = hex; $0.tint = $0.tint ?? 0.35 } }
+            .accessibilityLabel("Theme colour \(hex)")
+            .accessibilityAddTraits(space.colorHex == hex ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private var strength: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "circle.lefthalf.filled").font(Look.caption).foregroundStyle(.secondary)
+            Slider(value: Binding(get: { space.tint ?? 0.35 },
+                                  set: { v in edit { $0.tint = v } }), in: 0...1)
+                .accessibilityLabel("Colour strength")
+            Button("None") { edit { $0.colorHex = nil } }
+                .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
+                .accessibilityLabel("No theme colour")
+        }
+    }
+
+    private func edit(_ change: (inout Space) -> Void) {
+        var copy = space
+        change(&copy)
+        store.update(space: copy)
+    }
+}
+
+/// One dot per space, the current one wearing the space's own icon. A window with no spaces
+/// still shows a dot — it is standing on the profile's default set of tabs, which is a space
+/// in all but name.
+private struct SpaceDots: View {
+    @EnvironmentObject var store: TabStore
+    @State private var icons = false
+    @State private var theme = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if store.spaces.isEmpty {
+                Circle().fill(.tint).frame(width: 6, height: 6)
+                    .accessibilityLabel("This space")
+            } else {
+                ForEach(store.spaces) { dot($0) }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Spaces")
+    }
+
+    @ViewBuilder private func dot(_ space: Space) -> some View {
+        let here = store.currentSpaceID == space.id
+        Group {
+            if here {
+                Image(systemName: space.icon ?? "cloud").font(.system(size: 12))
+                    .foregroundStyle(.primary)
+            } else {
+                Circle().fill(.tertiary).frame(width: 6, height: 6)
+            }
+        }
+        .frame(width: 20, height: 20)
+        .contentShape(.rect)
+        .onTapGesture { store.switchTo(space: space) }
+        .help(space.name)
+        .contextMenu { SpaceMenu(store: store, space: space, icons: $icons, theme: $theme) }
+        .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
+        .popover(isPresented: $theme) { SpaceTheme(store: store, space: space) }
+        .accessibilityLabel(space.name)
+        .accessibilityAddTraits(here ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint("Switches to this space.")
+        .accessibilityAction { store.switchTo(space: space) }
+    }
+}
+
+// MARK: - Bookmarks
+
+/// This profile's bookmarks, standing in for Arc's per-space pinned list.
+/// ponytail: Vane has no per-space pinned *pages* (only pinned tabs, which are the grid
+/// above), and bookmarks are the list of pages the user already said they care about. The
+/// upgrade path is a `Space.pinnedURLs`-backed list once spaces get their own editing UI.
+private struct BookmarkList: View {
+    @EnvironmentObject var store: TabStore
+    /// Only here to be observed: the list has to redraw the moment ⌘D adds or removes one.
+    @ObservedObject var tab: Tab
+    @State private var marks: [Suggestion] = []
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(marks) { mark in
+                SidebarRow(selected: false, action: { open(mark) }) {
+                    // The cached favicon if the page has been visited, a globe if not — the
+                    // row should look like the site, not like a list of identical stars.
+                    SiteIcon(icon: URL(string: mark.url).flatMap(store.favicons.icon(for:)))
+                } label: {
+                    Text(mark.title.isEmpty ? mark.url : mark.title)
+                } trailing: {
+                    EmptyView()
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(mark.title.isEmpty ? mark.url : mark.title)
+                .accessibilityValue("Bookmark, \(mark.url)")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityHint("Opens this page.")
+                .accessibilityAction { open(mark) }
+            }
+        }
+        .onAppear { reload() }
+        .onChange(of: tab.bookmarked) { reload() }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Bookmarks")
+    }
+
+    private func reload() { marks = store.isPrivate ? [] : store.history.bookmarks(limit: 30) }
+
+    private func open(_ mark: Suggestion) {
+        guard let u = URL(string: mark.url) else { return }
+        if let t = store.active { t.web.load(URLRequest(url: u)) } else { store.newTab(u) }
+    }
+}
+
+// MARK: - Rows
+
+/// Every clickable line in the sidebar: an icon, a title, and whatever the row wants on the
+/// trailing edge. One shape so the list reads as one list.
+private struct SidebarRow<Leading: View, Trailing: View>: View {
+    let selected: Bool
+    let action: () -> Void
+    @ViewBuilder let leading: () -> Leading
+    @ViewBuilder let label: () -> Text
+    @ViewBuilder let trailing: () -> Trailing
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            leading()
+            label().font(Look.text).lineLimit(1)
+                .foregroundStyle(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+            Spacer(minLength: 0)
+            trailing()
+        }
+        .padding(.horizontal, 8)
+        .frame(height: Look.rowHeight)
+        .background(fill, in: .rect(cornerRadius: Look.pillRadius))
         .contentShape(.rect)
         .onHover { hovering = $0 }
-        .onTapGesture { store.current = tab.id }
+        .onTapGesture(perform: action)
+        .environment(\.rowHovering, hovering)
+    }
+
+    private var fill: Color {
+        selected ? Look.selected : (hovering ? Look.hovered : .clear)
+    }
+}
+
+extension SidebarRow where Leading == Image, Trailing == EmptyView {
+    init(icon: String, title: String, selected: Bool, action: @escaping () -> Void) {
+        self.init(selected: selected, action: action,
+                  leading: { Image(systemName: icon) },
+                  label: { Text(title) },
+                  trailing: { EmptyView() })
+    }
+}
+
+/// Whether the row a view sits in is hovered, so a close button can appear without every
+/// row needing its own hover plumbing.
+private struct RowHoveringKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    fileprivate var rowHovering: Bool {
+        get { self[RowHoveringKey.self] }
+        set { self[RowHoveringKey.self] = newValue }
+    }
+}
+
+/// A hairline, then the two housekeeping actions Arc puts here.
+private struct TidyRow: View {
+    @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(.quaternary).frame(height: 1)
+            // The menu item owns the tidy's cancellation and its "undo" bookkeeping — this
+            // is the same closure, not a second copy of it.
+            Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
+                .disabled(!TidyTabs.shouldOffer(store))
+                .help("Rename and group tabs (\(Keybindings.binding(for: .tidyTabs).display))")
+                .accessibilityLabel("Tidy Tabs")
+            Text("|").foregroundStyle(.quaternary)
+            Button("Clear") { clear() }
+                .help("Close every tab that is not pinned")
+                .accessibilityLabel("Close Unpinned Tabs")
+        }
+        .buttonStyle(.plain)
+        .font(Look.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .frame(height: Look.rowHeight)
+    }
+
+    /// Closing every tab would close the window, so when nothing is pinned a blank tab is
+    /// opened first to hold it open.
+    private func clear() {
+        let doomed = store.tabs.filter { !$0.pinned }
+        guard !doomed.isEmpty else { return }
+        if doomed.count == store.tabs.count { store.newBlankTab() }
+        doomed.forEach { store.close($0.id) }
+        axAnnounce("Closed \(doomed.count) tab\(doomed.count == 1 ? "" : "s").")
+    }
+}
+
+private struct NewTabRow: View {
+    @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        SidebarRow(icon: "plus", title: "New Tab", selected: false) { store.newTab(nil) }
+            .help("New Tab (\(Keybindings.binding(for: .newTab).display))")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("New Tab")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { store.newTab(nil) }
+    }
+}
+
+private struct OpenTabs: View {
+    @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        let open = store.tabs.filter { !$0.pinned }
+        VStack(spacing: 0) {
+            ForEach(open) { TabRow(tab: $0) }
+        }
+        // A container of rows, so VoiceOver reads this as a tab list and steps through the
+        // tabs instead of announcing an anonymous stack.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Tabs")
+        .accessibilityValue("\(open.count) open")
+        .accessibilityHint("Command 1 through 8 selects a tab, Command 9 the last one.")
+        .accessibilityAction(named: "Search Tabs") { store.palette = .tabs }
+        .accessibilityAction(named: "New Tab") { store.newTab(nil) }
+    }
+}
+
+private struct TabRow: View {
+    @EnvironmentObject var store: TabStore
+    @ObservedObject var tab: Tab
+    @State private var targeted = false
+
+    var body: some View {
+        let selected = store.current == tab.id
+        SidebarRow(selected: selected, action: { store.current = tab.id }) {
+            TabIcon(tab: tab)
+        } label: {
+            Text(TidyTitles.title(for: tab))
+        } trailing: {
+            TabRowTrailing(tab: tab, selected: selected)
+        }
+        // The drop target is the whole row, so the line shows which side it will land on.
+        .overlay(alignment: .top) {
+            Rectangle().fill(.tint).frame(height: 2).opacity(targeted ? 1 : 0)
+        }
         .help(tab.title)
         .draggable(tab.id.uuidString) {
-            // Drag preview: the chip alone would drag the whole strip's background with it.
-            HStack(spacing: 6) { TabIcon(tab: tab); Text(TidyTitles.title(for: tab)).lineLimit(1).font(.system(size: 12)) }
-                .padding(.horizontal, 8).padding(.vertical, 4)
+            // Drag preview: the row alone would drag the whole list's background with it.
+            HStack(spacing: 8) {
+                TabIcon(tab: tab)
+                Text(TidyTitles.title(for: tab)).lineLimit(1).font(Look.text)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
         }
-        .dropDestination(for: String.self) { ids, _ in drop(ids) } isTargeted: { targeted = $0 }
+        .dropDestination(for: String.self) { ids, _ in drop(ids, onto: tab, in: store) }
+            isTargeted: { targeted = $0 }
         .contextMenu {
             Button(tab.pinned ? "Unpin Tab" : "Pin Tab") { store.togglePin(tab.id) }
             Divider()
@@ -232,256 +985,103 @@ private struct TabChip: View {
         // element the user has to find and then guess the meaning of.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(TidyTitles.title(for: tab))
-        .accessibilityValue(state)
+        .accessibilityValue(tabState(tab, in: store))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Shows this tab.")
         .accessibilityAction(named: "Close Tab") { store.close(tab.id) }
         .accessibilityAction(named: tab.pinned ? "Unpin Tab" : "Pin Tab") { store.togglePin(tab.id) }
         .accessibilityAction(named: "Close Other Tabs") { closeOthers() }
-    }
-
-    /// Everything the chip says with a picture, a position or a colour instead of words.
-    private var state: String {
-        var bits: [String] = []
-        if let i = store.tabs.firstIndex(where: { $0.id == tab.id }) {
-            bits.append("tab \(i + 1) of \(store.tabs.count)")
+        .accessibilityAction(named: TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab") {
+            TabAudio.toggleMute(tab)
         }
-        if tab.pinned { bits.append("pinned") }
-        if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
-        bits.append(tab.loading ? "loading" : "loaded")
-        return bits.joined(separator: ", ")
     }
 
     private func closeOthers() {
         // Pinned tabs are not "other tabs" — closing them would undo the pin.
         for t in store.tabs where t.id != tab.id && !t.pinned { store.close(t.id) }
     }
-
-    /// The payload is the dragged tab's id; the drop index is this chip's own position.
-    private func drop(_ ids: [String]) -> Bool {
-        guard let id = ids.first,
-              let from = store.tabs.firstIndex(where: { $0.id.uuidString == id }),
-              let to = store.tabs.firstIndex(where: { $0.id == tab.id }) else { return false }
-        store.move(from: from, to: to)
-        return true
-    }
 }
 
-/// The site's own icon, with a globe standing in until it arrives (or forever, for a page
-/// that has none).
-private struct TabIcon: View {
-    @ObservedObject var tab: Tab
-
-    var body: some View {
-        Group {
-            if let icon = tab.favicon {
-                Image(nsImage: icon).resizable().interpolation(.high)
-            } else {
-                Image(systemName: "globe").resizable().foregroundStyle(.tertiary)
-            }
-        }
-        .aspectRatio(contentMode: .fit)
-        .frame(width: 14, height: 14)
-    }
-}
-
-// MARK: - Toolbar
-
-private struct Toolbar: View {
+/// The speaker and the close button. Split out only because one expression with both of
+/// them plus the row's own modifiers stopped type-checking in reasonable time.
+private struct TabRowTrailing: View {
     @EnvironmentObject var store: TabStore
-    @FocusState.Binding var addressFocused: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            if let tab = store.active {
-                NavButtons(tab: tab)
-                AddressField(tab: tab, focused: $addressFocused)
-                if tab.readerAvailable || Reader.isOn(tab) {
-                    Button { Reader.toggle(tab) } label: {
-                        Image(systemName: Reader.isOn(tab) ? "doc.plaintext.fill" : "doc.plaintext")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Reader.isOn(tab) ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                    .help("Reader (⌥⌘R)")
-                    .accessibilityLabel("Reader")
-                    .accessibilityValue(Reader.isOn(tab) ? "On" : "Off")
-                }
-                Button { tab.toggleBookmark() } label: {
-                    Image(systemName: tab.bookmarked ? "star.fill" : "star")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(tab.bookmarked ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .help(tab.bookmarked ? "Remove Bookmark (⌘D)" : "Bookmark This Page (⌘D)")
-                // Label stays constant and the state moves into the value, so VoiceOver
-                // reads "Bookmark This Page, bookmarked" rather than renaming the control
-                // under the user every time they press it.
-                .accessibilityLabel("Bookmark This Page")
-                .accessibilityValue(tab.bookmarked ? "Bookmarked" : "Not bookmarked")
-                .accessibilityAddTraits(tab.bookmarked ? .isSelected : [])
-                DownloadsButton(downloads: Downloads.manager(for: store.profileID))
-            }
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 42)
-        .background(.bar)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Browser toolbar")
-    }
-}
-
-private struct NavButtons: View {
     @ObservedObject var tab: Tab
+    let selected: Bool
+    @Environment(\.rowHovering) private var hovering
 
     var body: some View {
-        // Icon-only, so each one carries its own label and tooltip — without them
-        // VoiceOver announces three identical "button"s.
-        Group {
-            Button { tab.back() } label: { Image(systemName: "chevron.left") }
-                .disabled(!tab.canGoBack)
-                .help("Back (⌘[)")
-                .accessibilityLabel("Back")
-            Button { tab.forward() } label: { Image(systemName: "chevron.right") }
-                .disabled(!tab.canGoForward)
-                .help("Forward (⌘])")
-                .accessibilityLabel("Forward")
-            Button { tab.loading ? tab.stop() : tab.reload() } label: {
-                Image(systemName: tab.loading ? "xmark" : "arrow.clockwise")
+        HStack(spacing: 8) {
+            if tab.audible || TabAudio.isMuted(tab) {
+                Button { TabAudio.toggleMute(tab) } label: {
+                    Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 10))
+                }
+                .help(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
+                .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
-            .help(tab.loading ? "Stop Loading" : "Reload Page (⌘R)")
-            .accessibilityLabel(tab.loading ? "Stop Loading" : "Reload Page")
+            if hovering || selected {
+                Button { store.close(tab.id) } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .medium))
+                }
+                .help("Close Tab (⌘W)")
+                .accessibilityLabel("Close \(TidyTitles.title(for: tab))")
+            }
         }
         .buttonStyle(.plain)
-        .font(.system(size: 13, weight: .medium))
         .foregroundStyle(.secondary)
     }
 }
 
-private struct AddressField: View {
-    @EnvironmentObject var store: TabStore
-    @ObservedObject var tab: Tab
-    @FocusState.Binding var focused: Bool
-    @State private var draft = ""
+/// A site's own icon, with a fallback symbol standing in until it arrives (or forever, for
+/// a page that has none).
+private struct SiteIcon: View {
+    let icon: NSImage?
+    var fallback = "globe"
+    var size: CGFloat = 16
 
     var body: some View {
-        keyed
-            .onChange(of: draft) { _, now in
-                if focused { store.suggest(now) }
+        Group {
+            if let icon {
+                Image(nsImage: icon).resizable().interpolation(.high)
+            } else {
+                Image(systemName: fallback).resizable().foregroundStyle(.tertiary)
             }
-            .onChange(of: focused) { _, now in
-                tab.editing = now
-                if !now { draft = tab.address; store.clearSuggestions() }
-            }
-            .onChange(of: tab.address) { _, now in if !focused { draft = now } }
-            .onChange(of: tab.id) { draft = tab.address }
-            .onAppear { draft = tab.address }
-    }
-
-    // ponytail: split in two because one chain of this length stopped type-checking in
-    // reasonable time once Shift-Return was added. Nothing clever, just fewer modifiers
-    // per expression.
-    private var field: some View {
-        TextField("Search or enter address", text: $draft)
-            .textFieldStyle(.plain)
-            .font(.system(size: 13))
-            .padding(.horizontal, 12)
-            .frame(height: 28)
-            .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
-            .focused($focused)
-    }
-
-    private var keyed: some View {
-        field
-            .onSubmit {
-                // Enter takes the highlighted suggestion if the user arrowed onto one.
-                if let pick = store.pickedSuggestion, let u = URL(string: pick.url) {
-                    tab.editing = false
-                    tab.web.load(URLRequest(url: u))
-                } else {
-                    tab.go(draft)
-                }
-                store.clearSuggestions()
-                focused = false
-            }
-            // onKeyPress, not onMoveCommand: a focused TextField's field editor swallows
-            // the arrows to move its own insertion point, so onMoveCommand never fired and
-            // the suggestion list could not be reached from the keyboard at all. onKeyPress
-            // runs first, and .handled keeps the caret from jumping as a side effect.
-            .onKeyPress(keys: [.return]) { press in
-                // Shift-Return goes straight to the top result instead of the results page.
-                guard press.modifiers.contains(.shift) else { return .ignored }
-                store.goInstant(draft, from: tab)
-                store.clearSuggestions()
-                focused = false
-                return .handled
-            }
-            .onKeyPress(.tab) {
-                // .handled is required, or the field editor takes Tab as focus navigation.
-                guard !draft.trimmingCharacters(in: .whitespaces).isEmpty else { return .ignored }
-                tab.ask(draft)
-                store.clearSuggestions()
-                focused = false
-                return .handled
-            }
-            .onKeyPress(.upArrow) { store.moveSuggestion(-1); return .handled }
-            .onKeyPress(.downArrow) { store.moveSuggestion(1); return .handled }
-            .onExitCommand { store.clearSuggestions(); focused = false }
-            .accessibilityLabel("Address and Search")
-            .accessibilityHint("Type a website address or a search, then press Return. "
-                               + "Up and down arrows choose a suggestion.")
-            // The list is a separate overlay that appears out of nowhere and steals Return.
-            // Announcing it is the only way a VoiceOver user finds out it is there at all.
-            .onChange(of: store.suggestions.count) { _, n in
-                guard focused, n > 0 else { return }
-                axAnnounce("\(n) suggestion\(n == 1 ? "" : "s") available.")
-            }
-            .onChange(of: store.suggestionIndex) { _, i in
-                guard let s = store.pickedSuggestion else { return }
-                axAnnounce("\(s.title.isEmpty ? s.url : s.title), \(i + 1) of \(store.suggestions.count)")
-            }
+        }
+        .aspectRatio(contentMode: .fit)
+        .frame(width: size, height: size)
     }
 }
 
-private struct Suggestions: View {
+/// The same, for a tab — separate only because it has to observe the tab to redraw when the
+/// favicon lands.
+private struct TabIcon: View {
+    @ObservedObject var tab: Tab
+    var size: CGFloat = 16
+
+    var body: some View { SiteIcon(icon: tab.favicon, size: size) }
+}
+
+// MARK: - Sidebar footer
+
+private struct BottomRow: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(store.suggestions.enumerated()), id: \.element.id) { i, s in
-                HStack(spacing: 8) {
-                    Image(systemName: s.bookmarked ? "star.fill" : "clock")
-                        .font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 14)
-                    Text(s.title.isEmpty ? s.url : s.title).lineLimit(1).font(.system(size: 12))
-                    Text(s.url).lineLimit(1).font(.system(size: 11)).foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(i == store.suggestionIndex ? AnyShapeStyle(.selection) : AnyShapeStyle(.clear))
-                .contentShape(.rect)
-                .onTapGesture { open(s) }
-                // One element per row: the title is the label, where it came from and the
-                // url are the value, and the highlight is a trait rather than a colour.
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(s.title.isEmpty ? s.url : s.title)
-                .accessibilityValue("\(s.bookmarked ? "Bookmark" : "History"), \(s.url), "
-                                    + "\(i + 1) of \(store.suggestions.count)")
-                .accessibilityAddTraits(i == store.suggestionIndex ? [.isButton, .isSelected] : .isButton)
-                .accessibilityHint("Opens this page.")
-                .accessibilityAction { open(s) }
-            }
+        HStack(spacing: 8) {
+            DownloadsButton(downloads: Downloads.manager(for: store.profileID))
+            Spacer(minLength: 0)
+            SpaceDots()
+            Spacer(minLength: 0)
+            // The Spaces menu owns the naming alert; this is the same closure.
+            Button { Keybindings.actions[.newSpace]?() } label: { Image(systemName: "plus") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("New Space")
+                .accessibilityLabel("New Space")
         }
-        .frame(maxWidth: 620)
-        .background(.regularMaterial, in: .rect(cornerRadius: 10))
-        .shadow(radius: 14, y: 6)
-        .padding(.top, 4)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Address suggestions")
-        // Read after the field being typed into, not before it.
-        .accessibilitySortPriority(-1)
-    }
-
-    private func open(_ s: Suggestion) {
-        if let u = URL(string: s.url) { store.active?.web.load(URLRequest(url: u)) }
-        store.clearSuggestions()
+        .font(.system(size: 13))
+        .frame(height: 22)
+        .padding(.horizontal, 6)
     }
 }
 
@@ -498,7 +1098,7 @@ private struct SavePrompt: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Save password for \(p.host)?").font(.system(size: 13, weight: .medium))
                     if !p.account.isEmpty {
-                        Text(p.account).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(p.account).font(Look.caption).foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 16)
@@ -508,7 +1108,7 @@ private struct SavePrompt: View {
             .padding(.horizontal, 14).padding(.vertical, 10)
             .frame(maxWidth: 460)
             .fixedSize(horizontal: false, vertical: true)
-            .background(.regularMaterial, in: .rect(cornerRadius: 12))
+            .glass(radius: Look.cardRadius)
             .shadow(radius: 12, y: 4)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Save password for \(p.host)?")
@@ -530,7 +1130,7 @@ private struct FindBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").font(Look.caption).foregroundStyle(.secondary)
             TextField("Find on page", text: $text)
                 .textFieldStyle(.plain).font(.system(size: 12)).frame(width: 180)
                 .focused($focused)
@@ -546,9 +1146,9 @@ private struct FindBar: View {
             Button { store.findOpen = false } label: { Image(systemName: "xmark") }
                 .help("Close Find Bar").accessibilityLabel("Close Find Bar")
         }
-        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(.regularMaterial, in: .rect(cornerRadius: 10))
+        .glass(radius: Look.cardRadius)
         .shadow(radius: 10, y: 4)
         // Focus lands in the field the moment the bar opens, so the first thing after ⌘F
         // is typing — for the keyboard and for VoiceOver alike.
@@ -578,22 +1178,25 @@ private struct DownloadsButton: View {
     @State private var open = false
 
     var body: some View {
-        if !downloads.items.isEmpty {   // now includes finished history, not just active
-            Button { open.toggle() } label: { Image(systemName: "arrow.down.circle") }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-                .help("Downloads")
-                .accessibilityLabel("Downloads")
-                .accessibilityValue("\(downloads.items.count) item\(downloads.items.count == 1 ? "" : "s")")
-                .accessibilityHint("Shows what has been downloaded.")
-                .popover(isPresented: $open, arrowEdge: .bottom) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(downloads.items) { DownloadRow(item: $0, downloads: downloads) }
-                    }
-                    .padding(14).frame(width: 320)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Downloads")
+        let empty = downloads.items.isEmpty
+        // Always present, dimmed when there is nothing to show: the sidebar's bottom row is
+        // a fixed strip, and a button that comes and goes makes the whole row jump.
+        Button { open.toggle() } label: { Image(systemName: "arrow.down.circle") }
+            .buttonStyle(.plain)
+            .foregroundStyle(empty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
+            .disabled(empty)
+            .help("Downloads")
+            .accessibilityLabel("Downloads")
+            .accessibilityValue("\(downloads.items.count) item\(downloads.items.count == 1 ? "" : "s")")
+            .accessibilityHint("Shows what has been downloaded.")
+            .popover(isPresented: $open, arrowEdge: .top) {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(downloads.items) { DownloadRow(item: $0, downloads: downloads) }
                 }
-        }
+                .padding(14).frame(width: 320)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Downloads")
+            }
     }
 }
 
@@ -614,11 +1217,11 @@ private struct DownloadRow: View {
                     // than in an else-branch it could never reach.
                     if TidyDownloads.canUndo(item) {
                         Button("Undo Rename") { _ = TidyDownloads.undo(item, in: downloads) }
-                            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
                             .accessibilityLabel("Undo renaming \(item.name)")
                     }
                     Button("Show") { downloads.reveal(item) }
-                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.tint)
+                        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.tint)
                         .help("Show in Finder")
                         // "Show" on its own says nothing once it is out of context.
                         .accessibilityLabel("Show \(item.name) in Finder")
@@ -627,12 +1230,12 @@ private struct DownloadRow: View {
                     // exhaustively, so a paused download arrives as .failed("Paused").
                     // Without this it reads as a dead row with no way back.
                     Button("Resume") { _ = downloads.resume(item) }
-                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.tint)
+                        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.tint)
                         .help("Resume this download")
                         .accessibilityLabel("Resume \(item.name)")
                 } else if item.status == .running {
                     Button("Pause") { downloads.pause(item) }
-                        .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+                        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
                         .help("Pause this download")
                         .accessibilityLabel("Pause \(item.name)")
                 }
