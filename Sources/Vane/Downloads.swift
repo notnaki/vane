@@ -335,6 +335,7 @@ import WebKit
 
     func downloadDidFinish(_ download: WKDownload) {
         guard let i = item(for: download) else { return }
+        TidyDownloads.tidy(download, in: self)      // before unwatch() nils out item.download
         i.unwatch()
         i.state = .done
         i.status = .done

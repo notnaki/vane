@@ -254,7 +254,12 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     makeDefault.isEnabled = !URLHandling.isDefaultBrowser
     let blocking = item(.blockAds) { Blocker.enabled.toggle(); rebuild() }
     blocking.state = Blocker.enabled ? .on : .off
+    let tidyDownloads = item("Tidy Download Filenames", "") {
+        TidyDownloads.enabled.toggle(); rebuild()
+    }
+    tidyDownloads.state = TidyDownloads.enabled ? .on : .off
     root.addItem(menu("Sites", [
+        tidyDownloads,
         blocking,
         item(.addFilterList) { Blocker.chooseAndAddList() },
         .separator(),

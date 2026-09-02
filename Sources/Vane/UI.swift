@@ -595,6 +595,13 @@ private struct DownloadRow: View {
                     .accessibilityValue(status)
                 Spacer(minLength: 8)
                 if item.state == .done {
+                    // A renamed download is .done, so this has to sit beside Show rather
+                    // than in an else-branch it could never reach.
+                    if TidyDownloads.canUndo(item) {
+                        Button("Undo Rename") { _ = TidyDownloads.undo(item, in: Downloads.shared) }
+                            .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .accessibilityLabel("Undo renaming \(item.name)")
+                    }
                     Button("Show") { Downloads.shared.reveal(item) }
                         .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.tint)
                         .help("Show in Finder")
