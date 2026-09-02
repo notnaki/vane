@@ -405,6 +405,7 @@ struct Space: Identifiable, Codable, Equatable {
         try? fm.removeItem(at: Self.sessionURL(for: id, in: directory))
         try? fm.removeItem(at: Suspension.SpaceState.url(for: id, in: directory))
         Downloads.forget(id, in: directory)
+        TidyTitles.forget(id)
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
         try? fm.removeItem(at: Self.faviconDir(for: id, in: directory))
         return true
