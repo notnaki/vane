@@ -155,12 +155,17 @@ enum PaletteMode {
 /// One line of the command bar. `icon` is drawn only when `image` (a favicon) is missing,
 /// and `trailing` is the "what Return does here" label on the right — "Switch to Tab",
 /// "Ask Claude", "Open". Both are what make a row readable without reading it.
+///
+/// `detail` is matched against and spoken, but never drawn: Arc's rows are a title and a
+/// verb, and a url after every tab title is what made the list read as a log. `subtitle`
+/// is the part of it worth drawing when there is one — "Window 2", a history item's host.
 private struct PaletteRow: Identifiable {
     let id: String
     let icon: String
     var image: NSImage? = nil
     let title: String
     var detail: String = ""
+    var subtitle: String = ""
     var trailing: String = ""
     /// What VoiceOver calls this row, since the icon says it to everyone else.
     let kind: String
@@ -195,7 +200,7 @@ private struct CommandField: NSViewRepresentable {
         f.focusRingType = .none
         f.usesSingleLineMode = true
         f.lineBreakMode = .byTruncatingTail
-        f.font = .systemFont(ofSize: 17)
+        f.font = .systemFont(ofSize: Look.barFontSize)
         f.placeholderString = prompt
         f.setAccessibilityLabel(label)
         f.setAccessibilityHelp(hint)
@@ -269,6 +274,7 @@ private struct CommandField: NSViewRepresentable {
 /// Every entry point — ⌘L, ⌘T, the address pill, ⌘⇧P, ⌘⇧A — lands here, looking the same.
 @MainActor struct PaletteView: View {
     @EnvironmentObject var store: TabStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let mode: PaletteMode
     let dismiss: () -> Void
 
@@ -281,13 +287,24 @@ private struct CommandField: NSViewRepresentable {
     /// The field is held back one frame so it is created with the prefilled address already
     /// in it — an NSTextField can only select text it has.
     @State private var ready = false
+    /// False for the first frame, so the bar can scale and fade in from `appearScale`.
+    @State private var shown = false
 
     /// At most eight rows are visible; the rest are a scroll away. Arithmetic rather than a
     /// preference-key measuring dance, which the fixed row height makes exact.
-    private var listHeight: CGFloat { min(CGFloat(rows.count), 8) * Look.barRowHeight }
-    private var barHeight: CGFloat {
-        Look.barFieldHeight + (rows.isEmpty ? 0 : listHeight + Look.inset + 1)
+    private var listHeight: CGFloat {
+        let n = CGFloat(min(rows.count, 8))
+        return n * Look.barRowHeight + max(0, n - 1) * Look.barRowGap
     }
+    /// Above and below the rows: a row gap's less at the top, where the divider already
+    /// separates, than at the bottom, where the bar's edge has to.
+    private var listPadding: CGFloat { Look.barInset - Look.barRowGap + Look.barInset }
+    private var barHeight: CGFloat {
+        Look.barFieldHeight + (rows.isEmpty ? 0 : 1 + listHeight + listPadding)
+    }
+
+    /// Nil under Reduce Motion, which SwiftUI reads as "just change".
+    private func motion(_ a: Animation) -> Animation? { reduceMotion ? nil : a }
 
     var body: some View {
         GeometryReader { geo in
@@ -300,12 +317,16 @@ private struct CommandField: NSViewRepresentable {
                     .accessibilityHidden(true)
 
                 bar
-                    .frame(width: Look.barWidth)
-                    // A third of the way down, the way Arc and Spotlight sit — but never so
-                    // far that a tall list runs off the bottom of a short window.
+                    .frame(width: min(Look.barWidth, geo.size.width - Look.inset * 2))
+                    .scaleEffect(shown ? 1 : Look.appearScale)
+                    .opacity(shown ? 1 : 0)
+                    // Centred on the window, the way Arc's is, growing about its middle as
+                    // the list does — but never so far down that a tall list runs off the
+                    // bottom of a short window.
                     .padding(.top, max(Look.inset,
-                                       min(geo.size.height / 3,
+                                       min((geo.size.height - barHeight) / 2,
                                            geo.size.height - barHeight - Look.inset)))
+                    .animation(motion(Look.quick), value: rows.count)
             }
         }
         .onExitCommand { close() }
@@ -316,6 +337,7 @@ private struct CommandField: NSViewRepresentable {
             }
             ready = true
             refresh()
+            withAnimation(motion(Look.appear)) { shown = true }
         }
         .onChange(of: query) {
             if mode != .tabs { store.suggest(query) }
@@ -328,9 +350,9 @@ private struct CommandField: NSViewRepresentable {
 
     private var bar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: Look.barRowInset) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 15))
+                    .font(.system(size: Look.rowIcon, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(width: Look.rowIcon)
                 if ready {
@@ -342,17 +364,19 @@ private struct CommandField: NSViewRepresentable {
                                  onKey: key)
                 }
             }
-            .padding(.horizontal, 14)
+            // The same two insets a row has, so the field's icon sits over the rows' icons.
+            .padding(.horizontal, Look.barInset + Look.barRowInset)
             .frame(height: Look.barFieldHeight)
 
             if !rows.isEmpty {
-                Divider()
+                Hairline().padding(.horizontal, Look.barInset)
                 list
             }
         }
-        .glass(radius: Look.cardRadius)
-        .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
-        .shadow(color: .black.opacity(0.35), radius: 24, y: 10)
+        .glass(radius: Look.barRadius)
+        .background(Look.barFill, in: .rect(cornerRadius: Look.barRadius))
+        .hairline(radius: Look.barRadius, Look.barStroke)
+        .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
         // The bar is dark over anything, including a white page, so the semantic colours
         // inside it have to resolve dark too — otherwise light mode paints black on black.
         .environment(\.colorScheme, .dark)
@@ -365,14 +389,15 @@ private struct CommandField: NSViewRepresentable {
     private var list: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 0) {
+                VStack(spacing: Look.barRowGap) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in
                         line(i, row)
                     }
                 }
-                .padding(.vertical, Look.inset / 2)
+                .padding(.top, Look.barInset - Look.barRowGap)
+                .padding(.bottom, Look.barInset)
             }
-            .frame(height: listHeight + Look.inset)
+            .frame(height: listHeight + listPadding)
             .scrollIndicators(.never)
             .onChange(of: index) { proxy.scrollTo(index) }
         }
@@ -380,38 +405,42 @@ private struct CommandField: NSViewRepresentable {
 
     private func line(_ i: Int, _ row: PaletteRow) -> some View {
         let on = i == index
-        return HStack(spacing: 10) {
+        let lit = hover == row.id
+        return HStack(spacing: Look.barRowInset) {
             if let image = row.image {
                 Image(nsImage: image).resizable()
                     .frame(width: Look.rowIcon, height: Look.rowIcon)
             } else {
                 Image(systemName: row.icon)
-                    .font(.system(size: 13))
+                    .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .frame(width: Look.rowIcon, height: Look.rowIcon)
             }
-            Text(row.title).font(Look.text).lineLimit(1)
-            if !row.detail.isEmpty {
-                Text(row.detail).font(Look.caption).foregroundStyle(.secondary).lineLimit(1)
+            Text(row.title).font(Look.rowText).lineLimit(1)
+            if !row.subtitle.isEmpty {
+                Text(row.subtitle).font(Look.text).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: Look.inset)
+            // The verb and its chip travel together, on every row that has one; the
+            // selected row's are the bright pair, because that is the one Return presses.
             if !row.trailing.isEmpty {
-                Text(row.trailing).font(Look.text.weight(.medium))
-                    .foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
-            }
-            // Only on the selected row: the chip is what Return will press.
-            if on {
+                Text(row.trailing).font(Look.rowText)
+                    .foregroundStyle(on ? .primary : .secondary).lineLimit(1).layoutPriority(1)
                 Image(systemName: "arrow.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 22, height: 22)
-                    .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(on ? .primary : .secondary)
+                    .frame(width: Look.chip, height: Look.chip)
+                    .background(on ? Look.chipSelectedFill : Look.chipFill,
+                                in: .rect(cornerRadius: Look.chipRadius))
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, Look.barRowInset)
         .frame(height: Look.barRowHeight)
-        .background(on ? Look.selected : (hover == row.id ? Look.hovered : .clear),
+        .background(on ? Look.barSelected : (lit ? Look.barHovered : .clear),
                     in: .rect(cornerRadius: Look.pillRadius))
-        .padding(.horizontal, Look.inset)
+        .animation(motion(Look.quick), value: on)
+        .animation(motion(Look.quick), value: lit)
+        .padding(.horizontal, Look.barInset)
         .contentShape(.rect)
         .id(i)
         .onHover { hover = $0 ? row.id : (hover == row.id ? nil : hover) }
@@ -528,16 +557,19 @@ private struct CommandField: NSViewRepresentable {
 
     /// History, bookmarks and engine completions, in the order `TabStore.suggest` merged
     /// them. A completion is a search that has not happened yet, so it gets no url and no
-    /// "Open" label; the others are places.
+    /// "Open" label; the others are places, shown with their host so two pages with the
+    /// same title can be told apart.
     private func suggestionRows() -> [PaletteRow] {
         store.suggestions.map { s in
             let title = s.title.isEmpty ? s.url : s.title
             let icon = s.completion ? "magnifyingglass" : (s.bookmarked ? "star.fill" : "clock")
+            let host = URL(string: s.url)?.host ?? s.url
             return PaletteRow(
                 id: "url:" + s.url, icon: icon,
                 image: s.completion ? nil : URL(string: s.url).flatMap(store.favicons.icon),
                 title: title,
                 detail: s.completion ? "" : s.url,
+                subtitle: s.completion || s.title.isEmpty ? "" : host,
                 trailing: s.completion ? "" : "Open",
                 kind: s.completion ? "Search suggestion" : (s.bookmarked ? "Bookmark" : "History")
             ) {
@@ -560,6 +592,7 @@ private struct CommandField: NSViewRepresentable {
                 let detail = [tab.address, place].filter { !$0.isEmpty }.joined(separator: " — ")
                 out.append(PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
                                       image: tab.favicon, title: tab.title, detail: detail,
+                                      subtitle: place,
                                       trailing: "Switch to Tab", kind: "Open tab") {
                     other.current = tab.id
                     other.window?.makeKeyAndOrderFront(nil)

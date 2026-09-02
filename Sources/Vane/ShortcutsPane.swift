@@ -8,6 +8,7 @@ import SwiftUI
 /// next keystroke. The pure parts (what a keystroke means, how the list is grouped, how a
 /// conflict is worded) are static functions with a `check()` so they can be proved headless.
 @MainActor struct ShortcutsPane: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
     /// The row currently listening for a keystroke, if any.
     @State private var recording: Command?
@@ -27,35 +28,33 @@ import SwiftUI
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // The same rhythm as the other panes' `Pane`: cards a gap and a half apart.
+        VStack(alignment: .leading, spacing: Look.inset * 1.5) {
             header
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: Look.inset * 1.5) {
                     let groups = cards
                     if groups.isEmpty {
                         Text("No shortcuts match \u{201C}\(query)\u{201D}")
-                            .font(Look.caption).foregroundStyle(.secondary)
+                            .font(Look.text).foregroundStyle(.secondary)
+                            .padding(.horizontal, Look.cardInset)
                     }
                     ForEach(groups, id: \.0) { title, commands in
-                        if !title.isEmpty {
-                            Text(title).font(Look.caption).foregroundStyle(.secondary)
-                                .padding(.leading, 4)
-                        }
-                        Card {
-                            ForEach(Array(commands.enumerated()), id: \.element) { i, command in
-                                if i > 0 { Divider().padding(.leading, 10) }
-                                row(command)
-                            }
+                        if title.isEmpty {
+                            card(commands)
+                        } else {
+                            SettingsSection(title) { card(commands) }
                         }
                     }
                 }
-                .padding(.bottom, 4)
             }
             .scrollContentBackground(.hidden)
             Text("Click a shortcut to change it. \u{201C}Page\u{201D} lets a website\u{2019}s own "
                  + "shortcut win — Vane keeps out of the way while the page has focus.")
-                .font(Look.caption).foregroundStyle(.secondary)
+                .font(Look.text).foregroundStyle(.secondary)
+                .padding(.horizontal, Look.cardInset)
         }
+        .padding(.top, Look.inset * 2)
         .onDisappear { stopRecording() }
     }
 
@@ -67,20 +66,28 @@ import SwiftUI
         return Self.groups(query, Keybindings.search(query))
     }
 
+    /// One settings card of rows; the card draws the hairlines between them.
+    private func card(_ commands: [Command]) -> some View {
+        SettingsCard {
+            ForEach(commands, id: \.self) { row($0) }
+        }
+    }
+
     // MARK: - Header
 
     private var header: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 6) {
+            HStack(spacing: Look.inset - 2) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Search shortcuts", text: $query)
                     .textFieldStyle(.plain)
                     .font(Look.text)
                     .onChange(of: query) { stopRecording() }
             }
-            .padding(.horizontal, 8)
-            .frame(height: 26)
+            .padding(.horizontal, Look.inset)
+            .frame(height: Look.rowHeight)
             .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+            .hairline(radius: Look.pillRadius)
             .accessibilityLabel("Search Shortcuts")
             .accessibilityHint("Matches a command by name or by its keys — \u{201C}new tab\u{201D} "
                                + "or \u{201C}cmd t\u{201D}.")
@@ -96,10 +103,11 @@ import SwiftUI
                 axAnnounce("All shortcuts reset to their defaults.")
             }
             .buttonStyle(.plain)
-            .font(Look.caption)
-            .padding(.horizontal, 8)
-            .frame(height: 26)
+            .font(Look.text)
+            .padding(.horizontal, Look.inset + 2)
+            .frame(height: Look.rowHeight)
             .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+            .hairline(radius: Look.pillRadius)
         }
     }
 
@@ -126,17 +134,18 @@ import SwiftUI
                 }
                 chip(command, binding)
             }
-            .frame(height: Look.rowHeight)
+            .frame(height: Look.settingsRow)
             if let note {
                 Text(note.text)
                     .font(Look.caption)
                     .foregroundStyle(note.bad ? Color.red : Color.orange)
-                    .padding(.bottom, 4)
+                    .padding(.bottom, Look.inset)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, Look.cardInset)
         .contentShape(.rect)
         .background(isHovered ? Look.hovered : .clear)
+        .animation(reduceMotion ? nil : Look.quick, value: isHovered)
         .onHover { inside in
             if inside { hovered = command } else if hovered == command { hovered = nil }
         }
@@ -163,17 +172,14 @@ import SwiftUI
             live ? stopRecording() : startRecording(command)
         } label: {
             Text(live ? "Type shortcut…" : binding.isAssigned ? binding.display : "—")
-                .font(.system(size: 12).monospacedDigit())
+                .font(Look.text.monospacedDigit())
                 .foregroundStyle(live ? Color.accentColor
                                  : binding.isAssigned ? Color.primary : Color.secondary)
-                .padding(.horizontal, 7)
-                .frame(height: 20)
-                .frame(minWidth: 42)
-                .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
-                .overlay {
-                    RoundedRectangle(cornerRadius: Look.pillRadius)
-                        .strokeBorder(live ? Color.accentColor : .clear)
-                }
+                .padding(.horizontal, Look.inset)
+                .frame(height: Look.chip)
+                .frame(minWidth: Look.chip * 2)
+                .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
+                .hairline(radius: Look.chipRadius, live ? Color.accentColor : Look.hairline)
         }
         .buttonStyle(.plain)
         .help(live ? "Press the keys, or Escape to cancel" : "Click to change")
@@ -316,35 +322,6 @@ extension ShortcutsPane {
             return commands.isEmpty ? nil : (category.rawValue, commands)
         }
     }
-}
-
-// MARK: - Building blocks
-
-/// A settings card: rounded, hairline-stroked, rows stacked inside it.
-/// ponytail: local to this file on purpose — the Settings redesign lands its own copy in
-/// parallel, and one of the two gets deleted on merge rather than being guessed at now.
-private struct Card<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) { content }
-            .background(Look.pillFill, in: .rect(cornerRadius: Look.cardRadius))
-            .overlay {
-                RoundedRectangle(cornerRadius: Look.cardRadius)
-                    .strokeBorder(Color.primary.opacity(0.08))
-            }
-            .clipShape(.rect(cornerRadius: Look.cardRadius))
-    }
-}
-
-/// The same NSAlert shape the menus use, so a destructive settings button asks the same way.
-@MainActor private func confirm(_ message: String, _ verb: String, _ detail: String = "") -> Bool {
-    let a = NSAlert()
-    a.messageText = message
-    a.informativeText = detail
-    a.addButton(withTitle: verb)
-    a.addButton(withTitle: "Cancel")
-    return a.runModal() == .alertFirstButtonReturn
 }
 
 // MARK: - check
