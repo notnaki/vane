@@ -353,6 +353,23 @@ private struct AddressField: View {
     @State private var draft = ""
 
     var body: some View {
+        keyed
+            .onChange(of: draft) { _, now in
+                if focused { store.suggest(now) }
+            }
+            .onChange(of: focused) { _, now in
+                tab.editing = now
+                if !now { draft = tab.address; store.clearSuggestions() }
+            }
+            .onChange(of: tab.address) { _, now in if !focused { draft = now } }
+            .onChange(of: tab.id) { draft = tab.address }
+            .onAppear { draft = tab.address }
+    }
+
+    // ponytail: split in two because one chain of this length stopped type-checking in
+    // reasonable time once Shift-Return was added. Nothing clever, just fewer modifiers
+    // per expression.
+    private var field: some View {
         TextField("Search or enter address", text: $draft)
             .textFieldStyle(.plain)
             .font(.system(size: 13))
@@ -360,6 +377,10 @@ private struct AddressField: View {
             .frame(height: 28)
             .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
             .focused($focused)
+    }
+
+    private var keyed: some View {
+        field
             .onSubmit {
                 // Enter takes the highlighted suggestion if the user arrowed onto one.
                 if let pick = store.pickedSuggestion, let u = URL(string: pick.url) {
@@ -375,19 +396,17 @@ private struct AddressField: View {
             // the arrows to move its own insertion point, so onMoveCommand never fired and
             // the suggestion list could not be reached from the keyboard at all. onKeyPress
             // runs first, and .handled keeps the caret from jumping as a side effect.
+            .onKeyPress(keys: [.return]) { press in
+                // Shift-Return goes straight to the top result instead of the results page.
+                guard press.modifiers.contains(.shift) else { return .ignored }
+                store.goInstant(draft, from: tab)
+                store.clearSuggestions()
+                focused = false
+                return .handled
+            }
             .onKeyPress(.upArrow) { store.moveSuggestion(-1); return .handled }
             .onKeyPress(.downArrow) { store.moveSuggestion(1); return .handled }
             .onExitCommand { store.clearSuggestions(); focused = false }
-            .onChange(of: draft) { _, now in
-                if focused { store.suggest(now) }
-            }
-            .onChange(of: focused) { _, now in
-                tab.editing = now
-                if !now { draft = tab.address; store.clearSuggestions() }
-            }
-            .onChange(of: tab.address) { _, now in if !focused { draft = now } }
-            .onChange(of: tab.id) { draft = tab.address }
-            .onAppear { draft = tab.address }
             .accessibilityLabel("Address and Search")
             .accessibilityHint("Type a website address or a search, then press Return. "
                                + "Up and down arrows choose a suggestion.")
