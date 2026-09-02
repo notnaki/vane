@@ -170,10 +170,9 @@ import Foundation
     /// The pure half, so `check()` can prove the de-duplication with no network.
     ///
     /// A remote completion is expressed as an ordinary `Suggestion`: `title` is the phrase,
-    /// `url` is where pressing Return on it goes. Nothing had to change in `Suggestion` —
-    /// ponytail: the ceiling is that the list cannot draw a magnifying glass instead of a
-    /// favicon for these, because there is no field saying which is which. If the redesigned
-    /// address bar wants that, add `var completion = false` to Suggestion with a default.
+    /// `url` is where pressing Return on it goes, and `completion` is true — the one field
+    /// that separates "a search you have not run yet" from "a page you have been to", which
+    /// is what lets the command bar draw a magnifying glass here and a clock there.
     static func merge(_ query: String, local: [Suggestion], remote: [String]) -> [Suggestion] {
         var seen = Set(local.flatMap { [key($0.title), key($0.url)] })
         seen.insert(key(query))          // never offer back exactly what was typed
@@ -184,7 +183,8 @@ import Foundation
             // local urls — otherwise two rows could share an id, which ForEach cannot draw.
             let fresh = seen.insert(key(phrase)).inserted
             guard seen.insert(key(u.absoluteString)).inserted, fresh else { continue }
-            out.append(Suggestion(url: u.absoluteString, title: phrase, bookmarked: false))
+            out.append(Suggestion(url: u.absoluteString, title: phrase, bookmarked: false,
+                                  completion: true))
         }
         return out
     }

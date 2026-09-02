@@ -14,6 +14,15 @@ enum Look {
     /// Gap between the sidebar and the web card, and around the card.
     static let inset: CGFloat = 8
 
+    // The command bar. The one surface allowed rows taller than `rowHeight`: it is a
+    // centred sheet the user is typing into, not a dense list they are scanning.
+    static let barWidth: CGFloat = 640
+    static let barRowHeight: CGFloat = 40
+    /// The text field's row, which is deliberately taller than any result row.
+    static let barFieldHeight: CGFloat = 52
+    /// Favicon / symbol box at the leading edge of a command bar row.
+    static let rowIcon: CGFloat = 16
+
     static let text = Font.system(size: 13)
     static let caption = Font.system(size: 11)
     static let heading = Font.system(size: 13, weight: .semibold)
@@ -22,6 +31,13 @@ enum Look {
     static let selected = Color.primary.opacity(0.14)
     static let hovered = Color.primary.opacity(0.07)
     static let pillFill = Color.primary.opacity(0.06)
+
+    /// Dims the page behind the command bar, so what is being typed reads as the only live
+    /// thing on screen. Black rather than a material: it must darken, not blur again.
+    static let scrim = Color.black.opacity(0.25)
+    /// Under a floating surface's glass. Glass alone takes its colour from whatever is
+    /// behind it, and a command bar over a white page has to stay dark to stay legible.
+    static let barFill = Color.black.opacity(0.4)
 }
 
 /// Behind-window blur for the window itself — the desktop shows through the sidebar, which
