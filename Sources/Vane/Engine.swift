@@ -361,10 +361,12 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     }
 
     func webView(_ w: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
         Downloads.manager(for: profileID).attach(download)
     }
 
     func webView(_ w: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
         Downloads.manager(for: profileID).attach(download)
     }
 
