@@ -261,7 +261,7 @@ import Foundation
         ]
 
         // The gate. Everything here is about what does NOT go out.
-        Search.current = Search.builtIn[0]
+        Search.current = Search.defaultEngine
         enabled = false
         results += [
             ("the toggle round-trips on", { enabled = true; return enabled }()),
@@ -310,7 +310,7 @@ import Foundation
             ("a new completion is kept", m.contains { $0.title == "swift concurrency tutorial" }),
             ("a completion opens a search for its own phrase",
              m.first { $0.title == "swift concurrency tutorial" }?.url
-                == "https://duckduckgo.com/?q=swift%20concurrency%20tutorial"),
+                == "https://www.google.com/search?q=swift%20concurrency%20tutorial"),
             ("completions are not bookmarks", m.allSatisfy { $0.bookmarked == false || local.contains($0) }),
             ("every row has a distinct id", Set(m.map(\.id)).count == m.count),
             ("the merged list is capped",
