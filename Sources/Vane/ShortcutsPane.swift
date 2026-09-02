@@ -31,7 +31,7 @@ import SwiftUI
             header
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
-                    let groups = Self.groups(query, Keybindings.search(query))
+                    let groups = cards
                     if groups.isEmpty {
                         Text("No shortcuts match \u{201C}\(query)\u{201D}")
                             .font(Look.caption).foregroundStyle(.secondary)
@@ -57,6 +57,14 @@ import SwiftUI
                 .font(Look.caption).foregroundStyle(.secondary)
         }
         .onDisappear { stopRecording() }
+    }
+
+    /// SwiftUI only redraws for the state a body actually reads, and the rows read the
+    /// store rather than any state — so touching `revision` here is what turns a write to
+    /// Keybindings into a redraw.
+    private var cards: [(String, [Command])] {
+        _ = revision
+        return Self.groups(query, Keybindings.search(query))
     }
 
     // MARK: - Header
