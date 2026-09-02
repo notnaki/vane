@@ -373,7 +373,7 @@ import Foundation
         ]
 
         // The "is this already a url" guard. Nothing here is allowed to hit the network.
-        Search.current = Search.builtIn[0]
+        Search.current = Search.defaultEngine
         enabled = true
         results += [
             ("an ordinary phrase resolves", shouldResolve("swift concurrency")),

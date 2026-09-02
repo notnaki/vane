@@ -28,14 +28,23 @@ struct SearchEngine: Identifiable, Codable, Hashable {
 
     // MARK: - Engines
 
+    /// Google first, because it is the default and the picker should open on it.
     static let builtIn: [SearchEngine] = [
-        .init(id: "duckduckgo", name: "DuckDuckGo", queryTemplate: "https://duckduckgo.com/?q=%s"),
         .init(id: "google",     name: "Google",     queryTemplate: "https://www.google.com/search?q=%s"),
+        .init(id: "duckduckgo", name: "DuckDuckGo", queryTemplate: "https://duckduckgo.com/?q=%s"),
         .init(id: "bing",       name: "Bing",       queryTemplate: "https://www.bing.com/search?q=%s"),
         .init(id: "brave",      name: "Brave",      queryTemplate: "https://search.brave.com/search?q=%s"),
         .init(id: "kagi",       name: "Kagi",       queryTemplate: "https://kagi.com/search?q=%s"),
         .init(id: "ecosia",     name: "Ecosia",     queryTemplate: "https://www.ecosia.org/search?q=%s"),
     ]
+
+    /// The engine a user who has never opened Settings gets.
+    ///
+    /// Named rather than spelled `builtIn[0]`, so that reordering the list above is a
+    /// cosmetic change to the picker and nothing else. Everything that used to mean "the
+    /// default" by writing `builtIn[0]` should say this instead — index 0 answering both
+    /// questions is how "reorder the array" turns into "silently changed the default".
+    static let defaultEngine: SearchEngine = builtIn.first { $0.id == "google" } ?? builtIn[0]
 
     /// Swapped out by `check()` so the assertions never touch the user's real preferences.
     static var defaults = UserDefaults.standard
@@ -50,11 +59,13 @@ struct SearchEngine: Identifiable, Codable, Hashable {
 
     static var all: [SearchEngine] { builtIn + custom }
 
-    /// Falls back to the first built-in when the stored id names an engine that was removed.
+    /// Falls back to `defaultEngine` when nothing is stored, or when the stored id names an
+    /// engine that was removed. Reading the stored id first is what guarantees that
+    /// changing the default never moves a user who already chose one.
     static var current: SearchEngine {
         get {
             let id = defaults.string(forKey: "searchEngine")
-            return all.first { $0.id == id } ?? builtIn[0]
+            return all.first { $0.id == id } ?? defaultEngine
         }
         set { defaults.set(newValue.id, forKey: "searchEngine") }
     }
@@ -82,30 +93,22 @@ struct SearchEngine: Identifiable, Codable, Hashable {
     static func url(for input: String) -> URL? {
         let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return nil }
-        // A leading ? or ! is the user overriding the guess: search this, verbatim.
-        if s.hasPrefix("!") { return keywordSearch(s) }
+        // A leading ? is the user overriding the guess: search this, verbatim. It is tested
+        // before bangs on purpose — "?!g swift" means search for the string "!g swift".
         if s.hasPrefix("?") { return search(String(s.dropFirst())) }
+        // `!gh swift` and `swift !gh` both route. An unknown bang returns nil here and
+        // falls through to the plain search below — see `Bangs.unknown` for why.
+        if let u = Bangs.resolve(s) { return u }
         if let u = explicitScheme(s) { return u }
         if let u = filePath(s) { return u }
         if looksLikeHost(s) { return URL(string: scheme(for: s) + s, encodingInvalidCharacters: true) }
         return search(s)
     }
 
-    /// `!g swift` → Google. An unrecognised bang is handed to the current engine intact,
-    /// which is the right answer on DuckDuckGo (it resolves thousands of its own bangs) and
-    /// harmless noise anywhere else. ponytail: no bang table of our own, ever.
-    static func keywordSearch(_ input: String) -> URL? {
-        let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard s.hasPrefix("!") else { return nil }
-        let body = s.dropFirst()
-        let bang = String(body.prefix { !$0.isWhitespace }).lowercased()
-        let rest = String(body.drop { !$0.isWhitespace }).trimmingCharacters(in: .whitespaces)
-        guard !bang.isEmpty else { return nil }
-        guard let engine = all.first(where: { $0.id == bang })
-                ?? all.first(where: { $0.id.hasPrefix(bang) }) else { return search(s) }
-        return search(rest, using: engine) ?? engine.home
-    }
-
+    /// Bangs live in `Bangs.swift`. That file used to be a comment here reading "no bang
+    /// table of our own, ever", and that decision was correct exactly as long as the
+    /// default engine was DuckDuckGo, which resolves thousands of bangs itself. Google does
+    /// not, so leaning on the engine stopped working the day the default changed.
     static func search(_ query: String, using engine: SearchEngine? = nil) -> URL? {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return nil }
@@ -211,11 +214,23 @@ struct SearchEngine: Identifiable, Codable, Hashable {
             defaults = real
             scratch.removePersistentDomain(forName: suite)
         }
-        current = builtIn[0]                                   // DuckDuckGo, deterministically
         func str(_ input: String) -> String { url(for: input)?.absoluteString ?? "<nil>" }
-        func isSearch(_ input: String) -> Bool { str(input).hasPrefix("https://duckduckgo.com/?q=") }
+        func isSearch(_ input: String) -> Bool { str(input).hasPrefix("https://www.google.com/search?q=") }
 
+        // The default, and the promise that changing it never moves anyone who chose.
         var results: [(String, Bool)] = [
+            ("with nothing stored the default engine is Google", current.id == "google"),
+            ("the default is not merely whatever is first in the list",
+             defaultEngine.id == "google"),
+            ("an engine the user already chose survives the default changing",
+             { defaults.set("duckduckgo", forKey: "searchEngine"); return current.id == "duckduckgo" }()),
+            ("a stored engine is what a search actually uses",
+             str("hello") == "https://duckduckgo.com/?q=hello"),
+        ]
+        defaults.removeObject(forKey: "searchEngine")          // back to the default for the rest
+        results.append(("clearing the stored engine returns to the default", current == defaultEngine))
+
+        results += [
             ("a bare host becomes https", str("example.com") == "https://example.com"),
             ("a host with a path keeps the path", str("example.com/a?b=1") == "https://example.com/a?b=1"),
             ("localhost:3000 is a url over http, not a search", str("localhost:3000") == "http://localhost:3000"),
@@ -243,7 +258,11 @@ struct SearchEngine: Identifiable, Codable, Hashable {
             ("!g routes to google", str("!g swift").hasPrefix("https://www.google.com/search?q=swift")),
             ("!kagi routes by full id", str("!kagi swift").hasPrefix("https://kagi.com/search?q=swift")),
             ("a bang with no query lands on the engine home", str("!g") == "https://www.google.com"),
-            ("an unknown bang goes to the current engine intact", str("!gh swift").hasSuffix("q=%21gh%20swift")),
+            // Was "an unknown bang goes to the current engine intact" and only worked
+            // because the engine was DuckDuckGo. Same behaviour, now a stated policy — see
+            // `Bangs.unknown`. !gh is no longer unknown, so this uses a keyword nothing owns.
+            ("an unknown bang goes to the current engine intact",
+             str("!zzq swift").hasSuffix("q=%21zzq%20swift")),
         ]
 
         // Custom engine round-trip.
@@ -262,8 +281,8 @@ struct SearchEngine: Identifiable, Codable, Hashable {
                         str("!mine x") == "https://s.example/find/x?ui=1"))
         remove(mine)
         results.append(("removing a custom engine drops it", custom.isEmpty))
-        results.append(("removing the chosen engine falls back to the first built-in",
-                        current == builtIn[0]))
-        return results
+        results.append(("removing the chosen engine falls back to the default",
+                        current == defaultEngine))
+        return results + Bangs.check()
     }
 }

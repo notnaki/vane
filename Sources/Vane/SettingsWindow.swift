@@ -9,7 +9,7 @@ import SwiftUI
     /// engines moves the homepage with it until the user pins one down.
     static var homepage: URL {
         let stored = UserDefaults.standard.string(forKey: "homepage") ?? ""
-        return Search.url(for: stored) ?? Search.current.home ?? Search.builtIn[0].home!
+        return Search.url(for: stored) ?? Search.current.home ?? Search.defaultEngine.home!
     }
 
     /// Off is a real preference (a fresh window every launch), so it persists; on is the
@@ -64,7 +64,7 @@ private struct SettingsView: View {
 
 private struct GeneralPane: View {
     // The key `Search.current` reads. AppStorage so the picker redraws itself.
-    @AppStorage("searchEngine") private var engineID = Search.builtIn[0].id
+    @AppStorage("searchEngine") private var engineID = Search.defaultEngine.id
     @AppStorage("homepage") private var homepage = ""
     @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
     @State private var engines = Search.all
