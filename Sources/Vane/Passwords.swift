@@ -279,6 +279,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("search engines", Search.check),
                                ("search suggestions", SearchSuggestions.check),
                                ("instant links", InstantLinks.check),
+                               ("ai chat", AIChat.check),
                                ("certificate trust", CertificateTrust.check),
                                ("crash recovery", Crash.check),
                                ("reader", Reader.check),

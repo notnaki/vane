@@ -248,7 +248,22 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     }
 
     /// Address-bar input: a URL if it plausibly is one, otherwise a search.
+    /// Tab in the address bar: ask an assistant instead of searching.
+    func ask(_ input: String) {
+        let (assistant, question) = AIChat.match(input) ?? (AIChat.preferred, input)
+        guard let target = AIChat.url(for: question, using: assistant) else { return }
+        editing = false
+        web.load(URLRequest(url: target))
+    }
+
     func go(_ input: String) {
+        // "claude how do actors work" opens Claude rather than searching for that sentence.
+        if let (assistant, question) = AIChat.match(input),
+           let target = AIChat.url(for: question, using: assistant) {
+            editing = false
+            web.load(URLRequest(url: target))
+            return
+        }
         guard let target = Search.url(for: input) else { return }
         editing = false
         web.load(URLRequest(url: target))

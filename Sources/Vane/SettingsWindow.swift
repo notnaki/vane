@@ -66,6 +66,7 @@ private struct GeneralPane: View {
     // The key `Search.current` reads. AppStorage so the picker redraws itself.
     @AppStorage("searchEngine") private var engineID = Search.builtIn[0].id
     @AppStorage("homepage") private var homepage = ""
+    @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
     @State private var engines = Search.all
     @State private var newName = ""
     @State private var newTemplate = ""
@@ -78,6 +79,18 @@ private struct GeneralPane: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("AI assistant", selection: $assistantID) {
+                    ForEach(AIChat.all) { Text($0.name).tag($0.id) }
+                }
+            } footer: {
+                Text("Press Tab in the address bar to ask this assistant instead of "
+                     + "searching. Starting with an assistant's name — \u{201C}claude …\u{201D}, "
+                     + "\u{201C}chatgpt …\u{201D} — overrides it for that one query. Vane opens the "
+                     + "assistant's own site with the question; ChatGPT and Perplexity send "
+                     + "it automatically, Claude fills it in for you to send.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section {
                 Picker("Search engine", selection: $engineID) {
                     ForEach(engines) { Text($0.name).tag($0.id) }

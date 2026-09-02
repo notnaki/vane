@@ -404,6 +404,14 @@ private struct AddressField: View {
                 focused = false
                 return .handled
             }
+            .onKeyPress(.tab) {
+                // .handled is required, or the field editor takes Tab as focus navigation.
+                guard !draft.trimmingCharacters(in: .whitespaces).isEmpty else { return .ignored }
+                tab.ask(draft)
+                store.clearSuggestions()
+                focused = false
+                return .handled
+            }
             .onKeyPress(.upArrow) { store.moveSuggestion(-1); return .handled }
             .onKeyPress(.downArrow) { store.moveSuggestion(1); return .handled }
             .onExitCommand { store.clearSuggestions(); focused = false }
