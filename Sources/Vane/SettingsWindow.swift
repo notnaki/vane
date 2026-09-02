@@ -170,6 +170,7 @@ private struct PrivacyPane: View {
     @AppStorage("tidyTabs") private var tidyTabs = true
     @AppStorage("tidyDownloads") private var tidyDownloads = false
     @AppStorage("tidyTitles") private var tidyTitles = true
+    @AppStorage("linkPreviews") private var previews = true
 
     var body: some View {
         Form {
@@ -199,6 +200,17 @@ private struct PrivacyPane: View {
                      ?? "Apple's on-device model. Nothing is sent anywhere, and nothing "
                      + "happens until you ask for it — grouping tabs takes around twelve "
                      + "seconds, so it is a menu item, never automatic.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                // Not under the AI switch: the page render and its own description arrive in
+                // well under a second and need no model. The summary is the part that does,
+                // and it is extra rather than the point.
+                Toggle("Link previews", isOn: $previews)
+            } footer: {
+                Text("Hovering a link loads the page in the background to show it, which "
+                     + "means the site sees a visit you did not make. If on-device AI is on, "
+                     + "a summary follows once it is ready.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
