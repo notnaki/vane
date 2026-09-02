@@ -134,11 +134,21 @@ struct PaletteCommand: Identifiable {
 /// "search tabs" gesture Arc and Safari both use. One view, two starting filters — a second
 /// overlay for tab search would be the same 100 lines with one line deleted.
 enum PaletteMode {
-    case all, tabs
+    case all, tabs, address
 
-    var title: String { self == .tabs ? "Search Tabs" : "Command Palette" }
+    var title: String {
+        switch self {
+        case .tabs: "Search Tabs"
+        case .address: "Search or Enter URL"
+        case .all: "Command Palette"
+        }
+    }
     var prompt: String {
-        self == .tabs ? "Search open tabs" : "Search tabs, history, bookmarks and commands"
+        switch self {
+        case .tabs: "Search open tabs"
+        case .address: "Search or Enter URL…"
+        case .all: "Search tabs, history, bookmarks and commands"
+        }
     }
 }
 

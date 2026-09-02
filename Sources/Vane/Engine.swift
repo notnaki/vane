@@ -522,6 +522,10 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     }
     /// Bumped to pull focus into the URL field (⌘L, new tab) / open the find bar (⌘F).
     @Published var focusAddress = 0
+    /// The command bar. Set to open it in a mode, nil to close. Per window: two windows can
+    /// each have their own open. `.address` is what ⌘L, ⌘T and clicking the address pill
+    /// open — the place to type a url or a search.
+    @Published var palette: PaletteMode?
     @Published var findOpen = false
     @Published var suggestions: [Suggestion] = []
     /// -1 means "no suggestion highlighted" — Enter then uses what was typed.
