@@ -74,7 +74,8 @@ import SwiftUI
               pane: { _ in AnyView(MaxPane()) }),
         .init(id: "links", title: "Links", icon: "link",
               pane: { _ in AnyView(LinksPane()) }),
-        // Shortcuts tab is wired on merge
+        .init(id: "shortcuts", title: "Shortcuts", icon: "keyboard",
+              pane: { _ in AnyView(ShortcutsPane()) }),
         .init(id: "advanced", title: "Advanced", icon: "slider.horizontal.3",
               pane: { _ in AnyView(AdvancedPane()) }),
     ]
