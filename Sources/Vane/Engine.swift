@@ -31,6 +31,8 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     /// Playing in a detached window. Kept so suspension leaves it alone even when the tab
     /// is in the background — which is exactly when a PiP video is being watched.
     @Published var pictureInPicture = false
+    /// Making noise the user can hear. Muting the tab clears it.
+    @Published var audible = false
     @Published var favicon: NSImage?
     /// Pinned tabs sit at the head of the strip and survive a relaunch.
     @Published var pinned = false
@@ -80,6 +82,9 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         cfg.userContentController.addUserScript(
             WKUserScript(source: PictureInPicture.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
+                         forMainFrameOnly: false))
         return WKWebView(frame: .zero, configuration: cfg)
     }
 
@@ -90,6 +95,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         web.configuration.userContentController.add(WeakHandler(self), name: "vanepw")
         web.configuration.userContentController.add(WeakHandler(self), name: PictureInPicture.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
         web.customUserAgent = Settings.userAgent
         web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
         web.allowsBackForwardNavigationGestures = true
@@ -127,6 +133,9 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
                 MainActor.assumeIsolated { self?.canGoForward = w.canGoForward }
             },
         ]
+        // attach() re-runs on resume, so this covers a waking tab too.
+        TabAudio.watch(self) { [weak self] in self?.audible = $0 }
+        TabAudio.reapply(self)
     }
 
     // MARK: Suspension
@@ -151,6 +160,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         suspended = true
 
         let old = web
+        TabAudio.unwatch(self)         // KVO on a dead observee is a crash, not a leak
         obs = []                       // KVO on a view that is about to die
         old.stopLoading()
         old.uiDelegate = nil
@@ -159,6 +169,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PictureInPicture.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
         old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
         // ponytail: `old` is never deallocated — it survives at a high retain count, so
         // Tab.close() has to use `_close` SPI to give the process back. The retainer is
@@ -361,6 +372,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         guard let url = w.url else { return }
         bookmarked = history.isBookmarked(url)
         Task { readerAvailable = await Reader.isAvailable(in: w) }
+        TabAudio.reapply(self)         // no-op unless this tab is muted
         if suppressHistoryOnce {
             suppressHistoryOnce = false
         } else if !isPrivate {
@@ -405,6 +417,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     }
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
             if body["gone"] as? Bool == true { Previews.shared.cancel(); return }
@@ -604,6 +617,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         let wasPinned = tabs[i].pinned
         tabs.remove(at: i)
         if wasPinned { savePins() }
+        TabAudio.forget(id)            // else the maps grow by one per tab ever opened
         extensions.sync()
         // Last tab closed closes the window, the way every other Mac browser behaves.
         if tabs.isEmpty { window?.performClose(nil); return }

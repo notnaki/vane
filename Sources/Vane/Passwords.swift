@@ -324,7 +324,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("tidy titles", TidyTitles.check),
                                ("link previews", Previews.check),
                                ("per-site zoom", Zoom.check),
-                               ("export", Export.check)] {
+                               ("export", Export.check),
+                               ("tab audio", TabAudio.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }

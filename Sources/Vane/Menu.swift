@@ -263,6 +263,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         .separator(),
         item(.showReader) { Windows.current?.active.map(Reader.toggle) },
         item(.pictureInPicture) { PictureInPicture.toggle(Windows.current?.active) },
+        item(.muteTab) { Windows.current?.active.map(TabAudio.toggleMute) },
         item(.biggerReaderText) { Reader.adjustFontSize(1, in: Windows.current?.active) },
         item(.smallerReaderText) { Reader.adjustFontSize(-1, in: Windows.current?.active) },
         readerTypefaceItem(),
