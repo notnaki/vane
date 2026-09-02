@@ -70,6 +70,36 @@ enum Passwords {
         return (account, String(decoding: data, as: UTF8.self))
     }
 
+    /// Every credential Vane created for this profile. Lives here, beside `creator` and
+    /// `domain`, because a second copy of that query elsewhere silently returns nothing the
+    /// day either of them changes.
+    static func all(profileID: UUID = ProfileManager.activeProfileID) -> [(host: String, account: String, password: String)] {
+        var q: [String: Any] = [
+            kSecClass as String: kSecClassInternetPassword,
+            kSecAttrCreator as String: creator,
+            kSecReturnAttributes as String: true,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        let scope = domain(profileID)
+        if let scope { q[kSecAttrSecurityDomain as String] = scope }
+
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
+              let items = out as? [[String: Any]] else { return [] }
+
+        return items.compactMap { item in
+            guard let host = item[kSecAttrServer as String] as? String,
+                  let data = item[kSecValueData as String] as? Data else { return nil }
+            // "no security domain" is not expressible as a query, so the default profile
+            // filters other profiles' items out here.
+            let itemDomain = item[kSecAttrSecurityDomain as String] as? String ?? ""
+            if scope == nil && !itemDomain.isEmpty { return nil }
+            return (host, item[kSecAttrAccount as String] as? String ?? "",
+                    String(decoding: data, as: UTF8.self))
+        }.sorted { ($0.host, $0.account) < ($1.host, $1.account) }
+    }
+
     @discardableResult
     static func delete(host: String, account: String,
                        profileID: UUID = ProfileManager.activeProfileID) -> Bool {
@@ -293,7 +323,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("tidy tabs", TidyTabs.check),
                                ("tidy titles", TidyTitles.check),
                                ("link previews", Previews.check),
-                               ("per-site zoom", Zoom.check)] {
+                               ("per-site zoom", Zoom.check),
+                               ("export", Export.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }
