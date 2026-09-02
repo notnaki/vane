@@ -180,6 +180,15 @@ private struct TabChip: View {
         let selected = store.current == tab.id
         HStack(spacing: 6) {
             TabIcon(tab: tab)
+            if tab.audible || TabAudio.isMuted(tab) {
+                Button { TabAudio.toggleMute(tab) } label: {
+                    Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 9))
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
+                .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
+            }
             if !tab.pinned {
                 Text(TidyTitles.title(for: tab)).lineLimit(1).font(.system(size: 12))
                     .foregroundStyle(selected ? .primary : .secondary)
@@ -238,6 +247,7 @@ private struct TabChip: View {
             bits.append("tab \(i + 1) of \(store.tabs.count)")
         }
         if tab.pinned { bits.append("pinned") }
+        if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
         bits.append(tab.loading ? "loading" : "loaded")
         return bits.joined(separator: ", ")
     }

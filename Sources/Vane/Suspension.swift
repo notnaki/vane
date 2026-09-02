@@ -157,7 +157,15 @@ extension Prefs {
                 if tab.pictureInPicture {
                     f.playing = true          // detached and being watched; do not ask further
                 } else {
-                    f.playing = await tab.isPlayingMedia()
+                    // requestMediaPlaybackState reports .playing for a page-muted tab, so
+                    // without the mute check, muting a tab would make it permanently
+                    // unsuspendable — backwards. Everything that could still want a muted
+                    // tab is excluded earlier: selected in any window, pinned, or detached
+                    // into PiP. What is left is a muted video in a background tab of a
+                    // background window, untouched for the idle limit.
+                    // ponytail: interactionState restores scroll and history, not playback
+                    // position, so a resumed tab restarts its player.
+                    f.playing = await tab.isPlayingMedia() && !TabAudio.isMuted(tab)
                 }
                 f.hasInput = await tab.hasUnsubmittedInput()
                 // Re-read the cheap facts too: the awaits above gave the user time to click.
@@ -189,7 +197,15 @@ extension Prefs {
                 if tab.pictureInPicture {
                     f.playing = true          // detached and being watched; do not ask further
                 } else {
-                    f.playing = await tab.isPlayingMedia()
+                    // requestMediaPlaybackState reports .playing for a page-muted tab, so
+                    // without the mute check, muting a tab would make it permanently
+                    // unsuspendable — backwards. Everything that could still want a muted
+                    // tab is excluded earlier: selected in any window, pinned, or detached
+                    // into PiP. What is left is a muted video in a background tab of a
+                    // background window, untouched for the idle limit.
+                    // ponytail: interactionState restores scroll and history, not playback
+                    // position, so a resumed tab restarts its player.
+                    f.playing = await tab.isPlayingMedia() && !TabAudio.isMuted(tab)
                 }
                 if shouldSuspend(f, after: 0) { tab.suspend() }
             }
