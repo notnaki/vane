@@ -101,7 +101,9 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
 
 /// One-line text prompt. ponytail: an NSAlert with an accessory field, not a window — a
 /// name is one string and this is not the settings surface.
-@MainActor private func askForName(_ title: String, _ initial: String = "") -> String? {
+/// Not private: the sidebar's "Rename Space…" is the same prompt, and two copies of an
+/// alert is exactly how two prompts drift apart.
+@MainActor func askForName(_ title: String, _ initial: String = "") -> String? {
     let alert = NSAlert()
     alert.messageText = title
     let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
@@ -252,8 +254,9 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     root.addItem(menu("View", [
         item(.reload) { Windows.current?.active?.reload() },
         item(.hardReload) { Windows.current?.active?.hardReload() },
-        item(.openLocation) { Windows.current?.focusAddress += 1 },
+        item(.openLocation) { Windows.current?.palette = .address },
         item(.find) { Windows.current?.findOpen = true },
+        item(.toggleSidebar) { Windows.current?.sidebarShown.toggle() },
         .separator(),
         item(.actualSize) { Windows.current?.active.map(Zoom.reset) },
         item(.zoomIn) { Windows.current?.active.map(Zoom.zoomIn) },

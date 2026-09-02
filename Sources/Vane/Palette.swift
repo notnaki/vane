@@ -136,13 +136,13 @@ struct PaletteCommand: Identifiable {
 /// the "search tabs" gesture Arc and Safari both have. A separate overlay for that would be
 /// the same hundred lines with one line deleted.
 enum PaletteMode {
-    case all, tabs, address
+    case all, tabs, address, newTab
 
     /// What VoiceOver calls the bar. Never drawn — the prompt below is what is drawn.
     var title: String {
         switch self {
         case .tabs: "Search Tabs"
-        case .all, .address: "Search or Enter URL"
+        case .all, .address, .newTab: "Search or Enter URL"
         }
     }
     /// One prompt for every entry point: whatever opened this, it searches or navigates.
@@ -433,14 +433,14 @@ private struct CommandField: NSViewRepresentable {
         case .escape:     close()
         case .shiftEnter:
             // Instant Links: skip the results page and open what it would have led to.
-            guard mode == .address, !typed.isEmpty else { return false }
-            let tab = store.active ?? store.newBlankTab()
+            guard mode == .address || mode == .newTab, !typed.isEmpty else { return false }
+            let tab = target()
             close()
             store.goInstant(typed, from: tab)
         case .tab:
             // Same gesture the address bar had: hand what was typed to the assistant.
             guard mode != .tabs, !typed.isEmpty else { return false }
-            let tab = store.active ?? store.newBlankTab()
+            let tab = target()
             close()
             tab.ask(typed)
         }
@@ -448,6 +448,12 @@ private struct CommandField: NSViewRepresentable {
     }
 
     private var typed: String { query.trimmingCharacters(in: .whitespaces) }
+
+    /// Where Return loads: a fresh tab when the bar was opened by ⌘T, else the current one.
+    /// Made only now, so a dismissed bar never leaves an empty tab behind.
+    private func target() -> Tab {
+        mode == .newTab ? store.newBlankTab() : (store.active ?? store.newBlankTab())
+    }
 
     private func move(_ delta: Int) {
         guard !rows.isEmpty else { return }
@@ -522,7 +528,7 @@ private struct CommandField: NSViewRepresentable {
         return PaletteRow(id: "typed", icon: icon, title: text, trailing: trailing,
                           kind: trailing) {
             // go() resolves bangs, assistants, urls and searches — all of it, in that order.
-            (store.active ?? store.newBlankTab()).go(text)
+            target().go(text)
         }
     }
 
@@ -542,7 +548,7 @@ private struct CommandField: NSViewRepresentable {
                 kind: s.completion ? "Search suggestion" : (s.bookmarked ? "Bookmark" : "History")
             ) {
                 guard let u = URL(string: s.url) else { return }
-                let tab = store.active ?? store.newBlankTab()
+                let tab = target()
                 tab.editing = false
                 tab.web.load(URLRequest(url: u))
             }

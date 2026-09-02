@@ -520,8 +520,8 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
             extensions.sync()
         }
     }
-    /// Bumped to pull focus into the URL field (⌘L, new tab) / open the find bar (⌘F).
-    @Published var focusAddress = 0
+    /// Per window: hiding the sidebar in one window must not hide it in the next.
+    @Published var sidebarShown = true
     /// The command bar. Set to open it in a mode, nil to close. Per window: two windows can
     /// each have their own open. `.address` is what ⌘L, ⌘T and clicking the address pill
     /// open — the place to type a url or a search.
@@ -617,10 +617,18 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
     var active: Tab? { tabs.first { $0.id == current } }
 
+    /// A new tab with nowhere to go loads *nothing* and opens the command bar instead. Arc's
+    /// bet, and the right one: the homepage is a page nobody asked for, and about:blank at
+    /// least stays out of the way while the user types where they actually meant to go.
+    /// There is no new-tab page. ⌘T opens the search bar over whatever is showing, and the
+    /// tab only comes into being when the user searches or opens something from it — a
+    /// dismissed bar leaves nothing behind.
     func newTab(_ url: URL?) {
-        let t = newBlankTab()
-        t.web.load(URLRequest(url: url ?? TabStore.home))
-        if url == nil { focusAddress += 1 }
+        if let url {
+            newBlankTab().web.load(URLRequest(url: url))
+        } else {
+            palette = .newTab
+        }
     }
 
     /// Shift-Return in the address bar: skip the results page. The first target replaces
@@ -655,8 +663,9 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         if wasPinned { savePins() }
         TabAudio.forget(id)            // else the maps grow by one per tab ever opened
         extensions.sync()
-        // Last tab closed closes the window, the way every other Mac browser behaves.
-        if tabs.isEmpty { window?.performClose(nil); return }
+        // Closing the last tab leaves an empty window, not no window: the sidebar stays and
+        // the page area shows the glass, the way Arc's does.
+        if tabs.isEmpty { current = nil; return }
         if current == id { current = tabs[min(i, tabs.count - 1)].id }
     }
 
@@ -738,6 +747,27 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
 
     var currentSpace: Space? { spaces.first { $0.id == currentSpaceID } }
 
+    /// Bumped whenever a space's name, icon or theme changes. `spaces` reads the file every
+    /// time, so without a published counter nothing in the sidebar would know to redraw.
+    @Published private(set) var spaceRevision = 0
+
+    /// The one way the chrome edits a space: save it, tell the views, and re-apply the look.
+    func update(space: Space) {
+        ProfileManager.shared.updateSpace(space)
+        spaceRevision += 1
+        applySpaceAppearance()
+    }
+
+    /// A space can pin its window to light or dark; nil follows the system, which is what
+    /// every window did before spaces had a look.
+    func applySpaceAppearance() {
+        switch currentSpace?.appearance {
+        case "light": window?.appearance = NSAppearance(named: .aqua)
+        case "dark":  window?.appearance = NSAppearance(named: .darkAqua)
+        default:      window?.appearance = nil
+        }
+    }
+
     /// Write the open tabs back into whichever space this window is showing. No-op when the
     /// window is not in a space, and never for a private window — nothing private is written.
     func saveCurrentSpace() {
@@ -771,6 +801,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         // Not close(): that pushes onto the reopen stack and closes the window on the last tab.
         tabs.removeAll()
         currentSpaceID = space.id
+        applySpaceAppearance()          // the new space may be pinned to light or dark
         let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
         for url in space.pinnedURLs {
             let t = newBlankTab()

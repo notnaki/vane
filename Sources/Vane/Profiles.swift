@@ -263,14 +263,28 @@ struct Space: Identifiable, Codable, Equatable {
     var profileID: UUID
     var tabURLs: [URL]
     var pinnedURLs: [URL]
+    /// The space's look. All optional, so a spaces.json written before any of this existed
+    /// still decodes — an Optional property gets `decodeIfPresent` for free. `icon` is an SF
+    /// Symbol name, `appearance` is "light"/"dark" (nil follows the system) and `tint` is how
+    /// strongly `colorHex` washes over the window ground, 0…1.
+    var colorHex: String?
+    var icon: String?
+    var appearance: String?
+    var tint: Double?
 
     init(id: UUID = UUID(), name: String, profileID: UUID,
-         tabURLs: [URL] = [], pinnedURLs: [URL] = []) {
+         tabURLs: [URL] = [], pinnedURLs: [URL] = [],
+         colorHex: String? = nil, icon: String? = nil,
+         appearance: String? = nil, tint: Double? = nil) {
         self.id = id
         self.name = name
         self.profileID = profileID
         self.tabURLs = tabURLs
         self.pinnedURLs = pinnedURLs
+        self.colorHex = colorHex
+        self.icon = icon
+        self.appearance = appearance
+        self.tint = tint
     }
 }
 
@@ -626,6 +640,25 @@ struct Space: Identifiable, Codable, Equatable {
                && pm.spaces(for: work.id).first?.pinnedURLs.count == 1)
         assert("updating a space replaces it instead of duplicating it",
                pm.spaces(for: work.id).count == 1)
+        // A spaces.json from before spaces had a look must still load, or upgrading throws
+        // away every space the user had.
+        let legacySpace = #"[{"id":"\#(UUID().uuidString)","name":"Old","profileID":"\#(work.id.uuidString)","tabURLs":[],"pinnedURLs":[]}]"#
+        assert("a space written before icons and theme colours existed still decodes",
+               (try? JSONDecoder().decode([Space].self, from: Data(legacySpace.utf8)))?.first
+                   .map { $0.name == "Old" && $0.icon == nil && $0.colorHex == nil
+                          && $0.appearance == nil && $0.tint == nil } == true)
+        var themed = edited
+        themed.icon = "leaf"
+        themed.colorHex = "#4FA07A"
+        themed.appearance = "dark"
+        themed.tint = 0.4
+        pm.updateSpace(themed)
+        assert("a space's icon, colour, appearance and tint round-trip",
+               pm.spaces(for: work.id).first.map {
+                   $0.icon == "leaf" && $0.colorHex == "#4FA07A"
+                   && $0.appearance == "dark" && $0.tint == 0.4
+               } == true)
+        pm.updateSpace(edited)
         pm.deleteSpace(reading.id, in: work.id)
         assert("a deleted space is gone", pm.spaces(for: work.id).isEmpty)
         pm.updateSpace(edited)
