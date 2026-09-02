@@ -181,7 +181,7 @@ private struct TabChip: View {
         HStack(spacing: 6) {
             TabIcon(tab: tab)
             if !tab.pinned {
-                Text(tab.title).lineLimit(1).font(.system(size: 12))
+                Text(TidyTitles.title(for: tab)).lineLimit(1).font(.system(size: 12))
                     .foregroundStyle(selected ? .primary : .secondary)
                 // A pinned tab is a permanent fixture — no close button to fat-finger.
                 if hovering || selected {
@@ -190,7 +190,7 @@ private struct TabChip: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("Close Tab (⌘W)")
-                    .accessibilityLabel("Close \(tab.title)")
+                    .accessibilityLabel("Close \(TidyTitles.title(for: tab))")
                 }
             }
         }
@@ -208,7 +208,7 @@ private struct TabChip: View {
         .help(tab.title)
         .draggable(tab.id.uuidString) {
             // Drag preview: the chip alone would drag the whole strip's background with it.
-            HStack(spacing: 6) { TabIcon(tab: tab); Text(tab.title).lineLimit(1).font(.system(size: 12)) }
+            HStack(spacing: 6) { TabIcon(tab: tab); Text(TidyTitles.title(for: tab)).lineLimit(1).font(.system(size: 12)) }
                 .padding(.horizontal, 8).padding(.vertical, 4)
         }
         .dropDestination(for: String.self) { ids, _ in drop(ids) } isTargeted: { targeted = $0 }
@@ -222,7 +222,7 @@ private struct TabChip: View {
         // state is the value, and the close button becomes an action rather than a second
         // element the user has to find and then guess the meaning of.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(tab.title)
+        .accessibilityLabel(TidyTitles.title(for: tab))
         .accessibilityValue(state)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Shows this tab.")

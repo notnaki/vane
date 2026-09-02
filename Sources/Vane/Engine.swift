@@ -617,6 +617,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         tab.pinned.toggle()
         tabs.insert(tab, at: tabs.filter(\.pinned).count)
         savePins()
+        TidyTitles.refresh(tab)
     }
 
     /// ponytail: pinned urls in UserDefaults, deliberately not in session.json — the
