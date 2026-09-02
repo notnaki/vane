@@ -148,7 +148,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case newWindow, newPrivateWindow, newTab, reopenClosedTab, closeTab, closeWindow
     case printPage, settings
     // View
-    case reload, hardReload, openLocation, find
+    case reload, hardReload, openLocation, find, toggleSidebar
     case actualSize, zoomIn, zoomOut, fullScreen
     case showReader, biggerReaderText, smallerReaderText, readerSerif
     // History
@@ -197,6 +197,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .hardReload: "Reload Ignoring Cache"
         case .openLocation: "Open Location…"
         case .find: "Find…"
+        case .toggleSidebar: "Toggle Sidebar"
         case .actualSize: "Actual Size"
         case .zoomIn: "Zoom In"
         case .zoomOut: "Zoom Out"
@@ -242,8 +243,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .tidyTabs: "Tidy Tabs"
         case .undoTidyTabs: "Undo Tidy Tabs"
         case .muteTab: "Mute Tab"
-        case .commandPalette: "Command Palette"
-        case .searchTabs: "Search Tabs"
+        case .commandPalette: "Search…"
+        case .searchTabs: "Search Tabs…"
         }
     }
 
@@ -251,8 +252,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
         switch self {
         case .newWindow, .newPrivateWindow, .newTab, .reopenClosedTab, .closeTab,
              .closeWindow, .printPage, .settings: .file
-        case .reload, .hardReload, .openLocation, .find, .actualSize, .zoomIn, .zoomOut,
-             .fullScreen, .showReader, .biggerReaderText, .smallerReaderText, .readerSerif: .view
+        case .reload, .hardReload, .openLocation, .find, .toggleSidebar, .actualSize,
+             .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
+             .smallerReaderText, .readerSerif: .view
         case .back, .forward, .clearHistory: .history
         case .bookmarkPage: .bookmarks
         case .fillPassword, .importPasswords, .importHistoryAndBookmarks,
@@ -283,6 +285,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .hardReload:       Keybinding("r", [.command, .shift])
         case .openLocation:     Keybinding("l", .command)
         case .find:             Keybinding("f", .command)
+        case .toggleSidebar:    Keybinding("s", .command)
         case .actualSize:       Keybinding("0", .command)
         case .zoomIn:           Keybinding("+", .command)
         case .zoomOut:          Keybinding("-", .command)
