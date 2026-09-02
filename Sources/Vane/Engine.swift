@@ -28,6 +28,9 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     @Published var bookmarked = false
     /// Whether this page has an article worth reading — drives the toolbar button.
     @Published var readerAvailable = false
+    /// Playing in a detached window. Kept so suspension leaves it alone even when the tab
+    /// is in the background — which is exactly when a PiP video is being watched.
+    @Published var pictureInPicture = false
     @Published var favicon: NSImage?
     /// Pinned tabs sit at the head of the strip and survive a relaunch.
     @Published var pinned = false
@@ -71,6 +74,10 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID)
         cfg.userContentController.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        // All frames, unlike the password script: an embedded player lives in an iframe.
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: PictureInPicture.script, injectionTime: .atDocumentEnd,
+                         forMainFrameOnly: false))
         return WKWebView(frame: .zero, configuration: cfg)
     }
 
@@ -79,6 +86,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     /// because suspension swaps the web view out from under all of it.
     private func attach() {
         web.configuration.userContentController.add(WeakHandler(self), name: "vanepw")
+        web.configuration.userContentController.add(WeakHandler(self), name: PictureInPicture.messageName)
         web.customUserAgent = Settings.userAgent
         web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
         web.allowsBackForwardNavigationGestures = true
@@ -375,6 +383,10 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     }
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        if m.name == PictureInPicture.messageName {
+            if let active = PictureInPicture.state(from: m.body) { pictureInPicture = active }
+            return
+        }
         guard let body = m.body as? [String: Any],
               let password = body["password"] as? String, !password.isEmpty,
               let host = secureHost else { return }
