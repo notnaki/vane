@@ -172,6 +172,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case nextTab, previousTab
     case selectTab1, selectTab2, selectTab3, selectTab4
     case selectTab5, selectTab6, selectTab7, selectTab8, selectLastTab
+    case pictureInPicture
     case commandPalette, searchTabs
 
     enum Category: String, CaseIterable, Sendable {
@@ -235,6 +236,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .selectTab7: "Select Tab 7"
         case .selectTab8: "Select Tab 8"
         case .selectLastTab: "Select Last Tab"
+        case .pictureInPicture: "Picture in Picture"
         case .commandPalette: "Command Palette"
         case .searchTabs: "Search Tabs"
         }
@@ -300,6 +302,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .selectTab7:       Keybinding("7", .command)
         case .selectTab8:       Keybinding("8", .command)
         case .selectLastTab:    Keybinding("9", .command)
+        case .pictureInPicture: Keybinding("p", [.command, .option])
         case .commandPalette:   Keybinding("p", [.command, .shift])
         case .searchTabs:       Keybinding("a", [.command, .shift])
         // Everything else ships unbound — it is a menu item with no key equivalent today.

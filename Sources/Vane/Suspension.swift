@@ -57,6 +57,10 @@ extension Prefs {
         /// A private tab's data store is `.nonPersistent()` and a fresh one is made per web
         /// view, so a suspended private tab would come back logged out of everything.
         var isPrivate = false
+        /// Playing here, or detached into a picture-in-picture window. The second case is
+        /// checked separately rather than trusted to requestMediaPlaybackState: the video
+        /// is rendering in a window of its own, and a background tab whose video you are
+        /// actively watching is the worst possible thing to tear down.
         var playing = false
         var loading = false
         /// Typed-in, unsubmitted form input. Suspending on top of it throws work away.
@@ -150,7 +154,11 @@ extension Prefs {
             var f = facts(tab, now: now)
             guard shouldSuspend(f, after: limit) else { continue }
             Task { @MainActor in
-                f.playing = await tab.isPlayingMedia()
+                if tab.pictureInPicture {
+                    f.playing = true          // detached and being watched; do not ask further
+                } else {
+                    f.playing = await tab.isPlayingMedia()
+                }
                 f.hasInput = await tab.hasUnsubmittedInput()
                 // Re-read the cheap facts too: the awaits above gave the user time to click.
                 let fresh = facts(tab, now: .now)
@@ -178,7 +186,11 @@ extension Prefs {
                 // re-checked — the alternative here is the kernel taking a whole process,
                 // which loses strictly more than a half-typed comment.
                 var f = facts(tab, now: .now)
-                f.playing = await tab.isPlayingMedia()
+                if tab.pictureInPicture {
+                    f.playing = true          // detached and being watched; do not ask further
+                } else {
+                    f.playing = await tab.isPlayingMedia()
+                }
                 if shouldSuspend(f, after: 0) { tab.suspend() }
             }
         }

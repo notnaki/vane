@@ -179,6 +179,11 @@ Everything here is implemented and reachable from the UI.
   everything after that — escaping, URL resolution, the tag whitelist, the 140-word "is
   there enough article here" threshold — is Swift, so it is asserted offline. Adjustable
   font size and a serif/sans toggle.
+- Picture in picture (`⌥⌘P`). WebKit's own media controls already offer it; this puts it on
+  a rebindable key and, more usefully, tells the rest of the app about it — a tab playing in
+  a detached window is never suspended, which is otherwise exactly the tab that looks idle.
+  macOS has no API for this (`allowsPictureInPictureMediaPlayback` is iOS-only), so it drives
+  `webkitSetPresentationMode` from an injected script.
 - Downloads to `~/Downloads` without overwriting, with progress and Show in Finder.
 - Session restore, plus crash recovery: a marker file that exists while Vane runs and a
   30-second autosave, so a WebKit content-process take-down does not cost you the session.
@@ -319,6 +324,7 @@ including the comments, which carry most of the reasoning.
 | `Import.swift` | An RFC 4180 CSV reader and the password-export importer built on it. |
 | `BrowserImport.swift` | Reading history and bookmarks out of other browsers' unencrypted files: Chromium SQLite/JSON, Firefox `places.sqlite`, Safari's plist. |
 | `Blocker.swift` | EasyList → `WKContentRuleList` JSON conversion, the compile cache keyed on a hash of that JSON, and the built-in starter list. |
+| `PictureInPicture.swift` | The injected `webkitSetPresentationMode` toggle, the presentation-mode message contract, and the per-tab detached flag. |
 | `Reader.swift` | Reader mode: the in-page extraction contract, the Swift-side sanitiser and document builder, and the per-tab on/off state. |
 | `SearchEngines.swift` | `SearchEngine`, the built-in list, custom engines, and the decision procedure that turns address-bar input into a URL or a search. |
 | `Favicons.swift` | Per-profile favicon fetch, memory + disk cache, sweep by modification date at 300 files. No third-party proxy. |
