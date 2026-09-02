@@ -270,8 +270,21 @@ private struct PaletteRow: Identifiable {
     private func refresh() {
         let pool = candidates()
         rows = Array(Palette.rank(query, pool, key: { $0.title + " " + $0.detail }).prefix(24))
+        // Inserted after ranking: asking an assistant is always a valid thing to do with
+        // whatever was typed, so the fuzzy matcher must never be able to rank it away.
+        if let ai = aiRow() { rows.insert(ai, at: 0) }
         index = 0
         axAnnounce(rows.isEmpty ? "No results" : "\(rows.count) result\(rows.count == 1 ? "" : "s")")
+    }
+
+    private func aiRow() -> PaletteRow? {
+        guard mode == .all, !query.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        let (assistant, question) = AIChat.match(query) ?? (AIChat.preferred, query)
+        guard let url = AIChat.url(for: question, using: assistant) else { return nil }
+        return PaletteRow(id: "ai", icon: "sparkles", title: "Ask \(assistant.name)",
+                          detail: question, kind: "AI Chat") {
+            (Windows.current ?? Windows.open()).newTab(url)
+        }
     }
 
     private func candidates() -> [PaletteRow] {
