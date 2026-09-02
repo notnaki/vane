@@ -113,16 +113,8 @@ struct BrowserWindow: View {
         }
     }
 
-    /// A new tab loads nothing until the search bar says where to go, so dismissing the bar
-    /// over one leaves an empty tab nobody asked for. Closing it is the undo.
-    /// ponytail: only when it is not the last tab — closing that one closes the window, and
-    /// Escape on a fresh window's first tab must not quit it.
-    private func dismissPalette() {
-        if store.tabs.count > 1, let t = store.active, t.currentURL == nil {
-            store.close(t.id)
-        }
-        store.palette = nil
-    }
+    /// Nothing to undo on dismiss: ⌘T makes no tab until the bar is submitted.
+    private func dismissPalette() { store.palette = nil }
 }
 
 /// The current space's colour washed down the window, behind the sidebar *and* behind the
@@ -206,7 +198,8 @@ private struct WebCard: View {
             if let tab = store.active {
                 WebView(web: tab.web).id(tab.id)
             } else {
-                Color(nsColor: .textBackgroundColor)
+                // No tabs: nothing to draw. The glass ground shows through, like the sidebar.
+                Color.clear
             }
             if let tab = store.active { LoadingBar(tab: tab) }
             VStack(spacing: 8) {

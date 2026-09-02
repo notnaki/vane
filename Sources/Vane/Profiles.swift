@@ -392,6 +392,14 @@ struct Space: Identifiable, Codable, Equatable {
         persist()
     }
 
+    /// The profile's accent, picked from `palette`. Same shape as `rename` — `profiles` is
+    /// `private(set)` and `persist` is private, so the settings pane cannot do this itself.
+    func setColor(_ colorHex: String, for id: UUID) {
+        guard let i = profiles.firstIndex(where: { $0.id == id }) else { return }
+        profiles[i].colorHex = colorHex
+        persist()
+    }
+
     /// Deletes the profile and everything that belongs to it. Refuses to delete the last
     /// one — a browser with no profile has nowhere to put a tab.
     @discardableResult

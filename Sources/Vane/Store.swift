@@ -8,6 +8,11 @@ struct Suggestion: Identifiable, Equatable {
     let url: String
     let title: String
     let bookmarked: Bool
+    /// True for a phrase the search engine completed, false for the user's own history and
+    /// bookmarks. Only the command bar cares: a completion draws a magnifying glass and no
+    /// url, because it is a search that has not happened yet rather than a place. This is
+    /// the field `SearchSuggestions.merge` said to add when a list wanted to tell them apart.
+    var completion = false
 }
 
 /// History and bookmarks in one SQLite file.

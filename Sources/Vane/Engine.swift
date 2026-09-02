@@ -620,12 +620,14 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     /// A new tab with nowhere to go loads *nothing* and opens the command bar instead. Arc's
     /// bet, and the right one: the homepage is a page nobody asked for, and about:blank at
     /// least stays out of the way while the user types where they actually meant to go.
+    /// There is no new-tab page. ⌘T opens the search bar over whatever is showing, and the
+    /// tab only comes into being when the user searches or opens something from it — a
+    /// dismissed bar leaves nothing behind.
     func newTab(_ url: URL?) {
-        let t = newBlankTab()
         if let url {
-            t.web.load(URLRequest(url: url))
+            newBlankTab().web.load(URLRequest(url: url))
         } else {
-            palette = .address
+            palette = .newTab
         }
     }
 
@@ -661,8 +663,9 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         if wasPinned { savePins() }
         TabAudio.forget(id)            // else the maps grow by one per tab ever opened
         extensions.sync()
-        // Last tab closed closes the window, the way every other Mac browser behaves.
-        if tabs.isEmpty { window?.performClose(nil); return }
+        // Closing the last tab leaves an empty window, not no window: the sidebar stays and
+        // the page area shows the glass, the way Arc's does.
+        if tabs.isEmpty { current = nil; return }
         if current == id { current = tabs[min(i, tabs.count - 1)].id }
     }
 
