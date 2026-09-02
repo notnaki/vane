@@ -203,6 +203,9 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         if web.url == nil, let parkedURL { web.load(URLRequest(url: parkedURL)) }
         parkedState = nil
         parkedURL = nil
+        // interactionState restores a page without running a navigation, so didCommit
+        // never fires for a waking tab.
+        Zoom.apply(to: self)
     }
 
     /// Come up already suspended, so restoring thirty tabs costs one WebContent process
@@ -337,6 +340,15 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     func webView(_ w: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,
                  initiatedBy frame: WKFrameInfo, type: WKMediaCaptureType) async -> WKPermissionDecision {
         await SitePermissions.decide(origin: origin, type: type)
+    }
+
+    /// The destination is final here — redirects are done — and the new document has not
+    /// laid out yet, so the remembered zoom is on before the page is ever painted.
+    /// didStartProvisionalNavigation is too early (the url is still provisional, so a
+    /// redirect applies the wrong site's level) and didFinish is too late (the page has
+    /// already painted at the old zoom, which reads as a visible reflow bug).
+    func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
+        Zoom.apply(to: self)
     }
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
