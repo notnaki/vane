@@ -289,7 +289,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("downloads", Downloads.check),
                                ("on-device ai", AppleAI.check),
                                ("picture in picture", PictureInPicture.check),
-                               ("tidy downloads", TidyDownloads.check)] {
+                               ("tidy downloads", TidyDownloads.check),
+                               ("tidy tabs", TidyTabs.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }

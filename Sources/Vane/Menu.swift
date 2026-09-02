@@ -167,6 +167,31 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     ]
 }
 
+/// ponytail: one in-flight tidy per app, cancelled by invoking it again — the model call
+/// runs ~12s, and a second one would only contend for the single session.
+@MainActor private var tidyTask: Task<Void, Never>?
+
+@MainActor private func tidyItems() -> [NSMenuItem] {
+    let store = Windows.current
+    let tidy = item(.tidyTabs) {
+        tidyTask?.cancel()
+        guard let s = Windows.current else { return }
+        tidyTask = Task { @MainActor in
+            guard let groups = await TidyTabs.plan(for: s) else { return }
+            TidyTabs.apply(groups, to: s)
+            rebuild()                     // so Undo Tidy Tabs enables
+        }
+    }
+    tidy.isEnabled = store.map(TidyTabs.shouldOffer) ?? false
+    let undo = item(.undoTidyTabs) {
+        guard let s = Windows.current else { return }
+        TidyTabs.undo(s)
+        rebuild()
+    }
+    undo.isEnabled = store.map(TidyTabs.canUndo) ?? false
+    return [tidy, undo]
+}
+
 @MainActor private func spaceItems() -> [NSMenuItem] {
     let store = Windows.current
     let switchers = (store?.spaces ?? []).map { space in
@@ -281,6 +306,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     ]))
     root.addItem(menu("Profiles", profileItems()))
     root.addItem(menu("Spaces", spaceItems()))
+    root.addItem(menu("Tabs", tidyItems()))
     root.addItem(menu("Extensions", [
         item(.installExtension) { ExtensionHost.shared.chooseAndInstall(); rebuild() },
         .separator(),
