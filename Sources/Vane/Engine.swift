@@ -74,6 +74,8 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID)
         cfg.userContentController.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         // All frames, unlike the password script: an embedded player lives in an iframe.
         cfg.userContentController.addUserScript(
             WKUserScript(source: PictureInPicture.script, injectionTime: .atDocumentEnd,
@@ -87,6 +89,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     private func attach() {
         web.configuration.userContentController.add(WeakHandler(self), name: "vanepw")
         web.configuration.userContentController.add(WeakHandler(self), name: PictureInPicture.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
         web.customUserAgent = Settings.userAgent
         web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
         web.allowsBackForwardNavigationGestures = true
@@ -153,6 +156,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         old.uiDelegate = nil
         old.navigationDelegate = nil
         old.configuration.userContentController.removeScriptMessageHandler(forName: "vanepw")
+        old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName)
         old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
         // ponytail: `old` is never deallocated — it survives at a high retain count, so
         // Tab.close() has to use `_close` SPI to give the process back. The retainer was
@@ -291,6 +295,7 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        Previews.shared.cancel()      // the link that raised it is gone
         loading = true
         progress = 0.08        // a sliver immediately, so the bar never appears to stall at 0
     }
@@ -385,6 +390,13 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     }
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        if m.name == Previews.messageName {
+            guard let body = m.body as? [String: Any] else { return }
+            if body["gone"] as? Bool == true { Previews.shared.cancel(); return }
+            guard let raw = body["url"] as? String, let url = URL(string: raw) else { return }
+            Previews.shared.request(url, from: self)
+            return
+        }
         if m.name == PictureInPicture.messageName {
             if let active = PictureInPicture.state(from: m.body) { pictureInPicture = active }
             return
