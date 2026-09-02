@@ -316,6 +316,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("command palette", Palette.check),
                                ("tab suspension", Suspension.check),
                                ("keybindings", Keybindings.check),
+                               ("shortcuts pane", ShortcutsPane.check),
                                ("downloads", Downloads.check),
                                ("on-device ai", AppleAI.check),
                                ("picture in picture", PictureInPicture.check),
