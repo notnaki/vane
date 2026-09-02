@@ -286,7 +286,19 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         TidyDownloads.enabled.toggle(); rebuild()
     }
     tidyDownloads.state = TidyDownloads.enabled ? .on : .off
+    let httpsOnly = item("HTTPS-Only Mode", "") { HTTPSOnly.enabled.toggle(); rebuild() }
+    httpsOnly.state = HTTPSOnly.enabled ? .on : .off
     root.addItem(menu("Sites", [
+        httpsOnly,
+        item("Forget HTTPS-Only Exceptions…", "") {
+            let a = NSAlert()
+            a.messageText = "Forget every site you allowed to load without encryption?"
+            a.informativeText = "Those sites will be upgraded to https again, and will ask "
+                + "before ever loading in the clear."
+            a.addButton(withTitle: "Forget"); a.addButton(withTitle: "Cancel")
+            if a.runModal() == .alertFirstButtonReturn { HTTPSOnly.forgetAll() }
+        },
+        .separator(),
         tidyDownloads,
         blocking,
         item(.addFilterList) { Blocker.chooseAndAddList() },

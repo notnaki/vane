@@ -334,6 +334,15 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         let failed = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL
             ?? URL(string: address)
         guard let failed else { return }
+        // An https attempt we made ourselves that never connected. The honest page is the
+        // https-only interstitial, which offers a way through; "the secure connection
+        // failed" offers none.
+        if let http = HTTPSOnly.downgradeOffer(after: error, url: failed, profileID: profileID) {
+            suppressHistoryOnce = true
+            w.loadSimulatedRequest(URLRequest(url: http),
+                                   responseHTML: HTTPSOnly.interstitial(for: http))
+            return
+        }
         // The simulated load reports success, so without this the failed url lands in
         // history. ponytail: consumed by the next didFinish, which is always this one.
         suppressHistoryOnce = true
@@ -377,6 +386,29 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
             suppressHistoryOnce = false
         } else if !isPrivate {
             history.record(url, title: w.title ?? "")
+        }
+    }
+
+    /// HTTPS-only mode. `.cancel` plus a re-load is the only way to change a navigation's
+    /// scheme from here — WebKit does not let the delegate rewrite the request.
+    func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
+        case .allow:
+            decisionHandler(.allow)
+        case .upgrade(let to):
+            decisionHandler(.cancel)
+            w.load(HTTPSOnly.request(to))          // a shorter leash than the 60s default
+        case .block(let at):
+            decisionHandler(.cancel)
+            suppressHistoryOnce = true
+            w.loadSimulatedRequest(URLRequest(url: at),
+                                   responseHTML: HTTPSOnly.interstitial(for: at))
+        case .confirm(let at):
+            decisionHandler(.cancel)
+            if HTTPSOnly.confirmAndRemember(at, profileID: profileID) {
+                w.load(URLRequest(url: at))
+            }
         }
     }
 
