@@ -157,15 +157,18 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         old.navigationDelegate = nil
         old.configuration.userContentController.removeScriptMessageHandler(forName: "vanepw")
         old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(
+            forName: PictureInPicture.messageName)
         old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
         // ponytail: `old` is never deallocated — it survives at a high retain count, so
-        // Tab.close() has to use `_close` SPI to give the process back. The retainer was
-        // not found. First place to look is the WKWebExtensionController on the
-        // configuration: it tracks every web view associated with it so extensions can
-        // enumerate tabs, and the standalone harness that deallocated cleanly did not set
-        // one. Test by minting a configuration with webExtensionController nil and seeing
-        // whether the shell drops. The leak is an empty view — no page, no process — and
-        // is bounded per suspend, so it is a wart, not a regression.
+        // Tab.close() has to use `_close` SPI to give the process back. The retainer is
+        // still unidentified, but these have been TESTED AND RULED OUT, so do not spend
+        // the time again: a WKWebExtensionController on the configuration, a script message
+        // handler (removed or left in place), an injected user script, and window
+        // membership. A standalone WKWebView with each of those deallocates cleanly, so the
+        // retainer is something in the live app graph — SwiftUI's hosting of the
+        // NSViewRepresentable is the next place to look. The leak is an empty view with no
+        // page and no process, bounded per suspend, so it is a wart, not a regression.
         Tab.close(old)
         // The replacement is unloaded, so every `tab.web.…` call site elsewhere still has a
         // real object to talk to and none of them costs a process.
