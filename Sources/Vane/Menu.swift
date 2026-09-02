@@ -271,6 +271,8 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         item(.fillPassword) { Windows.current?.active?.fillPassword() },
         item(.importPasswords) { PasswordImport.chooseAndImport() },
         item(.importHistoryAndBookmarks) { BrowserImport.chooseAndImport() },
+        .separator(),
+        item("Export Passwords…", "") { Export.chooseAndExport(.passwords) },
         item(.manageSavedPasswords) {
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
         },
@@ -318,6 +320,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     root.addItem(menu("Develop", developItems()))
     root.addItem(menu("Bookmarks", [
         item(.bookmarkPage) { Windows.current?.active?.toggleBookmark(); rebuild() },
+        item("Export Bookmarks…", "") { Export.chooseAndExport(.bookmarks) },
         .separator(),
     ] + Store.shared.bookmarks(limit: 40).map { b in
         item(b.title.isEmpty ? b.url : b.title, "") {
@@ -337,6 +340,8 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         }
     } + [
         .separator(),
+        item("Export History (JSON)…", "") { Export.chooseAndExport(.historyJSON) },
+        item("Export History (CSV)…", "") { Export.chooseAndExport(.historyCSV) },
         item(.clearHistory) {
             let a = NSAlert()
             a.messageText = "Clear all browsing history?"
