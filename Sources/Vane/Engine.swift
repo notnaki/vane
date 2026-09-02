@@ -518,6 +518,20 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         if url == nil { focusAddress += 1 }
     }
 
+    /// Shift-Return in the address bar: skip the results page. The first target replaces
+    /// the current tab and the rest open beside it, with focus staying where the user was.
+    func goInstant(_ input: String, from tab: Tab) {
+        Task { [isPrivate] in
+            let urls = await InstantLinks.targets(for: input, isPrivate: isPrivate)
+            guard let first = urls.first else { return }
+            tab.editing = false
+            tab.web.load(URLRequest(url: first))
+            let keep = tab.id
+            for u in urls.dropFirst() { newTab(u) }
+            current = keep          // newTab focuses what it opens; undo that
+        }
+    }
+
     @discardableResult
     func newBlankTab() -> Tab {
         let t = Tab(isPrivate: isPrivate, profileID: profileID)

@@ -152,6 +152,7 @@ private struct PrivacyPane: View {
     // Absent = off. Deliberately not defaulted on: turning this on sends what you type to
     // the search engine before you press Return.
     @AppStorage("searchSuggestions") private var suggestions = false
+    @AppStorage("instantLinks") private var instant = true
 
     var body: some View {
         Form {
@@ -162,6 +163,15 @@ private struct PrivacyPane: View {
             } footer: {
                 Text("Filter lists in EasyList syntax — an EasyList, EasyPrivacy or uBlock "
                      + "Origin subscription file.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Instant Links", isOn: $instant)
+            } footer: {
+                Text("Shift-Return on a search opens the top result directly instead of the "
+                     + "results page. The query goes to DuckDuckGo whichever engine you use, "
+                     + "because it is the only one that answers without JavaScript. Never in "
+                     + "a private window, and never for anything that looks like an address.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
