@@ -308,7 +308,7 @@ private struct Toolbar: View {
                 .accessibilityLabel("Bookmark This Page")
                 .accessibilityValue(tab.bookmarked ? "Bookmarked" : "Not bookmarked")
                 .accessibilityAddTraits(tab.bookmarked ? .isSelected : [])
-                DownloadsButton()
+                DownloadsButton(downloads: Downloads.manager(for: store.profileID))
             }
         }
         .padding(.horizontal, 12)
@@ -561,7 +561,10 @@ private struct FindBar: View {
 }
 
 private struct DownloadsButton: View {
-    @ObservedObject var downloads = Downloads.shared
+    /// Passed in from the window's own store, not read from `Downloads.shared`. `shared`
+    /// resolves to whichever profile is active at the moment the view is built, so a
+    /// background window of another profile would show — and act on — the wrong list.
+    @ObservedObject var downloads: Downloads
     @State private var open = false
 
     var body: some View {
@@ -574,7 +577,7 @@ private struct DownloadsButton: View {
                 .accessibilityHint("Shows what has been downloaded.")
                 .popover(isPresented: $open, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 10) {
-                        ForEach(downloads.items) { DownloadRow(item: $0) }
+                        ForEach(downloads.items) { DownloadRow(item: $0, downloads: downloads) }
                     }
                     .padding(14).frame(width: 320)
                     .accessibilityElement(children: .contain)
@@ -586,6 +589,8 @@ private struct DownloadsButton: View {
 
 private struct DownloadRow: View {
     @ObservedObject var item: Downloads.Item
+    /// The manager this row's item actually belongs to.
+    let downloads: Downloads
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -598,25 +603,25 @@ private struct DownloadRow: View {
                     // A renamed download is .done, so this has to sit beside Show rather
                     // than in an else-branch it could never reach.
                     if TidyDownloads.canUndo(item) {
-                        Button("Undo Rename") { _ = TidyDownloads.undo(item, in: Downloads.shared) }
+                        Button("Undo Rename") { _ = TidyDownloads.undo(item, in: downloads) }
                             .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
                             .accessibilityLabel("Undo renaming \(item.name)")
                     }
-                    Button("Show") { Downloads.shared.reveal(item) }
+                    Button("Show") { downloads.reveal(item) }
                         .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.tint)
                         .help("Show in Finder")
                         // "Show" on its own says nothing once it is out of context.
                         .accessibilityLabel("Show \(item.name) in Finder")
-                } else if Downloads.shared.canResume(item) {
+                } else if downloads.canResume(item) {
                     // Item.State stays three cases because UI.swift switches it
                     // exhaustively, so a paused download arrives as .failed("Paused").
                     // Without this it reads as a dead row with no way back.
-                    Button("Resume") { _ = Downloads.shared.resume(item) }
+                    Button("Resume") { _ = downloads.resume(item) }
                         .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.tint)
                         .help("Resume this download")
                         .accessibilityLabel("Resume \(item.name)")
                 } else if item.status == .running {
-                    Button("Pause") { Downloads.shared.pause(item) }
+                    Button("Pause") { downloads.pause(item) }
                         .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
                         .help("Pause this download")
                         .accessibilityLabel("Pause \(item.name)")

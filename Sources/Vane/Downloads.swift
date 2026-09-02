@@ -8,10 +8,6 @@ import WebKit
 
     /// Resolves per profile, exactly like `Store.shared`, and by the same suffix rule — the
     /// default profile's file is plain `downloads.json`.
-    /// ponytail ceiling: a view that grabbed `Downloads.shared` keeps the old profile's
-    /// object until SwiftUI rebuilds it, and `Engine` attaches to whatever profile is
-    /// active at that instant rather than the tab's own. Both are one line to fix in files
-    /// I do not own.
     static var shared: Downloads { manager(for: ProfileManager.shared.active.id) }
 
     private static var cache: [UUID: Downloads] = [:]
