@@ -171,6 +171,7 @@ private struct PrivacyPane: View {
     @AppStorage("tidyDownloads") private var tidyDownloads = false
     @AppStorage("tidyTitles") private var tidyTitles = true
     @AppStorage("linkPreviews") private var previews = true
+    @AppStorage("httpsOnly") private var httpsOnly = true
 
     var body: some View {
         Form {

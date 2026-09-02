@@ -325,7 +325,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("link previews", Previews.check),
                                ("per-site zoom", Zoom.check),
                                ("export", Export.check),
-                               ("tab audio", TabAudio.check)] {
+                               ("tab audio", TabAudio.check),
+                               ("https-only", HTTPSOnly.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }

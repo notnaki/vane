@@ -393,7 +393,8 @@ struct Space: Identifiable, Codable, Equatable {
             Favicons.forget(id)
             ExtensionHost.forget(id)
             Passwords.deleteAll(profileID: id)
-            for key in ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey] {
+            for key in ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey,
+                        HTTPSOnly.exceptionsKey] {
                 UserDefaults.standard.removeObject(forKey: Self.defaultsKey(key, id))
             }
             Self.eraseWebsiteData(for: id)
