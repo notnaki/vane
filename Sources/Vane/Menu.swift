@@ -20,6 +20,32 @@ private final class Act: NSObject {
     return i
 }
 
+/// Bindings come from the registry, and the same closure is handed to the event monitor,
+/// so a rebound key and the menu item can never disagree about what they run.
+@MainActor private func item(_ command: Command, _ run: @escaping @MainActor () -> Void) -> NSMenuItem {
+    Keybindings.actions[command] = run
+    let act = Act(run)
+    keepAlive.append(act)
+    let binding = Keybindings.binding(for: command)
+    let entry = NSMenuItem(title: command.title, action: #selector(Act.fire),
+                           keyEquivalent: binding.menuKeyEquivalent)
+    entry.target = act
+    entry.keyEquivalentModifierMask = binding.menuModifierMask
+    return entry
+}
+
+/// Items that must stay first-responder dispatched, so they grey out correctly, but whose
+/// key still comes from the registry — with an equivalent action for the monitor.
+@MainActor private func responderItem(_ command: Command, _ action: Selector,
+                                      _ run: @escaping @MainActor () -> Void) -> NSMenuItem {
+    Keybindings.actions[command] = run
+    let binding = Keybindings.binding(for: command)
+    let entry = NSMenuItem(title: command.title, action: action,
+                           keyEquivalent: binding.menuKeyEquivalent)
+    entry.keyEquivalentModifierMask = binding.menuModifierMask
+    return entry
+}
+
 private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     let m = NSMenu(title: title)
     items.forEach(m.addItem)
@@ -29,10 +55,10 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
 }
 
 @MainActor private func developItems() -> [NSMenuItem] {
-    let inspector = item("Show Web Inspector", "i", [.command, .option]) {
+    let inspector = item(.showWebInspector) {
         Inspector.show(Windows.current?.active?.web)
     }
-    let console = item("Show JavaScript Console", "c", [.command, .option]) {
+    let console = item(.showJavaScriptConsole) {
         Inspector.showConsole(Windows.current?.active?.web)
     }
     // The SPI is the only way in from a menu item; without it, say so rather than
@@ -55,7 +81,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     let agentHolder = NSMenuItem(title: "User Agent", action: nil, keyEquivalent: "")
     agentHolder.submenu = agents
 
-    let allow = item("Allow Web Inspector", "") {
+    let allow = item(.allowWebInspector) {
         Settings.inspectorEnabled.toggle(); rebuild()
     }
     allow.state = Settings.inspectorEnabled ? .on : .off
@@ -63,7 +89,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     return [
         inspector,
         console,
-        item("View Source", "u", [.command, .option]) {
+        item(.viewSource) {
             if let s = Windows.current { s.active?.viewSource(into: s) }
         },
         .separator(),
@@ -89,7 +115,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
 }
 
 @MainActor private func readerTypefaceItem() -> NSMenuItem {
-    let entry = item("Reader Uses Serif", "") {
+    let entry = item(.readerSerif) {
         Reader.setSerif(!Reader.serif, in: Windows.current?.active)
         rebuild()
     }
@@ -108,7 +134,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         return entry
     }
     // delete() refuses on the last profile; disable rather than let it fail in an alert.
-    let remove = item("Delete Profile…", "") {
+    let remove = item(.deleteProfile) {
         let active = manager.active
         let alert = NSAlert()
         alert.messageText = "Delete the profile “\(active.name)”?"
@@ -127,12 +153,12 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
 
     return switchers + [
         .separator(),
-        item("New Profile…", "") {
+        item(.newProfile) {
             guard let name = askForName("Name the new profile") else { return }
             _ = manager.create(name: name)
             rebuild()
         },
-        item("Rename Profile…", "") {
+        item(.renameProfile) {
             guard let name = askForName("Rename profile", manager.active.name) else { return }
             manager.rename(manager.active.id, to: name)
             rebuild()
@@ -150,7 +176,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     }
     return switchers + [
         .separator(),
-        item("New Space…", "") {
+        item(.newSpace) {
             guard let name = askForName("Name the new space") else { return }
             _ = Windows.current?.newSpace(named: name)
             rebuild()
@@ -167,23 +193,27 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     root.addItem(menu("Vane", [
         NSMenuItem(title: "About Vane", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
         .separator(),
-        item("Settings…", ",") { SettingsWindow.show() },
+        item(.settings) { SettingsWindow.show() },
         .separator(),
         NSMenuItem(title: "Hide Vane", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
         NSMenuItem(title: "Quit Vane", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
     ]))
     root.addItem(menu("File", [
-        item("New Window", "n") { Windows.open() },
-        item("New Private Window", "N", [.command, .shift]) { Windows.open(isPrivate: true) },
-        item("New Tab", "t") { Windows.current?.newTab(nil) },
+        item(.newWindow) { Windows.open() },
+        item(.newPrivateWindow) { Windows.open(isPrivate: true) },
+        item(.newTab) { Windows.current?.newTab(nil) },
         .separator(),
-        item("Reopen Closed Tab", "T", [.command, .shift]) {
+        item(.reopenClosedTab) {
             if let u = ClosedTabs.pop() { (Windows.current ?? Windows.open()).newTab(u) }
         },
-        item("Close Tab", "w") { if let s = Windows.current, let c = s.current { s.close(c) } },
-        NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "W"),
+        item(.closeTab) { if let s = Windows.current, let c = s.current { s.close(c) } },
+        responderItem(.closeWindow, #selector(NSWindow.performClose(_:))) {
+            NSApp.keyWindow?.performClose(nil)
+        },
         .separator(),
-        NSMenuItem(title: "Print…", action: #selector(NSView.printView(_:)), keyEquivalent: "p"),
+        responderItem(.printPage, #selector(NSView.printView(_:))) {
+            NSApp.sendAction(#selector(NSView.printView(_:)), to: nil, from: nil)
+        },
     ]))
     root.addItem(menu("Edit", [
         NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"),
@@ -195,48 +225,48 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"),
     ]))
     root.addItem(menu("View", [
-        item("Reload Page", "r") { Windows.current?.active?.reload() },
-        item("Reload Ignoring Cache", "R", [.command, .shift]) { Windows.current?.active?.hardReload() },
-        item("Open Location…", "l") { Windows.current?.focusAddress += 1 },
-        item("Find…", "f") { Windows.current?.findOpen = true },
+        item(.reload) { Windows.current?.active?.reload() },
+        item(.hardReload) { Windows.current?.active?.hardReload() },
+        item(.openLocation) { Windows.current?.focusAddress += 1 },
+        item(.find) { Windows.current?.findOpen = true },
         .separator(),
-        item("Actual Size", "0") { Windows.current?.active?.web.pageZoom = 1 },
-        item("Zoom In", "+") { Windows.current?.active.map { $0.web.pageZoom *= 1.1 } },
-        item("Zoom Out", "-") { Windows.current?.active.map { $0.web.pageZoom /= 1.1 } },
+        item(.actualSize) { Windows.current?.active?.web.pageZoom = 1 },
+        item(.zoomIn) { Windows.current?.active.map { $0.web.pageZoom *= 1.1 } },
+        item(.zoomOut) { Windows.current?.active.map { $0.web.pageZoom /= 1.1 } },
         .separator(),
-        item("Enter Full Screen", "f", [.command, .control]) { NSApp.keyWindow?.toggleFullScreen(nil) },
+        item(.fullScreen) { NSApp.keyWindow?.toggleFullScreen(nil) },
         .separator(),
-        item("Show Reader", "r", [.command, .option]) { Windows.current?.active.map(Reader.toggle) },
-        item("Bigger Reader Text", "") { Reader.adjustFontSize(1, in: Windows.current?.active) },
-        item("Smaller Reader Text", "") { Reader.adjustFontSize(-1, in: Windows.current?.active) },
+        item(.showReader) { Windows.current?.active.map(Reader.toggle) },
+        item(.biggerReaderText) { Reader.adjustFontSize(1, in: Windows.current?.active) },
+        item(.smallerReaderText) { Reader.adjustFontSize(-1, in: Windows.current?.active) },
         readerTypefaceItem(),
     ]))
     root.addItem(menu("Passwords", [
-        item("Fill Password", "l", [.command, .shift]) { Windows.current?.active?.fillPassword() },
-        item("Import Passwords…", "") { PasswordImport.chooseAndImport() },
-        item("Import History & Bookmarks…", "") { BrowserImport.chooseAndImport() },
-        item("Manage Saved Passwords…", "") {
+        item(.fillPassword) { Windows.current?.active?.fillPassword() },
+        item(.importPasswords) { PasswordImport.chooseAndImport() },
+        item(.importHistoryAndBookmarks) { BrowserImport.chooseAndImport() },
+        item(.manageSavedPasswords) {
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
         },
     ]))
-    let makeDefault = item("Make Vane the Default Browser", "") { URLHandling.makeDefaultBrowser() }
+    let makeDefault = item(.makeDefaultBrowser) { URLHandling.makeDefaultBrowser() }
     makeDefault.isEnabled = !URLHandling.isDefaultBrowser
-    let blocking = item("Block Ads and Trackers", "") { Blocker.enabled.toggle(); rebuild() }
+    let blocking = item(.blockAds) { Blocker.enabled.toggle(); rebuild() }
     blocking.state = Blocker.enabled ? .on : .off
     root.addItem(menu("Sites", [
         blocking,
-        item("Add Filter List…", "") { Blocker.chooseAndAddList() },
+        item(.addFilterList) { Blocker.chooseAndAddList() },
         .separator(),
         makeDefault,
         .separator(),
-        item("Forget Certificate Exceptions…", "") {
+        item(.forgetCertificateExceptions) {
             let a = NSAlert()
             a.messageText = "Forget every certificate you chose to trust anyway?"
             a.informativeText = "Those sites will ask again the next time you visit them."
             a.addButton(withTitle: "Forget"); a.addButton(withTitle: "Cancel")
             if a.runModal() == .alertFirstButtonReturn { CertificateTrust.forgetAll() }
         },
-        item("Reset Camera & Microphone Permissions…", "") {
+        item(.resetMediaPermissions) {
             let a = NSAlert()
             a.messageText = "Forget camera and microphone permissions for every site?"
             a.addButton(withTitle: "Reset"); a.addButton(withTitle: "Cancel")
@@ -246,7 +276,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     root.addItem(menu("Profiles", profileItems()))
     root.addItem(menu("Spaces", spaceItems()))
     root.addItem(menu("Extensions", [
-        item("Install Extension…", "") { ExtensionHost.shared.chooseAndInstall(); rebuild() },
+        item(.installExtension) { ExtensionHost.shared.chooseAndInstall(); rebuild() },
         .separator(),
     ] + ExtensionHost.shared.installed.map { ctx in
         item("Remove " + (ctx.webExtension.displayName ?? "Extension"), "") {
@@ -255,7 +285,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     }))
     root.addItem(menu("Develop", developItems()))
     root.addItem(menu("Bookmarks", [
-        item("Bookmark This Page", "d") { Windows.current?.active?.toggleBookmark(); rebuild() },
+        item(.bookmarkPage) { Windows.current?.active?.toggleBookmark(); rebuild() },
         .separator(),
     ] + Store.shared.bookmarks(limit: 40).map { b in
         item(b.title.isEmpty ? b.url : b.title, "") {
@@ -263,11 +293,11 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         }
     }))
     root.addItem(menu("History", [
-        item("Back", "[") { Windows.current?.active?.back() },
-        item("Forward", "]") { Windows.current?.active?.forward() },
+        item(.back) { Windows.current?.active?.back() },
+        item(.forward) { Windows.current?.active?.forward() },
         .separator(),
-        item("Next Tab", "\u{0019}", [.control, .shift]) { Windows.current?.cycle(1) },
-        item("Previous Tab", "\t", [.control]) { Windows.current?.cycle(-1) },
+        item(.nextTab) { Windows.current?.cycle(1) },
+        item(.previousTab) { Windows.current?.cycle(-1) },
         .separator(),
     ] + Store.shared.recent(limit: 25).map { h in
         item(h.title.isEmpty ? h.url : h.title, "") {
@@ -275,7 +305,7 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         }
     } + [
         .separator(),
-        item("Clear History", "") {
+        item(.clearHistory) {
             let a = NSAlert()
             a.messageText = "Clear all browsing history?"
             a.informativeText = "Bookmarks and saved passwords are not affected."

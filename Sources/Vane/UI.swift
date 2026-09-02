@@ -67,6 +67,11 @@ struct BrowserWindow: View {
 /// not this view's to extend, and a Button with a shortcut is the SwiftUI equivalent. They
 /// are zero-size and transparent, *not* .hidden(), which would take them out of the
 /// responder chain and stop the shortcuts firing.
+/// ⌘9 is "last tab", not "tab 9" — matching Safari and Chrome.
+@MainActor private func tabCommand(_ n: Int) -> Command {
+    n == 9 ? .selectLastTab : (Command(rawValue: "selectTab\(n)") ?? .selectTab1)
+}
+
 private struct Shortcuts: View {
     @EnvironmentObject var store: TabStore
     @Binding var palette: PaletteMode?
@@ -75,12 +80,12 @@ private struct Shortcuts: View {
         ZStack {
             ForEach(1...9, id: \.self) { n in
                 Button("Select Tab \(n)") { select(n) }
-                    .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
+                    .keyboardShortcut(Keybindings.binding(for: tabCommand(n)).keyboardShortcut)
             }
             Button("Command Palette") { palette = .all }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .keyboardShortcut(Keybindings.binding(for: .commandPalette).keyboardShortcut)
             Button("Search Tabs") { palette = .tabs }
-                .keyboardShortcut("a", modifiers: [.command, .shift])
+                .keyboardShortcut(Keybindings.binding(for: .searchTabs).keyboardShortcut)
         }
         .frame(width: 0, height: 0)
         .opacity(0)

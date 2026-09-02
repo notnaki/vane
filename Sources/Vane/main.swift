@@ -35,6 +35,9 @@ Inspector.configure()
 Blocker.refresh()
 URLHandling.registerAppleEventHandler()
 app.mainMenu = buildMenu()
+// Rebound keys are resolved here, before AppKit dispatches menu key equivalents. Commands
+// with no registered action fall through untouched.
+NSEvent.addLocalMonitorForEvents(matching: .keyDown) { Keybindings.handle($0) ? nil : $0 }
 app.activate(ignoringOtherApps: true)
 URLHandling.promptIfNotDefaultOnce()
 app.run()
