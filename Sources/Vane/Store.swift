@@ -48,8 +48,13 @@ struct Suggestion: Identifiable, Equatable {
     private nonisolated(unsafe) var db: OpaquePointer?
 
     static var directory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Vane", isDirectory: true)
+        // VANE_DATA_DIR: a second instance — a debug build running beside the real app —
+        // gets its own history, session and spaces instead of racing the other over one
+        // set of files (and tripping its crash marker). Unset in normal use.
+        let base = ProcessInfo.processInfo.environment["VANE_DATA_DIR"]
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Vane", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }

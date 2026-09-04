@@ -200,11 +200,11 @@ enum Look {
     // MARK: The ground
 
     /// How much of the derived ground colour sits over the blurred desktop. Arc's black
-    /// theme reads 33–36 over a dark wallpaper and 66–73 over a bright one, which is a
-    /// quarter of the wallpaper showing through the colour and the material together
-    /// (`WindowGlass` is `.fullScreenUI`, itself ~44 % opaque). Light is laid on heavier: a
-    /// pale ground a quarter wallpaper turns to mud over a dark desktop.
-    static func groundOpacity(dark: Bool) -> Double { dark ? 0.55 : 0.75 }
+    /// theme reads 33–36 over a dark wallpaper and 66–73 over a bright one; at 0.62 over
+    /// `WindowGlass` (`.fullScreenUI`, itself ~44 % opaque) ours spans 30 over black to 84
+    /// over white, a fifth of the backdrop showing through. Light is laid on heavier: a
+    /// pale ground a fifth wallpaper turns to mud over a dark desktop.
+    static func groundOpacity(dark: Bool) -> Double { dark ? 0.62 : 0.78 }
 
     /// The sidebar's colour for a space, the way Arc derives it: the hue is kept, dark takes
     /// the colour down to ~14 % brightness with its saturation *raised* (Arc's green space
