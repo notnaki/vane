@@ -630,7 +630,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // so they don't come up twice.
         let firstOfProfile = TabStore.all.filter { $0.profileID == profileID && !$0.isPrivate }.count == 1
         let mine = !isPrivate && firstOfProfile
-        let favourites = space?.pinnedURLs ?? (mine ? TabStore.stayingURLs(.favourite, for: profileID) : [])
+        // Favourites are the one thing every Space shares, so they come from the profile
+        // whether this window is in a Space or not. `Spaces.favourites` also folds any
+        // per-space grid an older spaces.json still carries into that one list.
+        let favourites = isPrivate ? [] : Spaces.favourites(for: profileID)
         let pinned = space?.pinnedTabURLs ?? (mine ? TabStore.stayingURLs(.pinned, for: profileID) : [])
         // A space carries its own per-tab state in a sidecar; a window restore is handed one.
         let parked = space.map { Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory) } ?? parked
@@ -888,15 +891,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             tabs.filter { $0.kind == kind }.compactMap { TabStore.pinURL($0.currentURL) }
         }
         let favourites = urls(.favourite), pinned = urls(.pinned)
-        // Inside a space these belong to the space, not to the profile — switching space
-        // must not drag the last space's favourites along.
+        // Arc: the only thing Spaces share is Favourites. The grid belongs to the profile and
+        // is written there from every window; the Pinned rows belong to whichever Space this
+        // window is showing, and only fall back to the profile outside one.
+        UserDefaults.standard.set(favourites, forKey: TabStore.defaultsKey(.favourite, profileID))
         if let id = currentSpaceID, var space = spaces.first(where: { $0.id == id }) {
-            space.pinnedURLs = favourites.compactMap(URL.init(string:))
+            space.pinnedURLs = []          // migrated out; see Spaces.favourites
             space.pinnedTabURLs = pinned.compactMap(URL.init(string:))
             ProfileManager.shared.updateSpace(space)
             return
         }
-        UserDefaults.standard.set(favourites, forKey: TabStore.defaultsKey(.favourite, profileID))
         UserDefaults.standard.set(pinned, forKey: TabStore.defaultsKey(.pinned, profileID))
     }
 
@@ -911,6 +915,34 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// Bumped whenever a space's name, icon or theme changes. `spaces` reads the file every
     /// time, so without a published counter nothing in the sidebar would know to redraw.
     @Published private(set) var spaceRevision = 0
+
+    /// The space whose inline editor is open in the sidebar's footer, if any. Arc's `+`
+    /// makes the Space first and lets you name it in place; this is what says so.
+    @Published var editingSpace: UUID?
+
+    /// Which way the strip should slide on the next switch: +1 for a later Space (contents
+    /// come in from the right), -1 for an earlier one. Arc slides in the direction of travel.
+    @Published private(set) var spaceDirection = 1
+
+    /// Same thing a `spaceRevision` bump does, for the code outside `update(space:)` that
+    /// edits `spaces.json` directly — a move, a reorder, a delete.
+    func spacesChanged() { spaceRevision += 1 }
+
+    /// Sign of the move from the current Space to `space` in the sidebar's own order, so a
+    /// wrap-around from the last Space to the first still slides forwards.
+    private func direction(to space: Space) -> Int {
+        let list = spaces
+        guard let from = list.firstIndex(where: { $0.id == currentSpaceID }),
+              let to = list.firstIndex(where: { $0.id == space.id }) else { return 1 }
+        return to > from ? 1 : -1
+    }
+
+    /// Drag the footer dots: the profile's space order, rewritten.
+    func reorderSpaces(from: Int, to: Int) {
+        let list = Spaces.reordered(spaces, from: from, to: to)
+        ProfileManager.shared.saveSpaces(list, for: profileID)
+        spacesChanged()
+    }
 
     /// The one way the chrome edits a space: save it, tell the views, and re-apply the look.
     func update(space: Space) {
@@ -938,9 +970,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             tabs.filter(keep).compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
         }
         space.tabURLs = urls { $0.kind == .today }
-        space.pinnedURLs = urls { $0.kind == .favourite }
+        space.pinnedURLs = []              // Favourites are the profile's; see `savePins`
         space.pinnedTabURLs = urls { $0.kind == .pinned }
         ProfileManager.shared.updateSpace(space)
+        UserDefaults.standard.set(urls { $0.kind == .favourite }.map(\.absoluteString),
+                                  forKey: TabStore.defaultsKey(.favourite, profileID))
         // Scroll position and back/forward list, in a sidecar — `Space` is another file's
         // Codable struct and is not mine to widen. Keyed by url, which is what
         // `restoreFavourites` looks a favourite's state up by.
@@ -966,12 +1000,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // a window from ever showing another profile's tabs.
         guard space.profileID == profileID, space.id != currentSpaceID else { return }
         saveCurrentSpace()
+        // Which way the strip slides. Set before the switch so the sidebar's transition and
+        // the tint cross-fade are already pointing the right way when the list changes.
+        spaceDirection = direction(to: space)
         // Not close(): that pushes onto the reopen stack and closes the window on the last tab.
-        tabs.removeAll()
+        // Favourites are the profile's, not the Space's, so their tabs stay exactly as they
+        // are — Arc's grid does not so much as blink when you swipe between Spaces.
+        tabs.removeAll { $0.kind != .favourite }
         currentSpaceID = space.id
         applySpaceAppearance()          // the new space may be pinned to light or dark
         let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
-        restore(space.pinnedURLs, as: .favourite, parked: parked)
         restore(space.pinnedTabURLs ?? [], as: .pinned, parked: parked)
         for url in space.tabURLs { newBlankTab().open(url, parked: parked[url.absoluteString]) }
         current = tabs.first { $0.kind == .today }?.id
@@ -1009,14 +1047,27 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// Create a space in this window's profile and move this window into it, carrying the
     /// tabs that are already open — which is what "new space" means from a window's point of
     /// view. Returns nil for a private window, which has no profile storage to write to.
+    /// `name` defaults to Arc's placeholder because Arc's `+` does not ask: the Space appears
+    /// straight away and the name field is already focused inside it. See `NewSpaceButton`.
     @discardableResult
-    func newSpace(named name: String) -> Space? {
+    func newSpace(named name: String = "New Space") -> Space? {
         guard !isPrivate else { return nil }
         saveCurrentSpace()
         let space = ProfileManager.shared.createSpace(name: name, in: profileID)
-        // Move in first, then save through the one path that also writes the state sidecar.
-        currentSpaceID = space.id
-        saveCurrentSpace()
+        spaceDirection = 1                 // a new Space is always the last one
+        if currentSpaceID != nil {
+            // Arc's new Space is *empty*. Switching into it is what empties the strip; moving
+            // `currentSpaceID` by hand would have written this window's open tabs into the new
+            // Space as well as leaving them in the old one, so they showed up in both.
+            switchTo(space: space)
+        } else {
+            // Outside any Space there is nothing to switch away from, and what is already open
+            // is what the first Space is made of.
+            currentSpaceID = space.id
+            saveCurrentSpace()
+        }
+        palette = nil                      // the editor is the thing to look at, not the bar
+        editingSpace = space.id            // opens the inline name/icon/colour editor
         return spaces.first { $0.id == space.id } ?? space
     }
 }
