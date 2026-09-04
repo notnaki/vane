@@ -137,6 +137,11 @@ extension TabActions {
              TabStore.insertionIndexBeside(current: nil, kinds: []) == 0),
             ("with no Today tabs at all it still lands after the ones that stay",
              TabStore.insertionIndexBeside(current: 0, kinds: [.favourite, .pinned]) == 2),
+            ("a typed name is trimmed", cleanName("  Docs  ") == "Docs"),
+            ("a name that is only spaces clears the rename", cleanName("   ") == nil),
+            ("an empty name clears it too", cleanName("") == nil),
+            ("a newline is whitespace as far as a name goes", cleanName("\n Docs \n") == "Docs"),
+            ("spaces inside a name are left alone", cleanName(" Pull Requests ") == "Pull Requests"),
             ("the result is always a valid insertion point",
              (0..<strip.count).allSatisfy {
                  let i = TabStore.insertionIndexBeside(current: $0, kinds: strip)
@@ -144,5 +149,45 @@ extension TabActions {
              }),
         ]
         return out
+    }
+}
+
+// MARK: - Renaming and duplicating
+
+extension TabActions {
+    /// What a typed name means. Trimmed; nothing left means "clear the override and give the
+    /// tab its page's own title back", which is the only way out of a rename.
+    /// Pure, so the rule is proved rather than trusted to a dialog.
+    static func cleanName(_ input: String) -> String? {
+        let name = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    /// The user's own name for a tab, or nil if it is still wearing the page's.
+    @MainActor static func rename(_ tab: Tab) -> String? {
+        tab.currentURL.flatMap { TidyTitles.override(for: $0, in: tab.profileID) }
+    }
+
+    /// Arc renames a tab from a double-click on its row. ponytail: the same `askForName`
+    /// alert that renames a space and a profile, not an in-place field — a name is one
+    /// string, and a third spelling of "type a name" is a third thing to keep honest.
+    /// Ceiling: Arc edits in the row itself, so the tab stays visible while it is renamed.
+    @MainActor static func renameTab(_ tab: Tab) {
+        let shown = TidyTitles.title(for: tab)
+        // askForName returns nil for both Cancel and an empty field, so an empty field
+        // cannot mean "clear it" here — `Use the Page's Own Title` is that route.
+        guard let typed = askForName("Rename tab", shown), let name = cleanName(typed) else { return }
+        TidyTitles.rename(tab, to: name)
+        axAnnounce("Renamed to \(name).")
+    }
+
+    /// Chrome's Duplicate Tab, in Arc's placement: the copy lands beside the original and
+    /// takes focus, because duplicating is something you did on purpose.
+    /// ponytail: the url, not the back/forward list — `interactionState` would carry the
+    /// history too, and a duplicate that can go "back" to where the original has been is a
+    /// different feature.
+    @MainActor static func duplicate(_ tab: Tab, in store: TabStore) {
+        guard let url = tab.currentURL else { return }
+        store.openBeside(url, focus: true)
     }
 }

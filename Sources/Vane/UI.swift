@@ -605,6 +605,7 @@ private struct FavoriteTile: View {
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: tab, into: .favourite,
                                       axis: .horizontal, extent: width, side: $side))
+            .simultaneousGesture(TapGesture(count: 2).onEnded { TabActions.renameTab(tab) })
             .contextMenu { TabMenu(store: store, tab: tab) }
             // One element per favourite, the way a tab reads: the title is the label, the
             // state is the value, and unpin/close are actions rather than hidden gestures.
@@ -613,6 +614,7 @@ private struct FavoriteTile: View {
             .accessibilityValue(tabState(tab, in: store))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             .accessibilityHint("Shows this tab.")
+            .accessibilityAction(named: "Rename Tab") { TabActions.renameTab(tab) }
             .accessibilityAction(named: "Unfavourite Tab") { store.toggleFavourite(tab.id) }
             .accessibilityAction(named: "Pin Tab") { store.move(tab.id, to: .pinned) }
             .accessibilityAction(named: "Close Tab") { store.close(tab.id) }
@@ -1212,6 +1214,10 @@ private struct TabRow: View {
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: tab, into: tab.kind,
                                   axis: .vertical, extent: Look.rowHeight, side: $side))
+        // Arc's double-click-to-rename. Simultaneous, so the row's own single tap still
+        // selects the tab first — which is what Arc does too, and what makes the rename
+        // apply to the tab you are looking at.
+        .simultaneousGesture(TapGesture(count: 2).onEnded { TabActions.renameTab(tab) })
         .contextMenu { TabMenu(store: store, tab: tab) }
         // One element per tab, the way a tab in Safari reads: the title is the label, the
         // state is the value, and the close button becomes an action rather than a second
@@ -1227,6 +1233,8 @@ private struct TabRow: View {
         .accessibilityAction(named: tab.kind == .pinned ? "Unpin Tab" : "Pin Tab") {
             store.togglePinned(tab.id)
         }
+        .accessibilityAction(named: "Rename Tab") { TabActions.renameTab(tab) }
+        .accessibilityAction(named: "Duplicate Tab") { TabActions.duplicate(tab, in: store) }
         .accessibilityAction(named: "Favourite Tab") { store.move(tab.id, to: .favourite) }
         .accessibilityAction(named: "Close Other Tabs") { closeOthers() }
         .accessibilityAction(named: TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab") {
@@ -1256,6 +1264,17 @@ private struct TabMenu: View {
     var body: some View {
         Button("Copy Link") { copyLink() }
             .disabled(tab.currentURL == nil)
+        // Arc's own two, in Arc's order. Rename is also a double-click on the row; Duplicate
+        // has no gesture at all, which is exactly why it has to be here.
+        Button("Rename…") { TabActions.renameTab(tab) }
+        if TabActions.rename(tab) != nil {
+            Button("Use the Page’s Own Title") { TidyTitles.rename(tab, to: nil) }
+        }
+        Button("Duplicate") { TabActions.duplicate(tab, in: store) }
+            .disabled(tab.currentURL == nil)
+        Button("Reload") { tab.reload() }
+            .disabled(tab.currentURL == nil)
+        Button(TabAudio.isMuted(tab) ? "Unmute" : "Mute") { TabAudio.toggleMute(tab) }
         Divider()
         switch tab.kind {
         case .favourite:
