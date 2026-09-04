@@ -284,7 +284,7 @@ private struct Sidebar: View {
         }
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.inset)
-        .padding(.top, 6)
+        .padding(.top, Look.topInset)
         .frame(width: Look.sidebarWidth, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")

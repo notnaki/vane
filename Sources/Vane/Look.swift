@@ -65,6 +65,9 @@ enum Look {
     /// The sidebar's two fixed strips: traffic lights and navigation above, downloads and
     /// spaces below.
     static let topRow: CGFloat = 26
+    /// Above the top row. AppKit centres the traffic lights 16pt below the window's edge;
+    /// with a 26pt row this puts the toggle and nav glyphs on the same centre line.
+    static let topInset: CGFloat = 3
     static let footer: CGFloat = 22
     /// A favourite tile's icon: a step up from a row's 16, since it stands alone.
     static let tileIcon: CGFloat = 20
