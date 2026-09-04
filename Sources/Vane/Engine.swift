@@ -36,10 +36,6 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     @Published var favicon: NSImage?
     /// Pinned tabs sit at the head of the strip and survive a relaunch.
     @Published var pinned = false
-    /// The page this favourite was pinned at, and what it goes back to when it is closed.
-    /// The pin *is* this url: navigating a favourite elsewhere changes nothing on disk. nil
-    /// for an ordinary tab.
-    var homeURL: URL?
     /// True while this tab has no live page — see `suspend()`. Published so anything that
     /// wants to badge the strip can, but nothing does: suspension is meant to be invisible.
     @Published private(set) var suspended = false
@@ -234,20 +230,6 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         favicon = favicons.icon(for: url)      // from the cache, no page needed
     }
 
-    /// Closing a favourite. The page goes the way a suspended tab's does — the process with
-    /// it — but there is no state to come back to: the next click loads `home`, not
-    /// wherever the user had wandered off to. The tile stays exactly where it was.
-    func park(at home: URL) {
-        if web.url != nil { suspend() }        // a never-loaded view has no process to drop
-        suspended = true
-        parkedURL = home
-        parkedState = nil
-        address = home.absoluteString
-        favicon = favicons.icon(for: home) ?? favicon
-        loading = false
-        canGoBack = false
-        canGoForward = false
-    }
 
     /// Load it now, or park it if we know enough about it to draw it without loading.
     func open(_ url: URL, parked p: Parked?) {
@@ -404,6 +386,8 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         } else if !isPrivate {
             history.record(url, title: w.title ?? "")
         }
+        // A favourite is the tab itself, wherever it has gone: the pin on disk follows it.
+        if pinned { TabStore.savePins(owning: self) }
     }
 
     /// HTTPS-only mode. `.cancel` plus a re-load is the only way to change a navigation's
@@ -632,7 +616,6 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         for url in urls {
             let t = newBlankTab()
             t.pinned = true
-            t.homeURL = url
             t.park(url: url, parked[url.absoluteString] ?? Parked())
         }
     }
@@ -684,11 +667,12 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     func close(_ id: Tab.ID) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[i]
-        if !isPrivate { ClosedTabs.push(tab.currentURL) }
         let outcome = TabStore.closing(i, pinned: tabs.map(\.pinned), lastActive: tabs.map(\.lastActive))
-        if outcome.keep {
-            tab.park(at: tab.homeURL ?? tab.currentURL ?? TabStore.home)
-        } else {
+        // A favourite is the same tab, only moved into the grid: closing it leaves it exactly
+        // as it is, and only Unpin ever takes it out. Nothing is "closed", so nothing is
+        // pushed for Reopen Closed Tab either.
+        if !outcome.keep {
+            if !isPrivate { ClosedTabs.push(tab.currentURL) }
             tabs.remove(at: i)
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
         }
@@ -741,12 +725,9 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         savePins()
     }
 
-    /// The one place a tab crosses the line: pinning fixes its home at wherever it is now,
-    /// unpinning forgets it.
     private func setPinned(_ tab: Tab, _ pinned: Bool) {
         guard tab.pinned != pinned else { return }
         tab.pinned = pinned
-        tab.homeURL = pinned ? tab.currentURL : nil
         TidyTitles.refresh(tab)
     }
 
@@ -812,17 +793,21 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
             .compactMap(URL.init(string:))
     }
 
-    /// What is written down for a favourite: its home, never where it is now — a favourite
-    /// that has been browsed away from is still the favourite the user pinned. `current` is
-    /// a parameter only to make the point that it is ignored.
-    static func pinURL(home: URL?, current: URL?) -> String? {
-        guard let s = home?.absoluteString, s.hasPrefix("http") else { return nil }
+    /// What is written down for a favourite: the page it is on. Only web pages; a blank or
+    /// file tab is not a place to come back to.
+    static func pinURL(_ current: URL?) -> String? {
+        guard let s = current?.absoluteString, s.hasPrefix("http") else { return nil }
         return s
+    }
+
+    /// A pinned tab that navigated is still the pin, now pointing where it went.
+    static func savePins(owning tab: Tab) {
+        all.first { $0.tabs.contains { $0 === tab } }?.savePins()
     }
 
     func savePins() {
         guard !isPrivate else { return }
-        let urls = tabs.filter(\.pinned).compactMap { TabStore.pinURL(home: $0.homeURL, current: $0.currentURL) }
+        let urls = tabs.filter(\.pinned).compactMap { TabStore.pinURL($0.currentURL) }
         // Inside a space the pins belong to the space, not to the profile — switching space
         // must not drag the last space's pins along.
         if let id = currentSpaceID, var space = spaces.first(where: { $0.id == id }) {
@@ -868,14 +853,14 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         guard !isPrivate, let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
         else { return }
         space.tabURLs = tabs.filter { !$0.pinned }.compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
-        space.pinnedURLs = tabs.filter(\.pinned).compactMap(\.homeURL).filter { $0.scheme?.hasPrefix("http") == true }
+        space.pinnedURLs = tabs.filter(\.pinned).compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
         ProfileManager.shared.updateSpace(space)
         // Scroll position and back/forward list, in a sidecar — `Space` is another file's
-        // Codable struct and is not mine to widen. A favourite's state is filed under its
-        // home url, which is the key `restoreFavourites` will look it up by.
+        // Codable struct and is not mine to widen. Keyed by url, which is what
+        // `restoreFavourites` looks a favourite's state up by.
         var parked: [String: Parked] = [:]
         for t in tabs {
-            guard let key = t.pinned ? t.homeURL : t.currentURL,
+            guard let key = t.currentURL,
                   key.scheme?.hasPrefix("http") == true else { continue }
             parked[key.absoluteString] = t.snapshot
         }

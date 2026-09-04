@@ -247,14 +247,11 @@ import WebKit
             ("closing the only tab leaves nothing to show",
              TabStore.closing(0, pinned: [false], lastActive: [d(0)]) == (false, nil)),
 
-            // Pins on disk are home urls.
-            ("a pin is saved as its home url, not its current page",
-             TabStore.pinURL(home: u("https://home.example/"), current: u("https://elsewhere.example/x"))
-                == "https://home.example/"),
-            ("a favourite with no home is not written down",
-             TabStore.pinURL(home: nil, current: u("https://elsewhere.example/")) == nil),
-            ("a non-http home is not written down",
-             TabStore.pinURL(home: u("file:///x.html"), current: nil) == nil),
+            // Pins on disk are the favourite's page, wherever it has gone.
+            ("a pin is saved as its current page",
+             TabStore.pinURL(u("https://elsewhere.example/x")) == "https://elsewhere.example/x"),
+            ("a favourite on no page is not written down", TabStore.pinURL(nil) == nil),
+            ("a non-http page is not written down", TabStore.pinURL(u("file:///x.html")) == nil),
 
             // Drop index math: where a dragged tab lands before or after its target.
             ("dropping before a later target lands one short of it",
