@@ -256,8 +256,8 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     return switchers + [.separator()] + nav + numbered + [
         .separator(),
         item(.newSpace) {
-            guard let name = askForName("Name the new space") else { return }
-            _ = Windows.current?.newSpace(named: name)
+            // Arc's New Space appears first and is named in place — see `NewSpaceButton`.
+            _ = Windows.current?.newSpace()
             rebuild()
         },
     ]

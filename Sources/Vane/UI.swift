@@ -284,11 +284,16 @@ private struct Sidebar: View {
             ScrollView {
                 VStack(spacing: Look.rowGap) {
                     Favorites()
-                    SpaceRow()
-                    PinnedTabs()
-                    TidyRow()
-                    NewTabRow()
-                    OpenTabs()
+                    // Everything a Space owns, and nothing it shares: the grid above stays
+                    // put while these slide in from the direction of travel.
+                    VStack(spacing: Look.rowGap) {
+                        SpaceRow()
+                        PinnedTabs()
+                        TidyRow()
+                        NewTabRow()
+                        OpenTabs()
+                    }
+                    .spaceSlide(store)
                 }
                 // The list is at least as tall as what it is scrolling in, so the emptiness
                 // under the last tab is part of the *content* — which is what lets the drag
@@ -299,6 +304,7 @@ private struct Sidebar: View {
             }
             .scrollIndicators(.never)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
+            .spaceSwipe(store)
             BottomRow()
         }
         .padding(.horizontal, Look.inset)
@@ -621,7 +627,8 @@ private enum DropSide { case before, after }
 /// `dropExited` to the target that performed the drop, and a line left behind read as a
 /// second, phantom favourite.
 /// Not private: `SidebarDrop` in TabActions.swift has to stand aside while one of these
-/// is in flight, or a tab being reordered would be re-opened as a dropped link.
+/// is in flight, and a footer dot in SpacesUI.swift has to know a tab is what is being
+/// dropped on it.
 @MainActor final class Dragging: ObservableObject {
     static let shared = Dragging()
     @Published var tab: Tab.ID?
@@ -708,21 +715,23 @@ private struct SpaceRow: View {
 
     var body: some View {
         if let space = store.currentSpace {
-            row(space.icon ?? "cloud", space.name)
+            row(space.icon ?? "cloud", space, space.name)
+            .onTapGesture(count: 2) { store.renamingSpace = space.id }
+            .onTapGesture { showSpaceList(store) }
             .contextMenu { SpaceMenu(store: store, space: space, icons: $icons, theme: $theme) }
             .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
             .popover(isPresented: $theme) { SpaceTheme(store: store, space: space) }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Space")
             .accessibilityValue(space.name)
-            .accessibilityHint("Right-click to rename this space or change its icon and colour.")
+            .accessibilityHint("Click for the list of spaces, double-click to rename this one.")
             .accessibilityAction(named: "Rename Space") { renameSpace(space, in: store) }
             .accessibilityAction(named: "Change Space Icon") { icons = true }
             .accessibilityAction(named: "Edit Theme Color") { theme = true }
         } else {
             // A window outside any space still has this row, wearing the profile's name:
             // the list below it needs its heading, and the sidebar its shape.
-            row("cloud", store.profile.name)
+            row("cloud", nil, store.profile.name)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Space")
             .accessibilityValue(store.profile.name)
@@ -730,10 +739,10 @@ private struct SpaceRow: View {
         }
     }
 
-    private func row(_ icon: String, _ name: String) -> some View {
+    private func row(_ icon: String, _ space: Space?, _ name: String) -> some View {
         HStack(spacing: Look.rowSpacing) {
             Image(systemName: icon).font(Look.spaceIcon).frame(width: Look.tileIcon)
-            Text(name).font(Look.rowTitle)
+            SpaceName(store: store, space: space, fallback: name)
             Spacer(minLength: 0)
         }
         // Arc's quietest ink on the sidebar (152 on 66): a heading, not a row.
@@ -786,26 +795,28 @@ private struct SpaceMenu: View {
     }
 }
 
+/// Arc renames a Space in the sidebar, not in a dialog: this only arms the field, and
+/// `SpaceName` is what commits it.
 @MainActor private func renameSpace(_ space: Space, in store: TabStore) {
-    guard let name = askForName("Rename space", space.name) else { return }
-    var edited = space
-    edited.name = name
-    store.update(space: edited)
-    rebuild()                      // the Spaces menu lists the names
+    store.renamingSpace = space.id
 }
 
 @MainActor private func deleteSpace(_ space: Space, in store: TabStore) {
     guard store.spaces.count > 1 else { return }
     let a = NSAlert()
     a.messageText = "Delete the space “\(space.name)”?"
-    a.informativeText = "Its tabs and pinned tabs go with it. Nothing in your history, "
-        + "bookmarks or saved passwords is affected."
+    a.informativeText = "Its tabs and pinned tabs go to the Archive, where the Library can "
+        + "still find them. Nothing in your history, bookmarks or saved passwords is affected."
     a.alertStyle = .critical
     a.addButton(withTitle: "Cancel")
     a.addButton(withTitle: "Delete")
     a.buttons.last?.hasDestructiveAction = true
     guard a.runModal() == .alertSecondButtonReturn else { return }
     let survivor = store.spaces.first { $0.id != space.id }
+    // Arc archives a deleted Space's tabs rather than dropping them. Read the space back
+    // first: what is on disk is what is about to be deleted, and it is newer than the copy
+    // the menu was built from.
+    Spaces.archiveContents(of: store.spaces.first { $0.id == space.id } ?? space)
     ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
     if let survivor { store.switchTo(space: survivor) }
     rebuild()
@@ -835,17 +846,11 @@ private struct SpaceIcons: View {
     let space: Space
     @Environment(\.dismiss) private var dismiss
 
-    private static let symbols = [
-        "cloud", "star", "bolt", "book", "briefcase", "gamecontroller",
-        "music.note", "heart", "leaf", "flame", "house", "cart",
-        "graduationcap", "hammer", "paintbrush", "globe", "camera", "film",
-        "airplane", "car", "cup.and.saucer", "sparkles", "moon", "sun.max",
-    ]
 
     var body: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.fixed(Look.rowHeight), spacing: 6), count: 6),
                   spacing: 6) {
-            ForEach(Self.symbols, id: \.self) { name in
+            ForEach(Spaces.icons, id: \.self) { name in
                 Button { pick(name) } label: { tile(name) }
                     .buttonStyle(.plain)
                     .accessibilityLabel(name)
@@ -975,6 +980,8 @@ private struct SpaceDots: View {
     @EnvironmentObject var store: TabStore
     @State private var icons = false
     @State private var theme = false
+    /// Which dot a drag is over, so only that one lights up.
+    @State private var dropTarget: UUID?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -991,6 +998,8 @@ private struct SpaceDots: View {
 
     @ViewBuilder private func dot(_ space: Space) -> some View {
         let here = store.currentSpaceID == space.id
+        let over = Binding(get: { dropTarget == space.id },
+                           set: { dropTarget = $0 ? space.id : nil })
         Group {
             if here {
                 Image(systemName: space.icon ?? "cloud").font(Look.small)
@@ -999,9 +1008,12 @@ private struct SpaceDots: View {
                 Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
             }
         }
-        .frame(width: 20, height: 20)
+        .frame(width: Look.spaceDotHit, height: Look.spaceDotHit)
+        .background(dropTarget == space.id ? Look.selected : .clear, in: .circle)
         .contentShape(.rect)
         .onTapGesture { store.switchTo(space: space) }
+        .onDrag { spaceDragPayload(space) }
+        .onDrop(of: [.plainText], delegate: SpaceDrop(store: store, space: space, over: over))
         .help(space.name)
         .contextMenu { SpaceMenu(store: store, space: space, icons: $icons, theme: $theme) }
         .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
@@ -1278,6 +1290,7 @@ private struct TabMenu: View {
                 Button(TabMenu.name(kind)) { store.move(tab.id, to: kind) }
             }
         }
+        MoveToSpaceMenu(store: store, tab: tab)
         Divider()
         // A favourite or a pinned tab has no "archive": closing it parks it in place, which
         // is what the section means, so the item says what will actually happen.
@@ -1396,11 +1409,7 @@ private struct BottomRow: View {
             Spacer(minLength: 0)
             SpaceDots()
             Spacer(minLength: 0)
-            // The Spaces menu owns the naming alert; this is the same closure.
-            Button { Keybindings.actions[.newSpace]?() } label: { Image(systemName: "plus") }
-                .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
-                .help("New Space")
-                .accessibilityLabel("New Space")
+            NewSpaceButton()
         }
         .font(Look.icon)
         .frame(height: Look.footer)

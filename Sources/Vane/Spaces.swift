@@ -9,6 +9,17 @@ import Foundation
 /// it. Vane wrote Favourites into each Space (`Space.pinnedURLs`), so switching Space swapped
 /// the grid out — `migrate` is what un-does that on the first read, once, in place.
 enum Spaces {
+    /// What a Space's icon can be. ponytail: a fixed list, not a symbol browser — 24 covers
+    /// what a Space is ever named after, and the alternative is shipping a search field over
+    /// an API that cannot enumerate itself. (Arc offers the emoji picker; an SF Symbol grid
+    /// is the same idea in the toolkit Vane is actually built on.)
+    static let icons = [
+        "cloud", "star", "bolt", "book", "briefcase", "gamecontroller",
+        "music.note", "heart", "leaf", "flame", "house", "cart",
+        "graduationcap", "hammer", "paintbrush", "globe", "camera", "film",
+        "airplane", "car", "cup.and.saucer", "sparkles", "moon", "sun.max",
+    ]
+
     // MARK: - Favourites are global
 
     /// Arc caps the grid at twelve tiles.

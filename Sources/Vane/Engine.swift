@@ -920,6 +920,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// makes the Space first and lets you name it in place; this is what says so.
     @Published var editingSpace: UUID?
 
+    /// The space whose name is a text field in the header row right now. Double-clicking the
+    /// name and "Rename Space…" both set it; Arc renames in place rather than in a dialog.
+    @Published var renamingSpace: UUID?
+
     /// Which way the strip should slide on the next switch: +1 for a later Space (contents
     /// come in from the right), -1 for an earlier one. Arc slides in the direction of travel.
     @Published private(set) var spaceDirection = 1
