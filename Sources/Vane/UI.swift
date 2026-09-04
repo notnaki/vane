@@ -39,6 +39,8 @@ struct BrowserWindow: View {
     /// The sidebar sliding in over the page because the pointer went to the window's edge.
     @State private var peeking = false
     @State private var peekTask: Task<Void, Never>?
+    /// App-wide, so every window's sidebar is the width the user last dragged one to.
+    @ObservedObject private var sidebar = SidebarWidth.shared
 
     private var chrome: Bool { store.sidebarShown || peeking }
 
@@ -48,8 +50,13 @@ struct BrowserWindow: View {
             Look.ground
             ThemeTint()
             HStack(spacing: 0) {
-                if store.sidebarShown { Sidebar().frame(width: Look.sidebarWidth) }
+                if store.sidebarShown { Sidebar().frame(width: sidebar.width) }
                 WebCard()
+            }
+            // On the seam, over the card: the sidebar's own trailing edge is what Arc's
+            // resize handle is, and it has to be above the web view to see a drag at all.
+            if store.sidebarShown {
+                SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth / 2)
             }
             edgeStrip
             floatingSidebar
@@ -92,7 +99,7 @@ struct BrowserWindow: View {
     @ViewBuilder private var floatingSidebar: some View {
         if !store.sidebarShown && peeking {
             Sidebar()
-                .frame(width: Look.sidebarWidth)
+                .frame(width: sidebar.width)
                 // The same near-opaque ground as the command bar: this one floats over
                 // the page, and a bare material over a white page is a white panel.
                 .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
@@ -267,6 +274,7 @@ private struct LoadingBar: View {
 
 private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
+    @ObservedObject private var sidebar = SidebarWidth.shared
 
     var body: some View {
         VStack(spacing: 8) {
@@ -288,7 +296,7 @@ private struct Sidebar: View {
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.inset)
         .padding(.top, Look.topInset)
-        .frame(width: Look.sidebarWidth, alignment: .leading)
+        .frame(width: sidebar.width, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
     }
@@ -496,6 +504,8 @@ private struct PillBody: View {
 /// tile and seven are a 4-wide grid, never two fixed slots.
 private struct Favorites: View {
     @EnvironmentObject var store: TabStore
+    /// A narrow sidebar drops a column instead of shrinking every tile to a sliver.
+    @ObservedObject private var sidebar = SidebarWidth.shared
 
     var body: some View {
         let pinned = store.tabs.filter { $0.kind == .favourite }
@@ -505,7 +515,8 @@ private struct Favorites: View {
                               hint: "Drag a tab here to make it a favourite.")
         } else {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
-                                     count: TabStore.favouriteColumns(pinned.count)),
+                                     count: SidebarWidth.favouriteColumns(pinned.count,
+                                                                          width: sidebar.width)),
                       spacing: Look.inset) {
                 ForEach(pinned) { FavoriteTile(tab: $0) }
             }
