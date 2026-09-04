@@ -69,6 +69,11 @@ enum Look {
     /// A favourite tile's icon: a step up from a row's 16, since it stands alone.
     static let tileIcon: CGFloat = 20
 
+    /// The theme editor popover: seven swatches an `inset` apart, plus its margins. A swatch
+    /// is Arc's, measured off ref 8 at 2x.
+    static let swatch: CGFloat = 24
+    static let themeWidth: CGFloat = swatch * 7 + inset * 6 + inset * 4
+
     static let text = Font.system(size: 13)
     static let caption = Font.system(size: 11)
     static let heading = Font.system(size: 13, weight: .semibold)
