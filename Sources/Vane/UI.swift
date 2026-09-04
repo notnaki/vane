@@ -433,18 +433,21 @@ private struct PillBody: View {
             }
             Text(host).font(Look.text).lineLimit(1).foregroundStyle(.primary)
             Spacer(minLength: 4)
-            // Always there, as in Arc: two quiet glyphs read better than a row that grows
-            // controls under the pointer. Disabled, not hidden, when there is no page.
-            Button { copyLink() } label: { Image(systemName: "link") }
-                .disabled(tab == nil)
-                .help("Copy Link")
-                .accessibilityLabel("Copy Link")
-            Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
-                // ponytail: the whole settings window, not a per-site sheet. Site settings
-                // do not exist yet; when they do, this is the one caller to change.
-                .disabled(tab == nil)
-                .help("Site Settings")
-                .accessibilityLabel("Site Settings")
+            // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
+            // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
+            // They sit past a Spacer, so arriving and leaving never moves the host.
+            if hovering {
+                Button { copyLink() } label: { Image(systemName: "link") }
+                    .disabled(tab == nil)
+                    .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
+                    .accessibilityLabel("Copy Link")
+                Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
+                    // ponytail: the whole settings window, not a per-site sheet. Site settings
+                    // do not exist yet; when they do, this is the one caller to change.
+                    .disabled(tab == nil)
+                    .help("Site Settings")
+                    .accessibilityLabel("Site Settings")
+            }
         }
         .buttonStyle(.plain)
         .font(Look.rowText)
@@ -466,7 +469,10 @@ private struct PillBody: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Opens the search bar to type a website address or a search.")
         .accessibilityAction { open() }
+        // The two glyphs are only drawn on hover, so the actions they stand for have to be
+        // on the pill itself — a pointer gesture is not a route VoiceOver has.
         .accessibilityAction(named: "Copy Link") { copyLink() }
+        .accessibilityAction(named: "Site Settings") { SettingsWindow.show() }
     }
 
     /// With a page, the bar opens on its address; with none, on nothing — and what is
