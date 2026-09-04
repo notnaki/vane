@@ -150,6 +150,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     // View
     case reload, hardReload, openLocation, find, toggleSidebar
     case actualSize, zoomIn, zoomOut, fullScreen
+    case copyPageURL, showLibrary
     case showReader, biggerReaderText, smallerReaderText, readerSerif
     // History
     case back, forward, clearHistory
@@ -167,13 +168,16 @@ enum Command: String, CaseIterable, Codable, Sendable {
     // Profiles
     case newProfile, renameProfile, deleteProfile
     // Spaces
-    case newSpace
+    case newSpace, nextSpace, previousSpace
+    case goToSpace1, goToSpace2, goToSpace3, goToSpace4
+    case goToSpace5, goToSpace6, goToSpace7, goToSpace8, goToSpace9
     // Tabs
     case nextTab, previousTab
     case selectTab1, selectTab2, selectTab3, selectTab4
     case selectTab5, selectTab6, selectTab7, selectTab8, selectLastTab
     case pictureInPicture
-    case tidyTabs, undoTidyTabs
+    case tidyTabs, undoTidyTabs, clearTabs
+    case favouriteTab, pinTab
     case muteTab
     case commandPalette, searchTabs
 
@@ -189,7 +193,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .newPrivateWindow: "New Private Window"
         case .newTab: "New Tab"
         case .reopenClosedTab: "Reopen Closed Tab"
-        case .closeTab: "Close Tab"
+        case .closeTab: "Archive Tab"
         case .closeWindow: "Close Window"
         case .printPage: "Print…"
         case .settings: "Settings…"
@@ -202,6 +206,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .zoomIn: "Zoom In"
         case .zoomOut: "Zoom Out"
         case .fullScreen: "Enter Full Screen"
+        case .copyPageURL: "Copy Page URL"
+        case .showLibrary: "Show Library"
         case .showReader: "Show Reader"
         case .biggerReaderText: "Bigger Reader Text"
         case .smallerReaderText: "Smaller Reader Text"
@@ -228,6 +234,17 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .renameProfile: "Rename Profile…"
         case .deleteProfile: "Delete Profile…"
         case .newSpace: "New Space…"
+        case .nextSpace: "Next Space"
+        case .previousSpace: "Previous Space"
+        case .goToSpace1: "Go to Space 1"
+        case .goToSpace2: "Go to Space 2"
+        case .goToSpace3: "Go to Space 3"
+        case .goToSpace4: "Go to Space 4"
+        case .goToSpace5: "Go to Space 5"
+        case .goToSpace6: "Go to Space 6"
+        case .goToSpace7: "Go to Space 7"
+        case .goToSpace8: "Go to Space 8"
+        case .goToSpace9: "Go to Space 9"
         case .nextTab: "Next Tab"
         case .previousTab: "Previous Tab"
         case .selectTab1: "Select Tab 1"
@@ -242,6 +259,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .pictureInPicture: "Picture in Picture"
         case .tidyTabs: "Tidy Tabs"
         case .undoTidyTabs: "Undo Tidy Tabs"
+        case .clearTabs: "Clear Tabs"
+        case .favouriteTab: "Favourite Tab"
+        case .pinTab: "Pin Tab"
         case .muteTab: "Mute Tab"
         case .commandPalette: "Search…"
         case .searchTabs: "Search Tabs…"
@@ -254,7 +274,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
              .closeWindow, .printPage, .settings: .file
         case .reload, .hardReload, .openLocation, .find, .toggleSidebar, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
-             .smallerReaderText, .readerSerif: .view
+             .smallerReaderText, .readerSerif, .copyPageURL, .showLibrary: .view
         case .back, .forward, .clearHistory: .history
         case .bookmarkPage: .bookmarks
         case .fillPassword, .importPasswords, .importHistoryAndBookmarks,
@@ -264,7 +284,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .installExtension: .extensions
         case .showWebInspector, .showJavaScriptConsole, .viewSource, .allowWebInspector: .develop
         case .newProfile, .renameProfile, .deleteProfile: .profiles
-        case .newSpace: .spaces
+        case .newSpace, .nextSpace, .previousSpace, .goToSpace1, .goToSpace2, .goToSpace3,
+             .goToSpace4, .goToSpace5, .goToSpace6, .goToSpace7, .goToSpace8,
+             .goToSpace9: .spaces
         default: .tabs
         }
     }
@@ -293,8 +315,27 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .showReader:       Keybinding("r", [.command, .option])
         case .back:             Keybinding("[", .command)
         case .forward:          Keybinding("]", .command)
-        case .bookmarkPage:     Keybinding("d", .command)
-        case .fillPassword:     Keybinding("l", [.command, .shift])
+        // Arc's ⌘D is a favourite and ⌘⇧D a pin, so bookmarking moves one modifier over.
+        // It is still in the Bookmarks menu, still rebindable, and still the same command.
+        case .bookmarkPage:     Keybinding("d", [.command, .option])
+        case .favouriteTab:     Keybinding("d", .command)
+        case .pinTab:           Keybinding("d", [.command, .shift])
+        case .clearTabs:        Keybinding("k", [.command, .shift])
+        case .copyPageURL:      Keybinding("c", [.command, .shift])
+        // ⌘⇧L is Arc's Library; Fill Password moves to the adjacent ⌥⌘L.
+        case .showLibrary:      Keybinding("l", [.command, .shift])
+        case .fillPassword:     Keybinding("l", [.command, .option])
+        case .nextSpace:        Keybinding("\u{F703}", [.command, .option])
+        case .previousSpace:    Keybinding("\u{F702}", [.command, .option])
+        case .goToSpace1:       Keybinding("1", .control)
+        case .goToSpace2:       Keybinding("2", .control)
+        case .goToSpace3:       Keybinding("3", .control)
+        case .goToSpace4:       Keybinding("4", .control)
+        case .goToSpace5:       Keybinding("5", .control)
+        case .goToSpace6:       Keybinding("6", .control)
+        case .goToSpace7:       Keybinding("7", .control)
+        case .goToSpace8:       Keybinding("8", .control)
+        case .goToSpace9:       Keybinding("9", .control)
         case .showWebInspector: Keybinding("i", [.command, .option])
         case .showJavaScriptConsole: Keybinding("c", [.command, .option])
         case .viewSource:       Keybinding("u", [.command, .option])
@@ -597,7 +638,22 @@ extension Keybindings {
             ("Show Web Inspector defaults to ⌥⌘I", binding(for: .showWebInspector).display == "⌥⌘I"),
             ("Enter Full Screen defaults to ⌃⌘F", binding(for: .fullScreen).display == "⌃⌘F"),
             ("Back defaults to ⌘[", binding(for: .back).display == "⌘["),
-            ("Fill Password defaults to ⇧⌘L", binding(for: .fillPassword).display == "⇧⌘L"),
+            ("Fill Password defaults to ⌥⌘L", binding(for: .fillPassword).display == "⌥⌘L"),
+            ("Show Library defaults to ⇧⌘L, the way Arc binds it",
+             binding(for: .showLibrary).display == "⇧⌘L"),
+            ("Favourite Tab defaults to ⌘D", binding(for: .favouriteTab).display == "⌘D"),
+            ("Pin Tab defaults to ⇧⌘D", binding(for: .pinTab).display == "⇧⌘D"),
+            ("Bookmark This Page moves off ⌘D to ⌥⌘D",
+             binding(for: .bookmarkPage).display == "⌥⌘D"),
+            ("Clear Tabs defaults to ⇧⌘K", binding(for: .clearTabs).display == "⇧⌘K"),
+            ("Copy Page URL defaults to ⇧⌘C", binding(for: .copyPageURL).display == "⇧⌘C"),
+            ("⌘W archives rather than closes, the way Arc names it",
+             Command.closeTab.title == "Archive Tab" && binding(for: .closeTab).display == "⌘W"),
+            ("Next and Previous Space default to ⌥⌘→ and ⌥⌘←",
+             binding(for: .nextSpace).display == "⌥⌘→"
+                && binding(for: .previousSpace).display == "⌥⌘←"),
+            ("Go to Space N defaults to ⌃N",
+             binding(for: .goToSpace1).display == "⌃1" && binding(for: .goToSpace9).display == "⌃9"),
             ("Previous Tab defaults to ⌃⇥", binding(for: .previousTab).display == "⌃⇥"),
             ("Next Tab defaults to ⌃⇧⇥", binding(for: .nextTab).display == "⌃⇧⇥"),
             ("Select Tab 1 defaults to ⌘1", binding(for: .selectTab1).display == "⌘1"),

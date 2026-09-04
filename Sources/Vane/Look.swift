@@ -144,10 +144,14 @@ enum Look {
     /// thing on screen. Black rather than a material: it must darken, not blur again.
     /// Light: Arc hardly dims the page, and the bar's own shadow does most of the lifting.
     static let scrim = Color.black.opacity(0.12)
-    /// Under a floating surface's glass. Glass alone takes its colour from whatever is
-    /// behind it, and a command bar over a white page has to stay dark to stay legible —
-    /// so the window's own ground, near-opaque, with the page only a hint through it.
+    /// A floating surface's ground: the window's own background colour, near-opaque, with
+    /// the page only a hint through it. A material alone takes its colour from whatever is
+    /// behind it, and a command bar over a white page has to stay dark to stay legible.
     static let barFill = AnyShapeStyle(WindowBackgroundShapeStyle.windowBackground.opacity(0.92))
+    /// The one blur allowed on a floating surface, *under* `barFill`. Arc's bar is flat —
+    /// no Liquid Glass, no specular rim, no refraction — but the page behind it is still
+    /// softened rather than merely dimmed, which is what this does and all it does.
+    static let barMaterial = AnyShapeStyle(Material.regular)
     static let barShadow = Color.black.opacity(0.5)
     static let barShadowRadius: CGFloat = 30
     static let barShadowY: CGFloat = 12
@@ -165,6 +169,30 @@ enum Look {
     static let appearScale: CGFloat = 0.97
 }
 
+extension Look {
+    /// The chrome's geometry, proved offline. These are the numbers a screenshot is measured
+    /// against, so a change to one of them should fail here before anyone has to look.
+    nonisolated static func check() -> [(String, Bool)] {
+        var out: [(String, Bool)] = []
+        out.append(("the lights' centre line is the sidebar top row's centre line",
+                    lightsCentre == topInset + topRow / 2))
+        // 800 stands for the window's top edge wherever AppKit parented the buttons; only
+        // the offset from it matters, which is what makes the arithmetic testable at all.
+        out.append(("a 14pt light's origin puts its centre on that line",
+                    VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 14) == 800 - lightsCentre - 7))
+        out.append(("the offset is from the top edge, not from the window's height",
+                    VaneWindow.lightOriginY(windowTop: 100, buttonHeight: 14)
+                        == VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 14) - 700))
+        out.append(("a bigger light still centres on the same line",
+                    VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 20)
+                        == VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 14) - 3))
+        out.append(("the sidebar is laid out on a row-plus-gap pitch", rowHeight + rowGap == 40))
+        out.append(("the card and the pill share one radius", cardRadius == pillRadius))
+        out.append(("the command bar's rows keep Arc's 50pt pitch", barRowHeight + barRowGap == 50))
+        return out
+    }
+}
+
 extension Color {
     /// `#RRGGBB` as written in a Profile or a Space. ponytail: no alpha, no short form — the
     /// only producers of these strings are `Look.themeSwatches` and `ProfileManager.palette`.
@@ -180,8 +208,9 @@ extension Color {
 }
 
 /// Behind-window blur for the window itself — the desktop shows through the sidebar, which
-/// is the "transparent glass" of the design. Floating surfaces (command bar, pills) use
-/// `.glass()` below instead; this is for the ground they sit on.
+/// is the "transparent glass" of the design. This is the *only* blur in the window chrome:
+/// every control on top of it is a flat fill from `Look`, the way Arc's are. Floating
+/// surfaces add `Look.barMaterial` under `Look.barFill`, never Liquid Glass.
 struct WindowGlass: NSViewRepresentable {
     var material: NSVisualEffectView.Material = .underWindowBackground
     func makeNSView(context: Context) -> NSVisualEffectView {
@@ -201,12 +230,6 @@ struct Hairline: View {
 }
 
 extension View {
-    /// Liquid Glass for a floating surface: the command bar, a popover, the address pill.
-    /// One call so every surface refracts the same way.
-    func glass(radius: CGFloat = Look.cardRadius) -> some View {
-        glassEffect(.regular, in: .rect(cornerRadius: radius))
-    }
-
     /// The 1px line around a card, a field, the command bar. `strokeBorder` keeps the whole
     /// pixel inside the shape, so it never blurs against the fill's antialiased edge.
     func hairline(radius: CGFloat, _ color: Color = Look.hairline) -> some View {

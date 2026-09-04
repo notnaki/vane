@@ -262,7 +262,12 @@ struct Space: Identifiable, Codable, Equatable {
     var name: String
     var profileID: UUID
     var tabURLs: [URL]
+    /// The Favourites grid. The key is `pinnedURLs` because it predates the split between
+    /// Favourites and Pinned; renaming it would drop every existing space's grid.
     var pinnedURLs: [URL]
+    /// Arc's Pinned section — the list rows between the space's name and the New Tab
+    /// divider. Optional so a spaces.json written before the split still decodes.
+    var pinnedTabURLs: [URL]?
     /// The space's look. All optional, so a spaces.json written before any of this existed
     /// still decodes — an Optional property gets `decodeIfPresent` for free. `icon` is an SF
     /// Symbol name, `appearance` is "light"/"dark" (nil follows the system) and `tint` is how
@@ -273,7 +278,7 @@ struct Space: Identifiable, Codable, Equatable {
     var tint: Double?
 
     init(id: UUID = UUID(), name: String, profileID: UUID,
-         tabURLs: [URL] = [], pinnedURLs: [URL] = [],
+         tabURLs: [URL] = [], pinnedURLs: [URL] = [], pinnedTabURLs: [URL]? = nil,
          colorHex: String? = nil, icon: String? = nil,
          appearance: String? = nil, tint: Double? = nil) {
         self.id = id
@@ -281,6 +286,7 @@ struct Space: Identifiable, Codable, Equatable {
         self.profileID = profileID
         self.tabURLs = tabURLs
         self.pinnedURLs = pinnedURLs
+        self.pinnedTabURLs = pinnedTabURLs
         self.colorHex = colorHex
         self.icon = icon
         self.appearance = appearance

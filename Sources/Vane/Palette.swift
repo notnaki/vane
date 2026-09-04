@@ -71,6 +71,13 @@ enum Palette {
         return out
     }
 
+    /// Where Return loads, as Arc decides it. ⌘T's bar always makes a tab; ⌘L's replaces
+    /// the page it was opened on; ⌘Return makes a tab whichever opened it. With nothing open
+    /// there is nothing to replace, so a tab is made either way.
+    static func opensInNewTab(mode: PaletteMode, commandHeld: Bool, hasActiveTab: Bool) -> Bool {
+        commandHeld || mode == .newTab || !hasActiveTab
+    }
+
     static func check() -> [(String, Bool)] {
         // Force-unwrapped inside the assertions on purpose: a nil here is the failure the
         // line above it already checks for, so it can only fire if the checks disagree.
@@ -78,6 +85,18 @@ enum Palette {
         let none: [String] = []
         let watched = MainActor.assumeIsolated { ChangeWatch.check() }
         return [
+            // Where Return loads (§4 of the Arc spec): ⌘T makes a tab, ⌘L replaces the page.
+            ("⌘T's bar always opens in a new tab",
+             opensInNewTab(mode: .newTab, commandHeld: false, hasActiveTab: true)),
+            ("⌘L's bar replaces the page it was opened on",
+             !opensInNewTab(mode: .address, commandHeld: false, hasActiveTab: true)),
+            ("⌘Return opens in a new tab whichever way the bar was opened",
+             opensInNewTab(mode: .address, commandHeld: true, hasActiveTab: true)
+                && opensInNewTab(mode: .all, commandHeld: true, hasActiveTab: true)),
+            ("with nothing open there is nothing to replace, so a tab is made",
+             opensInNewTab(mode: .address, commandHeld: false, hasActiveTab: false)),
+            ("⌘⇧P's bar replaces the page too — it is the same bar",
+             !opensInNewTab(mode: .all, commandHeld: false, hasActiveTab: true)),
             ("with nothing typed the bar lists the open tabs",
              arrange(tabs: ["t1", "t2"], typed: nil, suggestions: none, ai: nil, commands: none) == ["t1", "t2"]),
             ("a matching tab comes before what was typed",
@@ -251,7 +270,11 @@ private struct PaletteRow: Identifiable {
     var trailing: String = ""
     /// What VoiceOver calls this row, since the icon says it to everyone else.
     let kind: String
-    let run: @MainActor () -> Void
+    /// `target` makes — or finds — the tab this row should load into, and is only called by
+    /// the rows that load something. Passed in rather than captured so ⌘Return can hand the
+    /// same row a fresh tab: a row's closure is built when the list is, which is before the
+    /// user has pressed anything.
+    let run: @MainActor (_ target: () -> Tab) -> Void
 }
 
 /// The command bar's text field.
@@ -263,7 +286,7 @@ private struct PaletteRow: Identifiable {
 /// than racing `onKeyPress` against it. Ceiling: a plain single-line NSTextField — no
 /// attributed text, no inline completion, no emoji picker.
 private struct CommandField: NSViewRepresentable {
-    enum Key { case up, down, enter, shiftEnter, tab, escape }
+    enum Key { case up, down, enter, shiftEnter, commandEnter, tab, escape }
 
     @Binding var text: String
     let prompt: String
@@ -331,7 +354,11 @@ private struct CommandField: NSViewRepresentable {
                      doCommandBy selector: Selector) -> Bool {
             // Shift-Return arrives as an ordinary insertNewline:, so the modifier has to be
             // read off the event that caused it.
-            let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+            let flags = NSApp.currentEvent?.modifierFlags ?? []
+            let shift = flags.contains(.shift)
+            // ⌘Return arrives as insertNewlineIgnoringFieldEditor:, ⇧Return as an ordinary
+            // insertNewline:, so both modifiers have to be read off the event that caused it.
+            let command = flags.contains(.command)
             switch selector {
             case #selector(NSResponder.moveUp(_:)):          return parent.onKey(.up)
             case #selector(NSResponder.moveDown(_:)):        return parent.onKey(.down)
@@ -339,7 +366,7 @@ private struct CommandField: NSViewRepresentable {
             case #selector(NSResponder.cancelOperation(_:)): return parent.onKey(.escape)
             case #selector(NSResponder.insertNewline(_:)),
                  #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
-                return parent.onKey(shift ? .shiftEnter : .enter)
+                return parent.onKey(command ? .commandEnter : (shift ? .shiftEnter : .enter))
             default: return false
             }
         }
@@ -464,8 +491,11 @@ private struct CommandField: NSViewRepresentable {
                 list
             }
         }
-        .glass(radius: Look.barRadius)
+        // Arc's bar is one flat surface, not glass: a blur of whatever is behind it,
+        // darkened almost to opaque, and a single hairline. No specular edge, no
+        // refraction — the shadow is what lifts it off the page.
         .background(Look.barFill, in: .rect(cornerRadius: Look.barRadius))
+        .background(Look.barMaterial, in: .rect(cornerRadius: Look.barRadius))
         .hairline(radius: Look.barRadius, Look.barStroke)
         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
         // The bar is dark over anything, including a white page, so the semantic colours
@@ -549,8 +579,9 @@ private struct CommandField: NSViewRepresentable {
         switch k {
         case .up:         move(-1)
         case .down:       move(1)
-        case .enter:      activate()
-        case .escape:     close()
+        case .enter:        activate()
+        case .commandEnter: activate(inNewTab: true)
+        case .escape:       close()
         case .shiftEnter:
             // Instant Links: skip the results page and open what it would have led to.
             guard mode == .address || mode == .newTab, !typed.isEmpty else { return false }
@@ -569,10 +600,12 @@ private struct CommandField: NSViewRepresentable {
 
     private var typed: String { query.trimmingCharacters(in: .whitespaces) }
 
-    /// Where Return loads: a fresh tab when the bar was opened by ⌘T, else the current one.
-    /// Made only now, so a dismissed bar never leaves an empty tab behind.
-    private func target() -> Tab {
-        mode == .newTab ? store.newBlankTab() : (store.active ?? store.newBlankTab())
+    /// Where Return loads: a fresh tab when the bar was opened by ⌘T or ⌘Return was held,
+    /// else the tab it was opened on. Made only now, so a dismissed bar never leaves an
+    /// empty tab behind.
+    private func target(inNewTab: Bool = false) -> Tab {
+        Palette.opensInNewTab(mode: mode, commandHeld: inNewTab, hasActiveTab: store.active != nil)
+            ? store.newBlankTab() : (store.active ?? store.newBlankTab())
     }
 
     private func move(_ delta: Int) {
@@ -582,12 +615,14 @@ private struct CommandField: NSViewRepresentable {
         axAnnounce("\(row.title), \(row.kind), \(index + 1) of \(rows.count)")
     }
 
-    private func activate() {
+    private func activate(inNewTab: Bool = false) {
         guard rows.indices.contains(index) else { return }
         let row = rows[index]
         // Dismiss first: a command may close this very window.
         close()
-        row.run()
+        // The tab is made lazily, inside the row: a command row opens nothing, and eagerly
+        // making a tab for it would leave a blank one behind.
+        row.run { target(inNewTab: inNewTab) }
     }
 
     /// The suggestion list belongs to the window, not to this view, so it has to be handed
@@ -638,7 +673,7 @@ private struct CommandField: NSViewRepresentable {
         }
         let text = typed
         return PaletteRow(id: "typed", icon: icon, title: text, trailing: trailing,
-                          kind: trailing) {
+                          kind: trailing) { target in
             // go() resolves bangs, assistants, urls and searches — all of it, in that order.
             target().go(text)
         }
@@ -661,7 +696,7 @@ private struct CommandField: NSViewRepresentable {
                 subtitle: s.completion || s.title.isEmpty ? "" : host,
                 trailing: s.completion ? "" : "Open",
                 kind: s.completion ? "Search suggestion" : (s.bookmarked ? "Bookmark" : "History")
-            ) {
+            ) { target in
                 guard let u = URL(string: s.url) else { return }
                 let tab = target()
                 tab.editing = false
@@ -682,7 +717,7 @@ private struct CommandField: NSViewRepresentable {
                 out.append(PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
                                       image: tab.favicon, title: tab.title, detail: detail,
                                       subtitle: place,
-                                      trailing: "Switch to Tab", kind: "Open tab") {
+                                      trailing: "Switch to Tab", kind: "Open tab") { _ in
                     other.current = tab.id
                     other.window?.makeKeyAndOrderFront(nil)
                 })
@@ -694,7 +729,7 @@ private struct CommandField: NSViewRepresentable {
     private func commandRows() -> [PaletteRow] {
         PaletteCommand.all.map { c in
             PaletteRow(id: "cmd:" + c.id, icon: c.icon, title: c.title,
-                       trailing: "Command", kind: "Command", run: c.run)
+                       trailing: "Command", kind: "Command") { _ in c.run() }
         }
     }
 
@@ -703,7 +738,7 @@ private struct CommandField: NSViewRepresentable {
         let (assistant, question) = AIChat.match(query) ?? (AIChat.preferred, query)
         guard let url = AIChat.url(for: question, using: assistant) else { return nil }
         return PaletteRow(id: "ai", icon: "sparkles", title: question,
-                          trailing: "Ask \(assistant.name)", kind: "AI Chat") {
+                          trailing: "Ask \(assistant.name)", kind: "AI Chat") { _ in
             (Windows.current ?? Windows.open()).newTab(url)
         }
     }

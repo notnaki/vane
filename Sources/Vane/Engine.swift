@@ -7,6 +7,18 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     + "(KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 
 /// One tab. Owns its WKWebView and republishes the bits the chrome needs via KVO.
+/// Which of Arc's three sidebar sections a tab lives in, in the order they are drawn.
+/// The strip is kept sorted by this, so a section is a contiguous run and never a filter
+/// that has to be re-sorted to be shown.
+///
+/// Favourites are the icon-only grid at the top; Pinned are list rows under the space's
+/// name; Today is everything below the New Tab divider. Only Today auto-archives, and only
+/// Today is closed by ⌘W — which is the whole reason the distinction exists.
+enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
+    case favourite = 0, pinned = 1, today = 2
+    static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
+}
+
 /// ponytail: KVO straight to @Published instead of a navigation-delegate state machine —
 /// WebKit already tracks all of this.
 @MainActor final class Tab: NSObject, ObservableObject, Identifiable, WKUIDelegate,
@@ -34,8 +46,12 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     /// Making noise the user can hear. Muting the tab clears it.
     @Published var audible = false
     @Published var favicon: NSImage?
-    /// Pinned tabs sit at the head of the strip and survive a relaunch.
-    @Published var pinned = false
+    /// Which section of the sidebar this tab is in. The strip is sorted by it.
+    @Published var kind: TabKind = .today
+    /// Favourites and Pinned both *stay*: neither auto-archives, ⌘W leaves both where they
+    /// are, and both are written down so they come back after a relaunch. Almost everything
+    /// that used to ask "is this pinned?" means this.
+    var stays: Bool { kind != .today }
     /// True while this tab has no live page — see `suspend()`. Published so anything that
     /// wants to badge the strip can, but nothing does: suspension is meant to be invisible.
     @Published private(set) var suspended = false
@@ -386,8 +402,9 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         } else if !isPrivate {
             history.record(url, title: w.title ?? "")
         }
-        // A favourite is the tab itself, wherever it has gone: the pin on disk follows it.
-        if pinned { TabStore.savePins(owning: self) }
+        // A favourite or a pinned tab is the tab itself, wherever it has gone: the record
+        // on disk follows it.
+        if stays { TabStore.savePins(owning: self) }
     }
 
     /// HTTPS-only mode. `.cancel` plus a re-load is the only way to change a navigation's
@@ -589,33 +606,38 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         self.currentSpaceID = space?.id
         TabStore.all.append(self)
         Suspension.begin()        // idempotent; here so main.swift needs no wiring
-        // A space carries its own tabs and pins; otherwise fall back to the profile's pins.
+        // A space carries its own tabs, favourites and pinned rows; otherwise fall back to
+        // the profile's.
         let urls = space.map { $0.tabURLs } ?? urls
-        // Pins belong to the profile, not to a window, so only the first window of that
-        // profile gets them back — and the session's copy of those same urls is dropped so
-        // they don't come up twice.
+        // What stays belongs to the profile, not to a window, so only the first window of
+        // that profile gets it back — and the session's copy of those same urls is dropped
+        // so they don't come up twice.
         let firstOfProfile = TabStore.all.filter { $0.profileID == profileID && !$0.isPrivate }.count == 1
-        let pins = space?.pinnedURLs
-            ?? ((!isPrivate && firstOfProfile) ? TabStore.pinnedURLs(for: profileID) : [])
+        let mine = !isPrivate && firstOfProfile
+        let favourites = space?.pinnedURLs ?? (mine ? TabStore.stayingURLs(.favourite, for: profileID) : [])
+        let pinned = space?.pinnedTabURLs ?? (mine ? TabStore.stayingURLs(.pinned, for: profileID) : [])
         // A space carries its own per-tab state in a sidecar; a window restore is handed one.
         let parked = space.map { Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory) } ?? parked
-        restoreFavourites(pins, parked: parked)
-        let rest = urls.filter { !pins.contains($0) }
+        restore(favourites, as: .favourite, parked: parked)
+        restore(pinned, as: .pinned, parked: parked)
+        let kept = Set(favourites + pinned)
+        let rest = urls.filter { !kept.contains($0) }
         rest.forEach { newBlankTab().open($0, parked: parked[$0.absoluteString]) }
-        // Favourites come back parked and stay parked: focus lands on the first ordinary
-        // tab, and with none the column is bare and the search bar is up — the same thing
-        // an empty window does, because as far as pages go it is one.
-        current = tabs.first { !$0.pinned }?.id
+        // Favourites and pinned rows come back parked and stay parked: focus lands on the
+        // first Today tab, and with none the column is bare and the search bar is up — the
+        // same thing an empty window does, because as far as pages go it is one.
+        current = tabs.first { $0.kind == .today }?.id
         if rest.isEmpty { newTab(nil) }
     }
 
-    /// Favourites, in order, all parked. Never loaded eagerly whatever `Prefs.suspendTabs`
-    /// says: a tile is a place to go, and eight of them at launch are eight processes for
-    /// pages nobody is looking at. `parked` may carry the state a favourite was last on.
-    private func restoreFavourites(_ urls: [URL], parked: [String: Parked]) {
+    /// One section's tabs, in order, all parked. Never loaded eagerly whatever
+    /// `Prefs.suspendTabs` says: a favourite tile or a pinned row is a place to go, and
+    /// eight of them at launch are eight processes for pages nobody is looking at.
+    /// `parked` may carry the state each one was last on.
+    private func restore(_ urls: [URL], as kind: TabKind, parked: [String: Parked]) {
         for url in urls {
             let t = newBlankTab()
-            t.pinned = true
+            t.kind = kind
             t.park(url: url, parked[url.absoluteString] ?? Parked())
         }
     }
@@ -664,13 +686,34 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     /// its home url, and only Unpin ever takes it out of the grid. Closing the last tab
     /// leaves an empty window, not no window: the sidebar stays and the page area shows the
     /// glass, the way Arc's does.
+    /// ⌘W, and what the auto-archive sweep does: remember the page so it can be brought
+    /// back from the Library, then close it. A favourite or a pinned tab is written down
+    /// already and stays exactly where it is — `close` parks it — so nothing is archived
+    /// for it either; that is the whole difference between the sections.
+    func archive(_ id: Tab.ID) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        if tab.kind == .today, !isPrivate, let u = tab.currentURL,
+           u.scheme?.hasPrefix("http") == true {
+            Archive.shared(for: profileID).add(url: u, title: TidyTitles.title(for: tab))
+        }
+        close(id)
+    }
+
+    /// A row in the Library's Archived Tabs list, clicked: open it again and take it out of
+    /// the archive, because it is not archived any more.
+    func unarchive(_ entry: Archive.Entry) {
+        Archive.shared(for: profileID).remove(entry.id)
+        guard let u = URL(string: entry.url) else { return }
+        newTab(u)
+    }
+
     func close(_ id: Tab.ID) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[i]
-        let outcome = TabStore.closing(i, pinned: tabs.map(\.pinned), lastActive: tabs.map(\.lastActive))
-        // A favourite is the same tab, only moved into the grid: closing it leaves it exactly
-        // as it is, and only Unpin ever takes it out. Nothing is "closed", so nothing is
-        // pushed for Reopen Closed Tab either.
+        let outcome = TabStore.closing(i, kinds: tabs.map(\.kind), lastActive: tabs.map(\.lastActive))
+        // A favourite or a pinned tab is the same tab, only moved into its section: closing
+        // it leaves it exactly as it is, and only Unfavourite/Unpin ever takes it out.
+        // Nothing is "closed", so nothing is pushed for Reopen Closed Tab either.
         if !outcome.keep {
             if !isPrivate { ClosedTabs.push(tab.currentURL) }
             tabs.remove(at: i)
@@ -680,24 +723,24 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         if current == id { current = outcome.next.map { tabs[$0].id } }
     }
 
-    /// What closing the tab at `i` does, as pure index math over the strip's pin flags. A
-    /// favourite is kept — parked in place — and an ordinary tab goes. `next` is what to show
-    /// if the closed tab was showing, as an index into the strip *after* the close: a
-    /// favourite hands over to the most recently used ordinary tab, an ordinary tab to its
-    /// neighbour — unless that neighbour is a favourite, because waking a favourite over
-    /// something else closing is exactly the "ones on top go away" the user complained of.
-    /// nil means the content column goes bare.
-    static func closing(_ i: Int, pinned: [Bool], lastActive: [Date]) -> (keep: Bool, next: Int?) {
-        let keep = pinned[i]
-        var rest = pinned, recent = lastActive
+    /// What closing the tab at `i` does, as pure index math over the strip's kinds. A
+    /// favourite or a pinned tab is kept — parked in place — and a Today tab goes. `next` is
+    /// what to show if the closed tab was showing, as an index into the strip *after* the
+    /// close: a kept tab hands over to the most recently used Today tab, a Today tab to its
+    /// neighbour — unless that neighbour is one of the kept ones, because waking a favourite
+    /// over something else closing is exactly the "ones on top go away" the user complained
+    /// of. nil means the content column goes bare.
+    static func closing(_ i: Int, kinds: [TabKind], lastActive: [Date]) -> (keep: Bool, next: Int?) {
+        let keep = kinds[i] != .today
+        var rest = kinds, recent = lastActive
         if !keep { rest.remove(at: i); recent.remove(at: i) }
         if keep {
-            let ordinary = rest.indices.filter { !rest[$0] }
+            let ordinary = rest.indices.filter { rest[$0] == .today }
             return (true, ordinary.max { recent[$0] < recent[$1] })
         }
         guard !rest.isEmpty else { return (false, nil) }
         let neighbour = min(i, rest.count - 1)
-        return (false, rest[neighbour] ? nil : neighbour)
+        return (false, rest[neighbour] == .today ? neighbour : nil)
     }
 
     func cycle(_ delta: Int) {
@@ -705,50 +748,67 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         current = tabs[(i + delta + tabs.count) % tabs.count].id
     }
 
-    // MARK: Reorder + pins
+    // MARK: Reorder + sections
 
-    /// The one ordering invariant: every pinned tab sits ahead of every unpinned one. A
-    /// drag that would break it is clamped to the nearest position that doesn't.
-    /// `count` and `pinnedCount` describe the strip *after* the move.
-    static func clampedDestination(count: Int, pinnedCount: Int, movingPinned: Bool, to: Int) -> Int {
-        let low = movingPinned ? 0 : pinnedCount
-        let high = movingPinned ? pinnedCount - 1 : count - 1
+    /// The one ordering invariant: the strip is sorted by section — every favourite ahead of
+    /// every pinned tab, every pinned tab ahead of every Today tab — so each section is a
+    /// contiguous run. A drag that would break it is clamped to the nearest position that
+    /// doesn't. `others` is the strip's kinds with the moved tab *already removed*, and the
+    /// result is an index into `others` to insert at.
+    static func clampedDestination(others: [TabKind], moving: TabKind, to: Int) -> Int {
+        let low = others.firstIndex { $0 >= moving } ?? others.count
+        let high = others.lastIndex { $0 <= moving }.map { $0 + 1 } ?? 0
         return min(max(to, low), max(low, high))
     }
 
-    /// Pinning parks the tab at the end of the pinned run; unpinning at the head of the rest.
-    func togglePin(_ id: Tab.ID) {
-        guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
+    /// Move a tab into a section. It lands at the end of Favourites or Pinned — where Arc
+    /// drops one — and at the head of Today, so an unpinned tab appears right under the
+    /// New Tab row rather than at the bottom of a long list.
+    func move(_ id: Tab.ID, to kind: TabKind) {
+        guard let i = tabs.firstIndex(where: { $0.id == id }), tabs[i].kind != kind else { return }
         let tab = tabs.remove(at: i)
-        setPinned(tab, !tab.pinned)
-        tabs.insert(tab, at: tabs.filter(\.pinned).count)
+        setKind(tab, kind)
+        let dest = TabStore.clampedDestination(others: tabs.map(\.kind), moving: kind,
+                                               to: kind == .today ? 0 : tabs.count)
+        tabs.insert(tab, at: dest)
         savePins()
     }
 
-    private func setPinned(_ tab: Tab, _ pinned: Bool) {
-        guard tab.pinned != pinned else { return }
-        tab.pinned = pinned
+    /// ⌘D / the Favourite Tab menu item: into the grid, or back down to Today.
+    func toggleFavourite(_ id: Tab.ID) {
+        guard let t = tabs.first(where: { $0.id == id }) else { return }
+        move(id, to: t.kind == .favourite ? .today : .favourite)
+    }
+
+    /// ⌘⇧D / the Pin Tab menu item: into the Pinned list, or back down to Today.
+    func togglePinned(_ id: Tab.ID) {
+        guard let t = tabs.first(where: { $0.id == id }) else { return }
+        move(id, to: t.kind == .pinned ? .today : .pinned)
+    }
+
+    private func setKind(_ tab: Tab, _ kind: TabKind) {
+        guard tab.kind != kind else { return }
+        tab.kind = kind
         TidyTitles.refresh(tab)
     }
 
     /// One drop for the whole sidebar: `id` lands before or after `target` and takes on the
-    /// target's side of the line — onto a tile pins, onto a row unpins — so the grid and
-    /// the list read as one strip the user drags across.
+    /// target's section — onto a tile favourites it, onto a pinned row pins it, onto a Today
+    /// row sends it back down — so the grid and the two lists read as one strip the user
+    /// drags across.
     func drop(_ id: Tab.ID, onto target: Tab.ID, after: Bool) {
         guard id != target,
               let from = tabs.firstIndex(where: { $0.id == id }),
               let to = tabs.firstIndex(where: { $0.id == target }) else { return }
-        let wantPinned = tabs[to].pinned
+        let want = tabs[to].kind
         let tab = tabs.remove(at: from)
-        let touchesPins = tab.pinned || wantPinned
-        setPinned(tab, wantPinned)
+        let touchesSections = tab.stays || want != .today
+        setKind(tab, want)
         let dest = TabStore.clampedDestination(
-            count: tabs.count + 1,
-            pinnedCount: tabs.filter(\.pinned).count + (tab.pinned ? 1 : 0),
-            movingPinned: tab.pinned,
+            others: tabs.map(\.kind), moving: want,
             to: TabStore.insertionIndex(from: from, target: to, after: after))
         tabs.insert(tab, at: min(dest, tabs.count))
-        if touchesPins { savePins() }
+        if touchesSections { savePins() }
     }
 
     /// Where a tab dragged from `from` goes to sit before (or after) `target`, once its own
@@ -758,14 +818,6 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         return after ? t + 1 : t
     }
 
-    /// A drop on the empty grid: the first favourite.
-    func pin(_ id: Tab.ID) {
-        guard let i = tabs.firstIndex(where: { $0.id == id }), !tabs[i].pinned else { return }
-        let tab = tabs.remove(at: i)
-        setPinned(tab, true)
-        tabs.insert(tab, at: 0)
-        savePins()
-    }
 
     /// How many across the favourites grid runs, the way Arc lays it out: tiles grow to fill
     /// a row until there are enough for a square, then the rows fill up instead. 0 is the
@@ -780,42 +832,52 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         }
     }
 
-    /// ponytail: pinned urls in UserDefaults, deliberately not in session.json — the
-    /// session is per-window and is rewritten by whichever window closed last, while pins
-    /// have to outlive all of them. Ceiling: one shared pin set, so pinning in two windows
-    /// at once means last writer wins.
-    static var pinnedURLs: [URL] { pinnedURLs(for: ProfileManager.shared.active.id) }
+    /// ponytail: the two staying sections' urls in UserDefaults, deliberately not in
+    /// session.json — the session is per-window and is rewritten by whichever window closed
+    /// last, while favourites and pinned tabs have to outlive all of them. Ceiling: one set
+    /// per profile, so favouriting in two windows at once means last writer wins.
+    ///
+    /// The default profile keeps the un-suffixed `pinnedTabs` key for its *favourites*: that
+    /// key predates the split between Favourites and Pinned, and pointing it anywhere else
+    /// would drop every existing user's grid on the floor for the sake of a tidier name.
+    static func defaultsKey(_ kind: TabKind, _ profileID: UUID) -> String {
+        ProfileManager.defaultsKey(kind == .favourite ? "pinnedTabs" : "pinnedRows", profileID)
+    }
 
-    /// Pins are profile data. The default profile keeps the un-suffixed `pinnedTabs` key, so
-    /// pins from before profiles existed are simply the default profile's pins.
-    static func pinnedURLs(for profileID: UUID) -> [URL] {
-        (UserDefaults.standard.stringArray(forKey: ProfileManager.defaultsKey("pinnedTabs", profileID)) ?? [])
+    static func stayingURLs(_ kind: TabKind, for profileID: UUID) -> [URL] {
+        (UserDefaults.standard.stringArray(forKey: defaultsKey(kind, profileID)) ?? [])
             .compactMap(URL.init(string:))
     }
 
-    /// What is written down for a favourite: the page it is on. Only web pages; a blank or
-    /// file tab is not a place to come back to.
+    /// What is written down for a favourite or a pinned tab: the page it is on. Only web
+    /// pages; a blank or file tab is not a place to come back to.
     static func pinURL(_ current: URL?) -> String? {
         guard let s = current?.absoluteString, s.hasPrefix("http") else { return nil }
         return s
     }
 
-    /// A pinned tab that navigated is still the pin, now pointing where it went.
+    /// A favourite or a pinned tab that navigated is still itself, now pointing where it
+    /// went.
     static func savePins(owning tab: Tab) {
         all.first { $0.tabs.contains { $0 === tab } }?.savePins()
     }
 
     func savePins() {
         guard !isPrivate else { return }
-        let urls = tabs.filter(\.pinned).compactMap { TabStore.pinURL($0.currentURL) }
-        // Inside a space the pins belong to the space, not to the profile — switching space
-        // must not drag the last space's pins along.
+        func urls(_ kind: TabKind) -> [String] {
+            tabs.filter { $0.kind == kind }.compactMap { TabStore.pinURL($0.currentURL) }
+        }
+        let favourites = urls(.favourite), pinned = urls(.pinned)
+        // Inside a space these belong to the space, not to the profile — switching space
+        // must not drag the last space's favourites along.
         if let id = currentSpaceID, var space = spaces.first(where: { $0.id == id }) {
-            space.pinnedURLs = urls.compactMap(URL.init(string:))
+            space.pinnedURLs = favourites.compactMap(URL.init(string:))
+            space.pinnedTabURLs = pinned.compactMap(URL.init(string:))
             ProfileManager.shared.updateSpace(space)
             return
         }
-        UserDefaults.standard.set(urls, forKey: ProfileManager.defaultsKey("pinnedTabs", profileID))
+        UserDefaults.standard.set(favourites, forKey: TabStore.defaultsKey(.favourite, profileID))
+        UserDefaults.standard.set(pinned, forKey: TabStore.defaultsKey(.pinned, profileID))
     }
 
     // MARK: Spaces
@@ -852,8 +914,12 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
     func saveCurrentSpace() {
         guard !isPrivate, let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
         else { return }
-        space.tabURLs = tabs.filter { !$0.pinned }.compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
-        space.pinnedURLs = tabs.filter(\.pinned).compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
+        func urls(_ keep: (Tab) -> Bool) -> [URL] {
+            tabs.filter(keep).compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
+        }
+        space.tabURLs = urls { $0.kind == .today }
+        space.pinnedURLs = urls { $0.kind == .favourite }
+        space.pinnedTabURLs = urls { $0.kind == .pinned }
         ProfileManager.shared.updateSpace(space)
         // Scroll position and back/forward list, in a sidecar — `Space` is another file's
         // Codable struct and is not mine to widen. Keyed by url, which is what
@@ -885,12 +951,34 @@ let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.
         currentSpaceID = space.id
         applySpaceAppearance()          // the new space may be pinned to light or dark
         let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
-        restoreFavourites(space.pinnedURLs, parked: parked)
+        restore(space.pinnedURLs, as: .favourite, parked: parked)
+        restore(space.pinnedTabURLs ?? [], as: .pinned, parked: parked)
         for url in space.tabURLs { newBlankTab().open(url, parked: parked[url.absoluteString]) }
-        current = tabs.first { !$0.pinned }?.id
+        current = tabs.first { $0.kind == .today }?.id
         if space.tabURLs.isEmpty { newTab(nil) }
         extensions.sync()
     }
+
+    /// ⌥⌘→ / ⌥⌘←: the next or previous space in this profile's list, wrapping round. A
+    /// window with one space (or none) has nowhere to go, and does nothing.
+    func cycleSpace(_ delta: Int) {
+        let list = spaces
+        guard list.count > 1, let i = list.firstIndex(where: { $0.id == currentSpaceID })
+        else { return }
+        switchTo(space: list[(i + delta + list.count) % list.count])
+    }
+
+    /// ⌃1…⌃9. Literally space N, unlike ⌘9 which means "the last tab": Arc numbers spaces
+    /// and there is no ninth space to be the last one.
+    func switchTo(spaceNumber n: Int) {
+        let list = spaces
+        guard list.indices.contains(n - 1) else { return }
+        switchTo(space: list[n - 1])
+    }
+
+    /// The Library popover in the sidebar's footer, so ⇧⌘L can open it — it is a popover on
+    /// a button, and AppKit has no way to press a SwiftUI button from a menu item.
+    @Published var libraryOpen = false
 
     /// Convenience for a menu that has an id rather than the struct.
     func switchTo(spaceID: UUID) {

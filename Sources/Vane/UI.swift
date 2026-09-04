@@ -93,10 +93,10 @@ struct BrowserWindow: View {
         if !store.sidebarShown && peeking {
             Sidebar()
                 .frame(width: Look.sidebarWidth)
-                .glass(radius: Look.cardRadius)
-                // The same near-opaque ground as the command bar: this one floats over the
-                // page, and glass alone over a white page is a white panel.
+                // The same near-opaque ground as the command bar: this one floats over
+                // the page, and a bare material over a white page is a white panel.
                 .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+                .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
                 .hairline(radius: Look.cardRadius)
                 .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                 .padding(Look.inset)
@@ -120,6 +120,9 @@ struct BrowserWindow: View {
         for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             store.window?.standardWindowButton(kind)?.isHidden = !visible
         }
+        // Unhiding re-lays the group, so put it back on the row's centre line before the
+        // frame it comes back in — otherwise ⌘S twice leaves the lights off the row.
+        (store.window as? VaneWindow)?.centreTrafficLights()
     }
 
     /// Nothing to undo on dismiss: ⌘T makes no tab until the bar is submitted.
@@ -273,7 +276,7 @@ private struct Sidebar: View {
                 VStack(spacing: Look.rowGap) {
                     Favorites().padding(.bottom, Look.inset - Look.rowGap)
                     SpaceRow()
-                    BookmarkList(tab: store.active)
+                    PinnedTabs()
                     TidyRow()
                     NewTabRow()
                     OpenTabs()
@@ -430,18 +433,21 @@ private struct PillBody: View {
             }
             Text(host).font(Look.text).lineLimit(1).foregroundStyle(.primary)
             Spacer(minLength: 4)
-            // Always there, as in Arc: two quiet glyphs read better than a row that grows
-            // controls under the pointer. Disabled, not hidden, when there is no page.
-            Button { copyLink() } label: { Image(systemName: "link") }
-                .disabled(tab == nil)
-                .help("Copy Link")
-                .accessibilityLabel("Copy Link")
-            Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
-                // ponytail: the whole settings window, not a per-site sheet. Site settings
-                // do not exist yet; when they do, this is the one caller to change.
-                .disabled(tab == nil)
-                .help("Site Settings")
-                .accessibilityLabel("Site Settings")
+            // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
+            // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
+            // They sit past a Spacer, so arriving and leaving never moves the host.
+            if hovering {
+                Button { copyLink() } label: { Image(systemName: "link") }
+                    .disabled(tab == nil)
+                    .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
+                    .accessibilityLabel("Copy Link")
+                Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
+                    // ponytail: the whole settings window, not a per-site sheet. Site settings
+                    // do not exist yet; when they do, this is the one caller to change.
+                    .disabled(tab == nil)
+                    .help("Site Settings")
+                    .accessibilityLabel("Site Settings")
+            }
         }
         .buttonStyle(.plain)
         .font(Look.rowText)
@@ -452,7 +458,6 @@ private struct PillBody: View {
         // A step up under the pointer, the way a row does: the pill is a button, and a
         // button that does not react reads as a label.
         .background(hovering ? Look.selected : Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
-        .glass(radius: Look.pillRadius)
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -464,7 +469,10 @@ private struct PillBody: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Opens the search bar to type a website address or a search.")
         .accessibilityAction { open() }
+        // The two glyphs are only drawn on hover, so the actions they stand for have to be
+        // on the pill itself — a pointer gesture is not a route VoiceOver has.
         .accessibilityAction(named: "Copy Link") { copyLink() }
+        .accessibilityAction(named: "Site Settings") { SettingsWindow.show() }
     }
 
     /// With a page, the bar opens on its address; with none, on nothing — and what is
@@ -481,17 +489,20 @@ private struct PillBody: View {
 
 // MARK: - Favourites
 
-/// Pinned tabs as a grid of tiles, Arc's way: a place, not a page. A tile stays put when its
-/// page is closed (`TabStore.close` parks it), and only Unpin — or a drag down into the
-/// list — takes it out. Columns follow the count (`TabStore.favouriteColumns`), so one
-/// favourite is one wide tile and seven are a 4-wide grid, never two fixed slots.
+/// Arc's Favourites: a grid of tiles at the very top, above the space's name. A place, not
+/// a page. A tile stays put when its page is closed (`TabStore.close` parks it), it never
+/// auto-archives, and only Unfavourite — or a drag down into one of the lists — takes it
+/// out. Columns follow the count (`TabStore.favouriteColumns`), so one favourite is one wide
+/// tile and seven are a 4-wide grid, never two fixed slots.
 private struct Favorites: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        let pinned = store.tabs.filter(\.pinned)
+        let pinned = store.tabs.filter { $0.kind == .favourite }
         if pinned.isEmpty {
-            FavoritesPlaceholder()
+            SectionDropTarget(kind: .favourite, symbol: "star", height: Look.tileHeight,
+                              label: "Favourites", value: "None yet",
+                              hint: "Drag a tab here to make it a favourite.")
         } else {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
                                      count: TabStore.favouriteColumns(pinned.count)),
@@ -505,28 +516,36 @@ private struct Favorites: View {
     }
 }
 
-/// One quiet full-width tile where the grid will be: the sidebar keeps its shape with
-/// nothing pinned, and the first favourite has somewhere to be dropped. A card's fill
-/// rather than a tile's, so it reads as a place rather than as a tile that lost its icon.
-private struct FavoritesPlaceholder: View {
+/// One quiet full-width slot where an empty section would be: the sidebar keeps its shape
+/// with nothing in Favourites or Pinned, and the first one has somewhere to be dropped. A
+/// card's fill rather than a tile's, so it reads as a place rather than as a tile that lost
+/// its icon.
+private struct SectionDropTarget: View {
     @EnvironmentObject var store: TabStore
+    let kind: TabKind
+    let symbol: String
+    let height: CGFloat
+    let label: String
+    let value: String
+    let hint: String
     @State private var side: DropSide?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         RoundedRectangle(cornerRadius: Look.pillRadius)
             .fill(side == nil ? Look.cardFill : Look.hovered)
-            .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
+            .frame(maxWidth: .infinity, minHeight: height)
             .overlay {
-                Image(systemName: "star").font(Look.symbol).foregroundStyle(.quaternary)
+                Image(systemName: symbol).font(Look.symbol).foregroundStyle(.quaternary)
             }
             .animation(reduceMotion ? nil : Look.quick, value: side == nil)
             .onDrop(of: [.plainText],
-                    delegate: TabDrop(store: store, target: nil, axis: .horizontal, extent: 0, side: $side))
+                    delegate: TabDrop(store: store, target: nil, into: kind,
+                                      axis: .horizontal, extent: 0, side: $side))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Favourites")
-            .accessibilityValue("None pinned")
-            .accessibilityHint("Drag a tab here to pin it.")
+            .accessibilityLabel(label)
+            .accessibilityValue(value)
+            .accessibilityHint(hint)
     }
 }
 
@@ -546,7 +565,6 @@ private struct FavoriteTile: View {
             // a tile is a button, and a button that does not react reads as a label.
             .background(selected || hovering ? Look.selected : Look.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
-            .glass(radius: Look.pillRadius)
             .overlay(alignment: side == .after ? .trailing : .leading) {
                 DropLine(on: side != nil, axis: .horizontal)
             }
@@ -558,12 +576,9 @@ private struct FavoriteTile: View {
             .help(tab.title)
             .onDrag { dragPayload(tab) } preview: { TabIcon(tab: tab, size: Look.tileIcon).padding(6) }
             .onDrop(of: [.plainText],
-                    delegate: TabDrop(store: store, target: tab, axis: .horizontal, extent: width, side: $side))
-            .contextMenu {
-                Button("Unpin Tab") { store.togglePin(tab.id) }
-                Divider()
-                Button("Close Tab") { store.close(tab.id) }
-            }
+                    delegate: TabDrop(store: store, target: tab, into: .favourite,
+                                      axis: .horizontal, extent: width, side: $side))
+            .contextMenu { TabMenu(store: store, tab: tab) }
             // One element per favourite, the way a tab reads: the title is the label, the
             // state is the value, and unpin/close are actions rather than hidden gestures.
             .accessibilityElement(children: .ignore)
@@ -571,7 +586,8 @@ private struct FavoriteTile: View {
             .accessibilityValue(tabState(tab, in: store))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             .accessibilityHint("Shows this tab.")
-            .accessibilityAction(named: "Unpin Tab") { store.togglePin(tab.id) }
+            .accessibilityAction(named: "Unfavourite Tab") { store.toggleFavourite(tab.id) }
+            .accessibilityAction(named: "Pin Tab") { store.move(tab.id, to: .pinned) }
             .accessibilityAction(named: "Close Tab") { store.close(tab.id) }
     }
 }
@@ -582,7 +598,11 @@ private struct FavoriteTile: View {
     if let i = store.tabs.firstIndex(where: { $0.id == tab.id }) {
         bits.append("tab \(i + 1) of \(store.tabs.count)")
     }
-    if tab.pinned { bits.append("pinned") }
+    switch tab.kind {
+    case .favourite: bits.append("favourite")
+    case .pinned:    bits.append("pinned")
+    case .today:     break
+    }
     if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
     bits.append(tab.loading ? "loading" : "loaded")
     return bits.joined(separator: ", ")
@@ -637,6 +657,9 @@ private struct DropLine: View {
 private struct TabDrop: DropDelegate {
     let store: TabStore
     let target: Tab?
+    /// Which section this target is in. With a `target` it is the target's own kind and is
+    /// unused; with none it is the empty section's, and is what the drop moves the tab into.
+    let into: TabKind
     let axis: Axis
     let extent: CGFloat
     @Binding var side: DropSide?
@@ -658,7 +681,7 @@ private struct TabDrop: DropDelegate {
         side = nil
         guard let id = Dragging.shared.tab else { return false }
         Dragging.shared.tab = nil
-        if let target { store.drop(id, onto: target.id, after: after) } else { store.pin(id) }
+        if let target { store.drop(id, onto: target.id, after: after) } else { store.move(id, to: into) }
         return true
     }
 
@@ -981,63 +1004,32 @@ private struct SpaceDots: View {
     }
 }
 
-// MARK: - Bookmarks
+// MARK: - Pinned
 
-/// This profile's bookmarks, standing in for Arc's per-space pinned list.
-/// ponytail: Vane has no per-space pinned *pages* (only pinned tabs, which are the grid
-/// above), and bookmarks are the list of pages the user already said they care about. The
-/// upgrade path is a `Space.pinnedURLs`-backed list once spaces get their own editing UI.
-private struct BookmarkList: View {
-    let tab: Tab?
-
-    var body: some View {
-        if let tab { LiveBookmarkList(tab: tab) } else { BookmarkRows(bookmarked: false) }
-    }
-}
-
-/// Only here to observe the tab: the list has to redraw the moment ⌘D adds or removes one,
-/// and with no tab there is nothing to press ⌘D on.
-private struct LiveBookmarkList: View {
-    @ObservedObject var tab: Tab
-    var body: some View { BookmarkRows(bookmarked: tab.bookmarked) }
-}
-
-private struct BookmarkRows: View {
+/// Arc's Pinned section: the tabs that stay, drawn as ordinary rows between the space's name
+/// and the New Tab divider. Deliberately the same row as a Today tab — in Arc the two are
+/// indistinguishable to look at, and the divider below is the only thing that says which is
+/// which. What differs is behaviour: a pinned tab never auto-archives, and ⌘W leaves it
+/// exactly where it is.
+private struct PinnedTabs: View {
     @EnvironmentObject var store: TabStore
-    let bookmarked: Bool
-    @State private var marks: [Suggestion] = []
 
     var body: some View {
+        let pinned = store.tabs.filter { $0.kind == .pinned }
         VStack(spacing: Look.rowGap) {
-            ForEach(marks) { mark in
-                SidebarRow(selected: false, action: { open(mark) }) {
-                    // The cached favicon if the page has been visited, a globe if not — the
-                    // row should look like the site, not like a list of identical stars.
-                    SiteIcon(icon: URL(string: mark.url).flatMap(store.favicons.icon(for:)))
-                } label: {
-                    Text(mark.title.isEmpty ? mark.url : mark.title)
-                } trailing: {
-                    EmptyView()
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(mark.title.isEmpty ? mark.url : mark.title)
-                .accessibilityValue("Bookmark, \(mark.url)")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityHint("Opens this page.")
-                .accessibilityAction { open(mark) }
+            if pinned.isEmpty {
+                // A row-high slot rather than nothing: an empty section with no drop target
+                // cannot be filled by dragging, which is the way Arc fills it.
+                SectionDropTarget(kind: .pinned, symbol: "pin", height: Look.rowHeight,
+                                  label: "Pinned Tabs", value: "None yet",
+                                  hint: "Drag a tab here to pin it.")
+            } else {
+                ForEach(pinned) { TabRow(tab: $0) }
             }
         }
-        .onAppear { reload() }
-        .onChange(of: bookmarked) { reload() }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Bookmarks")
-    }
-
-    private func reload() { marks = store.isPrivate ? [] : store.history.bookmarks(limit: 30) }
-
-    private func open(_ mark: Suggestion) {
-        guard let u = URL(string: mark.url) else { return }
-        if let t = store.active { t.web.load(URLRequest(url: u)) } else { store.newTab(u) }
+        .accessibilityLabel("Pinned Tabs")
+        .accessibilityValue("\(pinned.count) pinned")
     }
 }
 
@@ -1117,8 +1109,8 @@ private struct TidyRow: View {
                 .accessibilityLabel("Tidy Tabs")
             Text("|").foregroundStyle(.tertiary)
             Button("Clear") { clear() }
-                .help("Close every tab that is not pinned")
-                .accessibilityLabel("Close Unpinned Tabs")
+                .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
+                .accessibilityLabel("Clear Tabs")
         }
         .buttonStyle(.plain)
         .font(Look.caption)
@@ -1127,15 +1119,8 @@ private struct TidyRow: View {
         .frame(height: Look.rowHeight)
     }
 
-    /// Closing every tab would close the window, so when nothing is pinned a blank tab is
-    /// opened first to hold it open.
-    private func clear() {
-        let doomed = store.tabs.filter { !$0.pinned }
-        guard !doomed.isEmpty else { return }
-        if doomed.count == store.tabs.count { store.newBlankTab() }
-        doomed.forEach { store.close($0.id) }
-        axAnnounce("Closed \(doomed.count) tab\(doomed.count == 1 ? "" : "s").")
-    }
+    /// The menu item owns this too, so both routes archive rather than destroy.
+    private func clear() { Keybindings.actions[.clearTabs]?() }
 }
 
 private struct NewTabRow: View {
@@ -1155,14 +1140,14 @@ private struct OpenTabs: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        let open = store.tabs.filter { !$0.pinned }
+        let open = store.tabs.filter { $0.kind == .today }
         VStack(spacing: Look.rowGap) {
             ForEach(open) { TabRow(tab: $0) }
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
         // tabs instead of announcing an anonymous stack.
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Tabs")
+        .accessibilityLabel("Today")
         .accessibilityValue("\(open.count) open")
         .accessibilityHint("Command 1 through 8 selects a tab, Command 9 the last one.")
         .accessibilityAction(named: "Search Tabs") { store.palette = .tabs }
@@ -1198,13 +1183,9 @@ private struct TabRow: View {
             .padding(.horizontal, 8).padding(.vertical, 4)
         }
         .onDrop(of: [.plainText],
-                delegate: TabDrop(store: store, target: tab, axis: .vertical, extent: Look.rowHeight, side: $side))
-        .contextMenu {
-            Button(tab.pinned ? "Unpin Tab" : "Pin Tab") { store.togglePin(tab.id) }
-            Divider()
-            Button("Close Tab") { store.close(tab.id) }
-            Button("Close Other Tabs") { closeOthers() }
-        }
+                delegate: TabDrop(store: store, target: tab, into: tab.kind,
+                                  axis: .vertical, extent: Look.rowHeight, side: $side))
+        .contextMenu { TabMenu(store: store, tab: tab) }
         // One element per tab, the way a tab in Safari reads: the title is the label, the
         // state is the value, and the close button becomes an action rather than a second
         // element the user has to find and then guess the meaning of.
@@ -1213,8 +1194,13 @@ private struct TabRow: View {
         .accessibilityValue(tabState(tab, in: store))
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Shows this tab.")
-        .accessibilityAction(named: "Close Tab") { store.close(tab.id) }
-        .accessibilityAction(named: tab.pinned ? "Unpin Tab" : "Pin Tab") { store.togglePin(tab.id) }
+        .accessibilityAction(named: tab.kind == .today ? "Archive Tab" : "Close Tab") {
+            store.archive(tab.id)
+        }
+        .accessibilityAction(named: tab.kind == .pinned ? "Unpin Tab" : "Pin Tab") {
+            store.togglePinned(tab.id)
+        }
+        .accessibilityAction(named: "Favourite Tab") { store.move(tab.id, to: .favourite) }
         .accessibilityAction(named: "Close Other Tabs") { closeOthers() }
         .accessibilityAction(named: TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab") {
             TabAudio.toggleMute(tab)
@@ -1222,8 +1208,73 @@ private struct TabRow: View {
     }
 
     private func closeOthers() {
-        // Pinned tabs are not "other tabs" — closing them would undo the pin.
-        for t in store.tabs where t.id != tab.id && !t.pinned { store.close(t.id) }
+        // Favourites and pinned tabs are not "other tabs" — they stay whatever happens.
+        for t in store.tabs where t.id != tab.id && t.kind == .today { store.archive(t.id) }
+    }
+}
+
+/// The right-click menu on any tab in the sidebar, in Arc's shape: what this tab is, where
+/// it can go, and how to be rid of it. `Move To` names the other two sections, so a tab can
+/// be moved without a drag — which is the only route VoiceOver and the keyboard have.
+///
+/// ponytail: `store` is passed in rather than read from the environment, as `SpaceMenu`
+/// does — a context menu is hosted in its own window, and a missing `@EnvironmentObject`
+/// there is a crash rather than a blank menu.
+/// The names are Arc's, in the repo's spelling: Arc writes "Favorite", Vane writes
+/// "Favourite" everywhere else and one menu is not the place to start spelling it two ways.
+private struct TabMenu: View {
+    let store: TabStore
+    @ObservedObject var tab: Tab
+
+    var body: some View {
+        Button("Copy Link") { copyLink() }
+            .disabled(tab.currentURL == nil)
+        Divider()
+        switch tab.kind {
+        case .favourite:
+            Button("Unfavourite Tab") { store.toggleFavourite(tab.id) }
+        case .pinned:
+            Button("Unpin Tab") { store.togglePinned(tab.id) }
+        case .today:
+            Button("Favourite Tab") { store.move(tab.id, to: .favourite) }
+            Button("Pin Tab") { store.togglePinned(tab.id) }
+        }
+        Menu("Move To") {
+            ForEach(TabKind.allCases.filter { $0 != tab.kind }, id: \.self) { kind in
+                Button(TabMenu.name(kind)) { store.move(tab.id, to: kind) }
+            }
+        }
+        Divider()
+        // A favourite or a pinned tab has no "archive": closing it parks it in place, which
+        // is what the section means, so the item says what will actually happen.
+        Button(tab.kind == .today ? "Archive Tab" : "Close Tab") { store.archive(tab.id) }
+        if tab.kind == .today {
+            Button("Archive Tabs Below") { archiveBelow() }
+        }
+    }
+
+    /// What a section is called in a menu. The sidebar's own headings are the same words.
+    static func name(_ kind: TabKind) -> String {
+        switch kind {
+        case .favourite: "Favourites"
+        case .pinned:    "Pinned"
+        case .today:     "Today"
+        }
+    }
+
+    private func copyLink() {
+        guard let u = tab.currentURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(u.absoluteString, forType: .string)
+        axAnnounce("Link copied.")
+    }
+
+    /// Arc's "Archive Tabs Below": everything after this one in Today, and nothing above it.
+    private func archiveBelow() {
+        guard let i = store.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        let below = store.tabs[(i + 1)...].filter { $0.kind == .today }
+        below.forEach { store.archive($0.id) }
+        axAnnounce("Archived \(below.count) tab\(below.count == 1 ? "" : "s").")
     }
 }
 
@@ -1294,7 +1345,8 @@ private struct BottomRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            DownloadsButton(downloads: Downloads.manager(for: store.profileID))
+            LibraryButton(archive: Archive.shared(for: store.profileID),
+                          downloads: Downloads.manager(for: store.profileID))
             Spacer(minLength: 0)
             SpaceDots()
             Spacer(minLength: 0)
@@ -1333,7 +1385,9 @@ private struct SavePrompt: View {
             .padding(.horizontal, 14).padding(.vertical, 10)
             .frame(maxWidth: 460)
             .fixedSize(horizontal: false, vertical: true)
-            .glass(radius: Look.cardRadius)
+            .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+            .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
+            .hairline(radius: Look.cardRadius)
             .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Save password for \(p.host)?")
@@ -1373,7 +1427,9 @@ private struct FindBar: View {
         }
         .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .glass(radius: Look.cardRadius)
+        .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+        .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
+        .hairline(radius: Look.cardRadius)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         // Focus lands in the field the moment the bar opens, so the first thing after ⌘F
         // is typing — for the keyboard and for VoiceOver alike.
@@ -1395,33 +1451,82 @@ private struct FindBar: View {
     }
 }
 
-private struct DownloadsButton: View {
-    /// Passed in from the window's own store, not read from `Downloads.shared`. `shared`
-    /// resolves to whichever profile is active at the moment the view is built, so a
-    /// background window of another profile would show — and act on — the wrong list.
+/// Arc's Library, at the bottom-left corner of the sidebar: the archived tabs and the
+/// downloads, which are the two lists of things that have left the sidebar but are not gone.
+/// ponytail: a popover, not a window. Arc's Library is a full-window surface with easels and
+/// notes in it too; Vane has two lists, and two lists are a popover.
+private struct LibraryButton: View {
+    @EnvironmentObject var store: TabStore
+    /// Passed in from the window's own store, not read from a `shared`. That resolves to
+    /// whichever profile is active at the moment the view is built, so a background window
+    /// of another profile would show — and act on — the wrong lists.
+    @ObservedObject var archive: Archive
     @ObservedObject var downloads: Downloads
-    @State private var open = false
 
     var body: some View {
-        let empty = downloads.items.isEmpty
+        let empty = archive.entries.isEmpty && downloads.items.isEmpty
         // Always present, dimmed when there is nothing to show: the sidebar's bottom row is
         // a fixed strip, and a button that comes and goes makes the whole row jump.
-        Button { open.toggle() } label: { Image(systemName: "arrow.down.circle") }
+        Button { store.libraryOpen.toggle() } label: { Image(systemName: "archivebox") }
             .buttonStyle(.plain)
             .foregroundStyle(empty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
             .disabled(empty)
-            .help("Downloads")
-            .accessibilityLabel("Downloads")
-            .accessibilityValue("\(downloads.items.count) item\(downloads.items.count == 1 ? "" : "s")")
-            .accessibilityHint("Shows what has been downloaded.")
-            .popover(isPresented: $open, arrowEdge: .top) {
+            .help("Library (\(Keybindings.binding(for: .showLibrary).display))")
+            .accessibilityLabel("Library")
+            .accessibilityValue("\(archive.entries.count) archived, \(downloads.items.count) download\(downloads.items.count == 1 ? "" : "s")")
+            .accessibilityHint("Shows archived tabs and downloads.")
+            .popover(isPresented: $store.libraryOpen, arrowEdge: .top) {
+                LibraryPopover(archive: archive, downloads: downloads)
+            }
+    }
+}
+
+private struct LibraryPopover: View {
+    @EnvironmentObject var store: TabStore
+    @ObservedObject var archive: Archive
+    @ObservedObject var downloads: Downloads
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Look.inset) {
+            if !archive.entries.isEmpty {
+                HStack {
+                    Text("Archived Tabs").font(Look.heading)
+                    Spacer(minLength: 16)
+                    Button("Clear") { archive.clear() }
+                        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
+                        .accessibilityLabel("Clear the archive")
+                }
+                VStack(spacing: Look.rowGap) {
+                    // Newest first, and only as many as anyone reads off a popover; the rest
+                    // are still on disk and still findable in the command bar.
+                    ForEach(archive.entries.prefix(12)) { entry in
+                        SidebarRow(selected: false, action: { store.unarchive(entry) }) {
+                            SiteIcon(icon: URL(string: entry.url).flatMap(store.favicons.icon(for:)))
+                        } label: {
+                            Text(entry.title)
+                        } trailing: {
+                            EmptyView()
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(entry.title)
+                        .accessibilityValue("Archived tab, \(entry.url)")
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityHint("Opens this page again and takes it out of the archive.")
+                        .accessibilityAction { store.unarchive(entry) }
+                    }
+                }
+            }
+            if !downloads.items.isEmpty {
+                if !archive.entries.isEmpty { Hairline() }
+                Text("Downloads").font(Look.heading)
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(downloads.items) { DownloadRow(item: $0, downloads: downloads) }
                 }
-                .padding(14).frame(width: 320)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Downloads")
             }
+        }
+        .padding(14).frame(width: 320)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Library")
     }
 }
 

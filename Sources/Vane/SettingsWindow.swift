@@ -290,6 +290,7 @@ private struct GeneralPane: View {
     // here is the whole of the preference.
     @AppStorage("httpsOnly") private var httpsOnly = true
     @State private var restore = Prefs.restoreSession
+    @State private var archiveAfter = Prefs.archiveAfter
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
@@ -307,6 +308,18 @@ private struct GeneralPane: View {
                     Toggle("", isOn: $restore).labelsHidden()
                         .onChange(of: restore) { Prefs.restoreSession = restore }
                 }
+                SettingsRow("Auto-archive today's tabs") {
+                    Picker("", selection: $archiveAfter) {
+                        ForEach(Prefs.archiveChoices, id: \.after) { choice in
+                            Text(choice.name).tag(choice.after)
+                        }
+                    }
+                    .labelsHidden().fixedSize()
+                    .onChange(of: archiveAfter) { Prefs.archiveAfter = archiveAfter }
+                }
+                Footnote("A tab under Today that nobody has looked at for this long leaves the "
+                         + "sidebar for the Library, where it can be opened again. Favourites "
+                         + "and pinned tabs are never archived.")
             }
 
             SettingsCard {

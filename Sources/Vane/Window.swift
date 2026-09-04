@@ -1,6 +1,50 @@
 import AppKit
 import SwiftUI
 
+/// The window, only so the traffic lights can be nailed to the sidebar's top row.
+///
+/// AppKit picks where the lights go from the titlebar's height, and it re-picks after every
+/// resize, every key/resign-key and every restored frame. An empty compact toolbar gets that
+/// metric *close* to `Look.lightsCentre` — measured 19.75 against a row centred on 19 — but
+/// close is what the user saw as "the traffic lights aren't in the same place as the others".
+/// So the buttons are moved back onto the line after every layout pass, whatever AppKit did.
+final class VaneWindow: NSWindow {
+    /// Where a light's frame origin has to sit for its centre to land `Look.lightsCentre`
+    /// below the window's top edge. `top` is that top edge in the button's superview's own
+    /// (unflipped, y-up) coordinates, so this is the same arithmetic whatever titlebar view
+    /// AppKit happens to have parented the buttons to.
+    /// Pure, so `selfcheck --pure` can prove it without a window server.
+    nonisolated static func lightOriginY(windowTop top: CGFloat, buttonHeight h: CGFloat) -> CGFloat {
+        top - Look.lightsCentre - h / 2
+    }
+
+    /// Only y: AppKit's x already matches Arc's (close at 18.75pt from the left edge, 23pt
+    /// apart), and moving the group horizontally breaks the hover-together behaviour.
+    func centreTrafficLights() {
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            guard let button = standardWindowButton(kind), let host = button.superview else { continue }
+            // The window's top edge in base coordinates is its own height; convert that into
+            // whatever space the buttons are laid out in.
+            let top = host.convert(NSPoint(x: 0, y: frame.height), from: nil).y
+            let want = Self.lightOriginY(windowTop: top, buttonHeight: button.frame.height)
+            guard abs(button.frame.origin.y - want) > 0.01 else { continue }
+            button.setFrameOrigin(NSPoint(x: button.frame.origin.x, y: want))
+        }
+    }
+
+    /// Every AppKit relayout ends here, which makes this the one hook that catches a resize,
+    /// a live-resize step, a restored frame and a first ordering-in alike.
+    override func layoutIfNeeded() {
+        super.layoutIfNeeded()
+        centreTrafficLights()
+    }
+
+    /// Becoming or resigning key swaps the buttons' images and can re-lay them without a
+    /// layout pass of the window's own.
+    override func becomeKey() { super.becomeKey(); centreTrafficLights() }
+    override func resignKey() { super.resignKey(); centreTrafficLights() }
+}
+
 /// Window bookkeeping + session restore. ponytail: no NSDocument, no window controller
 /// hierarchy — a list of live TabStores and their NSWindows is the whole model.
 @MainActor enum Windows {
@@ -27,7 +71,7 @@ import SwiftUI
         } ?? ProfileManager.shared.active
         let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space,
                              parked: parked)
-        let window = NSWindow(
+        let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
@@ -38,9 +82,11 @@ import SwiftUI
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         // An empty toolbar, never shown: it only exists to make the titlebar 38pt tall,
-        // which is where AppKit centres the traffic lights at `Look.lightsCentre` instead
-        // of at 16pt — on the sidebar's top row rather than 3pt above it. The titlebar is
-        // transparent and the toolbar has no items, so nothing of it is ever drawn.
+        // which puts AppKit's own idea of where the lights go within a point of the
+        // sidebar's top row instead of 3pt above it — so the one frame that is drawn before
+        // `VaneWindow.centreTrafficLights` first runs is already near enough not to jump.
+        // The titlebar is transparent and the toolbar has no items, so nothing of it is
+        // ever drawn. `VaneWindow` is what actually holds the lights on the line.
         window.toolbar = NSToolbar(identifier: "VaneEmpty")
         window.toolbarStyle = .unifiedCompact
         window.tabbingMode = .disallowed          // Vane draws its own tabs
@@ -95,6 +141,19 @@ import SwiftUI
     private final class WindowDelegate: NSObject, NSWindowDelegate {
         let store: TabStore
         init(_ store: TabStore) { self.store = store }
+        /// Belt and braces around `VaneWindow.layoutIfNeeded`: a resize that AppKit satisfies
+        /// without a full layout pass still moves the lights, and this catches it.
+        /// The store's window, not the notification's: a `Notification` is not Sendable and
+        /// may not cross into the main actor, while the store already holds the window.
+        @MainActor private func recentre() {
+            (store.window as? VaneWindow)?.centreTrafficLights()
+        }
+        func windowDidResize(_ n: Notification) { recentre() }
+        func windowDidEndLiveResize(_ n: Notification) { recentre() }
+        func windowDidBecomeKey(_ n: Notification) { recentre() }
+        func windowDidResignKey(_ n: Notification) { recentre() }
+        func windowDidEnterFullScreen(_ n: Notification) { recentre() }
+        func windowDidExitFullScreen(_ n: Notification) { recentre() }
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
                 Session.save()
