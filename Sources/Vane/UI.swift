@@ -39,6 +39,8 @@ struct BrowserWindow: View {
     /// The sidebar sliding in over the page because the pointer went to the window's edge.
     @State private var peeking = false
     @State private var peekTask: Task<Void, Never>?
+    /// App-wide, so every window's sidebar is the width the user last dragged one to.
+    @ObservedObject private var sidebar = SidebarWidth.shared
 
     private var chrome: Bool { store.sidebarShown || peeking }
 
@@ -47,8 +49,13 @@ struct BrowserWindow: View {
             WindowGlass()
             SpaceGround()
             HStack(spacing: 0) {
-                if store.sidebarShown { Sidebar().frame(width: Look.sidebarWidth) }
+                if store.sidebarShown { Sidebar().frame(width: sidebar.width) }
                 WebCard()
+            }
+            // On the seam, over the card: the sidebar's own trailing edge is what Arc's
+            // resize handle is, and it has to be above the web view to see a drag at all.
+            if store.sidebarShown {
+                SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth / 2)
             }
             edgeStrip
             floatingSidebar
@@ -91,7 +98,7 @@ struct BrowserWindow: View {
     @ViewBuilder private var floatingSidebar: some View {
         if !store.sidebarShown && peeking {
             Sidebar()
-                .frame(width: Look.sidebarWidth)
+                .frame(width: sidebar.width)
                 // The same near-opaque ground as the command bar: this one floats over
                 // the page, and a bare material over a white page is a white panel.
                 .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
@@ -119,9 +126,13 @@ struct BrowserWindow: View {
         for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             store.window?.standardWindowButton(kind)?.isHidden = !visible
         }
+        // Which row the lights belong to depends on which sidebar is showing: the docked one
+        // starts at the window's edge, the peeked panel is inset by `Look.inset` all round.
+        let window = store.window as? VaneWindow
+        window?.peekingSidebar = !store.sidebarShown && peeking
         // Unhiding re-lays the group, so put it back on the row's centre line before the
         // frame it comes back in — otherwise ⌘S twice leaves the lights off the row.
-        (store.window as? VaneWindow)?.centreTrafficLights()
+        window?.centreTrafficLights()
     }
 
     /// Nothing to undo on dismiss: ⌘T makes no tab until the bar is submitted.
@@ -262,6 +273,9 @@ private struct LoadingBar: View {
 
 private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
+    @ObservedObject private var sidebar = SidebarWidth.shared
+    /// The scroll viewport's height, so its content can be made to fill it. See below.
+    @State private var scrollHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: Look.inset) {
@@ -276,14 +290,27 @@ private struct Sidebar: View {
                     NewTabRow()
                     OpenTabs()
                 }
+                // The list is at least as tall as what it is scrolling in, so the emptiness
+                // under the last tab is part of the *content* — which is what lets the drag
+                // ground behind it see the pointer. A scroll view claims the hover over its
+                // own frame, so a ground laid behind the scroll view never gets it.
+                .frame(minHeight: scrollHeight, alignment: .top)
+                .background(WindowDragArea())
             }
             .scrollIndicators(.never)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
             BottomRow()
         }
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.footerInset)
         .padding(.top, Look.topInset)
-        .frame(width: Look.sidebarWidth, alignment: .leading)
+        .frame(width: sidebar.width, alignment: .leading)
+        // Under everything in the sidebar, so a row, a button or the pill takes the pointer
+        // first and only the bare ground picks the window up.
+        .background(WindowDragArea())
+        // Arc's other way of making a tab: drop a link, a url or a selection anywhere on the
+        // sidebar. Outermost, so the per-section drop targets keep reordering to themselves.
+        .onDrop(of: [.url, .fileURL, .plainText], delegate: SidebarDrop(store: store))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
     }
@@ -500,12 +527,15 @@ private struct PillBody: View {
 /// no placeholder — and the first favourite is made by dropping a tab on the address pill.
 private struct Favorites: View {
     @EnvironmentObject var store: TabStore
+    /// A narrow sidebar drops a column instead of shrinking every tile to a sliver.
+    @ObservedObject private var sidebar = SidebarWidth.shared
 
     var body: some View {
         let pinned = store.tabs.filter { $0.kind == .favourite }
         if !pinned.isEmpty {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
-                                     count: TabStore.favouriteColumns(pinned.count)),
+                                     count: SidebarWidth.favouriteColumns(pinned.count,
+                                                                          width: sidebar.width)),
                       spacing: Look.inset) {
                 ForEach(pinned) { FavoriteTile(tab: $0) }
             }
@@ -547,6 +577,7 @@ private struct FavoriteTile: View {
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: tab, into: .favourite,
                                       axis: .horizontal, extent: width, side: $side))
+            .simultaneousGesture(TapGesture(count: 2).onEnded { TabActions.renameTab(tab) })
             .contextMenu { TabMenu(store: store, tab: tab) }
             // One element per favourite, the way a tab reads: the title is the label, the
             // state is the value, and unpin/close are actions rather than hidden gestures.
@@ -555,6 +586,7 @@ private struct FavoriteTile: View {
             .accessibilityValue(tabState(tab, in: store))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             .accessibilityHint("Shows this tab.")
+            .accessibilityAction(named: "Rename Tab") { TabActions.renameTab(tab) }
             .accessibilityAction(named: "Unfavourite Tab") { store.toggleFavourite(tab.id) }
             .accessibilityAction(named: "Pin Tab") { store.move(tab.id, to: .pinned) }
             .accessibilityAction(named: "Close Tab") { store.close(tab.id) }
@@ -588,7 +620,9 @@ private enum DropSide { case before, after }
 /// Observable so every drop line goes out the moment the drop lands: SwiftUI does not send
 /// `dropExited` to the target that performed the drop, and a line left behind read as a
 /// second, phantom favourite.
-@MainActor private final class Dragging: ObservableObject {
+/// Not private: `SidebarDrop` in TabActions.swift has to stand aside while one of these
+/// is in flight, or a tab being reordered would be re-opened as a dropped link.
+@MainActor final class Dragging: ObservableObject {
     static let shared = Dragging()
     @Published var tab: Tab.ID?
 }
@@ -1168,6 +1202,10 @@ private struct TabRow: View {
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: tab, into: tab.kind,
                                   axis: .vertical, extent: Look.rowHeight, side: $side))
+        // Arc's double-click-to-rename. Simultaneous, so the row's own single tap still
+        // selects the tab first — which is what Arc does too, and what makes the rename
+        // apply to the tab you are looking at.
+        .simultaneousGesture(TapGesture(count: 2).onEnded { TabActions.renameTab(tab) })
         .contextMenu { TabMenu(store: store, tab: tab) }
         // One element per tab, the way a tab in Safari reads: the title is the label, the
         // state is the value, and the close button becomes an action rather than a second
@@ -1183,6 +1221,8 @@ private struct TabRow: View {
         .accessibilityAction(named: tab.kind == .pinned ? "Unpin Tab" : "Pin Tab") {
             store.togglePinned(tab.id)
         }
+        .accessibilityAction(named: "Rename Tab") { TabActions.renameTab(tab) }
+        .accessibilityAction(named: "Duplicate Tab") { TabActions.duplicate(tab, in: store) }
         .accessibilityAction(named: "Favourite Tab") { store.move(tab.id, to: .favourite) }
         .accessibilityAction(named: "Close Other Tabs") { closeOthers() }
         .accessibilityAction(named: TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab") {
@@ -1212,6 +1252,17 @@ private struct TabMenu: View {
     var body: some View {
         Button("Copy Link") { copyLink() }
             .disabled(tab.currentURL == nil)
+        // Arc's own two, in Arc's order. Rename is also a double-click on the row; Duplicate
+        // has no gesture at all, which is exactly why it has to be here.
+        Button("Rename…") { TabActions.renameTab(tab) }
+        if TabActions.rename(tab) != nil {
+            Button("Use the Page’s Own Title") { TidyTitles.rename(tab, to: nil) }
+        }
+        Button("Duplicate") { TabActions.duplicate(tab, in: store) }
+            .disabled(tab.currentURL == nil)
+        Button("Reload") { tab.reload() }
+            .disabled(tab.currentURL == nil)
+        Button(TabAudio.isMuted(tab) ? "Unmute" : "Mute") { TabAudio.toggleMute(tab) }
         Divider()
         switch tab.kind {
         case .favourite:
@@ -1318,7 +1369,19 @@ private struct TabIcon: View {
     @ObservedObject var tab: Tab
     var size: CGFloat = 16
 
-    var body: some View { SiteIcon(icon: tab.favicon, size: size) }
+    var body: some View {
+        // Arc spins the row's favicon slot while its page is loading. The card's own 2pt bar
+        // only says that *the tab you are looking at* is busy; a background tab had nothing.
+        if tab.loading {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(size / 24)
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)      // the row's value already says "loading"
+        } else {
+            SiteIcon(icon: tab.favicon, size: size)
+        }
+    }
 }
 
 // MARK: - Sidebar footer
@@ -1451,6 +1514,9 @@ private struct LibraryButton: View {
         // Always present, dimmed when there is nothing to show: the sidebar's bottom row is
         // a fixed strip, and a button that comes and goes makes the whole row jump.
         Button { store.libraryOpen.toggle() } label: { Image(systemName: "archivebox") }
+            // A ring around the glyph while anything is downloading, so progress is visible
+            // without opening the popover to look for it.
+            .overlay { DownloadRing(downloads: downloads) }
             .buttonStyle(.plain)
             .foregroundStyle(empty ? Look.inkDisabled : Look.inkSecondary)
             .disabled(empty)
