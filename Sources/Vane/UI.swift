@@ -313,6 +313,9 @@ private struct Sidebar: View {
         // Under everything in the sidebar, so a row, a button or the pill takes the pointer
         // first and only the bare ground picks the window up.
         .background(WindowDragArea())
+        // Arc's other way of making a tab: drop a link, a url or a selection anywhere on the
+        // sidebar. Outermost, so the per-section drop targets keep reordering to themselves.
+        .onDrop(of: [.url, .fileURL, .plainText], delegate: SidebarDrop(store: store))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
     }
@@ -648,7 +651,9 @@ private enum DropSide { case before, after }
 /// Observable so every drop line goes out the moment the drop lands: SwiftUI does not send
 /// `dropExited` to the target that performed the drop, and a line left behind read as a
 /// second, phantom favourite.
-@MainActor private final class Dragging: ObservableObject {
+/// Not private: `SidebarDrop` in TabActions.swift has to stand aside while one of these
+/// is in flight, or a tab being reordered would be re-opened as a dropped link.
+@MainActor final class Dragging: ObservableObject {
     static let shared = Dragging()
     @Published var tab: Tab.ID?
 }

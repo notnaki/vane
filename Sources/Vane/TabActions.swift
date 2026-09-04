@@ -137,6 +137,11 @@ extension TabActions {
              TabStore.insertionIndexBeside(current: nil, kinds: []) == 0),
             ("with no Today tabs at all it still lands after the ones that stay",
              TabStore.insertionIndexBeside(current: 0, kinds: [.favourite, .pinned]) == 2),
+            ("a dropped link is trimmed",
+             droppedText("  https://example.com  ") == "https://example.com"),
+            ("a dropped paragraph becomes one line",
+             droppedText("hello\nworld") == "hello world"),
+            ("an empty drop opens nothing", droppedText("   \n  ") == nil),
             ("a typed name is trimmed", cleanName("  Docs  ") == "Docs"),
             ("a name that is only spaces clears the rename", cleanName("   ") == nil),
             ("an empty name clears it too", cleanName("") == nil),
@@ -189,5 +194,70 @@ extension TabActions {
     @MainActor static func duplicate(_ tab: Tab, in store: TabStore) {
         guard let url = tab.currentURL else { return }
         store.openBeside(url, focus: true)
+    }
+}
+
+// MARK: - Dropping a link onto the sidebar
+
+/// Arc's other way of making a tab: drag a link, a url or a piece of text out of a page —
+/// or out of another app — and drop it on the sidebar.
+///
+/// ponytail: one delegate on the sidebar as a whole rather than a drop target per section.
+/// The per-section `TabDrop`s already own reordering and only ever accept Vane's own tab
+/// drags, so this one steps aside whenever one of those is in flight and otherwise takes
+/// everything: `.url` and `.fileURL` for a real link, plain text for a selection.
+/// Ceiling: a dropped tab always lands beside the current one, not at the row it was dropped
+/// on — Arc puts it where the pointer is, which needs a section-aware delegate per section.
+struct SidebarDrop: DropDelegate {
+    let store: TabStore
+
+    func validateDrop(info: DropInfo) -> Bool {
+        // Our own tab, being reordered. `TabDrop` handles that, and this must not eat it.
+        guard Dragging.shared.tab == nil else { return false }
+        return info.hasItemsConforming(to: [.url, .fileURL, .plainText])
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: Dragging.shared.tab == nil ? .copy : .cancel)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard Dragging.shared.tab == nil else { return false }
+        // A url first: a link dragged out of a page carries both a url and its own text, and
+        // the url is the one that does not have to be guessed at.
+        if let provider = info.itemProviders(for: [.url, .fileURL]).first {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in TabActions.openDropped(url.absoluteString, in: store) }
+            }
+            return true
+        }
+        guard let provider = info.itemProviders(for: [.plainText]).first else { return false }
+        _ = provider.loadObject(ofClass: NSString.self) { text, _ in
+            guard let text = text as? String else { return }
+            Task { @MainActor in TabActions.openDropped(text, in: store) }
+        }
+        return true
+    }
+}
+
+extension TabActions {
+    /// What a dropped payload is worth opening as. Trimmed, and a multi-line selection is
+    /// flattened — a paragraph dragged out of a page arrives with its newlines, and a search
+    /// query with a line break in it is not a query anyone typed.
+    /// Nil for nothing at all, which is what an empty drag amounts to.
+    static func droppedText(_ raw: String) -> String? {
+        let flat = raw.split(whereSeparator: \.isNewline).joined(separator: " ")
+        let text = flat.trimmingCharacters(in: .whitespaces)
+        return text.isEmpty ? nil : text
+    }
+
+    /// Open a dropped url or a dropped phrase. `Search.url(for:)` already decides which of
+    /// the two it is, and is the same call the command bar makes, so a dropped string and a
+    /// typed one land in exactly the same place.
+    @MainActor static func openDropped(_ raw: String, in store: TabStore) {
+        guard let text = droppedText(raw), let url = Search.url(for: text) else { return }
+        store.openBeside(url, focus: true)
+        axAnnounce("Opened \(text) in a new tab.")
     }
 }
