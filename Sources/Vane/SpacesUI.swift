@@ -383,7 +383,7 @@ private struct SpaceSwipe: ViewModifier {
     /// wheel, a vertical scroll, a scroll over the page — is left alone.
     private func mine(_ event: NSEvent, _ store: TabStore) -> Bool {
         guard event.hasPreciseScrollingDeltas, event.window === store.window,
-              store.sidebarShown, event.locationInWindow.x < Look.sidebarWidth
+              store.sidebarShown, event.locationInWindow.x < SidebarWidth.shared.width
         else { return false }
         // 1.5, not 1: a swipe down a long tab list drifts sideways, and at parity that drift
         // switched Space on the way past.
