@@ -169,6 +169,30 @@ enum Look {
     static let appearScale: CGFloat = 0.97
 }
 
+extension Look {
+    /// The chrome's geometry, proved offline. These are the numbers a screenshot is measured
+    /// against, so a change to one of them should fail here before anyone has to look.
+    nonisolated static func check() -> [(String, Bool)] {
+        var out: [(String, Bool)] = []
+        out.append(("the lights' centre line is the sidebar top row's centre line",
+                    lightsCentre == topInset + topRow / 2))
+        // 800 stands for the window's top edge wherever AppKit parented the buttons; only
+        // the offset from it matters, which is what makes the arithmetic testable at all.
+        out.append(("a 14pt light's origin puts its centre on that line",
+                    VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 14) == 800 - lightsCentre - 7))
+        out.append(("the offset is from the top edge, not from the window's height",
+                    VaneWindow.lightOriginY(windowTop: 100, buttonHeight: 14)
+                        == VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 14) - 700))
+        out.append(("a bigger light still centres on the same line",
+                    VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 20)
+                        == VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 14) - 3))
+        out.append(("the sidebar is laid out on a row-plus-gap pitch", rowHeight + rowGap == 40))
+        out.append(("the card and the pill share one radius", cardRadius == pillRadius))
+        out.append(("the command bar's rows keep Arc's 50pt pitch", barRowHeight + barRowGap == 50))
+        return out
+    }
+}
+
 extension Color {
     /// `#RRGGBB` as written in a Profile or a Space. ponytail: no alpha, no short form — the
     /// only producers of these strings are `Look.themeSwatches` and `ProfileManager.palette`.

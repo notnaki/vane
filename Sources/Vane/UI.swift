@@ -120,6 +120,9 @@ struct BrowserWindow: View {
         for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             store.window?.standardWindowButton(kind)?.isHidden = !visible
         }
+        // Unhiding re-lays the group, so put it back on the row's centre line before the
+        // frame it comes back in — otherwise ⌘S twice leaves the lights off the row.
+        (store.window as? VaneWindow)?.centreTrafficLights()
     }
 
     /// Nothing to undo on dismiss: ⌘T makes no tab until the bar is submitted.
