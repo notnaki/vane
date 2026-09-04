@@ -93,10 +93,10 @@ struct BrowserWindow: View {
         if !store.sidebarShown && peeking {
             Sidebar()
                 .frame(width: Look.sidebarWidth)
-                .glass(radius: Look.cardRadius)
-                // The same near-opaque ground as the command bar: this one floats over the
-                // page, and glass alone over a white page is a white panel.
+                // The same near-opaque ground as the command bar: this one floats over
+                // the page, and a bare material over a white page is a white panel.
                 .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+                .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
                 .hairline(radius: Look.cardRadius)
                 .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                 .padding(Look.inset)
@@ -452,7 +452,6 @@ private struct PillBody: View {
         // A step up under the pointer, the way a row does: the pill is a button, and a
         // button that does not react reads as a label.
         .background(hovering ? Look.selected : Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
-        .glass(radius: Look.pillRadius)
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -546,7 +545,6 @@ private struct FavoriteTile: View {
             // a tile is a button, and a button that does not react reads as a label.
             .background(selected || hovering ? Look.selected : Look.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
-            .glass(radius: Look.pillRadius)
             .overlay(alignment: side == .after ? .trailing : .leading) {
                 DropLine(on: side != nil, axis: .horizontal)
             }
@@ -1333,7 +1331,9 @@ private struct SavePrompt: View {
             .padding(.horizontal, 14).padding(.vertical, 10)
             .frame(maxWidth: 460)
             .fixedSize(horizontal: false, vertical: true)
-            .glass(radius: Look.cardRadius)
+            .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+            .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
+            .hairline(radius: Look.cardRadius)
             .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Save password for \(p.host)?")
@@ -1373,7 +1373,9 @@ private struct FindBar: View {
         }
         .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .glass(radius: Look.cardRadius)
+        .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+        .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
+        .hairline(radius: Look.cardRadius)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         // Focus lands in the field the moment the bar opens, so the first thing after ⌘F
         // is typing — for the keyboard and for VoiceOver alike.

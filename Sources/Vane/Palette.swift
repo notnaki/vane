@@ -464,8 +464,11 @@ private struct CommandField: NSViewRepresentable {
                 list
             }
         }
-        .glass(radius: Look.barRadius)
+        // Arc's bar is one flat surface, not glass: a blur of whatever is behind it,
+        // darkened almost to opaque, and a single hairline. No specular edge, no
+        // refraction — the shadow is what lifts it off the page.
         .background(Look.barFill, in: .rect(cornerRadius: Look.barRadius))
+        .background(Look.barMaterial, in: .rect(cornerRadius: Look.barRadius))
         .hairline(radius: Look.barRadius, Look.barStroke)
         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
         // The bar is dark over anything, including a white page, so the semantic colours
