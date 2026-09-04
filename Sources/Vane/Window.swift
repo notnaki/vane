@@ -53,8 +53,16 @@ import SwiftUI
         window.contentView = NSHostingView(rootView: BrowserWindow()
             .environmentObject(store)
             .environmentObject(ProfileManager.shared))
-        window.setFrameAutosaveName(isPrivate ? "" : "VaneMain")
-        if TabStore.all.count > 1 { window.cascadeTopLeft(from: NSPoint(x: 40, y: 40)) } else { window.center() }
+        // Position first, autosave second, as SettingsWindow does: `setFrameUsingName`
+        // says whether there was a saved frame, and centring after it would throw the
+        // saved position away and keep only the size — which is what every launch did.
+        let name = isPrivate ? "" : "VaneMain"
+        if TabStore.all.count > 1 {
+            window.cascadeTopLeft(from: NSPoint(x: 40, y: 40))
+        } else if name.isEmpty || !window.setFrameUsingName(name) {
+            window.center()
+        }
+        window.setFrameAutosaveName(name)
 
         let delegate = WindowDelegate(store)
         delegates.append(delegate)
