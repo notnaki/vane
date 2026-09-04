@@ -127,9 +127,13 @@ struct BrowserWindow: View {
         for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             store.window?.standardWindowButton(kind)?.isHidden = !visible
         }
+        // Which row the lights belong to depends on which sidebar is showing: the docked one
+        // starts at the window's edge, the peeked panel is inset by `Look.inset` all round.
+        let window = store.window as? VaneWindow
+        window?.peekingSidebar = !store.sidebarShown && peeking
         // Unhiding re-lays the group, so put it back on the row's centre line before the
         // frame it comes back in — otherwise ⌘S twice leaves the lights off the row.
-        (store.window as? VaneWindow)?.centreTrafficLights()
+        window?.centreTrafficLights()
     }
 
     /// Nothing to undo on dismiss: ⌘T makes no tab until the bar is submitted.
