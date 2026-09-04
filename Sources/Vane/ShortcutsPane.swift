@@ -76,7 +76,7 @@ import SwiftUI
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Look.inset) {
             HStack(spacing: Look.inset - 2) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Search shortcuts", text: $query)
@@ -118,10 +118,10 @@ import SwiftUI
         let note = notes[command]
         let isHovered = hovered == command
         let priority = Keybindings.priority(for: command)
-        return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(command.title).font(Look.text).lineLimit(1)
-                Spacer(minLength: 6)
+        // The same row every other pane is built from; only what trails the title is
+        // this pane's own, and it comes and goes with the pointer.
+        return VStack(alignment: .leading, spacing: 0) {
+            SettingsRow(command.title) {
                 if isHovered || priority == .page { priorityMenu(command, priority) }
                 if isHovered && binding != command.defaultBinding {
                     Button { reset(command) } label: {
@@ -134,15 +134,14 @@ import SwiftUI
                 }
                 chip(command, binding)
             }
-            .frame(height: Look.settingsRow)
             if let note {
                 Text(note.text)
                     .font(Look.caption)
                     .foregroundStyle(note.bad ? Color.red : Color.orange)
+                    .padding(.horizontal, Look.cardInset)
                     .padding(.bottom, Look.inset)
             }
         }
-        .padding(.horizontal, Look.cardInset)
         .contentShape(.rect)
         .background(isHovered ? Look.hovered : .clear)
         .animation(reduceMotion ? nil : Look.quick, value: isHovered)
