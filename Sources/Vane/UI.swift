@@ -56,6 +56,9 @@ struct BrowserWindow: View {
             // Last, so the search bar composites over the sidebar as well as the page.
             if let mode = store.palette {
                 PaletteView(mode: mode) { dismissPalette() }
+                    // The bar fades itself in; this is the way out — Escape and a click
+                    // on the scrim dissolve it rather than cutting to the page.
+                    .transition(.opacity)
             }
         }
         // The window is `.fullSizeContentView`, but SwiftUI still keeps a titlebar-sized
@@ -64,6 +67,7 @@ struct BrowserWindow: View {
         .ignoresSafeArea()
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.sidebarShown)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: peeking)
+        .animation(reduceMotion ? nil : Look.appear, value: store.palette == nil)
         // Arc hides the traffic lights along with the sidebar: a collapsed window is the
         // page and nothing else. They come back the moment either sidebar does.
         .onChange(of: chrome, initial: true) { showTrafficLights(chrome) }
@@ -130,15 +134,20 @@ private struct ThemeTint: View {
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var profiles: ProfileManager
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        if let (color, strength) = tint {
-            // One even wash, not a bottom-weighted gradient: the gradient's strongest band
-            // landed in the 8pt gap under the card, where it read as a fat coloured bar
-            // along the card's bottom edge rather than as the sidebar's tint.
-            color.opacity(strength)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-        }
+        // One even wash, not a bottom-weighted gradient: the gradient's strongest band
+        // landed in the 8pt gap under the card, where it read as a fat coloured bar
+        // along the card's bottom edge rather than as the sidebar's tint.
+        // Always in the tree, clear when there is no tint, so switching space cross-fades
+        // one colour into the next instead of cutting — the fade *is* what says the whole
+        // window changed space, not just the list.
+        (tint?.0 ?? .clear).opacity(tint?.1 ?? 0)
+            .animation(reduceMotion ? nil : Look.appear, value: store.currentSpaceID)
+            .animation(reduceMotion ? nil : Look.appear, value: store.spaceRevision)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     private var tint: (Color, Double)? {
@@ -259,12 +268,12 @@ private struct Sidebar: View {
     var body: some View {
         VStack(spacing: 8) {
             TopRow()
-            if let tab = store.active { AddressPill(tab: tab) }
+            AddressPill(tab: store.active)
             ScrollView {
                 VStack(spacing: Look.rowGap) {
                     Favorites().padding(.bottom, Look.inset - Look.rowGap)
                     SpaceRow()
-                    if let tab = store.active { BookmarkList(tab: tab) }
+                    BookmarkList(tab: store.active)
                     TidyRow()
                     NewTabRow()
                     OpenTabs()
@@ -300,7 +309,7 @@ private struct TopRow: View {
                     .accessibilityLabel("Private window")
             }
             Spacer(minLength: 0)
-            if let tab = store.active { NavButtons(tab: tab) }
+            NavButtons(tab: store.active)
         }
         .buttonStyle(.plain)
         .font(Look.icon)
@@ -309,26 +318,54 @@ private struct TopRow: View {
     }
 }
 
+/// The page's back, forward and reload. With no page they stay where they are, disabled:
+/// nothing in the sidebar's chrome may come and go because a tab closed — the user read
+/// that as the window emptying out rather than as one tab going away.
 private struct NavButtons: View {
+    let tab: Tab?
+
+    var body: some View {
+        if let tab {
+            LiveNavButtons(tab: tab)
+        } else {
+            NavGlyphs(tab: nil, back: false, forward: false, loading: false)
+        }
+    }
+}
+
+/// Split from `NavGlyphs` only so the tab can be observed: `@ObservedObject` cannot be
+/// optional, and the disabled state above has no tab to observe.
+private struct LiveNavButtons: View {
     @ObservedObject var tab: Tab
+    var body: some View {
+        NavGlyphs(tab: tab, back: tab.canGoBack, forward: tab.canGoForward, loading: tab.loading)
+    }
+}
+
+private struct NavGlyphs: View {
+    let tab: Tab?
+    let back: Bool
+    let forward: Bool
+    let loading: Bool
 
     var body: some View {
         // Icon-only, so each one carries its own label and tooltip — without them
         // VoiceOver announces three identical "button"s.
         HStack(spacing: 16) {
-            Button { tab.back() } label: { Image(systemName: "arrow.left") }
-                .disabled(!tab.canGoBack)
+            Button { tab?.back() } label: { Image(systemName: "arrow.left") }
+                .disabled(!back)
                 .help("Back (⌘[)")
                 .accessibilityLabel("Back")
-            Button { tab.forward() } label: { Image(systemName: "arrow.right") }
-                .disabled(!tab.canGoForward)
+            Button { tab?.forward() } label: { Image(systemName: "arrow.right") }
+                .disabled(!forward)
                 .help("Forward (⌘])")
                 .accessibilityLabel("Forward")
-            Button { tab.loading ? tab.stop() : tab.reload() } label: {
-                Image(systemName: tab.loading ? "xmark" : "arrow.clockwise")
+            Button { loading ? tab?.stop() : tab?.reload() } label: {
+                Image(systemName: loading ? "xmark" : "arrow.clockwise")
             }
-            .help(tab.loading ? "Stop Loading" : "Reload Page (⌘R)")
-            .accessibilityLabel(tab.loading ? "Stop Loading" : "Reload Page")
+            .disabled(tab == nil)
+            .help(loading ? "Stop Loading" : "Reload Page (⌘R)")
+            .accessibilityLabel(loading ? "Stop Loading" : "Reload Page")
         }
         .buttonStyle(.plain)
     }
@@ -336,53 +373,27 @@ private struct NavButtons: View {
 
 /// Where the address bar used to be. It is a button, not a field: typing happens in the
 /// search bar, which is the one place in Vane a url or a search is entered.
+/// With no tab it stays, empty: same fill, same height, glyphs disabled, and a click opens
+/// the search bar to make the first tab. The sidebar keeps its shape whatever is open.
 private struct AddressPill: View {
-    @EnvironmentObject var store: TabStore
+    let tab: Tab?
+
+    var body: some View {
+        if let tab {
+            LiveAddressPill(tab: tab)
+        } else {
+            PillBody(tab: nil, host: "", address: "", reader: false, readerOn: false)
+        }
+    }
+}
+
+/// Split from `PillBody` only so the tab can be observed; the empty pill has none.
+private struct LiveAddressPill: View {
     @ObservedObject var tab: Tab
 
     var body: some View {
-        HStack(spacing: 8) {
-            if tab.readerAvailable || Reader.isOn(tab) {
-                Button { Reader.toggle(tab) } label: {
-                    Image(systemName: Reader.isOn(tab) ? "doc.plaintext.fill" : "doc.plaintext")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Reader.isOn(tab) ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .help("Reader (⌥⌘R)")
-                .accessibilityLabel("Reader")
-                .accessibilityValue(Reader.isOn(tab) ? "On" : "Off")
-            }
-            Text(host).font(Look.text).lineLimit(1).foregroundStyle(.primary)
-            Spacer(minLength: 4)
-            // Always there, as in Arc: two quiet glyphs read better than a row that grows
-            // controls under the pointer.
-            Button { copyLink() } label: { Image(systemName: "link") }
-                .help("Copy Link")
-                .accessibilityLabel("Copy Link")
-            Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
-                // ponytail: the whole settings window, not a per-site sheet. Site settings
-                // do not exist yet; when they do, this is the one caller to change.
-                .help("Site Settings")
-                .accessibilityLabel("Site Settings")
-        }
-        .buttonStyle(.plain)
-        .font(Look.rowText)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, Look.barRowInset)
-        .frame(height: Look.pillHeight)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
-        .glass(radius: Look.pillRadius)
-        .contentShape(.rect)
-        .onTapGesture { store.palette = .address }
-        .help(tab.address.isEmpty ? "Search or Enter URL" : tab.address)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Address and Search")
-        .accessibilityValue(tab.address.isEmpty ? "Empty" : tab.address)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Opens the search bar to type a website address or a search.")
-        .accessibilityAction { store.palette = .address }
-        .accessibilityAction(named: "Copy Link") { copyLink() }
+        PillBody(tab: tab, host: host, address: tab.address,
+                 reader: tab.readerAvailable || Reader.isOn(tab), readerOn: Reader.isOn(tab))
     }
 
     /// The host alone, the way Arc shows it — the scheme and `www.` are noise the user has
@@ -393,9 +404,75 @@ private struct AddressPill: View {
         }
         return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
     }
+}
+
+private struct PillBody: View {
+    @EnvironmentObject var store: TabStore
+    let tab: Tab?
+    let host: String
+    let address: String
+    let reader: Bool
+    let readerOn: Bool
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if reader, let tab {
+                Button { Reader.toggle(tab) } label: {
+                    Image(systemName: readerOn ? "doc.plaintext.fill" : "doc.plaintext")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(readerOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .help("Reader (⌥⌘R)")
+                .accessibilityLabel("Reader")
+                .accessibilityValue(readerOn ? "On" : "Off")
+            }
+            Text(host).font(Look.text).lineLimit(1).foregroundStyle(.primary)
+            Spacer(minLength: 4)
+            // Always there, as in Arc: two quiet glyphs read better than a row that grows
+            // controls under the pointer. Disabled, not hidden, when there is no page.
+            Button { copyLink() } label: { Image(systemName: "link") }
+                .disabled(tab == nil)
+                .help("Copy Link")
+                .accessibilityLabel("Copy Link")
+            Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
+                // ponytail: the whole settings window, not a per-site sheet. Site settings
+                // do not exist yet; when they do, this is the one caller to change.
+                .disabled(tab == nil)
+                .help("Site Settings")
+                .accessibilityLabel("Site Settings")
+        }
+        .buttonStyle(.plain)
+        .font(Look.rowText)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, Look.barRowInset)
+        .frame(height: Look.pillHeight)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // A step up under the pointer, the way a row does: the pill is a button, and a
+        // button that does not react reads as a label.
+        .background(hovering ? Look.selected : Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+        .glass(radius: Look.pillRadius)
+        .animation(reduceMotion ? nil : Look.quick, value: hovering)
+        .contentShape(.rect)
+        .onHover { hovering = $0 }
+        .onTapGesture { open() }
+        .help(address.isEmpty ? "Search or Enter URL" : address)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Address and Search")
+        .accessibilityValue(address.isEmpty ? "Empty" : address)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Opens the search bar to type a website address or a search.")
+        .accessibilityAction { open() }
+        .accessibilityAction(named: "Copy Link") { copyLink() }
+    }
+
+    /// With a page, the bar opens on its address; with none, on nothing — and what is
+    /// submitted becomes the window's first tab.
+    private func open() { store.palette = tab == nil ? .newTab : .address }
 
     private func copyLink() {
-        guard let u = tab.currentURL else { return }
+        guard let u = tab?.currentURL else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(u.absoluteString, forType: .string)
         axAnnounce("Link copied.")
@@ -412,12 +489,26 @@ private struct Favorites: View {
 
     var body: some View {
         let pinned = store.tabs.filter(\.pinned)
-        if !pinned.isEmpty {
+        if pinned.isEmpty {
+            // Two empty tiles, not nothing: the grid is part of the sidebar's shape, and a
+            // shape that collapses when the last pin goes reads as the window emptying.
+            // A card's fill rather than a tile's, so they read as places, not as tiles.
+            HStack(spacing: Look.inset) {
+                ForEach(0..<2, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: Look.pillRadius)
+                        .fill(Look.cardFill)
+                        .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Favourites")
+            .accessibilityValue("None pinned")
+        } else {
             // Two columns at the least: one pin stretched across the sidebar reads as a
             // banner, not as a favourite.
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8),
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
                                      count: min(max(pinned.count, 2), 3)),
-                      spacing: 8) {
+                      spacing: Look.inset) {
                 ForEach(pinned) { FavoriteTile(tab: $0) }
             }
             .accessibilityElement(children: .contain)
@@ -498,15 +589,7 @@ private struct SpaceRow: View {
 
     var body: some View {
         if let space = store.currentSpace {
-            HStack(spacing: 10) {
-                Image(systemName: space.icon ?? "cloud").frame(width: 16)
-                Text(space.name).font(Look.text)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .frame(height: Look.rowHeight)
-            .contentShape(.rect)
+            row(space.icon ?? "cloud", space.name)
             .contextMenu { SpaceMenu(store: store, space: space, icons: $icons, theme: $theme) }
             .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
             .popover(isPresented: $theme) { SpaceTheme(store: store, space: space) }
@@ -517,7 +600,27 @@ private struct SpaceRow: View {
             .accessibilityAction(named: "Rename Space") { renameSpace(space, in: store) }
             .accessibilityAction(named: "Change Space Icon") { icons = true }
             .accessibilityAction(named: "Edit Theme Color") { theme = true }
+        } else {
+            // A window outside any space still has this row, wearing the profile's name:
+            // the list below it needs its heading, and the sidebar its shape.
+            row("cloud", store.profile.name)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Space")
+            .accessibilityValue(store.profile.name)
+            .accessibilityHint("This window is not in a space. The plus button below makes one.")
         }
+    }
+
+    private func row(_ icon: String, _ name: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).frame(width: 16)
+            Text(name).font(Look.text)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .frame(height: Look.rowHeight)
+        .contentShape(.rect)
     }
 }
 
@@ -656,13 +759,17 @@ private struct SpaceTheme: View {
     let space: Space
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: Look.inset * 2) {
             appearance
             swatches
             strength
         }
-        .padding(14)
-        .frame(width: 268)
+        .padding(Look.inset * 2)
+        // Sized here, not by the popover: NSPopover takes the hosting view's first fitting
+        // size, which for a flexible grid plus a slider came out narrower than the content
+        // and clipped the row at the bottom.
+        .frame(width: Look.themeWidth)
+        .fixedSize()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Theme colour")
     }
@@ -691,8 +798,8 @@ private struct SpaceTheme: View {
     }
 
     private var swatches: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 7),
-                  spacing: 8) {
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(Look.swatch), spacing: Look.inset), count: 7),
+                  spacing: Look.inset) {
             ForEach(Look.themeSwatches, id: \.self) { hex in
                 swatch(hex)
             }
@@ -702,9 +809,13 @@ private struct SpaceTheme: View {
     private func swatch(_ hex: String) -> some View {
         Circle()
             .fill(Color(hex: hex) ?? .gray)
-            .frame(width: 22, height: 22)
+            .frame(width: Look.swatch, height: Look.swatch)
+            // Arc's ring stands off the swatch (ref 8) rather than lying on its edge, so
+            // the chosen colour is still a full disc.
             .overlay {
-                Circle().strokeBorder(.primary, lineWidth: space.colorHex == hex ? 2 : 0)
+                Circle().strokeBorder(.primary, lineWidth: 2)
+                    .padding(-4)
+                    .opacity(space.colorHex == hex ? 1 : 0)
             }
             .contentShape(.circle)
             .onTapGesture { edit { $0.colorHex = hex; $0.tint = $0.tint ?? 0.35 } }
@@ -713,13 +824,14 @@ private struct SpaceTheme: View {
     }
 
     private var strength: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Look.inset + 2) {
             Image(systemName: "circle.lefthalf.filled").font(Look.caption).foregroundStyle(.secondary)
             Slider(value: Binding(get: { space.tint ?? 0.35 },
                                   set: { v in edit { $0.tint = v } }), in: 0...1)
                 .accessibilityLabel("Colour strength")
             Button("None") { edit { $0.colorHex = nil } }
                 .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
+                .fixedSize()
                 .accessibilityLabel("No theme colour")
         }
     }
@@ -783,9 +895,23 @@ private struct SpaceDots: View {
 /// above), and bookmarks are the list of pages the user already said they care about. The
 /// upgrade path is a `Space.pinnedURLs`-backed list once spaces get their own editing UI.
 private struct BookmarkList: View {
-    @EnvironmentObject var store: TabStore
-    /// Only here to be observed: the list has to redraw the moment ⌘D adds or removes one.
+    let tab: Tab?
+
+    var body: some View {
+        if let tab { LiveBookmarkList(tab: tab) } else { BookmarkRows(bookmarked: false) }
+    }
+}
+
+/// Only here to observe the tab: the list has to redraw the moment ⌘D adds or removes one,
+/// and with no tab there is nothing to press ⌘D on.
+private struct LiveBookmarkList: View {
     @ObservedObject var tab: Tab
+    var body: some View { BookmarkRows(bookmarked: tab.bookmarked) }
+}
+
+private struct BookmarkRows: View {
+    @EnvironmentObject var store: TabStore
+    let bookmarked: Bool
     @State private var marks: [Suggestion] = []
 
     var body: some View {
@@ -809,7 +935,7 @@ private struct BookmarkList: View {
             }
         }
         .onAppear { reload() }
-        .onChange(of: tab.bookmarked) { reload() }
+        .onChange(of: bookmarked) { reload() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Bookmarks")
     }

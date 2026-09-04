@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // MARK: - Matching
@@ -52,11 +53,46 @@ enum Palette {
         return hits.map(\.item)
     }
 
+    /// The bar's row order, in one place so it can be proved without a window. With nothing
+    /// typed the bar is the list of open tabs (ref 2). With a query, the tabs that match lead
+    /// — at most `leadingTabs`, so the typed row is never pushed under the fold — then what
+    /// was typed, what it completes to, the assistant two rows under the typed one (ref 3),
+    /// the rest of the matching tabs, and commands as a tail.
+    static func arrange<T>(tabs: [T], typed: T?, suggestions: [T], ai: T?, commands: [T],
+                           leadingTabs: Int = 3) -> [T] {
+        guard let typed else { return tabs + commands }
+        var out = Array(tabs.prefix(leadingTabs))
+        let lead = out.count
+        out.append(typed)
+        out += suggestions
+        if let ai { out.insert(ai, at: min(lead + 2, out.count)) }
+        out += tabs.dropFirst(leadingTabs)
+        out += commands
+        return out
+    }
+
     static func check() -> [(String, Bool)] {
         // Force-unwrapped inside the assertions on purpose: a nil here is the failure the
         // line above it already checks for, so it can only fire if the checks disagree.
         let words = ["GitHub", "Gitlab", "git", "Hacker News"]
+        let none: [String] = []
+        let watched = MainActor.assumeIsolated { ChangeWatch.check() }
         return [
+            ("with nothing typed the bar lists the open tabs",
+             arrange(tabs: ["t1", "t2"], typed: nil, suggestions: none, ai: nil, commands: none) == ["t1", "t2"]),
+            ("a matching tab comes before what was typed",
+             arrange(tabs: ["t1"], typed: "q", suggestions: ["s1"], ai: nil, commands: none) == ["t1", "q", "s1"]),
+            ("at most three tabs lead; the rest follow the completions",
+             arrange(tabs: ["t1", "t2", "t3", "t4"], typed: "q", suggestions: ["s1"], ai: nil, commands: none)
+                == ["t1", "t2", "t3", "q", "s1", "t4"]),
+            ("the assistant sits two rows under what was typed",
+             arrange(tabs: ["t1"], typed: "q", suggestions: ["s1", "s2"], ai: "ai", commands: none)
+                == ["t1", "q", "s1", "ai", "s2"]),
+            ("…or right after it when there is nothing to complete to",
+             arrange(tabs: none, typed: "q", suggestions: none, ai: "ai", commands: none) == ["q", "ai"]),
+            ("commands are the tail",
+             arrange(tabs: ["t1"], typed: "q", suggestions: none, ai: nil, commands: ["c"]) == ["t1", "q", "c"]),
+        ] + watched + [
             ("query characters match in order", score("gh", "GitHub") != nil),
             ("the same characters out of order do not match", score("hg", "GitHub") == nil),
             ("matched characters may be scattered", score("gtb", "GitHub") != nil),
@@ -89,6 +125,52 @@ enum Palette {
              rank("zzz", words, key: { $0 }).isEmpty),
             ("rank puts the best match first",
              rank("hn", words, key: { $0 }).first == "Hacker News"),
+        ]
+    }
+}
+
+/// Re-runs the bar's list when a tab it is showing changes under it — a title arriving, a
+/// favicon landing, a page finishing. `TabStore` publishes its *list* of tabs and nothing
+/// about the tabs themselves, so a bar that only snapshotted on open kept drawing "New Tab"
+/// and a globe for a page that had long since said who it was.
+///
+/// The bump happens inside `objectWillChange`, before the tab's own value changes; that is
+/// fine, because SwiftUI runs `onChange` on its next pass, after the write has landed.
+/// ponytail: one revision counter, not per-field subscriptions. A tab's progress fires this
+/// too, and the refresh it triggers is a rank over a few dozen titles — nothing to save.
+@MainActor final class ChangeWatch: ObservableObject {
+    @Published private(set) var revision = 0
+    private var subscriptions: [AnyCancellable] = []
+
+    /// Replace what is being watched. Anything watched before is dropped.
+    func watch<O: ObservableObject>(_ objects: [O])
+    where O.ObjectWillChangePublisher == ObservableObjectPublisher {
+        subscriptions = objects.map { o in
+            o.objectWillChange.sink { [weak self] _ in self?.revision += 1 }
+        }
+    }
+
+    /// A stand-in for a Tab, which needs WebKit: the same shape as far as the watch can see.
+    private final class Probe: ObservableObject { @Published var value = 0 }
+
+    static func check() -> [(String, Bool)] {
+        let watch = ChangeWatch()
+        let a = Probe(), b = Probe()
+        watch.watch([a])
+        a.value = 1
+        let bumped = watch.revision == 1
+        b.value = 1
+        let unwatchedIgnored = watch.revision == 1
+        watch.watch([b])
+        a.value = 2
+        let dropped = watch.revision == 1
+        b.value = 2
+        let rewatched = watch.revision == 2
+        return [
+            ("a change on a watched tab bumps the revision", bumped),
+            ("a tab that is not watched does not", unwatchedIgnored),
+            ("watching a new set drops the old one", dropped),
+            ("…and follows the new one", rewatched),
         ]
     }
 }
@@ -289,6 +371,8 @@ private struct CommandField: NSViewRepresentable {
     @State private var ready = false
     /// False for the first frame, so the bar can scale and fade in from `appearScale`.
     @State private var shown = false
+    /// Every open tab, in every window: a title or favicon arriving redraws the row for it.
+    @StateObject private var tabs = ChangeWatch()
 
     /// At most eight rows are visible; the rest are a scroll away. Arithmetic rather than a
     /// preference-key measuring dance, which the fixed row height makes exact.
@@ -337,6 +421,7 @@ private struct CommandField: NSViewRepresentable {
             }
             ready = true
             refresh()
+            tabs.watch(allTabs)
             withAnimation(motion(Look.appear)) { shown = true }
         }
         .onChange(of: query) {
@@ -344,9 +429,15 @@ private struct CommandField: NSViewRepresentable {
             refresh()
         }
         // Completions land later than the keystroke that asked for them; the list has to
-        // grow under the user without moving what they had already arrowed onto.
+        // grow under the user without moving what they had already arrowed onto. The same
+        // goes for a tab that renames itself or gets its favicon while the bar is up.
         .onChange(of: store.suggestions) { refresh(reset: false) }
+        .onChange(of: tabs.revision) { refresh(reset: false) }
+        // Tabs opened or closed while the bar is up: watch the new set, and list it.
+        .onChange(of: allTabs.map(\.id)) { tabs.watch(allTabs); refresh(reset: false) }
     }
+
+    private var allTabs: [Tab] { TabStore.all.flatMap(\.tabs) }
 
     private var bar: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -510,29 +601,21 @@ private struct CommandField: NSViewRepresentable {
 
     private func refresh(reset: Bool = true) {
         var out: [PaletteRow] = []
+        let tabs = Palette.rank(query, tabRows(), key: { $0.title + " " + $0.detail })
         if mode == .tabs {
-            out = Palette.rank(query, tabRows(), key: { $0.title + " " + $0.detail })
+            out = tabs
         } else {
-            // Search first, in the order Arc puts them: what you typed (so Return always
-            // does the obvious thing), what the engine and your own history complete it to,
-            // the assistant, then the tabs you already have open. Appended rather than
-            // ranked as one pool — the ranking *is* this order, and a fuzzy score must
-            // never be able to push "what you actually typed" below a tab title.
-            if let row = typedRow() { out.append(row) }
-            out += suggestionRows()
-            // Third row, where Arc puts it (ref 3) — not appended after the completions,
-            // which would push it under the fold on any query the engine has eight guesses
-            // for. Asking an assistant is always a valid thing to do with what was typed,
-            // so it has to be on screen, and it must never be something the matcher can
-            // rank away.
-            if let row = aiRow() { out.insert(row, at: min(2, out.count)) }
-            out += Palette.rank(query, tabRows(), key: { $0.title + " " + $0.detail })
-            // Commands are a tail, never a headline: this is a search bar, and someone
-            // typing two letters means a search far more often than "Close Tab". Three
+            // Arc's order (refs 2, 3): a tab you already have open that matches is the
+            // best answer there is, so it leads — "Switch to Tab" is what Return does. Then
+            // what you typed, what the engine and your own history complete it to, the
+            // assistant, the rest of the tabs. Sections rather than one ranked pool: the
+            // order *is* the ranking, and a fuzzy score must never be able to move "what
+            // you actually typed" around. Commands are a tail, never a headline — someone
+            // typing two letters means a search far more often than "Close Tab", and three
             // characters is the floor at which a fuzzy match stops being a coincidence.
-            if typed.count >= 3 {
-                out += Palette.rank(typed, commandRows(), key: { $0.title })
-            }
+            out = Palette.arrange(
+                tabs: tabs, typed: typedRow(), suggestions: suggestionRows(), ai: aiRow(),
+                commands: typed.count >= 3 ? Palette.rank(typed, commandRows(), key: { $0.title }) : [])
         }
         rows = Array(out.prefix(24))
         index = reset ? 0 : min(index, max(0, rows.count - 1))
