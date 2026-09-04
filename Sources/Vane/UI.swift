@@ -45,8 +45,7 @@ struct BrowserWindow: View {
     var body: some View {
         ZStack(alignment: .leading) {
             WindowGlass()
-            Look.ground
-            ThemeTint()
+            SpaceGround()
             HStack(spacing: 0) {
                 if store.sidebarShown { Sidebar().frame(width: Look.sidebarWidth) }
                 WebCard()
@@ -99,7 +98,7 @@ struct BrowserWindow: View {
                 .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
                 .hairline(radius: Look.cardRadius)
                 .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
-                .padding(Look.inset)
+                .padding(Look.cardGap)
                 .transition(.move(edge: .leading).combined(with: .opacity))
                 .onHover { $0 ? peekTask?.cancel() : endPeek() }
         }
@@ -129,37 +128,33 @@ struct BrowserWindow: View {
     private func dismissPalette() { store.palette = nil }
 }
 
-/// The current space's colour washed over the window, behind the sidebar *and* behind the
-/// gap around the card, which is what makes the card read as floating on something rather
-/// than sitting in a grey box. Falls back to the profile's colour at a whisper, then to
-/// nothing at all.
-private struct ThemeTint: View {
+/// The window's ground: the space's colour, derived the way Arc derives a theme
+/// (`Look.ground`), laid over the behind-window blur behind the sidebar *and* behind the gap
+/// around the card, which is what makes the card read as floating on something rather than
+/// sitting in a grey box. A space with no colour of its own wears its profile's — Arc has
+/// no colourless space, and a grey slab was what the old fallback amounted to.
+private struct SpaceGround: View {
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var profiles: ProfileManager
-
+    @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let dark = scheme == .dark
         // One even wash, not a bottom-weighted gradient: the gradient's strongest band
         // landed in the 8pt gap under the card, where it read as a fat coloured bar
         // along the card's bottom edge rather than as the sidebar's tint.
-        // Always in the tree, clear when there is no tint, so switching space cross-fades
-        // one colour into the next instead of cutting — the fade *is* what says the whole
-        // window changed space, not just the list.
-        (tint?.0 ?? .clear).opacity(tint?.1 ?? 0)
+        // Always in the tree, so switching space cross-fades one colour into the next
+        // instead of cutting — the fade *is* what says the whole window changed space.
+        Look.groundColor(hex: hex, dark: dark, strength: store.currentSpace?.tint ?? Look.defaultTint)
+            .opacity(Look.groundOpacity(dark: dark))
             .animation(reduceMotion ? nil : Look.appear, value: store.currentSpaceID)
             .animation(reduceMotion ? nil : Look.appear, value: store.spaceRevision)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
     }
 
-    private var tint: (Color, Double)? {
-        if let space = store.currentSpace, let hex = space.colorHex, let c = Color(hex: hex) {
-            return (c, space.tint ?? 0.35)
-        }
-        if let c = Color(hex: store.profile.colorHex) { return (c, 0.10) }
-        return nil
-    }
+    private var hex: String { store.currentSpace?.colorHex ?? store.profile.colorHex }
 }
 
 /// ⌘1–⌘8 select tab N and ⌘9 selects the last one, the way Safari and Chrome do; ⌘⇧P and
@@ -231,8 +226,8 @@ private struct WebCard: View {
         .clipShape(.rect(cornerRadius: Look.cardRadius))
         // No inset on the leading edge while the sidebar is docked: the sidebar's own
         // padding already leaves the gap, and doubling it reads as a misaligned card.
-        .padding(.leading, store.sidebarShown ? 0 : Look.inset)
-        .padding([.top, .trailing, .bottom], Look.inset)
+        .padding(.leading, store.sidebarShown ? 0 : Look.cardGap)
+        .padding([.top, .trailing, .bottom], Look.cardGap)
     }
 }
 
@@ -269,12 +264,12 @@ private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: Look.inset) {
             TopRow()
             AddressPill(tab: store.active)
             ScrollView {
                 VStack(spacing: Look.rowGap) {
-                    Favorites().padding(.bottom, Look.inset - Look.rowGap)
+                    Favorites()
                     SpaceRow()
                     PinnedTabs()
                     TidyRow()
@@ -286,7 +281,7 @@ private struct Sidebar: View {
             BottomRow()
         }
         .padding(.horizontal, Look.inset)
-        .padding(.bottom, Look.inset)
+        .padding(.bottom, Look.footerInset)
         .padding(.top, Look.topInset)
         .frame(width: Look.sidebarWidth, alignment: .leading)
         .accessibilityElement(children: .contain)
@@ -316,7 +311,7 @@ private struct TopRow: View {
         }
         .buttonStyle(.plain)
         .font(Look.icon)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Look.inkSecondary)
         .frame(height: Look.topRow)
     }
 }
@@ -431,7 +426,9 @@ private struct PillBody: View {
                 .accessibilityLabel("Reader")
                 .accessibilityValue(readerOn ? "On" : "Off")
             }
-            Text(host).font(Look.text).lineLimit(1).foregroundStyle(.primary)
+            // Secondary ink, the way Arc sets the host (179 on 84): the address is a
+            // label for the page, not a title among titles.
+            Text(host).font(Look.text).lineLimit(1)
             Spacer(minLength: 4)
             // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
             // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
@@ -450,9 +447,9 @@ private struct PillBody: View {
             }
         }
         .buttonStyle(.plain)
-        .font(Look.rowText)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, Look.barRowInset)
+        .font(Look.pillGlyph)
+        .foregroundStyle(Look.inkSecondary)
+        .padding(.horizontal, Look.pillInset)
         .frame(height: Look.pillHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
         // A step up under the pointer, the way a row does: the pill is a button, and a
@@ -462,6 +459,11 @@ private struct PillBody: View {
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture { open() }
+        // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
+        // the top of the sidebar, and it is what the empty grid used to be dropped on.
+        .onDrop(of: [.plainText],
+                delegate: TabDrop(store: store, target: nil, into: .favourite,
+                                  axis: .horizontal, extent: 0, side: .constant(nil)))
         .help(address.isEmpty ? "Search or Enter URL" : address)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Address and Search")
@@ -494,58 +496,25 @@ private struct PillBody: View {
 /// auto-archives, and only Unfavourite — or a drag down into one of the lists — takes it
 /// out. Columns follow the count (`TabStore.favouriteColumns`), so one favourite is one wide
 /// tile and seven are a 4-wide grid, never two fixed slots.
+/// Empty, it is nothing at all — Arc's fresh space is the pill and then the space's name,
+/// no placeholder — and the first favourite is made by dropping a tab on the address pill.
 private struct Favorites: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
         let pinned = store.tabs.filter { $0.kind == .favourite }
-        if pinned.isEmpty {
-            SectionDropTarget(kind: .favourite, symbol: "star", height: Look.tileHeight,
-                              label: "Favourites", value: "None yet",
-                              hint: "Drag a tab here to make it a favourite.")
-        } else {
+        if !pinned.isEmpty {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
                                      count: TabStore.favouriteColumns(pinned.count)),
                       spacing: Look.inset) {
                 ForEach(pinned) { FavoriteTile(tab: $0) }
             }
+            // The grid sits an `inset` above the space row, not a row gap.
+            .padding(.bottom, Look.inset - Look.rowGap)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Favourites")
             .accessibilityValue("\(pinned.count) pinned")
         }
-    }
-}
-
-/// One quiet full-width slot where an empty section would be: the sidebar keeps its shape
-/// with nothing in Favourites or Pinned, and the first one has somewhere to be dropped. A
-/// card's fill rather than a tile's, so it reads as a place rather than as a tile that lost
-/// its icon.
-private struct SectionDropTarget: View {
-    @EnvironmentObject var store: TabStore
-    let kind: TabKind
-    let symbol: String
-    let height: CGFloat
-    let label: String
-    let value: String
-    let hint: String
-    @State private var side: DropSide?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: Look.pillRadius)
-            .fill(side == nil ? Look.cardFill : Look.hovered)
-            .frame(maxWidth: .infinity, minHeight: height)
-            .overlay {
-                Image(systemName: symbol).font(Look.symbol).foregroundStyle(.quaternary)
-            }
-            .animation(reduceMotion ? nil : Look.quick, value: side == nil)
-            .onDrop(of: [.plainText],
-                    delegate: TabDrop(store: store, target: nil, into: kind,
-                                      axis: .horizontal, extent: 0, side: $side))
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(label)
-            .accessibilityValue(value)
-            .accessibilityHint(hint)
     }
 }
 
@@ -728,15 +697,21 @@ private struct SpaceRow: View {
     }
 
     private func row(_ icon: String, _ name: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon).frame(width: 16)
-            Text(name).font(Look.text)
+        HStack(spacing: Look.rowSpacing) {
+            Image(systemName: icon).font(Look.spaceIcon).frame(width: Look.tileIcon)
+            Text(name).font(Look.rowTitle)
             Spacer(minLength: 0)
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 8)
+        // Arc's quietest ink on the sidebar (152 on 66): a heading, not a row.
+        .foregroundStyle(Look.inkTertiary)
+        .padding(.horizontal, Look.rowInset)
         .frame(height: Look.rowHeight)
         .contentShape(.rect)
+        // Dropping a tab on the space's name pins it — the way into an empty Pinned section
+        // now that there is no placeholder slot to drop on.
+        .onDrop(of: [.plainText],
+                delegate: TabDrop(store: store, target: nil, into: .pinned,
+                                  axis: .horizontal, extent: 0, side: .constant(nil)))
     }
 }
 
@@ -934,7 +909,7 @@ private struct SpaceTheme: View {
                     .opacity(space.colorHex == hex ? 1 : 0)
             }
             .contentShape(.circle)
-            .onTapGesture { edit { $0.colorHex = hex; $0.tint = $0.tint ?? 0.35 } }
+            .onTapGesture { edit { $0.colorHex = hex; $0.tint = $0.tint ?? Look.defaultTint } }
             .accessibilityLabel("Theme colour \(hex)")
             .accessibilityAddTraits(space.colorHex == hex ? [.isButton, .isSelected] : .isButton)
     }
@@ -942,7 +917,7 @@ private struct SpaceTheme: View {
     private var strength: some View {
         HStack(spacing: Look.inset + 2) {
             Image(systemName: "circle.lefthalf.filled").font(Look.caption).foregroundStyle(.secondary)
-            Slider(value: Binding(get: { space.tint ?? 0.35 },
+            Slider(value: Binding(get: { space.tint ?? Look.defaultTint },
                                   set: { v in edit { $0.tint = v } }), in: 0...1)
                 .accessibilityLabel("Colour strength")
             Button("None") { edit { $0.colorHex = nil } }
@@ -970,7 +945,7 @@ private struct SpaceDots: View {
     var body: some View {
         HStack(spacing: 8) {
             if store.spaces.isEmpty {
-                Circle().fill(.tint).frame(width: 6, height: 6)
+                Circle().fill(.tint).frame(width: Look.dot, height: Look.dot)
                     .accessibilityLabel("This space")
             } else {
                 ForEach(store.spaces) { dot($0) }
@@ -985,9 +960,9 @@ private struct SpaceDots: View {
         Group {
             if here {
                 Image(systemName: space.icon ?? "cloud").font(Look.small)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Look.inkPrimary)
             } else {
-                Circle().fill(.tertiary).frame(width: 6, height: 6)
+                Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
             }
         }
         .frame(width: 20, height: 20)
@@ -1016,20 +991,16 @@ private struct PinnedTabs: View {
 
     var body: some View {
         let pinned = store.tabs.filter { $0.kind == .pinned }
-        VStack(spacing: Look.rowGap) {
-            if pinned.isEmpty {
-                // A row-high slot rather than nothing: an empty section with no drop target
-                // cannot be filled by dragging, which is the way Arc fills it.
-                SectionDropTarget(kind: .pinned, symbol: "pin", height: Look.rowHeight,
-                                  label: "Pinned Tabs", value: "None yet",
-                                  hint: "Drag a tab here to pin it.")
-            } else {
+        // Empty is nothing, as in Arc: the divider follows the space's name. The way in is
+        // a drop on the space row, ⌘D, or a tab's own Pin action.
+        if !pinned.isEmpty {
+            VStack(spacing: Look.rowGap) {
                 ForEach(pinned) { TabRow(tab: $0) }
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Pinned Tabs")
+            .accessibilityValue("\(pinned.count) pinned")
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Pinned Tabs")
-        .accessibilityValue("\(pinned.count) pinned")
     }
 }
 
@@ -1050,16 +1021,17 @@ private struct SidebarRow<Leading: View, Trailing: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Look.rowSpacing) {
             leading()
-            // Every tab title in primary, selected or not — Arc's list is white on dark
-            // all the way down, and the selection is the fill, not a change of ink.
-            label().font(Look.text).lineLimit(1)
-                .foregroundStyle(dimmed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+            // Every tab title in the same ink, selected or not — Arc's list is one grey on
+            // dark all the way down, and the selection is the fill, not a change of ink.
+            label().font(Look.rowTitle).lineLimit(1)
+                .foregroundStyle(dimmed ? Look.inkTertiary : Look.inkPrimary)
             Spacer(minLength: 0)
             trailing()
         }
-        .padding(.horizontal, 8)
+        .padding(.leading, Look.rowInset)
+        .padding(.trailing, Look.rowTrailingInset)
         .frame(height: Look.rowHeight)
         .background(fill, in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
@@ -1074,11 +1046,18 @@ private struct SidebarRow<Leading: View, Trailing: View>: View {
     }
 }
 
-extension SidebarRow where Leading == Image, Trailing == EmptyView {
+/// A symbol in a favicon's box, so a row led by a glyph lines its title up with the tab
+/// titles around it.
+private struct GlyphBox: View {
+    let name: String
+    var body: some View { Image(systemName: name).frame(width: Look.tileIcon) }
+}
+
+extension SidebarRow where Leading == GlyphBox, Trailing == EmptyView {
     init(icon: String, title: String, selected: Bool, dimmed: Bool = false,
          action: @escaping () -> Void) {
         self.init(selected: selected, dimmed: dimmed, action: action,
-                  leading: { Image(systemName: icon) },
+                  leading: { GlyphBox(name: icon) },
                   label: { Text(title) },
                   trailing: { EmptyView() })
     }
@@ -1107,16 +1086,20 @@ private struct TidyRow: View {
                 .disabled(!TidyTabs.shouldOffer(store))
                 .help("Rename and group tabs (\(Keybindings.binding(for: .tidyTabs).display))")
                 .accessibilityLabel("Tidy Tabs")
-            Text("|").foregroundStyle(.tertiary)
+            Text("|").foregroundStyle(Look.inkQuiet)
             Button("Clear") { clear() }
                 .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
                 .accessibilityLabel("Clear Tabs")
         }
         .buttonStyle(.plain)
-        .font(Look.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 8)
-        .frame(height: Look.rowHeight)
+        .font(Look.sectionCaption)
+        .foregroundStyle(Look.inkTertiary)
+        .padding(.horizontal, Look.rowInset)
+        // Arc butts this label to the last pinned row and leaves the room *below* it, so
+        // the divider reads as the end of one section rather than the start of the next.
+        .frame(height: Look.tidyRow)
+        .padding(.top, -Look.rowGap)
+        .padding(.bottom, Look.sectionGap - Look.rowGap)
     }
 
     /// The menu item owns this too, so both routes archive rather than destroy.
@@ -1176,11 +1159,11 @@ private struct TabRow: View {
         .help(tab.title)
         .onDrag { dragPayload(tab) } preview: {
             // Drag preview: the row alone would drag the whole list's background with it.
-            HStack(spacing: 8) {
+            HStack(spacing: Look.rowSpacing) {
                 TabIcon(tab: tab)
-                Text(TidyTitles.title(for: tab)).lineLimit(1).font(Look.text)
+                Text(TidyTitles.title(for: tab)).lineLimit(1).font(Look.rowTitle)
             }
-            .padding(.horizontal, 8).padding(.vertical, 4)
+            .padding(.horizontal, Look.rowInset).padding(.vertical, 4)
         }
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: tab, into: tab.kind,
@@ -1305,7 +1288,7 @@ private struct TabRowTrailing: View {
             }
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Look.inkSecondary)
     }
 }
 
@@ -1352,13 +1335,13 @@ private struct BottomRow: View {
             Spacer(minLength: 0)
             // The Spaces menu owns the naming alert; this is the same closure.
             Button { Keybindings.actions[.newSpace]?() } label: { Image(systemName: "plus") }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
                 .help("New Space")
                 .accessibilityLabel("New Space")
         }
         .font(Look.icon)
         .frame(height: Look.footer)
-        .padding(.horizontal, 6)
+        .padding(.horizontal, Look.inset)
     }
 }
 
@@ -1469,7 +1452,7 @@ private struct LibraryButton: View {
         // a fixed strip, and a button that comes and goes makes the whole row jump.
         Button { store.libraryOpen.toggle() } label: { Image(systemName: "archivebox") }
             .buttonStyle(.plain)
-            .foregroundStyle(empty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
+            .foregroundStyle(empty ? Look.inkDisabled : Look.inkSecondary)
             .disabled(empty)
             .help("Library (\(Keybindings.binding(for: .showLibrary).display))")
             .accessibilityLabel("Library")

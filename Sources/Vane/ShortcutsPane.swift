@@ -85,9 +85,8 @@ import SwiftUI
                     .onChange(of: query) { stopRecording() }
             }
             .padding(.horizontal, Look.inset)
-            .frame(height: Look.rowHeight)
-            .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
-            .hairline(radius: Look.pillRadius)
+            .frame(height: Look.control)
+            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
             .accessibilityLabel("Search Shortcuts")
             .accessibilityHint("Matches a command by name or by its keys — \u{201C}new tab\u{201D} "
                                + "or \u{201C}cmd t\u{201D}.")
@@ -105,9 +104,8 @@ import SwiftUI
             .buttonStyle(.plain)
             .font(Look.text)
             .padding(.horizontal, Look.inset + 2)
-            .frame(height: Look.rowHeight)
-            .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
-            .hairline(radius: Look.pillRadius)
+            .frame(height: Look.control)
+            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
         }
     }
 
