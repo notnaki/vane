@@ -471,7 +471,7 @@ private struct CommandField: NSViewRepresentable {
             HStack(spacing: Look.barRowInset) {
                 Image(systemName: "magnifyingglass")
                     .font(Look.fieldIcon)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Look.barPlaceholder)
                     .frame(width: Look.rowIcon)
                 if ready {
                     CommandField(text: $query, prompt: mode.prompt,
@@ -527,32 +527,35 @@ private struct CommandField: NSViewRepresentable {
     private func line(_ i: Int, _ row: PaletteRow) -> some View {
         let on = i == index
         let lit = hover == row.id
-        return HStack(spacing: Look.barRowInset) {
+        return HStack(spacing: Look.barRowSpacing) {
             if let image = row.image {
                 Image(nsImage: image).resizable()
                     .frame(width: Look.rowIcon, height: Look.rowIcon)
             } else {
                 Image(systemName: row.icon)
                     .font(Look.symbol)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Look.barGlyph)
                     .frame(width: Look.rowIcon, height: Look.rowIcon)
             }
+            // Arc's title is a light grey until the row is the one Return will press,
+            // when it goes to full white — the fill alone is not the whole selection here.
             Text(row.title).font(Look.rowText).lineLimit(1)
+                .foregroundStyle(on ? Look.barSelectedText : Look.barText)
             if !row.subtitle.isEmpty {
-                Text(row.subtitle).font(Look.text).foregroundStyle(.secondary).lineLimit(1)
+                Text(row.subtitle).font(Look.text).foregroundStyle(Look.barTrailing).lineLimit(1)
             }
             Spacer(minLength: Look.inset)
             // The verb and its chip travel together, on every row that has one; the
             // selected row's are the bright pair, because that is the one Return presses.
             if !row.trailing.isEmpty {
                 Text(row.trailing).font(Look.rowText)
-                    .foregroundStyle(on ? .primary : .secondary).lineLimit(1).layoutPriority(1)
+                    .foregroundStyle(on ? Look.barSelectedText : Look.barTrailing)
+                    .lineLimit(1).layoutPriority(1)
                 Image(systemName: "arrow.right")
-                    .font(Look.glyph)
-                    .foregroundStyle(on ? .primary : .secondary)
+                    .font(Look.chipGlyph)
+                    .foregroundStyle(on ? Look.barSelectedText : Look.barGlyph)
                     .frame(width: Look.chip, height: Look.chip)
-                    .background(on ? Look.chipSelectedFill : Look.chipFill,
-                                in: .rect(cornerRadius: Look.chipRadius))
+                    .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
             }
         }
         .padding(.horizontal, Look.barRowInset)

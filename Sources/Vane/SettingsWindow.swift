@@ -182,7 +182,7 @@ struct SettingsCard<Content: View>: View {
             }
         }
         .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
-        .hairline(radius: Look.cardRadius)
+        .hairline(radius: Look.cardRadius, Look.cardStroke)
     }
 }
 
@@ -212,7 +212,7 @@ struct SettingsRow<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: Look.inset) {
-            Text(title).font(Look.text)
+            Text(title).font(Look.text).foregroundStyle(Look.inkPrimary)
             Spacer(minLength: Look.inset)
             trailing
         }
@@ -227,7 +227,8 @@ struct Footnote: View {
     let text: String
     init(_ text: String) { self.text = text }
     var body: some View {
-        Text(text).font(Look.text).foregroundStyle(.secondary)
+        // Arc's footnotes are a size down and a quiet grey (115 on 30).
+        Text(text).font(Look.footnote).foregroundStyle(Look.inkQuiet)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Look.cardInset)
@@ -248,7 +249,8 @@ struct SettingsSection<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset - 2) {
-            Text(title).font(Look.text).foregroundStyle(.secondary)
+            // Caption-sized, the way Arc heads "Your Data and Settings" (11pt, 109 on 27).
+            Text(title).font(Look.caption).foregroundStyle(Look.inkQuiet)
                 .padding(.horizontal, Look.cardInset)
             content
         }
@@ -269,9 +271,8 @@ private struct FieldStyle: ViewModifier {
     func body(content: Content) -> some View {
         content.textFieldStyle(.plain).font(Look.text)
             .padding(.horizontal, Look.inset)
-            .padding(.vertical, Look.inset - 2)
-            .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
-            .hairline(radius: Look.pillRadius)
+            .frame(height: Look.control)
+            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
     }
 }
 
@@ -417,7 +418,7 @@ private struct ProfilesPane: View {
 
     private var list: some View {
         SettingsCard(divided: false) {
-            Text("Your Profiles").font(Look.text).foregroundStyle(.secondary)
+            Text("Your Profiles").font(Look.caption).foregroundStyle(Look.inkSecondary)
                 .padding(.horizontal, Look.cardInset)
                 .frame(maxWidth: .infinity, minHeight: Look.settingsRow, alignment: .leading)
             Hairline()
@@ -466,17 +467,18 @@ private struct ProfilesPane: View {
                     .onAppear { renameFocused = true }
                     .onSubmit { manager.rename(p.id, to: draft); renaming = nil; rebuild() }
             } else {
-                Text(p.name).font(Look.text)
+                Text(p.name).font(Look.text).foregroundStyle(Look.inkPrimary)
                 Spacer(minLength: Look.inset)
-                Text(spaceCount(p)).font(Look.text).foregroundStyle(.secondary)
+                Text(spaceCount(p)).font(Look.caption).foregroundStyle(Look.inkSecondary)
             }
         }
         .padding(.horizontal, Look.inset)
-        .frame(height: Look.settingsRow - Look.inset / 2)
+        // Arc's list rows: a 32pt fill set 15 in from the card, on a 40 pitch.
+        .frame(height: Look.listRow)
         .background(p.id == selected ? Look.accentSelected : .clear,
-                    in: .rect(cornerRadius: Look.pillRadius))
-        .padding(.horizontal, Look.inset / 2)
-        .padding(.vertical, Look.inset / 4)
+                    in: .rect(cornerRadius: Look.chipRadius))
+        .padding(.horizontal, Look.cardInset)
+        .padding(.vertical, Look.listRowGap)
         .contentShape(.rect)
         .onTapGesture { renaming = nil; selected = p.id }
         .accessibilityElement(children: .contain)
@@ -622,7 +624,7 @@ private struct DataRow: View {
                     .foregroundStyle(.white)
                     .frame(width: Look.iconTile, height: Look.iconTile)
                     .background(tint, in: .rect(cornerRadius: Look.iconTileRadius))
-                Text(title).font(Look.text).foregroundStyle(.primary)
+                Text(title).font(Look.text).foregroundStyle(Look.inkPrimary)
                 Spacer(minLength: Look.inset)
                 Image(systemName: "arrow.right").foregroundStyle(Color.accentColor)
             }
