@@ -624,7 +624,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         Suspension.begin()        // idempotent; here so main.swift needs no wiring
         // A space carries its own tabs, favourites and pinned rows; otherwise fall back to
         // the profile's.
-        let urls = space.map { $0.tabURLs } ?? urls
+        // A Space's own Today tabs, plus whatever this window was asked to open — a url
+        // handed to a window that is in a Space opens *in* that Space rather than replacing
+        // it, which is what "new windows open in the current space" means.
+        let urls = space.map { s in s.tabURLs + urls.filter { !s.tabURLs.contains($0) } } ?? urls
         // What stays belongs to the profile, not to a window, so only the first window of
         // that profile gets it back — and the session's copy of those same urls is dropped
         // so they don't come up twice.
@@ -647,6 +650,30 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // same thing an empty window does, because as far as pages go it is one.
         current = tabs.first { $0.kind == .today }?.id
         if rest.isEmpty { newTab(nil) }
+        rememberSpace()
+    }
+
+    /// Which Space each profile was last showing. Arc comes back up in the Space you left it
+    /// in, and opens a new window in the Space you are looking at; the session file holds
+    /// tabs, not Spaces, so this is the one thing that has to be remembered separately.
+    nonisolated static func lastSpaceKey(_ profileID: UUID) -> String {
+        ProfileManager.defaultsKey("lastSpace", profileID)
+    }
+
+    static func lastSpace(for profileID: UUID) -> Space? {
+        guard let raw = UserDefaults.standard.string(forKey: lastSpaceKey(profileID)),
+              let id = UUID(uuidString: raw) else { return nil }
+        return ProfileManager.shared.spaces(for: profileID).first { $0.id == id }
+    }
+
+    private func rememberSpace() {
+        guard !isPrivate else { return }
+        let key = TabStore.lastSpaceKey(profileID)
+        if let id = currentSpaceID {
+            UserDefaults.standard.set(id.uuidString, forKey: key)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
     }
 
     /// One section's tabs, in order, all parked. Never loaded eagerly whatever
@@ -1018,6 +1045,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         for url in space.tabURLs { newBlankTab().open(url, parked: parked[url.absoluteString]) }
         current = tabs.first { $0.kind == .today }?.id
         if space.tabURLs.isEmpty { newTab(nil) }
+        rememberSpace()
         extensions.sync()
     }
 
@@ -1071,6 +1099,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             saveCurrentSpace()
         }
         palette = nil                      // the editor is the thing to look at, not the bar
+        rememberSpace()
         editingSpace = space.id            // opens the inline name/icon/colour editor
         return spaces.first { $0.id == space.id } ?? space
     }
