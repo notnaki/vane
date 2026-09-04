@@ -65,6 +65,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     var editing = false
     private var obs: [NSKeyValueObservation] = []
     var onNewTab: ((URL?) -> Void)?
+    /// A link the user asked for *beside* this tab — ⌘-click, middle-click, `target=_blank`.
+    /// The Bool is whether to go there; ⌘-click deliberately does not.
+    var onOpenBeside: ((URL, Bool) -> Void)?
 
     let isPrivate: Bool
     /// Which profile's data this tab reads and writes. Never changes for the life of the tab.
@@ -411,6 +414,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// scheme from here — WebKit does not let the delegate rewrite the request.
     func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        // ⌘-click, ⇧⌘-click and middle-click are a request for a tab, not for this page to
+        // go somewhere. Before HTTPS-only, because the new tab does its own load and gets
+        // its own vetting.
+        if let intent = TabActions.intent(for: navigationAction),
+           let url = navigationAction.request.url, let open = onOpenBeside {
+            decisionHandler(.cancel)
+            open(url, intent.focus)
+            return
+        }
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             decisionHandler(.allow)
@@ -521,7 +533,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     // target="_blank" and window.open — hand it to a real tab instead of a popup window.
     func webView(_ w: WKWebView, createWebViewWith cfg: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        onNewTab?(action.request.url)
+        if let url = action.request.url, let open = onOpenBeside {
+            open(url, !action.modifierFlags.contains(.command))
+        } else {
+            onNewTab?(action.request.url)
+        }
         return nil
     }
 }
@@ -676,6 +692,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func newBlankTab() -> Tab {
         let t = Tab(isPrivate: isPrivate, profileID: profileID)
         t.onNewTab = { [weak self] u in self?.newTab(u) }
+        // A popup or a `target=_blank` link belongs next to the page that opened it, not at
+        // the bottom of a list of thirty tabs — and it is what the user just asked for, so
+        // it takes focus where a ⌘-click does not.
+        t.onOpenBeside = { [weak self] u, focus in self?.openBeside(u, focus: focus) }
         tabs.append(t)
         current = t.id
         extensions.sync()

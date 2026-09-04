@@ -1,0 +1,148 @@
+import AppKit
+import SwiftUI
+import WebKit
+
+/// The everyday link gestures every browser has and Vane did not: ⌘-click and middle-click
+/// open a link in a new tab *beside* the one it came from, ⇧⌘-click does the same and goes
+/// there, and Escape stops a page that is still loading.
+enum TabActions {
+
+    /// What a click on a link should do, given the modifiers it was made with.
+    /// `focus` is only meaningful when `beside` is true.
+    struct Intent: Equatable {
+        let beside: Bool
+        let focus: Bool
+    }
+
+    /// `WKNavigationAction.buttonNumber` is a *mask*, not an index, whatever its name says:
+    /// measured against a real mouse it reports 1 for a left click and 4 for a wheel click,
+    /// which is `NSEvent.pressedMouseButtons` bit order (left 1, right 2, other 4). Guessing
+    /// WebCore's `MouseButton` enum here — where middle is 1 — would have turned every
+    /// ordinary left click into a background tab.
+    /// ponytail ceiling: a mouse that reports its wheel click as something else navigates in
+    /// place, which is what happened before this existed.
+    static let middleButton = 4
+
+    /// Nil means "let it navigate here", which is the answer for an ordinary click and for
+    /// every navigation that is not a click at all (a redirect, a form post, JavaScript).
+    ///
+    /// ⌘ opens beside and stays put — the point of ⌘-click is to keep reading and collect
+    /// links as you go. ⇧⌘ opens beside and goes there. A middle-click is ⌘-click with the
+    /// wheel, the way every other browser has it.
+    static func intent(command: Bool, shift: Bool, button: Int) -> Intent? {
+        if button == middleButton { return Intent(beside: true, focus: false) }
+        guard command else { return nil }
+        return Intent(beside: true, focus: shift)
+    }
+
+    /// The same question asked of a real navigation. Only a click on a link counts: a ⌘ held
+    /// down while a page redirects itself is not a request for a tab.
+    @MainActor static func intent(for action: WKNavigationAction) -> Intent? {
+        guard action.navigationType == .linkActivated else { return nil }
+        return intent(command: action.modifierFlags.contains(.command),
+                      shift: action.modifierFlags.contains(.shift),
+                      button: action.buttonNumber)
+    }
+
+    /// Escape while a page is still coming in. Arc stops the load; every other browser does
+    /// too, and Vane only had the Stop button in the sidebar's top row.
+    ///
+    /// Returns true when it acted, so the caller swallows the key. A page that is *not*
+    /// loading never sees Escape taken away from it — closing its own dialog, leaving its own
+    /// full-screen video and dismissing its own menu are all Escape, and all of them matter
+    /// more than a stop that has nothing to stop.
+    @MainActor static func stopLoading(in window: NSWindow?) -> Bool {
+        guard let store = TabStore.all.first(where: { $0.window === window }),
+              let tab = store.active, tab.loading else { return false }
+        tab.stop()
+        axAnnounce("Stopped loading.")
+        return true
+    }
+}
+
+extension TabStore {
+    /// Where a tab opened from another tab goes. Beside its opener when the opener is an
+    /// ordinary Today tab — which is what "beside" means to anyone who has ⌘-clicked a link —
+    /// and at the head of Today when it came from a favourite or a pinned tab, since those
+    /// live in sections a new page has no business joining.
+    ///
+    /// Pure index arithmetic over the strip's kinds, like `clampedDestination` next door, so
+    /// `selfcheck --pure` can prove it. `kinds` is the strip *without* the new tab in it.
+    static func insertionIndexBeside(current: Int?, kinds: [TabKind]) -> Int {
+        let firstToday = kinds.firstIndex(of: .today) ?? kinds.count
+        guard let i = current, kinds.indices.contains(i) else { return kinds.count }
+        return kinds[i] == .today ? i + 1 : firstToday
+    }
+
+    /// Open a url in a new tab beside the current one. `focus` false leaves the user where
+    /// they were, which is the whole point of ⌘-click.
+    func openBeside(_ url: URL, focus: Bool) {
+        let opener = current
+        let tab = newBlankTab()          // appends, and takes focus
+        tab.web.load(URLRequest(url: url))
+        if let from = tabs.firstIndex(where: { $0.id == tab.id }) {
+            let moved = tabs.remove(at: from)
+            let dest = TabStore.insertionIndexBeside(
+                current: tabs.firstIndex { $0.id == opener }, kinds: tabs.map(\.kind))
+            tabs.insert(moved, at: min(dest, tabs.count))
+        }
+        if !focus {
+            current = opener
+            axAnnounce("Opened in a background tab.")
+        }
+    }
+}
+
+extension TabActions {
+    /// Offline proof of the modifier table and the insertion arithmetic.
+    @MainActor static func check() -> [(String, Bool)] {
+        let plain = 0
+        var out: [(String, Bool)] = [
+            ("an ordinary click navigates in place",
+             intent(command: false, shift: false, button: plain) == nil),
+            ("⇧-click on its own navigates in place",
+             intent(command: false, shift: true, button: plain) == nil),
+            ("⌘-click opens beside, in the background",
+             intent(command: true, shift: false, button: plain) == Intent(beside: true, focus: false)),
+            ("⇧⌘-click opens beside and goes there",
+             intent(command: true, shift: true, button: plain) == Intent(beside: true, focus: true)),
+            ("middle-click opens beside, in the background",
+             intent(command: false, shift: false, button: middleButton)
+                == Intent(beside: true, focus: false)),
+            ("…whatever else is held down",
+             intent(command: true, shift: true, button: middleButton)
+                == Intent(beside: true, focus: false)),
+            ("the right button is not the middle one",
+             intent(command: false, shift: false, button: 2) == nil),
+            ("…and neither is the left one, which is 1 and not 0",
+             intent(command: false, shift: false, button: 1) == nil),
+        ]
+
+        // Insertion. The strip is always sorted favourite → pinned → today.
+        let strip: [TabKind] = [.favourite, .pinned, .today, .today, .today]
+        out += [
+            ("a tab opened from a Today tab lands right after it",
+             TabStore.insertionIndexBeside(current: 3, kinds: strip) == 4),
+            ("…including from the last one",
+             TabStore.insertionIndexBeside(current: 4, kinds: strip) == 5),
+            ("a tab opened from a favourite lands at the head of Today",
+             TabStore.insertionIndexBeside(current: 0, kinds: strip) == 2),
+            ("…and so does one opened from a pinned tab",
+             TabStore.insertionIndexBeside(current: 1, kinds: strip) == 2),
+            ("with nothing selected it goes to the end",
+             TabStore.insertionIndexBeside(current: nil, kinds: strip) == strip.count),
+            ("an index that is not in the strip goes to the end",
+             TabStore.insertionIndexBeside(current: 99, kinds: strip) == strip.count),
+            ("an empty strip takes it at zero",
+             TabStore.insertionIndexBeside(current: nil, kinds: []) == 0),
+            ("with no Today tabs at all it still lands after the ones that stay",
+             TabStore.insertionIndexBeside(current: 0, kinds: [.favourite, .pinned]) == 2),
+            ("the result is always a valid insertion point",
+             (0..<strip.count).allSatisfy {
+                 let i = TabStore.insertionIndexBeside(current: $0, kinds: strip)
+                 return i >= 0 && i <= strip.count
+             }),
+        ]
+        return out
+    }
+}

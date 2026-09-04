@@ -331,7 +331,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("https-only", HTTPSOnly.check),
                                ("bangs", Bangs.check),
                                ("sidebar width", SidebarWidth.check),
-                               ("peeked window chrome", VaneWindow.check)] {
+                               ("peeked window chrome", VaneWindow.check),
+                               ("link gestures", TabActions.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }

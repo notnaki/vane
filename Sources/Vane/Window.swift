@@ -81,6 +81,10 @@ final class VaneWindow: NSWindow {
     /// deliberately does not use `isMovableByWindowBackground`, which cannot tell the
     /// difference and moved the window from a drag on a tab row.
     override func sendEvent(_ event: NSEvent) {
+        // Escape stops a page that is still coming in — and *only* then, so a page's own
+        // dialog, menu or full-screen video keeps its Escape the rest of the time.
+        if event.type == .keyDown, event.keyCode == 53,
+           MainActor.assumeIsolated({ TabActions.stopLoading(in: self) }) { return }
         if event.type == .leftMouseDown,
            MainActor.assumeIsolated({ WindowDragGround.shared.over }) {
             // Runs its own event loop until the button comes up, and gives us AppKit's edge
