@@ -275,6 +275,8 @@ private struct LoadingBar: View {
 private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
+    /// The scroll viewport's height, so its content can be made to fill it. See below.
+    @State private var scrollHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 8) {
@@ -289,14 +291,24 @@ private struct Sidebar: View {
                     NewTabRow()
                     OpenTabs()
                 }
+                // The list is at least as tall as what it is scrolling in, so the emptiness
+                // under the last tab is part of the *content* — which is what lets the drag
+                // ground behind it see the pointer. A scroll view claims the hover over its
+                // own frame, so a ground laid behind the scroll view never gets it.
+                .frame(minHeight: scrollHeight, alignment: .top)
+                .background(WindowDragArea())
             }
             .scrollIndicators(.never)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
             BottomRow()
         }
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.inset)
         .padding(.top, Look.topInset)
         .frame(width: sidebar.width, alignment: .leading)
+        // Under everything in the sidebar, so a row, a button or the pill takes the pointer
+        // first and only the bare ground picks the window up.
+        .background(WindowDragArea())
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
     }

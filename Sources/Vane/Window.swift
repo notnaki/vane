@@ -39,6 +39,22 @@ final class VaneWindow: NSWindow {
         centreTrafficLights()
     }
 
+    /// Arc's sidebar *is* the window's title bar: dragging its bare ground moves the window,
+    /// and dragging anything on it does that thing instead. `WindowDragGround` is SwiftUI's
+    /// own answer to "is the pointer on bare ground", so this is the whole of it — and it
+    /// deliberately does not use `isMovableByWindowBackground`, which cannot tell the
+    /// difference and moved the window from a drag on a tab row.
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown,
+           MainActor.assumeIsolated({ WindowDragGround.shared.over }) {
+            // Runs its own event loop until the button comes up, and gives us AppKit's edge
+            // snapping and Spaces handling for nothing.
+            performDrag(with: event)
+            return
+        }
+        super.sendEvent(event)
+    }
+
     /// Becoming or resigning key swaps the buttons' images and can re-lay them without a
     /// layout pass of the window's own.
     override func becomeKey() { super.becomeKey(); centreTrafficLights() }
