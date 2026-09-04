@@ -37,6 +37,12 @@ import SwiftUI
         window.title = isPrivate ? "Vane — Private" : "Vane" + named
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        // An empty toolbar, never shown: it only exists to make the titlebar 38pt tall,
+        // which is where AppKit centres the traffic lights at `Look.lightsCentre` instead
+        // of at 16pt — on the sidebar's top row rather than 3pt above it. The titlebar is
+        // transparent and the toolbar has no items, so nothing of it is ever drawn.
+        window.toolbar = NSToolbar(identifier: "VaneEmpty")
+        window.toolbarStyle = .unifiedCompact
         window.tabbingMode = .disallowed          // Vane draws its own tabs
         // The window itself draws nothing: `WindowGlass` inside the content view is the
         // only ground, so the desktop shows through the sidebar and the gap around the page
@@ -157,8 +163,11 @@ import SwiftUI
             store.saveCurrentSpace()
             let entries = store.tabs.compactMap { tab -> Entry? in
                 // currentURL, not web.url: a suspended tab has no live page and would
-                // otherwise drop out of its own session.
-                guard let u = tab.currentURL, u.scheme?.hasPrefix("http") == true else { return nil }
+                // otherwise drop out of its own session. A favourite is written under its
+                // home url, so `TabStore.init` matches it to the pin instead of opening the
+                // page it had wandered to as a second, ordinary tab.
+                guard let u = tab.pinned ? tab.homeURL : tab.currentURL,
+                      u.scheme?.hasPrefix("http") == true else { return nil }
                 let snap = tab.snapshot
                 return Entry(url: u.absoluteString, title: snap.title,
                              state: snap.state?.base64EncodedString())

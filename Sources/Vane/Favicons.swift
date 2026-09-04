@@ -188,6 +188,7 @@ import WebKit
     /// Offline assertions for the pure logic. No network, no disk.
     static func check() -> [(String, Bool)] {
         let u = { (s: String) in URL(string: s)! }
+        let d = { (t: Double) in Date(timeIntervalSince1970: t) }
         return [
             ("cache key is the host", key(for: u("https://example.com/a?b=c")) == "example.com"),
             ("www folds onto the apex", key(for: u("https://WWW.Example.com/")) == "example.com"),
@@ -218,6 +219,58 @@ import WebKit
              TabStore.clampedDestination(count: 5, pinnedCount: 0, movingPinned: false, to: 0) == 0),
             ("the only pinned tab can only land at 0",
              TabStore.clampedDestination(count: 3, pinnedCount: 1, movingPinned: true, to: 2) == 0),
+
+            // The favourites grid: columns from the count, Arc's way.
+            ("no favourites is one placeholder column", TabStore.favouriteColumns(0) == 1),
+            ("one favourite is one full-width tile", TabStore.favouriteColumns(1) == 1),
+            ("two and three favourites get a column each",
+             TabStore.favouriteColumns(2) == 2 && TabStore.favouriteColumns(3) == 3),
+            ("four favourites are a 2×2", TabStore.favouriteColumns(4) == 2),
+            ("five and six run three across",
+             TabStore.favouriteColumns(5) == 3 && TabStore.favouriteColumns(6) == 3),
+            ("seven or more run four across",
+             TabStore.favouriteColumns(7) == 4 && TabStore.favouriteColumns(12) == 4),
+
+            // Closing: a favourite parks in place, an ordinary tab goes.
+            ("closing a favourite keeps its tile",
+             TabStore.closing(0, pinned: [true, false], lastActive: [d(0), d(1)]).keep),
+            ("closing an ordinary tab removes it",
+             !TabStore.closing(1, pinned: [true, false], lastActive: [d(0), d(1)]).keep),
+            ("a closed favourite hands over to the most recently used ordinary tab",
+             TabStore.closing(0, pinned: [true, true, false, false], lastActive: [d(9), d(9), d(2), d(1)]).next == 2),
+            ("a closed favourite with no ordinary tabs leaves the column bare",
+             TabStore.closing(1, pinned: [true, true], lastActive: [d(0), d(1)]).next == nil),
+            ("closing an ordinary tab shows its neighbour",
+             TabStore.closing(1, pinned: [true, false, false], lastActive: [d(0), d(0), d(0)]).next == 1),
+            ("closing the last ordinary tab never wakes a favourite",
+             TabStore.closing(2, pinned: [true, true, false], lastActive: [d(0), d(0), d(0)]).next == nil),
+            ("closing the only tab leaves nothing to show",
+             TabStore.closing(0, pinned: [false], lastActive: [d(0)]) == (false, nil)),
+
+            // Pins on disk are home urls.
+            ("a pin is saved as its home url, not its current page",
+             TabStore.pinURL(home: u("https://home.example/"), current: u("https://elsewhere.example/x"))
+                == "https://home.example/"),
+            ("a favourite with no home is not written down",
+             TabStore.pinURL(home: nil, current: u("https://elsewhere.example/")) == nil),
+            ("a non-http home is not written down",
+             TabStore.pinURL(home: u("file:///x.html"), current: nil) == nil),
+
+            // Drop index math: where a dragged tab lands before or after its target.
+            ("dropping before a later target lands one short of it",
+             TabStore.insertionIndex(from: 0, target: 3, after: false) == 2),
+            ("dropping after a later target lands on it",
+             TabStore.insertionIndex(from: 0, target: 3, after: true) == 3),
+            ("dropping before an earlier target lands on it",
+             TabStore.insertionIndex(from: 3, target: 0, after: false) == 0),
+            ("dropping after an earlier target lands one past it",
+             TabStore.insertionIndex(from: 3, target: 0, after: true) == 1),
+            ("a row dropped after the last tile pins at the end of the run",
+             TabStore.clampedDestination(count: 5, pinnedCount: 3, movingPinned: true,
+                                         to: TabStore.insertionIndex(from: 4, target: 1, after: true)) == 2),
+            ("a tile dropped above the first row unpins at the head of the list",
+             TabStore.clampedDestination(count: 5, pinnedCount: 1, movingPinned: false,
+                                         to: TabStore.insertionIndex(from: 0, target: 2, after: false)) == 1),
         ]
     }
 }
