@@ -481,33 +481,20 @@ private struct PillBody: View {
 
 // MARK: - Favourites
 
-/// Pinned tabs as a grid of icons. Same targets the old pinned chips were: drag to reorder,
-/// right-click to unpin or close. Two pins make two columns, as in Arc — a lone tile in a
-/// three-column grid looks like something failed to load.
+/// Pinned tabs as a grid of tiles, Arc's way: a place, not a page. A tile stays put when its
+/// page is closed (`TabStore.close` parks it), and only Unpin — or a drag down into the
+/// list — takes it out. Columns follow the count (`TabStore.favouriteColumns`), so one
+/// favourite is one wide tile and seven are a 4-wide grid, never two fixed slots.
 private struct Favorites: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
         let pinned = store.tabs.filter(\.pinned)
         if pinned.isEmpty {
-            // Two empty tiles, not nothing: the grid is part of the sidebar's shape, and a
-            // shape that collapses when the last pin goes reads as the window emptying.
-            // A card's fill rather than a tile's, so they read as places, not as tiles.
-            HStack(spacing: Look.inset) {
-                ForEach(0..<2, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: Look.pillRadius)
-                        .fill(Look.cardFill)
-                        .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
-                }
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Favourites")
-            .accessibilityValue("None pinned")
+            FavoritesPlaceholder()
         } else {
-            // Two columns at the least: one pin stretched across the sidebar reads as a
-            // banner, not as a favourite.
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
-                                     count: min(max(pinned.count, 2), 3)),
+                                     count: TabStore.favouriteColumns(pinned.count)),
                       spacing: Look.inset) {
                 ForEach(pinned) { FavoriteTile(tab: $0) }
             }
@@ -518,27 +505,60 @@ private struct Favorites: View {
     }
 }
 
+/// One quiet full-width tile where the grid will be: the sidebar keeps its shape with
+/// nothing pinned, and the first favourite has somewhere to be dropped. A card's fill
+/// rather than a tile's, so it reads as a place rather than as a tile that lost its icon.
+private struct FavoritesPlaceholder: View {
+    @EnvironmentObject var store: TabStore
+    @State private var side: DropSide?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: Look.pillRadius)
+            .fill(side == nil ? Look.cardFill : Look.hovered)
+            .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
+            .overlay {
+                Image(systemName: "star").font(Look.symbol).foregroundStyle(.quaternary)
+            }
+            .animation(reduceMotion ? nil : Look.quick, value: side == nil)
+            .onDrop(of: [.plainText],
+                    delegate: TabDrop(store: store, target: nil, axis: .horizontal, extent: 0, side: $side))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Favourites")
+            .accessibilityValue("None pinned")
+            .accessibilityHint("Drag a tab here to pin it.")
+    }
+}
+
 private struct FavoriteTile: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
-    @State private var targeted = false
+    @State private var hovering = false
+    @State private var side: DropSide?
+    @State private var width: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let selected = store.current == tab.id
         TabIcon(tab: tab, size: Look.tileIcon)
             .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
-            .background(selected ? Look.selected : Look.pillFill,
+            // Hover steps the tile up to the selected fill, the way the address pill does:
+            // a tile is a button, and a button that does not react reads as a label.
+            .background(selected || hovering ? Look.selected : Look.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
             .glass(radius: Look.pillRadius)
-            .overlay(alignment: .leading) {
-                Rectangle().fill(.tint).frame(width: 2).opacity(targeted ? 1 : 0)
+            .overlay(alignment: side == .after ? .trailing : .leading) {
+                DropLine(on: side != nil, axis: .horizontal)
             }
+            .animation(reduceMotion ? nil : Look.quick, value: hovering)
             .contentShape(.rect)
+            .onHover { hovering = $0 }
             .onTapGesture { store.current = tab.id }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             .help(tab.title)
-            .draggable(tab.id.uuidString) { TabIcon(tab: tab, size: Look.tileIcon).padding(6) }
-            .dropDestination(for: String.self) { ids, _ in drop(ids, onto: tab, in: store) }
-                isTargeted: { targeted = $0 }
+            .onDrag { dragPayload(tab) } preview: { TabIcon(tab: tab, size: Look.tileIcon).padding(6) }
+            .onDrop(of: [.plainText],
+                    delegate: TabDrop(store: store, target: tab, axis: .horizontal, extent: width, side: $side))
             .contextMenu {
                 Button("Unpin Tab") { store.togglePin(tab.id) }
                 Divider()
@@ -568,13 +588,86 @@ private struct FavoriteTile: View {
     return bits.joined(separator: ", ")
 }
 
-/// The payload is the dragged tab's id; the drop index is the target's own position.
-@MainActor private func drop(_ ids: [String], onto tab: Tab, in store: TabStore) -> Bool {
-    guard let id = ids.first,
-          let from = store.tabs.firstIndex(where: { $0.id.uuidString == id }),
-          let to = store.tabs.firstIndex(where: { $0.id == tab.id }) else { return false }
-    store.move(from: from, to: to)
-    return true
+// MARK: Drag and drop
+
+/// Which side of its target a drop will land on.
+private enum DropSide { case before, after }
+
+/// The tab being dragged, for the whole app. A drag never leaves the process, so a drop
+/// reads it straight back rather than round-tripping the item provider — which is
+/// asynchronous, and would leave `dropUpdated` unable to say whether this is one of ours.
+/// Observable so every drop line goes out the moment the drop lands: SwiftUI does not send
+/// `dropExited` to the target that performed the drop, and a line left behind read as a
+/// second, phantom favourite.
+@MainActor private final class Dragging: ObservableObject {
+    static let shared = Dragging()
+    @Published var tab: Tab.ID?
+}
+
+/// ponytail: `.onDrag`/`.onDrop` with a delegate rather than `.draggable`/`.dropDestination`.
+/// The Transferable pair cannot say which side of the target the pointer is on, so it can
+/// only ever drop *onto* a tab, never before or after it; this one gets the location.
+@MainActor private func dragPayload(_ tab: Tab) -> NSItemProvider {
+    // Published on the next turn, not now: a state change inside the drag's own start
+    // re-renders the row under the pointer, and SwiftUI drops the drag with it.
+    let id = tab.id
+    DispatchQueue.main.async { Dragging.shared.tab = id }
+    return NSItemProvider(object: id.uuidString as NSString)
+}
+
+/// The 2pt line a drop will land on, at one edge of its target. `on` is the target's own
+/// hover state; the line also needs a live drag, so a stale state cannot leave it behind.
+private struct DropLine: View {
+    let on: Bool
+    let axis: Axis
+    @ObservedObject private var dragging = Dragging.shared
+
+    var body: some View {
+        Rectangle().fill(.tint)
+            .frame(width: axis == .horizontal ? Look.dropLine : nil,
+                   height: axis == .vertical ? Look.dropLine : nil)
+            .opacity(on && dragging.tab != nil ? 1 : 0)
+    }
+}
+
+/// One drop target for a tile, a row and the empty grid. `target` nil is the placeholder,
+/// which simply pins. The side is the half of the target the pointer is in — left/right
+/// across `extent` for a tile, top/bottom of `Look.rowHeight` for a row — and is published
+/// through `side` so the target can draw its line before the button is released.
+private struct TabDrop: DropDelegate {
+    let store: TabStore
+    let target: Tab?
+    let axis: Axis
+    let extent: CGFloat
+    @Binding var side: DropSide?
+
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let dragging = Dragging.shared.tab else { return false }
+        return dragging != target?.id
+    }
+    func dropEntered(info: DropInfo) { side = which(info) }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard Dragging.shared.tab != nil else { return DropProposal(operation: .cancel) }
+        side = which(info)
+        return DropProposal(operation: .move)
+    }
+    func dropExited(info: DropInfo) { side = nil }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let after = which(info) == .after
+        side = nil
+        guard let id = Dragging.shared.tab else { return false }
+        Dragging.shared.tab = nil
+        if let target { store.drop(id, onto: target.id, after: after) } else { store.pin(id) }
+        return true
+    }
+
+    private func which(_ info: DropInfo) -> DropSide {
+        switch axis {
+        case .horizontal: info.location.x > extent / 2 ? .after : .before
+        case .vertical:   info.location.y > Look.rowHeight / 2 ? .after : .before
+        }
+    }
 }
 
 // MARK: - Spaces
@@ -1080,7 +1173,7 @@ private struct OpenTabs: View {
 private struct TabRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
-    @State private var targeted = false
+    @State private var side: DropSide?
 
     var body: some View {
         let selected = store.current == tab.id
@@ -1092,11 +1185,11 @@ private struct TabRow: View {
             TabRowTrailing(tab: tab, selected: selected)
         }
         // The drop target is the whole row, so the line shows which side it will land on.
-        .overlay(alignment: .top) {
-            Rectangle().fill(.tint).frame(height: 2).opacity(targeted ? 1 : 0)
+        .overlay(alignment: side == .after ? .bottom : .top) {
+            DropLine(on: side != nil, axis: .vertical)
         }
         .help(tab.title)
-        .draggable(tab.id.uuidString) {
+        .onDrag { dragPayload(tab) } preview: {
             // Drag preview: the row alone would drag the whole list's background with it.
             HStack(spacing: 8) {
                 TabIcon(tab: tab)
@@ -1104,8 +1197,8 @@ private struct TabRow: View {
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
         }
-        .dropDestination(for: String.self) { ids, _ in drop(ids, onto: tab, in: store) }
-            isTargeted: { targeted = $0 }
+        .onDrop(of: [.plainText],
+                delegate: TabDrop(store: store, target: tab, axis: .vertical, extent: Look.rowHeight, side: $side))
         .contextMenu {
             Button(tab.pinned ? "Unpin Tab" : "Pin Tab") { store.togglePin(tab.id) }
             Divider()

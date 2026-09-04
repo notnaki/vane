@@ -163,8 +163,11 @@ import SwiftUI
             store.saveCurrentSpace()
             let entries = store.tabs.compactMap { tab -> Entry? in
                 // currentURL, not web.url: a suspended tab has no live page and would
-                // otherwise drop out of its own session.
-                guard let u = tab.currentURL, u.scheme?.hasPrefix("http") == true else { return nil }
+                // otherwise drop out of its own session. A favourite is written under its
+                // home url, so `TabStore.init` matches it to the pin instead of opening the
+                // page it had wandered to as a second, ordinary tab.
+                guard let u = tab.pinned ? tab.homeURL : tab.currentURL,
+                      u.scheme?.hasPrefix("http") == true else { return nil }
                 let snap = tab.snapshot
                 return Entry(url: u.absoluteString, title: snap.title,
                              state: snap.state?.base64EncodedString())

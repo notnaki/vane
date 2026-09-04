@@ -75,6 +75,8 @@ enum Look {
     static let footer: CGFloat = 22
     /// A favourite tile's icon: a step up from a row's 16, since it stands alone.
     static let tileIcon: CGFloat = 20
+    /// The line a drop will land on: before or after a tile, above or below a row.
+    static let dropLine: CGFloat = 2
 
     /// The theme editor popover: seven swatches an `inset` apart, plus its margins. A swatch
     /// is Arc's, measured off ref 8 at 2x.
