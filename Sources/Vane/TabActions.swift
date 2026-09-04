@@ -284,6 +284,15 @@ extension TabActions {
     }
 }
 
+extension Look {
+    /// The ring drawn around a footer glyph — the Library button while a download runs. A
+    /// ring tight on the glyph reads as a border, so it stands off it by a couple of points.
+    /// ponytail: declared here rather than in Look.swift only to keep this branch's diff to
+    /// that file at zero while it is being restyled in parallel. It belongs with the other
+    /// sidebar metrics the day the two land.
+    static let iconRing: CGFloat = 22
+}
+
 /// A determinate ring around the Library glyph while anything is downloading. Arc puts the
 /// progress in the footer; Vane had it only inside the popover, so a download the user had
 /// walked away from was invisible.

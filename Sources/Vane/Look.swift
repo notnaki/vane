@@ -73,9 +73,6 @@ enum Look {
     /// is 38pt tall and centres the lights in it.
     static let lightsCentre: CGFloat = 19
     static let footer: CGFloat = 22
-    /// The ring drawn around a footer glyph — the Library button while a download runs. A
-    /// ring tight on the glyph reads as a border, so it stands off it by a couple of points.
-    static let iconRing: CGFloat = 22
     /// A favourite tile's icon: a step up from a row's 16, since it stands alone.
     static let tileIcon: CGFloat = 20
     /// The line a drop will land on: before or after a tile, above or below a row.
