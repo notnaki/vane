@@ -39,7 +39,9 @@ import SwiftUI
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.title = SettingsTab.all[0].title
-        w.minSize = NSSize(width: 640, height: 480)
+        // Wide enough that the longest row title ("New Space…" beside a 200pt field) stays
+        // on one line; at 640 it wrapped, and a wrapped title in a settings row reads as a bug.
+        w.minSize = NSSize(width: 720, height: 480)
         w.isReleasedWhenClosed = false        // closing must not free the instance we keep
         // Arc's tab bar is a preference-style toolbar: icon over word, the selected one in
         // a rounded tile, the title centred above, and the whole band a shade lighter than
