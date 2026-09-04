@@ -1386,7 +1386,19 @@ private struct TabIcon: View {
     @ObservedObject var tab: Tab
     var size: CGFloat = 16
 
-    var body: some View { SiteIcon(icon: tab.favicon, size: size) }
+    var body: some View {
+        // Arc spins the row's favicon slot while its page is loading. The card's own 2pt bar
+        // only says that *the tab you are looking at* is busy; a background tab had nothing.
+        if tab.loading {
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(size / 24)
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)      // the row's value already says "loading"
+        } else {
+            SiteIcon(icon: tab.favicon, size: size)
+        }
+    }
 }
 
 // MARK: - Sidebar footer
@@ -1519,6 +1531,9 @@ private struct LibraryButton: View {
         // Always present, dimmed when there is nothing to show: the sidebar's bottom row is
         // a fixed strip, and a button that comes and goes makes the whole row jump.
         Button { store.libraryOpen.toggle() } label: { Image(systemName: "archivebox") }
+            // A ring around the glyph while anything is downloading, so progress is visible
+            // without opening the popover to look for it.
+            .overlay { DownloadRing(downloads: downloads) }
             .buttonStyle(.plain)
             .foregroundStyle(empty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
             .disabled(empty)

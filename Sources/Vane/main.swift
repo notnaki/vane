@@ -9,6 +9,9 @@ if args.first == "selfcheck", args.contains("--pure") { SelfCheck.run(pureOnly: 
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
+// The Dock icon has to lead somewhere when every window is closed, and its menu has to
+// offer a window. That is the whole of the delegate; see AppLifecycle.swift.
+app.delegate = AppLifecycle.shared
 if args.first == "drmcheck"  { DRMCheck.run(url: args.dropFirst().first) }
 if args.first == "selfcheck" { SelfCheck.run() }
 if args.first == "import", let file = args.dropFirst().first {

@@ -137,6 +137,11 @@ extension TabActions {
              TabStore.insertionIndexBeside(current: nil, kinds: []) == 0),
             ("with no Today tabs at all it still lands after the ones that stay",
              TabStore.insertionIndexBeside(current: 0, kinds: [.favourite, .pinned]) == 2),
+            ("nothing downloading is no ring at all", downloadFraction([]) == nil),
+            ("one download is its own progress", downloadFraction([0.4]) == 0.4),
+            ("two downloads read as their mean", downloadFraction([0.2, 0.8]) == 0.5),
+            ("a ring never runs past full", downloadFraction([2, 2]) == 1),
+            ("…or below empty", downloadFraction([-1]) == 0),
             ("a dropped link is trimmed",
              droppedText("  https://example.com  ") == "https://example.com"),
             ("a dropped paragraph becomes one line",
@@ -259,5 +264,45 @@ extension TabActions {
         guard let text = droppedText(raw), let url = Search.url(for: text) else { return }
         store.openBeside(url, focus: true)
         axAnnounce("Opened \(text) in a new tab.")
+    }
+}
+
+// MARK: - The footer's download ring
+
+/// How far along the downloads are, as one number for the sidebar's Library glyph. Lives
+/// here rather than in `Downloads` because it is a fact about the *footer* — the downloader
+/// itself has no opinion about how several downloads add up.
+///
+/// nil means "nothing is running", which is the footer's resting state. Everything else is
+/// the mean of what is in flight: two downloads at 20% and 80% read as one ring at half,
+/// which is the honest summary of "the downloads are half done".
+extension TabActions {
+    static func downloadFraction(_ running: [Double]) -> Double? {
+        guard !running.isEmpty else { return nil }
+        let total = running.reduce(0, +) / Double(running.count)
+        return Swift.min(Swift.max(total, 0), 1)
+    }
+}
+
+/// A determinate ring around the Library glyph while anything is downloading. Arc puts the
+/// progress in the footer; Vane had it only inside the popover, so a download the user had
+/// walked away from was invisible.
+struct DownloadRing: View {
+    @ObservedObject var downloads: Downloads
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if let fraction = TabActions.downloadFraction(
+            downloads.items.filter { $0.state == .running }.map(\.fraction)) {
+            Circle()
+                .trim(from: 0, to: Swift.max(fraction, 0.02))    // never an invisible ring
+                .stroke(.tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))                   // noon, the way a clock runs
+                .frame(width: Look.iconRing, height: Look.iconRing)
+                .animation(reduceMotion ? nil : Look.quick, value: fraction)
+                // The button it sits on already says how many downloads there are and how
+                // they are doing; a ring with its own label would say it twice.
+                .accessibilityHidden(true)
+        }
     }
 }
