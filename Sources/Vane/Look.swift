@@ -65,9 +65,13 @@ enum Look {
     /// The sidebar's two fixed strips: traffic lights and navigation above, downloads and
     /// spaces below.
     static let topRow: CGFloat = 26
-    /// Above the top row. AppKit centres the traffic lights 16pt below the window's edge;
-    /// with a 26pt row this puts the toggle and nav glyphs on the same centre line.
-    static let topInset: CGFloat = 3
+    /// Above the top row, so its centre line is 19pt below the window's edge — the line the
+    /// traffic lights are brought down to in `Windows.open`. The lights move to the row,
+    /// not the row to the lights: at AppKit's default 16pt the whole sidebar sat 3pt high.
+    static let topInset: CGFloat = 6
+    /// The traffic lights' centre line, and so the top row's. A compact toolbar's titlebar
+    /// is 38pt tall and centres the lights in it.
+    static let lightsCentre: CGFloat = 19
     static let footer: CGFloat = 22
     /// A favourite tile's icon: a step up from a row's 16, since it stands alone.
     static let tileIcon: CGFloat = 20

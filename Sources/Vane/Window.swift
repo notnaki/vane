@@ -37,6 +37,12 @@ import SwiftUI
         window.title = isPrivate ? "Vane — Private" : "Vane" + named
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
+        // An empty toolbar, never shown: it only exists to make the titlebar 38pt tall,
+        // which is where AppKit centres the traffic lights at `Look.lightsCentre` instead
+        // of at 16pt — on the sidebar's top row rather than 3pt above it. The titlebar is
+        // transparent and the toolbar has no items, so nothing of it is ever drawn.
+        window.toolbar = NSToolbar(identifier: "VaneEmpty")
+        window.toolbarStyle = .unifiedCompact
         window.tabbingMode = .disallowed          // Vane draws its own tabs
         // The window itself draws nothing: `WindowGlass` inside the content view is the
         // only ground, so the desktop shows through the sidebar and the gap around the page
