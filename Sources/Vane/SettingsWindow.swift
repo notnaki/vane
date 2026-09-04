@@ -25,6 +25,9 @@ import SwiftUI
 /// frame autosave gives "remembers where it was" for free.
 @MainActor enum SettingsWindow {
     private static var window: NSWindow?
+    /// The selected tab, shared by the toolbar (AppKit) and the panes (SwiftUI).
+    private static let selection = SettingsSelection()
+    private static let tabs = SettingsToolbar(selection)
 
     static func show() {
         if let w = window {
@@ -32,16 +35,27 @@ import SwiftUI
             NSApp.activate()
             return
         }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 600),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.title = SettingsTab.all[0].title
         w.minSize = NSSize(width: 640, height: 480)
         w.isReleasedWhenClosed = false        // closing must not free the instance we keep
+        // Arc's tab bar is a preference-style toolbar: icon over word, the selected one in
+        // a rounded tile, the title centred above, and the whole band a shade lighter than
+        // the content. AppKit draws every part of that; a row of SwiftUI buttons drew none.
+        let toolbar = NSToolbar(identifier: "VaneSettingsTabs")
+        toolbar.delegate = tabs
+        toolbar.displayMode = .iconAndLabel
+        toolbar.allowsUserCustomization = false
+        w.toolbarStyle = .preference
+        w.toolbar = toolbar
+        toolbar.selectedItemIdentifier = NSToolbarItem.Identifier(selection.id)
+        selection.toolbar = toolbar
         // Before the hosting view: the pane retitles the window as it appears, and it can
         // only do that once `window` is the one it is inside.
         window = w
-        w.contentView = NSHostingView(rootView: SettingsView())
+        w.contentView = NSHostingView(rootView: SettingsView(selection: selection))
         // Position first, autosave second: setFrameUsingName reports whether there was one.
         if !w.setFrameUsingName("VaneSettings") { w.center() }
         w.setFrameAutosaveName("VaneSettings")
@@ -81,80 +95,92 @@ import SwiftUI
     ]
 }
 
+/// Which tab is showing. An object rather than SwiftUI state because two worlds write it:
+/// the toolbar's action, and a pane sending the user elsewhere ("Privacy and Security" →
+/// Advanced). Whichever writes, the toolbar's own highlight follows.
+@MainActor final class SettingsSelection: ObservableObject {
+    @Published var id = SettingsTab.all[0].id {
+        didSet { toolbar?.selectedItemIdentifier = NSToolbarItem.Identifier(id) }
+    }
+    weak var toolbar: NSToolbar?
+}
+
+/// Feeds `SettingsTab.all` to the window's toolbar, one selectable item per tab.
+@MainActor private final class SettingsToolbar: NSObject, NSToolbarDelegate {
+    private let selection: SettingsSelection
+    init(_ selection: SettingsSelection) { self.selection = selection }
+
+    private var ids: [NSToolbarItem.Identifier] { SettingsTab.all.map { .init($0.id) } }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { ids }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { ids }
+    func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { ids }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard let tab = SettingsTab.all.first(where: { $0.id == id.rawValue }) else { return nil }
+        let item = NSToolbarItem(itemIdentifier: id)
+        item.label = tab.title
+        item.paletteLabel = tab.title
+        item.image = NSImage(systemSymbolName: tab.icon, accessibilityDescription: tab.title)
+        item.target = self
+        item.action = #selector(pick(_:))
+        return item
+    }
+
+    @objc private func pick(_ sender: NSToolbarItem) { selection.id = sender.itemIdentifier.rawValue }
+}
+
 private struct SettingsView: View {
-    @State private var selection = SettingsTab.all[0].id
+    @ObservedObject var selection: SettingsSelection
 
     private var current: SettingsTab {
-        SettingsTab.all.first { $0.id == selection } ?? SettingsTab.all[0]
+        SettingsTab.all.first { $0.id == selection.id } ?? SettingsTab.all[0]
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            TabBar(selection: $selection)
-                .padding(.vertical, Look.inset)
-            ScrollView {
-                current.pane($selection)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, Look.inset * 2)
-                    .padding(.bottom, Look.inset * 2)
-            }
+        ScrollView {
+            current.pane($selection.id)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Look.paneMargin)
+                .padding(.bottom, Look.paneMargin)
         }
         .background(.windowBackground)
         // Once, here: a preference is a switch in this window, never a checkbox.
         .toggleStyle(.switch)
         .onAppear { SettingsWindow.retitle(current.title) }
-        .onChange(of: selection) { SettingsWindow.retitle(current.title) }
-    }
-}
-
-/// Arc's centred icon bar: a 22pt symbol over an 11pt word, the selected one filled and
-/// tinted. ponytail: buttons in an HStack, not a segmented control — a segmented control
-/// cannot stack an icon over a label.
-private struct TabBar: View {
-    @Binding var selection: String
-
-    var body: some View {
-        HStack(spacing: Look.inset / 2) {
-            ForEach(SettingsTab.all) { tab in
-                let on = tab.id == selection
-                Button { selection = tab.id } label: {
-                    VStack(spacing: 3) {
-                        Image(systemName: tab.icon).font(.system(size: 22))
-                            .frame(height: 26)
-                        Text(tab.title).font(Look.caption)
-                    }
-                    .foregroundStyle(on ? Color.accentColor : Color.secondary)
-                    .frame(width: 74)
-                    .padding(.vertical, Look.inset / 2)
-                    .background(on ? Look.selected : .clear,
-                                in: .rect(cornerRadius: Look.pillRadius))
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(tab.title)
-                .accessibilityAddTraits(on ? [.isSelected] : [])
-            }
-        }
-        .frame(maxWidth: .infinity)
+        .onChange(of: selection.id) { SettingsWindow.retitle(current.title) }
     }
 }
 
 // MARK: - Card and row
 //
-// Two shapes, used by every pane, so a preference looks the same wherever it lives: a
-// grouped card of rows split by hairlines, and a row that is a title plus one control.
+// The shapes every pane is built from, so a preference looks the same wherever it lives: a
+// grouped card of rows split by hairlines, a row that is a title plus one control, a grey
+// footnote inside the card, a grey caption over it. Internal, not private: ShortcutsPane
+// is built from the same pieces.
 
 /// A grouped card. `_VariadicView` is how a container gets at its children one by one —
 /// without it a ViewBuilder is one opaque blob and there is nowhere to put the hairlines.
+/// `divided: false` for a card of links, which Arc runs together without lines.
 struct SettingsCard<Content: View>: View {
+    var divided = true
     @ViewBuilder var content: Content
 
+    init(divided: Bool = true, @ViewBuilder content: () -> Content) {
+        self.divided = divided
+        self.content = content()
+    }
+
     var body: some View {
-        _VariadicView.Tree(DividedRows()) { content }
-            .background(Look.pillFill, in: .rect(cornerRadius: Look.cardRadius))
-            .overlay {
-                RoundedRectangle(cornerRadius: Look.cardRadius).strokeBorder(Look.pillFill)
+        Group {
+            if divided {
+                _VariadicView.Tree(DividedRows()) { content }
+            } else {
+                VStack(alignment: .leading, spacing: 0) { content }
             }
+        }
+        .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
+        .hairline(radius: Look.cardRadius)
     }
 }
 
@@ -164,15 +190,15 @@ private struct DividedRows: _VariadicView_MultiViewRoot {
         VStack(spacing: 0) {
             ForEach(children) { child in
                 child
-                if child.id != last { Divider().opacity(0.5) }
+                // Inset to the row content, like Arc's — a line that runs edge to edge
+                // reads as a card boundary, not a row boundary.
+                if child.id != last { Hairline().padding(.horizontal, Look.cardInset) }
             }
         }
     }
 }
 
-/// A title on the left, one control on the right. Row height is the list row plus the
-/// standard gap: settings rows breathe more than sidebar rows, and this keeps the two
-/// numbers related instead of inventing a third.
+/// A title on the left, one control on the right.
 struct SettingsRow<Trailing: View>: View {
     let title: String
     @ViewBuilder var trailing: Trailing
@@ -188,30 +214,51 @@ struct SettingsRow<Trailing: View>: View {
             Spacer(minLength: Look.inset)
             trailing
         }
-        .padding(.horizontal, Look.inset + 4)
-        .frame(minHeight: Look.rowHeight + Look.inset)
+        .padding(.horizontal, Look.cardInset)
+        .frame(minHeight: Look.settingsRow)
     }
 }
 
-/// The grey sentence under a card. Its own view so every footnote is the same size, the
-/// same colour and the same distance from the card it explains.
-private struct Footnote: View {
+/// The grey sentence that explains a card, as its last row — under a hairline, inside the
+/// stroke, the way Arc keeps an explanation with the thing it explains.
+struct Footnote: View {
     let text: String
     init(_ text: String) { self.text = text }
     var body: some View {
-        Text(text).font(Look.caption).foregroundStyle(.secondary)
+        Text(text).font(Look.text).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, Look.inset + 4)
-            .padding(.top, -Look.inset / 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Look.cardInset)
+            .padding(.vertical, Look.inset + 2)
     }
 }
 
-/// The vertical rhythm of a pane: cards a gap apart, footnotes hugging the card above.
+/// A grey title over a card ("Your Data and Settings", "File"), set in from the margin by
+/// the same inset as the rows beneath it, so it lines up with their text.
+struct SettingsSection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Look.inset - 2) {
+            Text(title).font(Look.text).foregroundStyle(.secondary)
+                .padding(.horizontal, Look.cardInset)
+            content
+        }
+    }
+}
+
+/// The vertical rhythm of a pane: cards a gap apart.
 private struct Pane<Content: View>: View {
     @ViewBuilder var content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) { content }
-            .padding(.top, Look.inset)
+            .padding(.top, Look.inset * 2)
     }
 }
 
@@ -220,9 +267,9 @@ private struct FieldStyle: ViewModifier {
     func body(content: Content) -> some View {
         content.textFieldStyle(.plain).font(Look.text)
             .padding(.horizontal, Look.inset)
-            .padding(.vertical, Look.inset / 2)
+            .padding(.vertical, Look.inset - 2)
             .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
-            .overlay { RoundedRectangle(cornerRadius: Look.pillRadius).strokeBorder(Look.pillFill) }
+            .hairline(radius: Look.pillRadius)
     }
 }
 
@@ -268,18 +315,18 @@ private struct GeneralPane: View {
                 SettingsRow("Filter lists") {
                     Button("Add Filter List…") { Blocker.chooseAndAddList() }
                 }
+                Footnote("Filter lists in EasyList syntax — an EasyList, EasyPrivacy or uBlock "
+                         + "Origin subscription file.")
             }
-            Footnote("Filter lists in EasyList syntax — an EasyList, EasyPrivacy or uBlock "
-                     + "Origin subscription file.")
 
             SettingsCard {
                 SettingsRow("HTTPS-Only Mode") {
                     Toggle("", isOn: $httpsOnly).labelsHidden()
                         .onChange(of: httpsOnly) { rebuild() }
                 }
+                Footnote("Every page is loaded over an encrypted connection. A site that only "
+                         + "offers http stops on a warning instead of loading in the clear.")
             }
-            Footnote("Every page is loaded over an encrypted connection. A site that only "
-                     + "offers http stops on a warning instead of loading in the clear.")
 
             SettingsCard {
                 SettingsRow("Default browser") {
@@ -330,17 +377,17 @@ private struct ProfilesPane: View {
         Pane {
             Text("Profiles keep your browsing separate — history, logins, cookies and "
                  + "extensions. A Space lives in exactly one Profile.")
-                .font(Look.text).foregroundStyle(.secondary)
+                .font(Look.text)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(alignment: .top, spacing: Look.inset * 1.5) {
-                list.frame(width: Look.sidebarWidth)
+                // The list runs the full height of the controls beside it, like Arc's, so
+                // the two columns read as one layout rather than a card and a stack.
+                list.frame(width: Look.profileListWidth).frame(maxHeight: .infinity)
                 VStack(alignment: .leading, spacing: Look.inset * 1.5) {
                     identity
                     spacesCard
-                    Text("Your Data and Settings").font(Look.caption).foregroundStyle(.secondary)
-                        .padding(.horizontal, Look.inset + 4).padding(.bottom, -Look.inset)
-                    data
+                    SettingsSection("Your Data and Settings") { data }
                 }
             }
         }
@@ -354,19 +401,28 @@ private struct ProfilesPane: View {
     // MARK: the list
 
     private var list: some View {
-        SettingsCard {
-            Text("Your Profiles").font(Look.caption).foregroundStyle(.secondary)
-                .padding(.horizontal, Look.inset + 4)
-                .frame(maxWidth: .infinity, minHeight: Look.rowHeight, alignment: .leading)
-            ForEach(manager.profiles) { p in
-                row(p)
+        SettingsCard(divided: false) {
+            Text("Your Profiles").font(Look.text).foregroundStyle(.secondary)
+                .padding(.horizontal, Look.cardInset)
+                .frame(maxWidth: .infinity, minHeight: Look.settingsRow, alignment: .leading)
+            Hairline()
+            VStack(spacing: 0) {
+                ForEach(Array(manager.profiles.enumerated()), id: \.element.id) { i, p in
+                    if i > 0 { Hairline().padding(.horizontal, Look.cardInset) }
+                    row(p)
+                }
             }
-            HStack(spacing: Look.inset * 2) {
+            .padding(.vertical, Look.inset / 2)
+            Spacer(minLength: 0)
+            Hairline()
+            HStack(spacing: 0) {
                 Button { add() } label: { Image(systemName: "plus") }
                     .accessibilityLabel("New Profile")
+                rule
                 Button { remove() } label: { Image(systemName: "minus") }
                     .accessibilityLabel("Delete Profile")
                     .disabled(manager.profiles.count < 2)
+                rule
                 Button { draft = profile.name; renaming = profile.id } label: {
                     Image(systemName: "pencil")
                 }
@@ -374,9 +430,16 @@ private struct ProfilesPane: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .padding(.horizontal, Look.inset + 4)
-            .frame(maxWidth: .infinity, minHeight: Look.rowHeight, alignment: .leading)
+            .frame(height: Look.settingsRow)
+            .padding(.horizontal, Look.inset)
         }
+    }
+
+    /// Between the list's footer buttons, the way Arc rules them apart.
+    private var rule: some View {
+        Rectangle().fill(Look.hairline)
+            .frame(width: 1, height: Look.rowHeight - Look.inset)
+            .padding(.horizontal, Look.inset + 2)
     }
 
     private func row(_ p: Profile) -> some View {
@@ -390,14 +453,15 @@ private struct ProfilesPane: View {
             } else {
                 Text(p.name).font(Look.text)
                 Spacer(minLength: Look.inset)
-                Text(spaceCount(p)).font(Look.caption).foregroundStyle(.secondary)
+                Text(spaceCount(p)).font(Look.text).foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, Look.inset)
-        .frame(height: Look.rowHeight + Look.inset / 2)
-        .background(p.id == selected ? Look.selected : .clear,
+        .frame(height: Look.settingsRow - Look.inset / 2)
+        .background(p.id == selected ? Look.accentSelected : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
-        .padding(.horizontal, 4)
+        .padding(.horizontal, Look.inset / 2)
+        .padding(.vertical, Look.inset / 4)
         .contentShape(.rect)
         .onTapGesture { renaming = nil; selected = p.id }
         .accessibilityElement(children: .contain)
@@ -480,23 +544,26 @@ private struct ProfilesPane: View {
     }
 
     private var data: some View {
-        SettingsCard {
-            DataRow(icon: "lock.fill", tint: .blue, title: "Privacy and Security") {
-                tab = "advanced"
-            }
-            DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
-                // The same place Menu.swift's Manage Saved Passwords… goes: the items are
-                // real keychain items, and Keychain Access is the editor for those.
-                NSWorkspace.shared.open(
-                    URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
-            }
-            DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
-                if confirm("Clear the browsing history of “\(profile.name)”?", "Clear",
-                           "Bookmarks and saved passwords are not affected.") {
-                    Store.store(for: profile.id).clearHistory()
-                    rebuild()
+        SettingsCard(divided: false) {
+            VStack(spacing: 0) {
+                DataRow(icon: "lock.fill", tint: .blue, title: "Privacy and Security") {
+                    tab = "advanced"
+                }
+                DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
+                    // The same place Menu.swift's Manage Saved Passwords… goes: the items
+                    // are real keychain items, and Keychain Access is the editor for those.
+                    NSWorkspace.shared.open(
+                        URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
+                }
+                DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
+                    if confirm("Clear the browsing history of “\(profile.name)”?", "Clear",
+                               "Bookmarks and saved passwords are not affected.") {
+                        Store.store(for: profile.id).clearHistory()
+                        rebuild()
+                    }
                 }
             }
+            .padding(.vertical, Look.inset / 2)
         }
     }
 
@@ -535,17 +602,17 @@ private struct DataRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Look.inset + 2) {
-                Image(systemName: icon).font(.system(size: 12, weight: .semibold))
+            HStack(spacing: Look.inset) {
+                Image(systemName: icon).font(Look.glyph)
                     .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .background(tint, in: .rect(cornerRadius: Look.pillRadius))
+                    .frame(width: Look.iconTile, height: Look.iconTile)
+                    .background(tint, in: .rect(cornerRadius: Look.iconTileRadius))
                 Text(title).font(Look.text).foregroundStyle(.primary)
                 Spacer(minLength: Look.inset)
                 Image(systemName: "arrow.right").foregroundStyle(Color.accentColor)
             }
-            .padding(.horizontal, Look.inset + 4)
-            .frame(minHeight: Look.rowHeight + Look.inset)
+            .padding(.horizontal, Look.cardInset)
+            .frame(height: Look.linkRow)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -582,29 +649,29 @@ private struct MaxPane: View {
                 SettingsRow("Shorten pinned tab titles") {
                     Toggle("", isOn: $tidyTitles).labelsHidden().disabled(off)
                 }
+                Footnote(AppleAI.unavailableReason
+                         ?? "Apple's on-device model. Nothing is sent anywhere, and nothing "
+                         + "happens until you ask for it — grouping tabs takes around twelve "
+                         + "seconds, so it is a menu item, never automatic.")
             }
-            Footnote(AppleAI.unavailableReason
-                     ?? "Apple's on-device model. Nothing is sent anywhere, and nothing "
-                     + "happens until you ask for it — grouping tabs takes around twelve "
-                     + "seconds, so it is a menu item, never automatic.")
 
             SettingsCard {
                 // Not under the AI switch: the page render and its own description arrive in
                 // well under a second and need no model. The summary is the part that does,
                 // and it is extra rather than the point.
                 SettingsRow("Link previews") { Toggle("", isOn: $previews).labelsHidden() }
+                Footnote("Hovering a link loads the page in the background to show it, which "
+                         + "means the site sees a visit you did not make. If on-device AI is on, "
+                         + "a summary follows once it is ready.")
             }
-            Footnote("Hovering a link loads the page in the background to show it, which "
-                     + "means the site sees a visit you did not make. If on-device AI is on, "
-                     + "a summary follows once it is ready.")
 
             SettingsCard {
                 SettingsRow("Instant Links") { Toggle("", isOn: $instant).labelsHidden() }
+                Footnote("Shift-Return on a search opens the top result directly instead of the "
+                         + "results page. The query goes to DuckDuckGo whichever engine you use, "
+                         + "because it is the only one that answers without JavaScript. Never in "
+                         + "a private window, and never for anything that looks like an address.")
             }
-            Footnote("Shift-Return on a search opens the top result directly instead of the "
-                     + "results page. The query goes to DuckDuckGo whichever engine you use, "
-                     + "because it is the only one that answers without JavaScript. Never in "
-                     + "a private window, and never for anything that looks like an address.")
         }
     }
 }
@@ -642,12 +709,12 @@ private struct LinksPane: View {
                     }
                     .labelsHidden().fixedSize()
                 }
+                Footnote("Press Tab in the address bar to ask this assistant instead of "
+                         + "searching. Starting with an assistant's name — \u{201C}claude …\u{201D}, "
+                         + "\u{201C}chatgpt …\u{201D} — overrides it for that one query. Vane opens the "
+                         + "assistant's own site with the question; ChatGPT and Perplexity send "
+                         + "it automatically, Claude fills it in for you to send.")
             }
-            Footnote("Press Tab in the address bar to ask this assistant instead of "
-                     + "searching. Starting with an assistant's name — \u{201C}claude …\u{201D}, "
-                     + "\u{201C}chatgpt …\u{201D} — overrides it for that one query. Vane opens the "
-                     + "assistant's own site with the question; ChatGPT and Perplexity send "
-                     + "it automatically, Claude fills it in for you to send.")
 
             SettingsCard {
                 SettingsRow("Search engine") {
@@ -689,11 +756,11 @@ private struct LinksPane: View {
                     }
                     .disabled(!engineIsValid)
                 }
+                Footnote("Search suggestions send what you type in the address bar to your "
+                         + "search engine as you type it. Never in a private window, and never "
+                         + "for anything that looks like an address. A custom engine's address "
+                         + "needs %s where the search words go.")
             }
-            Footnote("Search suggestions send what you type in the address bar to your "
-                     + "search engine as you type it. Never in a private window, and never "
-                     + "for anything that looks like an address. A custom engine's address "
-                     + "needs %s where the search words go.")
 
             SettingsCard {
                 SettingsRow("Your bangs") {
@@ -723,13 +790,13 @@ private struct LinksPane: View {
                         .disabled(newBang.isEmpty || newBangURL.isEmpty)
                 }
                 if let bangError {
-                    Text(bangError).font(Look.caption).foregroundStyle(.red)
-                        .padding(.horizontal, Look.inset + 4)
-                        .padding(.bottom, Look.inset)
+                    Text(bangError).font(Look.text).foregroundStyle(.red)
+                        .padding(.horizontal, Look.cardInset)
+                        .padding(.vertical, Look.inset + 2)
                 }
+                Footnote("A bang jumps straight to a site's own search: !gh swift searches "
+                         + "GitHub. Around forty are built in; yours win over those.")
             }
-            Footnote("A bang jumps straight to a site's own search: !gh swift searches "
-                     + "GitHub. Around forty are built in; yours win over those.")
         }
     }
 
@@ -785,13 +852,13 @@ private struct AdvancedPane: View {
                         ExtensionHost.shared.chooseAndInstall(); rebuild()
                     }
                 }
+                Footnote(Inspector.available
+                         ? "Sites that sniff the browser see the user agent instead. Reload the "
+                         + "page to apply it."
+                         : "Sites that sniff the browser see the user agent instead. Reload the "
+                         + "page to apply it. The in-app inspector is unavailable on this "
+                         + "macOS — right-click → Inspect Element still works.")
             }
-            Footnote(Inspector.available
-                     ? "Sites that sniff the browser see the user agent instead. Reload the "
-                     + "page to apply it."
-                     : "Sites that sniff the browser see the user agent instead. Reload the "
-                     + "page to apply it. The in-app inspector is unavailable on this "
-                     + "macOS — right-click → Inspect Element still works.")
 
             SettingsCard {
                 SettingsRow("Camera and microphone") {
@@ -817,7 +884,8 @@ private struct AdvancedPane: View {
 }
 
 /// The same NSAlert shape the menus use, so a destructive settings button asks the same way.
-@MainActor private func confirm(_ message: String, _ verb: String, _ detail: String = "") -> Bool {
+/// Internal: ShortcutsPane's Reset All asks with it too.
+@MainActor func confirm(_ message: String, _ verb: String, _ detail: String = "") -> Bool {
     let a = NSAlert()
     a.messageText = message
     a.informativeText = detail

@@ -45,6 +45,7 @@ struct BrowserWindow: View {
     var body: some View {
         ZStack(alignment: .leading) {
             WindowGlass()
+            Look.ground
             ThemeTint()
             HStack(spacing: 0) {
                 if store.sidebarShown { Sidebar().frame(width: Look.sidebarWidth) }
@@ -89,7 +90,11 @@ struct BrowserWindow: View {
             Sidebar()
                 .frame(width: Look.sidebarWidth)
                 .glass(radius: Look.cardRadius)
-                .shadow(radius: 24, y: 6)
+                // The same near-opaque ground as the command bar: this one floats over the
+                // page, and glass alone over a white page is a white panel.
+                .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+                .hairline(radius: Look.cardRadius)
+                .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                 .padding(Look.inset)
                 .transition(.move(edge: .leading).combined(with: .opacity))
                 .onHover { $0 ? peekTask?.cancel() : endPeek() }
@@ -117,7 +122,7 @@ struct BrowserWindow: View {
     private func dismissPalette() { store.palette = nil }
 }
 
-/// The current space's colour washed down the window, behind the sidebar *and* behind the
+/// The current space's colour washed over the window, behind the sidebar *and* behind the
 /// gap around the card, which is what makes the card read as floating on something rather
 /// than sitting in a grey box. Falls back to the profile's colour at a whisper, then to
 /// nothing at all.
@@ -127,10 +132,10 @@ private struct ThemeTint: View {
 
     var body: some View {
         if let (color, strength) = tint {
-            // Bottom-weighted, the way Arc's glow pools under the sidebar rather than
-            // sitting on the titlebar.
-            LinearGradient(colors: [color.opacity(strength * 0.45), color.opacity(strength)],
-                           startPoint: .top, endPoint: .bottom)
+            // One even wash, not a bottom-weighted gradient: the gradient's strongest band
+            // landed in the 8pt gap under the card, where it read as a fat coloured bar
+            // along the card's bottom edge rather than as the sidebar's tint.
+            color.opacity(strength)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
@@ -256,8 +261,8 @@ private struct Sidebar: View {
             TopRow()
             if let tab = store.active { AddressPill(tab: tab) }
             ScrollView {
-                VStack(spacing: 0) {
-                    Favorites().padding(.bottom, 8)
+                VStack(spacing: Look.rowGap) {
+                    Favorites().padding(.bottom, Look.inset - Look.rowGap)
                     SpaceRow()
                     if let tab = store.active { BookmarkList(tab: tab) }
                     TidyRow()
@@ -298,9 +303,9 @@ private struct TopRow: View {
             if let tab = store.active { NavButtons(tab: tab) }
         }
         .buttonStyle(.plain)
-        .font(.system(size: 15, weight: .medium))
+        .font(Look.icon)
         .foregroundStyle(.secondary)
-        .frame(height: 26)
+        .frame(height: Look.topRow)
     }
 }
 
@@ -310,7 +315,7 @@ private struct NavButtons: View {
     var body: some View {
         // Icon-only, so each one carries its own label and tooltip — without them
         // VoiceOver announces three identical "button"s.
-        HStack(spacing: 14) {
+        HStack(spacing: 16) {
             Button { tab.back() } label: { Image(systemName: "arrow.left") }
                 .disabled(!tab.canGoBack)
                 .help("Back (⌘[)")
@@ -361,9 +366,9 @@ private struct AddressPill: View {
                 .accessibilityLabel("Site Settings")
         }
         .buttonStyle(.plain)
-        .font(.system(size: 12))
+        .font(Look.rowText)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, Look.barRowInset)
         .frame(height: Look.pillHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
@@ -429,7 +434,7 @@ private struct FavoriteTile: View {
 
     var body: some View {
         let selected = store.current == tab.id
-        TabIcon(tab: tab, size: 20)
+        TabIcon(tab: tab, size: Look.tileIcon)
             .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
             .background(selected ? Look.selected : Look.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
@@ -440,7 +445,7 @@ private struct FavoriteTile: View {
             .contentShape(.rect)
             .onTapGesture { store.current = tab.id }
             .help(tab.title)
-            .draggable(tab.id.uuidString) { TabIcon(tab: tab, size: 20).padding(6) }
+            .draggable(tab.id.uuidString) { TabIcon(tab: tab, size: Look.tileIcon).padding(6) }
             .dropDestination(for: String.self) { ids, _ in drop(ids, onto: tab, in: store) }
                 isTargeted: { targeted = $0 }
             .contextMenu {
@@ -610,7 +615,7 @@ private struct SpaceIcons: View {
     ]
 
     var body: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 6), count: 6),
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(Look.rowHeight), spacing: 6), count: 6),
                   spacing: 6) {
             ForEach(Self.symbols, id: \.self) { name in
                 Button { pick(name) } label: { tile(name) }
@@ -628,8 +633,8 @@ private struct SpaceIcons: View {
 
     private func tile(_ name: String) -> some View {
         Image(systemName: name)
-            .font(.system(size: 15))
-            .frame(width: 34, height: 34)
+            .font(Look.icon)
+            .frame(width: Look.rowHeight, height: Look.rowHeight)
             .background(current == name ? Look.selected : .clear,
                         in: .rect(cornerRadius: Look.pillRadius))
     }
@@ -673,8 +678,8 @@ private struct SpaceTheme: View {
     private func mode(_ value: String?, _ symbol: String, _ label: String) -> some View {
         Button { edit { $0.appearance = value } } label: {
             Image(systemName: symbol)
-                .font(.system(size: 14))
-                .frame(width: 40, height: 28)
+                .font(Look.symbol)
+                .frame(width: Look.topRow + Look.pillRadius, height: Look.topRow)
                 .background(space.appearance == value ? Look.selected : .clear,
                             in: .rect(cornerRadius: Look.pillRadius))
         }
@@ -751,7 +756,7 @@ private struct SpaceDots: View {
         let here = store.currentSpaceID == space.id
         Group {
             if here {
-                Image(systemName: space.icon ?? "cloud").font(.system(size: 12))
+                Image(systemName: space.icon ?? "cloud").font(Look.small)
                     .foregroundStyle(.primary)
             } else {
                 Circle().fill(.tertiary).frame(width: 6, height: 6)
@@ -784,7 +789,7 @@ private struct BookmarkList: View {
     @State private var marks: [Suggestion] = []
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: Look.rowGap) {
             ForEach(marks) { mark in
                 SidebarRow(selected: false, action: { open(mark) }) {
                     // The cached favicon if the page has been visited, a globe if not — the
@@ -823,23 +828,30 @@ private struct BookmarkList: View {
 /// trailing edge. One shape so the list reads as one list.
 private struct SidebarRow<Leading: View, Trailing: View>: View {
     let selected: Bool
+    /// Secondary rather than primary type: "New Tab" is an action among places, and Arc
+    /// sets it a step quieter than the tabs around it.
+    var dimmed = false
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let label: () -> Text
     @ViewBuilder let trailing: () -> Trailing
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 10) {
             leading()
+            // Every tab title in primary, selected or not — Arc's list is white on dark
+            // all the way down, and the selection is the fill, not a change of ink.
             label().font(Look.text).lineLimit(1)
-                .foregroundStyle(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .foregroundStyle(dimmed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
             Spacer(minLength: 0)
             trailing()
         }
         .padding(.horizontal, 8)
         .frame(height: Look.rowHeight)
         .background(fill, in: .rect(cornerRadius: Look.pillRadius))
+        .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture(perform: action)
@@ -852,8 +864,9 @@ private struct SidebarRow<Leading: View, Trailing: View>: View {
 }
 
 extension SidebarRow where Leading == Image, Trailing == EmptyView {
-    init(icon: String, title: String, selected: Bool, action: @escaping () -> Void) {
-        self.init(selected: selected, action: action,
+    init(icon: String, title: String, selected: Bool, dimmed: Bool = false,
+         action: @escaping () -> Void) {
+        self.init(selected: selected, dimmed: dimmed, action: action,
                   leading: { Image(systemName: icon) },
                   label: { Text(title) },
                   trailing: { EmptyView() })
@@ -876,14 +889,14 @@ private struct TidyRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Rectangle().fill(.quaternary).frame(height: 1)
+            Hairline()
             // The menu item owns the tidy's cancellation and its "undo" bookkeeping — this
             // is the same closure, not a second copy of it.
             Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
                 .disabled(!TidyTabs.shouldOffer(store))
                 .help("Rename and group tabs (\(Keybindings.binding(for: .tidyTabs).display))")
                 .accessibilityLabel("Tidy Tabs")
-            Text("|").foregroundStyle(.quaternary)
+            Text("|").foregroundStyle(.tertiary)
             Button("Clear") { clear() }
                 .help("Close every tab that is not pinned")
                 .accessibilityLabel("Close Unpinned Tabs")
@@ -910,7 +923,7 @@ private struct NewTabRow: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        SidebarRow(icon: "plus", title: "New Tab", selected: false) { store.newTab(nil) }
+        SidebarRow(icon: "plus", title: "New Tab", selected: false, dimmed: true) { store.newTab(nil) }
             .help("New Tab (\(Keybindings.binding(for: .newTab).display))")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("New Tab")
@@ -924,7 +937,7 @@ private struct OpenTabs: View {
 
     var body: some View {
         let open = store.tabs.filter { !$0.pinned }
-        VStack(spacing: 0) {
+        VStack(spacing: Look.rowGap) {
             ForEach(open) { TabRow(tab: $0) }
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
@@ -1008,14 +1021,14 @@ private struct TabRowTrailing: View {
             if tab.audible || TabAudio.isMuted(tab) {
                 Button { TabAudio.toggleMute(tab) } label: {
                     Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 10))
+                        .font(Look.rowGlyph)
                 }
                 .help(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
                 .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
             if hovering || selected {
                 Button { store.close(tab.id) } label: {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .medium))
+                    Image(systemName: "xmark").font(Look.rowGlyph)
                 }
                 .help("Close Tab (⌘W)")
                 .accessibilityLabel("Close \(TidyTitles.title(for: tab))")
@@ -1072,8 +1085,8 @@ private struct BottomRow: View {
                 .help("New Space")
                 .accessibilityLabel("New Space")
         }
-        .font(.system(size: 13))
-        .frame(height: 22)
+        .font(Look.icon)
+        .frame(height: Look.footer)
         .padding(.horizontal, 6)
     }
 }
@@ -1089,7 +1102,7 @@ private struct SavePrompt: View {
             HStack(spacing: 12) {
                 Image(systemName: "key.fill").foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Save password for \(p.host)?").font(.system(size: 13, weight: .medium))
+                    Text("Save password for \(p.host)?").font(Look.rowText)
                     if !p.account.isEmpty {
                         Text(p.account).font(Look.caption).foregroundStyle(.secondary)
                     }
@@ -1102,7 +1115,7 @@ private struct SavePrompt: View {
             .frame(maxWidth: 460)
             .fixedSize(horizontal: false, vertical: true)
             .glass(radius: Look.cardRadius)
-            .shadow(radius: 12, y: 4)
+            .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Save password for \(p.host)?")
             // A credential decision is the first thing in the window worth reaching, not
@@ -1125,7 +1138,7 @@ private struct FindBar: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").font(Look.caption).foregroundStyle(.secondary)
             TextField("Find on page", text: $text)
-                .textFieldStyle(.plain).font(.system(size: 12)).frame(width: 180)
+                .textFieldStyle(.plain).font(Look.small).frame(width: 180)
                 .focused($focused)
                 .onSubmit { search(forward: true) }
                 .onChange(of: text) { search(forward: true) }
@@ -1142,7 +1155,7 @@ private struct FindBar: View {
         .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
         .padding(.horizontal, 12).padding(.vertical, 8)
         .glass(radius: Look.cardRadius)
-        .shadow(radius: 10, y: 4)
+        .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         // Focus lands in the field the moment the bar opens, so the first thing after ⌘F
         // is typing — for the keyboard and for VoiceOver alike.
         .onAppear { focused = true }
@@ -1201,7 +1214,7 @@ private struct DownloadRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(item.name).lineLimit(1).font(.system(size: 12))
+                Text(item.name).lineLimit(1).font(Look.small)
                     .accessibilityLabel(item.name)
                     .accessibilityValue(status)
                 Spacer(minLength: 8)
@@ -1240,7 +1253,7 @@ private struct DownloadRow: View {
                     .accessibilityValue("\(Int(item.fraction * 100)) percent")
             case .done:    EmptyView()
             case .failed(let why):
-                Text(why).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
+                Text(why).font(Look.caption).foregroundStyle(.red).lineLimit(2)
             }
         }
         .accessibilityElement(children: .contain)
