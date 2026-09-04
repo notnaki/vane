@@ -45,6 +45,7 @@ struct BrowserWindow: View {
     var body: some View {
         ZStack(alignment: .leading) {
             WindowGlass()
+            Look.ground
             ThemeTint()
             HStack(spacing: 0) {
                 if store.sidebarShown { Sidebar().frame(width: Look.sidebarWidth) }
@@ -89,7 +90,11 @@ struct BrowserWindow: View {
             Sidebar()
                 .frame(width: Look.sidebarWidth)
                 .glass(radius: Look.cardRadius)
-                .shadow(radius: 24, y: 6)
+                // The same near-opaque ground as the command bar: this one floats over the
+                // page, and glass alone over a white page is a white panel.
+                .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+                .hairline(radius: Look.cardRadius)
+                .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                 .padding(Look.inset)
                 .transition(.move(edge: .leading).combined(with: .opacity))
                 .onHover { $0 ? peekTask?.cancel() : endPeek() }
@@ -256,8 +261,8 @@ private struct Sidebar: View {
             TopRow()
             if let tab = store.active { AddressPill(tab: tab) }
             ScrollView {
-                VStack(spacing: 0) {
-                    Favorites().padding(.bottom, 8)
+                VStack(spacing: Look.rowGap) {
+                    Favorites().padding(.bottom, Look.inset - Look.rowGap)
                     SpaceRow()
                     if let tab = store.active { BookmarkList(tab: tab) }
                     TidyRow()
@@ -298,7 +303,7 @@ private struct TopRow: View {
             if let tab = store.active { NavButtons(tab: tab) }
         }
         .buttonStyle(.plain)
-        .font(.system(size: 15, weight: .medium))
+        .font(Look.icon)
         .foregroundStyle(.secondary)
         .frame(height: 26)
     }
@@ -310,7 +315,7 @@ private struct NavButtons: View {
     var body: some View {
         // Icon-only, so each one carries its own label and tooltip — without them
         // VoiceOver announces three identical "button"s.
-        HStack(spacing: 14) {
+        HStack(spacing: 16) {
             Button { tab.back() } label: { Image(systemName: "arrow.left") }
                 .disabled(!tab.canGoBack)
                 .help("Back (⌘[)")
@@ -361,7 +366,7 @@ private struct AddressPill: View {
                 .accessibilityLabel("Site Settings")
         }
         .buttonStyle(.plain)
-        .font(.system(size: 12))
+        .font(.system(size: 13, weight: .medium))
         .foregroundStyle(.secondary)
         .padding(.horizontal, 12)
         .frame(height: Look.pillHeight)
@@ -784,7 +789,7 @@ private struct BookmarkList: View {
     @State private var marks: [Suggestion] = []
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: Look.rowGap) {
             ForEach(marks) { mark in
                 SidebarRow(selected: false, action: { open(mark) }) {
                     // The cached favicon if the page has been visited, a globe if not — the
@@ -823,23 +828,30 @@ private struct BookmarkList: View {
 /// trailing edge. One shape so the list reads as one list.
 private struct SidebarRow<Leading: View, Trailing: View>: View {
     let selected: Bool
+    /// Secondary rather than primary type: "New Tab" is an action among places, and Arc
+    /// sets it a step quieter than the tabs around it.
+    var dimmed = false
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let label: () -> Text
     @ViewBuilder let trailing: () -> Trailing
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 10) {
             leading()
+            // Every tab title in primary, selected or not — Arc's list is white on dark
+            // all the way down, and the selection is the fill, not a change of ink.
             label().font(Look.text).lineLimit(1)
-                .foregroundStyle(selected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .foregroundStyle(dimmed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
             Spacer(minLength: 0)
             trailing()
         }
         .padding(.horizontal, 8)
         .frame(height: Look.rowHeight)
         .background(fill, in: .rect(cornerRadius: Look.pillRadius))
+        .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture(perform: action)
@@ -852,8 +864,9 @@ private struct SidebarRow<Leading: View, Trailing: View>: View {
 }
 
 extension SidebarRow where Leading == Image, Trailing == EmptyView {
-    init(icon: String, title: String, selected: Bool, action: @escaping () -> Void) {
-        self.init(selected: selected, action: action,
+    init(icon: String, title: String, selected: Bool, dimmed: Bool = false,
+         action: @escaping () -> Void) {
+        self.init(selected: selected, dimmed: dimmed, action: action,
                   leading: { Image(systemName: icon) },
                   label: { Text(title) },
                   trailing: { EmptyView() })
@@ -876,14 +889,14 @@ private struct TidyRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Rectangle().fill(.quaternary).frame(height: 1)
+            Hairline()
             // The menu item owns the tidy's cancellation and its "undo" bookkeeping — this
             // is the same closure, not a second copy of it.
             Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
                 .disabled(!TidyTabs.shouldOffer(store))
                 .help("Rename and group tabs (\(Keybindings.binding(for: .tidyTabs).display))")
                 .accessibilityLabel("Tidy Tabs")
-            Text("|").foregroundStyle(.quaternary)
+            Text("|").foregroundStyle(.tertiary)
             Button("Clear") { clear() }
                 .help("Close every tab that is not pinned")
                 .accessibilityLabel("Close Unpinned Tabs")
@@ -910,7 +923,7 @@ private struct NewTabRow: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        SidebarRow(icon: "plus", title: "New Tab", selected: false) { store.newTab(nil) }
+        SidebarRow(icon: "plus", title: "New Tab", selected: false, dimmed: true) { store.newTab(nil) }
             .help("New Tab (\(Keybindings.binding(for: .newTab).display))")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("New Tab")
@@ -924,7 +937,7 @@ private struct OpenTabs: View {
 
     var body: some View {
         let open = store.tabs.filter { !$0.pinned }
-        VStack(spacing: 0) {
+        VStack(spacing: Look.rowGap) {
             ForEach(open) { TabRow(tab: $0) }
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
@@ -1072,7 +1085,7 @@ private struct BottomRow: View {
                 .help("New Space")
                 .accessibilityLabel("New Space")
         }
-        .font(.system(size: 13))
+        .font(Look.icon)
         .frame(height: 22)
         .padding(.horizontal, 6)
     }

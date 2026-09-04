@@ -42,7 +42,12 @@ import SwiftUI
         // only ground, so the desktop shows through the sidebar and the gap around the page
         // card. An opaque window would paint over it before SwiftUI ever ran.
         window.isOpaque = false
-        window.backgroundColor = .clear
+        // Not `.clear`: a non-opaque window lets the pointer fall through wherever its
+        // pixels are fully transparent, and the behind-window blur is drawn by the window
+        // server, not into our pixels — so hover over the sidebar's ground came and went
+        // with the glyphs under it. A hair of alpha makes the whole window hit-testable and
+        // draws nothing anyone can see.
+        window.backgroundColor = NSColor.black.withAlphaComponent(0.001)
         // ProfileManager is in the environment so chrome can show the profile/space it is in
         // and redraw when the list changes; a view that does not want it simply ignores it.
         window.contentView = NSHostingView(rootView: BrowserWindow()

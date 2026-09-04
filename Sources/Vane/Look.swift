@@ -8,14 +8,17 @@ enum Look {
     static let sidebarWidth: CGFloat = 250
     /// The web view card, settings cards.
     static let cardRadius: CGFloat = 10
-    /// The address pill, favourites tiles, sidebar rows, buttons.
-    static let pillRadius: CGFloat = 8
+    /// The address pill, favourites tiles, sidebar rows, buttons. The same 10 as the card,
+    /// so every rounded thing in the window is one family; only the bar is rounder.
+    static let pillRadius: CGFloat = 10
     /// The sidebar's three heights, one family: a row, the address pill above it, and a
-    /// favourites tile. They step 34 → 36 → 52 so the sidebar reads as one rhythm rather
-    /// than three unrelated controls.
-    static let rowHeight: CGFloat = 34
+    /// favourites tile — Arc's, measured off the reference at 2x (36 on a 40 pitch, 36, 46).
+    static let rowHeight: CGFloat = 36
+    /// Between rows, so a selected fill never touches its neighbour's. `rowHeight + rowGap`
+    /// is the 40pt pitch the whole sidebar is laid out on.
+    static let rowGap: CGFloat = 4
     static let pillHeight: CGFloat = 36
-    static let tileHeight: CGFloat = 52
+    static let tileHeight: CGFloat = 46
     /// Gap between the sidebar and the web card, and around the card.
     static let inset: CGFloat = 8
 
@@ -60,9 +63,17 @@ enum Look {
     static let text = Font.system(size: 13)
     static let caption = Font.system(size: 11)
     static let heading = Font.system(size: 13, weight: .semibold)
+    /// The sidebar's symbol buttons: the top row, the footer, the pill's two glyphs.
+    static let icon = Font.system(size: 15, weight: .medium)
     /// Command bar rows: a step heavier than body, the way Arc sets them, so a title reads
     /// at a glance against the grey trailing label.
     static let rowText = Font.system(size: 13, weight: .medium)
+
+    /// The window's ground, over `WindowGlass`. The material alone takes whatever is behind
+    /// the window — a white page in another app turns the sidebar milky — so the window's
+    /// own background colour is laid over it, most of the way to opaque: dark in dark,
+    /// light in light, and the desktop only a hint through it, which is how Arc's reads.
+    static let ground = Color(nsColor: .windowBackgroundColor).opacity(0.72)
 
     /// One surface at graded strengths, so the pill, a tile, a hovered row and a selected row
     /// read as the same material rather than four different greys. Semantic on purpose:
@@ -134,7 +145,7 @@ extension Color {
 /// is the "transparent glass" of the design. Floating surfaces (command bar, pills) use
 /// `.glass()` below instead; this is for the ground they sit on.
 struct WindowGlass: NSViewRepresentable {
-    var material: NSVisualEffectView.Material = .hudWindow
+    var material: NSVisualEffectView.Material = .underWindowBackground
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
         v.material = material
