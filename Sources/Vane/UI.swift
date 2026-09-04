@@ -132,10 +132,10 @@ private struct ThemeTint: View {
 
     var body: some View {
         if let (color, strength) = tint {
-            // Bottom-weighted, the way Arc's glow pools under the sidebar rather than
-            // sitting on the titlebar.
-            LinearGradient(colors: [color.opacity(strength * 0.45), color.opacity(strength)],
-                           startPoint: .top, endPoint: .bottom)
+            // One even wash, not a bottom-weighted gradient: the gradient's strongest band
+            // landed in the 8pt gap under the card, where it read as a fat coloured bar
+            // along the card's bottom edge rather than as the sidebar's tint.
+            color.opacity(strength)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
