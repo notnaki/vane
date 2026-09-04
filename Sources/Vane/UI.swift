@@ -122,7 +122,7 @@ struct BrowserWindow: View {
     private func dismissPalette() { store.palette = nil }
 }
 
-/// The current space's colour washed down the window, behind the sidebar *and* behind the
+/// The current space's colour washed over the window, behind the sidebar *and* behind the
 /// gap around the card, which is what makes the card read as floating on something rather
 /// than sitting in a grey box. Falls back to the profile's colour at a whisper, then to
 /// nothing at all.
@@ -305,7 +305,7 @@ private struct TopRow: View {
         .buttonStyle(.plain)
         .font(Look.icon)
         .foregroundStyle(.secondary)
-        .frame(height: 26)
+        .frame(height: Look.topRow)
     }
 }
 
@@ -366,9 +366,9 @@ private struct AddressPill: View {
                 .accessibilityLabel("Site Settings")
         }
         .buttonStyle(.plain)
-        .font(.system(size: 13, weight: .medium))
+        .font(Look.rowText)
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, Look.barRowInset)
         .frame(height: Look.pillHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
@@ -434,7 +434,7 @@ private struct FavoriteTile: View {
 
     var body: some View {
         let selected = store.current == tab.id
-        TabIcon(tab: tab, size: 20)
+        TabIcon(tab: tab, size: Look.tileIcon)
             .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
             .background(selected ? Look.selected : Look.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
@@ -445,7 +445,7 @@ private struct FavoriteTile: View {
             .contentShape(.rect)
             .onTapGesture { store.current = tab.id }
             .help(tab.title)
-            .draggable(tab.id.uuidString) { TabIcon(tab: tab, size: 20).padding(6) }
+            .draggable(tab.id.uuidString) { TabIcon(tab: tab, size: Look.tileIcon).padding(6) }
             .dropDestination(for: String.self) { ids, _ in drop(ids, onto: tab, in: store) }
                 isTargeted: { targeted = $0 }
             .contextMenu {
@@ -615,7 +615,7 @@ private struct SpaceIcons: View {
     ]
 
     var body: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 6), count: 6),
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(Look.rowHeight), spacing: 6), count: 6),
                   spacing: 6) {
             ForEach(Self.symbols, id: \.self) { name in
                 Button { pick(name) } label: { tile(name) }
@@ -633,8 +633,8 @@ private struct SpaceIcons: View {
 
     private func tile(_ name: String) -> some View {
         Image(systemName: name)
-            .font(.system(size: 15))
-            .frame(width: 34, height: 34)
+            .font(Look.icon)
+            .frame(width: Look.rowHeight, height: Look.rowHeight)
             .background(current == name ? Look.selected : .clear,
                         in: .rect(cornerRadius: Look.pillRadius))
     }
@@ -678,8 +678,8 @@ private struct SpaceTheme: View {
     private func mode(_ value: String?, _ symbol: String, _ label: String) -> some View {
         Button { edit { $0.appearance = value } } label: {
             Image(systemName: symbol)
-                .font(.system(size: 14))
-                .frame(width: 40, height: 28)
+                .font(Look.symbol)
+                .frame(width: Look.topRow + Look.pillRadius, height: Look.topRow)
                 .background(space.appearance == value ? Look.selected : .clear,
                             in: .rect(cornerRadius: Look.pillRadius))
         }
@@ -756,7 +756,7 @@ private struct SpaceDots: View {
         let here = store.currentSpaceID == space.id
         Group {
             if here {
-                Image(systemName: space.icon ?? "cloud").font(.system(size: 12))
+                Image(systemName: space.icon ?? "cloud").font(Look.small)
                     .foregroundStyle(.primary)
             } else {
                 Circle().fill(.tertiary).frame(width: 6, height: 6)
@@ -1021,14 +1021,14 @@ private struct TabRowTrailing: View {
             if tab.audible || TabAudio.isMuted(tab) {
                 Button { TabAudio.toggleMute(tab) } label: {
                     Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 10))
+                        .font(Look.rowGlyph)
                 }
                 .help(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
                 .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
             if hovering || selected {
                 Button { store.close(tab.id) } label: {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .medium))
+                    Image(systemName: "xmark").font(Look.rowGlyph)
                 }
                 .help("Close Tab (⌘W)")
                 .accessibilityLabel("Close \(TidyTitles.title(for: tab))")
@@ -1086,7 +1086,7 @@ private struct BottomRow: View {
                 .accessibilityLabel("New Space")
         }
         .font(Look.icon)
-        .frame(height: 22)
+        .frame(height: Look.footer)
         .padding(.horizontal, 6)
     }
 }
@@ -1102,7 +1102,7 @@ private struct SavePrompt: View {
             HStack(spacing: 12) {
                 Image(systemName: "key.fill").foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Save password for \(p.host)?").font(.system(size: 13, weight: .medium))
+                    Text("Save password for \(p.host)?").font(Look.rowText)
                     if !p.account.isEmpty {
                         Text(p.account).font(Look.caption).foregroundStyle(.secondary)
                     }
@@ -1115,7 +1115,7 @@ private struct SavePrompt: View {
             .frame(maxWidth: 460)
             .fixedSize(horizontal: false, vertical: true)
             .glass(radius: Look.cardRadius)
-            .shadow(radius: 12, y: 4)
+            .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Save password for \(p.host)?")
             // A credential decision is the first thing in the window worth reaching, not
@@ -1138,7 +1138,7 @@ private struct FindBar: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").font(Look.caption).foregroundStyle(.secondary)
             TextField("Find on page", text: $text)
-                .textFieldStyle(.plain).font(.system(size: 12)).frame(width: 180)
+                .textFieldStyle(.plain).font(Look.small).frame(width: 180)
                 .focused($focused)
                 .onSubmit { search(forward: true) }
                 .onChange(of: text) { search(forward: true) }
@@ -1155,7 +1155,7 @@ private struct FindBar: View {
         .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
         .padding(.horizontal, 12).padding(.vertical, 8)
         .glass(radius: Look.cardRadius)
-        .shadow(radius: 10, y: 4)
+        .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         // Focus lands in the field the moment the bar opens, so the first thing after ⌘F
         // is typing — for the keyboard and for VoiceOver alike.
         .onAppear { focused = true }
@@ -1214,7 +1214,7 @@ private struct DownloadRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(item.name).lineLimit(1).font(.system(size: 12))
+                Text(item.name).lineLimit(1).font(Look.small)
                     .accessibilityLabel(item.name)
                     .accessibilityValue(status)
                 Spacer(minLength: 8)
@@ -1253,7 +1253,7 @@ private struct DownloadRow: View {
                     .accessibilityValue("\(Int(item.fraction * 100)) percent")
             case .done:    EmptyView()
             case .failed(let why):
-                Text(why).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
+                Text(why).font(Look.caption).foregroundStyle(.red).lineLimit(2)
             }
         }
         .accessibilityElement(children: .contain)

@@ -352,7 +352,7 @@ private struct CommandField: NSViewRepresentable {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Look.barRowInset) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: Look.rowIcon, weight: .medium))
+                    .font(Look.fieldIcon)
                     .foregroundStyle(.secondary)
                     .frame(width: Look.rowIcon)
                 if ready {
@@ -412,7 +412,7 @@ private struct CommandField: NSViewRepresentable {
                     .frame(width: Look.rowIcon, height: Look.rowIcon)
             } else {
                 Image(systemName: row.icon)
-                    .font(.system(size: 14))
+                    .font(Look.symbol)
                     .foregroundStyle(.secondary)
                     .frame(width: Look.rowIcon, height: Look.rowIcon)
             }
@@ -427,7 +427,7 @@ private struct CommandField: NSViewRepresentable {
                 Text(row.trailing).font(Look.rowText)
                     .foregroundStyle(on ? .primary : .secondary).lineLimit(1).layoutPriority(1)
                 Image(systemName: "arrow.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(Look.glyph)
                     .foregroundStyle(on ? .primary : .secondary)
                     .frame(width: Look.chip, height: Look.chip)
                     .background(on ? Look.chipSelectedFill : Look.chipFill,

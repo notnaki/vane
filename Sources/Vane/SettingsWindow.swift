@@ -603,7 +603,7 @@ private struct DataRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Look.inset) {
-                Image(systemName: icon).font(.system(size: 12, weight: .semibold))
+                Image(systemName: icon).font(Look.glyph)
                     .foregroundStyle(.white)
                     .frame(width: Look.iconTile, height: Look.iconTile)
                     .background(tint, in: .rect(cornerRadius: Look.iconTileRadius))

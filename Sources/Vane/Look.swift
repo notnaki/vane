@@ -45,6 +45,8 @@ enum Look {
     static let chipRadius: CGFloat = 6
     /// The field's type. Larger than body because it is the one thing being typed into.
     static let barFontSize: CGFloat = 18
+    /// The magnifying glass beside it, drawn at the row icons' size so the column lines up.
+    static let fieldIcon = Font.system(size: rowIcon, weight: .medium)
 
     // Settings. Rows breathe more than sidebar rows; both numbers stay tied to `rowHeight`
     // and `inset` so there is one rhythm, not three.
@@ -60,11 +62,26 @@ enum Look {
     static let paneMargin: CGFloat = inset * 4
     static let profileListWidth: CGFloat = 230
 
+    /// The sidebar's two fixed strips: traffic lights and navigation above, downloads and
+    /// spaces below.
+    static let topRow: CGFloat = 26
+    static let footer: CGFloat = 22
+    /// A favourite tile's icon: a step up from a row's 16, since it stands alone.
+    static let tileIcon: CGFloat = 20
+
     static let text = Font.system(size: 13)
     static let caption = Font.system(size: 11)
     static let heading = Font.system(size: 13, weight: .semibold)
+    /// Secondary type: the find field, a download's name, the current space's dot.
+    static let small = Font.system(size: 12)
     /// The sidebar's symbol buttons: the top row, the footer, the pill's two glyphs.
     static let icon = Font.system(size: 15, weight: .medium)
+    /// A symbol standing in a `rowIcon` box where a favicon would be: bar rows, pickers.
+    static let symbol = Font.system(size: 14)
+    /// A glyph inside a small tile: the "→" chip, a link row's coloured square.
+    static let glyph = Font.system(size: 12, weight: .semibold)
+    /// The glyphs a row grows on hover — the close "×", the speaker.
+    static let rowGlyph = Font.system(size: 11, weight: .medium)
     /// Command bar rows: a step heavier than body, the way Arc sets them, so a title reads
     /// at a glance against the grey trailing label.
     static let rowText = Font.system(size: 13, weight: .medium)
@@ -78,9 +95,11 @@ enum Look {
     /// One surface at graded strengths, so the pill, a tile, a hovered row and a selected row
     /// read as the same material rather than four different greys. Semantic on purpose:
     /// `.primary` is white on dark and black on light.
-    static let hovered = Color.primary.opacity(0.05)
+    /// Hover is the pill's strength, not a whisper under it: Arc's hovered row is as plain
+    /// as its selected one, and at 0.05 the user read the sidebar as not reacting at all.
+    static let hovered = Color.primary.opacity(0.08)
     static let pillFill = Color.primary.opacity(0.08)
-    static let selected = Color.primary.opacity(0.11)
+    static let selected = Color.primary.opacity(0.12)
     /// A selection that belongs to the user's accent rather than to the surface: the
     /// Profiles list, where the selected row is the one whose controls are shown.
     static let accentSelected = Color.accentColor.opacity(0.22)
@@ -118,6 +137,11 @@ enum Look {
     static let barShadow = Color.black.opacity(0.5)
     static let barShadowRadius: CGFloat = 30
     static let barShadowY: CGFloat = 12
+    /// The small floaters inside the card — find, the save-password prompt. Lighter and
+    /// tighter than the bar's: they sit on the page, not over the whole window.
+    static let floatShadow = Color.black.opacity(0.3)
+    static let floatShadowRadius: CGFloat = 12
+    static let floatShadowY: CGFloat = 4
 
     // Motion. Short and easing out: a fill should arrive under the pointer, never chase it.
     /// Hover and selection fills.
