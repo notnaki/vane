@@ -344,7 +344,7 @@ import Foundation
     static func title(for tab: Tab) -> String {
         guard let url = tab.currentURL else { return tab.title }
         if let name = override(for: url, in: tab.profileID) { return name }
-        guard enabled, tab.pinned else { return tab.title }
+        guard enabled, tab.stays else { return tab.title }
         if let hit = dict(cacheKey, tab.profileID)[url.absoluteString] { return hit }
         // Nothing cached yet: the deterministic answer is available *now*, so show it rather
         // than flashing the long title while `refresh` decides whether to ask the model.
@@ -362,7 +362,7 @@ import Foundation
     /// title-versus-cache comparison on every KVO tick, which is a lot of machinery to fix
     /// the label on a chip.
     static func refresh(_ tab: Tab) {
-        guard enabled, tab.pinned, !tab.isPrivate,
+        guard enabled, tab.stays, !tab.isPrivate,
               let url = tab.currentURL, url.scheme?.hasPrefix("http") == true else { return }
         let key = url.absoluteString
         guard dict(cacheKey, tab.profileID)[key] == nil else { return }

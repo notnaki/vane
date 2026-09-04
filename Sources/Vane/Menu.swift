@@ -191,7 +191,44 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         rebuild()
     }
     undo.isEnabled = store.map(TidyTabs.canUndo) ?? false
-    return [tidy, undo]
+    let clear = item(.clearTabs) { clearTabs() }
+    clear.isEnabled = store.map { s in s.tabs.contains { $0.kind == .today } } ?? false
+    let favourite = item(.favouriteTab) {
+        guard let s = Windows.current, let c = s.current else { return }
+        s.toggleFavourite(c)
+    }
+    let pin = item(.pinTab) {
+        guard let s = Windows.current, let c = s.current else { return }
+        s.togglePinned(c)
+    }
+    // The titles say what the item will do to *this* tab, the way Arc's do.
+    if let t = store?.active {
+        favourite.title = t.kind == .favourite ? "Unfavourite Tab" : "Favourite Tab"
+        pin.title = t.kind == .pinned ? "Unpin Tab" : "Pin Tab"
+    }
+    favourite.isEnabled = store?.active != nil
+    pin.isEnabled = store?.active != nil
+    return [favourite, pin, .separator(), tidy, undo, clear]
+}
+
+/// ⇧⌘C. Arc's, and the one browser shortcut everybody misses when it is missing.
+@MainActor private func copyPageURL() {
+    guard let u = Windows.current?.active?.currentURL else { return }
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(u.absoluteString, forType: .string)
+    axAnnounce("Link copied.")
+}
+
+/// ⇧⌘K, and the sidebar's `Clear`: today's tabs go to the archive, not to the bin.
+/// Archiving every tab would leave the window with nothing showing, which is exactly what
+/// Arc does — the sidebar stays, the page area goes bare and the search bar is a keystroke
+/// away. Favourites and pinned tabs are untouched.
+@MainActor private func clearTabs() {
+    guard let s = Windows.current else { return }
+    let doomed = s.tabs.filter { $0.kind == .today }
+    guard !doomed.isEmpty else { return }
+    doomed.forEach { s.archive($0.id) }
+    axAnnounce("Archived \(doomed.count) tab\(doomed.count == 1 ? "" : "s").")
 }
 
 @MainActor private func spaceItems() -> [NSMenuItem] {
@@ -201,7 +238,22 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         entry.state = store?.currentSpaceID == space.id ? .on : .off
         return entry
     }
-    return switchers + [
+    let numbered = (1...9).map { n in
+        item(Command(rawValue: "goToSpace\(n)") ?? .goToSpace1) {
+            Windows.current?.switchTo(spaceNumber: n)
+            rebuild()
+        }
+    }
+    // ⌃1…⌃9 have to be live whatever the menu shows, so the numbered items are in the menu
+    // but hidden past the ones that name a space: nine "Go to Space N" lines under three
+    // spaces would be seven dead rows.
+    for (i, entry) in numbered.enumerated() where i >= switchers.count { entry.isHidden = true }
+    let nav = [
+        item(.previousSpace) { Windows.current?.cycleSpace(-1); rebuild() },
+        item(.nextSpace) { Windows.current?.cycleSpace(1); rebuild() },
+    ]
+    for entry in nav { entry.isEnabled = (store?.spaces.count ?? 0) > 1 }
+    return switchers + [.separator()] + nav + numbered + [
         .separator(),
         item(.newSpace) {
             guard let name = askForName("Name the new space") else { return }
@@ -233,7 +285,9 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         item(.reopenClosedTab) {
             if let u = ClosedTabs.pop() { (Windows.current ?? Windows.open()).newTab(u) }
         },
-        item(.closeTab) { if let s = Windows.current, let c = s.current { s.close(c) } },
+        // Arc's ⌘W: a Today tab is archived rather than destroyed, and a favourite or a
+        // pinned tab just loses its page and stays in the sidebar.
+        item(.closeTab) { if let s = Windows.current, let c = s.current { s.archive(c) } },
         responderItem(.closeWindow, #selector(NSWindow.performClose(_:))) {
             NSApp.keyWindow?.performClose(nil)
         },
@@ -257,6 +311,8 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         item(.openLocation) { Windows.current?.palette = .address },
         item(.find) { Windows.current?.findOpen = true },
         item(.toggleSidebar) { Windows.current?.sidebarShown.toggle() },
+        item(.showLibrary) { Windows.current?.libraryOpen = true },
+        item(.copyPageURL) { copyPageURL() },
         .separator(),
         item(.actualSize) { Windows.current?.active.map(Zoom.reset) },
         item(.zoomIn) { Windows.current?.active.map(Zoom.zoomIn) },

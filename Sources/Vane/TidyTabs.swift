@@ -86,7 +86,7 @@ import Foundation
     /// `TabStore` enforces "every pinned tab ahead of every unpinned one" as a hard
     /// invariant, so a pinned tab literally cannot join a group in the middle of the strip.
     static func candidates(in store: TabStore) -> [Candidate] {
-        store.tabs.filter { !$0.pinned }.map {
+        store.tabs.filter { $0.kind == .today }.map {
             Candidate(id: $0.id, title: $0.title, host: $0.currentURL?.host ?? "")
         }
     }
@@ -113,7 +113,7 @@ import Foundation
     /// count. Grouping cannot dethrone it: `TabStore.current` is an id, and reordering an
     /// array does not change which id is in it.
     static func shouldOffer(_ store: TabStore) -> Bool {
-        let ordinary = store.tabs.filter { !$0.pinned && $0.id != store.current }.count
+        let ordinary = store.tabs.filter { $0.kind == .today && $0.id != store.current }.count
         return shouldOffer(ordinary: ordinary, threshold: threshold, enabled: enabled)
     }
 
@@ -358,7 +358,7 @@ import Foundation
     /// version of it.
     static func apply(_ groups: [Group], to store: TabStore) {
         let before = store.tabs.map(\.id)
-        let next = order(before, pinned: Set(store.tabs.filter(\.pinned).map(\.id)), groups: groups)
+        let next = order(before, pinned: Set(store.tabs.filter(\.stays).map(\.id)), groups: groups)
         guard next != before else { return }
         let live = Set(TabStore.all.map(ObjectIdentifier.init))
         saved = saved.filter { live.contains($0.key) }

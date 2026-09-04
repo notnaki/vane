@@ -53,6 +53,8 @@ extension Prefs {
         /// The active tab of *any* window — a background window's selected tab is on screen
         /// too, and tearing it down would be visible the moment that window is raised.
         var active = false
+        /// A favourite or a pinned tab: it stays in the sidebar, so the user expects it to
+        /// be instant when they click it.
         var pinned = false
         /// A private tab's data store is `.nonPersistent()` and a fresh one is made per web
         /// view, so a suspended private tab would come back logged out of everything.
@@ -116,7 +118,10 @@ extension Prefs {
     static func begin() {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: sweepInterval, repeats: true) { _ in
-            MainActor.assumeIsolated { sweep() }
+            // One timer for both sweeps. Auto-archive's shortest interval is twelve hours,
+            // so a minute of slop on it is beneath noticing, and a second Timer to say the
+            // same thing is a second Timer.
+            MainActor.assumeIsolated { sweep(); Archive.sweep() }
         }
         let src = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
         // The source is read back off the stored property rather than captured, so nothing
@@ -140,7 +145,7 @@ extension Prefs {
     /// process. `playing` and `hasInput` are filled in later, only for tabs that got this
     /// far, because both cost a round trip into WebKit.
     private static func facts(_ tab: Tab, now: Date) -> Facts {
-        Facts(active: isActive(tab), pinned: tab.pinned, isPrivate: tab.isPrivate,
+        Facts(active: isActive(tab), pinned: tab.stays, isPrivate: tab.isPrivate,
               loading: tab.loading, suspended: tab.suspended, loaded: tab.web.url != nil,
               idle: now.timeIntervalSince(tab.lastActive))
     }
