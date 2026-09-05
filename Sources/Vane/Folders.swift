@@ -610,7 +610,13 @@ struct FolderNameField: View {
             .focused($focused)
             .onSubmit { commit() }
             .onExitCommand { cancel() }
-            .onAppear { draft = folder.name; focused = true }
+            .onAppear { draft = folder.name }
+            // Focus on the *next* turn, not inside `onAppear`. A click on a folder row also
+            // folds it, so the rename starts while the list animation that click began is
+            // still running — and a focus request made in that frame is dropped, leaving a
+            // field nothing can be typed into. `RenameField` has no such race: clicking a
+            // tab row only selects it.
+            .task { focused = true }
             .onChange(of: focused) { _, now in if !now { commit() } }
             .onDisappear { commit() }
             .accessibilityLabel("Folder name")
