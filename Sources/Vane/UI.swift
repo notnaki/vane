@@ -77,6 +77,11 @@ struct BrowserWindow: View {
         // Arc hides the traffic lights along with the sidebar: a collapsed window is the
         // page and nothing else. They come back the moment either sidebar does.
         .onChange(of: chrome, initial: true) { showTrafficLights(chrome) }
+        // ⌘S while the peek is up keeps `chrome` true, so the line above never fires and the
+        // lights would stay on the peeked panel's inset line. Docking or hiding the sidebar
+        // always ends the peek, and the lights follow the row that is actually there.
+        .onChange(of: store.sidebarShown) { peekTask?.cancel(); peeking = false; showTrafficLights(chrome) }
+        .onChange(of: peeking) { showTrafficLights(chrome) }
         .onAppear { store.applySpaceAppearance() }
         // In .background so it costs no layout: the buttons are still in the view tree and
         // in the responder chain, which is all .keyboardShortcut needs.
