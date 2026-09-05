@@ -158,6 +158,29 @@ import WebKit
     /// answering "is media running", and we are answering "can the user hear it".
     static func isAudible(_ tab: Tab) -> Bool { audible(id: tab.id, web: tab.web) }
 
+    /// Media running, whether or not the user can hear it. The mini audio player asks this
+    /// rather than `isAudible`: muting a tab is not the same as closing its player, and Arc
+    /// keeps the tray up with a struck-through speaker on it.
+    /// ponytail: under the JS fallback a tab muted element-by-element reads as not playing,
+    /// because that is all the page reports. Ceiling: a second flag in the payload; on the
+    /// SPI path — every machine that has `_isPlayingAudio` — this is already right.
+    static func isPlaying(_ tab: Tab) -> Bool {
+        playingAudio(tab.web) ?? audibleIDs.contains(tab.id)
+    }
+
+    /// Anything that has to redraw when a tab it is *not* observing changes. The media tray
+    /// draws the tab you left, whose row may be scrolled off or in another window's sidebar,
+    /// so a per-row `@ObservedObject` never hears about it. One app-wide hook rather than a
+    /// Combine subscription per tab per window.
+    static var onAnyChange: (@MainActor (UUID) -> Void)?
+
+    /// Every place the per-tab sink is fired goes through here, so the hook cannot be
+    /// forgotten at one of them.
+    private static func tell(_ id: UUID, _ audible: Bool) {
+        sinks[id]?(audible)
+        onAnyChange?(id)
+    }
+
     private static func audible(id: UUID, web: WKWebView?) -> Bool {
         if mutedIDs.contains(id) { return false }
         return playingAudio(web) ?? audibleIDs.contains(id)
@@ -199,14 +222,14 @@ import WebKit
     static func handle(_ body: Any, for tab: Tab) {
         guard let a = audible(from: body) else { return }
         if a { audibleIDs.insert(tab.id) } else { audibleIDs.remove(tab.id) }
-        sinks[tab.id]?(isAudible(tab))
+        tell(tab.id, isAudible(tab))
     }
 
     private static func changed(_ id: UUID) {
         let web = watches[id]?.web
         let a = audible(id: id, web: web)
         if a { audibleIDs.insert(id) } else { audibleIDs.remove(id) }
-        sinks[id]?(a)
+        tell(id, a)
     }
 
     // MARK: - Muting
@@ -219,7 +242,7 @@ import WebKit
     static func setMuted(_ tab: Tab, _ on: Bool) {
         setMuted(tab.id, on)
         apply(tab)
-        sinks[tab.id]?(isAudible(tab))
+        tell(tab.id, isAudible(tab))
     }
 
     /// The map write on its own — no page, no web view, so `check()` can drive it.

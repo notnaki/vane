@@ -112,6 +112,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         cfg.userContentController.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
+        // Document *start*: the media-session wrapper has to be in place before the page
+        // registers its handlers. See MediaPlayer.swift.
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: MediaTray.script, injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false))
         cfg.userContentController.addUserScript(
             WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
@@ -126,6 +131,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         web.configuration.userContentController.add(WeakHandler(self), name: PictureInPicture.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), name: MediaTray.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: StatusBar.messageName)
         // A fresh web view has no page to be insecure about.
         secureContent = true
@@ -219,6 +225,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PictureInPicture.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: MediaTray.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
         old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
         // ponytail: `old` is never deallocated — it survives at a high retain count, so
@@ -521,6 +528,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
+        if m.name == MediaTray.messageName { MediaState.shared.handle(m.body, for: self); return }
         if m.name == StatusBar.messageName { hoveredLink = StatusBar.link(from: m.body); return }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
@@ -619,6 +627,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             // rather than in each of those callers is the only way the two cannot drift.
             if let id = current, let i = splits.firstIndex(where: { $0.contains(id) }) {
                 splits[i] = splits[i].focusing(id)
+            }
+            // Arc's auto picture-in-picture: the video in the tab you left follows you out,
+            // and goes back into the page when you come back to it.
+            if oldValue != current {
+                PictureInPicture.enterIfPlaying(tabs.first { $0.id == oldValue })
+                PictureInPicture.exitIfAuto(tabs.first { $0.id == current })
             }
             extensions.sync()
         }
@@ -895,6 +909,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             Motion.list { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
+            MediaState.shared.forget(id)
         }
         if renamingTab == id { renamingTab = nil }
         extensions.sync()

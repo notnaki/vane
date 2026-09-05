@@ -390,6 +390,17 @@ enum Look {
     /// ⌃ held shorter than this is a tap — switch, but never draw the row.
     static let switcherDelay: Double = 0.15
 
+    // The mini audio player: a pill above the sidebar's footer, a shade taller than a row
+    // so the artwork and the transport glyphs sit in it without crowding.
+    static let trayHeight: CGFloat = 40
+    /// Its transport glyphs — a step under a row's, because there are three of them in a
+    /// strip the width of a sidebar.
+    static let trayGlyph = Font.system(size: 12, weight: .semibold)
+    /// A title too long for the tray scrolls: points per second, and how long it rests at
+    /// each end before turning round.
+    static let marqueeSpeed: Double = 22
+    static let marqueePause: Double = 1.2
+
     // Toasts: a pill above the sidebar's footer, gone after `toastDuration` unless hovered.
     static let toastHeight: CGFloat = 32
     static let toastDuration: Double = 3
