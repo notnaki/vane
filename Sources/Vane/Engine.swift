@@ -586,8 +586,20 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
 @MainActor final class TabStore: ObservableObject {
     @Published var tabs: [Tab] = []
-    /// The tab whose row is a name field right now. One at a time, per window.
-    @Published var renamingTab: Tab.ID?
+    /// The tab whose row is a name field right now. One at a time, per window — and one
+    /// between the two: arming either name field puts the other away, or two rows in the
+    /// same list are both waiting to be typed into and only one of them can be.
+    @Published var renamingTab: Tab.ID? {
+        didSet { if renamingTab != nil { renamingFolder = nil } }
+    }
+    /// Arc's Folders: the shape of the Pinned section — which tabs sit in which folder, and
+    /// the order the rows are drawn in. `tabs` still holds the tabs themselves; this only
+    /// says how they are arranged. See `Pins` in Folders.swift.
+    @Published var pins = Pins()
+    /// The folder whose row is a name field right now, the way `renamingTab` is for a tab.
+    @Published var renamingFolder: UUID? {
+        didSet { if renamingFolder != nil { renamingTab = nil } }
+    }
     /// Counts the archives that land in one burst, so Clear can sweep rows out one after
     /// another. See `archive`.
     private let bursts = Motion.Burst()
@@ -700,7 +712,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // A space carries its own per-tab state in a sidecar; a window restore is handed one.
         let parked = space.map { Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory) } ?? parked
         restore(favourites, as: .favourite, parked: parked)
-        restore(pinned, as: .pinned, parked: parked)
+        // The Pinned section is not a list any more but a shape — folders and the tabs in
+        // them — so its tabs come up in the order the folders draw them.
+        restorePins(urls: pinned, parked: parked)
         let kept = Set(favourites + pinned)
         let rest = urls.filter { !kept.contains($0) }
         rest.forEach { newBlankTab().open($0, parked: parked[$0.absoluteString]) }
@@ -743,11 +757,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// `Prefs.suspendTabs` says: a favourite tile or a pinned row is a place to go, and
     /// eight of them at launch are eight processes for pages nobody is looking at.
     /// `parked` may carry the state each one was last on.
-    private func restore(_ urls: [URL], as kind: TabKind, parked: [String: Parked]) {
-        for url in urls {
+    @discardableResult
+    func restore(_ urls: [URL], as kind: TabKind, parked: [String: Parked]) -> [Tab] {
+        urls.map { url in
             let t = newBlankTab()
             t.kind = kind
             t.park(url: url, parked[url.absoluteString] ?? Parked())
+            return t
         }
     }
 
@@ -856,6 +872,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             if !isPrivate { ClosedTabs.push(tab.currentURL) }
             Motion.list { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
+            pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
         }
         if renamingTab == id { renamingTab = nil }
         extensions.sync()
@@ -912,6 +929,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
                                                    to: kind == .today ? 0 : tabs.count)
             tabs.insert(tab, at: dest)
         }
+        syncPins()          // a tab leaving Pinned leaves its folder with it
         savePins()
     }
 
@@ -952,6 +970,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             tabs.insert(tab, at: min(dest, tabs.count))
             return touches
         }
+        placeInPins(id, onto: target, after: after)
         if touchesSections { savePins() }
     }
 
@@ -1010,6 +1029,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // A Little Arc holds no favourites and no pinned rows; writing its empty lists down
         // would erase the profile's.
         guard !isPrivate, !isLittle else { return }
+        saveShape()          // the folders around the urls; see Folders.swift
         func urls(_ kind: TabKind) -> [String] {
             tabs.filter { $0.kind == kind }.compactMap { TabStore.pinURL($0.currentURL) }
         }
@@ -1102,6 +1122,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         space.tabURLs = urls { $0.kind == .today }
         space.pinnedURLs = []              // Favourites are the profile's; see `savePins`
         space.pinnedTabURLs = urls { $0.kind == .pinned }
+        saveShape()                        // and the folders those urls are arranged in
         ProfileManager.shared.updateSpace(space)
         UserDefaults.standard.set(urls { $0.kind == .favourite }.map(\.absoluteString),
                                   forKey: TabStore.defaultsKey(.favourite, profileID))
@@ -1144,7 +1165,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         currentSpaceID = space.id
         applySpaceAppearance()          // the new space may be pinned to light or dark
         let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
-        restore(space.pinnedTabURLs ?? [], as: .pinned, parked: parked)
+        restorePins(urls: space.pinnedTabURLs ?? [], parked: parked)
         for url in space.tabURLs { newBlankTab().open(url, parked: parked[url.absoluteString]) }
         current = tabs.first { $0.kind == .today }?.id
         if space.tabURLs.isEmpty { openPalette(.newTab) }

@@ -115,11 +115,22 @@ struct NewSpaceButton: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        Button { store.newSpace() } label: { Image(systemName: "plus") }
+        // Arc’s footer `+` is a menu, not a button. ponytail: two items, not four — Easels
+        // and Notes are whole features, and a menu entry that opens an apology is worse than
+        // no entry. They belong here on the day they exist.
+        Menu {
+            Button("New Space") { store.newSpace() }
+            Button("New Folder") { store.newFolder() }
+        } label: {
+            Image(systemName: "plus")
+        }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
             .buttonStyle(.plain)
             .foregroundStyle(Look.inkSecondary)
-            .help("New Space")
-            .accessibilityLabel("New Space")
+            .help("New Space or Folder")
+            .accessibilityLabel("New Space or Folder")
             .popover(isPresented: Binding(get: { store.editingSpace != nil },
                                           set: { if !$0 { store.editingSpace = nil } }),
                      arrowEdge: .top) {

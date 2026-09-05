@@ -738,7 +738,13 @@ private struct FavoriteTile: View {
     }
     switch tab.kind {
     case .favourite: bits.append("favourite")
-    case .pinned:    bits.append("pinned")
+    case .pinned:
+        bits.append("pinned")
+        // The indent is the only thing on screen that says a tab is inside a folder, and an
+        // indent is not something VoiceOver can read out.
+        if let folder = store.pins.folder(holding: tab.id.uuidString) {
+            bits.append("in \(folder.name)")
+        }
     case .today:     break
     }
     if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
@@ -763,6 +769,22 @@ private enum DropSide { case before, after }
 @MainActor final class Dragging: ObservableObject {
     static let shared = Dragging()
     @Published var tab: Tab.ID?
+    /// A folder row being dragged among the pinned rows. Never both at once — a drag is one
+    /// thing — but two fields rather than an enum keeps every existing `dragging.tab` read
+    /// meaning exactly what it did.
+    @Published var folder: Folder.ID?
+    /// Whether one of ours is in flight at all, which is what the drop lines and the
+    /// sidebar's catch-all delegate care about.
+    var active: Bool { tab != nil || folder != nil }
+
+    /// What is being dragged, and the end of the drag in the same breath. Every
+    /// `performDrop` calls this first: a delegate that reads the flag and then *refuses*
+    /// the drop leaves the drag running forever, and a drag that never ends makes
+    /// `SidebarDrop` stand aside from every later url and file drop.
+    func take() -> (tab: Tab.ID?, folder: Folder.ID?) {
+        defer { tab = nil; folder = nil }
+        return (tab, folder)
+    }
 }
 
 /// ponytail: `.onDrag`/`.onDrop` with a delegate rather than `.draggable`/`.dropDestination`.
@@ -772,7 +794,10 @@ private enum DropSide { case before, after }
     // Published on the next turn, not now: a state change inside the drag's own start
     // re-renders the row under the pointer, and SwiftUI drops the drag with it.
     let id = tab.id
-    DispatchQueue.main.async { Dragging.shared.tab = id }
+    // Both set, so a flag left behind by a drag that ended outside any of our targets —
+    // dropped on the desktop, say, where no `performDrop` ever runs — is cleared by the
+    // next drag rather than outliving the session.
+    DispatchQueue.main.async { Dragging.shared.tab = id; Dragging.shared.folder = nil }
     return NSItemProvider(object: id.uuidString as NSString)
 }
 
@@ -787,7 +812,7 @@ private struct DropLine: View {
         Rectangle().fill(.tint)
             .frame(width: axis == .horizontal ? Look.dropLine : nil,
                    height: axis == .vertical ? Look.dropLine : nil)
-            .opacity(on && dragging.tab != nil ? 1 : 0)
+            .opacity(on && dragging.active ? 1 : 0)
     }
 }
 
@@ -806,12 +831,15 @@ private struct TabDrop: DropDelegate {
     @Binding var side: DropSide?
 
     func validateDrop(info: DropInfo) -> Bool {
+        // A folder only ever lands among the pinned rows, so every other target refuses it
+        // rather than quietly dropping it somewhere it cannot be drawn.
+        if Dragging.shared.folder != nil { return target?.kind == .pinned }
         guard let dragging = Dragging.shared.tab else { return false }
         return dragging != target?.id
     }
     func dropEntered(info: DropInfo) { side = which(info) }
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        guard Dragging.shared.tab != nil else { return DropProposal(operation: .cancel) }
+        guard Dragging.shared.active else { return DropProposal(operation: .cancel) }
         side = which(info)
         return DropProposal(operation: .move)
     }
@@ -820,8 +848,16 @@ private struct TabDrop: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         let after = which(info) == .after
         side = nil
-        guard let id = Dragging.shared.tab else { return false }
-        Dragging.shared.tab = nil
+        // Read once and cleared *before* anything can refuse the drop. A drag left set here
+        // outlives the gesture, and `SidebarDrop` then stands aside from every url and file
+        // dropped on the sidebar for the rest of the session.
+        let (dragged, folder) = Dragging.shared.take()
+        if let folder {
+            guard let target, target.kind == .pinned else { return false }
+            store.move(folder: folder, next: target.id.uuidString, after: after)
+            return true
+        }
+        guard let id = dragged else { return false }
         if let target { store.drop(id, onto: target.id, after: after) } else { store.move(id, to: into) }
         return true
     }
@@ -890,9 +926,9 @@ private struct SpaceRow: View {
 }
 
 /// Exactly the items Arc offers, minus the ones Vane has nothing behind.
-/// ponytail: no New Folder, no Live Folders, no Share Space and no Export — folders and
-/// sharing are whole features, not menu items, and an entry that opens an apology is worse
-/// than no entry. They belong above `Manage Spaces…` on the day they exist.
+/// ponytail: no Live Folders, no Share Space and no Export — those are whole features, not
+/// menu items, and an entry that opens an apology is worse than no entry. They belong beside
+/// `New Folder` on the day they exist.
 /// ponytail: `store` is passed in rather than read from the environment. A context menu is
 /// hosted in its own window, and an `@EnvironmentObject` that fails to reach it is a crash,
 /// not a blank menu — not a risk worth taking for a shorter initialiser.
@@ -917,6 +953,8 @@ private struct SpaceMenu: View {
                 }
             }
         }
+        Divider()
+        Button("New Folder") { store.newFolder() }
         Divider()
         // The Profiles pane of Settings is the spaces list; there is no second surface.
         Button("Manage Spaces…") { SettingsWindow.show() }
@@ -949,6 +987,7 @@ private struct SpaceMenu: View {
     // the menu was built from.
     Spaces.archiveContents(of: store.spaces.first { $0.id == space.id } ?? space)
     ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
+    TabStore.forgetShape(space: space.id, profileID: space.profileID)
     if let survivor { store.switchTo(space: survivor) }
     rebuild()
 }
@@ -1173,16 +1212,196 @@ private struct PinnedTabs: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        let pinned = store.tabs.filter { $0.kind == .pinned }
-        // Empty is nothing, as in Arc: the divider follows the space's name. The way in is
-        // a drop on the space row, ⌘D, or a tab's own Pin action.
-        if !pinned.isEmpty {
+        // Drawn from `store.pins`, not from the strip: a folder is not a tab, and the order
+        // the rows are in is the folders’, which is what `Pins` is for.
+        let rows = store.pins.visible
+        // Empty is nothing, as in Arc: the divider follows the space’s name. The way in is
+        // a drop on the space row, ⌘D, a tab’s own Pin action, or New Folder.
+        if !rows.isEmpty {
             VStack(spacing: Look.rowGap) {
-                ForEach(pinned) { TabRow(tab: $0).transition(.rowCollapse) }
+                ForEach(rows) { PinnedRow(row: $0).transition(.rowCollapse) }
             }
+            .contextMenu { Button("New Folder") { store.newFolder() } }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Pinned Tabs")
-            .accessibilityValue("\(pinned.count) pinned")
+            .accessibilityValue("\(store.pins.tabs.count) pinned")
+        }
+    }
+}
+
+/// One line of the Pinned section — a folder or one of the tabs in it — stepped in by how
+/// deep it sits. The indent is the only thing that says a tab is inside a folder, which is
+/// exactly how Arc says it.
+private struct PinnedRow: View {
+    @EnvironmentObject var store: TabStore
+    let row: Pins.Visible
+
+    var body: some View {
+        Group {
+            if let folder = row.entry.folder {
+                FolderRow(folder: folder)
+            } else if let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab }) {
+                TabRow(tab: tab)
+            }
+        }
+        .padding(.leading, CGFloat(row.depth) * Look.folderIndent)
+    }
+}
+
+/// Which part of a folder row a drop is over: its edges reorder, its middle puts the thing
+/// inside. A tab row has only two halves (`DropSide`) because there is no inside to have.
+private enum FolderZone { case before, inside, after }
+
+/// A folder in the Pinned section: its glyph, its name and a chevron that says whether it is
+/// folded. Clicking anywhere on it folds or unfolds; everything else it can be is in its
+/// right-click menu, which is the only route the keyboard and VoiceOver have.
+private struct FolderRow: View {
+    @EnvironmentObject var store: TabStore
+    let folder: Folder
+    @State private var zone: FolderZone?
+    @State private var icons = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        SidebarRow(selected: false, action: { store.toggleFolder(folder.id) }) {
+            FolderGlyph(folder: folder)
+        } label: {
+            if store.renamingFolder == folder.id {
+                FolderNameField(store: store, folder: folder)
+            } else {
+                Text(folder.name)
+            }
+        } trailing: {
+            Image(systemName: "chevron.down")
+                .font(Look.rowGlyph)
+                .foregroundStyle(Look.inkSecondary)
+                .rotationEffect(.degrees(folder.collapsed ? -90 : 0))
+                .animation(reduceMotion ? nil : Look.quick, value: folder.collapsed)
+                .accessibilityHidden(true)      // the row’s value already says which it is
+        }
+        // A drop *into* the folder fills the whole row; a drop beside it draws a line at the
+        // edge it will land on. Behind `SidebarRow`, whose own fill is clear at rest.
+        .background(zone == .inside ? Look.selected : .clear,
+                    in: .rect(cornerRadius: Look.pillRadius))
+        .overlay(alignment: zone == .after ? .bottom : .top) {
+            DropLine(on: zone == .before || zone == .after, axis: .vertical)
+        }
+        .help(folder.name)
+        .onDrag { folderDragPayload(folder) } preview: {
+            HStack(spacing: Look.rowSpacing) {
+                FolderGlyph(folder: folder)
+                Text(folder.name).lineLimit(1).font(Look.rowTitle)
+            }
+            .padding(.horizontal, Look.rowInset).padding(.vertical, 4)
+        }
+        .onDrop(of: [.plainText], delegate: FolderDrop(store: store, folder: folder, zone: $zone))
+        .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingFolder = folder.id })
+        .contextMenu { FolderMenu(store: store, folder: folder, icons: $icons) }
+        .popover(isPresented: $icons) { FolderIcons(store: store, folder: folder) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(folder.name)
+        .accessibilityValue("Folder, \(store.pins.tabs(in: folder.id).count) tabs, "
+                            + (folder.collapsed ? "collapsed" : "expanded"))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Folds this folder open or shut.")
+        .accessibilityAction(named: "Rename Folder") { store.renamingFolder = folder.id }
+        .accessibilityAction(named: "Change Icon") { icons = true }
+        .accessibilityAction(named: "Archive All Tabs in Folder") { store.archiveFolder(folder.id) }
+        .accessibilityAction(named: "Delete Folder") { store.deleteFolder(folder.id) }
+    }
+}
+
+/// A folder’s glyph in a favicon’s box, so its name lines up with the tab titles around it.
+/// An emoji is text and an SF Symbol is an image; `Folder.iconIsEmoji` is what tells them
+/// apart, and it does so by looking at the string rather than by a second stored field.
+private struct FolderGlyph: View {
+    let folder: Folder
+    var body: some View {
+        Group {
+            if folder.iconIsEmoji {
+                Text(folder.icon).font(Look.small)
+            } else {
+                Image(systemName: folder.icon)
+            }
+        }
+        .frame(width: Look.tileIcon)
+    }
+}
+
+/// Right-clicking a folder, in Arc’s order: what it is called, whether it is open, and the
+/// two ways to be rid of it. Deleting keeps the tabs; archiving keeps the folder.
+private struct FolderMenu: View {
+    let store: TabStore
+    let folder: Folder
+    @Binding var icons: Bool
+
+    var body: some View {
+        Button("Rename…") { store.renamingFolder = folder.id }
+        Button("Change Icon…") { icons = true }
+        Button(folder.collapsed ? "Unfold" : "Collapse") { store.toggleFolder(folder.id) }
+        Divider()
+        Button("New Folder") { store.newFolder(beside: folder.id) }
+        Button("Archive All Tabs in Folder") { store.archiveFolder(folder.id) }
+            .disabled(store.pins.tabs(in: folder.id).isEmpty)
+        Divider()
+        Button("Delete Folder") { store.deleteFolder(folder.id) }
+    }
+}
+
+/// See `dragPayload`: published on the next turn so starting the drag does not re-render the
+/// row out from under it.
+@MainActor private func folderDragPayload(_ folder: Folder) -> NSItemProvider {
+    let id = folder.id
+    DispatchQueue.main.async { Dragging.shared.folder = id; Dragging.shared.tab = nil }
+    return NSItemProvider(object: id.uuidString as NSString)
+}
+
+/// The drop target a tab row does not need: three zones instead of two, because a folder has
+/// an inside. The middle half takes the thing in; the quarter at each edge reorders beside
+/// it, the way `TabDrop` does.
+private struct FolderDrop: DropDelegate {
+    let store: TabStore
+    let folder: Folder
+    @Binding var zone: FolderZone?
+
+    func validateDrop(info: DropInfo) -> Bool {
+        if let dragged = Dragging.shared.folder { return dragged != folder.id }
+        return Dragging.shared.tab != nil
+    }
+    func dropEntered(info: DropInfo) { zone = which(info) }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard Dragging.shared.active else { return DropProposal(operation: .cancel) }
+        zone = which(info)
+        return DropProposal(operation: .move)
+    }
+    func dropExited(info: DropInfo) { zone = nil }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let where_ = which(info)
+        zone = nil
+        let (tab, dragged) = Dragging.shared.take()      // see `TabDrop.performDrop`
+        if let dragged {
+            guard dragged != folder.id else { return false }
+            switch where_ {
+            case .inside: store.move(folder: dragged, into: folder.id)
+            default: store.move(folder: dragged, next: folder.id.uuidString,
+                                after: where_ == .after)
+            }
+            return true
+        }
+        guard let id = tab else { return false }
+        switch where_ {
+        case .inside: store.move(id, into: folder.id)
+        default: store.drop(id, beside: folder.id, after: where_ == .after)
+        }
+        return true
+    }
+
+    private func which(_ info: DropInfo) -> FolderZone {
+        switch info.location.y / Look.rowHeight {
+        case ..<0.25: .before
+        case 0.75...: .after
+        default: .inside
         }
     }
 }
@@ -1446,6 +1665,18 @@ private struct TabMenu: View {
         Menu("Move To") {
             ForEach(TabKind.allCases.filter { $0 != tab.kind }, id: \.self) { kind in
                 Button(TabMenu.name(kind)) { store.move(tab.id, to: kind) }
+            }
+        }
+        // Arc’s "New Folder" on a tab makes the folder *around* that tab, so the tab is
+        // pinned on the way in. "Move to Folder" is the same move without a drag, which is
+        // the only route the keyboard and VoiceOver have.
+        Button("New Folder") { store.newFolder(from: tab.id) }
+        let folders = store.pins.entries.compactMap(\.folder)
+        if !folders.isEmpty {
+            Menu("Move to Folder") {
+                ForEach(folders) { folder in
+                    Button(folder.name) { store.move(tab.id, into: folder.id) }
+                }
             }
         }
         MoveToSpaceMenu(store: store, tab: tab)
