@@ -42,6 +42,12 @@ private struct HistoryView: View {
     @State private var visits: [Visit] = []
     @State private var selection: Visit.ID?
     @State private var hovered: Visit.ID?
+    /// Which half of the window the keyboard is talking to: typing goes to the field, ⌫
+    /// to the list. Clicking a row moves it, so a row you just clicked can be forgotten
+    /// with the next keystroke.
+    @FocusState private var focus: Field?
+
+    private enum Field { case search, list }
 
     /// As many lines as anybody scrolls before they search instead. The search itself is a
     /// query, not a filter over these, so the cap never hides an older page from a search.
@@ -60,7 +66,7 @@ private struct HistoryView: View {
         .padding(.horizontal, Look.paneMargin)
         .padding(.bottom, Look.paneMargin)
         .background(.windowBackground)
-        .onAppear { reload() }
+        .onAppear { reload(); focus = .search }
         .onChange(of: query) { reload() }
     }
 
@@ -77,6 +83,7 @@ private struct HistoryView: View {
                 TextField("Search history", text: $query)
                     .textFieldStyle(.plain)
                     .font(Look.text)
+                    .focused($focus, equals: .search)
             }
             .padding(.horizontal, Look.inset)
             .frame(height: Look.control)
@@ -123,9 +130,11 @@ private struct HistoryView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        // The list itself takes the key focus, so ⌫ has somewhere to land after a click.
+        // The list takes the key focus as soon as a row is clicked, so ⌫ has somewhere to
+        // land — without it the keystroke goes back to the search field and edits the query.
         .focusable()
         .focusEffectDisabled()
+        .focused($focus, equals: .list)
         .onDeleteCommand { deleteSelected() }
         .accessibilityLabel("History")
     }
@@ -175,12 +184,15 @@ private struct HistoryView: View {
         if let id = selection, !visits.contains(where: { $0.id == id }) { selection = nil }
     }
 
+    /// Opens the page in a new tab and *stays* — the browser window is not pulled to the
+    /// front. A history window you are working through is a list you are still reading, and
+    /// keeping it key is also what leaves ⌫ pointed at the row you just clicked.
     private func open(_ visit: Visit) {
         selection = visit.id
+        focus = .list
         guard let url = URL(string: visit.url) else { return }
-        let store = Windows.current ?? Windows.open()
-        store.newTab(url)
-        store.window?.makeKeyAndOrderFront(nil)
+        (Windows.current ?? Windows.open()).newTab(url)
+        axAnnounce("Opened \(visit.display) in a new tab.")
     }
 
     private func delete(_ visit: Visit) {

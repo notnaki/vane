@@ -593,6 +593,13 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     ])
     root.addItem(window)
     NSApp.windowsMenu = window.submenu
+    // AppKit files a window into this menu as it is ordered front — and the menu is thrown
+    // away and rebuilt every time a checkmark moves, taking the list with it. Saying it
+    // again about every window is what keeps the list there; `changeWindowsItem` adds or
+    // updates, so repeating it cannot double anything up.
+    for w in NSApp.windows where !w.isExcludedFromWindowsMenu && !w.title.isEmpty {
+        NSApp.changeWindowsItem(w, title: w.title, filename: false)
+    }
     let help = menu("Help", [
         item(.vaneHelp) {
             if let u = URL(string: "https://github.com/notnaki/vane") { NSWorkspace.shared.open(u) }
