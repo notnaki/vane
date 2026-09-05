@@ -666,6 +666,15 @@ private final class DropWellView: NSView {
     override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { update(sender) }
     override func draggingExited(_ sender: (any NSDraggingInfo)?) { onZone?(nil) }
 
+    /// Released over the middle of the card: `update` answered `[]` there, so AppKit refuses
+    /// the drop and `performDragOperation` never runs — but the drag is over all the same,
+    /// and the flag that says otherwise is what keeps this very view mounted over the page.
+    /// Next turn, not now, so a drop AppKit is still delivering elsewhere can read it first.
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        onZone?(nil)
+        DispatchQueue.main.async { MainActor.assumeIsolated { Dragging.shared.end() } }
+    }
+
     /// `onDrop` ends the drag first and answers afterwards — a delegate that reads the flag
     /// and then refuses leaves the drag running for ever, and this one refuses the whole
     /// middle of the card.
