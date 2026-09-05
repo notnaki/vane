@@ -65,6 +65,13 @@ import SwiftUI
         NSApp.activate()
     }
 
+    /// Open straight at one pane — Help ▸ Keyboard Shortcuts, and anything else that means
+    /// "the setting you are after is over there".
+    static func show(tab: String) {
+        show()
+        selection.id = tab
+    }
+
     /// The title bar names the pane you are looking at, the way Arc's and System Settings'
     /// do — the tab bar is icons, so the title is where the full word lives.
     static func retitle(_ title: String) { window?.title = title }
