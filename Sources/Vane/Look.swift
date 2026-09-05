@@ -120,6 +120,10 @@ enum Look {
     static let swatch: CGFloat = 24
     static let themeWidth: CGFloat = swatch * 7 + inset * 6 + inset * 4
 
+    /// The Site Control Center popover. Wide enough for "Picture in Picture" and its switch
+    /// on one line, and no wider — it hangs off the address pill, not off the window.
+    static let siteWidth: CGFloat = 300
+
     static let text = Font.system(size: 13)
     /// A sidebar row's title, the space's name, New Tab: Arc sets these a point larger than
     /// body ("Vesta macOS Terminal" is 288px wide at 2x — 14 regular to the pixel).

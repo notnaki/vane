@@ -51,6 +51,33 @@ import WebKit
         defaults.set(allow, forKey: key(host: host, type: type))
     }
 
+    /// What this site may do with one device, counting the pair grant that covers it. A
+    /// site that once said yes to "camera and microphone" *has* said yes to the camera, and
+    /// the Site Control Center would be lying if it showed that row as unanswered.
+    static func effective(host: String, type: WKMediaCaptureType) -> Bool? {
+        remembered(host: host, type: type) ?? remembered(host: host, type: .cameraAndMicrophone)
+    }
+
+    /// The Site Control Center's three answers: Allow, Block, or nil for "ask me again".
+    ///
+    /// The pair grant is split into two single answers on the way through. It is its own
+    /// key, so leaving it in place would let a long-forgotten yes-to-both quietly outvote a
+    /// Block chosen here the next time the page asked for both at once — and simply
+    /// deleting it would silently revoke the *other* device's answer, which the user did
+    /// not touch.
+    static func set(host: String, type: WKMediaCaptureType, answer: Bool?) {
+        guard !host.isEmpty else { return }
+        if let pair = remembered(host: host, type: .cameraAndMicrophone) {
+            for kind in [WKMediaCaptureType.camera, .microphone]
+            where remembered(host: host, type: kind) == nil {
+                remember(host: host, type: kind, allow: pair)
+            }
+            defaults.removeObject(forKey: key(host: host, type: .cameraAndMicrophone))
+        }
+        if let answer { remember(host: host, type: type, allow: answer) }
+        else { defaults.removeObject(forKey: key(host: host, type: type)) }
+    }
+
     /// The whole decision for `WKUIDelegate`. Returns `.grant`/`.deny` only — never
     /// `.prompt`, which would hand the question back to WebKit, which has nowhere to put it.
     static func decide(origin: WKSecurityOrigin, type: WKMediaCaptureType) async -> WKPermissionDecision {
@@ -58,7 +85,7 @@ import WebKit
         // A blank host means a file:// or opaque origin — there is nothing to remember an
         // answer against and nothing to name in the prompt, so refuse rather than mislead.
         guard !host.isEmpty else { return .deny }
-        if let known = remembered(host: host, type: type) { return known ? .grant : .deny }
+        if let known = effective(host: host, type: type) { return known ? .grant : .deny }
 
         let alert = NSAlert()
         alert.messageText = "Allow “\(host)” to \(phrase(type))?"
@@ -203,6 +230,43 @@ import WebKit
         results.append(("...with what it was answered about, and what the answer was",
                         listed.contains { $0.host == "denied.example" && $0.what == "Microphone"
                                           && $0.allowed == false }))
+
+        // The Site Control Center's three-way answer, and the pair grant it has to unpick.
+        resetAll()
+        set(host: "panel.example", type: .camera, answer: true)
+        results.append(("Allow from the site panel round-trips",
+                        remembered(host: "panel.example", type: .camera) == true))
+        set(host: "panel.example", type: .camera, answer: false)
+        results.append(("Block overwrites an Allow rather than adding to it",
+                        remembered(host: "panel.example", type: .camera) == false))
+        set(host: "panel.example", type: .camera, answer: nil)
+        results.append(("Ask forgets the answer, so the site is asked again",
+                        remembered(host: "panel.example", type: .camera) == nil))
+        results.append(("…and only that one, not the whole site",
+                        { set(host: "panel.example", type: .microphone, answer: true)
+                          set(host: "panel.example", type: .camera, answer: nil)
+                          return remembered(host: "panel.example", type: .microphone) == true }()))
+
+        resetAll()
+        remember(host: "pair.example", type: .cameraAndMicrophone, allow: true)
+        results.append(("a pair grant answers for the camera on its own",
+                        effective(host: "pair.example", type: .camera) == true))
+        results.append(("…and for the microphone",
+                        effective(host: "pair.example", type: .microphone) == true))
+        results.append(("…but a single answer beats it",
+                        { remember(host: "pair.example", type: .camera, allow: false)
+                          return effective(host: "pair.example", type: .camera) == false }()))
+        resetAll()
+        remember(host: "pair.example", type: .cameraAndMicrophone, allow: true)
+        set(host: "pair.example", type: .camera, answer: false)
+        results.append(("blocking one device splits the pair instead of leaving it to outvote",
+                        remembered(host: "pair.example", type: .cameraAndMicrophone) == nil))
+        results.append(("…the blocked device is blocked",
+                        effective(host: "pair.example", type: .camera) == false))
+        results.append(("…and the untouched one keeps the yes it was given",
+                        effective(host: "pair.example", type: .microphone) == true))
+        results.append(("a site with no host cannot be answered for",
+                        { set(host: "", type: .camera, answer: true); return all().allSatisfy { !$0.host.isEmpty } }()))
 
         resetAll()
         results.append(("resetAll forgets everything",

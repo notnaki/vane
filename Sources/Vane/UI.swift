@@ -448,7 +448,6 @@ private struct LiveAddressPill: View {
                  reader: tab.readerAvailable || Reader.isOn(tab), readerOn: Reader.isOn(tab),
                  insecure: PillState.insecure(scheme: scheme, onlySecureContent: tab.secureContent,
                                               trusted: tab.certificateTrusted),
-                 insecureGlyph: PillState.glyph(scheme: scheme),
                  zoom: PillState.zoomLabel(tab.zoom))
     }
 
@@ -469,9 +468,8 @@ private struct PillBody: View {
     let address: String
     let reader: Bool
     let readerOn: Bool
-    /// Arc's warning on a page that is not secure; nothing at all on one that is.
+    /// Arc's warning on a page that is not secure; a plain lock on one that is.
     var insecure = false
-    var insecureGlyph = "lock.slash"
     /// "125%" while the page is zoomed, nil at 100 %. Clicking it puts the page back.
     var zoom: String?
     @State private var hovering = false
@@ -507,13 +505,13 @@ private struct PillBody: View {
         // The two glyphs are only drawn on hover, so the actions they stand for have to be
         // on the pill itself — a pointer gesture is not a route VoiceOver has.
         .accessibilityAction(named: "Copy Link") { copyLink() }
-        .accessibilityAction(named: "Site Settings") { SettingsWindow.show() }
+        .accessibilityAction(named: "Browser Settings") { SettingsWindow.show() }
         .accessibilityAction(named: "Actual Size") { if let tab, zoom != nil { Zoom.reset(tab) } }
     }
 
     private var content: some View {
         HStack(spacing: 8) {
-            if insecure { InsecureGlyph(name: insecureGlyph) }
+            SiteGlyph(tab: tab)
             if reader, let tab { ReaderGlyph(tab: tab, on: readerOn) }
             // Secondary ink, the way Arc sets the host (179 on 84): the address is a
             // label for the page, not a title among titles.
@@ -574,23 +572,47 @@ private struct PillHoverGlyphs: View {
             .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
             .accessibilityLabel("Copy Link")
         Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
-            // ponytail: the whole settings window, not a per-site sheet. Site settings
-            // do not exist yet; when they do, this is the one caller to change.
+            // Browser-wide, not per-site: per-site lives in the Site Control Center on the
+            // pill's leading glyph (SiteControl.swift), which is where Arc keeps it.
             .disabled(!enabled)
-            .help("Site Settings")
-            .accessibilityLabel("Site Settings")
+            .help("Browser Settings")
+            .accessibilityLabel("Browser Settings")
     }
 }
 
-/// Arc's "not secure" mark, before the host. Split out of `PillBody` only to keep its one
-/// expression inside what the type-checker will finish.
-private struct InsecureGlyph: View {
-    let name: String
+/// Arc's site mark, before the host, and the button that opens the Site Control Center.
+/// Always drawn — a lock, a broken lock, or a globe with no page — because the sidebar's
+/// chrome does not come and go, and a control the user has to make a page insecure to find
+/// is not a control.
+private struct SiteGlyph: View {
+    let tab: Tab?
+    /// So the badge lights up the moment a permission prompt is answered, which happens in
+    /// a modal alert with no route back into this view. See `SiteChanges`.
+    @ObservedObject private var changes = SiteChanges.shared
+    @State private var open = false
+
     var body: some View {
-        Image(systemName: name)
-            .help(name == "lock.slash" ? "Not secure: this page is not encrypted."
-                                       : "Not secure: this page has a certificate or content problem.")
-            .accessibilityLabel("Not secure")
+        let model = SiteControlModel(tab)
+        Button { open.toggle() } label: {
+            Image(systemName: model.glyph)
+                // Tiny on purpose: it says "this site holds a grant", and anything bigger
+                // would read as a warning about the connection instead.
+                .overlay(alignment: .topTrailing) {
+                    if model.badge != nil {
+                        Circle().fill(Color.accentColor).frame(width: 5, height: 5)
+                            .offset(x: 3, y: -2)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .disabled(tab == nil)
+        .help(model.siteless ? "Site Controls" : "\(model.title) — \(model.connection)")
+        .accessibilityLabel("Site Controls")
+        .accessibilityValue([model.connection, model.badge].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityHint("Shows what this site is allowed to do, and its zoom, extensions and data.")
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            if let tab { SiteControlPopover(tab: tab) }
+        }
     }
 }
 
