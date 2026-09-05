@@ -215,11 +215,17 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         guard let s = Windows.current else { return }
         tidyTask = Task { @MainActor in
             guard let groups = await TidyTabs.plan(for: s) else { return }
+            let before = s.tabs.map(\.id)
             TidyTabs.apply(groups, to: s)
             rebuild()                     // so Undo Tidy Tabs enables
-            // Only if anything moved: a tidy that changed nothing has nothing to undo.
-            if TidyTabs.canUndo(s) {
-                Toasts.show("Tidied tabs", action: ("Undo", { TidyTabs.undo(s); rebuild() }), in: s)
+            // Only if anything moved: a tidy that changed nothing has nothing to undo, and
+            // `canUndo` would still say yes for an earlier tidy nobody undid.
+            if s.tabs.map(\.id) != before {
+                Toasts.show("Tidied tabs", action: ("Undo", { [weak s] in
+                    guard let s else { return }
+                    TidyTabs.undo(s)
+                    rebuild()
+                }), in: s)
             }
         }
     }

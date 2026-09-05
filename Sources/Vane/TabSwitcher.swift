@@ -15,12 +15,14 @@ struct TabSwitcher: Equatable {
     /// The highlighted slot.
     private(set) var index: Int
 
-    /// nil when there is nothing to move to: a lone tab is not a choice. `startAt` is the
-    /// slot the first press lands on — 1 for ⌃⇥, the last for ⌃⇧⇥, 0 when no tab is showing.
-    init?(recent ids: [UUID], startAt: Int) {
-        guard ids.indices.contains(startAt) else { return nil }
+    /// The first press: ⌃⇥ (`delta` +1) lands on the previous tab, ⌃⇧⇥ (−1) on the oldest,
+    /// and with no tab showing either lands on the most recent. nil when there is nothing to
+    /// move to — a lone tab is not a choice in either direction, unless nothing is showing
+    /// and it is the one thing there is to show.
+    init?(recent ids: [UUID], current: UUID?, delta: Int) {
+        guard !ids.isEmpty, ids.count > 1 || current == nil else { return nil }
         self.ids = ids
-        index = startAt
+        index = current == nil ? 0 : (delta > 0 ? 1 : ids.count - 1)
     }
 
     var highlighted: UUID { ids[index] }
@@ -62,6 +64,7 @@ struct TabSwitcher: Equatable {
     /// The window the session belongs to; its `WebCard` is the one that draws the row.
     private(set) weak var store: TabStore?
     private var monitors: [Any] = []
+    private var resign: NSObjectProtocol?
     private var reveal: Task<Void, Never>?
 
     /// ⌃⇥ (+1) and ⌃⇧⇥ (−1): open on the first press, move on every one after.
@@ -69,13 +72,13 @@ struct TabSwitcher: Equatable {
         if state != nil { state?.advance(by: delta); return }
         guard let s = Windows.current else { return }
         let ids = TabSwitcher.recent(s.tabs.map { ($0.id, $0.lastActive) }, current: s.current)
-        let start = s.current == nil ? 0 : (delta > 0 ? 1 : ids.count - 1)
-        guard let fresh = TabSwitcher(recent: ids, startAt: start) else { return }
+        guard let fresh = TabSwitcher(recent: ids, current: s.current, delta: delta) else { return }
         store = s
         state = fresh
         reveal = Task { [weak self] in
             try? await Task.sleep(for: .seconds(Look.switcherDelay))
-            if !Task.isCancelled { self?.shown = true }
+            guard !Task.isCancelled else { return }
+            withAnimation(Motion.reduced ? nil : Look.appear) { self?.shown = true }
         }
         monitors = [
             NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -84,12 +87,23 @@ struct TabSwitcher: Equatable {
             },
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 guard let self, state != nil else { return event }
-                if event.keyCode == 53 { cancel(); return nil }                       // Escape
+                // ⌃ was let go where no flagsChanged reached us (over another app's window,
+                // say): the session is stale, so settle it and let the key through.
+                guard NSEvent.modifierFlags.contains(.control), store != nil else {
+                    commit()
+                    return event
+                }
+                if event.charactersIgnoringModifiers == "\u{1b}" { cancel(); return nil }   // Escape
                 if event.modifierFlags.contains(.control),
                    event.charactersIgnoringModifiers == "w" { closeHighlighted(); return nil }
                 return event
             },
         ].compactMap { $0 }
+        // ⌘⇥ away while ⌃ is still down: the release happens in another app and this
+        // process never hears it, so leaving is the release.
+        resign = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.cancel() } }
     }
 
     /// ⌃ came up: go to the highlighted tab.
@@ -103,19 +117,25 @@ struct TabSwitcher: Equatable {
     func cancel() { end() }
 
     /// ⌃W with the row up: Arc's way of clearing out the tabs you were just in without
-    /// leaving the switcher. Same rule as ⌘W — a Today tab is archived, a kept one parked.
+    /// leaving the switcher. Same rule as ⌘W — a Today tab is archived and its card goes; a
+    /// favourite or a pinned tab is only parked, and is still a tab to switch to.
     func closeHighlighted() {
-        guard let id = state?.highlighted, let store else { return }
+        guard let id = state?.highlighted, let store,
+              let tab = store.tabs.first(where: { $0.id == id }) else { return }
         store.archive(id)
-        if state?.removeHighlighted() != true { end() }
+        if tab.kind == .today, state?.removeHighlighted() != true { end() }
     }
 
     private func end() {
         monitors.forEach(NSEvent.removeMonitor)
         monitors = []
+        if let resign { NotificationCenter.default.removeObserver(resign) }
+        resign = nil
         reveal?.cancel()
-        state = nil
-        shown = false
+        withAnimation(Motion.reduced ? nil : Look.appear) {
+            state = nil
+            shown = false
+        }
         store = nil
     }
 }
@@ -127,7 +147,6 @@ struct TabSwitcher: Equatable {
 struct TabSwitcherOverlay: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var switching = TabSwitching.shared
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if switching.shown, switching.store === store, let state = switching.state {
@@ -144,7 +163,6 @@ struct TabSwitcherOverlay: View {
             .hairline(radius: Look.barRadius, Look.barStroke)
             .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
             .transition(.opacity.combined(with: .scale(scale: Look.appearScale)))
-            .animation(reduceMotion ? nil : Look.appear, value: switching.shown)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Recent tabs")
             .accessibilityHint("Keep holding Control and press Tab to move. Release Control to switch.")
@@ -188,10 +206,13 @@ extension TabSwitcher {
             ("the rest follow by last use, newest first", Array(mru.dropFirst()) == [b, f, d, a]),
             ("five cards, never more", mru.count == 5 && !mru.contains(e)),
             ("no showing tab: plain MRU", recent(tabs, current: nil).first == b),
-            ("a lone tab is not a choice", TabSwitcher(recent: [a], startAt: 1) == nil),
-            ("no tabs at all is not a choice", TabSwitcher(recent: [], startAt: 0) == nil),
+            ("a lone tab is not a choice", TabSwitcher(recent: [a], current: a, delta: 1) == nil),
+            ("… nor backwards", TabSwitcher(recent: [a], current: a, delta: -1) == nil),
+            ("with nothing showing, a lone tab is the one card",
+             TabSwitcher(recent: [a], current: nil, delta: -1)?.highlighted == a),
+            ("no tabs at all is not a choice", TabSwitcher(recent: [], current: nil, delta: 1) == nil),
         ]
-        guard var s = TabSwitcher(recent: [a, b, c], startAt: 1) else {
+        guard var s = TabSwitcher(recent: [a, b, c], current: a, delta: 1) else {
             return out + [("a session opens on the previous tab", false)]
         }
         out.append(("a session opens on the previous tab: the two-tab toggle", s.highlighted == b))
@@ -204,9 +225,9 @@ extension TabSwitcher {
         s.advance(by: -7)
         out.append(("any stride wraps", s.highlighted == b))
         out.append(("⌃⇧⇥ first press lands on the oldest",
-                    TabSwitcher(recent: [a, b, c], startAt: 2)?.highlighted == c))
+                    TabSwitcher(recent: [a, b, c], current: a, delta: -1)?.highlighted == c))
         // ⌃W: [a, b, c] with b highlighted → [a, c], c under the highlight.
-        s = TabSwitcher(recent: [a, b, c], startAt: 1)!
+        s = TabSwitcher(recent: [a, b, c], current: a, delta: 1)!
         out.append(("closing the highlighted tab keeps the slot, so the next card slides under",
                     s.removeHighlighted() && s.highlighted == c && s.ids == [a, c]))
         out.append(("closing the last card steps the highlight back",

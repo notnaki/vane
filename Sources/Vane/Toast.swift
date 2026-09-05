@@ -17,6 +17,10 @@ import SwiftUI
         let id = UUID()
         let text: String
         let action: (title: String, run: @MainActor () -> Void)?
+        /// The window it happened in, so only that window's sidebar draws it. On the toast
+        /// rather than the store: a toast from a second window must not drag the one
+        /// already showing into the wrong sidebar.
+        var owner: ObjectIdentifier? = nil
     }
 
     /// The pure part: what is showing and what is waiting, so `check()` can prove the
@@ -40,7 +44,6 @@ import SwiftUI
     static let shared = Toasts()
 
     @Published private(set) var queue = Queue()
-    private(set) weak var owner: TabStore?
     /// The pointer is on the pill: hold it. Set by the host's `onHover`.
     var hovering = false { didSet { if !hovering { schedule() } } }
     private var timer: Task<Void, Never>?
@@ -51,9 +54,8 @@ import SwiftUI
     /// window, which is where the shortcut was pressed.
     static func show(_ text: String, action: (title: String, run: @MainActor () -> Void)? = nil,
                      in store: TabStore? = Windows.current) {
-        shared.owner = store
         let wasEmpty = shared.queue.current == nil
-        shared.queue.push(Toast(text: text, action: action))
+        shared.queue.push(Toast(text: text, action: action, owner: store.map(ObjectIdentifier.init)))
         if wasEmpty { shared.schedule() }
     }
 
@@ -66,6 +68,9 @@ import SwiftUI
 
     func dismiss(_ toast: Toast) {
         guard queue.current?.id == toast.id else { return }
+        // The pill under the pointer is going; whatever comes next is not being hovered,
+        // and `onHover(false)` never fires for a view that was removed.
+        hovering = false
         queue.dismiss()
         schedule()
     }
@@ -91,7 +96,7 @@ struct ToastHost: View {
 
     var body: some View {
         ZStack {
-            if toasts.owner === store, let toast = toasts.current {
+            if let toast = toasts.current, toast.owner == ObjectIdentifier(store) {
                 HStack(spacing: Look.inset) {
                     Text(toast.text)
                         .font(Look.rowText)
@@ -111,8 +116,8 @@ struct ToastHost: View {
                 .padding(.trailing, toast.action == nil ? Look.pillInset : Look.inset / 2)
                 .frame(height: Look.toastHeight)
                 .background(Look.barFill, in: .capsule)
+                .background(tint.opacity(Look.toastTint), in: .capsule)
                 .background(Look.barMaterial, in: .capsule)
-                .overlay { tint.opacity(Look.toastTint).clipShape(.capsule).allowsHitTesting(false) }
                 .hairline(radius: Look.toastHeight / 2, Look.barStroke)
                 .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
                 .onHover { toasts.hovering = $0 }
