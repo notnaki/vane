@@ -600,6 +600,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @Published var renamingFolder: UUID? {
         didSet { if renamingFolder != nil { renamingTab = nil } }
     }
+    /// The window's split views: 2–4 of the tabs above shown side by side in one page card
+    /// and as one sidebar row. Ids, not tabs, so a split survives its panes moving section,
+    /// being renamed or being suspended. Everything done to them is in SplitView.swift.
+    @Published var splits: [Split] = []
     /// Counts the archives that land in one burst, so Clear can sweep rows out one after
     /// another. See `archive`.
     private let bursts = Motion.Burst()
@@ -876,7 +880,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         }
         if renamingTab == id { renamingTab = nil }
         extensions.sync()
-        if current == id { current = outcome.next.map { tabs[$0].id } }
+        // A split loses a pane with the tab, and a split down to one pane is a plain tab
+        // again. Its remaining pane is a better answer than "the neighbouring row": the user
+        // is looking at the rest of the split, not at the list.
+        let pane = dropPane(id)
+        if current == id { current = pane ?? outcome.next.map { tabs[$0].id } }
     }
 
     /// What closing the tab at `i` does, as pure index math over the strip's kinds. A

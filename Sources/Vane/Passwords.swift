@@ -365,7 +365,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("link gestures", TabActions.check),
                                ("recent tab switcher", TabSwitcher.check),
                                ("toasts", Toasts.check),
-                               ("pinned folders", Pins.check)] {
+                               ("pinned folders", Pins.check),
+                               ("split view", Split.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }

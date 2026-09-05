@@ -79,6 +79,22 @@ enum Look {
     static let findFieldWidth: CGFloat = 180
     static let findCountWidth: CGFloat = 64
 
+    // Split view. Arc's panes are separate sheets inside the one card with a hairline down
+    // the gap between them, and the gap is what there is to aim the divider drag at: a 1pt
+    // target between two web views is not a target.
+    static let splitDivider: CGFloat = 1
+    static let splitGap: CGFloat = 9
+    /// A pane's own corner: the card's, one step tighter, because it sits inside it.
+    static let paneRadius: CGFloat = cardRadius - 2
+    /// The frame round the pane the keyboard is in, and the band a drop will land in. The
+    /// accent rather than `ink`: it is the one thing on the page that is the app talking.
+    static let paneFrame = Color.accentColor.opacity(0.5)
+    static let paneFrameWidth: CGFloat = 2
+    /// How much of the card's edge takes a dragged tab as a new pane.
+    static let splitDropBand: CGFloat = 0.25
+    /// How far a split row's favicons overlap each other.
+    static let splitIconLap: CGFloat = 5
+
     // Settings. Arc's rows are 43 (86px), its link rows 34, its list rows 32 on a 40 pitch.
     static let settingsRow: CGFloat = 43
     /// From a card's edge to its row content, and where its dividers start and stop.
