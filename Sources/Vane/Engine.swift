@@ -46,6 +46,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// Making noise the user can hear. Muting the tab clears it.
     @Published var audible = false
     @Published var favicon: NSImage?
+    /// The link under the pointer, for the status bar. nil when nothing is hovered.
+    @Published var hoveredLink: String?
+    /// `web.pageZoom`, republished: the pill's zoom chip. Zoom.swift writes it.
+    @Published var zoom = 1.0
+    /// WebKit's `hasOnlySecureContent` and whether `serverTrust` evaluates — the pill's
+    /// insecure glyph. Both start true and are only ever set by a live page.
+    @Published var secureContent = true
+    @Published var certificateTrusted = true
     /// Which section of the sidebar this tab is in. The strip is sorted by it.
     @Published var kind: TabKind = .today
     /// Favourites and Pinned both *stay*: neither auto-archives, ⌘W leaves both where they
@@ -104,6 +112,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         cfg.userContentController.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
+                         forMainFrameOnly: false))
         return WKWebView(frame: .zero, configuration: cfg)
     }
 
@@ -115,6 +126,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         web.configuration.userContentController.add(WeakHandler(self), name: PictureInPicture.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), name: StatusBar.messageName)
+        // A fresh web view has no page to be insecure about.
+        secureContent = true
+        certificateTrusted = true
+        hoveredLink = nil
         web.customUserAgent = Settings.userAgent
         web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
         web.allowsBackForwardNavigationGestures = true
@@ -150,6 +166,20 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             },
             web.observe(\.canGoForward, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated { self?.canGoForward = w.canGoForward }
+            },
+            web.observe(\.hasOnlySecureContent, options: [.new]) { [weak self] w, _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.suspended else { return }
+                    self.secureContent = w.hasOnlySecureContent
+                }
+            },
+            // A certificate the user clicked through is still a certificate that failed:
+            // WebKit hands the trust back, and the pill says so for as long as it is shown.
+            web.observe(\.serverTrust, options: [.new]) { [weak self] w, _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.suspended else { return }
+                    self.certificateTrusted = w.serverTrust.map { SecTrustEvaluateWithError($0, nil) } ?? true
+                }
             },
         ]
         // attach() re-runs on resume, so this covers a waking tab too.
@@ -189,6 +219,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PictureInPicture.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
         old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
         // ponytail: `old` is never deallocated — it survives at a high retain count, so
         // Tab.close() has to use `_close` SPI to give the process back. The retainer is
@@ -480,6 +511,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
+        if m.name == StatusBar.messageName { hoveredLink = StatusBar.link(from: m.body); return }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
             if body["gone"] as? Bool == true { Previews.shared.cancel(); return }
@@ -544,6 +576,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
 @MainActor final class TabStore: ObservableObject {
     @Published var tabs: [Tab] = []
+    /// The tab whose row is a name field right now. One at a time, per window.
+    @Published var renamingTab: Tab.ID?
+    /// Counts the archives that land in one burst, so Clear can sweep rows out one after
+    /// another. See `archive`.
+    private let bursts = Motion.Burst()
     @Published var current: Tab.ID? {
         didSet {
             // Selecting a tab is what wakes it, and it has to happen here rather than in a
@@ -726,7 +763,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // the bottom of a list of thirty tabs — and it is what the user just asked for, so
         // it takes focus where a ⌘-click does not.
         t.onOpenBeside = { [weak self] u, focus in self?.openBeside(u, focus: focus) }
-        tabs.append(t)
+        Motion.list { tabs.append(t) }
         current = t.id
         extensions.sync()
         return t
@@ -741,6 +778,18 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// already and stays exactly where it is — `close` parks it — so nothing is archived
     /// for it either; that is the whole difference between the sections.
     func archive(_ id: Tab.ID) {
+        // Several archives in one synchronous burst — Clear, Archive Tabs Below, the
+        // auto-archive sweep — leave one after another, the way Arc sweeps Today away,
+        // rather than all in the same frame. A lone ⌘W is a burst of one and goes at once.
+        let delay = Motion.sweepDelay(bursts.next(), reduced: Motion.reduced)
+        guard delay > 0 else { archiveNow(id); return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            self?.archiveNow(id)      // a no-op if the tab has gone in the meantime
+        }
+    }
+
+    private func archiveNow(_ id: Tab.ID) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
         if tab.kind == .today, !isPrivate, let u = tab.currentURL,
            u.scheme?.hasPrefix("http") == true {
@@ -766,9 +815,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // Nothing is "closed", so nothing is pushed for Reopen Closed Tab either.
         if !outcome.keep {
             if !isPrivate { ClosedTabs.push(tab.currentURL) }
-            tabs.remove(at: i)
+            Motion.list { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
         }
+        if renamingTab == id { renamingTab = nil }
         extensions.sync()
         if current == id { current = outcome.next.map { tabs[$0].id } }
     }
@@ -816,11 +866,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// New Tab row rather than at the bottom of a long list.
     func move(_ id: Tab.ID, to kind: TabKind) {
         guard let i = tabs.firstIndex(where: { $0.id == id }), tabs[i].kind != kind else { return }
-        let tab = tabs.remove(at: i)
-        setKind(tab, kind)
-        let dest = TabStore.clampedDestination(others: tabs.map(\.kind), moving: kind,
-                                               to: kind == .today ? 0 : tabs.count)
-        tabs.insert(tab, at: dest)
+        Motion.list {
+            let tab = tabs.remove(at: i)
+            setKind(tab, kind)
+            let dest = TabStore.clampedDestination(others: tabs.map(\.kind), moving: kind,
+                                                   to: kind == .today ? 0 : tabs.count)
+            tabs.insert(tab, at: dest)
+        }
         savePins()
     }
 
@@ -851,13 +903,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
               let from = tabs.firstIndex(where: { $0.id == id }),
               let to = tabs.firstIndex(where: { $0.id == target }) else { return }
         let want = tabs[to].kind
-        let tab = tabs.remove(at: from)
-        let touchesSections = tab.stays || want != .today
-        setKind(tab, want)
-        let dest = TabStore.clampedDestination(
-            others: tabs.map(\.kind), moving: want,
-            to: TabStore.insertionIndex(from: from, target: to, after: after))
-        tabs.insert(tab, at: min(dest, tabs.count))
+        let touchesSections = Motion.list {
+            let tab = tabs.remove(at: from)
+            let touches = tab.stays || want != .today
+            setKind(tab, want)
+            let dest = TabStore.clampedDestination(
+                others: tabs.map(\.kind), moving: want,
+                to: TabStore.insertionIndex(from: from, target: to, after: after))
+            tabs.insert(tab, at: min(dest, tabs.count))
+            return touches
+        }
         if touchesSections { savePins() }
     }
 

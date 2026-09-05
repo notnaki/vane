@@ -78,13 +78,17 @@ extension TabStore {
     /// they were, which is the whole point of ⌘-click.
     func openBeside(_ url: URL, focus: Bool) {
         let opener = current
-        let tab = newBlankTab()          // appends, and takes focus
-        tab.web.load(URLRequest(url: url))
-        if let from = tabs.firstIndex(where: { $0.id == tab.id }) {
-            let moved = tabs.remove(at: from)
-            let dest = TabStore.insertionIndexBeside(
-                current: tabs.firstIndex { $0.id == opener }, kinds: tabs.map(\.kind))
-            tabs.insert(moved, at: min(dest, tabs.count))
+        // One animation for the append and the move, so the row grows in beside its opener
+        // rather than appearing at the bottom and flying up.
+        Motion.list {
+            let tab = newBlankTab()          // appends, and takes focus
+            tab.web.load(URLRequest(url: url))
+            if let from = tabs.firstIndex(where: { $0.id == tab.id }) {
+                let moved = tabs.remove(at: from)
+                let dest = TabStore.insertionIndexBeside(
+                    current: tabs.firstIndex { $0.id == opener }, kinds: tabs.map(\.kind))
+                tabs.insert(moved, at: min(dest, tabs.count))
+            }
         }
         if !focus {
             current = opener

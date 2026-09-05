@@ -364,7 +364,7 @@ import Foundation
         saved = saved.filter { live.contains($0.key) }
         saved[ObjectIdentifier(store)] = before
         let byID = Dictionary(uniqueKeysWithValues: store.tabs.map { ($0.id, $0) })
-        store.tabs = next.compactMap { byID[$0] }
+        Motion.list { store.tabs = next.compactMap { byID[$0] } }
         // `store.current` is untouched on purpose: it is an id, so the active tab is still
         // the active tab, and assigning it would re-fire the didSet that resumes tabs.
     }
@@ -387,7 +387,7 @@ import Foundation
         let next = restore(saved: before, current: store.tabs.map(\.id))
         guard next != store.tabs.map(\.id) else { return }
         let byID = Dictionary(uniqueKeysWithValues: store.tabs.map { ($0.id, $0) })
-        store.tabs = next.compactMap { byID[$0] }
+        Motion.list { store.tabs = next.compactMap { byID[$0] } }
     }
 
     // MARK: - check

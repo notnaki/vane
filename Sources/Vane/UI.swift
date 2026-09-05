@@ -234,6 +234,11 @@ private struct WebCard: View {
             .padding(.horizontal, 14)
             .padding(.top, 10)
         }
+        // The status bar: the hovered link's url, bottom-left, inside the card's clip the
+        // way Arc's sits on the page rather than under it.
+        .overlay(alignment: .bottomLeading) {
+            if let tab = store.active { StatusBarView(tab: tab).padding(Look.statusInset) }
+        }
         .clipShape(.rect(cornerRadius: Look.cardRadius))
         // No inset on the leading edge while the sidebar is docked: the sidebar's own
         // padding already leaves the gap, and doubling it reads as a misaligned card.
@@ -276,6 +281,9 @@ private struct Sidebar: View {
     @ObservedObject private var sidebar = SidebarWidth.shared
     /// The scroll viewport's height, so its content can be made to fill it. See below.
     @State private var scrollHeight: CGFloat = 0
+    /// One geometry group for the whole strip, so a tab changing section — a row becoming a
+    /// tile, a tile a row — travels from where it was to where it is going.
+    @Namespace private var strip
 
     var body: some View {
         VStack(spacing: Look.inset) {
@@ -307,6 +315,7 @@ private struct Sidebar: View {
             .spaceSwipe(store)
             BottomRow()
         }
+        .environment(\.strip, strip)
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.footerInset)
         .padding(.top, Look.topInset)
@@ -423,8 +432,13 @@ private struct LiveAddressPill: View {
     @ObservedObject var tab: Tab
 
     var body: some View {
+        let scheme = tab.currentURL?.scheme
         PillBody(tab: tab, host: host, address: tab.address,
-                 reader: tab.readerAvailable || Reader.isOn(tab), readerOn: Reader.isOn(tab))
+                 reader: tab.readerAvailable || Reader.isOn(tab), readerOn: Reader.isOn(tab),
+                 insecure: PillState.insecure(scheme: scheme, onlySecureContent: tab.secureContent,
+                                              trusted: tab.certificateTrusted),
+                 insecureGlyph: PillState.glyph(scheme: scheme),
+                 zoom: PillState.zoomLabel(tab.zoom))
     }
 
     /// The host alone, the way Arc shows it — the scheme and `www.` are noise the user has
@@ -444,41 +458,16 @@ private struct PillBody: View {
     let address: String
     let reader: Bool
     let readerOn: Bool
+    /// Arc's warning on a page that is not secure; nothing at all on one that is.
+    var insecure = false
+    var insecureGlyph = "lock.slash"
+    /// "125%" while the page is zoomed, nil at 100 %. Clicking it puts the page back.
+    var zoom: String?
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 8) {
-            if reader, let tab {
-                Button { Reader.toggle(tab) } label: {
-                    Image(systemName: readerOn ? "doc.plaintext.fill" : "doc.plaintext")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(readerOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .help("Reader (⌥⌘R)")
-                .accessibilityLabel("Reader")
-                .accessibilityValue(readerOn ? "On" : "Off")
-            }
-            // Secondary ink, the way Arc sets the host (179 on 84): the address is a
-            // label for the page, not a title among titles.
-            Text(host).font(Look.text).lineLimit(1)
-            Spacer(minLength: 4)
-            // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
-            // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
-            // They sit past a Spacer, so arriving and leaving never moves the host.
-            if hovering {
-                Button { copyLink() } label: { Image(systemName: "link") }
-                    .disabled(tab == nil)
-                    .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
-                    .accessibilityLabel("Copy Link")
-                Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
-                    // ponytail: the whole settings window, not a per-site sheet. Site settings
-                    // do not exist yet; when they do, this is the one caller to change.
-                    .disabled(tab == nil)
-                    .help("Site Settings")
-                    .accessibilityLabel("Site Settings")
-            }
-        }
+        content
         .buttonStyle(.plain)
         .font(Look.pillGlyph)
         .foregroundStyle(Look.inkSecondary)
@@ -500,7 +489,7 @@ private struct PillBody: View {
         .help(address.isEmpty ? "Search or Enter URL" : address)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Address and Search")
-        .accessibilityValue(address.isEmpty ? "Empty" : address)
+        .accessibilityValue(axValue)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Opens the search bar to type a website address or a search.")
         .accessibilityAction { open() }
@@ -508,6 +497,31 @@ private struct PillBody: View {
         // on the pill itself — a pointer gesture is not a route VoiceOver has.
         .accessibilityAction(named: "Copy Link") { copyLink() }
         .accessibilityAction(named: "Site Settings") { SettingsWindow.show() }
+        .accessibilityAction(named: "Actual Size") { if let tab, zoom != nil { Zoom.reset(tab) } }
+    }
+
+    private var content: some View {
+        HStack(spacing: 8) {
+            if insecure { InsecureGlyph(name: insecureGlyph) }
+            if reader, let tab { ReaderGlyph(tab: tab, on: readerOn) }
+            // Secondary ink, the way Arc sets the host (179 on 84): the address is a
+            // label for the page, not a title among titles.
+            Text(host).font(Look.text).lineLimit(1)
+            Spacer(minLength: 4)
+            if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
+            // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
+            // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
+            // They sit past a Spacer, so arriving and leaving never moves the host.
+            if hovering { PillHoverGlyphs(enabled: tab != nil, copyLink: copyLink) }
+        }
+    }
+
+    /// The address, and the two things the glyph and the chip say about it.
+    private var axValue: String {
+        var s = address.isEmpty ? "Empty" : address
+        if insecure { s += ", not secure" }
+        if let zoom { s += ", zoomed to \(zoom)" }
+        return s
     }
 
     /// With a page, the bar opens on its address; with none, on nothing — and what is
@@ -519,6 +533,70 @@ private struct PillBody: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(u.absoluteString, forType: .string)
         axAnnounce("Link copied.")
+    }
+}
+
+/// The reader toggle, before the host.
+private struct ReaderGlyph: View {
+    let tab: Tab
+    let on: Bool
+    var body: some View {
+        Button { Reader.toggle(tab) } label: {
+            Image(systemName: on ? "doc.plaintext.fill" : "doc.plaintext")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+        .help("Reader (⌥⌘R)")
+        .accessibilityLabel("Reader")
+        .accessibilityValue(on ? "On" : "Off")
+    }
+}
+
+/// Copy Link and Site Settings, the two glyphs Arc's pill grows on hover.
+private struct PillHoverGlyphs: View {
+    let enabled: Bool
+    let copyLink: () -> Void
+    var body: some View {
+        Button { copyLink() } label: { Image(systemName: "link") }
+            .disabled(!enabled)
+            .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
+            .accessibilityLabel("Copy Link")
+        Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
+            // ponytail: the whole settings window, not a per-site sheet. Site settings
+            // do not exist yet; when they do, this is the one caller to change.
+            .disabled(!enabled)
+            .help("Site Settings")
+            .accessibilityLabel("Site Settings")
+    }
+}
+
+/// Arc's "not secure" mark, before the host. Split out of `PillBody` only to keep its one
+/// expression inside what the type-checker will finish.
+private struct InsecureGlyph: View {
+    let name: String
+    var body: some View {
+        Image(systemName: name)
+            .help(name == "lock.slash" ? "Not secure: this page is not encrypted."
+                                       : "Not secure: this page has a certificate or content problem.")
+            .accessibilityLabel("Not secure")
+    }
+}
+
+/// "125%" in the pill while the page is zoomed. A click is Actual Size.
+private struct ZoomChip: View {
+    let label: String
+    let tab: Tab
+    var body: some View {
+        Button { Zoom.reset(tab) } label: {
+            Text(label)
+                .font(Look.caption)
+                .padding(.horizontal, 5)
+                .frame(height: Look.chip - 6)
+                .background(Look.selected, in: .rect(cornerRadius: Look.chipRadius))
+        }
+        .help("Zoomed to \(label). Click for actual size (\(Keybindings.binding(for: .actualSize).display)).")
+        .accessibilityLabel("Zoom \(label)")
+        .accessibilityHint("Resets the page to actual size.")
     }
 }
 
@@ -543,7 +621,7 @@ private struct Favorites: View {
                                      count: SidebarWidth.favouriteColumns(pinned.count,
                                                                           width: sidebar.width)),
                       spacing: Look.inset) {
-                ForEach(pinned) { FavoriteTile(tab: $0) }
+                ForEach(pinned) { FavoriteTile(tab: $0).transition(.tileGrow) }
             }
             // The grid sits an `inset` above the space row, not a row gap.
             .padding(.bottom, Look.inset - Look.rowGap)
@@ -561,10 +639,20 @@ private struct FavoriteTile: View {
     @State private var side: DropSide?
     @State private var width: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.strip) private var strip
 
     var body: some View {
         let selected = store.current == tab.id
-        TabIcon(tab: tab, size: Look.tileIcon)
+        Group {
+            if store.renamingTab == tab.id {
+                // A tile has no title to edit in place, so the field takes the tile: the
+                // icon comes back with the name it was given.
+                RenameField(store: store, tab: tab, font: Look.text)
+                    .padding(.horizontal, Look.rowInset)
+            } else {
+                TabIcon(tab: tab, size: Look.tileIcon)
+            }
+        }
             .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
             // Hover steps the tile up to the selected fill, the way the address pill does:
             // a tile is a button, and a button that does not react reads as a label.
@@ -574,6 +662,7 @@ private struct FavoriteTile: View {
                 DropLine(on: side != nil, axis: .horizontal)
             }
             .animation(reduceMotion ? nil : Look.quick, value: hovering)
+            .inStrip(tab.id, strip)
             .contentShape(.rect)
             .onHover { hovering = $0 }
             .onTapGesture { store.current = tab.id }
@@ -583,7 +672,7 @@ private struct FavoriteTile: View {
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: tab, into: .favourite,
                                       axis: .horizontal, extent: width, side: $side))
-            .simultaneousGesture(TapGesture(count: 2).onEnded { TabActions.renameTab(tab) })
+            .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
             .contextMenu { TabMenu(store: store, tab: tab) }
             // One element per favourite, the way a tab reads: the title is the label, the
             // state is the value, and unpin/close are actions rather than hidden gestures.
@@ -592,7 +681,7 @@ private struct FavoriteTile: View {
             .accessibilityValue(tabState(tab, in: store))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             .accessibilityHint("Shows this tab.")
-            .accessibilityAction(named: "Rename Tab") { TabActions.renameTab(tab) }
+            .accessibilityAction(named: "Rename Tab") { store.renamingTab = tab.id }
             .accessibilityAction(named: "Unfavourite Tab") { store.toggleFavourite(tab.id) }
             .accessibilityAction(named: "Pin Tab") { store.move(tab.id, to: .pinned) }
             .accessibilityAction(named: "Close Tab") { store.close(tab.id) }
@@ -982,6 +1071,7 @@ private struct SpaceDots: View {
     @State private var theme = false
     /// Which dot a drag is over, so only that one lights up.
     @State private var dropTarget: UUID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1001,13 +1091,18 @@ private struct SpaceDots: View {
         let over = Binding(get: { dropTarget == space.id },
                            set: { dropTarget = $0 ? space.id : nil })
         Group {
+            // The dot grows into the icon and the old icon shrinks to a dot as the Space
+            // changes — Arc's footer morph, as a scale-and-fade both ways.
             if here {
                 Image(systemName: space.icon ?? "cloud").font(Look.small)
                     .foregroundStyle(Look.inkPrimary)
+                    .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
             } else {
                 Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
+                    .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
             }
         }
+        .animation(reduceMotion ? nil : Look.quick, value: here)
         .frame(width: Look.spaceDotHit, height: Look.spaceDotHit)
         .background(dropTarget == space.id ? Look.selected : .clear, in: .circle)
         .contentShape(.rect)
@@ -1041,7 +1136,7 @@ private struct PinnedTabs: View {
         // a drop on the space row, ⌘D, or a tab's own Pin action.
         if !pinned.isEmpty {
             VStack(spacing: Look.rowGap) {
-                ForEach(pinned) { TabRow(tab: $0) }
+                ForEach(pinned) { TabRow(tab: $0).transition(.rowCollapse) }
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Pinned Tabs")
@@ -1054,14 +1149,14 @@ private struct PinnedTabs: View {
 
 /// Every clickable line in the sidebar: an icon, a title, and whatever the row wants on the
 /// trailing edge. One shape so the list reads as one list.
-private struct SidebarRow<Leading: View, Trailing: View>: View {
+private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     let selected: Bool
     /// Secondary rather than primary type: "New Tab" is an action among places, and Arc
     /// sets it a step quieter than the tabs around it.
     var dimmed = false
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
-    @ViewBuilder let label: () -> Text
+    @ViewBuilder let label: () -> Label
     @ViewBuilder let trailing: () -> Trailing
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1099,7 +1194,7 @@ private struct GlyphBox: View {
     var body: some View { Image(systemName: name).frame(width: Look.tileIcon) }
 }
 
-extension SidebarRow where Leading == GlyphBox, Trailing == EmptyView {
+extension SidebarRow where Leading == GlyphBox, Label == Text, Trailing == EmptyView {
     init(icon: String, title: String, selected: Bool, dimmed: Bool = false,
          action: @escaping () -> Void) {
         self.init(selected: selected, dimmed: dimmed, action: action,
@@ -1112,10 +1207,24 @@ extension SidebarRow where Leading == GlyphBox, Trailing == EmptyView {
 /// Whether the row a view sits in is hovered, so a close button can appear without every
 /// row needing its own hover plumbing.
 private struct RowHoveringKey: EnvironmentKey { static let defaultValue = false }
+/// The sidebar's geometry group (see `Sidebar.strip`). nil outside the sidebar — the
+/// Library's rows are not in it.
+private struct StripKey: EnvironmentKey { static let defaultValue: Namespace.ID? = nil }
 extension EnvironmentValues {
     fileprivate var rowHovering: Bool {
         get { self[RowHoveringKey.self] }
         set { self[RowHoveringKey.self] = newValue }
+    }
+    fileprivate var strip: Namespace.ID? {
+        get { self[StripKey.self] }
+        set { self[StripKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// A tab's place in the strip's geometry group, when it is in one.
+    @ViewBuilder fileprivate func inStrip(_ id: Tab.ID, _ ns: Namespace.ID?) -> some View {
+        if let ns { matchedGeometryEffect(id: id, in: ns) } else { self }
     }
 }
 
@@ -1171,7 +1280,7 @@ private struct OpenTabs: View {
     var body: some View {
         let open = store.tabs.filter { $0.kind == .today }
         VStack(spacing: Look.rowGap) {
-            ForEach(open) { TabRow(tab: $0) }
+            ForEach(open) { TabRow(tab: $0).transition(.rowCollapse) }
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
         // tabs instead of announcing an anonymous stack.
@@ -1188,13 +1297,19 @@ private struct TabRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
     @State private var side: DropSide?
+    @Environment(\.strip) private var strip
 
     var body: some View {
         let selected = store.current == tab.id
         SidebarRow(selected: selected, action: { store.current = tab.id }) {
             TabIcon(tab: tab)
         } label: {
-            Text(TidyTitles.title(for: tab))
+            // Arc's in-row rename: the title becomes a field and the row keeps its shape.
+            if store.renamingTab == tab.id {
+                RenameField(store: store, tab: tab)
+            } else {
+                Text(TidyTitles.title(for: tab))
+            }
         } trailing: {
             TabRowTrailing(tab: tab, selected: selected)
         }
@@ -1202,6 +1317,7 @@ private struct TabRow: View {
         .overlay(alignment: side == .after ? .bottom : .top) {
             DropLine(on: side != nil, axis: .vertical)
         }
+        .inStrip(tab.id, strip)
         .help(tab.title)
         .onDrag { dragPayload(tab) } preview: {
             // Drag preview: the row alone would drag the whole list's background with it.
@@ -1217,7 +1333,7 @@ private struct TabRow: View {
         // Arc's double-click-to-rename. Simultaneous, so the row's own single tap still
         // selects the tab first — which is what Arc does too, and what makes the rename
         // apply to the tab you are looking at.
-        .simultaneousGesture(TapGesture(count: 2).onEnded { TabActions.renameTab(tab) })
+        .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
         .contextMenu { TabMenu(store: store, tab: tab) }
         // One element per tab, the way a tab in Safari reads: the title is the label, the
         // state is the value, and the close button becomes an action rather than a second
@@ -1233,7 +1349,7 @@ private struct TabRow: View {
         .accessibilityAction(named: tab.kind == .pinned ? "Unpin Tab" : "Pin Tab") {
             store.togglePinned(tab.id)
         }
-        .accessibilityAction(named: "Rename Tab") { TabActions.renameTab(tab) }
+        .accessibilityAction(named: "Rename Tab") { store.renamingTab = tab.id }
         .accessibilityAction(named: "Duplicate Tab") { TabActions.duplicate(tab, in: store) }
         .accessibilityAction(named: "Favourite Tab") { store.move(tab.id, to: .favourite) }
         .accessibilityAction(named: "Close Other Tabs") { closeOthers() }
@@ -1266,7 +1382,7 @@ private struct TabMenu: View {
             .disabled(tab.currentURL == nil)
         // Arc's own two, in Arc's order. Rename is also a double-click on the row; Duplicate
         // has no gesture at all, which is exactly why it has to be here.
-        Button("Rename…") { TabActions.renameTab(tab) }
+        Button("Rename…") { store.renamingTab = tab.id }
         if TabActions.rename(tab) != nil {
             Button("Use the Page’s Own Title") { TidyTitles.rename(tab, to: nil) }
         }
@@ -1349,6 +1465,9 @@ private struct TabRowTrailing: View {
                 }
                 .help("Close Tab (⌘W)")
                 .accessibilityLabel("Close \(TidyTitles.title(for: tab))")
+                // Grows in under the pointer rather than popping: the row's own hover
+                // animation carries it.
+                .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
             }
         }
         .buttonStyle(.plain)

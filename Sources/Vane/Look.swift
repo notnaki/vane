@@ -301,6 +301,26 @@ enum Look {
     /// A floating surface appearing: scale from `appearScale` and fade, together.
     static let appear = Animation.easeOut(duration: 0.15)
     static let appearScale: CGFloat = 0.97
+    /// The tab list changing shape: a row arriving, leaving, or moving between sections. A
+    /// touch of spring, the way Arc's rows settle, but short enough that ⌘W ⌘W ⌘W never
+    /// queues up behind itself.
+    static let list = Animation.spring(duration: 0.28, bounce: 0.12)
+    /// Clear sweeps Today's rows out one after another: each row leaves this much after the
+    /// one above it, and a long list stops staggering past `sweepCap` so forty tabs do not
+    /// take two seconds to go.
+    static let sweepStagger: Double = 0.045
+    static let sweepCap: Double = 0.4
+    /// The status bar: how long a link is hovered before its url appears, and how fast the
+    /// capsule fades either way.
+    static let statusDelay: Double = 1.5
+    static let statusFade = Animation.easeOut(duration: 0.18)
+    /// The status capsule's inset from the card's corner, its height, and the longest url it
+    /// shows before the middle is elided.
+    static let statusInset: CGFloat = 8
+    static let statusHeight: CGFloat = 24
+    static let statusMaxChars = 72
+    /// A favourite tile appearing or leaving the grid grows in place rather than sliding.
+    static let tileAppearScale: CGFloat = 0.6
 }
 
 extension Look {
