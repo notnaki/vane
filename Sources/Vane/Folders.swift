@@ -600,6 +600,11 @@ struct FolderNameField: View {
     let folder: Folder
     @State private var draft = ""
     @State private var done = false
+    /// Whether this field ever held the caret. A field that never did holds the name the
+    /// folder had when it was built, and committing that would quietly undo a rename made
+    /// in the meantime — which is exactly what happened when the collapse animation left a
+    /// second, stale field behind.
+    @State private var armed = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -617,8 +622,10 @@ struct FolderNameField: View {
             // field nothing can be typed into. `RenameField` has no such race: clicking a
             // tab row only selects it.
             .task { focused = true }
-            .onChange(of: focused) { _, now in if !now { commit() } }
-            .onDisappear { commit() }
+            .onChange(of: focused) { _, now in
+                if now { armed = true } else if armed { commit() }
+            }
+            .onDisappear { if armed { commit() } }
             .accessibilityLabel("Folder name")
             .accessibilityHint("Return renames the folder, Escape keeps its current name.")
     }
