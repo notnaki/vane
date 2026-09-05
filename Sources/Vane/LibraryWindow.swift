@@ -193,8 +193,12 @@ extension Look {
     /// The whole panel. It covers the sidebar and reaches over the page the way Arc's does —
     /// the page card does not move, it is simply behind this.
     static let libraryWidth: CGFloat = 660
-    /// A Space's column in the Spaces section.
-    static let spaceColumn: CGFloat = 260
+    /// A Space's column in the Spaces section. Narrow enough that two fit beside the rail;
+    /// ponytail ceiling: a third Space scrolls horizontally rather than the panel growing.
+    static let spaceColumn: CGFloat = 220
+    /// The traffic lights' own strip at the top of the window. The panel covers the sidebar,
+    /// so its header has to start after them exactly as `TopRow`'s does.
+    static let trafficLights: CGFloat = 62
 }
 
 // MARK: - The panel
@@ -237,6 +241,9 @@ struct LibraryPanel: View {
     private var rail: some View {
         VStack(alignment: .leading, spacing: Look.rowGap) {
             HStack(spacing: 0) {
+                // The panel is inset from the window's edge by `cardGap`, so the lights'
+                // strip is that much narrower here than it is in the sidebar's own top row.
+                Spacer().frame(width: Look.trafficLights - Look.cardGap - Look.inset)
                 Text("Library").font(Look.heading).foregroundStyle(Look.inkSecondary)
                 Spacer(minLength: 0)
                 Button { store.libraryOpen = false } label: { Image(systemName: "xmark") }
