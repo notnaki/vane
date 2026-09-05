@@ -834,6 +834,10 @@ private struct LinksPane: View {
                          + "window you already have open.")
             }
 
+            // Arc's Air Traffic Control, directly under the preference it overrides — a rule
+            // only makes sense next to the default it is an exception to. See AirTraffic.swift.
+            SettingsSection("Air Traffic Control") { AirTrafficCard() }
+
             SettingsCard {
                 SettingsRow("Open links from Favourites and Pinned tabs in Peek") {
                     Toggle("", isOn: $peekLinks).labelsHidden()

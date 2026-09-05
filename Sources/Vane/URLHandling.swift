@@ -58,16 +58,25 @@ import AppKit
     /// NSAppleEventManager does not retain its handlers.
     private static let handler = Handler()
 
-    /// Where a link from another app lands: a Little Arc window (Arc's default, and Vane's),
-    /// or a tab in the frontmost ordinary window. `LittleArc.route` is the decision on its
-    /// own, so it can be proved without a window server.
+    /// Where a link from another app lands: whatever an Air Traffic Control rule says, else
+    /// a Little Arc window (Arc's default, and Vane's), else a tab in the frontmost ordinary
+    /// window. `AirTraffic.route` and `LittleArc.route` are both decisions on their own, so
+    /// both can be proved without a window server.
+    ///
+    /// The rules are asked per url rather than for the batch: three links arriving together
+    /// can perfectly well belong in three different places, which is the point of having them.
     static func open(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        switch LittleArc.route(preferLittle: Prefs.openLinksInLittleArc,
-                               hasWindow: Windows.main != nil) {
-        case .little:    urls.forEach { LittleArc.open($0) }
-        case .tab:       urls.forEach { Windows.main?.newTab($0) }
-        case .newWindow: Windows.open(urls: urls)
+        let rest = urls.filter { !AirTraffic.hand($0) }
+        // `hasWindow` is read after the rules have run: a rule that just opened the first
+        // window is exactly why the link under it should become a tab in it.
+        if !rest.isEmpty {
+            switch LittleArc.route(preferLittle: Prefs.openLinksInLittleArc,
+                                   hasWindow: Windows.main != nil) {
+            case .little:    rest.forEach { LittleArc.open($0) }
+            case .tab:       rest.forEach { Windows.main?.newTab($0) }
+            case .newWindow: Windows.open(urls: rest)
+            }
         }
         NSApp.activate(ignoringOtherApps: true)
     }

@@ -363,6 +363,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("sidebar width", SidebarWidth.check),
                                ("peeked window chrome", VaneWindow.check),
                                ("little arc", LittleArc.check),
+                               ("air traffic control", AirTraffic.check),
                                ("peek", Peek.check),
                                ("link gestures", TabActions.check),
                                ("recent tab switcher", TabSwitcher.check),
