@@ -120,6 +120,7 @@ import WebKit
     static func apply(to tab: Tab) {
         guard let url = tab.currentURL else { return }
         tab.web.pageZoom = level(for: url, profile: tab.profileID)
+        tab.zoom = tab.web.pageZoom      // the pill's chip
     }
 
     // MARK: - The three menu commands
@@ -136,6 +137,7 @@ import WebKit
     private static func move(_ tab: Tab, _ next: (Double) -> Double) {
         let level = next(tab.web.pageZoom)
         tab.web.pageZoom = level
+        tab.zoom = level                 // the pill's chip
         // A private window reads stored levels — a site you zoomed yesterday is still
         // readable today — but writes nothing, because "which sites did you zoom" is
         // exactly the browsing record private mode exists not to keep.

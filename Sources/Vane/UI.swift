@@ -234,6 +234,11 @@ private struct WebCard: View {
             .padding(.horizontal, 14)
             .padding(.top, 10)
         }
+        // The status bar: the hovered link's url, bottom-left, inside the card's clip the
+        // way Arc's sits on the page rather than under it.
+        .overlay(alignment: .bottomLeading) {
+            if let tab = store.active { StatusBarView(tab: tab).padding(Look.statusInset) }
+        }
         .clipShape(.rect(cornerRadius: Look.cardRadius))
         // No inset on the leading edge while the sidebar is docked: the sidebar's own
         // padding already leaves the gap, and doubling it reads as a misaligned card.
@@ -427,8 +432,13 @@ private struct LiveAddressPill: View {
     @ObservedObject var tab: Tab
 
     var body: some View {
+        let scheme = tab.currentURL?.scheme
         PillBody(tab: tab, host: host, address: tab.address,
-                 reader: tab.readerAvailable || Reader.isOn(tab), readerOn: Reader.isOn(tab))
+                 reader: tab.readerAvailable || Reader.isOn(tab), readerOn: Reader.isOn(tab),
+                 insecure: PillState.insecure(scheme: scheme, onlySecureContent: tab.secureContent,
+                                              trusted: tab.certificateTrusted),
+                 insecureGlyph: PillState.glyph(scheme: scheme),
+                 zoom: PillState.zoomLabel(tab.zoom))
     }
 
     /// The host alone, the way Arc shows it — the scheme and `www.` are noise the user has
@@ -448,41 +458,16 @@ private struct PillBody: View {
     let address: String
     let reader: Bool
     let readerOn: Bool
+    /// Arc's warning on a page that is not secure; nothing at all on one that is.
+    var insecure = false
+    var insecureGlyph = "lock.slash"
+    /// "125%" while the page is zoomed, nil at 100 %. Clicking it puts the page back.
+    var zoom: String?
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 8) {
-            if reader, let tab {
-                Button { Reader.toggle(tab) } label: {
-                    Image(systemName: readerOn ? "doc.plaintext.fill" : "doc.plaintext")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(readerOn ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                .help("Reader (⌥⌘R)")
-                .accessibilityLabel("Reader")
-                .accessibilityValue(readerOn ? "On" : "Off")
-            }
-            // Secondary ink, the way Arc sets the host (179 on 84): the address is a
-            // label for the page, not a title among titles.
-            Text(host).font(Look.text).lineLimit(1)
-            Spacer(minLength: 4)
-            // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
-            // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
-            // They sit past a Spacer, so arriving and leaving never moves the host.
-            if hovering {
-                Button { copyLink() } label: { Image(systemName: "link") }
-                    .disabled(tab == nil)
-                    .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
-                    .accessibilityLabel("Copy Link")
-                Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
-                    // ponytail: the whole settings window, not a per-site sheet. Site settings
-                    // do not exist yet; when they do, this is the one caller to change.
-                    .disabled(tab == nil)
-                    .help("Site Settings")
-                    .accessibilityLabel("Site Settings")
-            }
-        }
+        content
         .buttonStyle(.plain)
         .font(Look.pillGlyph)
         .foregroundStyle(Look.inkSecondary)
@@ -504,7 +489,7 @@ private struct PillBody: View {
         .help(address.isEmpty ? "Search or Enter URL" : address)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Address and Search")
-        .accessibilityValue(address.isEmpty ? "Empty" : address)
+        .accessibilityValue(axValue)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Opens the search bar to type a website address or a search.")
         .accessibilityAction { open() }
@@ -512,6 +497,31 @@ private struct PillBody: View {
         // on the pill itself — a pointer gesture is not a route VoiceOver has.
         .accessibilityAction(named: "Copy Link") { copyLink() }
         .accessibilityAction(named: "Site Settings") { SettingsWindow.show() }
+        .accessibilityAction(named: "Actual Size") { if let tab, zoom != nil { Zoom.reset(tab) } }
+    }
+
+    private var content: some View {
+        HStack(spacing: 8) {
+            if insecure { InsecureGlyph(name: insecureGlyph) }
+            if reader, let tab { ReaderGlyph(tab: tab, on: readerOn) }
+            // Secondary ink, the way Arc sets the host (179 on 84): the address is a
+            // label for the page, not a title among titles.
+            Text(host).font(Look.text).lineLimit(1)
+            Spacer(minLength: 4)
+            if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
+            // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
+            // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
+            // They sit past a Spacer, so arriving and leaving never moves the host.
+            if hovering { PillHoverGlyphs(enabled: tab != nil, copyLink: copyLink) }
+        }
+    }
+
+    /// The address, and the two things the glyph and the chip say about it.
+    private var axValue: String {
+        var s = address.isEmpty ? "Empty" : address
+        if insecure { s += ", not secure" }
+        if let zoom { s += ", zoomed to \(zoom)" }
+        return s
     }
 
     /// With a page, the bar opens on its address; with none, on nothing — and what is
@@ -523,6 +533,70 @@ private struct PillBody: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(u.absoluteString, forType: .string)
         axAnnounce("Link copied.")
+    }
+}
+
+/// The reader toggle, before the host.
+private struct ReaderGlyph: View {
+    let tab: Tab
+    let on: Bool
+    var body: some View {
+        Button { Reader.toggle(tab) } label: {
+            Image(systemName: on ? "doc.plaintext.fill" : "doc.plaintext")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+        .help("Reader (⌥⌘R)")
+        .accessibilityLabel("Reader")
+        .accessibilityValue(on ? "On" : "Off")
+    }
+}
+
+/// Copy Link and Site Settings, the two glyphs Arc's pill grows on hover.
+private struct PillHoverGlyphs: View {
+    let enabled: Bool
+    let copyLink: () -> Void
+    var body: some View {
+        Button { copyLink() } label: { Image(systemName: "link") }
+            .disabled(!enabled)
+            .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
+            .accessibilityLabel("Copy Link")
+        Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
+            // ponytail: the whole settings window, not a per-site sheet. Site settings
+            // do not exist yet; when they do, this is the one caller to change.
+            .disabled(!enabled)
+            .help("Site Settings")
+            .accessibilityLabel("Site Settings")
+    }
+}
+
+/// Arc's "not secure" mark, before the host. Split out of `PillBody` only to keep its one
+/// expression inside what the type-checker will finish.
+private struct InsecureGlyph: View {
+    let name: String
+    var body: some View {
+        Image(systemName: name)
+            .help(name == "lock.slash" ? "Not secure: this page is not encrypted."
+                                       : "Not secure: this page has a certificate or content problem.")
+            .accessibilityLabel("Not secure")
+    }
+}
+
+/// "125%" in the pill while the page is zoomed. A click is Actual Size.
+private struct ZoomChip: View {
+    let label: String
+    let tab: Tab
+    var body: some View {
+        Button { Zoom.reset(tab) } label: {
+            Text(label)
+                .font(Look.caption)
+                .padding(.horizontal, 5)
+                .frame(height: Look.chip - 6)
+                .background(Look.selected, in: .rect(cornerRadius: Look.chipRadius))
+        }
+        .help("Zoomed to \(label). Click for actual size (\(Keybindings.binding(for: .actualSize).display)).")
+        .accessibilityLabel("Zoom \(label)")
+        .accessibilityHint("Resets the page to actual size.")
     }
 }
 

@@ -46,6 +46,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// Making noise the user can hear. Muting the tab clears it.
     @Published var audible = false
     @Published var favicon: NSImage?
+    /// The link under the pointer, for the status bar. nil when nothing is hovered.
+    @Published var hoveredLink: String?
+    /// `web.pageZoom`, republished: the pill's zoom chip. Zoom.swift writes it.
+    @Published var zoom = 1.0
+    /// WebKit's `hasOnlySecureContent` and whether `serverTrust` evaluates — the pill's
+    /// insecure glyph. Both start true and are only ever set by a live page.
+    @Published var secureContent = true
+    @Published var certificateTrusted = true
     /// Which section of the sidebar this tab is in. The strip is sorted by it.
     @Published var kind: TabKind = .today
     /// Favourites and Pinned both *stay*: neither auto-archives, ⌘W leaves both where they
@@ -104,6 +112,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         cfg.userContentController.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
+                         forMainFrameOnly: false))
         return WKWebView(frame: .zero, configuration: cfg)
     }
 
@@ -115,6 +126,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         web.configuration.userContentController.add(WeakHandler(self), name: PictureInPicture.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), name: StatusBar.messageName)
+        // A fresh web view has no page to be insecure about.
+        secureContent = true
+        certificateTrusted = true
+        hoveredLink = nil
         web.customUserAgent = Settings.userAgent
         web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
         web.allowsBackForwardNavigationGestures = true
@@ -150,6 +166,20 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             },
             web.observe(\.canGoForward, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated { self?.canGoForward = w.canGoForward }
+            },
+            web.observe(\.hasOnlySecureContent, options: [.new]) { [weak self] w, _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.suspended else { return }
+                    self.secureContent = w.hasOnlySecureContent
+                }
+            },
+            // A certificate the user clicked through is still a certificate that failed:
+            // WebKit hands the trust back, and the pill says so for as long as it is shown.
+            web.observe(\.serverTrust, options: [.new]) { [weak self] w, _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.suspended else { return }
+                    self.certificateTrusted = w.serverTrust.map { SecTrustEvaluateWithError($0, nil) } ?? true
+                }
             },
         ]
         // attach() re-runs on resume, so this covers a waking tab too.
@@ -189,6 +219,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PictureInPicture.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
         old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
         // ponytail: `old` is never deallocated — it survives at a high retain count, so
         // Tab.close() has to use `_close` SPI to give the process back. The retainer is
@@ -480,6 +511,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
+        if m.name == StatusBar.messageName { hoveredLink = StatusBar.link(from: m.body); return }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
             if body["gone"] as? Bool == true { Previews.shared.cancel(); return }
