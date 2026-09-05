@@ -158,27 +158,35 @@ import WebKit
     /// answering "is media running", and we are answering "can the user hear it".
     static func isAudible(_ tab: Tab) -> Bool { audible(id: tab.id, web: tab.web) }
 
+    /// Tabs with media running, whether or not the user can hear it. Kept as a set rather
+    /// than asked per tab per render: the page card and the tray both need the answer for
+    /// every tab on every pass, and `_isPlayingAudio` is a cross-process property read.
+    /// Written only where audibility is already being recomputed, so it cannot drift.
+    private(set) static var playingIDs: Set<UUID> = []
+
     /// Media running, whether or not the user can hear it. The mini audio player asks this
     /// rather than `isAudible`: muting a tab is not the same as closing its player, and Arc
     /// keeps the tray up with a struck-through speaker on it.
     /// ponytail: under the JS fallback a tab muted element-by-element reads as not playing,
     /// because that is all the page reports. Ceiling: a second flag in the payload; on the
     /// SPI path — every machine that has `_isPlayingAudio` — this is already right.
-    static func isPlaying(_ tab: Tab) -> Bool {
-        playingAudio(tab.web) ?? audibleIDs.contains(tab.id)
-    }
+    static func isPlaying(_ tab: Tab) -> Bool { playingIDs.contains(tab.id) }
 
     /// Anything that has to redraw when a tab it is *not* observing changes. The media tray
     /// draws the tab you left, whose row may be scrolled off or in another window's sidebar,
-    /// so a per-row `@ObservedObject` never hears about it. One app-wide hook rather than a
-    /// Combine subscription per tab per window.
-    static var onAnyChange: (@MainActor (UUID) -> Void)?
+    /// so a per-row `@ObservedObject` never hears about it. App-wide hooks rather than a
+    /// Combine subscription per tab per window; a list because more than one thing wants
+    /// them and a single slot is a bug waiting for the second caller.
+    private static var observers: [@MainActor (UUID) -> Void] = []
 
-    /// Every place the per-tab sink is fired goes through here, so the hook cannot be
-    /// forgotten at one of them.
-    private static func tell(_ id: UUID, _ audible: Bool) {
+    static func observe(_ body: @escaping @MainActor (UUID) -> Void) { observers.append(body) }
+
+    /// Every place the per-tab sink is fired goes through here, so the hooks cannot be
+    /// forgotten at one of them. `playing` is recomputed here for the same reason.
+    private static func tell(_ id: UUID, _ audible: Bool, playing: Bool) {
+        if playing { playingIDs.insert(id) } else { playingIDs.remove(id) }
         sinks[id]?(audible)
-        onAnyChange?(id)
+        for o in observers { o(id) }
     }
 
     private static func audible(id: UUID, web: WKWebView?) -> Bool {
@@ -195,7 +203,7 @@ import WebKit
         let w = Watcher(id: tab.id)
         tab.web.addObserver(w, forKeyPath: playingKey, options: [.new], context: nil)
         watches[tab.id] = Watch(watcher: w, web: tab.web)
-        onChange(isAudible(tab))
+        tell(tab.id, isAudible(tab), playing: playingAudio(tab.web) ?? audibleIDs.contains(tab.id))
     }
 
     /// Before the web view is torn down. KVO on a dead observee is a crash, not a leak.
@@ -208,6 +216,7 @@ import WebKit
     static func forget(_ id: UUID) {
         mutedIDs.remove(id)
         audibleIDs.remove(id)
+        playingIDs.remove(id)
         sinks[id] = nil
         if let w = watches.removeValue(forKey: id) { w.web?.removeObserver(w.watcher, forKeyPath: playingKey) }
     }
@@ -222,14 +231,14 @@ import WebKit
     static func handle(_ body: Any, for tab: Tab) {
         guard let a = audible(from: body) else { return }
         if a { audibleIDs.insert(tab.id) } else { audibleIDs.remove(tab.id) }
-        tell(tab.id, isAudible(tab))
+        tell(tab.id, isAudible(tab), playing: playingAudio(tab.web) ?? a)
     }
 
     private static func changed(_ id: UUID) {
         let web = watches[id]?.web
         let a = audible(id: id, web: web)
         if a { audibleIDs.insert(id) } else { audibleIDs.remove(id) }
-        tell(id, a)
+        tell(id, a, playing: playingAudio(web) ?? a)
     }
 
     // MARK: - Muting
@@ -242,7 +251,8 @@ import WebKit
     static func setMuted(_ tab: Tab, _ on: Bool) {
         setMuted(tab.id, on)
         apply(tab)
-        tell(tab.id, isAudible(tab))
+        // Muting does not stop the player, which is exactly why the tray stays up for it.
+        tell(tab.id, isAudible(tab), playing: playingAudio(tab.web) ?? audibleIDs.contains(tab.id))
     }
 
     /// The map write on its own — no page, no web view, so `check()` can drive it.

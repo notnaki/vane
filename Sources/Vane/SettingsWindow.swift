@@ -315,8 +315,9 @@ private struct GeneralPane: View {
     // here is the whole of the preference.
     @AppStorage("httpsOnly") private var httpsOnly = true
     // PictureInPicture reads this key straight out of defaults on every tab switch, so
-    // writing it here is the whole of the preference.
-    @AppStorage("autoPiP") private var autoPiP = true
+    // writing it here is the whole of the preference. Its name comes from there, so the
+    // toggle and the reader cannot end up on two different keys.
+    @AppStorage(PictureInPicture.prefKey) private var autoPiP = true
     @State private var restore = Prefs.restoreSession
     @State private var archiveAfter = Prefs.archiveAfter
     @State private var isDefault = URLHandling.isDefaultBrowser

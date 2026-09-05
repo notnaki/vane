@@ -44,11 +44,13 @@ struct WebView: NSViewRepresentable {
 /// the only place that sees both the old view and the new one.
 final class WebHost: NSView {
     private(set) var web: WKWebView?
-    /// Kept running but not on screen. `canBecomeKeyView` is what AppKit's key loop asks,
-    /// and the accessibility flag is what VoiceOver asks; both have to say no, or an
-    /// invisible page is Tab-able and readable.
+    /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
+    /// of the window's key loop and out of the accessibility tree, so an invisible page is
+    /// neither Tab-able nor readable by VoiceOver, and it costs no compositing either.
+    /// Measured: it does *not* stop the page's media, unlike taking the view out of the
+    /// window, which is what the mini audio player is up against in the first place.
     var offscreen = false {
-        didSet { if offscreen != oldValue { setAccessibilityElement(!offscreen) } }
+        didSet { if offscreen != oldValue { isHidden = offscreen } }
     }
 
     init(_ web: WKWebView) {
@@ -57,9 +59,6 @@ final class WebHost: NSView {
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("not in a nib") }
-
-    override var canBecomeKeyView: Bool { !offscreen }
-    override func accessibilityChildren() -> [Any]? { offscreen ? [] : super.accessibilityChildren() }
 
     func show(_ next: WKWebView) {
         guard next !== web else { return }

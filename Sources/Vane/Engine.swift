@@ -106,9 +106,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         cfg.userContentController.addUserScript(
             WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         // All frames, unlike the password script: an embedded player lives in an iframe.
+        // Its own content world: `__vanePiP` is then not on the page's `window` at all.
         cfg.userContentController.addUserScript(
             WKUserScript(source: PictureInPicture.script, injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: false))
+                         forMainFrameOnly: false, in: PictureInPicture.world))
         cfg.userContentController.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
@@ -128,7 +129,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// because suspension swaps the web view out from under all of it.
     private func attach() {
         web.configuration.userContentController.add(WeakHandler(self), name: "vanepw")
-        web.configuration.userContentController.add(WeakHandler(self), name: PictureInPicture.messageName)
+        web.configuration.userContentController.add(WeakHandler(self),
+                                                    contentWorld: PictureInPicture.world,
+                                                    name: PictureInPicture.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: MediaTray.messageName)
@@ -223,7 +226,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         old.configuration.userContentController.removeScriptMessageHandler(forName: "vanepw")
         old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(
-            forName: PictureInPicture.messageName)
+            forName: PictureInPicture.messageName, contentWorld: PictureInPicture.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: MediaTray.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
@@ -284,6 +287,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func tearDown() {
         suspend()
         TabAudio.forget(id)
+        MediaState.shared.forget(id)
     }
 
     /// Come up already suspended, so restoring thirty tabs costs one WebContent process
@@ -536,7 +540,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
-        if m.name == MediaTray.messageName { MediaState.shared.handle(m.body, for: self); return }
+        if m.name == MediaTray.messageName {
+            MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
+            return
+        }
         if m.name == StatusBar.messageName { hoveredLink = StatusBar.link(from: m.body); return }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
@@ -623,14 +630,8 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// Counts the archives that land in one burst, so Clear can sweep rows out one after
     /// another. See `archive`.
     private let bursts = Motion.Burst()
-    /// The tab that was current before this one. Published because the page card keeps it
-    /// in the window for one switch longer: auto picture-in-picture asks the outgoing page
-    /// a question, and a page whose view has already left the window has already paused its
-    /// video. ponytail: exactly one extra page, not every live tab.
-    @Published private(set) var previous: Tab.ID?
     @Published var current: Tab.ID? {
         didSet {
-            previous = oldValue
             // Selecting a tab is what wakes it, and it has to happen here rather than in a
             // Task: SwiftUI reads `tab.web` on this same turn of the run loop.
             if let t = tabs.first(where: { $0.id == current }) { t.lastActive = .now; t.resume() }
