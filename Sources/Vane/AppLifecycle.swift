@@ -22,8 +22,11 @@ import AppKit
 
     /// The window the user last had, the session they last had, or a new one — in that order,
     /// which is the same ladder `main.swift` climbs at launch.
+    /// `Windows.main`, not the last store: a miniaturised Little Arc is not the window
+    /// somebody clicking the Dock icon is asking for, and raising it would leave the session
+    /// unrestored for good.
     static func reopen() {
-        if let last = TabStore.all.last?.window {
+        if let last = Windows.main?.window {
             last.makeKeyAndOrderFront(nil)
             return
         }

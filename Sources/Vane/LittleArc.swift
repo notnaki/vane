@@ -47,14 +47,15 @@ import SwiftUI
 
     /// One url, one window. Called once per url, so three links arriving together are three
     /// Little Arcs — which is what Arc does, and what "one page per window" means.
+    /// `url` is nil for a Little Arc opened with nothing in it — ⌘T from inside one, which
+    /// comes up empty with the search bar over it, the same as a new window does.
     @discardableResult
-    static func open(_ url: URL) -> TabStore {
+    static func open(_ url: URL?) -> TabStore {
         let profile = ProfileManager.shared.active
-        let store = TabStore(urls: [url], profileID: profile.id, isLittle: true)
+        let store = TabStore(urls: url.map { [$0] } ?? [], profileID: profile.id, isLittle: true)
         // `WebCard` leaves its leading edge bare for a docked sidebar. There isn't one, so
         // this is what gives the page the same gap on all four sides.
         store.sidebarShown = false
-        keepInside(store)
 
         let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
@@ -83,15 +84,17 @@ import SwiftUI
         // frame autosave: a Little Arc is not a window the user arranges, it is one that
         // appears in the middle of the screen with the thing they clicked in it.
         window.center()
-        // Two links from the same message must not land exactly on top of each other. The
-        // list is of the Little Arcs that already have a window; this one gets its own on
-        // the line below, so `last` is the one before it.
+        // Two links from the same message must not land exactly on top of each other, and
+        // the tenth must not be off the bottom of the screen: the step is dropped as soon as
+        // the whole window would no longer fit, which starts the pile again from the centre.
         // ponytail: not `cascadeTopLeft(from:)` — that puts the window *at* the point it is
         // given, so handing it the last window's corner stacked the two exactly.
-        if let previous = windows.last {
+        if let previous = windows.last, let screen = window.screen ?? NSScreen.main {
             let step = Look.inset * 3
-            window.setFrameTopLeftPoint(NSPoint(x: previous.frame.minX + step,
-                                                y: previous.frame.maxY - step))
+            let next = NSPoint(x: previous.frame.minX + step, y: previous.frame.maxY - step)
+            let landing = NSRect(x: next.x, y: next.y - window.frame.height,
+                                 width: window.frame.width, height: window.frame.height)
+            if screen.visibleFrame.contains(landing) { window.setFrameTopLeftPoint(next) }
         }
 
         let delegate = Delegate(store)
@@ -99,20 +102,9 @@ import SwiftUI
         window.delegate = delegate
         store.window = window
         window.makeKeyAndOrderFront(nil)
+        // The Window menu names what its toggle will do, and that just changed.
+        rebuild()
         return store
-    }
-
-    /// A page that opens a window — `target=_blank`, `window.open` — from inside a Little
-    /// Arc gets another Little Arc, not a tab in the browser window it never came from.
-    /// ponytail: rebound on the one tab the store starts with, which is the only tab it can
-    /// have as long as nothing calls `newTab` on it. Ceiling: ⌘T from the menu still makes
-    /// a second tab in the same little window, and that tab's popups go to the sidebar.
-    /// Upgrade path is a flag on `TabStore` that `newBlankTab` reads.
-    private static func keepInside(_ store: TabStore) {
-        for tab in store.tabs {
-            tab.onNewTab = { url in if let url { open(url) } }
-            tab.onOpenBeside = { url, _ in open(url) }
-        }
     }
 
     // MARK: - Which windows are ours
@@ -125,12 +117,19 @@ import SwiftUI
         return stores.first { $0.window === window }
     }
 
-    /// Window ▸ Show All Little Arc Windows. Arc's item is a toggle, and so is this: they
-    /// come to the front together, or they all get out of the way together.
+    /// True while every Little Arc is up and on screen — which is what makes the menu item
+    /// say "Hide" rather than "Show". False with none open, so the item reads "Show".
+    static var allShowing: Bool {
+        let all = windows
+        return !all.isEmpty && all.allSatisfy { $0.isVisible && !$0.isMiniaturized }
+    }
+
+    /// Window ▸ Show / Hide All Little Arc Windows. Arc's item is a toggle, and so is this:
+    /// they come to the front together, or they all get out of the way together.
     static func toggleAll() {
         let all = windows
         guard !all.isEmpty else { return }
-        if all.allSatisfy({ $0.isVisible && !$0.isMiniaturized }) {
+        if allShowing {
             all.forEach { $0.miniaturize(nil) }
         } else {
             for w in all {
@@ -139,6 +138,7 @@ import SwiftUI
             }
             all.last?.makeKeyAndOrderFront(nil)
         }
+        rebuild()          // the item's own title is the thing that just changed
     }
 
     // MARK: - Open in ▸
@@ -159,18 +159,24 @@ import SwiftUI
     /// hand-off either way. Ceiling: the page reloads from its interaction state, so an
     /// unsubmitted form goes with it but a video restarts.
     static func move(_ store: TabStore, to space: Space?) {
-        defer { store.window?.performClose(nil) }
+        // Nothing to hand over yet — ⌘O pressed before the first navigation committed. The
+        // window stays, because closing it here would throw the link away.
         guard let tab = store.active, let url = tab.currentURL else { return }
         let snapshot = tab.snapshot
-        let target = Windows.current(in: store.profileID)
-            ?? Windows.open(profile: store.profile, space: space)
+        // With no browser window the url goes into the one being opened for it, so it comes
+        // up on the page instead of behind the new-tab bar; an existing window gets a tab.
+        let existing = Windows.current(in: store.profileID)
+        let target = existing ?? Windows.open(urls: [url], profile: store.profile, space: space)
         if let space, target.currentSpaceID != space.id { target.switchTo(space: space) }
-        let moved = target.newBlankTab()
+        let moved = existing == nil
+            ? (target.tabs.first { $0.currentURL == url } ?? target.newBlankTab())
+            : target.newBlankTab()
         moved.park(url: url, snapshot)
         moved.resume()
         target.current = moved.id
         target.window?.makeKeyAndOrderFront(nil)
         axAnnounce("Moved to \(space?.name ?? "the browser window").")
+        store.window?.performClose(nil)
     }
 
     /// ⌥⌘O and the button: the Spaces this page can be dropped into, the current one ticked.
@@ -233,32 +239,31 @@ import SwiftUI
 
     // MARK: - Keys
 
-    /// ⌘W, ⌘O and ⌥⌘O inside a Little Arc, taken before the global registry sees them.
-    /// All three mean something else in the browser window — ⌘W archives a tab into a
-    /// sidebar this window does not have, and ⌘O is Open File — so this is a window-local
-    /// override rather than three more rebindable commands competing for the same keys.
+    /// ⌘O and ⌥⌘O inside a Little Arc, taken before the global registry sees them: ⌘O is
+    /// Open File everywhere else in Vane, so this is a window-local override rather than two
+    /// more rebindable commands competing for the same key. ⌘W is not here — it is
+    /// `TabStore.closeOrArchive`, so the menu item and the key cannot disagree.
     /// Returns true when the key was ours. Wired in main.swift, ahead of `Keybindings`.
+    /// The modifier test comes first: this runs on every key the app sees, and all but a
+    /// handful carry no ⌘ at all.
     static func handleKey(_ event: NSEvent) -> Bool {
-        guard event.type == .keyDown, let store = store(of: NSApp.keyWindow) else { return false }
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
-        switch (event.charactersIgnoringModifiers?.lowercased(), mods) {
-        case ("w", [.command]):
-            store.window?.performClose(nil)
-        case ("o", [.command]):
-            openInCurrentSpace(store)
-        case ("o", [.command, .option]):
-            pickSpace(store)
-        default:
-            return false
+        guard event.type == .keyDown, mods.contains(.command),
+              event.charactersIgnoringModifiers?.lowercased() == "o",
+              let store = store(of: NSApp.keyWindow) else { return false }
+        switch mods {
+        case [.command]:            openInCurrentSpace(store)
+        case [.command, .option]:   pickSpace(store)
+        default:                    return false
         }
         return true
     }
 
     // MARK: - Window bookkeeping
 
-    /// Everything `Windows.WindowDelegate` does that applies here: forget the store, and
-    /// keep the lights on the line through a resize. Nothing is saved — a Little Arc is not
-    /// in the session.
+    /// Everything `Windows.WindowDelegate` does that applies here: take the page down,
+    /// forget the store, and keep the lights on the line through a resize. Nothing is
+    /// saved — a Little Arc is not in the session.
     private final class Delegate: NSObject, NSWindowDelegate {
         let store: TabStore
         init(_ store: TabStore) { self.store = store }
@@ -270,8 +275,10 @@ import SwiftUI
         func windowDidResignKey(_ n: Notification) { recentre() }
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
+                store.tabs.forEach { $0.tearDown() }
                 TabStore.all.removeAll { $0 === store }
                 LittleArc.keptDelegates.removeAll { $0 === self }
+                rebuild()
             }
         }
     }
@@ -299,6 +306,15 @@ import SwiftUI
             ("the pill is the sidebar's pill, at the sidebar's height",
              Look.pillHeight == Look.rowHeight),
         ]
+    }
+}
+
+extension TabStore {
+    /// ⌘W and File ▸ Archive Tab. Arc archives the tab into the sidebar; a Little Arc has no
+    /// sidebar to archive into and no second tab to fall back on, so the window goes instead.
+    /// One definition, so the menu item and the key equivalent cannot disagree about it.
+    func closeOrArchive() {
+        if isLittle { window?.performClose(nil) } else { archiveWithToast() }
     }
 }
 

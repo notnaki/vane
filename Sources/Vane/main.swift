@@ -22,9 +22,11 @@ if args.first == "import", let file = args.dropFirst().first {
 
 Crash.begin()
 
-// `vane <url>` beats a restored session; otherwise pick up where the user left off.
+// `vane <url>` beats a restored session; otherwise pick up where the user left off. The url
+// is routed exactly as a link from any other app is, so `open -a Vane <url>` and a click in
+// Mail land in the same place — a Little Arc, or a window with the page in it.
 if let first = args.first, first.hasPrefix("http"), let u = URL(string: first) {
-    Windows.open(urls: [u])
+    URLHandling.open([u])
 } else if !Prefs.restoreSession || !Crash.offerRestore() {
     Windows.open()
 }

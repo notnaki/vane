@@ -825,9 +825,10 @@ struct CommandField: NSViewRepresentable {
     }
 
     /// The profile's Spaces, by name. Arc switches Space from the bar, and typing the name
-    /// of the Space you want is faster than counting ⌃1…⌃9.
+    /// of the Space you want is faster than counting ⌃1…⌃9. Not offered in a Little Arc,
+    /// which has no Space to leave and no strip to switch.
     private func spaceRows() -> [PaletteRow] {
-        guard !store.isPrivate else { return [] }
+        guard !store.isPrivate, !store.isLittle else { return [] }
         return store.spaces.filter { $0.id != store.currentSpaceID }.map { space in
             PaletteRow(id: "space:" + space.id.uuidString, icon: space.icon ?? "square.stack",
                        title: space.name, detail: "Space",
