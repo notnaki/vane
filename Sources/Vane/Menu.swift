@@ -160,6 +160,61 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     return entry
 }
 
+/// Arc keeps passwords and per-site controls in Settings, not in the menu bar; Vane's live
+/// as submenus of the app menu so the bar stays Arc's ten menus wide.
+@MainActor private func passwordItems() -> [NSMenuItem] {
+    [
+
+        item(.fillPassword) { Windows.current?.active?.fillPassword() },
+        item(.importPasswords) { PasswordImport.chooseAndImport() },
+        .separator(),
+        item("Export Passwords…", "") { Export.chooseAndExport(.passwords) },
+        item(.manageSavedPasswords) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
+        },
+    ]
+}
+
+@MainActor private func siteItems() -> [NSMenuItem] {
+    let blocking = item(.blockAds) { Blocker.enabled.toggle(); rebuild() }
+    blocking.state = Blocker.enabled ? .on : .off
+    let tidyDownloads = item("Tidy Download Filenames", "") {
+        TidyDownloads.enabled.toggle(); rebuild()
+    }
+    tidyDownloads.state = TidyDownloads.enabled ? .on : .off
+    let httpsOnly = item("HTTPS-Only Mode", "") { HTTPSOnly.enabled.toggle(); rebuild() }
+    httpsOnly.state = HTTPSOnly.enabled ? .on : .off
+    return [
+        httpsOnly,
+        item("Forget HTTPS-Only Exceptions…", "") {
+            let a = NSAlert()
+            a.messageText = "Forget every site you allowed to load without encryption?"
+            a.informativeText = "Those sites will be upgraded to https again, and will ask "
+                + "before ever loading in the clear."
+            a.addButton(withTitle: "Forget"); a.addButton(withTitle: "Cancel")
+            if a.runModal() == .alertFirstButtonReturn { HTTPSOnly.forgetAll() }
+        },
+        .separator(),
+        tidyDownloads,
+        blocking,
+        item(.addFilterList) { Blocker.chooseAndAddList() },
+        .separator(),
+        item(.forgetCertificateExceptions) {
+            let a = NSAlert()
+            a.messageText = "Forget every certificate you chose to trust anyway?"
+            a.informativeText = "Those sites will ask again the next time you visit them."
+            a.addButton(withTitle: "Forget"); a.addButton(withTitle: "Cancel")
+            if a.runModal() == .alertFirstButtonReturn { CertificateTrust.forgetAll() }
+        },
+        item(.resetMediaPermissions) {
+            let a = NSAlert()
+            a.messageText = "Forget camera and microphone permissions for every site?"
+            a.addButton(withTitle: "Reset"); a.addButton(withTitle: "Cancel")
+            if a.runModal() == .alertFirstButtonReturn { SitePermissions.resetAll() }
+        },
+    ]
+}
+
 @MainActor private func profileItems() -> [NSMenuItem] {
     let manager = ProfileManager.shared
     let switchers = manager.profiles.map { profile in
@@ -343,33 +398,38 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     // The Space menu is the browser window's, whatever is in front: a Little Arc is in no
     // Space and cannot switch into one.
     let store = Windows.main
-    let switchers = (store?.spaces ?? []).map { space in
+    let spaces = store?.spaces ?? []
+    // Arc's order: New Space, Manage Spaces…, the two arrows, then the Spaces themselves
+    // wearing ⌃1…⌃9 — the shortcut sits on the row it switches to, not on a hidden twin.
+    let switchers = spaces.enumerated().map { n, space in
         let entry = item(space.name, "") { Windows.main?.switchTo(space: space); rebuild() }
         entry.state = store?.currentSpaceID == space.id ? .on : .off
+        if let command = Command(rawValue: "goToSpace\(n + 1)") {
+            let binding = Keybindings.binding(for: command)
+            entry.keyEquivalent = binding.menuKeyEquivalent
+            entry.keyEquivalentModifierMask = binding.menuModifierMask
+            Keybindings.actions[command] = { Windows.main?.switchTo(spaceNumber: n + 1); rebuild() }
+        }
         return entry
     }
-    let numbered = (1...9).map { n in
-        item(Command(rawValue: "goToSpace\(n)") ?? .goToSpace1) {
-            Windows.main?.switchTo(spaceNumber: n)
-            rebuild()
-        }
-    }
-    // ⌃1…⌃9 have to be live whatever the menu shows, so the numbered items are in the menu
-    // but hidden past the ones that name a space: nine "Go to Space N" lines under three
-    // spaces would be seven dead rows.
-    for (i, entry) in numbered.enumerated() where i >= switchers.count { entry.isHidden = true }
     let nav = [
         item(.previousSpace) { Windows.main?.cycleSpace(-1); rebuild() },
         item(.nextSpace) { Windows.main?.cycleSpace(1); rebuild() },
     ]
-    for entry in nav { entry.isEnabled = (store?.spaces.count ?? 0) > 1 }
-    return switchers + [.separator()] + nav + numbered + [
-        .separator(),
+    for entry in nav { entry.isEnabled = spaces.count > 1 }
+    return [
         item(.newSpace) {
             // Arc's New Space appears first and is named in place — see `NewSpaceButton`.
             _ = Windows.main?.newSpace()
             rebuild()
         },
+        item("Manage Spaces…", "") { SettingsWindow.show() },
+        .separator(),
+    ] + nav + [.separator()] + switchers + [
+        .separator(),
+        // Arc has no Profiles menu: a profile is a property of a Space, so this is where
+        // the switcher lives.
+        menu("Profiles", profileItems()),
     ]
 }
 
@@ -403,6 +463,9 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         // Sites, where nobody looking for them would think to open.
         item(.importHistoryAndBookmarks) { BrowserImport.chooseAndImport() },
         makeDefaultApp,
+        .separator(),
+        menu("Passwords", passwordItems()),
+        menu("Sites", siteItems()),
         .separator(),
         NSMenuItem(title: "Hide Vane", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
         standard("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h",
@@ -504,74 +567,12 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         item(.biggerReaderText) { Reader.adjustFontSize(1, in: Windows.current?.active) },
         item(.smallerReaderText) { Reader.adjustFontSize(-1, in: Windows.current?.active) },
         readerTypefaceItem(),
-    ]))
-    root.addItem(menu("Passwords", [
-        item(.fillPassword) { Windows.current?.active?.fillPassword() },
-        item(.importPasswords) { PasswordImport.chooseAndImport() },
         .separator(),
-        item("Export Passwords…", "") { Export.chooseAndExport(.passwords) },
-        item(.manageSavedPasswords) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
-        },
+        // Arc files its developer tools under View; a top-level Develop menu is Safari's.
+        menu("Developer", developItems()),
     ]))
-    let blocking = item(.blockAds) { Blocker.enabled.toggle(); rebuild() }
-    blocking.state = Blocker.enabled ? .on : .off
-    let tidyDownloads = item("Tidy Download Filenames", "") {
-        TidyDownloads.enabled.toggle(); rebuild()
-    }
-    tidyDownloads.state = TidyDownloads.enabled ? .on : .off
-    let httpsOnly = item("HTTPS-Only Mode", "") { HTTPSOnly.enabled.toggle(); rebuild() }
-    httpsOnly.state = HTTPSOnly.enabled ? .on : .off
-    root.addItem(menu("Sites", [
-        httpsOnly,
-        item("Forget HTTPS-Only Exceptions…", "") {
-            let a = NSAlert()
-            a.messageText = "Forget every site you allowed to load without encryption?"
-            a.informativeText = "Those sites will be upgraded to https again, and will ask "
-                + "before ever loading in the clear."
-            a.addButton(withTitle: "Forget"); a.addButton(withTitle: "Cancel")
-            if a.runModal() == .alertFirstButtonReturn { HTTPSOnly.forgetAll() }
-        },
-        .separator(),
-        tidyDownloads,
-        blocking,
-        item(.addFilterList) { Blocker.chooseAndAddList() },
-        .separator(),
-        item(.forgetCertificateExceptions) {
-            let a = NSAlert()
-            a.messageText = "Forget every certificate you chose to trust anyway?"
-            a.informativeText = "Those sites will ask again the next time you visit them."
-            a.addButton(withTitle: "Forget"); a.addButton(withTitle: "Cancel")
-            if a.runModal() == .alertFirstButtonReturn { CertificateTrust.forgetAll() }
-        },
-        item(.resetMediaPermissions) {
-            let a = NSAlert()
-            a.messageText = "Forget camera and microphone permissions for every site?"
-            a.addButton(withTitle: "Reset"); a.addButton(withTitle: "Cancel")
-            if a.runModal() == .alertFirstButtonReturn { SitePermissions.resetAll() }
-        },
-    ]))
-    root.addItem(menu("Profiles", profileItems()))
     root.addItem(menu("Spaces", spaceItems()))
     root.addItem(menu("Tabs", tidyItems()))
-    root.addItem(menu("Extensions", [
-        item(.installExtension) { ExtensionHost.shared.chooseAndInstall(); rebuild() },
-        .separator(),
-    ] + ExtensionHost.shared.installed.map { ctx in
-        item("Remove " + (ctx.webExtension.displayName ?? "Extension"), "") {
-            ExtensionHost.shared.remove(ctx); rebuild()
-        }
-    }))
-    root.addItem(menu("Develop", developItems()))
-    root.addItem(menu("Bookmarks", [
-        item(.bookmarkPage) { Windows.current?.active?.toggleBookmark(); rebuild() },
-        item("Export Bookmarks…", "") { Export.chooseAndExport(.bookmarks) },
-        .separator(),
-    ] + Store.shared.bookmarks(limit: 40).map { b in
-        item(b.title.isEmpty ? b.url : b.title, "") {
-            if let u = URL(string: b.url) { Windows.current?.active?.web.load(URLRequest(url: u)) }
-        }
-    }))
     // Arc's Archive menu, in Arc's order — the recent-pages list it replaces now lives in
     // the History window, where it can be searched instead of being the last 25 rows of a
     // menu nobody can scroll.
@@ -609,7 +610,27 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
             a.addButton(withTitle: "Clear"); a.addButton(withTitle: "Cancel")
             if a.runModal() == .alertFirstButtonReturn { Store.shared.clearHistory() }
         },
+        .separator(),
+        // Arc has no Bookmarks menu; what Vane imports from other browsers lives here.
+        menu("Bookmarks", [
+
+            item(.bookmarkPage) { Windows.current?.active?.toggleBookmark(); rebuild() },
+            item("Export Bookmarks…", "") { Export.chooseAndExport(.bookmarks) },
+            .separator(),
+        ] + Store.shared.bookmarks(limit: 40).map { b in
+            item(b.title.isEmpty ? b.url : b.title, "") {
+                if let u = URL(string: b.url) { Windows.current?.active?.web.load(URLRequest(url: u)) }
+            }
+        }),
     ]))
+    root.addItem(menu("Extensions", [
+        item(.installExtension) { ExtensionHost.shared.chooseAndInstall(); rebuild() },
+        .separator(),
+    ] + ExtensionHost.shared.installed.map { ctx in
+        item("Remove " + (ctx.webExtension.displayName ?? "Extension"), "") {
+            ExtensionHost.shared.remove(ctx); rebuild()
+        }
+    }))
     // Standard, and standard is the point: ⌘M was dead until this menu existed, and the
     // window list is AppKit's to fill in once it knows which menu is the Window menu.
     let window = menu("Window", [
