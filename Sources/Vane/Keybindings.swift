@@ -147,13 +147,16 @@ enum Command: String, CaseIterable, Codable, Sendable {
     // File
     case newWindow, newPrivateWindow, newTab, reopenClosedTab, closeTab, closeWindow
     case printPage, settings
+    case openFile, savePageAs, sharePage
     // View
     case reload, hardReload, openLocation, find, toggleSidebar
+    case findNext, findPrevious
     case actualSize, zoomIn, zoomOut, fullScreen
     case copyPageURL, showLibrary
     case showReader, biggerReaderText, smallerReaderText, readerSerif
-    // History
+    // History / Archive
     case back, forward, clearHistory
+    case viewArchive, viewHistory, showDownloads, clearArchive
     // Bookmarks
     case bookmarkPage
     // Passwords
@@ -173,6 +176,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case goToSpace5, goToSpace6, goToSpace7, goToSpace8, goToSpace9
     // Tabs
     case nextTab, previousTab
+    case tabSwitcher, tabSwitcherBackwards
     case selectTab1, selectTab2, selectTab3, selectTab4
     case selectTab5, selectTab6, selectTab7, selectTab8, selectLastTab
     case pictureInPicture
@@ -180,11 +184,15 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case favouriteTab, pinTab
     case muteTab
     case commandPalette, searchTabs
+    // Window / Help
+    case minimizeWindow
+    case vaneHelp, keyboardShortcutsHelp
 
     enum Category: String, CaseIterable, Sendable {
         case file = "File", view = "View", history = "History", bookmarks = "Bookmarks"
         case passwords = "Passwords", sites = "Sites", extensions = "Extensions"
         case develop = "Develop", profiles = "Profiles", spaces = "Spaces", tabs = "Tabs"
+        case window = "Window", help = "Help"
     }
 
     var title: String {
@@ -197,10 +205,15 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .closeWindow: "Close Window"
         case .printPage: "Print…"
         case .settings: "Settings…"
+        case .openFile: "Open File…"
+        case .savePageAs: "Save Page As…"
+        case .sharePage: "Share…"
         case .reload: "Reload Page"
         case .hardReload: "Reload Ignoring Cache"
         case .openLocation: "Open Location…"
         case .find: "Find…"
+        case .findNext: "Find Next"
+        case .findPrevious: "Find Previous"
         case .toggleSidebar: "Toggle Sidebar"
         case .actualSize: "Actual Size"
         case .zoomIn: "Zoom In"
@@ -214,7 +227,11 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .readerSerif: "Reader Uses Serif"
         case .back: "Back"
         case .forward: "Forward"
-        case .clearHistory: "Clear History"
+        case .clearHistory: "Clear History…"
+        case .viewArchive: "View Archive"
+        case .viewHistory: "View History"
+        case .showDownloads: "Downloads"
+        case .clearArchive: "Clear Archive…"
         case .bookmarkPage: "Bookmark This Page"
         case .fillPassword: "Fill Password"
         case .importPasswords: "Import Passwords…"
@@ -247,6 +264,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .goToSpace9: "Go to Space 9"
         case .nextTab: "Next Tab"
         case .previousTab: "Previous Tab"
+        case .tabSwitcher: "Tab Switcher"
+        case .tabSwitcherBackwards: "Tab Switcher Backwards"
         case .selectTab1: "Select Tab 1"
         case .selectTab2: "Select Tab 2"
         case .selectTab3: "Select Tab 3"
@@ -265,17 +284,22 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .muteTab: "Mute Tab"
         case .commandPalette: "Search…"
         case .searchTabs: "Search Tabs…"
+        case .minimizeWindow: "Minimize"
+        case .vaneHelp: "Vane Help"
+        case .keyboardShortcutsHelp: "Keyboard Shortcuts"
         }
     }
 
     var category: Category {
         switch self {
         case .newWindow, .newPrivateWindow, .newTab, .reopenClosedTab, .closeTab,
-             .closeWindow, .printPage, .settings: .file
-        case .reload, .hardReload, .openLocation, .find, .toggleSidebar, .actualSize,
+             .closeWindow, .printPage, .settings, .openFile, .savePageAs, .sharePage: .file
+        case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious,
+             .toggleSidebar, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
              .smallerReaderText, .readerSerif, .copyPageURL, .showLibrary: .view
-        case .back, .forward, .clearHistory: .history
+        case .back, .forward, .clearHistory, .viewArchive, .viewHistory, .showDownloads,
+             .clearArchive: .history
         case .bookmarkPage: .bookmarks
         case .fillPassword, .importPasswords, .importHistoryAndBookmarks,
              .manageSavedPasswords: .passwords
@@ -287,6 +311,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .newSpace, .nextSpace, .previousSpace, .goToSpace1, .goToSpace2, .goToSpace3,
              .goToSpace4, .goToSpace5, .goToSpace6, .goToSpace7, .goToSpace8,
              .goToSpace9: .spaces
+        case .minimizeWindow: .window
+        case .vaneHelp, .keyboardShortcutsHelp: .help
         default: .tabs
         }
     }
@@ -306,7 +332,12 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .reload:           Keybinding("r", .command)
         case .hardReload:       Keybinding("r", [.command, .shift])
         case .openLocation:     Keybinding("l", .command)
+        case .openFile:         Keybinding("o", .command)
+        // Arc's ⌘S is the sidebar, and Save Page As is one modifier up — see §G.
+        case .savePageAs:       Keybinding("s", [.command, .shift])
         case .find:             Keybinding("f", .command)
+        case .findNext:         Keybinding("g", .command)
+        case .findPrevious:     Keybinding("g", [.command, .shift])
         case .toggleSidebar:    Keybinding("s", .command)
         case .actualSize:       Keybinding("0", .command)
         case .zoomIn:           Keybinding("+", .command)
@@ -315,11 +346,12 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .showReader:       Keybinding("r", [.command, .option])
         case .back:             Keybinding("[", .command)
         case .forward:          Keybinding("]", .command)
-        // Arc's ⌘D is a favourite and ⌘⇧D a pin, so bookmarking moves one modifier over.
-        // It is still in the Bookmarks menu, still rebindable, and still the same command.
+        // Arc's ⌘D pins the tab. Bookmarking keeps the adjacent ⌥⌘D it already had, and
+        // Favourite ships unbound — Arc gives it no default either, it is a menu item and
+        // a right-click. ⇧⌘D is left free (Arc spends it on the toolbar, which Vane has
+        // no equivalent of).
         case .bookmarkPage:     Keybinding("d", [.command, .option])
-        case .favouriteTab:     Keybinding("d", .command)
-        case .pinTab:           Keybinding("d", [.command, .shift])
+        case .pinTab:           Keybinding("d", .command)
         case .clearTabs:        Keybinding("k", [.command, .shift])
         case .copyPageURL:      Keybinding("c", [.command, .shift])
         // ⌘⇧L is Arc's Library; Fill Password moves to the adjacent ⌥⌘L.
@@ -339,9 +371,12 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .showWebInspector: Keybinding("i", [.command, .option])
         case .showJavaScriptConsole: Keybinding("c", [.command, .option])
         case .viewSource:       Keybinding("u", [.command, .option])
-        // Menu.swift spells this backtab + ⌃⇧; the init folds that to tab + ⌃⇧.
-        case .nextTab:          Keybinding("\u{19}", [.control, .shift])
-        case .previousTab:      Keybinding("\t", .control)
+        // Arc: ⌥⌘↑/↓ walk the sidebar, ⌃⇥ is the switcher and goes *forwards*.
+        // The init folds backtab + ⌃⇧ to tab + ⌃⇧.
+        case .nextTab:          Keybinding("\u{F701}", [.command, .option])
+        case .previousTab:      Keybinding("\u{F700}", [.command, .option])
+        case .tabSwitcher:      Keybinding("\t", .control)
+        case .tabSwitcherBackwards: Keybinding("\u{19}", [.control, .shift])
         case .selectTab1:       Keybinding("1", .command)
         case .selectTab2:       Keybinding("2", .command)
         case .selectTab3:       Keybinding("3", .command)
@@ -357,6 +392,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .muteTab:          Keybinding("m", [.command, .option])
         case .commandPalette:   Keybinding("p", [.command, .shift])
         case .searchTabs:       Keybinding("a", [.command, .shift])
+        case .viewHistory:      Keybinding("y", .command)
+        case .showDownloads:    Keybinding("j", [.command, .shift])
+        case .minimizeWindow:   Keybinding("m", .command)
         // Everything else ships unbound — it is a menu item with no key equivalent today.
         default: .unassigned
         }
@@ -379,14 +417,49 @@ enum Command: String, CaseIterable, Codable, Sendable {
     private struct Saved: Codable {
         var bindings: [String: Keybinding] = [:]
         var priorities: [String: Priority] = [:]
+        /// Optional so a blob written before migrations existed still decodes; nil is 0.
+        var migrated: Int?
+    }
+
+    // MARK: Migration
+
+    /// Defaults that moved after they had already shipped, and what they used to be.
+    /// A *saved* binding equal to the old default is not a decision anybody made about
+    /// those keys — it is the default they were handed, written down by a pane that stores
+    /// whatever it records — so it is dropped and the new default takes over. A binding
+    /// the user actually chose is left exactly where it is, even if that now collides.
+    nonisolated static let movedDefaults: [Command: Keybinding] = [
+        .nextTab: Keybinding("\u{19}", [.control, .shift]),
+        .previousTab: Keybinding("\t", .control),
+        .favouriteTab: Keybinding("d", .command),
+        .pinTab: Keybinding("d", [.command, .shift]),
+    ]
+
+    /// Bumped when `movedDefaults` grows, so each migration runs once per user.
+    nonisolated static let migration = 1
+
+    /// Pure, so `selfcheck --pure` can prove the rule without a defaults suite.
+    nonisolated static func migrate(_ bindings: [String: Keybinding],
+                                    moved: [Command: Keybinding]) -> [String: Keybinding] {
+        var out = bindings
+        for (command, old) in moved where out[command.rawValue] == old {
+            out[command.rawValue] = nil
+        }
+        return out
     }
 
     private static var cached: Saved?
     private static var state: Saved {
         get {
             if let cached { return cached }
-            let s = defaults.data(forKey: storeKey)
+            var s = defaults.data(forKey: storeKey)
                 .flatMap { try? JSONDecoder().decode(Saved.self, from: $0) } ?? Saved()
+            if (s.migrated ?? 0) < migration {
+                s.bindings = migrate(s.bindings, moved: movedDefaults)
+                s.migrated = migration
+                // Not `state = s`: this is the getter, and the setter would re-enter it.
+                if let d = try? JSONEncoder().encode(s) { defaults.set(d, forKey: storeKey) }
+            }
             cached = s
             return s
         }
@@ -641,9 +714,12 @@ extension Keybindings {
             ("Fill Password defaults to ⌥⌘L", binding(for: .fillPassword).display == "⌥⌘L"),
             ("Show Library defaults to ⇧⌘L, the way Arc binds it",
              binding(for: .showLibrary).display == "⇧⌘L"),
-            ("Favourite Tab defaults to ⌘D", binding(for: .favouriteTab).display == "⌘D"),
-            ("Pin Tab defaults to ⇧⌘D", binding(for: .pinTab).display == "⇧⌘D"),
-            ("Bookmark This Page moves off ⌘D to ⌥⌘D",
+            ("Pin Tab defaults to ⌘D, the way Arc binds it",
+             binding(for: .pinTab).display == "⌘D"),
+            ("Favourite Tab ships unbound, as Arc does",
+             binding(for: .favouriteTab).display == "---"),
+            ("⇧⌘D is left free", conflicts(Keybinding("d", [.command, .shift])).isEmpty),
+            ("Bookmark This Page keeps ⌥⌘D",
              binding(for: .bookmarkPage).display == "⌥⌘D"),
             ("Clear Tabs defaults to ⇧⌘K", binding(for: .clearTabs).display == "⇧⌘K"),
             ("Copy Page URL defaults to ⇧⌘C", binding(for: .copyPageURL).display == "⇧⌘C"),
@@ -654,8 +730,22 @@ extension Keybindings {
                 && binding(for: .previousSpace).display == "⌥⌘←"),
             ("Go to Space N defaults to ⌃N",
              binding(for: .goToSpace1).display == "⌃1" && binding(for: .goToSpace9).display == "⌃9"),
-            ("Previous Tab defaults to ⌃⇥", binding(for: .previousTab).display == "⌃⇥"),
-            ("Next Tab defaults to ⌃⇧⇥", binding(for: .nextTab).display == "⌃⇧⇥"),
+            ("the Tab Switcher goes forwards on ⌃⇥, not backwards",
+             binding(for: .tabSwitcher).display == "⌃⇥"
+                && binding(for: .tabSwitcherBackwards).display == "⌃⇧⇥"),
+            ("Next and Previous Tab walk the sidebar on ⌥⌘↓ and ⌥⌘↑",
+             binding(for: .nextTab).display == "⌥⌘↓"
+                && binding(for: .previousTab).display == "⌥⌘↑"),
+            ("View History defaults to ⌘Y", binding(for: .viewHistory).display == "⌘Y"),
+            ("Downloads defaults to ⇧⌘J", binding(for: .showDownloads).display == "⇧⌘J"),
+            ("Minimize defaults to ⌘M", binding(for: .minimizeWindow).display == "⌘M"),
+            ("Open File defaults to ⌘O", binding(for: .openFile).display == "⌘O"),
+            ("Save Page As defaults to ⇧⌘S, leaving ⌘S the sidebar's",
+             binding(for: .savePageAs).display == "⇧⌘S"
+                && binding(for: .toggleSidebar).display == "⌘S"),
+            ("Find Next and Previous default to ⌘G and ⇧⌘G",
+             binding(for: .findNext).display == "⌘G"
+                && binding(for: .findPrevious).display == "⇧⌘G"),
             ("Select Tab 1 defaults to ⌘1", binding(for: .selectTab1).display == "⌘1"),
             // The local monitor sees every keyDown in the app. If a bare keystroke ever
             // resolved to a command, typing would stop working everywhere.
@@ -672,6 +762,11 @@ extension Keybindings {
         out.append(("the shipped defaults do not collide with each other",
                     Command.allCases.filter { binding(for: $0).isAssigned }
                         .allSatisfy { conflicts(binding(for: $0)) == [$0] }))
+        // The same thing said about `defaultBinding` itself rather than about what the
+        // store hands back, so a duplicate cannot hide behind an override.
+        let shipped = Command.allCases.map(\.defaultBinding).filter(\.isAssigned)
+        out.append(("no two commands ship with the same default binding",
+                    Set(shipped).count == shipped.count))
         out.append(("an unassigned binding conflicts with nothing",
                     conflicts(.unassigned).isEmpty))
         set(Keybinding("t", .command), for: .newWindow)
@@ -684,6 +779,28 @@ extension Keybindings {
         cached = nil
         out.append(("an override survives a trip through UserDefaults",
                     binding(for: .newWindow).display == "⌘T"))
+
+        // Migration: the ⌃⇥ swap and ⌘D moving from Favourite to Pin.
+        let stale: [String: Keybinding] = [
+            Command.previousTab.rawValue: Keybinding("\t", .control),
+            Command.favouriteTab.rawValue: Keybinding("d", .command),
+            Command.pinTab.rawValue: Keybinding("f", [.command, .control, .option]),
+            Command.newTab.rawValue: Keybinding("t", .command),
+        ]
+        let migrated = migrate(stale, moved: movedDefaults)
+        out += [
+            ("a saved binding that was only the old default is dropped",
+             migrated[Command.previousTab.rawValue] == nil
+                && migrated[Command.favouriteTab.rawValue] == nil),
+            ("a binding the user really chose is not touched",
+             migrated[Command.pinTab.rawValue] == Keybinding("f", [.command, .control, .option])),
+            ("a command whose default never moved is not touched",
+             migrated[Command.newTab.rawValue] == Keybinding("t", .command)),
+            ("migrating twice changes nothing more",
+             migrate(migrated, moved: movedDefaults) == migrated),
+            ("every moved default is a binding the app no longer ships",
+             movedDefaults.allSatisfy { $0.key.defaultBinding != $0.value }),
+        ]
 
         // Reset.
         reset(.newWindow)
@@ -715,7 +832,7 @@ extension Keybindings {
                 && search("cmd shift t").contains(.reopenClosedTab)),
             ("a shortcut query does not return the wrong modifiers",
              !search("cmd t").contains(.reopenClosedTab)),
-            ("named keys can be typed", search("ctrl tab").contains(.previousTab)),
+            ("named keys can be typed", search("ctrl tab").contains(.tabSwitcher)),
             ("a modifiers-only query lists everything using them",
              search("⌥⌘").contains(.showWebInspector) && !search("⌥⌘").contains(.newTab)),
             ("a plain word is not mistaken for a shortcut",

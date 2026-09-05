@@ -46,12 +46,47 @@ private final class Act: NSObject {
     return entry
 }
 
+private extension NSMenuItem {
+    /// `performTextFinderAction:` asks the sender which action it is, and the answer is the
+    /// tag — so a standard find item needs one set inline.
+    func tagged(_ tag: Int) -> NSMenuItem {
+        self.tag = tag
+        return self
+    }
+}
+
 private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     let m = NSMenu(title: title)
     items.forEach(m.addItem)
     let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
     holder.submenu = m
     return holder
+}
+
+/// An item AppKit already implements: it is dispatched down the responder chain, so it
+/// greys out on its own and works in a web view, a text field and the address bar alike.
+/// Deliberately outside the registry — nobody rebinds Copy, and forty spelling toggles in
+/// the Shortcuts pane would bury the shortcuts anybody actually looks for.
+private func standard(_ title: String, _ action: Selector, _ key: String = "",
+                      _ mods: NSEvent.ModifierFlags = .command) -> NSMenuItem {
+    let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
+    entry.keyEquivalentModifierMask = mods
+    return entry
+}
+
+/// The Find submenu's next/previous. AppKit dispatches `performTextFinderAction:` and asks
+/// the *sender* which action it is, so the tag is the whole difference between them. The
+/// key still comes from the registry, and the monitor sends the same selector at the
+/// responder chain with the same sender.
+@MainActor private func finderItem(_ command: Command, _ action: NSTextFinder.Action) -> NSMenuItem {
+    let selector = #selector(NSResponder.performTextFinderAction(_:))
+    let binding = Keybindings.binding(for: command)
+    let entry = NSMenuItem(title: command.title, action: selector,
+                           keyEquivalent: binding.menuKeyEquivalent)
+    entry.keyEquivalentModifierMask = binding.menuModifierMask
+    entry.tag = action.rawValue
+    Keybindings.actions[command] = { NSApp.sendAction(selector, to: nil, from: entry) }
+    return entry
 }
 
 @MainActor private func developItems() -> [NSMenuItem] {
@@ -208,7 +243,67 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     }
     favourite.isEnabled = store?.active != nil
     pin.isEnabled = store?.active != nil
-    return [favourite, pin, .separator(), tidy, undo, clear]
+    // Arc walks the sidebar with ⌥⌘↑/↓ and holds ⌃⇥ for the switcher, which is an MRU
+    // overlay there and plain sidebar order here until that overlay exists (audit P1).
+    let navigation = [
+        item(.previousTab) { Windows.current?.cycle(-1) },
+        item(.nextTab) { Windows.current?.cycle(1) },
+        item(.tabSwitcher) { Windows.current?.cycle(1) },
+        item(.tabSwitcherBackwards) { Windows.current?.cycle(-1) },
+    ]
+    return [favourite, pin, .separator(), tidy, undo, clear, .separator()] + navigation
+}
+
+// MARK: - File
+
+/// ⌘O. A local file opens in a tab of its own; `loadFileURL` is the only load a WKWebView
+/// will accept for a file url, and it needs the read access spelled out.
+@MainActor private func openFile() {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = false
+    panel.message = "Open a file in a new tab"
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    let store = Windows.current ?? Windows.open()
+    store.newBlankTab().web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+}
+
+/// ⇧⌘S. ponytail: one format — a web archive, the same single file Safari's Save As
+/// defaults to, written by WebKit itself. A "Page Source"/"PDF" picker is three more code
+/// paths for a menu item nobody visits twice.
+@MainActor private func savePageAs() {
+    guard let tab = Windows.current?.active, let url = tab.currentURL else { return }
+    let panel = NSSavePanel()
+    let base = TidyTitles.title(for: tab)
+    panel.nameFieldStringValue = (base.isEmpty ? (url.host ?? "Page") : base) + ".webarchive"
+    panel.canCreateDirectories = true
+    guard panel.runModal() == .OK, let destination = panel.url else { return }
+    tab.web.createWebArchiveData { result in
+        guard case .success(let data) = result else { return }
+        try? data.write(to: destination)
+    }
+}
+
+/// File ▸ Share. ponytail: the system picker anchored to the window, not a submenu built
+/// from `NSSharingService.sharingServices(forItems:)` — that call is deprecated, and the
+/// picker is the one macOS keeps up to date with whatever the user has enabled.
+@MainActor private func sharePage() {
+    guard let url = Windows.current?.active?.currentURL,
+          let view = NSApp.keyWindow?.contentView else { return }
+    let picker = NSSharingServicePicker(items: [url])
+    picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
+}
+
+// MARK: - Archive
+
+/// Arc's Archive menu opens the Library at a section. Vane's Library is one popover on the
+/// sidebar's footer, so both rows land in the same place — and the sidebar has to be
+/// showing for the popover to have anything to hang off.
+@MainActor private func showLibrary() {
+    guard let store = Windows.current else { return }
+    store.sidebarShown = true
+    store.libraryOpen = true
 }
 
 /// ⇧⌘C. Arc's, and the one browser shortcut everybody misses when it is missing.
@@ -269,22 +364,33 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
 
 @MainActor func buildMenu() -> NSMenu {
     let root = NSMenu()
+    let makeDefaultApp = item(.makeDefaultBrowser) { URLHandling.makeDefaultBrowser() }
+    makeDefaultApp.isEnabled = !URLHandling.isDefaultBrowser
     root.addItem(menu("Vane", [
         NSMenuItem(title: "About Vane", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
         .separator(),
         item(.settings) { SettingsWindow.show() },
         .separator(),
+        // Arc keeps both of these in the app menu; Vane had them filed under Passwords and
+        // Sites, where nobody looking for them would think to open.
+        item(.importHistoryAndBookmarks) { BrowserImport.chooseAndImport() },
+        makeDefaultApp,
+        .separator(),
         NSMenuItem(title: "Hide Vane", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
+        standard("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h",
+                 [.command, .option]),
+        standard("Show All", #selector(NSApplication.unhideAllApplications(_:))),
+        .separator(),
         NSMenuItem(title: "Quit Vane", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
     ]))
     root.addItem(menu("File", [
+        item(.newTab) { Windows.current?.newTab(nil) },
         item(.newWindow) { Windows.open() },
         item(.newPrivateWindow) { Windows.open(isPrivate: true) },
-        item(.newTab) { Windows.current?.newTab(nil) },
         .separator(),
-        item(.reopenClosedTab) {
-            if let u = ClosedTabs.pop() { (Windows.current ?? Windows.open()).newTab(u) }
-        },
+        item(.openLocation) { Windows.current?.palette = .address },
+        item(.openFile) { openFile() },
+        .separator(),
         // Arc's ⌘W: a Today tab is archived rather than destroyed, and a favourite or a
         // pinned tab just loses its page and stays in the sidebar.
         item(.closeTab) { if let s = Windows.current, let c = s.current { s.archive(c) } },
@@ -292,26 +398,67 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
             NSApp.keyWindow?.performClose(nil)
         },
         .separator(),
+        item(.savePageAs) { savePageAs() },
         responderItem(.printPage, #selector(NSView.printView(_:))) {
             NSApp.sendAction(#selector(NSView.printView(_:)), to: nil, from: nil)
         },
+        item(.sharePage) { sharePage() },
     ]))
     root.addItem(menu("Edit", [
-        NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"),
-        NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "Z"),
+        NSMenuItem(title: "Undo", action: NSSelectorFromString("undo:"), keyEquivalent: "z"),
+        NSMenuItem(title: "Redo", action: NSSelectorFromString("redo:"), keyEquivalent: "Z"),
         .separator(),
         NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"),
         NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"),
         NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"),
+        standard("Paste and Match Style", NSSelectorFromString("pasteAsPlainText:"), "v",
+                 [.command, .option, .shift]),
+        standard("Delete", #selector(NSText.delete(_:)), "", []),
         NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"),
+        .separator(),
+        menu("Find", [
+            item(.find) { Windows.current?.findOpen = true },
+            finderItem(.findNext, .nextMatch),
+            finderItem(.findPrevious, .previousMatch),
+            standard("Use Selection for Find", #selector(NSResponder.performTextFinderAction(_:)), "e")
+                .tagged(NSTextFinder.Action.setSearchString.rawValue),
+        ]),
+        menu("Spelling and Grammar", [
+            standard("Show Spelling and Grammar", NSSelectorFromString("showGuessPanel:"), ":"),
+            standard("Check Document Now", NSSelectorFromString("checkSpelling:"), ";"),
+            .separator(),
+            standard("Check Spelling While Typing", NSSelectorFromString("toggleContinuousSpellChecking:")),
+            standard("Check Grammar With Spelling", NSSelectorFromString("toggleGrammarChecking:")),
+            standard("Correct Spelling Automatically", NSSelectorFromString("toggleAutomaticSpellingCorrection:")),
+        ]),
+        menu("Substitutions", [
+            standard("Show Substitutions", NSSelectorFromString("orderFrontSubstitutionsPanel:")),
+            .separator(),
+            standard("Smart Copy/Paste", NSSelectorFromString("toggleSmartInsertDelete:")),
+            standard("Smart Quotes", NSSelectorFromString("toggleAutomaticQuoteSubstitution:")),
+            standard("Smart Dashes", NSSelectorFromString("toggleAutomaticDashSubstitution:")),
+            standard("Smart Links", NSSelectorFromString("toggleAutomaticLinkDetection:")),
+            standard("Data Detectors", NSSelectorFromString("toggleAutomaticDataDetection:")),
+            standard("Text Replacement", NSSelectorFromString("toggleAutomaticTextReplacement:")),
+        ]),
+        menu("Transformations", [
+            standard("Make Upper Case", NSSelectorFromString("uppercaseWord:")),
+            standard("Make Lower Case", NSSelectorFromString("lowercaseWord:")),
+            standard("Capitalize", NSSelectorFromString("capitalizeWord:")),
+        ]),
+        menu("Speech", [
+            standard("Start Speaking", NSSelectorFromString("startSpeaking:")),
+            standard("Stop Speaking", NSSelectorFromString("stopSpeaking:")),
+        ]),
+        .separator(),
+        standard("Emoji & Symbols", #selector(NSApplication.orderFrontCharacterPalette(_:)),
+                 " ", [.command, .control]),
+        standard("Start Dictation…", NSSelectorFromString("startDictation:")),
     ]))
     root.addItem(menu("View", [
         item(.reload) { Windows.current?.active?.reload() },
         item(.hardReload) { Windows.current?.active?.hardReload() },
-        item(.openLocation) { Windows.current?.palette = .address },
-        item(.find) { Windows.current?.findOpen = true },
         item(.toggleSidebar) { Windows.current?.sidebarShown.toggle() },
-        item(.showLibrary) { Windows.current?.libraryOpen = true },
         item(.copyPageURL) { copyPageURL() },
         .separator(),
         item(.actualSize) { Windows.current?.active.map(Zoom.reset) },
@@ -330,15 +477,12 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     root.addItem(menu("Passwords", [
         item(.fillPassword) { Windows.current?.active?.fillPassword() },
         item(.importPasswords) { PasswordImport.chooseAndImport() },
-        item(.importHistoryAndBookmarks) { BrowserImport.chooseAndImport() },
         .separator(),
         item("Export Passwords…", "") { Export.chooseAndExport(.passwords) },
         item(.manageSavedPasswords) {
             NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
         },
     ]))
-    let makeDefault = item(.makeDefaultBrowser) { URLHandling.makeDefaultBrowser() }
-    makeDefault.isEnabled = !URLHandling.isDefaultBrowser
     let blocking = item(.blockAds) { Blocker.enabled.toggle(); rebuild() }
     blocking.state = Blocker.enabled ? .on : .off
     let tidyDownloads = item("Tidy Download Filenames", "") {
@@ -361,8 +505,6 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
         tidyDownloads,
         blocking,
         item(.addFilterList) { Blocker.chooseAndAddList() },
-        .separator(),
-        makeDefault,
         .separator(),
         item(.forgetCertificateExceptions) {
             let a = NSAlert()
@@ -399,21 +541,36 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
             if let u = URL(string: b.url) { Windows.current?.active?.web.load(URLRequest(url: u)) }
         }
     }))
-    root.addItem(menu("History", [
+    // Arc's Archive menu, in Arc's order — the recent-pages list it replaces now lives in
+    // the History window, where it can be searched instead of being the last 25 rows of a
+    // menu nobody can scroll.
+    root.addItem(menu("Archive", [
         item(.back) { Windows.current?.active?.back() },
         item(.forward) { Windows.current?.active?.forward() },
         .separator(),
-        item(.nextTab) { Windows.current?.cycle(1) },
-        item(.previousTab) { Windows.current?.cycle(-1) },
+        item(.viewArchive) { showLibrary() },
+        item(.viewHistory) { HistoryWindow.show() },
+        item(.showDownloads) { showLibrary() },
         .separator(),
-    ] + Store.shared.recent(limit: 25).map { h in
-        item(h.title.isEmpty ? h.url : h.title, "") {
-            if let u = URL(string: h.url) { Windows.current?.active?.web.load(URLRequest(url: u)) }
-        }
-    } + [
+        item(.reopenClosedTab) {
+            if let u = ClosedTabs.pop() { (Windows.current ?? Windows.open()).newTab(u) }
+        },
         .separator(),
         item("Export History (JSON)…", "") { Export.chooseAndExport(.historyJSON) },
         item("Export History (CSV)…", "") { Export.chooseAndExport(.historyCSV) },
+        .separator(),
+        item(.clearArchive) {
+            guard let store = Windows.current else { return }
+            let archive = Archive.shared(for: store.profileID)
+            let a = NSAlert()
+            a.messageText = "Clear the archive?"
+            a.informativeText = "\(archive.entries.count) archived tab"
+                + (archive.entries.count == 1 ? "" : "s")
+                + " will be forgotten. The pages stay in your history."
+            a.addButton(withTitle: "Clear"); a.addButton(withTitle: "Cancel")
+            a.buttons.first?.hasDestructiveAction = true
+            if a.runModal() == .alertFirstButtonReturn { archive.clear() }
+        },
         item(.clearHistory) {
             let a = NSAlert()
             a.messageText = "Clear all browsing history?"
@@ -422,5 +579,34 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
             if a.runModal() == .alertFirstButtonReturn { Store.shared.clearHistory() }
         },
     ]))
+    // Standard, and standard is the point: ⌘M was dead until this menu existed, and the
+    // window list is AppKit's to fill in once it knows which menu is the Window menu.
+    let window = menu("Window", [
+        responderItem(.minimizeWindow, #selector(NSWindow.performMiniaturize(_:))) {
+            NSApp.keyWindow?.performMiniaturize(nil)
+        },
+        standard("Zoom", #selector(NSWindow.performZoom(_:))),
+        .separator(),
+        item(.showLibrary) { showLibrary() },
+        .separator(),
+        standard("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))),
+    ])
+    root.addItem(window)
+    NSApp.windowsMenu = window.submenu
+    // AppKit files a window into this menu as it is ordered front — and the menu is thrown
+    // away and rebuilt every time a checkmark moves, taking the list with it. Saying it
+    // again about every window is what keeps the list there; `changeWindowsItem` adds or
+    // updates, so repeating it cannot double anything up.
+    for w in NSApp.windows where !w.isExcludedFromWindowsMenu && !w.title.isEmpty {
+        NSApp.changeWindowsItem(w, title: w.title, filename: false)
+    }
+    let help = menu("Help", [
+        item(.vaneHelp) {
+            if let u = URL(string: "https://github.com/notnaki/vane") { NSWorkspace.shared.open(u) }
+        },
+        item(.keyboardShortcutsHelp) { SettingsWindow.show(tab: "shortcuts") },
+    ])
+    root.addItem(help)
+    NSApp.helpMenu = help.submenu
     return root
 }
