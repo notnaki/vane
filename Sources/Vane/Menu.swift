@@ -521,6 +521,9 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         item(.newTab) { Windows.current?.newTab(nil) },
         item(.newWindow) { Windows.open() },
         item(.newPrivateWindow) { Windows.open(isPrivate: true) },
+        // Arc's ⌥⌘N: a search that is not in any window yet. `open(nil)` is the whole of it
+        // — a Little Arc with no url comes up with its command bar over an empty page.
+        item(.newLittleArc) { LittleArc.open(nil) },
         .separator(),
         item(.openLocation) { Windows.current?.openPalette(.address) },
         item(.openFile) { openFile() },

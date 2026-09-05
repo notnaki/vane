@@ -47,8 +47,16 @@ import SwiftUI
 
     /// One url, one window. Called once per url, so three links arriving together are three
     /// Little Arcs — which is what Arc does, and what "one page per window" means.
-    /// `url` is nil for a Little Arc opened with nothing in it — ⌘T from inside one, which
-    /// comes up empty with the search bar over it, the same as a new window does.
+    /// `url` is nil for a Little Arc opened with nothing in it — ⌘T from inside one, and
+    /// File ▸ New Little Arc Window (⌥⌘N), which come up empty with the search bar over the
+    /// page, the same as a new window does. `TabStore.init` is what opens that bar.
+    ///
+    /// ponytail: ⌥⌘N is an ordinary rebindable command, so it only fires while Vane is
+    /// frontmost. Arc's is system-wide. Ceiling: from another app you have to switch to Vane
+    /// first. Upgrade path is `RegisterEventHotKey` (Carbon, still supported, and the only
+    /// route that needs no permission at all) — deliberately not `CGEvent.tapCreate`, which
+    /// is a keylogger as far as the OS is concerned and costs the user an Accessibility or
+    /// Input Monitoring grant, which is far too much to ask for one shortcut.
     @discardableResult
     static func open(_ url: URL?) -> TabStore {
         let profile = ProfileManager.shared.active

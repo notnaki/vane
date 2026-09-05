@@ -1871,16 +1871,22 @@ private struct TabRow: View {
     }
 
     /// Arc's ⌥-click: the tab opens *beside* the one you are looking at, in a split, instead
-    /// of replacing it.
+    /// of replacing it. Arc's ⌥⌘-click: it floats off into a Little Arc instead, leaving the
+    /// row where it is — `TabActions.rowClick` is the table, proved offline.
     /// ponytail: `NSEvent.modifierFlags` read at the moment of the tap rather than a
     /// modifier-aware gesture. SwiftUI's tap carries no flags, and the only alternative is a
     /// second hit-testing layer over every row. Ceiling: it reads the *current* state of the
     /// keyboard, so a modifier released inside the same click's few milliseconds is missed.
     private func select() {
-        if NSEvent.modifierFlags.contains(.option), store.current != tab.id {
-            store.addPane(tab.id)
-        } else {
-            store.current = tab.id
+        let mods = NSEvent.modifierFlags
+        switch TabActions.rowClick(option: mods.contains(.option),
+                                   command: mods.contains(.command),
+                                   isCurrent: store.current == tab.id) {
+        case .show:   store.current = tab.id
+        case .split:  store.addPane(tab.id)
+        // A row with no page yet — a parked favourite that has never loaded — has nothing to
+        // hand over, so it is shown instead of opening an empty window.
+        case .little: if let url = tab.currentURL { LittleArc.open(url) } else { store.current = tab.id }
         }
     }
 

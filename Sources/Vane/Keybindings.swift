@@ -146,6 +146,7 @@ struct Keybinding: Codable, Hashable, Sendable {
 enum Command: String, CaseIterable, Codable, Sendable {
     // File
     case newWindow, newPrivateWindow, newTab, reopenClosedTab, closeTab, closeWindow
+    case newLittleArc
     case printPage, settings
     case openFile, savePageAs, sharePage
     // View
@@ -200,6 +201,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         switch self {
         case .newWindow: "New Window"
         case .newPrivateWindow: "New Private Window"
+        case .newLittleArc: "New Little Arc Window"
         case .newTab: "New Tab"
         case .reopenClosedTab: "Reopen Closed Tab"
         case .closeTab: "Archive Tab"
@@ -296,8 +298,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
 
     var category: Category {
         switch self {
-        case .newWindow, .newPrivateWindow, .newTab, .reopenClosedTab, .closeTab,
-             .closeWindow, .printPage, .settings, .openFile, .savePageAs, .sharePage: .file
+        case .newWindow, .newPrivateWindow, .newTab, .newLittleArc, .reopenClosedTab,
+             .closeTab, .closeWindow, .printPage, .settings, .openFile, .savePageAs,
+             .sharePage: .file
         case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious,
              .toggleSidebar, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
@@ -327,6 +330,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
         switch self {
         case .newWindow:        Keybinding("n", .command)
         case .newPrivateWindow: Keybinding("n", [.command, .shift])
+        // Arc's ⌥⌘N. See LittleArc.swift for why it is not a system-wide hotkey.
+        case .newLittleArc:     Keybinding("n", [.command, .option])
         case .newTab:           Keybinding("t", .command)
         case .reopenClosedTab:  Keybinding("t", [.command, .shift])
         case .closeTab:         Keybinding("w", .command)
