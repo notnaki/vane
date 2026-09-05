@@ -709,21 +709,16 @@ private struct SpacesPane: View {
             // No New Space button: the footer's `+` makes one and names it in place, in an
             // editor that hangs off a button this panel is covering.
             PaneHeader(title: "Spaces") { EmptyView() }
-            if store.spaces.isEmpty {
-                Text("This profile has no Spaces yet.")
-                    .font(Look.text).foregroundStyle(Look.inkTertiary)
-                    .padding(.horizontal, Look.cardInset)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else {
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: Look.inset) {
-                        ForEach(store.spaces) { SpaceColumn(space: $0) }
-                    }
-                    .padding(.horizontal, Look.cardInset)
-                    .padding(.bottom, Look.inset)
+            // No empty state: a profile always has at least one Space, and the window this
+            // panel is over is showing one. See `ProfileManager.ensureSpaces`.
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: Look.inset) {
+                    ForEach(store.spaces) { SpaceColumn(space: $0) }
                 }
-                .scrollContentBackground(.hidden)
+                .padding(.horizontal, Look.cardInset)
+                .padding(.bottom, Look.inset)
             }
+            .scrollContentBackground(.hidden)
         }
         .padding(.top, Look.inset * 2)
         .padding(.horizontal, Look.inset)

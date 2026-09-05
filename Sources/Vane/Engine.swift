@@ -742,22 +742,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // handed to a window that is in a Space opens *in* that Space rather than replacing
         // it, which is what "new windows open in the current space" means.
         let urls = space.map { s in s.tabURLs + urls.filter { !s.tabURLs.contains($0) } } ?? urls
-        // What stays belongs to the profile, not to a window, so only the first window of
-        // that profile gets it back — and the session's copy of those same urls is dropped
-        // so they don't come up twice.
-        // A Little Arc does not count: it is not a window the profile's pinned rows belong
-        // to, and letting it be "the first one" would cost the next real window its rows.
-        let firstOfProfile = TabStore.all
-            .filter { $0.profileID == profileID && !$0.isPrivate && !$0.isLittle }.count == 1
-        let mine = !isPrivate && !isLittle && firstOfProfile
         // Favourites are the one thing every Space shares, so they come from the profile
         // whether this window is in a Space or not. `Spaces.favourites` also folds any
         // per-space grid an older spaces.json still carries into that one list.
         // A Little Arc has no sidebar to put either section in, and nothing it does may
         // move the profile's grid — so it starts with the one page it was handed.
         let favourites = isPrivate || isLittle ? [] : Spaces.favourites(for: profileID)
-        let pinned = isLittle ? []
-            : (space?.pinnedTabURLs ?? (mine ? TabStore.stayingURLs(.pinned, for: profileID) : []))
+        // Pinned rows belong to the Space, full stop: a browser window always has one, and a
+        // Little Arc or a private window has neither a Space nor rows to restore.
+        let pinned = space?.pinnedTabURLs ?? []
         // A space carries its own per-tab state in a sidecar; a window restore is handed one.
         // Merged rather than swapped, the sidecar winning: on the launch that migrates a
         // profile into its first Space there is no sidecar yet, and the session's own titles
@@ -1081,21 +1074,22 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         }
     }
 
-    /// ponytail: the two staying sections' urls in UserDefaults, deliberately not in
-    /// session.json — the session is per-window and is rewritten by whichever window closed
-    /// last, while favourites and pinned tabs have to outlive all of them. Ceiling: one set
-    /// per profile, so favouriting in two windows at once means last writer wins.
+    /// Where the Favourites grid is written: UserDefaults, deliberately not session.json —
+    /// the session is per-window and is rewritten by whichever window closed last, while
+    /// the grid has to outlive all of them. Ceiling: one grid per profile, so favouriting
+    /// in two windows at once means last writer wins.
     ///
     /// The default profile keeps the un-suffixed `pinnedTabs` key for its *favourites*: that
     /// key predates the split between Favourites and Pinned, and pointing it anywhere else
     /// would drop every existing user's grid on the floor for the sake of a tidier name.
+    ///
+    /// `.pinned` names the old `pinnedRows` key, which nothing writes any more: Pinned rows
+    /// belong to a Space, and every browser window is in one. `ProfileManager.ensureSpaces`
+    /// is the last reader — it migrates that key into the profile's first Space and deletes
+    /// it. ponytail: the key name stays here rather than moving, so there is one place that
+    /// says what a profile's defaults are called.
     static func defaultsKey(_ kind: TabKind, _ profileID: UUID) -> String {
         ProfileManager.defaultsKey(kind == .favourite ? "pinnedTabs" : "pinnedRows", profileID)
-    }
-
-    static func stayingURLs(_ kind: TabKind, for profileID: UUID) -> [URL] {
-        (UserDefaults.vane.stringArray(forKey: defaultsKey(kind, profileID)) ?? [])
-            .compactMap(URL.init(string:))
     }
 
     /// What is written down for a favourite or a pinned tab: the page it is on. Only web
@@ -1121,16 +1115,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         }
         let favourites = urls(.favourite), pinned = urls(.pinned)
         // Arc: the only thing Spaces share is Favourites. The grid belongs to the profile and
-        // is written there from every window; the Pinned rows belong to whichever Space this
-        // window is showing, and only fall back to the profile outside one.
+        // is written there from every window; the Pinned rows belong to the Space this window
+        // is showing — and it is always showing one, so there is no profile-level fallback.
         UserDefaults.vane.set(favourites, forKey: TabStore.defaultsKey(.favourite, profileID))
-        if let id = currentSpaceID, var space = spaces.first(where: { $0.id == id }) {
-            space.pinnedURLs = []          // migrated out; see Spaces.favourites
-            space.pinnedTabURLs = pinned.compactMap(URL.init(string:))
-            ProfileManager.shared.updateSpace(space)
-            return
-        }
-        UserDefaults.vane.set(pinned, forKey: TabStore.defaultsKey(.pinned, profileID))
+        guard let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
+        else { return }
+        space.pinnedURLs = []          // migrated out; see Spaces.favourites
+        space.pinnedTabURLs = pinned.compactMap(URL.init(string:))
+        ProfileManager.shared.updateSpace(space)
     }
 
     // MARK: Spaces
