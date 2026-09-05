@@ -329,6 +329,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("content blocker", Blocker.check), ("browser import", BrowserImport.check),
                                ("favicons + tabs", Favicons.check), ("url handling", URLHandling.check),
                                ("error pages", ErrorPage.check), ("site permissions", SitePermissions.check),
+                               ("site control center", SiteControl.check),
                                ("extensions", ExtensionHost.check),
                                ("profiles + spaces", ProfileManager.check),
                                ("spaces", Spaces.check),
