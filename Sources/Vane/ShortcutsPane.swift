@@ -349,7 +349,7 @@ extension ShortcutsPane {
             ("two clashes are listed",
              alsoUsedBy([.newTab, .newWindow]) == "Also used by New Tab, New Window"),
             ("an empty query groups by category", grouped.count == Command.Category.allCases.count),
-            ("…in menu order", grouped.first?.0 == "File" && grouped.last?.0 == "Tabs"),
+            ("…in menu order", grouped.first?.0 == "File" && grouped.last?.0 == "Help"),
             ("…and lists every command once",
              grouped.flatMap(\.1).count == all.count && Set(grouped.flatMap(\.1)).count == all.count),
             ("a query is one ranked card, headerless",
