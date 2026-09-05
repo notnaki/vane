@@ -388,7 +388,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         item(.newWindow) { Windows.open() },
         item(.newPrivateWindow) { Windows.open(isPrivate: true) },
         .separator(),
-        item(.openLocation) { Windows.current?.palette = .address },
+        item(.openLocation) { Windows.current?.openPalette(.address) },
         item(.openFile) { openFile() },
         .separator(),
         // Arc's ⌘W: a Today tab is archived rather than destroyed, and a favourite or a
@@ -418,8 +418,11 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         .separator(),
         menu("Find", [
             item(.find) { Windows.current?.findOpen = true },
-            finderItem(.findNext, .nextMatch),
-            finderItem(.findPrevious, .previousMatch),
+            // Not `finderItem`: Vane's find bar is WebKit's search, not an NSTextFinder,
+            // so these run the bar's own next/previous — which is also what the ⌘G the
+            // event monitor sees runs. See Find.advance.
+            item(.findNext) { Find.advance(forward: true) },
+            item(.findPrevious) { Find.advance(forward: false) },
             standard("Use Selection for Find", #selector(NSResponder.performTextFinderAction(_:)), "e")
                 .tagged(NSTextFinder.Action.setSearchString.rawValue),
         ]),

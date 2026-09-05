@@ -57,18 +57,30 @@ enum Palette {
     /// typed the bar is the list of open tabs (ref 2). With a query, the tabs that match lead
     /// — at most `leadingTabs`, so the typed row is never pushed under the fold — then what
     /// was typed, what it completes to, the assistant two rows under the typed one (ref 3),
-    /// the rest of the matching tabs, and commands as a tail.
-    static func arrange<T>(tabs: [T], typed: T?, suggestions: [T], ai: T?, commands: [T],
-                           leadingTabs: Int = 3) -> [T] {
-        guard let typed else { return tabs + commands }
+    /// the rest of the matching tabs, the other places that match, and commands as a tail.
+    ///
+    /// `rest` is the places that are neither open tabs nor completions: an archived tab to
+    /// restore, a Space to switch to. They sit above the commands because they are somewhere
+    /// to go, and below the tabs because a tab you already have open is the better answer.
+    static func arrange<T>(tabs: [T], typed: T?, suggestions: [T], ai: T?, rest: [T] = [],
+                           commands: [T], leadingTabs: Int = 3) -> [T] {
+        guard let typed else { return tabs + rest + commands }
         var out = Array(tabs.prefix(leadingTabs))
         let lead = out.count
         out.append(typed)
         out += suggestions
         if let ai { out.insert(ai, at: min(lead + 2, out.count)) }
         out += tabs.dropFirst(leadingTabs)
+        out += rest
         out += commands
         return out
+    }
+
+    /// ⌘T, ⌘L and ⌘⇧P over a bar that is already up close it (Arc v0.107): the same key that
+    /// opened it is the fastest way out, and reopening a bar that never went away is what
+    /// makes a browser feel stuck.
+    static func toggled(current: PaletteMode?, pressed: PaletteMode) -> PaletteMode? {
+        current == nil ? pressed : nil
     }
 
     /// Where Return loads, as Arc decides it. ⌘T's bar always makes a tab; ⌘L's replaces
@@ -111,6 +123,28 @@ enum Palette {
              arrange(tabs: none, typed: "q", suggestions: none, ai: "ai", commands: none) == ["q", "ai"]),
             ("commands are the tail",
              arrange(tabs: ["t1"], typed: "q", suggestions: none, ai: nil, commands: ["c"]) == ["t1", "q", "c"]),
+            ("an archived tab or a Space follows the open tabs",
+             arrange(tabs: ["t1"], typed: "q", suggestions: none, ai: nil, rest: ["archived"],
+                     commands: none) == ["t1", "q", "archived"]),
+            ("…and still comes before the commands",
+             arrange(tabs: none, typed: "q", suggestions: none, ai: nil, rest: ["space"],
+                     commands: ["c"]) == ["q", "space", "c"]),
+            ("…and after every matching tab, not just the leading three",
+             arrange(tabs: ["t1", "t2", "t3", "t4"], typed: "q", suggestions: none, ai: nil,
+                     rest: ["archived"], commands: ["c"])
+                == ["t1", "t2", "t3", "q", "t4", "archived", "c"]),
+            ("…and under the completions and the assistant, which answer what was typed",
+             arrange(tabs: none, typed: "q", suggestions: ["s1"], ai: "ai", rest: ["space"],
+                     commands: none) == ["q", "s1", "ai", "space"]),
+            ("with nothing typed the bar is still just the tabs",
+             arrange(tabs: ["t1"], typed: nil, suggestions: none, ai: nil, rest: none,
+                     commands: none) == ["t1"]),
+
+            ("⌘T over a closed bar opens it", toggled(current: nil, pressed: .newTab) == .newTab),
+            ("⌘T over an open bar closes it",
+             toggled(current: .newTab, pressed: .newTab) == nil),
+            ("⌘L over a bar ⌘T opened closes it too — it is the same bar",
+             toggled(current: .newTab, pressed: .address) == nil),
         ] + watched + [
             ("query characters match in order", score("gh", "GitHub") != nil),
             ("the same characters out of order do not match", score("hg", "GitHub") == nil),
@@ -225,8 +259,50 @@ struct PaletteCommand: Identifiable {
         PaletteCommand("Toggle Reader", icon: "doc.plaintext") {
             Windows.current?.active.map(Reader.toggle)
         },
+        PaletteCommand("Open Library", icon: "archivebox") { Windows.current?.libraryOpen = true },
+        PaletteCommand("View Archive", icon: "tray.full") { Windows.current?.libraryOpen = true },
+        PaletteCommand("View History", icon: "clock.arrow.circlepath") { showHistory() },
         PaletteCommand("Open Settings", icon: "gearshape") { SettingsWindow.show() },
+        PaletteCommand("Keyboard Shortcuts", icon: "keyboard") { SettingsWindow.show(tab: "shortcuts") },
     ]
+
+    /// Where "View History" goes. A hook rather than a call: the surface that lists history
+    /// is not this file's to own, and until something better registers itself the History
+    /// menu — the last twenty-five pages — is the history this build actually has.
+    @MainActor static var showHistory: @MainActor () -> Void = {
+        guard let menu = NSApp.mainMenu?.item(withTitle: "History")?.submenu else { return }
+        // Screen coordinates, since there is no view to hang it off: under the pointer, the
+        // way a menu opened by a command should appear where the user is looking.
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+
+    /// The rows that only make sense against what is in front of you right now: pinning the
+    /// tab you are on, favouriting it, moving it to one of *your* Spaces. They cannot live in
+    /// `all` — a static list cannot know whether this tab is already pinned, and Arc's bar
+    /// says "Unpin Tab" when it is.
+    @MainActor static func contextual() -> [PaletteCommand] {
+        guard let store = Windows.current, let tab = store.active else { return [] }
+        var out: [PaletteCommand] = [
+            PaletteCommand(tab.kind == .pinned ? "Unpin Tab" : "Pin Tab",
+                           icon: tab.kind == .pinned ? "pin.slash" : "pin") {
+                store.togglePinned(tab.id)
+            },
+            PaletteCommand(tab.kind == .favourite ? "Remove from Favourites" : "Add to Favourites",
+                           icon: tab.kind == .favourite ? "star.slash" : "star") {
+                store.toggleFavourite(tab.id)
+            },
+        ]
+        // Arc's "Move to Space ▸" is a submenu; a search bar has no submenus, so it is one
+        // row per Space — which is also the row you can type the Space's name at.
+        guard tab.currentURL?.scheme?.hasPrefix("http") == true else { return out }
+        for space in store.spaces where space.id != store.currentSpaceID {
+            out.append(PaletteCommand("Move to \(space.name)",
+                                      icon: space.icon ?? "square.on.square") {
+                Spaces.move(tab.id, to: space.id, as: .today, from: store)
+            })
+        }
+        return out
+    }
 }
 
 // MARK: - Overlay
@@ -656,8 +732,14 @@ struct CommandField: NSViewRepresentable {
             // you actually typed" around. Commands are a tail, never a headline — someone
             // typing two letters means a search far more often than "Close Tab", and three
             // characters is the floor at which a fuzzy match stops being a coincidence.
+            // Archived tabs and Spaces are places, so they are searched the moment there is
+            // something to search with; commands are verbs, and three characters is the floor
+            // at which a fuzzy match on one stops being a coincidence.
+            let places = typed.isEmpty ? []
+                : Palette.rank(typed, archiveRows() + spaceRows(), key: { $0.title + " " + $0.detail })
             out = Palette.arrange(
                 tabs: tabs, typed: typedRow(), suggestions: suggestionRows(), ai: aiRow(),
+                rest: places,
                 commands: typed.count >= 3 ? Palette.rank(typed, commandRows(), key: { $0.title }) : [])
         }
         rows = Array(out.prefix(24))
@@ -734,8 +816,37 @@ struct CommandField: NSViewRepresentable {
         return out
     }
 
+    /// Tabs that have left the sidebar but not the browser. Return puts one back where it
+    /// was, which is what the Library's rows do — this is the same list, searchable.
+    private func archiveRows() -> [PaletteRow] {
+        guard !store.isPrivate else { return [] }
+        let archive = Archive.shared(for: store.profileID)
+        return archive.entries.map { entry in
+            PaletteRow(id: "archived:" + entry.url, icon: "archivebox",
+                       image: URL(string: entry.url).flatMap(store.favicons.icon),
+                       title: entry.title.isEmpty ? entry.url : entry.title,
+                       detail: entry.url,
+                       trailing: "Restore Tab", kind: "Archived tab") { _ in
+                Windows.current?.unarchive(entry)
+            }
+        }
+    }
+
+    /// The profile's Spaces, by name. Arc switches Space from the bar, and typing the name
+    /// of the Space you want is faster than counting ⌃1…⌃9.
+    private func spaceRows() -> [PaletteRow] {
+        guard !store.isPrivate else { return [] }
+        return store.spaces.filter { $0.id != store.currentSpaceID }.map { space in
+            PaletteRow(id: "space:" + space.id.uuidString, icon: space.icon ?? "square.stack",
+                       title: space.name, detail: "Space",
+                       trailing: "Switch to Space", kind: "Space") { _ in
+                Windows.current?.switchTo(space: space)
+            }
+        }
+    }
+
     private func commandRows() -> [PaletteRow] {
-        PaletteCommand.all.map { c in
+        (PaletteCommand.all + PaletteCommand.contextual()).map { c in
             PaletteRow(id: "cmd:" + c.id, icon: c.icon, title: c.title,
                        trailing: "Command", kind: "Command") { _ in c.run() }
         }

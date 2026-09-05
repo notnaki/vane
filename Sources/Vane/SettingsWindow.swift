@@ -29,6 +29,13 @@ import SwiftUI
     private static let selection = SettingsSelection()
     private static let tabs = SettingsToolbar(selection)
 
+    /// Open the window on a particular pane — "Keyboard Shortcuts" in the command bar, and
+    /// the Privacy and Security row in Profiles, both land somewhere specific.
+    static func show(tab id: String) {
+        show()
+        selection.id = id
+    }
+
     static func show() {
         if let w = window {
             w.makeKeyAndOrderFront(nil)
