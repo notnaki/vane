@@ -187,7 +187,12 @@ struct Visit: Identifiable, Hashable, Sendable {
     /// ⌫ in the History window: one line, not every visit to that page.
     func deleteVisit(_ id: Int64) { run("DELETE FROM visits WHERE id = ?", [Int(id)]) }
 
-    func clearHistory() { exec("DELETE FROM visits") }
+    /// `since: nil` is "all time", which is a DELETE with no WHERE rather than a very old
+    /// date — a stored visit with a broken timestamp must not survive "clear everything".
+    func clearHistory(since: Date? = nil) {
+        guard let since else { return exec("DELETE FROM visits") }
+        run("DELETE FROM visits WHERE at >= ?", [since.timeIntervalSince1970])
+    }
 
     // MARK: Bookmarks
 

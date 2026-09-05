@@ -72,6 +72,13 @@ enum Look {
     /// Arc's are small (24px at 2x) and regular weight.
     static let fieldIcon = Font.system(size: 13)
 
+    // Find bar. A strip over the page card rather than a sheet: small type, a field wide
+    // enough for a phrase, and a fixed slot for "128 of 250" so stepping through the
+    // matches never shuffles the buttons beside it a pixel at a time.
+    static let findFontSize: CGFloat = 12
+    static let findFieldWidth: CGFloat = 180
+    static let findCountWidth: CGFloat = 64
+
     // Settings. Arc's rows are 43 (86px), its link rows 34, its list rows 32 on a 40 pitch.
     static let settingsRow: CGFloat = 43
     /// From a card's edge to its row content, and where its dividers start and stop.

@@ -1574,57 +1574,6 @@ private struct SavePrompt: View {
     }
 }
 
-private struct FindBar: View {
-    @EnvironmentObject var store: TabStore
-    @ObservedObject var tab: Tab
-    @State private var text = ""
-    @State private var miss = false
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(Look.caption).foregroundStyle(.secondary)
-            TextField("Find on page", text: $text)
-                .textFieldStyle(.plain).font(Look.small).frame(width: 180)
-                .focused($focused)
-                .onSubmit { search(forward: true) }
-                .onChange(of: text) { search(forward: true) }
-                .foregroundStyle(miss ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
-                .accessibilityLabel("Find on Page")
-                .accessibilityValue(miss ? "No matches" : "")
-            Button { search(forward: false) } label: { Image(systemName: "chevron.up") }
-                .help("Previous Match").accessibilityLabel("Previous Match")
-            Button { search(forward: true) }  label: { Image(systemName: "chevron.down") }
-                .help("Next Match").accessibilityLabel("Next Match")
-            Button { store.findOpen = false } label: { Image(systemName: "xmark") }
-                .help("Close Find Bar").accessibilityLabel("Close Find Bar")
-        }
-        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
-        .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
-        .hairline(radius: Look.cardRadius)
-        .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
-        // Focus lands in the field the moment the bar opens, so the first thing after ⌘F
-        // is typing — for the keyboard and for VoiceOver alike.
-        .onAppear { focused = true }
-        .onExitCommand { store.findOpen = false }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Find on page")
-        // Ahead of the page, behind a password prompt.
-        .accessibilitySortPriority(1)
-    }
-
-    private func search(forward: Bool) {
-        Task {
-            let hit = await tab.find(text, forward: forward)
-            miss = !hit
-            // Turning the text red is not an answer for anyone who cannot see it.
-            if !hit && !text.isEmpty { axAnnounce("No matches for \(text)") }
-        }
-    }
-}
-
 /// Arc's Library, at the bottom-left corner of the sidebar: the archived tabs and the
 /// downloads, which are the two lists of things that have left the sidebar but are not gone.
 /// ponytail: a popover, not a window. Arc's Library is a full-window surface with easels and
@@ -1704,68 +1653,5 @@ private struct LibraryPopover: View {
         .padding(14).frame(width: 320)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Library")
-    }
-}
-
-private struct DownloadRow: View {
-    @ObservedObject var item: Downloads.Item
-    /// The manager this row's item actually belongs to.
-    let downloads: Downloads
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(item.name).lineLimit(1).font(Look.small)
-                    .accessibilityLabel(item.name)
-                    .accessibilityValue(status)
-                Spacer(minLength: 8)
-                if item.state == .done {
-                    // A renamed download is .done, so this has to sit beside Show rather
-                    // than in an else-branch it could never reach.
-                    if TidyDownloads.canUndo(item) {
-                        Button("Undo Rename") { _ = TidyDownloads.undo(item, in: downloads) }
-                            .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
-                            .accessibilityLabel("Undo renaming \(item.name)")
-                    }
-                    Button("Show") { downloads.reveal(item) }
-                        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.tint)
-                        .help("Show in Finder")
-                        // "Show" on its own says nothing once it is out of context.
-                        .accessibilityLabel("Show \(item.name) in Finder")
-                } else if downloads.canResume(item) {
-                    // Item.State stays three cases because UI.swift switches it
-                    // exhaustively, so a paused download arrives as .failed("Paused").
-                    // Without this it reads as a dead row with no way back.
-                    Button("Resume") { _ = downloads.resume(item) }
-                        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.tint)
-                        .help("Resume this download")
-                        .accessibilityLabel("Resume \(item.name)")
-                } else if item.status == .running {
-                    Button("Pause") { downloads.pause(item) }
-                        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
-                        .help("Pause this download")
-                        .accessibilityLabel("Pause \(item.name)")
-                }
-            }
-            switch item.state {
-            case .running:
-                ProgressView(value: item.fraction).progressViewStyle(.linear)
-                    .accessibilityLabel("Download progress")
-                    .accessibilityValue("\(Int(item.fraction * 100)) percent")
-            case .done:    EmptyView()
-            case .failed(let why):
-                Text(why).font(Look.caption).foregroundStyle(.red).lineLimit(2)
-            }
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    /// The progress bar and the red text, in words.
-    private var status: String {
-        switch item.state {
-        case .running:         "downloading, \(Int(item.fraction * 100)) percent"
-        case .done:            "finished"
-        case .failed(let why): "failed, \(why)"
-        }
     }
 }
