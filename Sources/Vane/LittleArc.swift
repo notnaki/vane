@@ -110,8 +110,15 @@ import SwiftUI
     /// into the session. Shared with Peek, which is the same window with different chrome.
     /// `url` is nil for one opened empty, and for one whose page is about to be `park`ed
     /// back in from a snapshot.
-    static func floatingStore(_ url: URL?, profileID: UUID) -> TabStore {
-        let store = TabStore(urls: url.map { [$0] } ?? [], profileID: profileID, isLittle: true)
+    ///
+    /// `isPrivate` is passed, never defaulted, by anything that floats over an existing
+    /// window: a Peek over a Private Window that quietly took the persistent data store
+    /// would write the peeked page into history and keep its cookies — the one thing that
+    /// window exists not to do. A Little Arc comes from another app, where there is no
+    /// window to inherit from, so it takes the default.
+    static func floatingStore(_ url: URL?, profileID: UUID, isPrivate: Bool = false) -> TabStore {
+        let store = TabStore(isPrivate: isPrivate, urls: url.map { [$0] } ?? [],
+                             profileID: profileID, isLittle: true)
         // `WebCard` leaves its leading edge bare for a docked sidebar. There isn't one, so
         // this is what gives the page the same gap on all four sides.
         store.sidebarShown = false

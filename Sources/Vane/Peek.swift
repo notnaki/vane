@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 
 /// Arc's Peek: a link clicked in a Favourite or a Pinned tab that leads somewhere *else*
 /// opens in a floating page over the window instead of navigating the tab.
@@ -55,24 +56,32 @@ import SwiftUI
         return sameSite(from, to) ? .navigate : .peek
     }
 
-    /// Whether two urls are the same site, which is the same question `WKWebsiteDataRecord`
-    /// answers: the registrable domain, so `mail.example.com` and `example.com` are one site
-    /// and `example.com` and `example.org` are two.
+    /// Whether two urls are the same site — the question `WKWebsiteDataRecord` answers, and
+    /// the one that decides whether a link is still "inside" the place a tab is kept on.
+    /// It is a comparison of hosts, not of origins: the scheme and the port are deliberately
+    /// ignored, so http→https and `:8000`→`:8001` are the same site and stay in the tab.
+    /// A url with no host is nobody's site, itself included.
+    nonisolated static func sameSite(_ a: URL, _ b: URL) -> Bool {
+        guard let x = registrable(a), let y = registrable(b) else { return false }
+        return x == y
+    }
+
+    /// The registrable domain of a url's host: `mail.example.com` → `example.com`.
     ///
     /// ponytail: the last two labels, with no public suffix list. That reads `a.co.uk` and
     /// `b.co.uk` as one site, so a link between them navigates instead of peeking — the
     /// direction that does nothing surprising, since navigating is what every browser did
     /// before this existed. Upgrade path: ship the PSL and key this on it, the way
     /// `SiteControl.covers` would also then be spelled.
-    nonisolated static func sameSite(_ a: URL, _ b: URL) -> Bool {
-        guard let x = registrable(a), let y = registrable(b) else { return false }
-        return x == y
-    }
-
+    ///
+    /// An address literal has no labels to trim: `127.0.0.1` is a host, not a subdomain of
+    /// `0.1`, and trimming it made every port on the loopback a different site from every
+    /// other. Testing for all-numeric labels catches IPv4; IPv6 arrives bracketed, with no
+    /// dots to split on, and falls out of the label count.
     nonisolated static func registrable(_ url: URL) -> String? {
         guard let host = url.host()?.lowercased(), !host.isEmpty else { return nil }
         let labels = host.split(separator: ".")
-        guard labels.count > 2 else { return host }
+        guard labels.count > 2, !labels.allSatisfy({ $0.allSatisfy(\.isNumber) }) else { return host }
         return labels.suffix(2).joined(separator: ".")
     }
 
@@ -82,10 +91,14 @@ import SwiftUI
     /// act on the same thing without walking AppKit's window list.
     private(set) static var live: Session?
 
-    /// True for the store behind the Peek that is up. `LittleArc.stores` asks, because a
-    /// Peek is built on the same one-page store and must not be answered for by ⌘O's
-    /// "hand this to a Space" or by Window ▸ Hide All Little Arc Windows.
-    static func owns(_ store: TabStore) -> Bool { live?.store === store }
+    /// True for a store whose window is a Peek. `LittleArc.stores` asks, because a Peek is
+    /// built on the same one-page store and must not be answered for by ⌘O's "hand this to
+    /// a Space" or by Window ▸ Hide All Little Arc Windows.
+    ///
+    /// Asked of the window rather than of `live`, which is already nil through the 150ms a
+    /// Peek spends springing out — long enough for the store it belongs to to look, briefly,
+    /// like a Little Arc.
+    static func owns(_ store: TabStore) -> Bool { store.window is PeekWindow }
 
     /// Everything a Peek needs to put its page back where it came from.
     @MainActor final class Session {
@@ -108,10 +121,21 @@ import SwiftUI
     /// view tree — which is what makes the close animation run before the window goes.
     @MainActor final class Shown: ObservableObject { @Published var on = false }
 
-    /// Split View is not merged yet. When it is, it sets this and the Peek's bar grows the
-    /// button Arc has there; until then there is nothing to add a pane to, and a button that
-    /// cannot work is worse than no button.
-    static var addToSplit: ((URL) -> Void)?
+    /// Split View is not merged yet. When it is, it sets `addToSplit` and the Peek's bar
+    /// grows the button Arc has there; until then there is nothing to add a pane to, and a
+    /// button that cannot work is worse than no button.
+    ///
+    /// Published rather than a bare `static var`: a plain one read inside `body` is not a
+    /// dependency of anything, so a Peek already on screen when Split View wires itself up
+    /// would never redraw its bar.
+    @MainActor final class Splitting: ObservableObject {
+        @Published var add: ((URL) -> Void)?
+    }
+    static let splitting = Splitting()
+    static var addToSplit: ((URL) -> Void)? {
+        get { splitting.add }
+        set { splitting.add = newValue }
+    }
 
     // MARK: - Opening
 
@@ -121,7 +145,11 @@ import SwiftUI
         guard let host = parent.window else { return }
         close(animated: false)                      // one at a time
 
-        let store = LittleArc.floatingStore(parked == nil ? url : nil, profileID: parent.profileID)
+        // A Peek is a page of the window it floats over, so it is private exactly when that
+        // window is: nothing peeked out of a Private Window reaches history or the disk.
+        let store = LittleArc.floatingStore(parked == nil ? url : nil,
+                                            profileID: parent.profileID,
+                                            isPrivate: parent.isPrivate)
         // A store made with no url comes up empty with the new-tab bar over it, which is
         // right for ⌘T and wrong here: the page is not new, it is the one being put back.
         if let parked {
@@ -146,6 +174,10 @@ import SwiftUI
             .environmentObject(store)
             .environmentObject(ProfileManager.shared))
         store.window = window
+        // The window tears its own page down when it closes, whoever closed it — so a Peek
+        // taken away by AppKit (the parent going, the app quitting) leaves no WebContent
+        // process and no stray store behind.
+        window.delegate = window
         live = session
 
         // `.above` and a child of the browser window: it travels with it across Spaces and
@@ -157,13 +189,22 @@ import SwiftUI
 
         // The window covers the parent exactly, so a resize has to be followed; a *move* is
         // AppKit's job once the window is a child. The parent closing takes the Peek with it.
+        //
+        // `queue: nil`, not `.main`: a queued block runs on some later turn of the run loop,
+        // by which time the window that posted `willClose` is gone and there is nothing left
+        // to take the Peek off. Synchronous delivery on the poster's thread — which is the
+        // main thread, since these are AppKit notifications — is the whole point here.
         let centre = NotificationCenter.default
         session.watchers = [
-            centre.addObserver(forName: NSWindow.didResizeNotification, object: host, queue: .main) { _ in
+            centre.addObserver(forName: NSWindow.didResizeNotification, object: host, queue: nil) { _ in
                 MainActor.assumeIsolated { live?.window.setFrame(host.frame, display: true) }
             },
-            centre.addObserver(forName: NSWindow.willCloseNotification, object: host, queue: .main) { _ in
-                MainActor.assumeIsolated { close(animated: false) }
+            centre.addObserver(forName: NSWindow.willCloseNotification, object: host, queue: nil) { _ in
+                MainActor.assumeIsolated {
+                    close(animated: false)
+                    // …and there is no longer a window for ⌘Z to put one back into.
+                    lastClosed = nil
+                }
             },
         ]
 
@@ -172,10 +213,21 @@ import SwiftUI
                    + "\u{2318}O to open it as a tab.")
     }
 
-    /// Where the Peek came from and what was in it, kept so ⌘Z can put it back. Cleared once
-    /// it is stale — see `Look.peekReopen`.
-    private static var lastClosed: (url: URL, page: Parked, source: Tab.ID,
-                                    parent: TabStore, at: Date)?
+    /// Where the Peek came from and what was in it, kept so ⌘Z can put it back.
+    ///
+    /// The parent is held **weakly**. A strong one outlived every window it named: a closed
+    /// Peek pinned the whole browser window's store — its tabs, their WebContent processes,
+    /// its history handle — for as long as the app ran, because nothing ever cleared this.
+    /// Weak plus the three places that nil it (the parent going, ⌘O handing the page over,
+    /// and the grace running out) means the last Peek costs a url and a snapshot.
+    private struct Closed {
+        let url: URL
+        let page: Parked
+        let source: Tab.ID
+        weak var parent: TabStore?
+        let at: Date
+    }
+    private static var lastClosed: Closed?
 
     // MARK: - Closing
 
@@ -187,7 +239,8 @@ import SwiftUI
         live = nil
         session.watchers.forEach(NotificationCenter.default.removeObserver)
         if let tab = session.store.active, let url = tab.currentURL {
-            lastClosed = (url, tab.snapshot, session.source, session.parent, .now)
+            lastClosed = Closed(url: url, page: tab.snapshot, source: session.source,
+                                parent: session.parent, at: .now)
         }
         guard animated, !Motion.reduced else { return dismantle(session) }
         withAnimation(Look.appear) { session.shown.on = false }
@@ -197,13 +250,34 @@ import SwiftUI
         }
     }
 
-    /// Take the page down and let go of the window. Everything `LittleArc.Delegate` does on
-    /// close, minus the traffic lights a borderless window does not have.
+    /// Let go of the window. The page is taken down by `tearDown`, which the window's own
+    /// `windowWillClose` calls — so it happens on this path and on every path AppKit takes
+    /// without asking us first.
     private static func dismantle(_ session: Session) {
-        session.store.tabs.forEach { $0.tearDown() }
-        TabStore.all.removeAll { $0 === session.store }
         session.window.parent?.removeChildWindow(session.window)
         session.window.close()
+    }
+
+    /// Everything `LittleArc.Delegate` does when its window closes, minus the traffic lights
+    /// a borderless window does not have. Idempotent: the second call finds no store.
+    static func tearDown(_ window: PeekWindow) {
+        if live?.window === window {
+            live?.watchers.forEach(NotificationCenter.default.removeObserver)
+            live = nil
+        }
+        guard let store = TabStore.all.first(where: { $0.window === window }) else { return }
+        store.tabs.forEach { $0.tearDown() }
+        TabStore.all.removeAll { $0 === store }
+    }
+
+    /// A Peek whose navigation was cancelled before anything committed — the link turned out
+    /// to be a download, or WebKit refused it — has an empty card and no way to fill it.
+    /// Called from `Tab`'s download and failure delegates.
+    static func dismissIfBlank(_ tab: Tab) {
+        guard let live, live.store.tabs.contains(where: { $0 === tab }), tab.web.url == nil
+        else { return }
+        close(animated: false)
+        lastClosed = nil          // there was never a page; ⌘Z would bring back the same blank
     }
 
     // MARK: - ⌘O
@@ -217,62 +291,99 @@ import SwiftUI
         let moved = target.newTabBeside(session.source)
         live = nil                                  // the hand-off closes it; don't re-arm ⌘Z
         session.watchers.forEach(NotificationCenter.default.removeObserver)
+        // The page is not gone, it is a tab — so there is nothing for ⌘Z to bring back, and
+        // nothing here to keep the parent's store alive after the tab already does.
+        lastClosed = nil
         LittleArc.hand(page, into: moved, of: target, from: session.store, saying: "Opened as a tab.")
         dismantle(session)
     }
 
-    // MARK: - ⌘Z / ⇧⌘T
+    // MARK: - ⌘Z
 
-    /// Bring the last Peek back, if it was closed a moment ago. Arc's undo is exactly that
-    /// narrow: it is for the Escape you did not mean, not a history of everything you have
-    /// ever peeked.
+    /// Bring the last Peek back, if it was closed a moment ago *in this window*. Arc's undo
+    /// is exactly that narrow: it is for the Escape you did not mean, not a history of
+    /// everything you have ever peeked.
+    ///
+    /// Three gates, all of them about not stealing the key: nothing may already be peeking
+    /// (⌘Z with a Peek up is the page's own undo, not "replace this Peek"), the window in
+    /// front has to be the one the Peek was closed in, and the grace has to be unspent —
+    /// after which the record is dropped rather than left to keep a window's store alive.
     static func reopen() -> Bool {
-        guard let last = lastClosed, Date.now.timeIntervalSince(last.at) < Look.peekReopen,
-              let source = last.parent.tabs.first(where: { $0.id == last.source })
-        else { return false }
+        guard let last = lastClosed, live == nil else { return false }
+        guard let parent = last.parent, Date.now.timeIntervalSince(last.at) < Look.peekReopen else {
+            lastClosed = nil
+            return false
+        }
+        guard NSApp.keyWindow === parent.window,
+              let source = parent.tabs.first(where: { $0.id == last.source }) else { return false }
         lastClosed = nil
-        open(last.url, from: source, in: last.parent, parked: last.page)
+        open(last.url, from: source, in: parent, parked: last.page)
         return true
     }
 
     // MARK: - Keys
 
-    /// Escape and ⌘O inside a Peek, plus ⌘Z / ⇧⌘T just after one closed. Taken before the
-    /// keybinding registry, the way `LittleArc.handleKey` is, because all four mean
+    /// Escape and ⌘O inside a Peek, plus ⌘Z just after one closed. Taken before the
+    /// keybinding registry, the way `LittleArc.handleKey` is, because all three mean
     /// something else in a window with a sidebar. ⌘W is not here: `TabStore.closeOrArchive`
     /// already calls `performClose`, which `PeekWindow` overrides.
     ///
-    /// ponytail ceiling: ⌘Z within `Look.peekReopen` seconds of a close reopens the Peek
-    /// rather than undoing whatever the page's own editor was doing. Arc collides the same
-    /// way; the guard is the grace period, and a text field that owns the responder chain
-    /// keeps its own undo.
+    /// ⇧⌘T is deliberately *not* here. It is Reopen Closed Tab, a command about the archive
+    /// that has nothing to do with a Peek, and claiming it for eight seconds after every
+    /// close would have made a global shortcut mean two things depending on what the user
+    /// had done a moment earlier.
     static func handleKey(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown else { return false }
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
         let key = event.charactersIgnoringModifiers?.lowercased()
-        if live != nil {
-            if event.keyCode == 53, mods.isEmpty, isKey { close(); return true }
-            if key == "o", mods == [.command], isKey { openAsTab(); return true }
+        if let session = live, session.window.isKeyWindow {
+            // The browser window's own order, kept: Escape stops a page that is still coming
+            // in, and only closes the thing it is in once there is nothing left to stop.
+            if event.keyCode == 53, mods.isEmpty {
+                if !TabActions.stopLoading(in: session.window) { close() }
+                return true
+            }
+            if key == "o", mods == [.command] { openAsTab(); return true }
         }
-        guard mods == [.command] && key == "z" || mods == [.command, .shift] && key == "t",
-              !(NSApp.keyWindow?.firstResponder is NSText) else { return false }
+        // ⌘Z belongs to whatever has the responder chain. A page's own editor — a Gmail
+        // draft, a code sandbox — lives inside a WKWebView and never reports as `NSText`,
+        // so testing only for that swallowed the undo of everything anyone was typing.
+        guard mods == [.command], key == "z", !editing else { return false }
         return reopen()
     }
 
-    /// True while the Peek is the window the keys are going to. A key pressed in another
-    /// window is not aimed at the Peek, however far in front it is drawn.
-    private static var isKey: Bool { live?.window.isKeyWindow == true }
+    /// True while the key window's first responder is somewhere text is being edited: a
+    /// native field, or anywhere inside a web page.
+    private static var editing: Bool {
+        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
+        if responder is NSText { return true }
+        var view = responder as? NSView
+        while let v = view {
+            if v is WKWebView { return true }
+            view = v.superview
+        }
+        return false
+    }
 }
 
 // MARK: - The window
 
 /// Borderless, so there are no traffic lights and no title bar over the card — and key, so
 /// the page inside can be typed into. A borderless NSWindow refuses key by default.
-final class PeekWindow: NSWindow {
+///
+/// Its own delegate: the only thing a Peek's window has to hear is its own close, and one
+/// object is cheaper than a kept-delegates array for something there is at most one of.
+final class PeekWindow: NSWindow, NSWindowDelegate {
     override var canBecomeKey: Bool { true }
     /// ⌘W arrives here through `TabStore.closeOrArchive`, which a Peek's store answers as a
     /// Little Arc's does. AppKit's own `performClose` beeps on a window with no close button.
     override func performClose(_ sender: Any?) { MainActor.assumeIsolated { Peek.close() } }
+    /// However this window came to be closing — our own close, the app quitting, AppKit
+    /// taking it with its parent — the page goes down and the store stops being one of
+    /// `TabStore.all`.
+    func windowWillClose(_ notification: Notification) {
+        MainActor.assumeIsolated { Peek.tearDown(self) }
+    }
 }
 
 // MARK: - The view
@@ -288,13 +399,16 @@ private struct PeekView: View {
         GeometryReader { geo in
             ZStack {
                 // Dims the window behind, and is the click target that closes: everywhere
-                // outside the card is "I'm done with this".
-                Look.peekScrim
-                    .opacity(shown.on ? 1 : 0)
-                    .contentShape(.rect)
-                    .onTapGesture { Peek.close() }
-                    .accessibilityLabel("Close Peek")
-                    .accessibilityAddTraits(.isButton)
+                // outside the card is "I'm done with this". A real Button, not a tap
+                // gesture on a shape — a gesture is invisible to VoiceOver and to Full
+                // Keyboard Access, so the trait said "button" for something nothing but a
+                // mouse could press.
+                Button { Peek.close() } label: {
+                    Look.peekScrim.opacity(shown.on ? 1 : 0).contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close Peek")
+                .accessibilityHint("Closes the page floating over the window.")
                 card
                     .frame(width: geo.size.width * Look.peekFraction,
                            height: geo.size.height * Look.peekFraction)
@@ -325,16 +439,23 @@ private struct PeekView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Peek")
+        // The window behind is dimmed and one click from being uncovered: to a screen
+        // reader that is a sheet, and reading the page under it as if it were still in play
+        // would be a lie about what a click does.
+        .accessibilityAddTraits(.isModal)
     }
 }
 
 /// The Peek's whole chrome: open it as a tab, add it to a split once there is one, close it.
 private struct PeekBar: View {
+    /// Not `Peek.addToSplit` read straight: see `Peek.Splitting`.
+    @ObservedObject private var splitting = Peek.splitting
+
     var body: some View {
         HStack(spacing: Look.inset) {
-            if Peek.addToSplit != nil {
+            if let addToSplit = splitting.add {
                 PeekButton("square.split.2x1", "Add to Split") {
-                    if let url = Peek.live?.store.active?.currentURL { Peek.addToSplit?(url) }
+                    if let url = Peek.live?.store.active?.currentURL { addToSplit(url) }
                 }
             }
             PeekButton("arrow.up.forward.app", "Open as Tab (\u{2318}O)") { Peek.openAsTab() }
@@ -422,6 +543,9 @@ extension Peek {
             ("a port is not a site: two servers on one host stay in the tab",
              sameSite(URL(string: "http://127.0.0.1:8000/a")!,
                       URL(string: "http://127.0.0.1:8001/b")!)),
+            ("…and neither is the scheme: an http→https link is not a link off the site",
+             sameSite(URL(string: "http://example.com/a")!,
+                      URL(string: "https://example.com/b")!)),
             ("…but two hosts are two sites, however local",
              !sameSite(URL(string: "http://127.0.0.1:8000/a")!,
                        URL(string: "http://localhost:8001/b")!)),
@@ -429,6 +553,12 @@ extension Peek {
              registrable(drive) == "google.com" && registrable(news) == "example.com"),
             ("a bare host is its own registrable domain",
              registrable(URL(string: "http://localhost:8000/")!) == "localhost"),
+            ("an address literal is a host, not a subdomain of its last two numbers",
+             registrable(URL(string: "http://127.0.0.1:8000/")!) == "127.0.0.1"),
+            ("…so two addresses on one subnet are still two sites",
+             !sameSite(URL(string: "http://10.0.0.1/")!, URL(string: "http://10.0.0.2/")!)),
+            ("a hostname that merely starts with digits is still trimmed",
+             registrable(URL(string: "http://1.cdn.example.com/")!) == "example.com"),
             ("a url with no host has none", registrable(URL(string: "about:blank")!) == nil),
             ("…and no host is never the same site as anything, itself included",
              !sameSite(URL(string: "about:blank")!, URL(string: "about:blank")!)),
