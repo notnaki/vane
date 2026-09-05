@@ -872,6 +872,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func unarchive(_ entry: Archive.Entry) {
         Archive.shared(for: profileID).remove(entry.id)
         guard let u = URL(string: entry.url) else { return }
+        // A private window, a Little Arc, or a window that is in no Space has no Space to go
+        // back to — and switching one that is in none would tear its Today tabs down without
+        // anywhere to have saved them. The page simply opens here.
+        guard !isPrivate, !isLittle, currentSpaceID != nil else { newTab(u); return }
         if let target = Library.restoreTarget(entry, spaces: spaces.map(\.id), current: currentSpaceID),
            target != currentSpaceID, let space = spaces.first(where: { $0.id == target }) {
             switchTo(space: space)

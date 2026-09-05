@@ -444,7 +444,8 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
             _ = Windows.main?.newSpace()
             rebuild()
         },
-        item("Manage Spaces…", "") { SettingsWindow.show() },
+        // Arc's "Manage Spaces…" is the Library's Spaces view, not a settings pane.
+        item("Manage Spaces…", "") { showLibrary(.spaces) },
         .separator(),
     ] + nav + [.separator()] + switchers + [
         .separator(),

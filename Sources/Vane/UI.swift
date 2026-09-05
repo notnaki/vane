@@ -42,7 +42,10 @@ struct BrowserWindow: View {
     /// App-wide, so every window's sidebar is the width the user last dragged one to.
     @ObservedObject private var sidebar = SidebarWidth.shared
 
-    private var chrome: Bool { store.sidebarShown || peeking }
+    /// Whether the window is showing any chrome at all, which is what the traffic lights
+    /// follow. The Library counts: it covers the sidebar and leaves the lights' own strip
+    /// blank at the top of its rail, so a panel with no lights beside it is a hole.
+    private var chrome: Bool { store.sidebarShown || peeking || store.libraryOpen }
 
     var body: some View {
         ZStack(alignment: .leading) {
@@ -96,7 +99,9 @@ struct BrowserWindow: View {
 
     /// The 6pt of window edge that brings the sidebar back. Only live while it is away.
     @ViewBuilder private var edgeStrip: some View {
-        if !store.sidebarShown {
+        // Not while the Library is open: the strip is under the panel, and a sidebar
+        // peeking out from behind it is two sidebars.
+        if !store.sidebarShown && !store.libraryOpen {
             Color.clear
                 .frame(width: 6)
                 .frame(maxHeight: .infinity)
@@ -363,7 +368,7 @@ private struct TopRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Spacer().frame(width: 62)          // traffic lights
+            Spacer().frame(width: Look.trafficLights)   // traffic lights
             Button { store.sidebarShown.toggle() } label: { Image(systemName: "sidebar.left") }
                 .help("Toggle Sidebar (\(Keybindings.binding(for: .toggleSidebar).display))")
                 .accessibilityLabel("Toggle Sidebar")

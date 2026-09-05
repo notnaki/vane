@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Arc's Library: the panel that slides out over the sidebar with everything that has left
 /// the window but is not gone — archived tabs, downloads, every Space's pages, and history.
@@ -8,14 +9,15 @@ import SwiftUI
 /// browser window — it pushes out from the sidebar's edge and the page stays put behind it —
 /// and a separate window would need its own store, its own profile plumbing and its own
 /// traffic lights to say the same thing. Ceiling: it is one panel per window and it cannot
-/// be dragged out onto its own screen; History, which really is a window, is linked rather
+/// be dragged out onto its own screen; History, which really is a window, is raised rather
 /// than duplicated here.
 
 // MARK: - Sections
 
-/// The rail's four rows. `history` is the odd one: it opens `HistoryWindow`, because the
-/// searchable history already exists as a window and a second copy of it would be a second
-/// thing to keep honest.
+/// The rail's four rows. `history` is the odd one: it is a button, not a pane. The
+/// searchable history already exists as a window (⌘Y) and a second copy of it would be a
+/// second thing to keep honest, so picking it raises that window and leaves the panel on
+/// whatever it was showing.
 enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     case archived, downloads, spaces, history
 
@@ -38,6 +40,10 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         case .history:   "clock"
         }
     }
+
+    /// A private window is in no Space and owns no profile furniture, so the Spaces columns
+    /// would have nothing to show and nothing they could safely move.
+    func available(private isPrivate: Bool) -> Bool { !(isPrivate && self == .spaces) }
 }
 
 // MARK: - State
@@ -48,7 +54,9 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
 @MainActor final class Library: ObservableObject {
     static let shared = Library()
 
-    @Published var section: LibrarySection = .archived
+    /// Never `.history`: that row raises a window instead of changing the pane, so ⇧⌘L can
+    /// never come back to a section that would raise it again.
+    @Published private(set) var section: LibrarySection = .archived
     /// The Archived Tabs search field, live as it is typed.
     @Published var query = ""
     /// Arc's "Little Arc" chip: only the tabs that were archived out of a Little Arc window.
@@ -56,16 +64,33 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
 
     /// Opening at a section — the footer glyph, the Archive menu, ⇧⌘J, "Manage Spaces…".
     static func open(_ section: LibrarySection, in store: TabStore?) {
+        // History is a window of its own. Raising it must not become the panel's section,
+        // or every later ⇧⌘L would raise it again.
+        guard section != .history else { HistoryWindow.show(); return }
+        guard let store, section.available(private: store.isPrivate) else { return }
+        // A filter belongs to the visit, not to the user: a Library opened fresh shows
+        // everything, the way a reopened Finder window is not still filtered.
+        if !store.libraryOpen {
+            shared.query = ""
+            shared.littleArcOnly = false
+        }
         shared.section = section
-        if section == .history { HistoryWindow.show() }
-        store?.libraryOpen = true
+        store.libraryOpen = true
     }
 
     /// ⇧⌘L and the footer glyph: the same keystroke that opened it closes it again.
     static func toggle(_ section: LibrarySection, in store: TabStore?) {
         guard let store else { return }
-        if store.libraryOpen && shared.section == section { store.libraryOpen = false; return }
+        if store.libraryOpen && shared.section == section { close(store); return }
         open(section, in: store)
+    }
+
+    /// Escape, the ×, and opening a page out of the Library. The key view goes back to the
+    /// page, so the next keystroke is the page's rather than falling on a panel that is not
+    /// there any more.
+    static func close(_ store: TabStore) {
+        store.libraryOpen = false
+        if let web = store.active?.web { store.window?.makeFirstResponder(web) }
     }
 }
 
@@ -121,8 +146,8 @@ extension Library {
     /// A page in a Space with no tab open on it has no title to show — spaces.json is a list
     /// of urls. This is what a row is labelled with instead: the host without its "www.",
     /// and the path when there is one, which is as much as an address says on one line.
-    /// ponytail ceiling: a real title needs a lookup in the history table per row. The
-    /// current Space's rows do have titles, because those tabs are open.
+    /// ponytail ceiling: a real title needs a lookup in the history table per row. A Space
+    /// that is on screen does have titles, because those tabs are open.
     nonisolated static func label(for url: URL) -> String {
         let host = (url.host ?? url.absoluteString)
             .replacingOccurrences(of: "www.", with: "", options: .anchored)
@@ -134,43 +159,87 @@ extension Library {
 // MARK: - Moving a page between Spaces
 
 extension Library {
+    /// The window showing this Space, if one is. A Space that is on screen keeps its pages
+    /// in that window's strip, not in spaces.json — the file is only written when the window
+    /// saves — so a move that edits the file behind such a window's back is undone by its
+    /// next save and the page either comes back or disappears. Every move therefore asks who
+    /// owns each end first. A Little Arc and a private window are in no Space and own none.
+    static func owner(of space: UUID) -> TabStore? {
+        TabStore.all.first { $0.currentSpaceID == space && !$0.isLittle && !$0.isPrivate }
+    }
+
     /// Dragging a row from one Space's column onto another's, and the right-click that says
-    /// the same thing. Two cases, because a Space that is on screen and a Space that is not
-    /// are stored in different places: the window owns the current Space's tabs until it
-    /// saves them, and every other Space is a list of urls in spaces.json.
-    static func move(_ url: URL, from source: UUID, to target: UUID, in store: TabStore) {
+    /// the same thing. Either end can be on screen or on disk, and the two are stored in
+    /// different places, so both ends are asked separately.
+    ///
+    /// A profile id rather than a `TabStore`: nothing here belongs to the window the drag
+    /// started in, and a drop's payload arrives on a background queue, where a store is not
+    /// something that can be carried.
+    static func move(_ url: URL, from source: UUID, to target: UUID,
+                     pinned: Bool, profile: UUID) {
         guard source != target else { return }
-        // On screen: it is a live tab, so hand it to the code that already moves live tabs —
-        // that one carries the tab's scroll position and back/forward list with it.
-        if source == store.currentSpaceID,
-           let tab = store.tabs.first(where: { $0.currentURL == url }) {
-            Spaces.move(tab.id, to: target, as: .today, from: store)
-            return
+        let kind: TabKind = pinned ? .pinned : .today
+        let into = owner(of: target)
+
+        if let live = owner(of: source), let tab = live.tabs.first(where: { $0.currentURL == url }) {
+            // The source is on screen: hand the live tab to the code that already moves one,
+            // which carries its scroll position and back/forward list across. That also
+            // writes the target's list — harmless when the target is on screen too, because
+            // that window rewrites the same list from its strip when it saves.
+            Spaces.move(tab.id, to: target, as: kind, from: live)
+        } else {
+            let spaces = ProfileManager.shared.spaces(for: profile)
+            guard var from = spaces.first(where: { $0.id == source }) else { return }
+            from.tabURLs.removeAll { $0 == url }
+            from.pinnedTabURLs?.removeAll { $0 == url }
+            ProfileManager.shared.updateSpace(from)
+            // The state sidecar travels with the page, the way `Spaces.move` carries it, so
+            // a moved tab comes up where it was left rather than reloading from the top.
+            var parked = Suspension.SpaceState.load(space: source, profileID: profile,
+                                                    in: Store.directory)
+            let carried = parked.removeValue(forKey: url.absoluteString)
+            Suspension.SpaceState.save(parked, space: source, profileID: profile,
+                                       in: Store.directory)
+            if into == nil, var to = spaces.first(where: { $0.id == target }) {
+                switch kind {
+                case .pinned: to.pinnedTabURLs = Spaces.appending(url, to: to.pinnedTabURLs ?? [])
+                default:      to.tabURLs = Spaces.appending(url, to: to.tabURLs)
+                }
+                ProfileManager.shared.updateSpace(to)
+                if let carried {
+                    var landing = Suspension.SpaceState.load(space: target, profileID: profile,
+                                                             in: Store.directory)
+                    landing[url.absoluteString] = carried
+                    Suspension.SpaceState.save(landing, space: target, profileID: profile,
+                                               in: Store.directory)
+                }
+            }
         }
-        guard var from = store.spaces.first(where: { $0.id == source }) else { return }
-        from.tabURLs.removeAll { $0 == url }
-        from.pinnedTabURLs?.removeAll { $0 == url }
-        ProfileManager.shared.updateSpace(from)
-        if target == store.currentSpaceID {
-            // Into the Space this window is showing: open it, because the window's strip is
-            // what gets written back to spaces.json and a url added behind its back would be
-            // overwritten by the next save.
-            store.newTab(url)
-        } else if var to = store.spaces.first(where: { $0.id == target }) {
-            to.tabURLs = Spaces.appending(url, to: to.tabURLs)
-            ProfileManager.shared.updateSpace(to)
+        // The target is on screen: that window's strip is the truth, so the page has to open
+        // there rather than only landing in a file the window is about to overwrite.
+        if let into {
+            into.newTab(url)
+            if pinned, let id = into.tabs.last?.id { into.move(id, to: .pinned) }
         }
-        store.spacesChanged()
+        // Every window of the profile draws these columns, and `spaces` is a file read.
+        for store in TabStore.all where store.profileID == profile { store.spacesChanged() }
     }
 }
 
 /// The row being dragged between Space columns. `Dragging` carries a live `Tab.ID` and
-/// `SpaceDragging` a Space; a Library row is neither — it is a url and the Space it came
-/// from, which is all a move needs.
+/// `SpaceDragging` a Space; a Library row is neither — it is a page, the Space it came from
+/// and which section of that Space it sat in.
+///
+/// The page is in the drag's own payload as well; this only says where the drag started, and
+/// a drop checks that the two agree before anything moves. So a drag that ended somewhere
+/// else, leaving this behind, can never be picked up by a later drop.
 @MainActor final class LibraryDragging: ObservableObject {
     static let shared = LibraryDragging()
     @Published var url: URL?
     @Published var from: UUID?
+    @Published var pinned = false
+
+    func clear() { url = nil; from = nil; pinned = false }
 }
 
 // MARK: - Restoring
@@ -190,8 +259,10 @@ extension TabStore {
 extension Look {
     /// The Library's rail: wide enough for "Archived Tabs" beside its symbol at row type.
     static let libraryRail: CGFloat = 180
-    /// The whole panel. It covers the sidebar and reaches over the page the way Arc's does —
-    /// the page card does not move, it is simply behind this.
+    /// The whole panel, when the window is wide enough for it. It covers the sidebar and
+    /// reaches over the page the way Arc's does — the page card does not move, it is simply
+    /// behind this. A narrow window gets a narrower panel rather than one hanging off the
+    /// edge; see `LibraryPanel.width`.
     static let libraryWidth: CGFloat = 660
     /// A Space's column in the Spaces section. Narrow enough that two fit beside the rail;
     /// ponytail ceiling: a third Space scrolls horizontally rather than the panel growing.
@@ -209,30 +280,40 @@ struct LibraryPanel: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var library = Library.shared
 
+    /// Never wider than the window it is inside, minus the gap it floats in.
+    private func width(_ available: CGFloat) -> CGFloat {
+        min(Look.libraryWidth, max(Look.libraryRail, available - Look.cardGap * 2))
+    }
+
     var body: some View {
-        HStack(spacing: 0) {
-            rail
-            Hairline().frame(width: 1, height: nil).frame(maxHeight: .infinity)
-            content
+        GeometryReader { geo in
+            HStack(spacing: 0) {
+                rail
+                Rectangle().fill(Look.hairline).frame(width: 1).frame(maxHeight: .infinity)
+                content
+            }
+            .frame(width: width(geo.size.width))
+            .frame(maxHeight: .infinity)
+            .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+            .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
+            .hairline(radius: Look.cardRadius)
+            .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
+            .padding(Look.cardGap)
         }
-        .frame(width: Look.libraryWidth)
-        .frame(maxHeight: .infinity)
-        .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
-        .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
-        .hairline(radius: Look.cardRadius)
-        .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
-        .padding(Look.cardGap)
         // Escape closes it, the way every other floating surface in the window closes.
         // A zero-size button rather than `.onExitCommand`: the panel is not focused until
-        // something inside it is clicked, and a cancel action is heard either way.
+        // something inside it is clicked, and a cancel action is heard either way. It is
+        // *not* in the tree while the command bar or the find bar is up — those two read
+        // Escape themselves, and the innermost cancel action would otherwise win.
         .background {
-            Button("Close Library") { store.libraryOpen = false }
-                .keyboardShortcut(.cancelAction)
-                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+            if store.palette == nil && !store.findOpen {
+                Button("Close Library") { Library.close(store) }
+                    .keyboardShortcut(.cancelAction)
+                    .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Library")
-        .accessibilityAddTraits(.isModal)
         .onAppear { axAnnounce("Library, \(library.section.title).") }
     }
 
@@ -246,7 +327,7 @@ struct LibraryPanel: View {
                 Spacer().frame(width: Look.trafficLights - Look.cardGap - Look.inset)
                 Text("Library").font(Look.heading).foregroundStyle(Look.inkSecondary)
                 Spacer(minLength: 0)
-                Button { store.libraryOpen = false } label: { Image(systemName: "xmark") }
+                Button { Library.close(store) } label: { Image(systemName: "xmark") }
                     .buttonStyle(.plain).font(Look.rowGlyph)
                     .foregroundStyle(Look.inkTertiary)
                     .help("Close the Library (\(Keybindings.binding(for: .showLibrary).display))")
@@ -256,7 +337,7 @@ struct LibraryPanel: View {
             .frame(height: Look.topRow)
             .padding(.top, Look.topInset)
 
-            ForEach(LibrarySection.allCases) { section in
+            ForEach(LibrarySection.allCases.filter { $0.available(private: store.isPrivate) }) { section in
                 LibraryRailRow(section: section, selected: library.section == section) {
                     Library.open(section, in: store)
                     axAnnounce(section.title)
@@ -276,10 +357,11 @@ struct LibraryPanel: View {
     @ViewBuilder private var content: some View {
         Group {
             switch library.section {
-            case .archived:  ArchivedTabsPane(archive: Archive.shared(for: store.profileID))
             case .downloads: DownloadsPane(downloads: Downloads.manager(for: store.profileID))
-            case .spaces:    SpacesPane()
-            case .history:   HistoryPane()
+            case .spaces where !store.isPrivate: SpacesPane()
+            // History never becomes the section, and Spaces is not offered in a private
+            // window — either way the archive is what a Library with nothing else shows.
+            default: ArchivedTabsPane(archive: Archive.shared(for: store.profileID))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -333,18 +415,35 @@ private struct PaneHeader<Trailing: View>: View {
     }
 }
 
-/// A pane's quiet button: Clear, Clear Archive…, Open History.
+/// A pane's quiet button: Clear, Clear Archive…. The padding is inside the label, so the
+/// whole pill is the button rather than the words in the middle of it.
 private struct PaneButton: View {
     let title: String
     let action: () -> Void
 
     var body: some View {
-        Button(title, action: action)
-            .buttonStyle(.plain)
-            .font(Look.small).foregroundStyle(Look.inkSecondary)
-            .padding(.horizontal, Look.inset + 2)
-            .frame(height: Look.control)
-            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+        Button(action: action) {
+            Text(title)
+                .font(Look.small).foregroundStyle(Look.inkSecondary)
+                .padding(.horizontal, Look.inset + 2)
+                .frame(height: Look.control)
+                .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// The card look without `SettingsCard`'s variadic tree. That one materialises every child
+/// to put dividers between them, which on a two-thousand-entry archive is two thousand rows
+/// built to draw the twenty that are on screen; this lays its rows out lazily and each row
+/// draws its own separator.
+private struct LibraryCard<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 0) { content }
+            .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
+            .hairline(radius: Look.cardRadius, Look.cardStroke)
     }
 }
 
@@ -354,13 +453,10 @@ private struct ArchivedTabsPane: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var archive: Archive
     @ObservedObject private var library = Library.shared
-    @State private var hovered: Archive.Entry.ID?
-
-    private var groups: [(title: String, entries: [Archive.Entry])] {
-        Library.grouped(Library.filtered(archive.entries,
-                                         query: library.query,
-                                         littleArcOnly: library.littleArcOnly))
-    }
+    /// Cut into days once per change rather than once per render: the grouping sorts the
+    /// whole archive and formats a date per day, and a pointer moving over a row must not
+    /// pay for that.
+    @State private var groups: [(title: String, entries: [Archive.Entry])] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset) {
@@ -377,7 +473,14 @@ private struct ArchivedTabsPane: View {
                     LazyVStack(alignment: .leading, spacing: Look.inset * 1.5) {
                         ForEach(groups, id: \.title) { group in
                             SettingsSection(group.title) {
-                                SettingsCard { ForEach(group.entries) { row($0) } }
+                                LibraryCard {
+                                    ForEach(group.entries) { entry in
+                                        ArchivedRow(entry: entry, archive: archive)
+                                        if entry.id != group.entries.last?.id {
+                                            Hairline().padding(.horizontal, Look.cardInset)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -388,8 +491,18 @@ private struct ArchivedTabsPane: View {
         }
         .padding(.top, Look.inset * 2)
         .padding(.horizontal, Look.inset)
+        .onAppear { regroup() }
+        .onChange(of: archive.entries) { regroup() }
+        .onChange(of: library.query) { regroup() }
+        .onChange(of: library.littleArcOnly) { regroup() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Archived Tabs")
+    }
+
+    private func regroup() {
+        groups = Library.grouped(Library.filtered(archive.entries,
+                                                  query: library.query,
+                                                  littleArcOnly: library.littleArcOnly))
     }
 
     private var search: some View {
@@ -414,6 +527,7 @@ private struct ArchivedTabsPane: View {
                     .frame(height: Look.control)
                     .background(library.littleArcOnly ? Look.selected : Look.controlFill,
                                 in: .rect(cornerRadius: Look.chipRadius))
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .help("Only tabs archived from a Little Arc window")
@@ -432,7 +546,26 @@ private struct ArchivedTabsPane: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func row(_ entry: Archive.Entry) -> some View {
+    /// Arc asks before emptying the archive, because there is no undo for it.
+    private func clear() {
+        guard confirm("Clear the archive?", "Clear",
+                      "\(archive.entries.count) archived tab\(archive.entries.count == 1 ? "" : "s") "
+                        + "will be forgotten. Open tabs and history are not affected.")
+        else { return }
+        archive.clear()
+        axAnnounce("Archive cleared.")
+    }
+}
+
+/// One archived tab. Its own view so the hover state belongs to the row: held in the pane,
+/// every pointer move redrew the whole list.
+private struct ArchivedRow: View {
+    @EnvironmentObject var store: TabStore
+    let entry: Archive.Entry
+    @ObservedObject var archive: Archive
+    @State private var hovering = false
+
+    var body: some View {
         HStack(spacing: Look.inset) {
             SiteIcon(icon: URL(string: entry.url).flatMap(store.favicons.icon(for:)))
             VStack(alignment: .leading, spacing: Look.captionGap) {
@@ -445,24 +578,22 @@ private struct ArchivedTabsPane: View {
             }
             // Under the pointer only, the way Arc's restore icon appears: a list where every
             // row wears a button reads as a list of buttons.
-            if hovered == entry.id {
-                Button { store.restore(entry) } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkSecondary)
-                .help("Restore this tab")
-                .accessibilityLabel("Restore \(entry.title)")
+            if hovering {
+                Button { restore() } label: { Image(systemName: "arrow.uturn.backward") }
+                    .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    .help("Restore this tab")
+                    .accessibilityLabel("Restore \(entry.title)")
             }
         }
         .padding(.horizontal, Look.cardInset)
         .frame(minHeight: Look.settingsRow)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(hovered == entry.id ? Look.hovered : .clear)
+        .background(hovering ? Look.hovered : .clear)
         .contentShape(.rect)
-        .onHover { hovered = $0 ? entry.id : (hovered == entry.id ? nil : hovered) }
-        .onTapGesture { store.restore(entry) }
+        .onHover { hovering = $0 }
+        .onTapGesture { restore() }
         .contextMenu {
-            Button("Restore") { store.restore(entry) }
+            Button("Restore") { restore() }
             Button("Copy URL") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(entry.url, forType: .string)
@@ -476,18 +607,13 @@ private struct ArchivedTabsPane: View {
         .accessibilityValue("Archived tab, \(entry.url)")
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Opens this page again and takes it out of the archive.")
-        .accessibilityAction { store.restore(entry) }
+        .accessibilityAction { restore() }
         .accessibilityAction(named: "Remove from Archive") { archive.remove(entry.id) }
     }
 
-    /// Arc asks before emptying the archive, because there is no undo for it.
-    private func clear() {
-        guard confirm("Clear the archive?", "Clear",
-                      "\(archive.entries.count) archived tab\(archive.entries.count == 1 ? "" : "s") "
-                        + "will be forgotten. Open tabs and history are not affected.")
-        else { return }
-        archive.clear()
-        axAnnounce("Archive cleared.")
+    private func restore() {
+        store.restore(entry)
+        Library.close(store)
     }
 }
 
@@ -495,7 +621,6 @@ private struct ArchivedTabsPane: View {
 
 private struct DownloadsPane: View {
     @ObservedObject var downloads: Downloads
-    @State private var hovered: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset) {
@@ -511,8 +636,13 @@ private struct DownloadsPane: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 ScrollView {
-                    SettingsCard {
-                        ForEach(downloads.items) { row($0) }
+                    LibraryCard {
+                        ForEach(downloads.items) { item in
+                            DownloadListRow(item: item, downloads: downloads)
+                            if item.id != downloads.items.last?.id {
+                                Hairline().padding(.horizontal, Look.cardInset)
+                            }
+                        }
                     }
                     .padding(.bottom, Look.inset)
                 }
@@ -521,22 +651,30 @@ private struct DownloadsPane: View {
         }
         .padding(.top, Look.inset * 2)
         .padding(.horizontal, Look.inset)
+        // A row that finished weeks ago may have been moved or thrown away since.
+        .onAppear { downloads.refreshMissing() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Downloads")
     }
+}
 
-    private func row(_ item: Downloads.Item) -> some View {
+private struct DownloadListRow: View {
+    @ObservedObject var item: Downloads.Item
+    let downloads: Downloads
+    @State private var hovering = false
+
+    var body: some View {
         DownloadRow(item: item, downloads: downloads)
             .padding(.horizontal, Look.cardInset)
             .padding(.vertical, Look.inset)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(hovered == item.id ? Look.hovered : .clear)
+            .background(hovering ? Look.hovered : .clear)
             .contentShape(.rect)
-            .onHover { hovered = $0 ? item.id : (hovered == item.id ? nil : hovered) }
+            .onHover { hovering = $0 }
             // Arc lets a finished download be dragged straight out of the Library into a
             // Finder window or another app. A file promise would be the thorough version;
             // the file is already on disk, so its url is the whole payload.
-            .onDrag { provider(item) }
+            .onDrag { provider() }
             .contextMenu {
                 if item.status == .done {
                     Button("Open") { downloads.open(item) }
@@ -547,10 +685,15 @@ private struct DownloadsPane: View {
             }
     }
 
-    private func provider(_ item: Downloads.Item) -> NSItemProvider {
+    /// There is nothing to drag out of a row whose file has gone: mark the row instead of
+    /// handing the Finder a url that resolves to nothing.
+    private func provider() -> NSItemProvider {
         guard item.status == .done, let url = item.url,
-              let p = NSItemProvider(contentsOf: url) else { return NSItemProvider() }
-        return p
+              FileManager.default.fileExists(atPath: url.path) else {
+            downloads.refreshMissing()
+            return NSItemProvider()
+        }
+        return NSItemProvider(contentsOf: url) ?? NSItemProvider()
     }
 }
 
@@ -563,9 +706,9 @@ private struct SpacesPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset) {
-            PaneHeader(title: "Spaces") {
-                PaneButton(title: "New Space") { store.newSpace() }
-            }
+            // No New Space button: the footer's `+` makes one and names it in place, in an
+            // editor that hangs off a button this panel is covering.
+            PaneHeader(title: "Spaces") { EmptyView() }
             if store.spaces.isEmpty {
                 Text("This profile has no Spaces yet.")
                     .font(Look.text).foregroundStyle(Look.inkTertiary)
@@ -584,9 +727,6 @@ private struct SpacesPane: View {
         }
         .padding(.top, Look.inset * 2)
         .padding(.horizontal, Look.inset)
-        // The columns are read off spaces.json, which is a file rather than a published
-        // property: without this a move would not redraw the column it came out of.
-        .id(store.spaceRevision)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
     }
@@ -598,38 +738,42 @@ private struct SpaceColumn: View {
     @State private var over = false
     @State private var editing = false
 
-    /// The Space this window is showing is live: its tabs are in the strip, not in
-    /// spaces.json, and they have real titles. Every other Space is a list of urls.
-    private var pinned: [URL] {
-        space.id == store.currentSpaceID
-            ? store.tabs.filter { $0.kind == .pinned }.compactMap(\.currentURL)
-            : (space.pinnedTabURLs ?? [])
-    }
+    /// The window showing this Space keeps its pages in its strip, with real titles; every
+    /// other Space is the url list in spaces.json. `owner` rather than "is it this window's"
+    /// so a Space open in another window reads from that window too.
+    private var live: TabStore? { Library.owner(of: space.id) }
 
-    private var today: [URL] {
-        space.id == store.currentSpaceID
-            ? store.tabs.filter { $0.kind == .today }.compactMap(\.currentURL)
-            : space.tabURLs
+    /// Pinned first, then Today, as one list so the rows have one order to be indexed by.
+    private var rows: [(url: URL, pinned: Bool)] {
+        if let live {
+            return live.tabs.filter { $0.kind == .pinned }.compactMap(\.currentURL).map { ($0, true) }
+                + live.tabs.filter { $0.kind == .today }.compactMap(\.currentURL).map { ($0, false) }
+        }
+        return (space.pinnedTabURLs ?? []).map { ($0, true) } + space.tabURLs.map { ($0, false) }
     }
 
     var body: some View {
+        let rows = rows
         VStack(alignment: .leading, spacing: Look.inset) {
             header
-            SettingsCard {
-                if pinned.isEmpty && today.isEmpty {
+            LibraryCard {
+                if rows.isEmpty {
                     Text("No pages").font(Look.caption).foregroundStyle(Look.inkQuiet)
                         .padding(.horizontal, Look.cardInset).frame(height: Look.linkRow)
                 }
-                ForEach(pinned, id: \.absoluteString) { PageRow(space: space, url: $0, pinned: true) }
-                ForEach(today, id: \.absoluteString) { PageRow(space: space, url: $0, pinned: false) }
+                // By position, not by url: the same page can be open in two tabs of one
+                // Space, and two rows sharing an id is a list that scrolls to nowhere.
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    PageRow(space: space, url: row.url, pinned: row.pinned)
+                }
             }
         }
         .frame(width: Look.spaceColumn)
         .padding(Look.inset / 2)
         .background(over ? Look.hovered : .clear, in: .rect(cornerRadius: Look.cardRadius))
-        .onDrop(of: [.text], isTargeted: $over) { _ in drop() }
+        .onDrop(of: [.utf8PlainText], isTargeted: $over) { drop($0) }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(space.name), \(pinned.count + today.count) page\(pinned.count + today.count == 1 ? "" : "s")")
+        .accessibilityLabel("\(space.name), \(rows.count) page\(rows.count == 1 ? "" : "s")")
     }
 
     private var header: some View {
@@ -656,14 +800,26 @@ private struct SpaceColumn: View {
         .onTapGesture { store.switchTo(spaceID: space.id) }
     }
 
-    private func drop() -> Bool {
+    /// The payload says which page; `LibraryDragging` says where it started. Both have to
+    /// agree before anything moves, so a drag that ended somewhere else — leaving the
+    /// singleton behind — cannot be picked up by a later drop of somebody else's text.
+    private func drop(_ providers: [NSItemProvider]) -> Bool {
         over = false
-        guard let url = LibraryDragging.shared.url,
-              let from = LibraryDragging.shared.from, from != space.id else { return false }
-        LibraryDragging.shared.url = nil
-        LibraryDragging.shared.from = nil
-        Library.move(url, from: from, to: space.id, in: store)
-        axAnnounce("Moved to \(space.name).")
+        guard let from = LibraryDragging.shared.from, from != space.id,
+              let provider = providers.first else { return false }
+        let pinned = LibraryDragging.shared.pinned
+        let target = space.id, name = space.name, profile = store.profileID
+        _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier) { data, _ in
+            guard let data, let text = String(data: data, encoding: .utf8),
+                  let url = URL(string: text) else { return }
+            Task { @MainActor in
+                guard LibraryDragging.shared.url == url,
+                      LibraryDragging.shared.from == from else { return }
+                LibraryDragging.shared.clear()
+                Library.move(url, from: from, to: target, pinned: pinned, profile: profile)
+                axAnnounce("Moved to \(name).")
+            }
+        }
         return true
     }
 }
@@ -703,7 +859,10 @@ private struct PageRow: View {
             Button("Open") { open() }
             Menu("Move to Space") {
                 ForEach(store.spaces.filter { $0.id != space.id }) { other in
-                    Button(other.name) { Library.move(url, from: space.id, to: other.id, in: store) }
+                    Button(other.name) {
+                        Library.move(url, from: space.id, to: other.id,
+                                     pinned: pinned, profile: store.profileID)
+                    }
                 }
             }
             Divider()
@@ -730,45 +889,20 @@ private struct PageRow: View {
         } else {
             store.newTab(url)
         }
-        store.libraryOpen = false
+        Library.close(store)
     }
 
     private func payload() -> NSItemProvider {
-        // Next turn, not now: a state change inside the drag's own start re-renders the row
-        // under the pointer and SwiftUI drops the drag with it. Same reason as `dragPayload`.
-        let url = url, from = space.id
+        // Published on the next turn, not now: a state change inside the drag's own start
+        // re-renders the row under the pointer and SwiftUI drops the drag with it. Same
+        // reason as `dragPayload`. Every drag start overwrites what the last one left.
+        let url = url, from = space.id, pinned = pinned
         DispatchQueue.main.async {
             LibraryDragging.shared.url = url
             LibraryDragging.shared.from = from
+            LibraryDragging.shared.pinned = pinned
         }
         return NSItemProvider(object: url.absoluteString as NSString)
-    }
-}
-
-// MARK: - History
-
-/// History is a window (⌘Y), and this is the link to it rather than a second copy of it:
-/// the searchable, day-grouped list already exists in `HistoryWindow`, and two lists over
-/// one table is two things to keep honest.
-private struct HistoryPane: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: Look.inset) {
-            PaneHeader(title: "History") {
-                PaneButton(title: "Open History") { HistoryWindow.show() }
-            }
-            SettingsCard {
-                Text("History opens in its own window (\(Keybindings.binding(for: .viewHistory).display)), "
-                     + "where every page you have visited is searchable and grouped by day.")
-                    .font(Look.footnote).foregroundStyle(Look.inkSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(Look.cardInset)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.top, Look.inset * 2)
-        .padding(.horizontal, Look.inset)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("History")
     }
 }
 
@@ -868,8 +1002,16 @@ extension Library {
              label(for: URL(string: "https://a.www.example.com/")!) == "a.www.example.com"),
         ]
 
-        out.append(("every section has a symbol and a title",
-                    LibrarySection.allCases.allSatisfy { !$0.icon.isEmpty && !$0.title.isEmpty }))
+        // Which sections a window offers.
+        out += [
+            ("every section has a symbol and a title",
+             LibrarySection.allCases.allSatisfy { !$0.icon.isEmpty && !$0.title.isEmpty }),
+            ("a private window is offered no Spaces section",
+             !LibrarySection.spaces.available(private: true)
+                && LibrarySection.allCases.filter { $0.available(private: true) }.count == 3),
+            ("an ordinary window is offered all four",
+             LibrarySection.allCases.allSatisfy { $0.available(private: false) }),
+        ]
         return out
     }
 }
