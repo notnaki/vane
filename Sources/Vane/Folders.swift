@@ -103,6 +103,21 @@ struct Pins: Codable, Equatable, Sendable {
     /// what is written down.
     var tabs: [String] { entries.compactMap(\.tab) }
 
+    /// The folder a row sits directly in, nil at the top of the section. What a tab's
+    /// accessibility value says after "pinned".
+    func folder(holding id: String) -> Folder? {
+        guard let i = index(of: id), let parent = entries[i].parent else { return nil }
+        return folder(parent)
+    }
+
+    /// Whether a new folder would fit beside `to`. False at the deepest level, where
+    /// `newFolder` refuses rather than quietly putting one somewhere else.
+    func canNestFolder(next to: String?) -> Bool {
+        guard let to, let t = index(of: to) else { return true }
+        return (entries[t].parent.flatMap { index(of: $0).map { depth(of: $0) + 1 } } ?? 0)
+            <= Pins.maxDepth
+    }
+
     /// The tabs inside a folder, however deeply. "Archive all tabs in folder" is this list.
     func tabs(in folder: UUID) -> [String] {
         guard let i = index(of: folder) else { return [] }
@@ -185,10 +200,9 @@ struct Pins: Codable, Equatable, Sendable {
             entries.append(Entry(row: .folder(folder), parent: nil))
             return folder
         }
-        let parent = entries[t].parent
-        guard (parent.flatMap { index(of: $0).map { depth(of: $0) + 1 } } ?? 0) <= Pins.maxDepth
-        else { return nil }
-        entries.insert(Entry(row: .folder(folder), parent: parent), at: subtree(at: t).lowerBound)
+        guard canNestFolder(next: to) else { return nil }
+        entries.insert(Entry(row: .folder(folder), parent: entries[t].parent),
+                       at: subtree(at: t).lowerBound)
         return folder
     }
 
@@ -370,6 +384,63 @@ extension Pins {
         assert("editing a folder that has gone does nothing",
                { var c = e; c.edit(folder: UUID()) { $0.name = "no" }; return c == e }())
 
+        // Which folder a row is in — what a pinned tab's accessibility value says.
+        var h = flat("a", "b")
+        let box2 = h.newFolder(named: "Box", next: "b")!
+        h.move("b", into: box2.id)
+        assert("a tab in a folder knows which one", h.folder(holding: "b")?.name == "Box")
+        assert("a tab at the top of the section is in none", h.folder(holding: "a") == nil)
+        assert("a row nobody has heard of is in none", h.folder(holding: "zz") == nil)
+
+        // The cap, asked before anything is moved.
+        assert("there is always room for a folder at the top", h.canNestFolder(next: nil))
+        assert("…and beside a tab at the top", h.canNestFolder(next: "a"))
+        var cap = Pins()
+        var last = cap.newFolder(named: "L0")!
+        for i in 1...Pins.maxDepth {
+            let next = cap.newFolder(named: "L\(i)")!
+            cap.move(next.id.uuidString, into: last.id)
+            last = next
+        }
+        cap.entries.append(Entry(row: .tab("t"), parent: nil))
+        cap.move("t", into: last.id)
+        assert("a tab still fits inside the deepest folder", cap.tabs(in: last.id) == ["t"])
+        assert("but a folder beside that tab would be one level too deep",
+               !cap.canNestFolder(next: "t"))
+        assert("…and asking for one makes nothing",
+               { var c = cap; return c.newFolder(next: "t") == nil }())
+        assert("a sibling of the deepest folder is still allowed",
+               cap.canNestFolder(next: last.id.uuidString))
+
+        // Restoring: the shape's order, then whatever it has not heard of.
+        func url(_ s: String) -> URL { URL(string: "https://e.example/\(s)")! }
+        var r = Pins()
+        r.entries = [Entry(row: .tab("https://e.example/b"), parent: nil),
+                     Entry(row: .tab("https://e.example/a"), parent: nil)]
+        assert("with no saved shape the urls come back as they are",
+               TabStore.pinOrder(shape: nil, urls: [url("a"), url("b")]) == [url("a"), url("b")])
+        assert("the saved shape decides the order",
+               TabStore.pinOrder(shape: r, urls: [url("a"), url("b")]) == [url("b"), url("a")])
+        assert("a url the shape has never heard of comes after the ones it has",
+               TabStore.pinOrder(shape: r, urls: [url("a"), url("c"), url("b")])
+                   == [url("b"), url("a"), url("c")])
+        assert("a shape naming a url the window has not got skips it",
+               TabStore.pinOrder(shape: r, urls: [url("a")]) == [url("a")])
+        var dup = Pins()
+        dup.entries = [Entry(row: .tab("https://e.example/a"), parent: nil),
+                       Entry(row: .tab("https://e.example/b"), parent: nil),
+                       Entry(row: .tab("https://e.example/a"), parent: nil)]
+        assert("two pinned tabs on the same page both come back",
+               TabStore.pinOrder(shape: dup, urls: [url("a"), url("a"), url("b")])
+                   == [url("a"), url("b"), url("a")])
+        assert("…and a shape asking for more of them than there are invents none",
+               TabStore.pinOrder(shape: dup, urls: [url("a"), url("b")])
+                   == [url("a"), url("b")])
+        assert("…while a window holding more of them than the shape names keeps the rest",
+               TabStore.pinOrder(shape: dup, urls: [url("a"), url("a"), url("a"), url("b")])
+                   == [url("a"), url("b"), url("a"), url("a")])
+        assert("an empty window restores nothing", TabStore.pinOrder(shape: dup, urls: []).isEmpty)
+
         // Codable, which is how the section survives a relaunch.
         if let data = try? JSONEncoder().encode(p),
            let back = try? JSONDecoder().decode(Pins.self, from: data) {
@@ -409,7 +480,10 @@ extension TabStore {
     /// drawn from `pins`, but ⌃⇥, ⌘1…9 and "tab 3 of 9" all read `tabs`, and a list that
     /// tabs through in a different order from the one on screen is a bug you cannot see.
     func applyPinOrder() {
-        let order = Dictionary(uniqueKeysWithValues: pins.tabs.enumerated().map { ($0.element, $0.offset) })
+        // `uniquingKeysWith`, not `uniqueKeysWithValues`: an id the section somehow names
+        // twice is a bug to survive, not one to trap the whole app on.
+        let order = Dictionary(pins.tabs.enumerated().map { ($0.element, $0.offset) },
+                               uniquingKeysWith: { a, _ in a })
         let pinned = tabs.enumerated().filter { $0.element.kind == .pinned }
         let sorted = pinned.sorted {
             let a = order[$0.element.id.uuidString] ?? Int.max, b = order[$1.element.id.uuidString] ?? Int.max
@@ -427,15 +501,20 @@ extension TabStore {
         applyPinOrder()
     }
 
-    /// A tab dragged onto a folder row.
+    /// A tab dragged onto a folder row — or sent there by "Move to Folder", which is the
+    /// same move without a drag.
     func move(_ id: Tab.ID, into folder: UUID) {
         move(id, to: .pinned)          // a Today tab pins itself on the way in
         syncPins()
         Motion.list {
+            // Dropped into a folded folder the tab would simply vanish. Arc opens the
+            // folder instead, so you can see where the thing you just moved went.
+            pins.edit(folder: folder) { $0.collapsed = false }
             pins.move(id.uuidString, into: folder)
             applyPinOrder()
         }
         savePins()
+        axAnnounce("Moved to \(pins.folder(folder)?.name ?? "folder").")
     }
 
     /// A tab dropped on the top or bottom edge of a folder row: beside the folder, not in
@@ -461,21 +540,32 @@ extension TabStore {
 
     func move(folder id: UUID, into parent: UUID) {
         Motion.list {
+            pins.edit(folder: parent) { $0.collapsed = false }      // see `move(_:into:)`
             pins.move(id.uuidString, into: parent)
             applyPinOrder()
         }
         savePins()
+        axAnnounce("Moved to \(pins.folder(parent)?.name ?? "folder").")
     }
 
     /// Arc's "New Folder": made where the click was, named in place. With a tab, that tab
     /// moves into it — right-clicking a pinned tab and asking for a folder means "put this
     /// in one", not "make an empty one somewhere".
     @discardableResult
-    func newFolder(from tab: Tab.ID? = nil) -> Folder? {
+    func newFolder(from tab: Tab.ID? = nil, beside folder: UUID? = nil) -> Folder? {
+        // Where the new folder goes: beside the row that was right-clicked, at that row's
+        // own level, or at the end of the section when nothing was.
+        let next = tab?.uuidString ?? folder?.uuidString
+        // Asked before anything moves: pinning the tab and *then* finding there is no room
+        // for a folder around it would leave the tab moved with nothing to show for it.
+        guard pins.canNestFolder(next: next) else {
+            axAnnounce("Folders nest \(Pins.maxDepth + 1) deep at most.")
+            return nil
+        }
         if let tab { move(tab, to: .pinned) }
         syncPins()
         let folder = Motion.list { () -> Folder? in
-            let made = pins.newFolder(next: tab?.uuidString)
+            let made = pins.newFolder(next: next)
             if let made, let tab { pins.move(tab.uuidString, into: made.id) }
             applyPinOrder()
             return made
@@ -511,14 +601,28 @@ extension TabStore {
     /// empty. They have to leave Pinned first — a pinned tab is never archived, which is
     /// the whole difference between the sections.
     func archiveFolder(_ id: UUID) {
-        let ids = pins.tabs(in: id).compactMap { UUID(uuidString: $0) }
-        for tab in ids where tabs.contains(where: { $0.id == tab }) {
-            move(tab, to: .today)
-            archive(tab)
+        // Only what is still open: `pins` is synced on every change, but a tab named here
+        // and gone by the time the menu item is clicked must not be counted or announced.
+        let live = pins.tabs(in: id).compactMap(UUID.init(uuidString:))
+            .filter { want in tabs.contains { $0.id == want } }
+        // One animation and one write for the lot. `move(_:to:)` per tab would be one of
+        // each per tab, and the rows would leave Pinned in separate frames.
+        Motion.list {
+            for want in live {
+                guard let i = tabs.firstIndex(where: { $0.id == want }) else { continue }
+                let tab = tabs.remove(at: i)
+                tab.kind = .today
+                TidyTitles.refresh(tab)
+                tabs.insert(tab, at: TabStore.clampedDestination(
+                    others: tabs.map(\.kind), moving: .today, to: 0))
+            }
+            syncPins()
+            applyPinOrder()
         }
-        syncPins()
         savePins()
-        axAnnounce("Archived \(ids.count) tab\(ids.count == 1 ? "" : "s").")
+        // `archive` counts its own burst, so the rows sweep out one after another.
+        live.forEach { archive($0) }
+        axAnnounce("Archived \(live.count) tab\(live.count == 1 ? "" : "s").")
     }
 
     // MARK: Persistence
@@ -526,10 +630,16 @@ extension TabStore {
     /// ponytail: the section's shape in UserDefaults beside the urls it orders, one key per
     /// Space. A sidecar file (the way `Suspension.SpaceState` does it) would be the tidier
     /// home, but this is one `Data` of a few hundred bytes and the flat url list it belongs
-    /// to already lives here. Ceiling: deleting a Space leaves its key behind.
+    /// to already lives here. `forgetShape` is what takes a deleted Space's key with it.
     static func shapeKey(space: UUID?, profileID: UUID) -> String {
         ProfileManager.defaultsKey(space.map { "pinShape.\($0.uuidString)" } ?? "pinShape",
                                    profileID)
+    }
+
+    /// A Space being deleted takes its folders with it; the key would otherwise sit in the
+    /// defaults for the life of the profile, waiting for a Space id that will never come back.
+    static func forgetShape(space: UUID, profileID: UUID) {
+        UserDefaults.standard.removeObject(forKey: shapeKey(space: space, profileID: profileID))
     }
 
     static func savedShape(space: UUID?, profileID: UUID) -> Pins? {
@@ -541,7 +651,11 @@ extension TabStore {
     /// The shape as it goes to disk: the same folders, with every tab named by the page it
     /// is on rather than by a `Tab.ID` that will not exist after a relaunch.
     func saveShape() {
-        guard !isPrivate else { return }
+        guard !isPrivate, !isLittle else { return }
+        // A window whose Pinned section is empty has nothing to say about the shape: it is
+        // either a fresh window or one that was never handed the profile's rows, and letting
+        // it clear the key would take another window's folders with it.
+        guard !pins.entries.isEmpty else { return }
         let byID = Dictionary(tabs.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { a, _ in a })
         let shape = pins.mapped { byID[$0].flatMap { TabStore.pinURL($0.currentURL) } }
         let key = TabStore.shapeKey(space: currentSpaceID, profileID: profileID)
@@ -556,12 +670,25 @@ extension TabStore {
 
     /// The pinned urls in the order the saved shape draws them, with anything the shape has
     /// never heard of after — a tab another window moved into this Space while it was shut.
-    static func pinOrder(shape: Pins?, urls: [URL]) -> [URL] {
+nonisolated static func pinOrder(shape: Pins?, urls: [URL]) -> [URL] {
         guard let shape else { return urls }
-        let known = Set(urls.map(\.absoluteString))
-        let ordered = shape.tabs.filter(known.contains).compactMap(URL.init(string:))
-        let seen = Set(ordered.map(\.absoluteString))
-        return ordered + urls.filter { !seen.contains($0.absoluteString) }
+        // Counted, not a Set: two pinned tabs can sit on the same page, and matching by
+        // membership alone either drops the second one or invents one the window has not got.
+        var left: [String: Int] = [:]
+        for u in urls { left[u.absoluteString, default: 0] += 1 }
+        var ordered: [URL] = []
+        for name in shape.tabs {
+            guard let n = left[name], n > 0, let url = URL(string: name) else { continue }
+            left[name] = n - 1
+            ordered.append(url)
+        }
+        var tail: [URL] = []
+        for u in urls {
+            guard let n = left[u.absoluteString], n > 0 else { continue }
+            left[u.absoluteString] = n - 1
+            tail.append(u)
+        }
+        return ordered + tail
     }
 
     /// Rebuild the live shape once the tabs exist. The saved one names its tabs by url; this
@@ -583,7 +710,14 @@ extension TabStore {
     /// order, and the folders around them.
     @discardableResult
     func restorePins(urls: [URL], parked: [String: Parked]) -> [Tab] {
-        let shape = TabStore.savedShape(space: currentSpaceID, profileID: profileID)
+        // Only a window that was actually handed the pinned rows owns the section. A private
+        // window and a Little Arc are handed none by design, and so is the second Space-less
+        // window of a profile — reading the shape in any of them would draw the folders as
+        // empty rows, and the next `saveShape` would write that folder-only shape back over
+        // the real one, losing every membership in it.
+        let saved = isPrivate || isLittle ? nil
+            : TabStore.savedShape(space: currentSpaceID, profileID: profileID)
+        let shape = urls.isEmpty && saved?.tabs.isEmpty == false ? nil : saved
         let made = restore(TabStore.pinOrder(shape: shape, urls: urls), as: .pinned, parked: parked)
         adoptPins(shape: shape, tabs: made)
         return made

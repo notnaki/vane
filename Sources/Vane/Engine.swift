@@ -586,14 +586,20 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
 @MainActor final class TabStore: ObservableObject {
     @Published var tabs: [Tab] = []
-    /// The tab whose row is a name field right now. One at a time, per window.
-    @Published var renamingTab: Tab.ID?
+    /// The tab whose row is a name field right now. One at a time, per window — and one
+    /// between the two: arming either name field puts the other away, or two rows in the
+    /// same list are both waiting to be typed into and only one of them can be.
+    @Published var renamingTab: Tab.ID? {
+        didSet { if renamingTab != nil { renamingFolder = nil } }
+    }
     /// Arc's Folders: the shape of the Pinned section — which tabs sit in which folder, and
     /// the order the rows are drawn in. `tabs` still holds the tabs themselves; this only
     /// says how they are arranged. See `Pins` in Folders.swift.
     @Published var pins = Pins()
     /// The folder whose row is a name field right now, the way `renamingTab` is for a tab.
-    @Published var renamingFolder: UUID?
+    @Published var renamingFolder: UUID? {
+        didSet { if renamingFolder != nil { renamingTab = nil } }
+    }
     /// Counts the archives that land in one burst, so Clear can sweep rows out one after
     /// another. See `archive`.
     private let bursts = Motion.Burst()

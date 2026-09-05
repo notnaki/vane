@@ -130,7 +130,7 @@ struct NewSpaceButton: View {
             .buttonStyle(.plain)
             .foregroundStyle(Look.inkSecondary)
             .help("New Space or Folder")
-            .accessibilityLabel("New")
+            .accessibilityLabel("New Space or Folder")
             .popover(isPresented: Binding(get: { store.editingSpace != nil },
                                           set: { if !$0 { store.editingSpace = nil } }),
                      arrowEdge: .top) {

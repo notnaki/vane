@@ -738,7 +738,13 @@ private struct FavoriteTile: View {
     }
     switch tab.kind {
     case .favourite: bits.append("favourite")
-    case .pinned:    bits.append("pinned")
+    case .pinned:
+        bits.append("pinned")
+        // The indent is the only thing on screen that says a tab is inside a folder, and an
+        // indent is not something VoiceOver can read out.
+        if let folder = store.pins.folder(holding: tab.id.uuidString) {
+            bits.append("in \(folder.name)")
+        }
     case .today:     break
     }
     if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
@@ -770,6 +776,15 @@ private enum DropSide { case before, after }
     /// Whether one of ours is in flight at all, which is what the drop lines and the
     /// sidebar's catch-all delegate care about.
     var active: Bool { tab != nil || folder != nil }
+
+    /// What is being dragged, and the end of the drag in the same breath. Every
+    /// `performDrop` calls this first: a delegate that reads the flag and then *refuses*
+    /// the drop leaves the drag running forever, and a drag that never ends makes
+    /// `SidebarDrop` stand aside from every later url and file drop.
+    func take() -> (tab: Tab.ID?, folder: Folder.ID?) {
+        defer { tab = nil; folder = nil }
+        return (tab, folder)
+    }
 }
 
 /// ponytail: `.onDrag`/`.onDrop` with a delegate rather than `.draggable`/`.dropDestination`.
@@ -779,7 +794,10 @@ private enum DropSide { case before, after }
     // Published on the next turn, not now: a state change inside the drag's own start
     // re-renders the row under the pointer, and SwiftUI drops the drag with it.
     let id = tab.id
-    DispatchQueue.main.async { Dragging.shared.tab = id }
+    // Both set, so a flag left behind by a drag that ended outside any of our targets —
+    // dropped on the desktop, say, where no `performDrop` ever runs — is cleared by the
+    // next drag rather than outliving the session.
+    DispatchQueue.main.async { Dragging.shared.tab = id; Dragging.shared.folder = nil }
     return NSItemProvider(object: id.uuidString as NSString)
 }
 
@@ -830,14 +848,16 @@ private struct TabDrop: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         let after = which(info) == .after
         side = nil
-        if let folder = Dragging.shared.folder {
-            Dragging.shared.folder = nil
+        // Read once and cleared *before* anything can refuse the drop. A drag left set here
+        // outlives the gesture, and `SidebarDrop` then stands aside from every url and file
+        // dropped on the sidebar for the rest of the session.
+        let (dragged, folder) = Dragging.shared.take()
+        if let folder {
             guard let target, target.kind == .pinned else { return false }
             store.move(folder: folder, next: target.id.uuidString, after: after)
             return true
         }
-        guard let id = Dragging.shared.tab else { return false }
-        Dragging.shared.tab = nil
+        guard let id = dragged else { return false }
         if let target { store.drop(id, onto: target.id, after: after) } else { store.move(id, to: into) }
         return true
     }
@@ -967,6 +987,7 @@ private struct SpaceMenu: View {
     // the menu was built from.
     Spaces.archiveContents(of: store.spaces.first { $0.id == space.id } ?? space)
     ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
+    TabStore.forgetShape(space: space.id, profileID: space.profileID)
     if let survivor { store.switchTo(space: survivor) }
     rebuild()
 }
@@ -1319,7 +1340,7 @@ private struct FolderMenu: View {
         Button("Change Icon…") { icons = true }
         Button(folder.collapsed ? "Unfold" : "Collapse") { store.toggleFolder(folder.id) }
         Divider()
-        Button("New Folder") { store.newFolder() }
+        Button("New Folder") { store.newFolder(beside: folder.id) }
         Button("Archive All Tabs in Folder") { store.archiveFolder(folder.id) }
             .disabled(store.pins.tabs(in: folder.id).isEmpty)
         Divider()
@@ -1331,7 +1352,7 @@ private struct FolderMenu: View {
 /// row out from under it.
 @MainActor private func folderDragPayload(_ folder: Folder) -> NSItemProvider {
     let id = folder.id
-    DispatchQueue.main.async { Dragging.shared.folder = id }
+    DispatchQueue.main.async { Dragging.shared.folder = id; Dragging.shared.tab = nil }
     return NSItemProvider(object: id.uuidString as NSString)
 }
 
@@ -1358,8 +1379,8 @@ private struct FolderDrop: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         let where_ = which(info)
         zone = nil
-        if let dragged = Dragging.shared.folder {
-            Dragging.shared.folder = nil
+        let (tab, dragged) = Dragging.shared.take()      // see `TabDrop.performDrop`
+        if let dragged {
             guard dragged != folder.id else { return false }
             switch where_ {
             case .inside: store.move(folder: dragged, into: folder.id)
@@ -1368,8 +1389,7 @@ private struct FolderDrop: DropDelegate {
             }
             return true
         }
-        guard let id = Dragging.shared.tab else { return false }
-        Dragging.shared.tab = nil
+        guard let id = tab else { return false }
         switch where_ {
         case .inside: store.move(id, into: folder.id)
         default: store.drop(id, beside: folder.id, after: where_ == .after)

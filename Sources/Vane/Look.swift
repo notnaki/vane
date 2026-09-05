@@ -123,9 +123,9 @@ enum Look {
     static let dot: CGFloat = 8
     /// The line a drop will land on: before or after a tile, above or below a row.
     static let dropLine: CGFloat = 2
-    /// How far a folder's contents step in from the rows around them. One favicon's width,
-    /// so a child row's icon starts where its folder's name did and the nesting reads as a
-    /// column rather than as a wobble.
+    /// How far a folder's contents step in from the rows around them. Enough to read as
+    /// nesting at a glance, and small enough that three levels still leave a title room in
+    /// a 250pt sidebar — which is the same reason `Pins.maxDepth` stops where it does.
     static let folderIndent: CGFloat = 14
 
     /// The theme editor popover: seven swatches an `inset` apart, plus its margins. A swatch

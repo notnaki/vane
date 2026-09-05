@@ -232,7 +232,10 @@ struct SidebarDrop: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard !Dragging.shared.active else { return false }
+        // A drag of ours that reached the sidebar as a whole was refused by every row it
+        // passed over. End it here: the flag would otherwise outlive the gesture, and the
+        // guard above would stand aside from every url and file drop from then on.
+        if Dragging.shared.active { _ = Dragging.shared.take(); return false }
         // A url first: a link dragged out of a page carries both a url and its own text, and
         // the url is the one that does not have to be guessed at.
         if let provider = info.itemProviders(for: [.url, .fileURL]).first {
