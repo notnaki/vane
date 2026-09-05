@@ -536,6 +536,11 @@ private struct SpaceSwipe: ViewModifier {
     }
 
     /// Not far enough, or nowhere to go: the strip goes home.
+    ///
+    /// ponytail: only a `.ended`/`.cancelled` event brings the strip home, so a gesture whose
+    /// event stream is cut off mid-swipe — which a trackpad does not do, but a synthetic
+    /// event source can — leaves it parked where the last delta put it. Ceiling: a watchdog
+    /// timer, which is a lot of machinery to insure against something the hardware guarantees.
     private func settle(_ store: TabStore) {
         guard store.spaceDrag != 0 else { store.spaceSwiping = false; return }
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
