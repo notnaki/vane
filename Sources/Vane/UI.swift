@@ -276,6 +276,9 @@ private struct Sidebar: View {
     @ObservedObject private var sidebar = SidebarWidth.shared
     /// The scroll viewport's height, so its content can be made to fill it. See below.
     @State private var scrollHeight: CGFloat = 0
+    /// One geometry group for the whole strip, so a tab changing section — a row becoming a
+    /// tile, a tile a row — travels from where it was to where it is going.
+    @Namespace private var strip
 
     var body: some View {
         VStack(spacing: Look.inset) {
@@ -307,6 +310,7 @@ private struct Sidebar: View {
             .spaceSwipe(store)
             BottomRow()
         }
+        .environment(\.strip, strip)
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.footerInset)
         .padding(.top, Look.topInset)
@@ -543,7 +547,7 @@ private struct Favorites: View {
                                      count: SidebarWidth.favouriteColumns(pinned.count,
                                                                           width: sidebar.width)),
                       spacing: Look.inset) {
-                ForEach(pinned) { FavoriteTile(tab: $0) }
+                ForEach(pinned) { FavoriteTile(tab: $0).transition(.tileGrow) }
             }
             // The grid sits an `inset` above the space row, not a row gap.
             .padding(.bottom, Look.inset - Look.rowGap)
@@ -561,6 +565,7 @@ private struct FavoriteTile: View {
     @State private var side: DropSide?
     @State private var width: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.strip) private var strip
 
     var body: some View {
         let selected = store.current == tab.id
@@ -574,6 +579,7 @@ private struct FavoriteTile: View {
                 DropLine(on: side != nil, axis: .horizontal)
             }
             .animation(reduceMotion ? nil : Look.quick, value: hovering)
+            .inStrip(tab.id, strip)
             .contentShape(.rect)
             .onHover { hovering = $0 }
             .onTapGesture { store.current = tab.id }
@@ -982,6 +988,7 @@ private struct SpaceDots: View {
     @State private var theme = false
     /// Which dot a drag is over, so only that one lights up.
     @State private var dropTarget: UUID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1001,13 +1008,18 @@ private struct SpaceDots: View {
         let over = Binding(get: { dropTarget == space.id },
                            set: { dropTarget = $0 ? space.id : nil })
         Group {
+            // The dot grows into the icon and the old icon shrinks to a dot as the Space
+            // changes — Arc's footer morph, as a scale-and-fade both ways.
             if here {
                 Image(systemName: space.icon ?? "cloud").font(Look.small)
                     .foregroundStyle(Look.inkPrimary)
+                    .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
             } else {
                 Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
+                    .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
             }
         }
+        .animation(reduceMotion ? nil : Look.quick, value: here)
         .frame(width: Look.spaceDotHit, height: Look.spaceDotHit)
         .background(dropTarget == space.id ? Look.selected : .clear, in: .circle)
         .contentShape(.rect)
@@ -1041,7 +1053,7 @@ private struct PinnedTabs: View {
         // a drop on the space row, ⌘D, or a tab's own Pin action.
         if !pinned.isEmpty {
             VStack(spacing: Look.rowGap) {
-                ForEach(pinned) { TabRow(tab: $0) }
+                ForEach(pinned) { TabRow(tab: $0).transition(.rowCollapse) }
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Pinned Tabs")
@@ -1112,10 +1124,24 @@ extension SidebarRow where Leading == GlyphBox, Trailing == EmptyView {
 /// Whether the row a view sits in is hovered, so a close button can appear without every
 /// row needing its own hover plumbing.
 private struct RowHoveringKey: EnvironmentKey { static let defaultValue = false }
+/// The sidebar's geometry group (see `Sidebar.strip`). nil outside the sidebar — the
+/// Library's rows are not in it.
+private struct StripKey: EnvironmentKey { static let defaultValue: Namespace.ID? = nil }
 extension EnvironmentValues {
     fileprivate var rowHovering: Bool {
         get { self[RowHoveringKey.self] }
         set { self[RowHoveringKey.self] = newValue }
+    }
+    fileprivate var strip: Namespace.ID? {
+        get { self[StripKey.self] }
+        set { self[StripKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// A tab's place in the strip's geometry group, when it is in one.
+    @ViewBuilder fileprivate func inStrip(_ id: Tab.ID, _ ns: Namespace.ID?) -> some View {
+        if let ns { matchedGeometryEffect(id: id, in: ns) } else { self }
     }
 }
 
@@ -1171,7 +1197,7 @@ private struct OpenTabs: View {
     var body: some View {
         let open = store.tabs.filter { $0.kind == .today }
         VStack(spacing: Look.rowGap) {
-            ForEach(open) { TabRow(tab: $0) }
+            ForEach(open) { TabRow(tab: $0).transition(.rowCollapse) }
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
         // tabs instead of announcing an anonymous stack.
@@ -1188,6 +1214,7 @@ private struct TabRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
     @State private var side: DropSide?
+    @Environment(\.strip) private var strip
 
     var body: some View {
         let selected = store.current == tab.id
@@ -1202,6 +1229,7 @@ private struct TabRow: View {
         .overlay(alignment: side == .after ? .bottom : .top) {
             DropLine(on: side != nil, axis: .vertical)
         }
+        .inStrip(tab.id, strip)
         .help(tab.title)
         .onDrag { dragPayload(tab) } preview: {
             // Drag preview: the row alone would drag the whole list's background with it.
@@ -1349,6 +1377,9 @@ private struct TabRowTrailing: View {
                 }
                 .help("Close Tab (⌘W)")
                 .accessibilityLabel("Close \(TidyTitles.title(for: tab))")
+                // Grows in under the pointer rather than popping: the row's own hover
+                // animation carries it.
+                .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
             }
         }
         .buttonStyle(.plain)
