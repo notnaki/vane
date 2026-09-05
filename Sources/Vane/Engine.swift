@@ -110,11 +110,17 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         cfg.userContentController.addUserScript(
             WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         // All frames, unlike the password script: an embedded player lives in an iframe.
+        // Its own content world: `__vanePiP` is then not on the page's `window` at all.
         cfg.userContentController.addUserScript(
             WKUserScript(source: PictureInPicture.script, injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: false))
+                         forMainFrameOnly: false, in: PictureInPicture.world))
         cfg.userContentController.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
+                         forMainFrameOnly: false))
+        // Document *start*: the media-session wrapper has to be in place before the page
+        // registers its handlers. See MediaPlayer.swift.
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: MediaTray.script, injectionTime: .atDocumentStart,
                          forMainFrameOnly: false))
         cfg.userContentController.addUserScript(
             WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
@@ -127,9 +133,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// because suspension swaps the web view out from under all of it.
     private func attach() {
         web.configuration.userContentController.add(WeakHandler(self), name: "vanepw")
-        web.configuration.userContentController.add(WeakHandler(self), name: PictureInPicture.messageName)
+        web.configuration.userContentController.add(WeakHandler(self),
+                                                    contentWorld: PictureInPicture.world,
+                                                    name: PictureInPicture.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: Previews.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), name: MediaTray.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: StatusBar.messageName)
         // A fresh web view has no page to be insecure about.
         secureContent = true
@@ -221,8 +230,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         old.configuration.userContentController.removeScriptMessageHandler(forName: "vanepw")
         old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(
-            forName: PictureInPicture.messageName)
+            forName: PictureInPicture.messageName, contentWorld: PictureInPicture.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: MediaTray.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
         old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
         // ponytail: `old` is never deallocated — it survives at a high retain count, so
@@ -281,6 +291,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func tearDown() {
         suspend()
         TabAudio.forget(id)
+        MediaState.shared.forget(id)
     }
 
     /// Come up already suspended, so restoring thirty tabs costs one WebContent process
@@ -329,6 +340,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         cfg.mediaTypesRequiringUserActionForPlayback = []
         cfg.allowsAirPlayForMediaPlayback = true
         cfg.preferences.isElementFullscreenEnabled = true
+        // Picture in picture is off by default in WKWebView on macOS — measured: the key is
+        // there and reads false, and with it false `webkitSetPresentationMode` is a silent
+        // no-op, which is why both the ⌥⌘P toggle and auto-PiP did nothing. The public
+        // property is iOS-only (`allowsPictureInPictureMediaPlayback` on the configuration),
+        // so this is KVC on the same preference Safari sets.
+        // ponytail: KVC on a documented-by-name preference, exactly like developerExtrasEnabled
+        // below. If the key ever goes away this throws nothing and PiP simply stays off.
+        cfg.preferences.setValue(true, forKey: "allowsPictureInPictureMediaPlayback")
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = false
         // isInspectable governs remote inspection from Safari's Develop menu. The in-app
         // inspector window and the "Inspect Element" context-menu item are gated on this
@@ -560,6 +579,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
+        if m.name == MediaTray.messageName {
+            MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
+            return
+        }
         if m.name == StatusBar.messageName { hoveredLink = StatusBar.link(from: m.body); return }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
@@ -658,6 +681,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             // rather than in each of those callers is the only way the two cannot drift.
             if let id = current, let i = splits.firstIndex(where: { $0.contains(id) }) {
                 splits[i] = splits[i].focusing(id)
+            }
+            // Arc's auto picture-in-picture: the video in the tab you left follows you out,
+            // and goes back into the page when you come back to it.
+            if oldValue != current {
+                PictureInPicture.enterIfPlaying(tabs.first { $0.id == oldValue })
+                PictureInPicture.exitIfAuto(tabs.first { $0.id == current })
             }
             extensions.sync()
         }
@@ -948,6 +977,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             Motion.list { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
+            MediaState.shared.forget(id)
         }
         if renamingTab == id { renamingTab = nil }
         extensions.sync()

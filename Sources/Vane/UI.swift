@@ -20,11 +20,53 @@ import WebKit
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
     let web: WKWebView
-    func makeNSView(context: Context) -> WKWebView { web }
-    func updateNSView(_ v: WKWebView, context: Context) {}
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: WKWebView, context: Context) -> CGSize? {
+    /// Out of the window's key loop and out of the accessibility tree: a page kept running
+    /// off screen (see `OffscreenPages`) must not be Tab-able to or readable by VoiceOver.
+    var offscreen = false
+
+    func makeNSView(context: Context) -> WebHost { WebHost(web) }
+    func updateNSView(_ host: WebHost, context: Context) {
+        host.show(web)
+        host.offscreen = offscreen
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: WebHost, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? nsView.frame.width,
                height: proposal.height ?? nsView.frame.height)
+    }
+}
+
+/// A plain box whose only job is to hold whichever WKWebView the tab has *now*.
+///
+/// `Tab.suspend()` throws the web view away and puts a fresh one in its place, so a
+/// representable that hands back the view it was made with and does nothing in
+/// `updateNSView` leaves the dead one on screen — a blank page when you come back to a tab
+/// that was suspended under memory pressure. The swap has to happen somewhere, and this is
+/// the only place that sees both the old view and the new one.
+final class WebHost: NSView {
+    private(set) var web: WKWebView?
+    /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
+    /// of the window's key loop and out of the accessibility tree, so an invisible page is
+    /// neither Tab-able nor readable by VoiceOver, and it costs no compositing either.
+    /// Measured: it does *not* stop the page's media, unlike taking the view out of the
+    /// window, which is what the mini audio player is up against in the first place.
+    var offscreen = false {
+        didSet { if offscreen != oldValue { isHidden = offscreen } }
+    }
+
+    init(_ web: WKWebView) {
+        super.init(frame: .zero)
+        show(web)
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError("not in a nib") }
+
+    func show(_ next: WKWebView) {
+        guard next !== web else { return }
+        web?.removeFromSuperview()
+        next.frame = bounds
+        next.autoresizingMask = [.width, .height]
+        addSubview(next)
+        web = next
     }
 }
 
@@ -245,6 +287,7 @@ struct WebCard: View {
                 // No tabs: nothing to draw. The glass ground shows through, like the sidebar.
                 Color.clear
             }
+            OffscreenPages()
             if let tab = store.active { LoadingBar(tab: tab) }
             VStack(spacing: 8) {
                 if store.findOpen, let tab = store.active {
@@ -345,9 +388,11 @@ private struct Sidebar: View {
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.footerInset)
         .padding(.top, Look.topInset)
-        // Toasts slide up from under the footer and sit just above it, over the list.
+        // Toasts and the mini audio player slide up from under the footer and sit just
+        // above it, over the list — the toast above the player, so neither covers the other.
         .overlay(alignment: .bottom) {
-            ToastHost().padding(.bottom, Look.footer + Look.footerInset + Look.inset)
+            VStack(spacing: Look.inset) { ToastHost(); MediaTrayView() }
+                .padding(.bottom, Look.footer + Look.footerInset + Look.inset)
         }
         .frame(width: sidebar.width, alignment: .leading)
         // Under everything in the sidebar, so a row, a button or the pill takes the pointer

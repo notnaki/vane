@@ -326,6 +326,10 @@ private struct GeneralPane: View {
     // HTTPSOnly reads this key straight out of defaults on every navigation, so writing it
     // here is the whole of the preference.
     @AppStorage("httpsOnly") private var httpsOnly = true
+    // PictureInPicture reads this key straight out of defaults on every tab switch, so
+    // writing it here is the whole of the preference. Its name comes from there, so the
+    // toggle and the reader cannot end up on two different keys.
+    @AppStorage(PictureInPicture.prefKey) private var autoPiP = true
     @State private var restore = Prefs.restoreSession
     @State private var archiveAfter = Prefs.archiveAfter
     @State private var isDefault = URLHandling.isDefaultBrowser
@@ -378,6 +382,15 @@ private struct GeneralPane: View {
                 }
                 Footnote("Every page is loaded over an encrypted connection. A site that only "
                          + "offers http stops on a warning instead of loading in the clear.")
+            }
+
+            SettingsCard {
+                SettingsRow("Automatically enter Picture in Picture when switching tabs") {
+                    Toggle("", isOn: $autoPiP).labelsHidden()
+                }
+                Footnote("A video playing in the tab you leave pops out into a floating window "
+                         + "and follows you around; coming back to the tab puts it back in the "
+                         + "page. A thumbnail or a silent background loop is left alone.")
             }
 
             SettingsCard {
