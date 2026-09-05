@@ -631,6 +631,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func clearSuggestions() { suggestTask?.cancel(); suggestions = []; suggestionIndex = -1 }
 
     let isPrivate: Bool
+    /// A Little Arc window: one page, no sidebar, no Space. It shares the profile's cookies
+    /// and history — it is the same browser, only a different window — but it owns none of
+    /// the profile's furniture, so it restores no favourites and no pinned rows and is
+    /// never written into the session. See LittleArc.swift.
+    let isLittle: Bool
     /// The profile this window belongs to. A window never changes profile — opening another
     /// profile opens another window.
     let profileID: UUID
@@ -653,8 +658,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// its interactionState. A tab we have state for comes up suspended instead of loading.
     init(isPrivate: Bool = false, urls: [URL] = [],
          profileID: UUID = ProfileManager.shared.active.id, space: Space? = nil,
-         parked: [String: Parked] = [:]) {
+         parked: [String: Parked] = [:], isLittle: Bool = false) {
         self.isPrivate = isPrivate
+        self.isLittle = isLittle
         self.profileID = profileID
         self.currentSpaceID = space?.id
         TabStore.all.append(self)
@@ -668,13 +674,19 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // What stays belongs to the profile, not to a window, so only the first window of
         // that profile gets it back — and the session's copy of those same urls is dropped
         // so they don't come up twice.
-        let firstOfProfile = TabStore.all.filter { $0.profileID == profileID && !$0.isPrivate }.count == 1
-        let mine = !isPrivate && firstOfProfile
+        // A Little Arc does not count: it is not a window the profile's pinned rows belong
+        // to, and letting it be "the first one" would cost the next real window its rows.
+        let firstOfProfile = TabStore.all
+            .filter { $0.profileID == profileID && !$0.isPrivate && !$0.isLittle }.count == 1
+        let mine = !isPrivate && !isLittle && firstOfProfile
         // Favourites are the one thing every Space shares, so they come from the profile
         // whether this window is in a Space or not. `Spaces.favourites` also folds any
         // per-space grid an older spaces.json still carries into that one list.
-        let favourites = isPrivate ? [] : Spaces.favourites(for: profileID)
-        let pinned = space?.pinnedTabURLs ?? (mine ? TabStore.stayingURLs(.pinned, for: profileID) : [])
+        // A Little Arc has no sidebar to put either section in, and nothing it does may
+        // move the profile's grid — so it starts with the one page it was handed.
+        let favourites = isPrivate || isLittle ? [] : Spaces.favourites(for: profileID)
+        let pinned = isLittle ? []
+            : (space?.pinnedTabURLs ?? (mine ? TabStore.stayingURLs(.pinned, for: profileID) : []))
         // A space carries its own per-tab state in a sidecar; a window restore is handed one.
         let parked = space.map { Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory) } ?? parked
         restore(favourites, as: .favourite, parked: parked)
@@ -704,7 +716,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     }
 
     private func rememberSpace() {
-        guard !isPrivate else { return }
+        // A Little Arc is in no Space, and must not be read as "the user left this profile
+        // outside every Space" — that would clear the Space the next window comes up in.
+        guard !isPrivate, !isLittle else { return }
         let key = TabStore.lastSpaceKey(profileID)
         if let id = currentSpaceID {
             UserDefaults.standard.set(id.uuidString, forKey: key)
@@ -972,7 +986,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     }
 
     func savePins() {
-        guard !isPrivate else { return }
+        // A Little Arc holds no favourites and no pinned rows; writing its empty lists down
+        // would erase the profile's.
+        guard !isPrivate, !isLittle else { return }
         func urls(_ kind: TabKind) -> [String] {
             tabs.filter { $0.kind == kind }.compactMap { TabStore.pinURL($0.currentURL) }
         }

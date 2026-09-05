@@ -369,6 +369,15 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     ]
 }
 
+/// Arc's Window ▸ Show All Little Arc Windows. Greyed out with none open, which is most of
+/// the time — and the windows themselves are in the list below it, because AppKit files
+/// every titled window into this menu on its own.
+@MainActor private func littleArcWindows() -> NSMenuItem {
+    let entry = item("Show All Little Arc Windows", "") { LittleArc.toggleAll() }
+    entry.isEnabled = !LittleArc.windows.isEmpty
+    return entry
+}
+
 /// Menus carry live state (checkmarks, the bookmarks and history lists), so they are
 /// rebuilt rather than mutated in place.
 @MainActor func rebuild() { NSApp.mainMenu = buildMenu() }
@@ -603,6 +612,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         .separator(),
         item(.showLibrary) { showLibrary() },
         .separator(),
+        littleArcWindows(),
         standard("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))),
     ])
     root.addItem(window)

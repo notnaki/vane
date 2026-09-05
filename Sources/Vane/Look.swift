@@ -105,6 +105,15 @@ enum Look {
     static let topInset: CGFloat = 9
     /// The traffic lights' centre line, and so the top row's.
     static let lightsCentre: CGFloat = 23
+    /// Little Arc: a small floating window with one page and one row of chrome. Arc's is
+    /// roughly 1000×700 and it is a size, not a proportion — the point is that it is
+    /// obviously not your browser window.
+    static let littleWidth: CGFloat = 1000
+    static let littleHeight: CGFloat = 700
+    /// Above Little Arc's bar. Its row is the address pill's own height rather than the
+    /// sidebar's `topRow`, so the padding that puts that row's centre on the traffic
+    /// lights' line is a different number — the same line, arrived at from a taller row.
+    static let littleTopInset: CGFloat = lightsCentre - pillHeight / 2
     static let footer: CGFloat = 28
     /// Under the footer.
     static let footerInset: CGFloat = 10
@@ -386,6 +395,10 @@ extension Look {
         out.append(("a bigger light still centres on the same line",
                     VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 20)
                         == VaneWindow.lightOriginY(windowTop: 800, buttonHeight: 14) - 3))
+        out.append(("Little Arc's bar puts its pill on the same lights' line as the sidebar",
+                    littleTopInset + pillHeight / 2 == lightsCentre))
+        out.append(("…so its whole bar is 41pt, the sidebar's row pitch",
+                    littleTopInset + pillHeight == rowHeight + rowGap))
         out.append(("the sidebar is laid out on Arc's 41pt row pitch", rowHeight + rowGap == 41))
         out.append(("the top strip is Arc's 45pt", topInset + topRow + inset == 45))
         out.append(("the Tidy row and New Tab are Arc's 31pt apart",

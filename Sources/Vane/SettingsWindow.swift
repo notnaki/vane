@@ -18,6 +18,21 @@ import SwiftUI
         get { UserDefaults.standard.object(forKey: "restoreSession") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "restoreSession") }
     }
+
+    /// Settings › Links. Little Arc is Arc's default and Vane's: a link from Mail or Slack
+    /// is something you look at once, not a tab you meant to collect. Stored as a string
+    /// rather than a Bool so the Picker in `LinksPane` has something to tag its rows with,
+    /// and so a third target (Arc's "Most Recent Space") can be added without a migration.
+    static var openLinksInLittleArc: Bool {
+        UserDefaults.standard.string(forKey: LinkTarget.key) != LinkTarget.currentSpace
+    }
+}
+
+/// The two answers the Links pane's "Open links from other apps in" offers.
+enum LinkTarget {
+    static let key = "externalLinks"
+    static let littleArc = "little"
+    static let currentSpace = "space"
 }
 
 /// The settings window. ponytail: one NSWindow we own, made once and reused — the app has
@@ -747,6 +762,9 @@ private struct MaxPane: View {
 private struct LinksPane: View {
     // The key `Search.current` reads. AppStorage so the picker redraws itself.
     @AppStorage("searchEngine") private var engineID = Search.defaultEngine.id
+    // `Prefs.openLinksInLittleArc` reads this; the default is written nowhere, so an
+    // unset key and "little" have to mean the same thing on both sides.
+    @AppStorage(LinkTarget.key) private var externalLinks = LinkTarget.littleArc
     @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
     // Absent = off. Deliberately not defaulted on: turning this on sends what you type to
     // the search engine before you press Return.
@@ -768,6 +786,20 @@ private struct LinksPane: View {
 
     var body: some View {
         Pane {
+            SettingsCard {
+                SettingsRow("Open links from other apps in") {
+                    Picker("", selection: $externalLinks) {
+                        Text("Little Arc").tag(LinkTarget.littleArc)
+                        Text("Current Space").tag(LinkTarget.currentSpace)
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                Footnote("A Little Arc is a small window with one page and no sidebar: read "
+                         + "it, then close it with \u{2318}W — or press \u{2318}O to keep it as a "
+                         + "tab in a Space. Current Space puts every link straight into the "
+                         + "window you already have open.")
+            }
+
             SettingsCard {
                 SettingsRow("AI assistant") {
                     Picker("", selection: $assistantID) {

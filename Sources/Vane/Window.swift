@@ -130,14 +130,23 @@ extension VaneWindow {
     private static var delegates: [WindowDelegate] = []
 
     /// The window the menus act on. keyWindow is nil while a sheet or panel is up, so fall
-    /// back to the most recently opened one rather than doing nothing.
+    /// back to the most recently opened one rather than doing nothing — but never to a
+    /// Little Arc, which is one page in a window of its own and not where a menu item aimed
+    /// at "the browser" should land.
     static var current: TabStore? {
-        TabStore.all.first { $0.window?.isKeyWindow == true } ?? TabStore.all.last
+        TabStore.all.first { $0.window?.isKeyWindow == true } ?? main
+    }
+
+    /// The frontmost ordinary browser window. What a link from another app opens a tab in,
+    /// and what a Little Arc hands its page over to. See LittleArc.swift.
+    static var main: TabStore? {
+        let ordinary = TabStore.all.filter { !$0.isLittle }
+        return ordinary.first { $0.window?.isKeyWindow == true } ?? ordinary.last
     }
 
     /// The window the menus act on, restricted to one profile.
     static func current(in profileID: UUID) -> TabStore? {
-        let mine = TabStore.all.filter { $0.profileID == profileID }
+        let mine = TabStore.all.filter { $0.profileID == profileID && !$0.isLittle }
         return mine.first { $0.window?.isKeyWindow == true } ?? mine.last
     }
 
@@ -301,7 +310,9 @@ extension VaneWindow {
     /// rewritten, so quitting from profile B does not erase profile A's session.
     static func save() {
         var byProfile: [UUID: [[Entry]]] = [:]
-        for store in TabStore.all where !store.isPrivate {
+        // Nothing private is written down, and neither is a Little Arc: it is a link
+        // someone followed once, not a window to come back up in.
+        for store in TabStore.all where !store.isPrivate && !store.isLittle {
             store.saveCurrentSpace()
             let entries = store.tabs.compactMap { tab -> Entry? in
                 // currentURL, not web.url: a suspended tab has no live page and would

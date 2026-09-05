@@ -1,0 +1,384 @@
+import AppKit
+import SwiftUI
+
+/// Arc's "Little Arc": a link from another app opens in a small floating window with one
+/// page and one row of chrome, instead of landing as a tab in whatever window happened to
+/// be in front. The bet is that most links from Mail, Slack or Terminal are read once and
+/// closed — putting them in the sidebar makes the user tidy up after every message they
+/// read. ⌘W throws it away; "Open in ▸" is the one gesture that says "actually, keep this",
+/// and only then does it become a tab in a Space.
+///
+/// It is the same browser: the same profile, cookies, history and extensions. What it is
+/// not is a *window of the profile* — it restores no favourites, holds no Space, and is
+/// never written into the session (`TabStore.isLittle`), so closing it leaves nothing
+/// behind and quitting with three of them open does not bring three of them back.
+///
+/// ponytail: `VaneWindow` unchanged rather than a subclass — everything it does (holding
+/// the traffic lights on `Look.lightsCentre`, dragging by bare ground, Escape stopping a
+/// load) is exactly what this window wants, and Little Arc's own row is laid out to put
+/// its pill on that same line. A window is identified as a Little Arc by its store, not by
+/// its class.
+@MainActor enum LittleArc {
+
+    // MARK: - Routing
+
+    /// Where a url from another app goes.
+    enum Route: Equatable, Sendable {
+        case little
+        /// A tab in the window that is already open.
+        case tab
+        /// Nothing is open — the link is the reason to open a window at all.
+        case newWindow
+    }
+
+    /// The whole decision, as a pure function of the preference and whether there is an
+    /// ordinary window to add a tab to. `nonisolated` so `selfcheck --pure` can prove the
+    /// table without a window server.
+    ///
+    /// Little Arc does not care whether a window is open: it is a window of its own, and
+    /// Arc opens one either way. "Current Space" does — with nothing open there is no
+    /// current Space, and the link becomes the window's first tab.
+    nonisolated static func route(preferLittle: Bool, hasWindow: Bool) -> Route {
+        if preferLittle { return .little }
+        return hasWindow ? .tab : .newWindow
+    }
+
+    // MARK: - Opening
+
+    /// One url, one window. Called once per url, so three links arriving together are three
+    /// Little Arcs — which is what Arc does, and what "one page per window" means.
+    @discardableResult
+    static func open(_ url: URL) -> TabStore {
+        let profile = ProfileManager.shared.active
+        let store = TabStore(urls: [url], profileID: profile.id, isLittle: true)
+        // `WebCard` leaves its leading edge bare for a docked sidebar. There isn't one, so
+        // this is what gives the page the same gap on all four sides.
+        store.sidebarShown = false
+        keepInside(store)
+
+        let window = VaneWindow(
+            contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered, defer: false)
+        window.title = "Little Arc"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        // Same trick as `Windows.open`: an empty compact toolbar gets AppKit's own idea of
+        // where the lights go near enough to `Look.lightsCentre` that the first frame does
+        // not jump before `centreTrafficLights` runs.
+        window.toolbar = NSToolbar(identifier: "VaneEmpty")
+        window.toolbarStyle = .unifiedCompact
+        window.tabbingMode = .disallowed
+        window.isOpaque = false
+        window.backgroundColor = NSColor.black.withAlphaComponent(0.001)
+        window.contentView = NSHostingView(rootView: LittleArcView()
+            .environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        // Centred, and cascading from there once there is more than one — deliberately no
+        // frame autosave: a Little Arc is not a window the user arranges, it is one that
+        // appears in the middle of the screen with the thing they clicked in it.
+        window.center()
+        if windows.count > 1 { window.cascadeTopLeft(from: window.frame.origin) }
+
+        let delegate = Delegate(store)
+        keptDelegates.append(delegate)
+        window.delegate = delegate
+        store.window = window
+        window.makeKeyAndOrderFront(nil)
+        return store
+    }
+
+    /// A page that opens a window — `target=_blank`, `window.open` — from inside a Little
+    /// Arc gets another Little Arc, not a tab in the browser window it never came from.
+    /// ponytail: rebound on the one tab the store starts with, which is the only tab it can
+    /// have as long as nothing calls `newTab` on it. Ceiling: ⌘T from the menu still makes
+    /// a second tab in the same little window, and that tab's popups go to the sidebar.
+    /// Upgrade path is a flag on `TabStore` that `newBlankTab` reads.
+    private static func keepInside(_ store: TabStore) {
+        for tab in store.tabs {
+            tab.onNewTab = { url in if let url { open(url) } }
+            tab.onOpenBeside = { url, _ in open(url) }
+        }
+    }
+
+    // MARK: - Which windows are ours
+
+    static var stores: [TabStore] { TabStore.all.filter(\.isLittle) }
+    static var windows: [NSWindow] { stores.compactMap(\.window) }
+
+    static func store(of window: NSWindow?) -> TabStore? {
+        guard let window else { return nil }
+        return stores.first { $0.window === window }
+    }
+
+    /// Window ▸ Show All Little Arc Windows. Arc's item is a toggle, and so is this: they
+    /// come to the front together, or they all get out of the way together.
+    static func toggleAll() {
+        let all = windows
+        guard !all.isEmpty else { return }
+        if all.allSatisfy({ $0.isVisible && !$0.isMiniaturized }) {
+            all.forEach { $0.miniaturize(nil) }
+        } else {
+            for w in all {
+                if w.isMiniaturized { w.deminiaturize(nil) }
+                w.orderFront(nil)
+            }
+            all.last?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    // MARK: - Open in ▸
+
+    /// ⌘O and the "Open in" button's default: the Space the browser window is showing.
+    static func openInCurrentSpace(_ store: TabStore) {
+        move(store, to: Windows.current(in: store.profileID)?.currentSpace)
+    }
+
+    /// Hand the page over to an ordinary window and close the Little Arc. The tab arrives on
+    /// the same page with the same back/forward list and scroll offset — `park` + `resume`
+    /// is the same pair a Space switch goes through — rather than as a fresh load of the
+    /// url, which would lose wherever the user had clicked to.
+    ///
+    /// ponytail: the page is re-created in the target window rather than the live `Tab`
+    /// being moved between stores. Moving it would keep the WebContent process, but every
+    /// callback on that tab is bound to the store it was made in, so it is a rebind and a
+    /// hand-off either way. Ceiling: the page reloads from its interaction state, so an
+    /// unsubmitted form goes with it but a video restarts.
+    static func move(_ store: TabStore, to space: Space?) {
+        defer { store.window?.performClose(nil) }
+        guard let tab = store.active, let url = tab.currentURL else { return }
+        let snapshot = tab.snapshot
+        let target = Windows.current(in: store.profileID)
+            ?? Windows.open(profile: store.profile, space: space)
+        if let space, target.currentSpaceID != space.id { target.switchTo(space: space) }
+        let moved = target.newBlankTab()
+        moved.park(url: url, snapshot)
+        moved.resume()
+        target.current = moved.id
+        target.window?.makeKeyAndOrderFront(nil)
+        axAnnounce("Moved to \(space?.name ?? "the browser window").")
+    }
+
+    /// ⌥⌘O and the button: the Spaces this page can be dropped into, the current one ticked.
+    /// ponytail: an NSMenu popped up by hand rather than a SwiftUI `Menu`, so the button and
+    /// the shortcut open exactly the same list — SwiftUI has no way to open a `Menu` from a
+    /// key press.
+    static func pickSpace(_ store: TabStore) {
+        guard let view = store.window?.contentView else { return }
+        // Under the bar's trailing end, which is where the button is.
+        let at = NSPoint(x: view.bounds.maxX - Look.inset,
+                         y: view.bounds.maxY - Look.littleTopInset - Look.pillHeight)
+        spaceMenu(store).popUp(positioning: nil, at: at, in: view)
+    }
+
+    static func spaceMenu(_ store: TabStore) -> NSMenu {
+        let menu = NSMenu()
+        let spaces = ProfileManager.shared.spaces(for: store.profileID)
+        let showing = Windows.current(in: store.profileID)?.currentSpaceID
+        // A profile with no Spaces still has a window, and "put this in it" is still the
+        // thing the user is asking for.
+        if spaces.isEmpty {
+            menu.addItem(entry("Open in Window") { move(store, to: nil) })
+        }
+        for space in spaces {
+            let row = entry(space.name) { move(store, to: space) }
+            row.state = space.id == showing ? .on : .off
+            menu.addItem(row)
+        }
+        return menu
+    }
+
+    /// NSMenuItem needs an ObjC target and does not retain it. Menu.swift's version of this
+    /// is private to that file, and one item type is not worth exporting.
+    private static func entry(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
+        let act = MenuAction(run)
+        keptActions.append(act)
+        let item = NSMenuItem(title: title, action: #selector(MenuAction.fire), keyEquivalent: "")
+        item.target = act
+        return item
+    }
+
+    private static var keptActions: [MenuAction] = []
+    private static var keptDelegates: [Delegate] = []
+
+    /// The closure behind one of those items.
+    @MainActor private final class MenuAction: NSObject {
+        let run: () -> Void
+        init(_ run: @escaping () -> Void) { self.run = run }
+        @objc func fire() { run() }
+    }
+
+    // MARK: - Keys
+
+    /// ⌘W, ⌘O and ⌥⌘O inside a Little Arc, taken before the global registry sees them.
+    /// All three mean something else in the browser window — ⌘W archives a tab into a
+    /// sidebar this window does not have, and ⌘O is Open File — so this is a window-local
+    /// override rather than three more rebindable commands competing for the same keys.
+    /// Returns true when the key was ours. Wired in main.swift, ahead of `Keybindings`.
+    static func handleKey(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown, let store = store(of: NSApp.keyWindow) else { return false }
+        let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        switch (event.charactersIgnoringModifiers?.lowercased(), mods) {
+        case ("w", [.command]):
+            store.window?.performClose(nil)
+        case ("o", [.command]):
+            openInCurrentSpace(store)
+        case ("o", [.command, .option]):
+            pickSpace(store)
+        default:
+            return false
+        }
+        return true
+    }
+
+    // MARK: - Window bookkeeping
+
+    /// Everything `Windows.WindowDelegate` does that applies here: forget the store, and
+    /// keep the lights on the line through a resize. Nothing is saved — a Little Arc is not
+    /// in the session.
+    private final class Delegate: NSObject, NSWindowDelegate {
+        let store: TabStore
+        init(_ store: TabStore) { self.store = store }
+
+        @MainActor private func recentre() { (store.window as? VaneWindow)?.centreTrafficLights() }
+        func windowDidResize(_ n: Notification) { recentre() }
+        func windowDidEndLiveResize(_ n: Notification) { recentre() }
+        func windowDidBecomeKey(_ n: Notification) { recentre() }
+        func windowDidResignKey(_ n: Notification) { recentre() }
+        func windowWillClose(_ n: Notification) {
+            MainActor.assumeIsolated {
+                TabStore.all.removeAll { $0 === store }
+                LittleArc.keptDelegates.removeAll { $0 === self }
+            }
+        }
+    }
+
+    // MARK: - check
+
+    /// The routing table and the bar's geometry, proved offline.
+    nonisolated static func check() -> [(String, Bool)] {
+        [
+            ("a link opens a Little Arc when that is the preference, window or no window",
+             route(preferLittle: true, hasWindow: true) == .little
+                && route(preferLittle: true, hasWindow: false) == .little),
+            ("\u{201C}Current Space\u{201D} with a window open adds a tab to it",
+             route(preferLittle: false, hasWindow: true) == .tab),
+            ("\u{201C}Current Space\u{201D} with nothing open makes the window it needs",
+             route(preferLittle: false, hasWindow: false) == .newWindow),
+            ("the preference is the only thing that can choose Little Arc",
+             route(preferLittle: false, hasWindow: true) != .little
+                && route(preferLittle: false, hasWindow: false) != .little),
+            ("Little Arc never falls back to a tab",
+             route(preferLittle: true, hasWindow: true) != .tab),
+            ("the window is Arc's size", Look.littleWidth == 1000 && Look.littleHeight == 700),
+            ("its bar puts the pill's centre on the traffic lights' line",
+             Look.littleTopInset + Look.pillHeight / 2 == Look.lightsCentre),
+            ("the pill is the sidebar's pill, at the sidebar's height",
+             Look.pillHeight == Look.rowHeight),
+        ]
+    }
+}
+
+// MARK: - The window
+
+/// A Little Arc window: the same ground as the browser window, one bar, and the page as the
+/// same floating card. No sidebar, so nothing here is a list.
+struct LittleArcView: View {
+    @EnvironmentObject var store: TabStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            WindowGlass()
+            SpaceGround()
+            VStack(spacing: 0) {
+                LittleArcBar()
+                WebCard()
+            }
+            // Last, so ⌘L's bar composites over the bar as well as the page.
+            if let mode = store.palette {
+                PaletteView(mode: mode) { store.palette = nil }
+                    .transition(.opacity)
+            }
+        }
+        // `.fullSizeContentView` still leaves SwiftUI a titlebar-sized safe area, which
+        // would push the bar below the traffic lights instead of around them.
+        .ignoresSafeArea()
+        .animation(reduceMotion ? nil : Look.appear, value: store.palette == nil)
+        .onAppear { store.applySpaceAppearance() }
+        // Costs no layout, and is the only thing that hears a title arrive.
+        .background { if let tab = store.active { TitleSync(tab: tab) } }
+    }
+}
+
+/// The window's title is the page's, so AppKit lists a Little Arc in the Window menu by
+/// what is in it rather than by a row of identical "Little Arc"s. Its own view because only
+/// something observing the tab hears the title land.
+private struct TitleSync: View {
+    @ObservedObject var tab: Tab
+    @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: tab.title, initial: true) {
+                store.window?.title = tab.title.isEmpty ? "Little Arc" : tab.title
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+/// Little Arc's one row of chrome: the traffic lights, the page's own back/forward, the same
+/// address pill the sidebar has, and Arc's "Open in ▸". Laid out so the pill's centre lands
+/// on `Look.lightsCentre` — the lights are the row, the same way they are in the sidebar.
+struct LittleArcBar: View {
+    @EnvironmentObject var store: TabStore
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Spacer().frame(width: 62)          // traffic lights
+            NavButtons(tab: store.active)
+            AddressPill(tab: store.active)
+            OpenInButton()
+        }
+        .font(Look.icon)
+        .foregroundStyle(Look.inkSecondary)
+        .padding(.horizontal, Look.inset)
+        .padding(.top, Look.littleTopInset)
+        .frame(height: Look.littleTopInset + Look.pillHeight, alignment: .top)
+        // The bar is this window's title bar, the way the sidebar is the browser window's.
+        .background(WindowDragArea())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Little Arc")
+    }
+}
+
+/// "Open in ▸": the one way a Little Arc's page becomes a tab you keep. Clicking it offers
+/// the Spaces; ⌘O takes the one the browser window is already showing.
+private struct OpenInButton: View {
+    @EnvironmentObject var store: TabStore
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button { LittleArc.pickSpace(store) } label: {
+            HStack(spacing: 4) {
+                Text("Open in").font(Look.text)
+                Image(systemName: "chevron.right").font(Look.caption)
+            }
+            .foregroundStyle(Look.inkPrimary)
+            .padding(.horizontal, Look.rowInset)
+            .frame(height: Look.topRow)
+            .background(hovering ? Look.selected : Look.pillFill,
+                        in: .rect(cornerRadius: Look.pillRadius))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .animation(reduceMotion ? nil : Look.quick, value: hovering)
+        .onHover { hovering = $0 }
+        .help("Open in a Space (\u{2318}O), or pick one (\u{2325}\u{2318}O)")
+        .accessibilityLabel("Open in")
+        .accessibilityHint("Moves this page into a Space of the browser window.")
+        .accessibilityAction(named: "Open in Current Space") { LittleArc.openInCurrentSpace(store) }
+    }
+}
