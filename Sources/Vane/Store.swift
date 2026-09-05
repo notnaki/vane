@@ -15,6 +15,19 @@ struct Suggestion: Identifiable, Equatable {
     var completion = false
 }
 
+/// One visit, as the History window lists it: every row, with its own time, rather than the
+/// one-row-per-url roll-up the address bar wants. Its id is the visits row, so deleting a
+/// line deletes that visit and leaves the other times you went there alone.
+struct Visit: Identifiable, Hashable, Sendable {
+    let id: Int64
+    let url: String
+    let title: String
+    let at: Date
+
+    /// What the row shows when the page never reported a title.
+    var display: String { title.isEmpty ? url : title }
+}
+
 /// History and bookmarks in one SQLite file.
 /// ponytail: sqlite3 ships in the OS, so no wrapper dependency and no Core Data. One
 /// connection, used from the main thread — writes are a single row and reads are indexed.
@@ -143,6 +156,36 @@ struct Suggestion: Identifiable, Equatable {
         }
         return out
     }
+
+    /// Every visit, newest first, optionally narrowed by a substring of the title or the
+    /// url. The search is SQL rather than a filter in the window, so a long history does
+    /// not have to be in memory to be searchable; the wildcards are escaped for the same
+    /// reason `suggest` escapes them.
+    func history(matching query: String = "", limit: Int = 500) -> [Visit] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        var out: [Visit] = []
+        let read: (OpaquePointer) -> Void = { st in
+            out.append(Visit(id: sqlite3_column_int64(st, 0),
+                             url: self.text(st, 1), title: self.text(st, 2),
+                             at: Date(timeIntervalSince1970: sqlite3_column_double(st, 3))))
+        }
+        guard !q.isEmpty else {
+            run("SELECT id, url, title, at FROM visits ORDER BY at DESC LIMIT ?", [limit], read)
+            return out
+        }
+        let like = "%" + q.replacingOccurrences(of: "\\", with: "\\\\")
+                          .replacingOccurrences(of: "%", with: "\\%")
+                          .replacingOccurrences(of: "_", with: "\\_") + "%"
+        run("""
+            SELECT id, url, title, at FROM visits
+            WHERE url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
+            ORDER BY at DESC LIMIT ?
+            """, [like, like, limit], read)
+        return out
+    }
+
+    /// ⌫ in the History window: one line, not every visit to that page.
+    func deleteVisit(_ id: Int64) { run("DELETE FROM visits WHERE id = ?", [Int(id)]) }
 
     func clearHistory() { exec("DELETE FROM visits") }
 

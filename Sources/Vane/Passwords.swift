@@ -298,6 +298,30 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         check("20k visits insert in one transaction (took \(String(format: "%.2f", elapsed))s)",
               elapsed < 5 && store.recent(limit: 30_000).count > 20_000)
 
+        // What the History window reads: every visit with its own time, searchable, and a
+        // single line deletable without taking the other visits to that page with it.
+        store.clearHistory()
+        let day = Date(timeIntervalSince1970: 1_700_000_000)
+        store.record([(URL(string: "https://swift.org/blog")!, "Swift Blog", day),
+                      (URL(string: "https://swift.org/blog")!, "Swift Blog", day - 86_400),
+                      (URL(string: "https://apple.com")!, "Apple", day - 90_000)])
+        let visits = store.history()
+        check("history lists every visit, not one row per url", visits.count == 3)
+        check("history comes back newest first",
+              visits.first?.title == "Swift Blog" && visits.map(\.at) == visits.map(\.at).sorted(by: >))
+        check("history search matches a title", store.history(matching: "apple").count == 1)
+        check("history search matches a url", store.history(matching: "swift.org").count == 2)
+        check("history search is case-insensitive", store.history(matching: "SWIFT").count == 2)
+        check("history search escapes LIKE wildcards", store.history(matching: "%").isEmpty)
+        check("history search matching nothing comes back empty", store.history(matching: "zzzz").isEmpty)
+        if let newest = store.history(matching: "swift.org").first {
+            store.deleteVisit(newest.id)
+            check("deleting one visit leaves that page's other visits alone",
+                  store.history(matching: "swift.org").count == 1)
+        } else {
+            check("deleting one visit leaves that page's other visits alone", false)
+        }
+
         check("clearHistory empties visits", { store.clearHistory(); return store.recent().isEmpty }())
         try? FileManager.default.removeItem(at: dir)
 
@@ -319,6 +343,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("tab suspension", Suspension.check),
                                ("keybindings", Keybindings.check),
                                ("shortcuts pane", ShortcutsPane.check),
+                               ("history window", HistoryWindow.check),
                                ("downloads", Downloads.check),
                                ("on-device ai", AppleAI.check),
                                ("picture in picture", PictureInPicture.check),
