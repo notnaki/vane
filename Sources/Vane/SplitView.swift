@@ -191,10 +191,16 @@ struct Split: Equatable, Sendable {
     /// The split the user is in right now, if any: the one holding the selected tab.
     var activeSplit: Split? { current.flatMap { split(containing: $0) } }
 
-    /// Which of a split's panes owns its sidebar row — the one that comes first in the strip,
-    /// so the row stays where the user's eye already is when panes are added or swapped.
+    /// Which of a split's panes owns its sidebar row — the first one in the strip, so the row
+    /// stays where the user's eye already is when panes are added or swapped.
+    ///
+    /// A favourite is skipped: it is drawn as a tile in the grid rather than as a row, and a
+    /// split led by one would have had its row swallowed by a tile that is already there.
+    /// ponytail: the tile stays as it was, so a split holding a favourite reads as a tile
+    /// *and* a row. That is the honest picture — a favourite is a place that is always in the
+    /// grid, and it happens to also be a pane right now.
     func leadPane(_ split: Split) -> Tab.ID? {
-        tabs.first { split.contains($0.id) }?.id
+        tabs.first { split.contains($0.id) && $0.kind != .favourite }?.id
     }
 
     /// Splits are disjoint, so any pane that was in the old one names it. `key` is a tab the
@@ -309,15 +315,17 @@ struct Split: Equatable, Sendable {
     // MARK: Session
 
     /// The window's splits as the session file holds them. A pane with no url of its own —
-    /// a blank tab that was never navigated — takes the whole split out: half a split is
-    /// worse than none.
+    /// the blank tab ⌃⇧= just made, never navigated — is left out rather than taking the
+    /// whole split with it; a split of one is not a split, and that one is written down as
+    /// the plain tab it will come back as.
     var savedSplits: [Split.Saved] {
         splits.compactMap { split in
             let urls = split.tabs.compactMap { id in
                 tabs.first { $0.id == id }?.currentURL?.absoluteString
             }
-            guard urls.count == split.tabs.count else { return nil }
-            return Split.Saved(urls: urls, vertical: split.vertical, active: split.active)
+            guard urls.count >= 2 else { return nil }
+            return Split.Saved(urls: urls, vertical: split.vertical,
+                               active: min(split.active, urls.count - 1))
         }
     }
 
@@ -392,6 +400,9 @@ private struct Pane: View {
 
     var body: some View {
         WebView(web: tab.web).id(tab.id)
+            // A pane is on screen whether or not the keyboard is in it, so a pane that comes
+            // back from the session parked has to wake up rather than sit there blank.
+            .onAppear { tab.resume() }
             .background(PaneFocus(focus: focus))
             .clipShape(.rect(cornerRadius: Look.paneRadius))
             .overlay {
@@ -464,6 +475,10 @@ private struct SplitDivider: View {
     let weights: [Double]
     /// The weights the drag started from, so every frame of it is measured from one place.
     @State private var base: [Double]?
+    /// Whether this view is the one holding the resize cursor. `NSCursor.push` is a stack,
+    /// and a divider that goes away while hovered — a pane closing under the pointer — would
+    /// otherwise leave the resize cursor on the whole app.
+    @State private var pushed = false
 
     var body: some View {
         Rectangle()
@@ -474,9 +489,15 @@ private struct SplitDivider: View {
                    height: vertical ? Look.splitGap : nil)
             .contentShape(.rect)
             .onHover { inside in
-                if inside { (vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).push() }
-                else { NSCursor.pop() }
+                if inside, !pushed {
+                    pushed = true
+                    (vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).push()
+                } else if !inside, pushed {
+                    pushed = false
+                    NSCursor.pop()
+                }
             }
+            .onDisappear { if pushed { pushed = false; NSCursor.pop() } }
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
