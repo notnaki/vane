@@ -856,6 +856,10 @@ private enum DropSide { case before, after }
     /// thing — but two fields rather than an enum keeps every existing `dragging.tab` read
     /// meaning exactly what it did.
     @Published var folder: Folder.ID? { didSet { watch() } }
+    /// Dragging one row of a multi-select drags the whole selection. Empty for an ordinary
+    /// one-tab drag, so `tab` — the row actually grabbed, and the one the drag preview and
+    /// every existing reader is about — keeps meaning exactly what it did.
+    @Published var tabs: [Tab.ID] = []
     /// Whether one of ours is in flight at all, which is what the drop lines and the
     /// sidebar's catch-all delegate care about.
     var active: Bool { tab != nil || folder != nil }
@@ -869,7 +873,14 @@ private enum DropSide { case before, after }
         return (tab, folder)
     }
 
-    func end() { tab = nil; folder = nil }
+    /// The same, for a target that can take a whole selection: the dragged tabs in the order
+    /// their rows were drawn, which is the order they should land in.
+    func takeAll() -> (tabs: [Tab.ID], folder: Folder.ID?) {
+        defer { end() }
+        return (tabs.isEmpty ? [tab].compactMap { $0 } : tabs, folder)
+    }
+
+    func end() { tab = nil; folder = nil; tabs = [] }
 
     /// The other end of a drag that no `performDrop` ever sees: released on the desktop, on
     /// the sidebar's bare ground, or in the middle of the page card, where the answer is "not
@@ -904,14 +915,22 @@ private enum DropSide { case before, after }
 /// ponytail: `.onDrag`/`.onDrop` with a delegate rather than `.draggable`/`.dropDestination`.
 /// The Transferable pair cannot say which side of the target the pointer is on, so it can
 /// only ever drop *onto* a tab, never before or after it; this one gets the location.
-@MainActor private func dragPayload(_ tab: Tab) -> NSItemProvider {
+@MainActor private func dragPayload(_ tab: Tab, in store: TabStore? = nil) -> NSItemProvider {
     // Published on the next turn, not now: a state change inside the drag's own start
     // re-renders the row under the pointer, and SwiftUI drops the drag with it.
     let id = tab.id
-    // Both set, so a flag left behind by a drag that ended outside any of our targets —
+    // Grabbing a row that is part of a selection drags the selection, in the order it is
+    // drawn; grabbing any other row drags that row alone and leaves the selection be —
+    // which is how Finder behaves, and what stops a drag quietly moving tabs off screen.
+    let set = store?.selection.contains(id) == true ? store?.selectedTabs.map(\.id) ?? [] : []
+    // All three set, so a flag left behind by a drag that ended outside any of our targets —
     // dropped on the desktop, say, where no `performDrop` ever runs — is cleared by the
     // next drag rather than outliving the session.
-    DispatchQueue.main.async { Dragging.shared.tab = id; Dragging.shared.folder = nil }
+    DispatchQueue.main.async {
+        Dragging.shared.tab = id
+        Dragging.shared.folder = nil
+        Dragging.shared.tabs = set
+    }
     return NSItemProvider(object: id.uuidString as NSString)
 }
 
@@ -965,14 +984,24 @@ private struct TabDrop: DropDelegate {
         // Read once and cleared *before* anything can refuse the drop. A drag left set here
         // outlives the gesture, and `SidebarDrop` then stands aside from every url and file
         // dropped on the sidebar for the rest of the session.
-        let (dragged, folder) = Dragging.shared.take()
+        let (dragged, folder) = Dragging.shared.takeAll()
         if let folder {
             guard let target, target.kind == .pinned else { return false }
             store.move(folder: folder, next: target.id.uuidString, after: after)
             return true
         }
-        guard let id = dragged else { return false }
-        if let target { store.drop(id, onto: target.id, after: after) } else { store.move(id, to: into) }
+        guard !dragged.isEmpty else { return false }
+        // A dropped selection lands as a run in the order its rows were drawn. Dropping
+        // *before* the target means each next tab goes after the one just placed, so the run
+        // keeps its order instead of arriving inside out.
+        var anchor = target
+        for id in dragged {
+            guard let here = anchor else { store.move(id, to: into); continue }
+            // A tab dropped onto itself — the target's own row was in the selection — is
+            // already where it belongs; it still becomes the anchor for the rest of the run.
+            if id != here.id { store.drop(id, onto: here.id, after: after || id != dragged.first) }
+            anchor = store.tabs.first { $0.id == id } ?? here
+        }
         return true
     }
 
@@ -1518,7 +1547,7 @@ private struct FolderDrop: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         let where_ = which(info)
         zone = nil
-        let (tab, dragged) = Dragging.shared.take()      // see `TabDrop.performDrop`
+        let (tabs, dragged) = Dragging.shared.takeAll()      // see `TabDrop.performDrop`
         if let dragged {
             guard dragged != folder.id else { return false }
             switch where_ {
@@ -1528,10 +1557,14 @@ private struct FolderDrop: DropDelegate {
             }
             return true
         }
-        guard let id = tab else { return false }
+        guard !tabs.isEmpty else { return false }
+        // Every row lands next to the *folder*, not next to the one before it, so a run
+        // dropped below one has to be laid down bottom-first to come out in the order it
+        // was drawn. Into the folder, and above it, in-order is already right.
         switch where_ {
-        case .inside: store.move(id, into: folder.id)
-        default: store.drop(id, beside: folder.id, after: where_ == .after)
+        case .inside: tabs.forEach { store.move($0, into: folder.id) }
+        case .before: tabs.forEach { store.drop($0, beside: folder.id, after: false) }
+        case .after:  tabs.reversed().forEach { store.drop($0, beside: folder.id, after: true) }
         }
         return true
     }
@@ -1551,6 +1584,10 @@ private struct FolderDrop: DropDelegate {
 /// trailing edge. One shape so the list reads as one list.
 private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     let selected: Bool
+    /// In a multi-select. It wears the same fill as `selected` — a selection is a selection —
+    /// and the row that is *also* `selected` is picked out by an accent hairline, so the
+    /// list still says which of the ticked tabs is the one on screen.
+    var ticked = false
     /// Secondary rather than primary type: "New Tab" is an action among places, and Arc
     /// sets it a step quieter than the tabs around it.
     var dimmed = false
@@ -1575,6 +1612,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
         .padding(.trailing, Look.rowTrailingInset)
         .frame(height: Look.rowHeight)
         .background(fill, in: .rect(cornerRadius: Look.pillRadius))
+        .hairline(radius: Look.pillRadius, ticked && selected ? Look.selectedEdge : .clear)
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -1583,7 +1621,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     }
 
     private var fill: Color {
-        selected ? Look.selected : (hovering ? Look.hovered : .clear)
+        selected || ticked ? Look.selected : (hovering ? Look.hovered : .clear)
     }
 }
 
@@ -1745,7 +1783,7 @@ private struct SplitRow: View {
         }
         .inStrip(lead.id, strip)
         .help("Split view of \(panes.count) tabs")
-        .onDrag { dragPayload(lead) } preview: {
+        .onDrag { dragPayload(lead, in: store) } preview: {
             HStack(spacing: Look.rowSpacing) {
                 SplitIcons(panes: panes)
                 Text(title).lineLimit(1).font(Look.rowTitle)
@@ -1813,7 +1851,8 @@ private struct TabRow: View {
 
     var body: some View {
         let selected = store.current == tab.id
-        SidebarRow(selected: selected, action: select) {
+        let ticked = store.selection.contains(tab.id)
+        SidebarRow(selected: selected, ticked: ticked, action: select) {
             TabIcon(tab: tab)
         } label: {
             // Arc's in-row rename: the title becomes a field and the row keeps its shape.
@@ -1831,11 +1870,14 @@ private struct TabRow: View {
         }
         .inStrip(tab.id, strip)
         .help(tab.title)
-        .onDrag { dragPayload(tab) } preview: {
+        .onDrag { dragPayload(tab, in: store) } preview: {
             // Drag preview: the row alone would drag the whole list's background with it.
+            // Dragging a selection says how many are coming, since only one row is drawn.
             HStack(spacing: Look.rowSpacing) {
                 TabIcon(tab: tab)
-                Text(TidyTitles.title(for: tab)).lineLimit(1).font(Look.rowTitle)
+                Text(ticked && store.selection.count > 1
+                     ? "\(store.selection.count) tabs" : TidyTitles.title(for: tab))
+                    .lineLimit(1).font(Look.rowTitle)
             }
             .padding(.horizontal, Look.rowInset).padding(.vertical, 4)
         }
@@ -1846,14 +1888,22 @@ private struct TabRow: View {
         // selects the tab first — which is what Arc does too, and what makes the rename
         // apply to the tab you are looking at.
         .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
-        .contextMenu { TabMenu(store: store, tab: tab) }
+        // Right-clicking one of several ticked rows is about all of them; anywhere else it
+        // is about the one tab, exactly as before.
+        .contextMenu {
+            if ticked, store.selection.count > 1 {
+                BulkMenu(store: store, count: store.selection.count, kind: tab.kind)
+            } else {
+                TabMenu(store: store, tab: tab)
+            }
+        }
         // One element per tab, the way a tab in Safari reads: the title is the label, the
         // state is the value, and the close button becomes an action rather than a second
         // element the user has to find and then guess the meaning of.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(TidyTitles.title(for: tab))
         .accessibilityValue(tabState(tab, in: store))
-        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Shows this tab.")
         .accessibilityAction(named: tab.kind == .today ? "Archive Tab" : "Close Tab") {
             store.archive(tab.id)
@@ -1870,9 +1920,11 @@ private struct TabRow: View {
         }
     }
 
-    /// Arc's ⌥-click: the tab opens *beside* the one you are looking at, in a split, instead
-    /// of replacing it. Arc's ⌥⌘-click: it floats off into a Little Arc instead, leaving the
-    /// row where it is — `TabActions.rowClick` is the table, proved offline.
+    /// What a click on a row means, by what is held down: ⌘ ticks it into the selection, ⇧
+    /// takes the run from the last row clicked, ⌥ opens it *beside* the one you are reading
+    /// in a split, ⌥⌘ floats it off into a Little Arc leaving the row where it is, and a
+    /// plain click drops the selection and shows the tab. `TabActions.rowClick` is the
+    /// table, proved offline — one place the meaning of a click is decided.
     /// ponytail: `NSEvent.modifierFlags` read at the moment of the tap rather than a
     /// modifier-aware gesture. SwiftUI's tap carries no flags, and the only alternative is a
     /// second hit-testing layer over every row. Ceiling: it reads the *current* state of the
@@ -1881,9 +1933,16 @@ private struct TabRow: View {
         let mods = NSEvent.modifierFlags
         switch TabActions.rowClick(option: mods.contains(.option),
                                    command: mods.contains(.command),
+                                   shift: mods.contains(.shift),
                                    isCurrent: store.current == tab.id) {
-        case .show:   store.current = tab.id
+        // Showing a tab is the one click that is about *this* row and no other, so it is
+        // also what ends a selection.
+        case .show:
+            store.selection.clear()
+            store.current = tab.id
         case .split:  store.addPane(tab.id)
+        case .tick:   store.toggleSelection(tab.id)
+        case .range:  store.extendSelection(to: tab.id)
         // A row with no page yet — a parked favourite that has never loaded — has nothing to
         // hand over, so it is shown instead of opening an empty window.
         case .little:
@@ -1912,7 +1971,7 @@ private struct TabRow: View {
 /// there is a crash rather than a blank menu.
 /// The names are Arc's, in the repo's spelling: Arc writes "Favorite", Vane writes
 /// "Favourite" everywhere else and one menu is not the place to start spelling it two ways.
-private struct TabMenu: View {
+struct TabMenu: View {
     let store: TabStore
     @ObservedObject var tab: Tab
 

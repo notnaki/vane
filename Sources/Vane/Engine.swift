@@ -669,6 +669,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @Published var renamingTab: Tab.ID? {
         didSet { if renamingTab != nil { renamingFolder = nil } }
     }
+    /// Arc's multi-select: which rows are ticked, and which section they are in. Per window,
+    /// like the sidebar itself. See Selection.swift — everything done with it is there.
+    @Published var selection = Selection()
     /// Arc's Folders: the shape of the Pinned section — which tabs sit in which folder, and
     /// the order the rows are drawn in. `tabs` still holds the tabs themselves; this only
     /// says how they are arranged. See `Pins` in Folders.swift.
@@ -995,6 +998,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             MediaState.shared.forget(id)
         }
         if renamingTab == id { renamingTab = nil }
+        // A selection may only ever name tabs that exist: one closed under it — by ⌘W, by a
+        // bulk archive, by the auto-archive sweep — drops out of it here rather than
+        // lingering as an id no row will ever be drawn for.
+        selection.keep(Set(tabs.map(\.id)))
         extensions.sync()
         // A split loses a pane with the tab, and a split down to one pane is a plain tab
         // again. Its remaining pane is a better answer than "the neighbouring row": the user

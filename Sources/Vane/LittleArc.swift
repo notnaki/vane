@@ -368,6 +368,9 @@ extension TabStore {
     /// sidebar to archive into and no second tab to fall back on, so the window goes instead.
     /// One definition, so the menu item and the key equivalent cannot disagree about it.
     func closeOrArchive() {
+        // ⌘W with rows ticked archives all of them — the selection is what "the tab" means
+        // while it stands. See Selection.swift.
+        if !selection.isEmpty { archiveSelection(); return }
         if isLittle { window?.performClose(nil) } else { archiveWithToast() }
     }
 }
