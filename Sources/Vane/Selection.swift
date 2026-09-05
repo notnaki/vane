@@ -138,9 +138,15 @@ extension TabStore {
             .compactMap { id in tabs.first { $0.id == id } }
     }
 
-    /// A row was clicked with ⌘ down.
+    /// A row was clicked with ⌘ down. The tab on screen is already selected in every sense
+    /// the sidebar shows, so the first ⌘-click adds to it rather than starting from nothing —
+    /// the way ⌘-clicking a second icon in Finder gives you two, not one.
     func toggleSelection(_ id: Tab.ID) {
-        selection.toggle(id, in: section(of: id))
+        let rows = section(of: id)
+        if selection.isEmpty, let here = current, here != id, rows.ids.contains(here) {
+            selection.toggle(here, in: rows)
+        }
+        selection.toggle(id, in: rows)
         axAnnounce(selection.announcement)
     }
 
@@ -184,7 +190,11 @@ extension TabStore {
         let ids = selectedTabs.map(\.id)
         guard !ids.isEmpty else { return }
         ids.forEach { move($0, to: kind) }
-        selection.moved(to: kind)
+        // ponytail: Favourites are tiles, and a tile does not draw the row fill — a selection
+        // that lands there is one the user can neither see nor click their way out of, so it
+        // ends at the grid's edge. Upgrade path: give the tile the same ticked/edge treatment
+        // `SidebarRow` has and this becomes `moved(to: .favourite)` like the other two.
+        if kind == .favourite { selection.clear() } else { selection.moved(to: kind) }
         axAnnounce("Moved \(ids.count) tab\(ids.count == 1 ? "" : "s") to \(TabMenu.name(kind)).")
     }
 

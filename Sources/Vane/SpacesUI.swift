@@ -282,10 +282,13 @@ struct SpaceDrop: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         over = false
-        if let tab = Dragging.shared.tab {
-            Dragging.shared.tab = nil
-            Spaces.move(tab, to: space.id, as: .today, from: store)
-            axAnnounce("Moved to \(space.name).")
+        if Dragging.shared.tab != nil {
+            // A dragged multi-select moves as one, in the order its rows were drawn.
+            let (tabs, _) = Dragging.shared.takeAll()
+            tabs.forEach { Spaces.move($0, to: space.id, as: .today, from: store) }
+            store.selection.clear()
+            axAnnounce(tabs.count == 1 ? "Moved to \(space.name)."
+                       : "Moved \(tabs.count) tabs to \(space.name).")
             return true
         }
         guard let dragged = SpaceDragging.shared.id else { return false }
