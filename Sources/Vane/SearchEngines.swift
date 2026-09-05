@@ -47,7 +47,7 @@ struct SearchEngine: Identifiable, Codable, Hashable {
     static let defaultEngine: SearchEngine = builtIn.first { $0.id == "google" } ?? builtIn[0]
 
     /// Swapped out by `check()` so the assertions never touch the user's real preferences.
-    static var defaults = UserDefaults.standard
+    static var defaults = UserDefaults.vane
 
     static var custom: [SearchEngine] {
         get {

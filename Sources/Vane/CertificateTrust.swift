@@ -15,7 +15,7 @@ import WebKit
 @MainActor enum CertificateTrust {
 
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
-    private static var defaults: UserDefaults = .standard
+    private static var defaults: UserDefaults = .vane
 
     /// `|` is the separator because a hostname cannot contain one — a `.` separator would
     /// make the prefix sweep in `forget(host:)` also eat `example.com.au`.

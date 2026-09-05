@@ -639,11 +639,11 @@ extension TabStore {
     /// A Space being deleted takes its folders with it; the key would otherwise sit in the
     /// defaults for the life of the profile, waiting for a Space id that will never come back.
     static func forgetShape(space: UUID, profileID: UUID) {
-        UserDefaults.standard.removeObject(forKey: shapeKey(space: space, profileID: profileID))
+        UserDefaults.vane.removeObject(forKey: shapeKey(space: space, profileID: profileID))
     }
 
     static func savedShape(space: UUID?, profileID: UUID) -> Pins? {
-        guard let data = UserDefaults.standard.data(forKey: shapeKey(space: space, profileID: profileID))
+        guard let data = UserDefaults.vane.data(forKey: shapeKey(space: space, profileID: profileID))
         else { return nil }
         return try? JSONDecoder().decode(Pins.self, from: data)
     }
@@ -662,10 +662,10 @@ extension TabStore {
         // Nothing but loose tabs is nothing worth writing: an empty shape is what a fresh
         // profile has, and leaving the key absent keeps `savedShape` honest about that.
         guard shape.entries.contains(where: { $0.folder != nil }) else {
-            UserDefaults.standard.removeObject(forKey: key)
+            UserDefaults.vane.removeObject(forKey: key)
             return
         }
-        UserDefaults.standard.set(try? JSONEncoder().encode(shape), forKey: key)
+        UserDefaults.vane.set(try? JSONEncoder().encode(shape), forKey: key)
     }
 
     /// The pinned urls in the order the saved shape draws them, with anything the shape has

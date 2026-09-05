@@ -144,7 +144,7 @@ import AppKit
     /// Asked exactly once, ever. A browser that renews this question every launch is a
     /// browser people uninstall.
     static func promptIfNotDefaultOnce() {
-        let defaults = UserDefaults.standard
+        let defaults = UserDefaults.vane
         // Running the bare binary out of .build has no bundle to register; asking there
         // would burn the one question on something LaunchServices would refuse anyway.
         guard Bundle.main.bundleIdentifier != nil,

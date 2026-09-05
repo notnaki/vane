@@ -45,14 +45,14 @@ import SwiftUI
 
     /// A width read back off disk. An unset key reads as 0, which clamps up to the minimum
     /// rather than to the default, so "never set" is checked before clamping.
-    nonisolated static func load(_ defaults: UserDefaults = .standard) -> CGFloat {
+    nonisolated static func load(_ defaults: UserDefaults = .vane) -> CGFloat {
         guard defaults.object(forKey: key) != nil else { return standard }
         return clamp(defaults.double(forKey: key))
     }
 
     /// Only on the way out of a drag, not on every frame of it: a drag is ~60 writes a
     /// second and none of the intermediate ones is worth remembering.
-    func save(_ defaults: UserDefaults = .standard) {
+    func save(_ defaults: UserDefaults = .vane) {
         defaults.set(Double(width), forKey: SidebarWidth.key)
     }
 

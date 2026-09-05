@@ -25,7 +25,7 @@ import WebKit
     /// longer resolves — folder deleted, volume gone, or a pre-sandbox plain path that the
     /// sandbox will not grant — is dropped from the stored list rather than retried forever.
     @discardableResult
-    static func urls(_ key: String, in defaults: UserDefaults = .standard) -> [URL] {
+    static func urls(_ key: String, in defaults: UserDefaults = .vane) -> [URL] {
         let stored = raw(key, in: defaults)
         var kept: [Data] = []
         var out: [URL] = []
@@ -38,7 +38,7 @@ import WebKit
         return out
     }
 
-    static func paths(_ key: String, in defaults: UserDefaults = .standard) -> [String] {
+    static func paths(_ key: String, in defaults: UserDefaults = .vane) -> [String] {
         urls(key, in: defaults).map(\.path)
     }
 
@@ -46,7 +46,7 @@ import WebKit
     /// remembered — the honest answer to "can this be reopened next launch", and a caller
     /// must not write down a path it cannot reopen.
     @discardableResult
-    static func add(_ url: URL, to key: String, in defaults: UserDefaults = .standard) -> Bool {
+    static func add(_ url: URL, to key: String, in defaults: UserDefaults = .vane) -> Bool {
         guard let data = bookmark(url) else { return false }
         var all = raw(key, in: defaults)
         guard !all.contains(where: { same($0, url) }) else { return true }
@@ -56,7 +56,7 @@ import WebKit
         return true
     }
 
-    static func remove(path: String, from key: String, in defaults: UserDefaults = .standard) {
+    static func remove(path: String, from key: String, in defaults: UserDefaults = .vane) {
         let url = URL(fileURLWithPath: path)
         defaults.set(raw(key, in: defaults).filter { !same($0, url) }, forKey: key)
         accessing.remove(url.resolvingSymlinksInPath().path)
@@ -149,7 +149,7 @@ import WebKit
         guard let defaults = UserDefaults(suiteName: suite) else {
             return [("scratch defaults suite is available", false)]
         }
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.vane.removePersistentDomain(forName: suite) }
         let key = "folders"
 
         assert("a user-picked folder can be bookmarked", add(folder, to: key, in: defaults))
@@ -217,6 +217,11 @@ import WebKit
     /// *is* the legacy folder), when it has already run, or when there is nothing to copy.
     static func migrateIfNeeded(into container: URL) {
         let fm = FileManager.default
+        // A test instance is not an upgraded install. `VANE_DATA_DIR` exists so a debug
+        // build can run on data of its own; copying the user's real folder into it is
+        // exactly what it is there to prevent — and it is how two Spaces the user had named
+        // "asd" turned up in a data dir that had just been created empty.
+        guard Store.overrideDirectory == nil else { return }
         guard container.standardizedFileURL != legacy.standardizedFileURL else { return }
         let stamp = container.appendingPathComponent(".migrated-from-legacy")
         guard !fm.fileExists(atPath: stamp.path) else { return }
@@ -423,7 +428,7 @@ struct Space: Identifiable, Codable, Equatable {
             Passwords.deleteAll(profileID: id)
             for key in ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey,
                         HTTPSOnly.exceptionsKey] {
-                UserDefaults.standard.removeObject(forKey: Self.defaultsKey(key, id))
+                UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
             Self.eraseWebsiteData(for: id)
         }
@@ -745,7 +750,7 @@ struct Space: Identifiable, Codable, Equatable {
         let keepDB = dbURL(for: defaultID, in: dir)
         let keepDBSize = (try? fm.attributesOfItem(atPath: keepDB.path)[.size] as? Int) ?? nil
         // Read-only: the real user's pinned tabs, never written by this check.
-        let keepPins = UserDefaults.standard.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]
+        let keepPins = UserDefaults.vane.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]
         let survivors = pm.profiles.map(\.id)
 
         // MARK: the throwaway, populated the way a used profile is
@@ -761,9 +766,9 @@ struct Space: Identifiable, Codable, Equatable {
         pm.createSpace(name: "Scratch", in: victim)
         let victimKeys = ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey]
             .map { defaultsKey($0, victim) }
-        UserDefaults.standard.set(["https://pinned.example"], forKey: victimKeys[0])
-        UserDefaults.standard.set(false, forKey: victimKeys[1])
-        UserDefaults.standard.set([Data("bookmark".utf8)], forKey: victimKeys[2])
+        UserDefaults.vane.set(["https://pinned.example"], forKey: victimKeys[0])
+        UserDefaults.vane.set(false, forKey: victimKeys[1])
+        UserDefaults.vane.set([Data("bookmark".utf8)], forKey: victimKeys[2])
 
         // A website data store only exists on disk once something is written into it.
         // Scoped so the only strong reference left is the manager's own cache — which is
@@ -803,7 +808,7 @@ struct Space: Identifiable, Codable, Equatable {
                !fm.fileExists(atPath: sessionURL(for: victim, in: dir).path)
                && !fm.fileExists(atPath: spacesURL(for: victim, in: dir).path))
         assert("deleting a profile deletes its UserDefaults keys",
-               victimKeys.allSatisfy { UserDefaults.standard.object(forKey: $0) == nil })
+               victimKeys.allSatisfy { UserDefaults.vane.object(forKey: $0) == nil })
         // Before the cookies are read back, because reading them re-creates the store and
         // would re-register the identifier.
         //
@@ -830,7 +835,7 @@ struct Space: Identifiable, Codable, Equatable {
                && ((try? fm.attributesOfItem(atPath: keepDB.path)[.size] as? Int) ?? nil) == keepDBSize)
         assert("another profile's favicon cache survives", fm.fileExists(atPath: keepIcon.path))
         assert("another profile's UserDefaults keys survive",
-               (UserDefaults.standard.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]) == keepPins)
+               (UserDefaults.vane.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]) == keepPins)
         assert("another profile's website data store survives",
                WKWebsiteDataStore.default().isPersistent)
         assert("the profile list is back to exactly the profiles that were there before",

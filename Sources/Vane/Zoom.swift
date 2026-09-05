@@ -19,7 +19,7 @@ import WebKit
 
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
     /// Same trick as `CertificateTrust` and `SitePermissions`.
-    private static var defaults: UserDefaults = .standard
+    private static var defaults: UserDefaults = .vane
 
     // MARK: - The ladder
 

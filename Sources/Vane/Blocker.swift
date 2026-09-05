@@ -63,11 +63,11 @@ private struct BlockRule: Encodable, Equatable {
     /// the others. The default profile keeps the un-suffixed key, so an existing preference
     /// carries over.
     static func enabled(for profileID: UUID) -> Bool {
-        UserDefaults.standard.object(forKey: ProfileManager.defaultsKey("blockerEnabled", profileID)) as? Bool ?? true
+        UserDefaults.vane.object(forKey: ProfileManager.defaultsKey("blockerEnabled", profileID)) as? Bool ?? true
     }
 
     static func setEnabled(_ on: Bool, for profileID: UUID) {
-        UserDefaults.standard.set(on, forKey: ProfileManager.defaultsKey("blockerEnabled", profileID))
+        UserDefaults.vane.set(on, forKey: ProfileManager.defaultsKey("blockerEnabled", profileID))
         refresh()
     }
 

@@ -20,8 +20,8 @@ import Foundation
     /// Off means the raw `Tab.title` everywhere. Manual renames still apply — those are the
     /// user's own words, not ours, and a feature switch has no business deleting them.
     static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: "tidyTitles") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "tidyTitles") }
+        get { UserDefaults.vane.object(forKey: "tidyTitles") as? Bool ?? true }
+        set { UserDefaults.vane.set(newValue, forKey: "tidyTitles") }
     }
 
     /// What fits a pinned chip before it starts eating the strip. Also the line between
@@ -302,7 +302,7 @@ import Foundation
     private static let overrideKey = "tidyTitleOverrides"
 
     private static func dict(_ base: String, _ profileID: UUID) -> [String: String] {
-        UserDefaults.standard.dictionary(forKey: ProfileManager.defaultsKey(base, profileID))
+        UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(base, profileID))
             as? [String: String] ?? [:]
     }
 
@@ -310,8 +310,8 @@ import Foundation
         var d = dict(base, profileID)
         d[url] = value
         let key = ProfileManager.defaultsKey(base, profileID)
-        if d.isEmpty { UserDefaults.standard.removeObject(forKey: key) }
-        else { UserDefaults.standard.set(d, forKey: key) }
+        if d.isEmpty { UserDefaults.vane.removeObject(forKey: key) }
+        else { UserDefaults.vane.set(d, forKey: key) }
     }
 
     /// The user's own name for this tab, from a double-click on the chip.
@@ -375,7 +375,7 @@ import Foundation
             // ponytail: no LRU. A pinned strip is a handful of urls; if it ever gets absurd,
             // throwing the whole cache away costs one re-run per pin and zero code.
             if cache.count > 200 {
-                UserDefaults.standard.removeObject(forKey: ProfileManager.defaultsKey(cacheKey, profileID))
+                UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(cacheKey, profileID))
                 cache = [:]
             }
             put(cacheKey, profileID, key, out)
@@ -387,7 +387,7 @@ import Foundation
     /// toggle that should not leave stale names behind.
     static func forget(_ profileID: UUID) {
         for base in [cacheKey, overrideKey] {
-            UserDefaults.standard.removeObject(forKey: ProfileManager.defaultsKey(base, profileID))
+            UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(base, profileID))
         }
     }
 
@@ -537,9 +537,9 @@ import Foundation
         let keys = [alpha, beta].flatMap {
             [ProfileManager.defaultsKey(cacheKey, $0), ProfileManager.defaultsKey(overrideKey, $0)]
         } + ["tidyTitles"]
-        let saved = keys.map { ($0, UserDefaults.standard.object(forKey: $0)) }
-        defer { for (k, v) in saved { UserDefaults.standard.set(v, forKey: k) } }
-        for k in keys { UserDefaults.standard.removeObject(forKey: k) }
+        let saved = keys.map { ($0, UserDefaults.vane.object(forKey: $0)) }
+        defer { for (k, v) in saved { UserDefaults.vane.set(v, forKey: k) } }
+        for k in keys { UserDefaults.vane.removeObject(forKey: k) }
 
         let docs = URL(string: "https://docs.example.com/guide")!
         let other = URL(string: "https://other.example.com/")!
@@ -559,7 +559,7 @@ import Foundation
         assert("an all-whitespace rename clears rather than blanking the tab",
                override(for: docs, in: beta) == nil)
 
-        UserDefaults.standard.removeObject(forKey: "tidyTitles")
+        UserDefaults.vane.removeObject(forKey: "tidyTitles")
         let byDefault = enabled
         enabled = false
         let offRoundTrip = enabled

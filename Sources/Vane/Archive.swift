@@ -7,8 +7,8 @@ extension Prefs {
     /// with 24 hours, 7 days and 30 days offered beside it; 0 is "never", which is a real
     /// answer and so is stored rather than falling back to the default.
     static var archiveAfter: TimeInterval {
-        get { UserDefaults.standard.object(forKey: "archiveAfter") as? Double ?? 12 * 3600 }
-        set { UserDefaults.standard.set(newValue, forKey: "archiveAfter") }
+        get { UserDefaults.vane.object(forKey: "archiveAfter") as? Double ?? 12 * 3600 }
+        set { UserDefaults.vane.set(newValue, forKey: "archiveAfter") }
     }
 
     /// What the setting offers, in Arc's order. ponytail: a fixed list, not a duration
@@ -75,13 +75,13 @@ extension Prefs {
     private init(profileID: UUID) {
         self.profileID = profileID
         let key = ProfileManager.defaultsKey("archivedTabs", profileID)
-        entries = (UserDefaults.standard.data(forKey: key))
+        entries = (UserDefaults.vane.data(forKey: key))
             .flatMap { try? JSONDecoder().decode([Entry].self, from: $0) } ?? []
     }
 
     private func save() {
         guard let data = try? JSONEncoder().encode(entries) else { return }
-        UserDefaults.standard.set(data, forKey: ProfileManager.defaultsKey("archivedTabs", profileID))
+        UserDefaults.vane.set(data, forKey: ProfileManager.defaultsKey("archivedTabs", profileID))
     }
 
     func add(url: URL, title: String, at: Date = .now,

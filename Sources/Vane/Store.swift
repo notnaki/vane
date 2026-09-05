@@ -60,11 +60,18 @@ struct Visit: Identifiable, Hashable, Sendable {
     // Every other access is from the main thread, as it always was.
     private nonisolated(unsafe) var db: OpaquePointer?
 
+    /// The data dir a second instance was pointed at, if any. A debug build running beside
+    /// the real app gets its own everything: files here, preferences in `UserDefaults.vane`,
+    /// and no copy of the user's pre-sandbox folder (see `LegacyData.migrateIfNeeded`).
+    nonisolated static var overrideDirectory: String? {
+        ProcessInfo.processInfo.environment["VANE_DATA_DIR"]
+    }
+
     static var directory: URL {
         // VANE_DATA_DIR: a second instance — a debug build running beside the real app —
         // gets its own history, session and spaces instead of racing the other over one
         // set of files (and tripping its crash marker). Unset in normal use.
-        let base = ProcessInfo.processInfo.environment["VANE_DATA_DIR"]
+        let base = overrideDirectory
             .map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("Vane", isDirectory: true)
@@ -275,5 +282,36 @@ struct Visit: Identifiable, Hashable, Sendable {
             if seen.insert(s.url).inserted { out.append(s) }
         }
         return Array(out.prefix(limit))
+    }
+}
+
+/// Where every preference goes.
+///
+/// `Store.directory` already sends a test instance's *files* somewhere of its own, but a
+/// preference is not a file the app names: the standard defaults are the *process's* own
+/// domain, so a debug build launched with `VANE_DATA_DIR` still read — and worse, wrote —
+/// the user's pinned rows, favourites, last Space and every Settings toggle. That is not an
+/// isolated instance; it is the same browser with a different history file.
+///
+/// ponytail: one `static let` and a rename at every call site, rather than an injected store
+/// threaded through eighty of them. With the variable unset — normal use — this *is* the
+/// standard defaults, so nothing about the shipping app changes. Ceiling: a suite plist is
+/// left in `~/Library/Preferences` per test dir; `defaults delete <suite>` clears it.
+extension UserDefaults {
+    // `nonisolated(unsafe)` for the same reason the standard defaults are: the object is
+    // made once and `UserDefaults` is thread-safe by contract — it simply predates Sendable.
+    nonisolated(unsafe) static let vane: UserDefaults = {
+        guard let dir = Store.overrideDirectory else { return .standard }
+        return UserDefaults(suiteName: suiteName(forDataDir: dir)) ?? .standard
+    }()
+
+    /// A suite name derived from the data dir, so two test instances on two dirs keep their
+    /// preferences apart and one dir keeps its own across launches. djb2 rather than
+    /// `hashValue`: Swift's string hashing is seeded per process and would hand the same
+    /// directory a different suite on every launch.
+    nonisolated static func suiteName(forDataDir dir: String) -> String {
+        var h: UInt64 = 5381
+        for byte in dir.utf8 { h = h &* 33 &+ UInt64(byte) }
+        return "vane.datadir." + String(h, radix: 36)
     }
 }

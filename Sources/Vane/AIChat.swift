@@ -61,7 +61,7 @@ struct AIAssistant: Identifiable, Codable, Hashable {
 
     /// Swapped out by `check()` so the assertions never touch the user's real preference.
     /// Same trick, same reason, as `Search.defaults`.
-    static var defaults = UserDefaults.standard
+    static var defaults = UserDefaults.vane
 
     /// Falls back to the first entry when the stored id names an assistant that was removed.
     static var preferred: Assistant {

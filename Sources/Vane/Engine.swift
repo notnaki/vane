@@ -785,7 +785,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     }
 
     static func lastSpace(for profileID: UUID) -> Space? {
-        guard let raw = UserDefaults.standard.string(forKey: lastSpaceKey(profileID)),
+        guard let raw = UserDefaults.vane.string(forKey: lastSpaceKey(profileID)),
               let id = UUID(uuidString: raw) else { return nil }
         return ProfileManager.shared.spaces(for: profileID).first { $0.id == id }
     }
@@ -796,9 +796,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         guard !isPrivate, !isLittle else { return }
         let key = TabStore.lastSpaceKey(profileID)
         if let id = currentSpaceID {
-            UserDefaults.standard.set(id.uuidString, forKey: key)
+            UserDefaults.vane.set(id.uuidString, forKey: key)
         } else {
-            UserDefaults.standard.removeObject(forKey: key)
+            UserDefaults.vane.removeObject(forKey: key)
         }
     }
 
@@ -1082,7 +1082,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     }
 
     static func stayingURLs(_ kind: TabKind, for profileID: UUID) -> [URL] {
-        (UserDefaults.standard.stringArray(forKey: defaultsKey(kind, profileID)) ?? [])
+        (UserDefaults.vane.stringArray(forKey: defaultsKey(kind, profileID)) ?? [])
             .compactMap(URL.init(string:))
     }
 
@@ -1111,14 +1111,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // Arc: the only thing Spaces share is Favourites. The grid belongs to the profile and
         // is written there from every window; the Pinned rows belong to whichever Space this
         // window is showing, and only fall back to the profile outside one.
-        UserDefaults.standard.set(favourites, forKey: TabStore.defaultsKey(.favourite, profileID))
+        UserDefaults.vane.set(favourites, forKey: TabStore.defaultsKey(.favourite, profileID))
         if let id = currentSpaceID, var space = spaces.first(where: { $0.id == id }) {
             space.pinnedURLs = []          // migrated out; see Spaces.favourites
             space.pinnedTabURLs = pinned.compactMap(URL.init(string:))
             ProfileManager.shared.updateSpace(space)
             return
         }
-        UserDefaults.standard.set(pinned, forKey: TabStore.defaultsKey(.pinned, profileID))
+        UserDefaults.vane.set(pinned, forKey: TabStore.defaultsKey(.pinned, profileID))
     }
 
     // MARK: Spaces
@@ -1198,7 +1198,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         space.pinnedTabURLs = urls { $0.kind == .pinned }
         saveShape()                        // and the folders those urls are arranged in
         ProfileManager.shared.updateSpace(space)
-        UserDefaults.standard.set(urls { $0.kind == .favourite }.map(\.absoluteString),
+        UserDefaults.vane.set(urls { $0.kind == .favourite }.map(\.absoluteString),
                                   forKey: TabStore.defaultsKey(.favourite, profileID))
         // Scroll position and back/forward list, in a sidecar — `Space` is another file's
         // Codable struct and is not mine to widen. Keyed by url, which is what

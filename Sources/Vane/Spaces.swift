@@ -48,14 +48,14 @@ enum Spaces {
     /// nothing left to merge.
     @MainActor static func favourites(for profileID: UUID) -> [URL] {
         let key = TabStore.defaultsKey(.favourite, profileID)
-        let existing = (UserDefaults.standard.stringArray(forKey: key) ?? [])
+        let existing = (UserDefaults.vane.stringArray(forKey: key) ?? [])
             .compactMap(URL.init(string:))
         let spaces = ProfileManager.shared.spaces(for: profileID)
         guard spaces.contains(where: { !$0.pinnedURLs.isEmpty }) else {
             return Array(existing.prefix(favouritesCap))
         }
         let merged = mergedFavourites(existing: existing, perSpace: spaces.map(\.pinnedURLs))
-        UserDefaults.standard.set(merged.map(\.absoluteString), forKey: key)
+        UserDefaults.vane.set(merged.map(\.absoluteString), forKey: key)
         var cleared = spaces
         for i in cleared.indices { cleared[i].pinnedURLs = [] }
         ProfileManager.shared.saveSpaces(cleared, for: profileID)
