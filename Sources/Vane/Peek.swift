@@ -122,7 +122,14 @@ import SwiftUI
         close(animated: false)                      // one at a time
 
         let store = LittleArc.floatingStore(parked == nil ? url : nil, profileID: parent.profileID)
-        if let parked { store.tabs.first?.park(url: url, parked); store.tabs.first?.resume() }
+        // A store made with no url comes up empty with the new-tab bar over it, which is
+        // right for ⌘T and wrong here: the page is not new, it is the one being put back.
+        if let parked {
+            let tab = store.newBlankTab()
+            tab.park(url: url, parked)
+            tab.resume()
+            store.palette = nil
+        }
 
         let window = PeekWindow(contentRect: host.frame, styleMask: [.borderless, .fullSizeContentView],
                                 backing: .buffered, defer: false)
@@ -282,7 +289,7 @@ private struct PeekView: View {
             ZStack {
                 // Dims the window behind, and is the click target that closes: everywhere
                 // outside the card is "I'm done with this".
-                Look.scrim
+                Look.peekScrim
                     .opacity(shown.on ? 1 : 0)
                     .contentShape(.rect)
                     .onTapGesture { Peek.close() }
