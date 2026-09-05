@@ -332,6 +332,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         cfg.mediaTypesRequiringUserActionForPlayback = []
         cfg.allowsAirPlayForMediaPlayback = true
         cfg.preferences.isElementFullscreenEnabled = true
+        // Picture in picture is off by default in WKWebView on macOS — measured: the key is
+        // there and reads false, and with it false `webkitSetPresentationMode` is a silent
+        // no-op, which is why both the ⌥⌘P toggle and auto-PiP did nothing. The public
+        // property is iOS-only (`allowsPictureInPictureMediaPlayback` on the configuration),
+        // so this is KVC on the same preference Safari sets.
+        // ponytail: KVC on a documented-by-name preference, exactly like developerExtrasEnabled
+        // below. If the key ever goes away this throws nothing and PiP simply stays off.
+        cfg.preferences.setValue(true, forKey: "allowsPictureInPictureMediaPlayback")
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = false
         // isInspectable governs remote inspection from Safari's Develop menu. The in-app
         // inspector window and the "Inspect Element" context-menu item are gated on this
@@ -615,8 +623,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// Counts the archives that land in one burst, so Clear can sweep rows out one after
     /// another. See `archive`.
     private let bursts = Motion.Burst()
+    /// The tab that was current before this one. Published because the page card keeps it
+    /// in the window for one switch longer: auto picture-in-picture asks the outgoing page
+    /// a question, and a page whose view has already left the window has already paused its
+    /// video. ponytail: exactly one extra page, not every live tab.
+    @Published private(set) var previous: Tab.ID?
     @Published var current: Tab.ID? {
         didSet {
+            previous = oldValue
             // Selecting a tab is what wakes it, and it has to happen here rather than in a
             // Task: SwiftUI reads `tab.web` on this same turn of the run loop.
             if let t = tabs.first(where: { $0.id == current }) { t.lastActive = .now; t.resume() }

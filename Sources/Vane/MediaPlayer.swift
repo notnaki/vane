@@ -299,13 +299,20 @@ private struct Marquee: View {
     private var overflow: CGFloat { max(0, textWidth - boxWidth) }
 
     var body: some View {
-        Text(text)
-            .font(Look.rowText)
-            .lineLimit(1)
-            .fixedSize()
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { textWidth = $0 }
-            .offset(x: shifted ? -overflow : 0)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        // The text goes in an *overlay* on a `Color.clear`, not in the layout: a title long
+        // enough to be worth scrolling would otherwise report its full width to the HStack
+        // and push the transport buttons off the end of the sidebar.
+        Color.clear
+            .frame(maxWidth: .infinity)
+            .overlay {
+                Text(text)
+                    .font(Look.rowText)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { textWidth = $0 }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .offset(x: shifted ? -overflow : 0)
+            }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { boxWidth = $0 }
             .clipped()
             .onChange(of: text) { restart() }

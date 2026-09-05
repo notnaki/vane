@@ -20,11 +20,54 @@ import WebKit
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
     let web: WKWebView
-    func makeNSView(context: Context) -> WKWebView { web }
-    func updateNSView(_ v: WKWebView, context: Context) {}
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: WKWebView, context: Context) -> CGSize? {
+    /// Out of the window's key loop and out of the accessibility tree: a page kept running
+    /// off screen (see `OffscreenPages`) must not be Tab-able to or readable by VoiceOver.
+    var offscreen = false
+
+    func makeNSView(context: Context) -> WebHost { WebHost(web) }
+    func updateNSView(_ host: WebHost, context: Context) {
+        host.show(web)
+        host.offscreen = offscreen
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: WebHost, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? nsView.frame.width,
                height: proposal.height ?? nsView.frame.height)
+    }
+}
+
+/// A plain box whose only job is to hold whichever WKWebView the tab has *now*.
+///
+/// `Tab.suspend()` throws the web view away and puts a fresh one in its place, so a
+/// representable that hands back the view it was made with and does nothing in
+/// `updateNSView` leaves the dead one on screen — a blank page when you come back to a tab
+/// that was suspended under memory pressure. The swap has to happen somewhere, and this is
+/// the only place that sees both the old view and the new one.
+final class WebHost: NSView {
+    private(set) var web: WKWebView?
+    /// Kept running but not on screen. `canBecomeKeyView` is what AppKit's key loop asks,
+    /// and the accessibility flag is what VoiceOver asks; both have to say no, or an
+    /// invisible page is Tab-able and readable.
+    var offscreen = false {
+        didSet { if offscreen != oldValue { setAccessibilityElement(!offscreen) } }
+    }
+
+    init(_ web: WKWebView) {
+        super.init(frame: .zero)
+        show(web)
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError("not in a nib") }
+
+    override var canBecomeKeyView: Bool { !offscreen }
+    override func accessibilityChildren() -> [Any]? { offscreen ? [] : super.accessibilityChildren() }
+
+    func show(_ next: WKWebView) {
+        guard next !== web else { return }
+        web?.removeFromSuperview()
+        next.frame = bounds
+        next.autoresizingMask = [.width, .height]
+        addSubview(next)
+        web = next
     }
 }
 
@@ -245,6 +288,7 @@ struct WebCard: View {
                 // No tabs: nothing to draw. The glass ground shows through, like the sidebar.
                 Color.clear
             }
+            OffscreenPages()
             if let tab = store.active { LoadingBar(tab: tab) }
             VStack(spacing: 8) {
                 if store.findOpen, let tab = store.active {
