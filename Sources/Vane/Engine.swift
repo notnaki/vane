@@ -786,6 +786,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             Motion.list { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
         }
+        if renamingTab == id { renamingTab = nil }
         extensions.sync()
         if current == id { current = outcome.next.map { tabs[$0].id } }
     }

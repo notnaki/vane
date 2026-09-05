@@ -569,7 +569,16 @@ private struct FavoriteTile: View {
 
     var body: some View {
         let selected = store.current == tab.id
-        TabIcon(tab: tab, size: Look.tileIcon)
+        Group {
+            if store.renamingTab == tab.id {
+                // A tile has no title to edit in place, so the field takes the tile: the
+                // icon comes back with the name it was given.
+                RenameField(store: store, tab: tab, font: Look.text)
+                    .padding(.horizontal, Look.rowInset)
+            } else {
+                TabIcon(tab: tab, size: Look.tileIcon)
+            }
+        }
             .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
             // Hover steps the tile up to the selected fill, the way the address pill does:
             // a tile is a button, and a button that does not react reads as a label.
@@ -589,7 +598,7 @@ private struct FavoriteTile: View {
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: tab, into: .favourite,
                                       axis: .horizontal, extent: width, side: $side))
-            .simultaneousGesture(TapGesture(count: 2).onEnded { TabActions.renameTab(tab) })
+            .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
             .contextMenu { TabMenu(store: store, tab: tab) }
             // One element per favourite, the way a tab reads: the title is the label, the
             // state is the value, and unpin/close are actions rather than hidden gestures.
@@ -598,7 +607,7 @@ private struct FavoriteTile: View {
             .accessibilityValue(tabState(tab, in: store))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             .accessibilityHint("Shows this tab.")
-            .accessibilityAction(named: "Rename Tab") { TabActions.renameTab(tab) }
+            .accessibilityAction(named: "Rename Tab") { store.renamingTab = tab.id }
             .accessibilityAction(named: "Unfavourite Tab") { store.toggleFavourite(tab.id) }
             .accessibilityAction(named: "Pin Tab") { store.move(tab.id, to: .pinned) }
             .accessibilityAction(named: "Close Tab") { store.close(tab.id) }
@@ -1066,14 +1075,14 @@ private struct PinnedTabs: View {
 
 /// Every clickable line in the sidebar: an icon, a title, and whatever the row wants on the
 /// trailing edge. One shape so the list reads as one list.
-private struct SidebarRow<Leading: View, Trailing: View>: View {
+private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     let selected: Bool
     /// Secondary rather than primary type: "New Tab" is an action among places, and Arc
     /// sets it a step quieter than the tabs around it.
     var dimmed = false
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
-    @ViewBuilder let label: () -> Text
+    @ViewBuilder let label: () -> Label
     @ViewBuilder let trailing: () -> Trailing
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1111,7 +1120,7 @@ private struct GlyphBox: View {
     var body: some View { Image(systemName: name).frame(width: Look.tileIcon) }
 }
 
-extension SidebarRow where Leading == GlyphBox, Trailing == EmptyView {
+extension SidebarRow where Leading == GlyphBox, Label == Text, Trailing == EmptyView {
     init(icon: String, title: String, selected: Bool, dimmed: Bool = false,
          action: @escaping () -> Void) {
         self.init(selected: selected, dimmed: dimmed, action: action,
@@ -1221,7 +1230,12 @@ private struct TabRow: View {
         SidebarRow(selected: selected, action: { store.current = tab.id }) {
             TabIcon(tab: tab)
         } label: {
-            Text(TidyTitles.title(for: tab))
+            // Arc's in-row rename: the title becomes a field and the row keeps its shape.
+            if store.renamingTab == tab.id {
+                RenameField(store: store, tab: tab)
+            } else {
+                Text(TidyTitles.title(for: tab))
+            }
         } trailing: {
             TabRowTrailing(tab: tab, selected: selected)
         }
@@ -1245,7 +1259,7 @@ private struct TabRow: View {
         // Arc's double-click-to-rename. Simultaneous, so the row's own single tap still
         // selects the tab first — which is what Arc does too, and what makes the rename
         // apply to the tab you are looking at.
-        .simultaneousGesture(TapGesture(count: 2).onEnded { TabActions.renameTab(tab) })
+        .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
         .contextMenu { TabMenu(store: store, tab: tab) }
         // One element per tab, the way a tab in Safari reads: the title is the label, the
         // state is the value, and the close button becomes an action rather than a second
@@ -1261,7 +1275,7 @@ private struct TabRow: View {
         .accessibilityAction(named: tab.kind == .pinned ? "Unpin Tab" : "Pin Tab") {
             store.togglePinned(tab.id)
         }
-        .accessibilityAction(named: "Rename Tab") { TabActions.renameTab(tab) }
+        .accessibilityAction(named: "Rename Tab") { store.renamingTab = tab.id }
         .accessibilityAction(named: "Duplicate Tab") { TabActions.duplicate(tab, in: store) }
         .accessibilityAction(named: "Favourite Tab") { store.move(tab.id, to: .favourite) }
         .accessibilityAction(named: "Close Other Tabs") { closeOthers() }
@@ -1294,7 +1308,7 @@ private struct TabMenu: View {
             .disabled(tab.currentURL == nil)
         // Arc's own two, in Arc's order. Rename is also a double-click on the row; Duplicate
         // has no gesture at all, which is exactly why it has to be here.
-        Button("Rename…") { TabActions.renameTab(tab) }
+        Button("Rename…") { store.renamingTab = tab.id }
         if TabActions.rename(tab) != nil {
             Button("Use the Page’s Own Title") { TidyTitles.rename(tab, to: nil) }
         }
