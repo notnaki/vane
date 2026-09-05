@@ -319,16 +319,21 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         item(.tabSwitcherBackwards) { TabSwitching.shared.step(-1) },
     ]
     // Split View. Arc keeps these in the Tabs menu, and their enabled state is what says
-    // whether there is a split to act on at all.
-    let addSplit = item(.addSplit) { Windows.current?.addSplit() }
+    // whether there is a split to act on at all. `Windows.main` throughout, never
+    // `Windows.current`: a Little Arc has no sidebar and no strip to hold a split, and ⌃⇧=
+    // over one used to split the popup rather than the window behind it — which is also the
+    // window whose state greyed these items out.
+    let addSplit = item(.addSplit) { Windows.main?.addSplit() }
     addSplit.isEnabled = store?.active != nil
-    let removeSplit = item(.removeSplit) { Windows.current?.removeSplitPane() }
-    let nextPane = item(.nextPane) { Windows.current?.focusNextPane() }
+    let removeSplit = item(.removeSplit) { Windows.main?.removeSplitPane() }
+    let nextPane = item(.nextPane) { Windows.main?.focusNextPane() }
     let separate = item("Separate All Tabs", "", []) {
-        guard let s = Windows.current, let split = s.activeSplit else { return }
+        guard let s = Windows.main, let split = s.activeSplit else { return }
         s.separateSplit(split)
     }
-    for entry in [removeSplit, nextPane, separate] { entry.isEnabled = store?.activeSplit != nil }
+    for entry in [removeSplit, nextPane, separate] {
+        entry.isEnabled = store?.activeSplit != nil
+    }
     let split = [addSplit, removeSplit, nextPane, separate]
     return [favourite, pin, .separator(), tidy, undo, clear, .separator()]
         + split + [.separator()] + navigation

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 
 // MARK: - The model
 
@@ -154,7 +155,7 @@ struct Split: Equatable, Sendable {
     /// Which edge band of a card of `size` the point is in, in SwiftUI's coordinates (y down
     /// from the top). The nearest edge wins, so a corner resolves to something rather than to
     /// two things at once.
-    static func zone(at p: CGPoint, in size: CGSize, band: CGFloat = 0.25) -> Zone {
+    static func zone(at p: CGPoint, in size: CGSize, band: CGFloat = Look.splitDropBand) -> Zone {
         guard size.width > 0, size.height > 0 else { return .centre }
         let x = p.x / size.width, y = p.y / size.height
         let edges: [(Zone, CGFloat)] = [(.leading, x), (.trailing, 1 - x), (.top, y), (.bottom, 1 - y)]
@@ -199,8 +200,10 @@ struct Split: Equatable, Sendable {
     /// ponytail: the tile stays as it was, so a split holding a favourite reads as a tile
     /// *and* a row. That is the honest picture — a favourite is a place that is always in the
     /// grid, and it happens to also be a pane right now.
+    /// A split of nothing but favourites falls back to its first pane, so the row exists
+    /// beside the tiles rather than the split having no way back into it at all.
     func leadPane(_ split: Split) -> Tab.ID? {
-        tabs.first { split.contains($0.id) && $0.kind != .favourite }?.id
+        tabs.first { split.contains($0.id) && $0.kind != .favourite }?.id ?? split.tabs.first
     }
 
     /// Splits are disjoint, so any pane that was in the old one names it. `key` is a tab the
@@ -214,7 +217,10 @@ struct Split: Equatable, Sendable {
     /// ⌃⇧= "Add Split View": a new pane beside the current tab, with the command bar up in
     /// `.address` so the next thing typed loads *into the new pane*.
     func addSplit() {
-        guard let anchor = current else { return }
+        // A Little Arc is one page in a window with no sidebar: it has nowhere to draw a
+        // split's row and nothing to split with. The menu already targets `Windows.main`;
+        // this is the same refusal said where every other route has to pass it too.
+        guard !isLittle, let anchor = current else { return }
         guard split(containing: anchor)?.isFull != true else {
             axAnnounce("Split view already has \(Split.maxPanes) panes.")
             return
@@ -262,20 +268,23 @@ struct Split: Equatable, Sendable {
             splits[i] = shrunk
             return shrunk.activeTab
         }
+        // One pane left: it is a plain tab again, and it has been on screen the whole time.
         let survivor = splits[i].tabs.first { $0 != id }
         splits.remove(at: i)
+        touch([survivor].compactMap { $0 })
         return survivor
     }
 
     /// ⌃⇧− "Remove Split": the pane you are in closes, exactly as ⌘W would close it.
     func removeSplitPane() {
-        guard let split = activeSplit, let id = current, split.contains(id) else { return }
+        guard !isLittle, let split = activeSplit, let id = current,
+              split.contains(id) else { return }
         archive(id)
     }
 
     /// ⌃⇧N: focus moves to the next pane, wrapping.
     func focusNextPane() {
-        guard let split = activeSplit, let here = current else { return }
+        guard !isLittle, let split = activeSplit, let here = current else { return }
         let moved = split.focusing(here).next()
         replace(moved, keyedOn: here)
         current = moved.activeTab
@@ -297,7 +306,16 @@ struct Split: Equatable, Sendable {
     /// Nothing closes — this is the opposite of Remove Split, not a tidier spelling of it.
     func separateSplit(_ split: Split) {
         splits.removeAll { $0.tabs == split.tabs }
+        touch(split.tabs)
         axAnnounce("Separated \(split.tabs.count) tabs.")
+    }
+
+    /// A tab that has just stopped being a pane has been on screen all along, but its idle
+    /// clock says otherwise — `lastActive` only moves when a tab is *selected*, and a pane
+    /// beside the selected one is never selected. Without this the next sweep suspends it and
+    /// the row the user is looking at goes blank.
+    private func touch(_ ids: [Tab.ID]) {
+        for id in ids { tabs.first { $0.id == id }?.lastActive = .now }
     }
 
     /// "Swap": the panes change places. Named rather than assumed, so the sidebar row's own
@@ -320,12 +338,17 @@ struct Split: Equatable, Sendable {
     /// the plain tab it will come back as.
     var savedSplits: [Split.Saved] {
         splits.compactMap { split in
-            let urls = split.tabs.compactMap { id in
-                tabs.first { $0.id == id }?.currentURL?.absoluteString
+            // Kept as (pane index, url) pairs rather than urls alone: dropping a blank pane
+            // shifts every pane after it, and `active` is an index into the panes.
+            let kept: [(pane: Int, url: String)] = split.tabs.enumerated().compactMap { i, id in
+                guard let url = tabs.first(where: { $0.id == id })?.currentURL else { return nil }
+                return (i, url.absoluteString)
             }
-            guard urls.count >= 2 else { return nil }
-            return Split.Saved(urls: urls, vertical: split.vertical,
-                               active: min(split.active, urls.count - 1))
+            guard kept.count >= 2 else { return nil }
+            // The focused pane if it survived, else the first — never whatever tab happens to
+            // have landed on that index once the blanks were taken out.
+            let active = kept.firstIndex { $0.pane == split.active } ?? 0
+            return Split.Saved(urls: kept.map(\.url), vertical: split.vertical, active: active)
         }
     }
 
@@ -403,7 +426,7 @@ private struct Pane: View {
             // A pane is on screen whether or not the keyboard is in it, so a pane that comes
             // back from the session parked has to wake up rather than sit there blank.
             .onAppear { tab.resume() }
-            .background(PaneFocus(focus: focus))
+            .background(PaneFocus(web: tab.web, focus: focus))
             .clipShape(.rect(cornerRadius: Look.paneRadius))
             .overlay {
                 RoundedRectangle(cornerRadius: Look.paneRadius)
@@ -425,6 +448,9 @@ private struct Pane: View {
 /// not consume. Ceiling: it fires on the way *down*, so a click the page turns into a drag
 /// still moves the focus — which is what Arc does too.
 private struct PaneFocus: NSViewRepresentable {
+    /// The pane's own page. Identity, not geometry: it is what says a click landed on *this*
+    /// pane rather than on something drawn over it.
+    let web: WKWebView
     let focus: () -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -433,8 +459,11 @@ private struct PaneFocus: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ view: NSView, context: Context) { context.coordinator.focus = focus }
-    func makeCoordinator() -> Coordinator { Coordinator(focus) }
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.focus = focus
+        context.coordinator.web = web      // a suspended tab comes back on a fresh web view
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(web, focus) }
 
     static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
         MainActor.assumeIsolated { coordinator.stop() }
@@ -442,20 +471,36 @@ private struct PaneFocus: NSViewRepresentable {
 
     @MainActor final class Coordinator {
         var focus: () -> Void
+        var web: WKWebView
         private weak var view: NSView?
         private var monitor: Any?
 
-        init(_ focus: @escaping () -> Void) { self.focus = focus }
+        init(_ web: WKWebView, _ focus: @escaping () -> Void) {
+            self.web = web
+            self.focus = focus
+        }
 
         func watch(_ view: NSView) {
             self.view = view
             monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-                guard let self, let view = self.view, event.window === view.window,
-                      view.bounds.contains(view.convert(event.locationInWindow, from: nil))
-                else { return event }
+                guard let self, self.owns(event) else { return event }
                 self.focus()
                 return event
             }
+        }
+
+        /// Whether the click landed *in the pane* — which is not the same as landing inside
+        /// its rectangle. The find bar, the save-password prompt and the status capsule are
+        /// drawn over the page, and refocusing the pane under one of them rebuilt the find
+        /// field out from under the pointer. So the rectangle is only half of it: the view
+        /// the window says was hit has to be this pane's own page as well.
+        private func owns(_ event: NSEvent) -> Bool {
+            guard let view, let window = view.window, event.window === window,
+                  view.bounds.contains(view.convert(event.locationInWindow, from: nil)),
+                  let content = window.contentView else { return false }
+            guard let hit = content.hitTest(content.convert(event.locationInWindow, from: nil))
+            else { return false }
+            return hit === web || hit.isDescendant(of: web)
         }
 
         func stop() {
@@ -497,7 +542,12 @@ private struct SplitDivider: View {
                     NSCursor.pop()
                 }
             }
-            .onDisappear { if pushed { pushed = false; NSCursor.pop() } }
+            .onDisappear {
+                if pushed { pushed = false; NSCursor.pop() }
+                // A divider that goes away mid-drag — a pane closing, an orientation flip —
+                // must not come back holding the weights the last drag started from.
+                base = nil
+            }
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in
@@ -562,16 +612,17 @@ struct SplitDropWell: View {
         }
     }
 
-    private func drop(_ zone: Split.Zone) {
-        guard let id = Dragging.shared.tab else { return }
-        Dragging.shared.tab = nil
+    /// The drag ends here whatever the answer is, including "not on an edge, so nothing".
+    private func drop(_ zone: Split.Zone) -> Bool {
+        guard let id = Dragging.shared.take().tab, zone != .centre else { return false }
         store.addPane(id, at: zone)
+        return true
     }
 }
 
 private struct DropWell: NSViewRepresentable {
     let zone: (Split.Zone?) -> Void
-    let drop: (Split.Zone) -> Void
+    let drop: (Split.Zone) -> Bool
 
     func makeNSView(context: Context) -> DropWellView {
         let view = DropWellView()
@@ -588,7 +639,7 @@ private struct DropWell: NSViewRepresentable {
 
 private final class DropWellView: NSView {
     var onZone: ((Split.Zone?) -> Void)?
-    var onDrop: ((Split.Zone) -> Void)?
+    var onDrop: ((Split.Zone) -> Bool)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -615,12 +666,13 @@ private final class DropWellView: NSView {
     override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { update(sender) }
     override func draggingExited(_ sender: (any NSDraggingInfo)?) { onZone?(nil) }
 
+    /// `onDrop` ends the drag first and answers afterwards — a delegate that reads the flag
+    /// and then refuses leaves the drag running for ever, and this one refuses the whole
+    /// middle of the card.
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         let where_ = zone(sender)
         onZone?(nil)
-        guard where_ != .centre else { return false }
-        onDrop?(where_)
-        return true
+        return onDrop?(where_) ?? false
     }
 }
 
@@ -748,6 +800,12 @@ extension Split {
                 && zone(at: CGPoint(x: 260, y: 400), in: card) == .centre),
             ("a card with no size has no zones",
              zone(at: .zero, in: .zero) == .centre),
+            // The band the model measures and the band the card draws are the same number,
+            // said once. They were two 0.25s, which is one edit away from disagreeing.
+            ("the band the hit test uses is the one the drop highlight draws",
+             zone(at: CGPoint(x: card.width * Look.splitDropBand - 1, y: 400), in: card) == .leading
+                && zone(at: CGPoint(x: card.width * Look.splitDropBand + 1, y: 400),
+                        in: card) == .centre),
             ("top and bottom are the vertical ones",
              Zone.top.isVertical && Zone.bottom.isVertical
                 && !Zone.leading.isVertical && !Zone.trailing.isVertical),

@@ -614,6 +614,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             if let t = tabs.first(where: { $0.id == current }) { t.lastActive = .now; t.resume() }
             // The tab being left behind starts its idle clock now, not when it was opened.
             if let old = tabs.first(where: { $0.id == oldValue }) { old.lastActive = .now }
+            // Selecting a pane by any route at all — ⌘1–9, ⌃⇥, ⌥⌘↑↓, a favourite tile, the
+            // command bar — is what the split means by "the active pane". Keeping it here
+            // rather than in each of those callers is the only way the two cannot drift.
+            if let id = current, let i = splits.firstIndex(where: { $0.contains(id) }) {
+                splits[i] = splits[i].focusing(id)
+            }
             extensions.sync()
         }
     }
@@ -1169,6 +1175,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // Not close(): that pushes onto the reopen stack and closes the window on the last tab.
         // Favourites are the profile's, not the Space's, so their tabs stay exactly as they
         // are — Arc's grid does not so much as blink when you swipe between Spaces.
+        // Every pane whose tab is about to go leaves its split first; otherwise `splits`
+        // keeps ids of tabs that no longer exist, and a split holding a favourite would draw
+        // one pane and a divider into nothing.
+        for tab in tabs where tab.kind != .favourite { dropPane(tab.id) }
         tabs.removeAll { $0.kind != .favourite }
         currentSpaceID = space.id
         applySpaceAppearance()          // the new space may be pinned to light or dark
