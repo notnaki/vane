@@ -35,7 +35,6 @@ NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotif
 }
 
 Inspector.configure()
-Find.install()         // ⌘G / ⇧⌘G work before the find bar has ever been opened
 Blocker.refresh()
 AppleAI.prewarm()      // first request otherwise pays model load on top of its own latency
 URLHandling.registerAppleEventHandler()

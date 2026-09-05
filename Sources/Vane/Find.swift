@@ -166,14 +166,6 @@ import WebKit
         Task { await session.run(text, in: tab, forward: forward) }
     }
 
-    /// Called once at launch so ⌘G works before the bar has ever been opened. Menu.swift
-    /// registers the same two commands when it builds the Find submenu; last write wins and
-    /// both run this.
-    static func install() {
-        Keybindings.actions[.findNext] = { advance(forward: true) }
-        Keybindings.actions[.findPrevious] = { advance(forward: false) }
-    }
-
     // MARK: Offline check
 
     static func check() -> [(String, Bool)] {
@@ -285,7 +277,6 @@ private struct FindBarBody: View {
         .onAppear {
             text = session.query
             ready = true
-            Find.install()
         }
         // Live, like every other find bar: each keystroke searches from the top again.
         .onChange(of: text) { search(forward: true, fresh: true) }

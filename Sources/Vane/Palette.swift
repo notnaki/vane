@@ -261,20 +261,10 @@ struct PaletteCommand: Identifiable {
         },
         PaletteCommand("Open Library", icon: "archivebox") { Windows.current?.libraryOpen = true },
         PaletteCommand("View Archive", icon: "tray.full") { Windows.current?.libraryOpen = true },
-        PaletteCommand("View History", icon: "clock.arrow.circlepath") { showHistory() },
+        PaletteCommand("View History", icon: "clock.arrow.circlepath") { HistoryWindow.show() },
         PaletteCommand("Open Settings", icon: "gearshape") { SettingsWindow.show() },
         PaletteCommand("Keyboard Shortcuts", icon: "keyboard") { SettingsWindow.show(tab: "shortcuts") },
     ]
-
-    /// Where "View History" goes. A hook rather than a call: the surface that lists history
-    /// is not this file's to own, and until something better registers itself the History
-    /// menu — the last twenty-five pages — is the history this build actually has.
-    @MainActor static var showHistory: @MainActor () -> Void = {
-        guard let menu = NSApp.mainMenu?.item(withTitle: "History")?.submenu else { return }
-        // Screen coordinates, since there is no view to hang it off: under the pointer, the
-        // way a menu opened by a command should appear where the user is looking.
-        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-    }
 
     /// The rows that only make sense against what is in front of you right now: pinning the
     /// tab you are on, favouriting it, moving it to one of *your* Spaces. They cannot live in
