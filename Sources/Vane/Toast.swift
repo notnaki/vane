@@ -122,6 +122,9 @@ struct ToastHost: View {
                 .accessibilityLabel(toast.text)
             }
         }
+        // Never wider than the rows above it: a long title truncates rather than pushing the
+        // pill past the sidebar's edges.
+        .padding(.horizontal, Look.inset)
         .animation(reduceMotion ? nil : Look.list, value: toasts.current?.id)
         // Below the footer's edge is where the slide comes from; the sidebar itself clips it.
         .clipped()
