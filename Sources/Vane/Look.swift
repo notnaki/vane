@@ -358,8 +358,11 @@ enum Look {
     // Motion. Short and easing out: a fill should arrive under the pointer, never chase it.
     /// Hover and selection fills.
     static let quick = Animation.easeOut(duration: 0.15)
-    /// A floating surface appearing: scale from `appearScale` and fade, together.
-    static let appear = Animation.easeOut(duration: 0.15)
+    /// A floating surface appearing: scale from `appearScale` and fade, together. The
+    /// duration is spelled out because a surface that is a *window* of its own — a Peek —
+    /// has to stay alive for exactly as long as its own fade, and `Animation` will not say.
+    static let appearDuration: Double = 0.15
+    static let appear = Animation.easeOut(duration: appearDuration)
     static let appearScale: CGFloat = 0.97
     /// The tab list changing shape: a row arriving, leaving, or moving between sections. A
     /// touch of spring, the way Arc's rows settle, but short enough that ⌘W ⌘W ⌘W never
@@ -395,6 +398,16 @@ enum Look {
     static let toastDuration: Double = 3
     /// How much of the space's colour washes over the pill's dark ground.
     static let toastTint: Double = 0.45
+
+    // Peek: a link out of a Favourite or a Pinned tab, floating over the window it came
+    // from. Its corner and its shadow are the command bar's — both are surfaces over the
+    // whole window — so the only numbers of its own are how big it is and how long ⌘Z has.
+    /// Of the window, each way. Arc's Peek leaves enough of the sidebar showing that it is
+    /// obviously a page *over* your window rather than a window of its own.
+    static let peekFraction: CGFloat = 0.8
+    /// How long after a Peek closes ⌘Z and ⇧⌘T still bring it back. Long enough for the
+    /// Escape you did not mean, short enough that it is never a surprise.
+    static let peekReopen: Double = 8
 }
 
 extension Look {

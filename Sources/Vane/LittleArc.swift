@@ -52,10 +52,7 @@ import SwiftUI
     @discardableResult
     static func open(_ url: URL?) -> TabStore {
         let profile = ProfileManager.shared.active
-        let store = TabStore(urls: url.map { [$0] } ?? [], profileID: profile.id, isLittle: true)
-        // `WebCard` leaves its leading edge bare for a docked sidebar. There isn't one, so
-        // this is what gives the page the same gap on all four sides.
-        store.sidebarShown = false
+        let store = floatingStore(url, profileID: profile.id)
 
         let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
@@ -107,9 +104,27 @@ import SwiftUI
         return store
     }
 
+    // MARK: - One page, no furniture
+
+    /// The store behind a floating one-page window: no sidebar, no Space, nothing written
+    /// into the session. Shared with Peek, which is the same window with different chrome.
+    /// `url` is nil for one opened empty, and for one whose page is about to be `park`ed
+    /// back in from a snapshot.
+    static func floatingStore(_ url: URL?, profileID: UUID) -> TabStore {
+        let store = TabStore(urls: url.map { [$0] } ?? [], profileID: profileID, isLittle: true)
+        // `WebCard` leaves its leading edge bare for a docked sidebar. There isn't one, so
+        // this is what gives the page the same gap on all four sides.
+        store.sidebarShown = false
+        return store
+    }
+
     // MARK: - Which windows are ours
 
-    static var stores: [TabStore] { TabStore.all.filter(\.isLittle) }
+    /// A Peek is built on the same one-page store, but it is not a Little Arc: its ⌘O means
+    /// "beside the tab I came from" rather than "hand this to a Space", and Window ▸ Hide
+    /// All Little Arc Windows has no business miniaturising something that is a child of the
+    /// window it floats over.
+    static var stores: [TabStore] { TabStore.all.filter { $0.isLittle && !Peek.owns($0) } }
     static var windows: [NSWindow] { stores.compactMap(\.window) }
 
     static func store(of window: NSWindow?) -> TabStore? {
@@ -161,22 +176,37 @@ import SwiftUI
     static func move(_ store: TabStore, to space: Space?) {
         // Nothing to hand over yet — ⌘O pressed before the first navigation committed. The
         // window stays, because closing it here would throw the link away.
-        guard let tab = store.active, let url = tab.currentURL else { return }
-        let snapshot = tab.snapshot
+        guard let page = page(of: store) else { return }
         // With no browser window the url goes into the one being opened for it, so it comes
         // up on the page instead of behind the new-tab bar; an existing window gets a tab.
         let existing = Windows.current(in: store.profileID)
-        let target = existing ?? Windows.open(urls: [url], profile: store.profile, space: space)
+        let target = existing ?? Windows.open(urls: [page.url], profile: store.profile, space: space)
         if let space, target.currentSpaceID != space.id { target.switchTo(space: space) }
         let moved = existing == nil
-            ? (target.tabs.first { $0.currentURL == url } ?? target.newBlankTab())
+            ? (target.tabs.first { $0.currentURL == page.url } ?? target.newBlankTab())
             : target.newBlankTab()
-        moved.park(url: url, snapshot)
+        hand(page, into: moved, of: target, from: store,
+             saying: "Moved to \(space?.name ?? "the browser window").")
+        store.window?.performClose(nil)
+    }
+
+    /// What a floating window is showing, as the pair `Tab.park` wants. Nil before the first
+    /// navigation committed. Peek asks the same question of its own store.
+    static func page(of store: TabStore) -> (url: URL, snapshot: Parked)? {
+        guard let tab = store.active, let url = tab.currentURL else { return nil }
+        return (url, tab.snapshot)
+    }
+
+    /// Put `page` into a tab of an ordinary window and go there. The two halves of the
+    /// hand-off that neither caller varies — Peek's ⌘O differs only in *where* the tab is
+    /// placed, which is why that is the caller's job and this is not.
+    static func hand(_ page: (url: URL, snapshot: Parked), into moved: Tab,
+                     of target: TabStore, from store: TabStore, saying: String) {
+        moved.park(url: page.url, page.snapshot)
         moved.resume()
         target.current = moved.id
         target.window?.makeKeyAndOrderFront(nil)
-        axAnnounce("Moved to \(space?.name ?? "the browser window").")
-        store.window?.performClose(nil)
+        axAnnounce(saying)
     }
 
     /// ⌥⌘O and the button: the Spaces this page can be dropped into, the current one ticked.

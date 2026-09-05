@@ -76,6 +76,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// A link the user asked for *beside* this tab — ⌘-click, middle-click, `target=_blank`.
     /// The Bool is whether to go there; ⌘-click deliberately does not.
     var onOpenBeside: ((URL, Bool) -> Void)?
+    /// A link this tab should show *over* the window instead of going to — see Peek.swift.
+    /// Left nil in a window with nowhere to float one, which is what keeps the test in
+    /// `decidePolicyFor` a single condition rather than a list of exceptions.
+    var onPeek: ((URL) -> Void)?
 
     let isPrivate: Bool
     /// Which profile's data this tab reads and writes. Never changes for the life of the tab.
@@ -464,6 +468,18 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             open(url, intent.focus)
             return
         }
+        // A link out of a favourite or a pinned tab that leads somewhere else, or any link
+        // ⇧-clicked: it opens over the window and this tab stays where it is. Also before
+        // HTTPS-only — the Peek's own page is vetted when it loads. See Peek.swift.
+        if navigationAction.navigationType == .linkActivated,
+           let url = navigationAction.request.url, let peek = onPeek,
+           Peek.route(sourceKind: kind, from: w.url ?? url, to: url,
+                      modifiers: navigationAction.modifierFlags,
+                      enabled: Prefs.peekLinks) == .peek {
+            decisionHandler(.cancel)
+            peek(url)
+            return
+        }
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             decisionHandler(.allow)
@@ -827,6 +843,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         t.onOpenBeside = { [weak self] u, focus in
             guard let self else { return }
             if isLittle { LittleArc.open(u) } else { openBeside(u, focus: focus) }
+        }
+        // A Peek floats over a window with a sidebar in it. A Little Arc — or a Peek itself —
+        // is already one floating page, so a link in it has nothing to float over and simply
+        // navigates.
+        if !isLittle {
+            t.onPeek = { [weak self, weak t] u in
+                guard let self, let t else { return }
+                Peek.open(u, from: t, in: self)
+            }
         }
         Motion.list { tabs.append(t) }
         current = t.id
