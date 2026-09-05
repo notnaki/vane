@@ -285,7 +285,10 @@ private struct PaletteRow: Identifiable {
 /// Shift-Return, Tab and the arrows before the field editor decides what they mean, rather
 /// than racing `onKeyPress` against it. Ceiling: a plain single-line NSTextField — no
 /// attributed text, no inline completion, no emoji picker.
-private struct CommandField: NSViewRepresentable {
+///
+/// Internal, not private: the find bar needs the same three things (selected on open, Return
+/// and Shift-Return seen first, focus that stays put), only smaller.
+struct CommandField: NSViewRepresentable {
     enum Key { case up, down, enter, shiftEnter, commandEnter, tab, escape }
 
     @Binding var text: String
@@ -294,6 +297,8 @@ private struct CommandField: NSViewRepresentable {
     let selectAll: Bool
     let label: String
     let hint: String
+    /// The bar's size by default; the find bar asks for its own, smaller one.
+    var font: NSFont = .systemFont(ofSize: Look.barFontSize)
     /// Return true to swallow the key; false lets the field editor have it.
     let onKey: (Key) -> Bool
 
@@ -305,7 +310,7 @@ private struct CommandField: NSViewRepresentable {
         f.focusRingType = .none
         f.usesSingleLineMode = true
         f.lineBreakMode = .byTruncatingTail
-        f.font = .systemFont(ofSize: Look.barFontSize)
+        f.font = font
         f.placeholderString = prompt
         f.setAccessibilityLabel(label)
         f.setAccessibilityHelp(hint)

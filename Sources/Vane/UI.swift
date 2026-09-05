@@ -1574,57 +1574,6 @@ private struct SavePrompt: View {
     }
 }
 
-private struct FindBar: View {
-    @EnvironmentObject var store: TabStore
-    @ObservedObject var tab: Tab
-    @State private var text = ""
-    @State private var miss = false
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(Look.caption).foregroundStyle(.secondary)
-            TextField("Find on page", text: $text)
-                .textFieldStyle(.plain).font(Look.small).frame(width: 180)
-                .focused($focused)
-                .onSubmit { search(forward: true) }
-                .onChange(of: text) { search(forward: true) }
-                .foregroundStyle(miss ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
-                .accessibilityLabel("Find on Page")
-                .accessibilityValue(miss ? "No matches" : "")
-            Button { search(forward: false) } label: { Image(systemName: "chevron.up") }
-                .help("Previous Match").accessibilityLabel("Previous Match")
-            Button { search(forward: true) }  label: { Image(systemName: "chevron.down") }
-                .help("Next Match").accessibilityLabel("Next Match")
-            Button { store.findOpen = false } label: { Image(systemName: "xmark") }
-                .help("Close Find Bar").accessibilityLabel("Close Find Bar")
-        }
-        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
-        .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
-        .hairline(radius: Look.cardRadius)
-        .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
-        // Focus lands in the field the moment the bar opens, so the first thing after ⌘F
-        // is typing — for the keyboard and for VoiceOver alike.
-        .onAppear { focused = true }
-        .onExitCommand { store.findOpen = false }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Find on page")
-        // Ahead of the page, behind a password prompt.
-        .accessibilitySortPriority(1)
-    }
-
-    private func search(forward: Bool) {
-        Task {
-            let hit = await tab.find(text, forward: forward)
-            miss = !hit
-            // Turning the text red is not an answer for anyone who cannot see it.
-            if !hit && !text.isEmpty { axAnnounce("No matches for \(text)") }
-        }
-    }
-}
-
 /// Arc's Library, at the bottom-left corner of the sidebar: the archived tabs and the
 /// downloads, which are the two lists of things that have left the sidebar but are not gone.
 /// ponytail: a popover, not a window. Arc's Library is a full-window surface with easels and
