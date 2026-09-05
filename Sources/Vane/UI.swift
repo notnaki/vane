@@ -59,6 +59,11 @@ struct BrowserWindow: View {
             }
             edgeStrip
             floatingSidebar
+            // Arc's Library slides out of the window's leading edge over the sidebar. The
+            // page card behind it does not move — nothing about the HStack changes.
+            if store.libraryOpen {
+                LibraryPanel().transition(.move(edge: .leading).combined(with: .opacity))
+            }
             // Last, so the search bar composites over the sidebar as well as the page.
             if let mode = store.palette {
                 PaletteView(mode: mode) { dismissPalette() }
@@ -73,6 +78,7 @@ struct BrowserWindow: View {
         .ignoresSafeArea()
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.sidebarShown)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: peeking)
+        .animation(reduceMotion ? nil : Look.appear, value: store.libraryOpen)
         .animation(reduceMotion ? nil : Look.appear, value: store.palette == nil)
         // Arc hides the traffic lights along with the sidebar: a collapsed window is the
         // page and nothing else. They come back the moment either sidebar does.
@@ -995,8 +1001,9 @@ private struct SpaceMenu: View {
         Divider()
         Button("New Folder") { store.newFolder() }
         Divider()
-        // The Profiles pane of Settings is the spaces list; there is no second surface.
-        Button("Manage Spaces…") { SettingsWindow.show() }
+        // Arc's "Manage Spaces…" opens the Library's Spaces view — every Space's pages side
+        // by side, draggable between columns — rather than a settings pane.
+        Button("Manage Spaces…") { Library.open(.spaces, in: store) }
         Divider()
         Button("Delete Space") { deleteSpace(space, in: store) }
             .disabled(store.spaces.count < 2)
@@ -2045,10 +2052,8 @@ private struct SavePrompt: View {
     }
 }
 
-/// Arc's Library, at the bottom-left corner of the sidebar: the archived tabs and the
-/// downloads, which are the two lists of things that have left the sidebar but are not gone.
-/// ponytail: a popover, not a window. Arc's Library is a full-window surface with easels and
-/// notes in it too; Vane has two lists, and two lists are a popover.
+/// Arc's Library, at the bottom-left corner of the sidebar: the button that slides the
+/// Library panel out over the sidebar. The panel itself is LibraryWindow.swift.
 private struct LibraryButton: View {
     @EnvironmentObject var store: TabStore
     /// Passed in from the window's own store, not read from a `shared`. That resolves to
@@ -2058,71 +2063,19 @@ private struct LibraryButton: View {
     @ObservedObject var downloads: Downloads
 
     var body: some View {
-        let empty = archive.entries.isEmpty && downloads.items.isEmpty
-        // Always present, dimmed when there is nothing to show: the sidebar's bottom row is
-        // a fixed strip, and a button that comes and goes makes the whole row jump.
-        Button { store.libraryOpen.toggle() } label: { Image(systemName: "archivebox") }
+        // Never disabled any more: the panel has this profile's Spaces and its history in
+        // it as well as the two lists, so there is always something behind the glyph.
+        Button { Library.toggle(Library.shared.section, in: store) } label: {
+            Image(systemName: "archivebox")
+        }
             // A ring around the glyph while anything is downloading, so progress is visible
-            // without opening the popover to look for it.
+            // without opening the Library to look for it.
             .overlay { DownloadRing(downloads: downloads) }
             .buttonStyle(.plain)
-            .foregroundStyle(empty ? Look.inkDisabled : Look.inkSecondary)
-            .disabled(empty)
+            .foregroundStyle(store.libraryOpen ? Look.inkPrimary : Look.inkSecondary)
             .help("Library (\(Keybindings.binding(for: .showLibrary).display))")
             .accessibilityLabel("Library")
             .accessibilityValue("\(archive.entries.count) archived, \(downloads.items.count) download\(downloads.items.count == 1 ? "" : "s")")
-            .accessibilityHint("Shows archived tabs and downloads.")
-            .popover(isPresented: $store.libraryOpen, arrowEdge: .top) {
-                LibraryPopover(archive: archive, downloads: downloads)
-            }
-    }
-}
-
-private struct LibraryPopover: View {
-    @EnvironmentObject var store: TabStore
-    @ObservedObject var archive: Archive
-    @ObservedObject var downloads: Downloads
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Look.inset) {
-            if !archive.entries.isEmpty {
-                HStack {
-                    Text("Archived Tabs").font(Look.heading)
-                    Spacer(minLength: 16)
-                    Button("Clear") { archive.clear() }
-                        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
-                        .accessibilityLabel("Clear the archive")
-                }
-                VStack(spacing: Look.rowGap) {
-                    // Newest first, and only as many as anyone reads off a popover; the rest
-                    // are still on disk and still findable in the command bar.
-                    ForEach(archive.entries.prefix(12)) { entry in
-                        SidebarRow(selected: false, action: { store.unarchive(entry) }) {
-                            SiteIcon(icon: URL(string: entry.url).flatMap(store.favicons.icon(for:)))
-                        } label: {
-                            Text(entry.title)
-                        } trailing: {
-                            EmptyView()
-                        }
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(entry.title)
-                        .accessibilityValue("Archived tab, \(entry.url)")
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityHint("Opens this page again and takes it out of the archive.")
-                        .accessibilityAction { store.unarchive(entry) }
-                    }
-                }
-            }
-            if !downloads.items.isEmpty {
-                if !archive.entries.isEmpty { Hairline() }
-                Text("Downloads").font(Look.heading)
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(downloads.items) { DownloadRow(item: $0, downloads: downloads) }
-                }
-            }
-        }
-        .padding(14).frame(width: 320)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Library")
+            .accessibilityHint("Shows archived tabs, downloads, Spaces and history.")
     }
 }

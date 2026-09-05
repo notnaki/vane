@@ -858,16 +858,24 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
         if tab.kind == .today, !isPrivate, let u = tab.currentURL,
            u.scheme?.hasPrefix("http") == true {
-            Archive.shared(for: profileID).add(url: u, title: TidyTitles.title(for: tab))
+            // The Space it was in and whether it was a Little Arc go down with it, so the
+            // Library can put it back where it came from and filter on where it came from.
+            Archive.shared(for: profileID).add(url: u, title: TidyTitles.title(for: tab),
+                                               space: currentSpaceID, littleArc: isLittle)
         }
         close(id)
     }
 
     /// A row in the Library's Archived Tabs list, clicked: open it again and take it out of
-    /// the archive, because it is not archived any more.
+    /// the archive, because it is not archived any more. Arc v1.17: it goes back to the
+    /// Space it was archived from, not to whichever Space this window happens to be showing.
     func unarchive(_ entry: Archive.Entry) {
         Archive.shared(for: profileID).remove(entry.id)
         guard let u = URL(string: entry.url) else { return }
+        if let target = Library.restoreTarget(entry, spaces: spaces.map(\.id), current: currentSpaceID),
+           target != currentSpaceID, let space = spaces.first(where: { $0.id == target }) {
+            switchTo(space: space)
+        }
         newTab(u)
     }
 

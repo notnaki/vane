@@ -382,13 +382,16 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
 
 // MARK: - Archive
 
-/// Arc's Archive menu opens the Library at a section. Vane's Library is one popover on the
-/// sidebar's footer, so both rows land in the same place — and the sidebar has to be
-/// showing for the popover to have anything to hang off.
-@MainActor private func showLibrary() {
+/// Arc's Archive menu opens the Library at a section, and each row means a different one.
+@MainActor private func showLibrary(_ section: LibrarySection) {
     guard let store = Windows.main else { return }
-    store.sidebarShown = true
-    store.libraryOpen = true
+    Library.open(section, in: store)
+}
+
+/// ⇧⌘L, which is a toggle in Arc: the keystroke that opened the Library closes it again.
+/// It reopens on whichever section was last looked at.
+@MainActor private func toggleLibrary() {
+    Library.toggle(Library.shared.section, in: Windows.main)
 }
 
 /// ⇧⌘C. Arc's, and the one browser shortcut everybody misses when it is missing.
@@ -598,9 +601,9 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         item(.back) { Windows.current?.active?.back() },
         item(.forward) { Windows.current?.active?.forward() },
         .separator(),
-        item(.viewArchive) { showLibrary() },
+        item(.viewArchive) { showLibrary(.archived) },
         item(.viewHistory) { HistoryWindow.show() },
-        item(.showDownloads) { showLibrary() },
+        item(.showDownloads) { showLibrary(.downloads) },
         .separator(),
         item(.reopenClosedTab) {
             if let u = ClosedTabs.pop() { (Windows.main ?? Windows.open()).newTab(u) }
@@ -657,7 +660,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         },
         standard("Zoom", #selector(NSWindow.performZoom(_:))),
         .separator(),
-        item(.showLibrary) { showLibrary() },
+        item(.showLibrary) { toggleLibrary() },
         .separator(),
         littleArcWindows(),
         standard("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))),
