@@ -148,6 +148,10 @@ extension VaneWindow {
         let profile = profile ?? space.flatMap { s in
             ProfileManager.shared.profiles.first { $0.id == s.profileID }
         } ?? ProfileManager.shared.active
+        // Arc opens a new window in the Space you are looking at, and comes back up after a
+        // relaunch in the Space you left. A session file holds tabs, not Spaces, so the
+        // profile's last Space is what says which one that was.
+        let space = space ?? (isPrivate ? nil : TabStore.lastSpace(for: profile.id))
         let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space,
                              parked: parked)
         let window = VaneWindow(
