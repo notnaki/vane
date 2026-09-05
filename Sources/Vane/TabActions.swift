@@ -74,8 +74,6 @@ extension TabStore {
         return kinds[i] == .today ? i + 1 : firstToday
     }
 
-    /// Open a url in a new tab beside the current one. `focus` false leaves the user where
-    /// they were, which is the whole point of ⌘-click.
     /// An empty tab, placed beside `opener`. ⌘-click loads a url into it; Peek's ⌘O parks
     /// its page into it instead — which is the only reason the placement is separable from
     /// `openBeside` at all.
@@ -95,6 +93,8 @@ extension TabStore {
         }
     }
 
+    /// Open a url in a new tab beside the current one. `focus` false leaves the user where
+    /// they were, which is the whole point of ⌘-click.
     func openBeside(_ url: URL, focus: Bool) {
         let opener = current
         newTabBeside(opener).web.load(URLRequest(url: url))
