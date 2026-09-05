@@ -389,6 +389,11 @@ private struct ProfilesPane: View {
     /// Spaces come off disk, so they are read once per selection rather than per redraw.
     @State private var spaces: [Space] = []
     @State private var newSpace = ""
+    /// Where this profile's downloads go, and whether it asks first. Read on selection
+    /// rather than through @AppStorage: the key is per profile, so it changes as the
+    /// selection does.
+    @State private var downloadDirectory = DownloadLocation.systemDownloads
+    @State private var askWhereToSave = false
     /// So a row that has just become a text field is the one the keystrokes go to.
     @FocusState private var renameFocused: Bool
 
@@ -410,6 +415,7 @@ private struct ProfilesPane: View {
                 VStack(alignment: .leading, spacing: Look.inset * 1.5) {
                     identity
                     spacesCard
+                    downloadsCard
                     SettingsSection("Your Data and Settings") { data }
                 }
             }
@@ -567,6 +573,34 @@ private struct ProfilesPane: View {
         }
     }
 
+    /// Arc keeps the download folder in Profiles, beside the search engine and the archive
+    /// cadence — work and personal do not file their downloads in the same place.
+    private var downloadsCard: some View {
+        SettingsCard {
+            SettingsRow("Download location") {
+                Button(DownloadLocation.label(downloadDirectory)) {
+                    if let picked = DownloadLocation.choose(for: profile.id,
+                                                            current: downloadDirectory) {
+                        downloadDirectory = picked
+                    }
+                }
+                .help(downloadDirectory.path)
+                .accessibilityLabel("Download location, \(downloadDirectory.path)")
+                .accessibilityHint("Choose the folder downloads are saved into.")
+                .disabled(askWhereToSave)
+            }
+            SettingsRow("Ask where to save each file") {
+                Toggle("", isOn: $askWhereToSave).labelsHidden()
+                    .onChange(of: askWhereToSave) {
+                        DownloadLocation.setAskEveryTime(askWhereToSave, for: profile.id)
+                    }
+            }
+            Footnote("Downloads land in this folder without asking, keeping their own name "
+                     + "and never overwriting a file already there. Turn the switch on and "
+                     + "every download stops on a Save panel instead.")
+        }
+    }
+
     private var data: some View {
         SettingsCard(divided: false) {
             VStack(spacing: 0) {
@@ -594,6 +628,8 @@ private struct ProfilesPane: View {
     private func reload() {
         spaces = manager.spaces(for: profile.id)
         name = profile.name
+        downloadDirectory = DownloadLocation.directory(for: profile.id)
+        askWhereToSave = DownloadLocation.askEveryTime(for: profile.id)
     }
 
     /// "1 Space", not "1 Spaces".

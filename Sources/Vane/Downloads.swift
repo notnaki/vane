@@ -40,9 +40,13 @@ import WebKit
 
     @Published var items: [Item] = []
 
-    /// Where finished files land. A stored property only so a harness can point it at a
-    /// temp folder; nothing in the app ever changes it.
-    var destinationDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+    /// Where finished files land: the profile's own folder, unless a harness has pointed
+    /// this instance somewhere else.
+    var destinationDirectory: URL {
+        get { override ?? DownloadLocation.directory(for: profileID) }
+        set { override = newValue }
+    }
+    private var override: URL?
 
     init(profileID: UUID = ProfileManager.defaultID,
          directory: URL = Store.directory,
@@ -80,6 +84,13 @@ import WebKit
         @Published var total: Int64 = 0
         @Published var completed: Date?
         @Published var status: Status = .running
+        /// How fast bytes are arriving, smoothed. Zero until two samples are in — an ETA
+        /// off the first tick of a transfer is a number made up.
+        @Published var bytesPerSecond: Double = 0
+
+        /// The last rate sample: when it was taken and how many bytes had arrived by then.
+        private var sampledAt: Date?
+        private var sampledBytes: Int64 = 0
 
         /// Basename of the resume blob, or nil when there is nothing to resume from.
         fileprivate var resumeFile: String?
@@ -145,9 +156,27 @@ import WebKit
                     self.fraction = p.fractionCompleted
                     self.received = p.completedUnitCount
                     if p.totalUnitCount > 0 { self.total = p.totalUnitCount }
+                    self.sample()
                     self.onProgress?()
                 }
             }
+        }
+
+        /// One rate sample every half second, folded into the last one. Sampling on every
+        /// progress tick instead would read whatever the last packet happened to be, and an
+        /// ETA that jumps between "2 seconds" and "4 minutes" is worse than none.
+        private func sample(now: Date = .now) {
+            guard let then = sampledAt else {
+                sampledAt = now
+                sampledBytes = received
+                return
+            }
+            let elapsed = now.timeIntervalSince(then)
+            guard elapsed >= 0.5 else { return }
+            bytesPerSecond = Downloads.smoothed(previous: bytesPerSecond,
+                                                bytes: received - sampledBytes, over: elapsed)
+            sampledAt = now
+            sampledBytes = received
         }
 
         /// Stop observing and forget the WKDownload. Anything that ends a transfer calls
@@ -302,9 +331,9 @@ import WebKit
         return target
     }
 
-    /// Straight to ~/Downloads, never overwriting.
-    /// ponytail: no save panel by default — that is what every browser does, and the
-    /// "always ask" preference is a checkbox for the day there is a settings window.
+    /// Straight to the profile's download folder, never overwriting — unless the profile
+    /// asks to be asked, in which case a save panel decides and cancelling it cancels the
+    /// download rather than leaving a row that never starts.
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String,
                   completionHandler: @escaping @MainActor (URL?) -> Void) {
@@ -318,7 +347,15 @@ import WebKit
             completionHandler(entry.url)
             return
         }
-        let target = Self.uniqueDestination(in: destinationDirectory, suggested: suggestedFilename)
+        var target = Self.uniqueDestination(in: destinationDirectory, suggested: suggestedFilename)
+        if DownloadLocation.askEveryTime(for: profileID) {
+            guard let chosen = askWhereToSave(suggested: suggestedFilename,
+                                              in: destinationDirectory) else {
+                completionHandler(nil)      // cancelled: no file, and no row either
+                return
+            }
+            target = chosen
+        }
         let entry = Item(download, name: target.lastPathComponent)
         entry.url = target
         entry.source = download.originalRequest?.url ?? response.url
@@ -327,6 +364,18 @@ import WebKit
         items.insert(entry, at: 0)
         save()
         completionHandler(target)
+    }
+
+    /// The save panel, run where WebKit is waiting for an answer. Modal on purpose: the
+    /// delegate's completion handler is the download, and there is nothing useful to do
+    /// with the window until the user has said where the file goes.
+    private func askWhereToSave(suggested: String, in directory: URL) -> URL? {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggested.isEmpty ? "download" : suggested
+        panel.directoryURL = directory
+        panel.canCreateDirectories = true
+        panel.message = "Where should this download be saved?"
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     func downloadDidFinish(_ download: WKDownload) {
@@ -485,7 +534,47 @@ import WebKit
         item.resumeFile = nil
     }
 
+    // MARK: Cancel
+
+    /// Stop a transfer for good and take the half-written file with it. Distinct from
+    /// `pause`, which keeps both the partial file and the resume data on purpose.
+    func cancel(_ item: Item) {
+        item.pausedByUser = false
+        if let d = item.download {
+            d.cancel { _ in }               // the resume data is deliberately dropped
+            item.unwatch()
+        }
+        deleteResume(item)
+        if let url = item.url { try? FileManager.default.removeItem(at: url) }
+        item.status = .failed
+        item.state = .failed(Self.cancelledText)
+        item.bytesPerSecond = 0
+        save()
+    }
+
+    static let cancelledText = "Cancelled"
+
+    /// Takes a row out of the list. The file on disk is left alone: the Library is a list
+    /// of what happened, and forgetting an entry is not the same as deleting a download.
+    func forget(_ item: Item) {
+        deleteResume(item)
+        items.removeAll { $0 === item }
+        save()
+    }
+
     // MARK: Finder
+
+    /// Clicking a finished download opens it, the way it does in Arc's Library.
+    func open(_ item: Item) {
+        guard let url = item.url else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            item.status = .missing
+            item.state = .failed(Self.missingText)
+            save()
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
 
     func reveal(_ item: Item) {
         guard let url = item.url else { return }
@@ -497,6 +586,62 @@ import WebKit
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    // MARK: Words
+
+    /// A byte count as a person reads it. Decimal units, because that is what the Finder,
+    /// every browser and every server's Content-Length agree on.
+    ///
+    /// Pure and locale-free on purpose: `ByteCountFormatter` is neither, and a row that
+    /// reads differently on a French machine is a row that cannot be asserted.
+    nonisolated static func byteText(_ bytes: Int64) -> String {
+        guard bytes >= 1000 else { return bytes == 1 ? "1 byte" : "\(max(0, bytes)) bytes" }
+        let units = ["KB", "MB", "GB", "TB", "PB"]
+        var value = Double(bytes) / 1000, unit = 0
+        while value >= 1000, unit < units.count - 1 { value /= 1000; unit += 1 }
+        // One decimal while the number is small enough for it to mean something.
+        return value < 10 ? String(format: "%.1f %@", value, units[unit])
+                          : String(format: "%.0f %@", value, units[unit])
+    }
+
+    /// "1.5 MB of 3.0 MB" while it runs, "3.0 MB" when it is done or the server never said
+    /// how big the file was.
+    nonisolated static func sizeText(received: Int64, total: Int64, done: Bool = false) -> String {
+        guard !done else { return byteText(total > 0 ? total : received) }
+        guard total > received else { return byteText(received) }
+        return "\(byteText(received)) of \(byteText(total))"
+    }
+
+    /// How long the rest of the file will take, or nil when that cannot be known yet — an
+    /// unknown size, a stalled transfer, or a rate we have not sampled twice.
+    nonisolated static func secondsRemaining(received: Int64, total: Int64,
+                                             bytesPerSecond: Double) -> Double? {
+        guard total > received, bytesPerSecond > 0 else { return nil }
+        return Double(total - received) / bytesPerSecond
+    }
+
+    /// The ETA in words, and coarser the further out it is: a download that says "37
+    /// seconds left" is claiming a precision it does not have, and one that says "1 minute"
+    /// while it means 61 seconds is claiming worse.
+    nonisolated static func etaText(seconds: Double?) -> String {
+        guard let seconds, seconds.isFinite, seconds >= 0 else { return "" }
+        let whole = Int(seconds.rounded())
+        if whole < 2 { return "About a second left" }
+        if whole < 60 { return "\(whole) seconds left" }
+        if whole < 90 { return "About a minute left" }
+        if whole < 3600 { return "\(Int((Double(whole) / 60).rounded())) minutes left" }
+        let hours = Int((Double(whole) / 3600).rounded())
+        return hours <= 1 ? "About an hour left" : "\(hours) hours left"
+    }
+
+    /// A new rate sample folded into the running one. A third of the new reading, so a
+    /// stalled packet does not throw the ETA and a real slowdown still gets through.
+    nonisolated static func smoothed(previous: Double, bytes: Int64, over seconds: Double,
+                                     weight: Double = 0.3) -> Double {
+        guard seconds > 0, bytes >= 0 else { return previous }
+        let sample = Double(bytes) / seconds
+        return previous <= 0 ? sample : previous * (1 - weight) + sample * weight
     }
 
     // MARK: Offline check
@@ -682,8 +827,194 @@ import WebKit
                Downloads(profileID: ProfileManager.defaultID, directory: capRoot, sandboxed: true)
                    .items.map(\.name) == ["half.iso"])
 
+        // --- Cancelling ---
+        let cancelRoot = root.appendingPathComponent("cancel", isDirectory: true)
+        try? fm.createDirectory(at: cancelRoot, withIntermediateDirectories: true)
+        let halfFile = cancelRoot.appendingPathComponent("half.iso")
+        try? Data(repeating: 0x41, count: 512).write(to: halfFile)
+        let canceller = Downloads(profileID: ProfileManager.defaultID, directory: cancelRoot,
+                                  sandboxed: true)
+        var halfRec = Record(name: "half.iso", destination: halfFile, total: 4096,
+                             received: 512, state: "paused")
+        halfRec.reason = "Paused"
+        let half = canceller.add(halfRec)
+        canceller.cancel(half)
+        assert("cancelling says so on the row", half.state == .failed(cancelledText))
+        assert("a cancelled download is not offered for resume", canceller.canResume(half) == false)
+        assert("cancelling deletes the half-written file", !fm.fileExists(atPath: halfFile.path))
+        assert("a cancelled download survives a relaunch as cancelled",
+               Downloads(profileID: ProfileManager.defaultID, directory: cancelRoot, sandboxed: true)
+                   .items.first?.status == .failed)
+        canceller.forget(half)
+        assert("forgetting a row takes it out of the list", canceller.items.isEmpty)
+        assert("forgetting a row is written down",
+               Downloads(profileID: ProfileManager.defaultID, directory: cancelRoot, sandboxed: true)
+                   .items.isEmpty)
+
+        // --- Where downloads go (a scratch defaults suite; never the user's own) ---
+        let suite = "vane.check.downloads.\(ProcessInfo.processInfo.processIdentifier)"
+        if let scratch = UserDefaults(suiteName: suite) {
+            defer { scratch.removePersistentDomain(forName: suite) }
+            let id = ProfileManager.defaultID
+            let other = UUID()
+            assert("with nothing set, downloads go to the system folder",
+                   DownloadLocation.directory(for: id, defaults: scratch)
+                       == DownloadLocation.systemDownloads)
+            assert("nobody is asked where to save by default",
+                   DownloadLocation.askEveryTime(for: id, defaults: scratch) == false)
+            let picked = root.appendingPathComponent("picked", isDirectory: true)
+            try? fm.createDirectory(at: picked, withIntermediateDirectories: true)
+            DownloadLocation.setDirectory(picked, for: id, defaults: scratch)
+            assert("a chosen folder is where downloads go",
+                   DownloadLocation.directory(for: id, defaults: scratch).path == picked.path)
+            assert("the choice is per profile, not global",
+                   DownloadLocation.directory(for: other, defaults: scratch)
+                       == DownloadLocation.systemDownloads)
+            try? fm.removeItem(at: picked)
+            assert("a folder that has since been deleted falls back rather than failing",
+                   DownloadLocation.directory(for: id, defaults: scratch)
+                       == DownloadLocation.systemDownloads)
+            let notADirectory = root.appendingPathComponent("afile.txt")
+            try? Data("x".utf8).write(to: notADirectory)
+            DownloadLocation.setDirectory(notADirectory, for: id, defaults: scratch)
+            assert("a file where a folder should be falls back too",
+                   DownloadLocation.directory(for: id, defaults: scratch)
+                       == DownloadLocation.systemDownloads)
+            DownloadLocation.setDirectory(nil, for: id, defaults: scratch)
+            assert("clearing the choice goes back to the system folder",
+                   scratch.string(forKey: DownloadLocation.directoryKey(id)) == nil)
+            DownloadLocation.setAskEveryTime(true, for: id, defaults: scratch)
+            assert("asking every time is remembered",
+                   DownloadLocation.askEveryTime(for: id, defaults: scratch))
+            assert("...for that profile only",
+                   DownloadLocation.askEveryTime(for: other, defaults: scratch) == false)
+            assert("the system folder is drawn as Downloads",
+                   DownloadLocation.label(DownloadLocation.systemDownloads) == "Downloads")
+            assert("any other folder is drawn by its own name",
+                   DownloadLocation.label(URL(fileURLWithPath: "/Users/x/Desktop/Files")) == "Files")
+        } else {
+            assert("scratch defaults suite is available", false)
+        }
+
+        // --- Sizes, in the words the row draws ---
+        assert("a small file is counted in bytes", byteText(512) == "512 bytes")
+        assert("one byte is not one bytes", byteText(1) == "1 byte")
+        assert("nothing yet reads as zero", byteText(0) == "0 bytes")
+        assert("a kilobyte is decimal, like the Finder's", byteText(1000) == "1.0 KB")
+        assert("999 bytes is still bytes", byteText(999) == "999 bytes")
+        assert("a megabyte reads as one", byteText(1_500_000) == "1.5 MB")
+        assert("a big number drops the decimal", byteText(12_345_678) == "12 MB")
+        assert("a gigabyte reads as one", byteText(2_400_000_000) == "2.4 GB")
+        assert("progress reads as one size out of another",
+               sizeText(received: 1_500_000, total: 3_000_000) == "1.5 MB of 3.0 MB")
+        assert("a finished download is just its size",
+               sizeText(received: 3_000_000, total: 3_000_000, done: true) == "3.0 MB")
+        assert("a server that never said how big shows what has arrived",
+               sizeText(received: 1_500_000, total: 0) == "1.5 MB")
+        assert("a download past its stated size shows what has arrived",
+               sizeText(received: 3_100_000, total: 3_000_000) == "3.1 MB")
+
+        // --- Time remaining ---
+        assert("half a file at a megabyte a second is a second and a half",
+               secondsRemaining(received: 500_000, total: 2_000_000, bytesPerSecond: 1_000_000) == 1.5)
+        assert("an unknown size has no ETA",
+               secondsRemaining(received: 500_000, total: 0, bytesPerSecond: 1_000_000) == nil)
+        assert("a stalled transfer has no ETA",
+               secondsRemaining(received: 1, total: 100, bytesPerSecond: 0) == nil)
+        assert("no ETA prints nothing at all", etaText(seconds: nil) == "")
+        assert("under two seconds is about a second", etaText(seconds: 1.4) == "About a second left")
+        assert("seconds are seconds", etaText(seconds: 42) == "42 seconds left")
+        assert("just over a minute is about a minute", etaText(seconds: 61) == "About a minute left")
+        assert("minutes are minutes", etaText(seconds: 200) == "3 minutes left")
+        assert("just under an hour is still minutes", etaText(seconds: 3500) == "58 minutes left")
+        assert("just over an hour is about an hour", etaText(seconds: 3700) == "About an hour left")
+        assert("hours are hours", etaText(seconds: 7300) == "2 hours left")
+
+        // --- The rate the ETA is built on ---
+        assert("the first sample is taken as it is",
+               smoothed(previous: 0, bytes: 1000, over: 1) == 1000)
+        assert("a later sample only moves the rate part of the way",
+               smoothed(previous: 1000, bytes: 2000, over: 1) == 1300)
+        assert("a zero-length interval cannot divide by it",
+               smoothed(previous: 1000, bytes: 500, over: 0) == 1000)
+        assert("a stalled sample drags the rate down without zeroing it",
+               smoothed(previous: 1000, bytes: 0, over: 1) == 700)
+
         return out
     }
 
     private static var defaultProfile: UUID { ProfileManager.defaultID }
+}
+
+// MARK: - Where downloads go
+
+/// The download destination, per profile — Arc keeps it in Profiles, next to the search
+/// engine and the archive cadence, because a work profile and a personal one do not file
+/// their downloads in the same place.
+///
+/// ponytail: a path string in UserDefaults, not a security-scoped bookmark. Vane is not
+/// sandboxed, so a path is the whole of it; a folder the user later deletes falls back to
+/// ~/Downloads rather than failing the download.
+@MainActor enum DownloadLocation {
+    /// The system folder, and what an unset preference means.
+    nonisolated static var systemDownloads: URL {
+        FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Downloads")
+    }
+
+    nonisolated static func directoryKey(_ id: UUID) -> String {
+        ProfileManager.defaultsKey("downloadDirectory", id)
+    }
+    nonisolated static func askKey(_ id: UUID) -> String {
+        ProfileManager.defaultsKey("downloadAskEveryTime", id)
+    }
+
+    /// Where this profile files its downloads. A stored folder that has since been deleted
+    /// or renamed is not an error the user should meet as a failed download.
+    static func directory(for id: UUID, defaults: UserDefaults = .standard,
+                          fm: FileManager = .default) -> URL {
+        guard let path = defaults.string(forKey: directoryKey(id)), !path.isEmpty else {
+            return systemDownloads
+        }
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return systemDownloads
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    /// Nil resets to the system folder rather than storing an empty path.
+    static func setDirectory(_ url: URL?, for id: UUID, defaults: UserDefaults = .standard) {
+        guard let url else { return defaults.removeObject(forKey: directoryKey(id)) }
+        defaults.set(url.path, forKey: directoryKey(id))
+    }
+
+    static func askEveryTime(for id: UUID, defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: askKey(id))
+    }
+
+    static func setAskEveryTime(_ on: Bool, for id: UUID, defaults: UserDefaults = .standard) {
+        defaults.set(on, forKey: askKey(id))
+    }
+
+    /// The folder picker behind the settings row.
+    static func choose(for id: UUID, current: URL) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = current
+        panel.prompt = "Choose"
+        panel.message = "Where should downloads be saved?"
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        setDirectory(url, for: id)
+        return url
+    }
+
+    /// The folder's name, as the settings row draws it: the last component, or "Downloads"
+    /// for the system folder wherever it is and whatever the user has renamed it to.
+    nonisolated static func label(_ url: URL) -> String {
+        url.path == systemDownloads.path ? "Downloads" : url.lastPathComponent
+    }
 }
