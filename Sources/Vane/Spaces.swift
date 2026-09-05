@@ -225,31 +225,97 @@ enum Spaces {
     // MARK: - Two-finger swipe
 
     /// The horizontal swipe on the sidebar, as a state machine over scroll deltas so the
-    /// threshold and the debounce can be proved without a trackpad.
+    /// tracking, the rubber band and the commit can all be proved without a trackpad.
     ///
-    /// One switch per gesture: `armed` goes false the moment the threshold is crossed and
-    /// only comes back when the fingers leave the trackpad (`ended`). Without it a single
-    /// long swipe walks through every Space in the profile, and the momentum phase walks
-    /// through them again.
+    /// The switch happens on fingers-up, not mid-gesture: while the fingers are down the
+    /// strip only *moves*, and the user can carry it back and change their mind. That is the
+    /// whole difference between this and the old 40pt trip-wire, which fired under the
+    /// fingers and then had to spend the rest of the gesture ignoring them.
     struct Swipe {
-        /// Points of horizontal travel before a swipe counts. Below ~30 a diagonal scroll on
-        /// a long tab list switches Space by accident.
-        static let threshold: CGFloat = 40
+        /// Which part of a trackpad gesture an event belongs to. Momentum is its own case
+        /// because it must be *ignored*: the fingers have already left the trackpad and the
+        /// commit has already been decided, so feeding the coast back in would carry the
+        /// strip through the next Space and the one after it.
+        enum Phase { case began, changed, ended, momentum }
 
+        /// How far across the sidebar the fingers have to have carried the strip for
+        /// fingers-up to commit. Arc's is a bit over a third; below ~0.25 a diagonal scroll
+        /// down a long tab list changes Space by accident.
+        static let commitFraction: CGFloat = 0.35
+        /// …or this fast, in points per second, so a flick that barely moves still switches.
+        static let flickSpeed: CGFloat = 600
+        /// How much of the travel past the first or last Space actually shows: the strip
+        /// gives, so the gesture is answered, but it plainly does not want to go.
+        static let bandGive: CGFloat = 0.3
+        /// …and never further than this share of the sidebar, so the band has an end.
+        static let bandCap: CGFloat = 0.12
+
+        /// Raw finger travel, signed the way `scrollingDeltaX` is: negative means the fingers
+        /// went left, which brings on the *next* Space.
         private(set) var travel: CGFloat = 0
+        /// Smoothed points per second, for the flick commit. Smoothed because the last event
+        /// before fingers-up is often a near-zero straggler that would read as a dead stop.
+        private(set) var speed: CGFloat = 0
+        /// False once this gesture has committed, so one swipe is one Space. A gesture can
+        /// end twice (`.ended` after `.cancelled`), and both would otherwise commit.
         private(set) var armed = true
 
-        /// Feeds one scroll event. Returns +1 for "next Space", -1 for "previous", nil for
-        /// "not yet". `dx` is `NSEvent.scrollingDeltaX`: fingers moving left produce a
-        /// negative delta and mean "bring on what is to the right", i.e. the next Space.
-        mutating func feed(dx: CGFloat, ended: Bool) -> Int? {
-            if ended { travel = 0; armed = true; return nil }
-            travel += dx
-            guard armed, abs(travel) >= Self.threshold else { return nil }
-            armed = false
+        /// Feeds one scroll event. `offset` is where the strip should sit right now, or nil
+        /// for "leave it where it is" — an event that is not the fingers moving must never
+        /// stomp on a spring that is already running. `commit` is +1 for "next Space", -1
+        /// for "previous", nil for "spring back".
+        mutating func feed(dx: CGFloat, dt: Double, phase: Phase,
+                           width: CGFloat, count: Int, index: Int) -> (offset: CGFloat?, commit: Int?) {
+            switch phase {
+            case .momentum:
+                return (nil, nil)
+            case .began:
+                travel = 0
+                speed = 0
+                armed = true
+                return (0, nil)
+            case .changed:
+                guard armed else { return (nil, nil) }
+                travel += dx
+                if dt > 0 { speed = 0.6 * (dx / CGFloat(dt)) + 0.4 * speed }
+                return (Self.offset(travel, width: width, count: count, index: index), nil)
+            case .ended:
+                defer { travel = 0; speed = 0 }
+                guard armed, let direction = Self.commit(travel: travel, speed: speed, width: width,
+                                                         count: count, index: index)
+                else { return (nil, nil) }
+                armed = false
+                return (nil, direction)
+            }
+        }
+
+        /// Where the strip sits for a given travel: 1:1 with the fingers, up to the one
+        /// sidebar width that lands the neighbour exactly where the current Space is, and
+        /// only `bandGive` of it when there is no Space that way to bring on.
+        static func offset(_ travel: CGFloat, width: CGFloat, count: Int, index: Int) -> CGFloat {
+            let stuck = count < 2
+                || (travel > 0 && index <= 0)                // nothing before the first Space
+                || (travel < 0 && index >= count - 1)        // nor after the last
+            if stuck {
+                let cap = width * bandCap
+                return max(-cap, min(cap, travel * bandGive))
+            }
+            return max(-width, min(width, travel))
+        }
+
+        /// Fingers up: which way the strip should land, or nil to spring back. Far enough or
+        /// fast enough, and the flick has to still be going the way the strip already is —
+        /// a fast swipe back to where it started is a cancellation, not a commit.
+        static func commit(travel: CGFloat, speed: CGFloat, width: CGFloat,
+                           count: Int, index: Int) -> Int? {
+            guard count > 1, travel != 0 else { return nil }
             let direction = travel < 0 ? 1 : -1
-            travel = 0
-            return direction
+            // The swipe does not wrap, unlike ⌥⌘←/→: the rubber band has just spent the whole
+            // gesture saying there is nothing over there.
+            guard (0..<count).contains(index + direction) else { return nil }
+            let far = abs(travel) >= width * commitFraction
+            let flick = abs(speed) >= flickSpeed && (speed < 0) == (travel < 0)
+            return far || flick ? direction : nil
         }
     }
 
@@ -359,24 +425,81 @@ enum Spaces {
         assert("an out-of-range drag is refused rather than crashing",
                reordered([1, 2, 3], from: 9, to: 0) == [1, 2, 3])
 
-        // The swipe: one switch per gesture, in the direction the fingers went.
-        var s = Swipe()
-        assert("a nudge below the threshold does not switch space",
-               s.feed(dx: -Swipe.threshold + 1, ended: false) == nil)
-        assert("crossing the threshold leftwards goes to the next space",
-               s.feed(dx: -2, ended: false) == 1)
-        assert("the rest of the same swipe switches nothing else",
-               s.feed(dx: -200, ended: false) == nil && s.feed(dx: -200, ended: false) == nil)
-        assert("the gesture ending re-arms it", s.feed(dx: 0, ended: true) == nil && s.armed)
-        assert("crossing it rightwards goes to the previous space",
-               s.feed(dx: Swipe.threshold, ended: false) == -1)
-        var back = Swipe()
-        assert("a swipe that changes its mind still needs the full threshold",
-               back.feed(dx: -30, ended: false) == nil && back.feed(dx: 30, ended: false) == nil)
-        assert("travel is signed, so left then right cancels out", back.travel == 0)
-        var drift = Swipe()
-        assert("many small deltas add up to one switch",
-               (0..<7).compactMap { _ in drift.feed(dx: -8, ended: false) } == [1])
+        // The swipe. A 300pt sidebar with three Spaces, standing in the middle one, unless
+        // an assertion says otherwise.
+        let w: CGFloat = 300
+        func swipe(_ steps: [(CGFloat, Swipe.Phase)], dt: Double = 1.0 / 60,
+                   count: Int = 3, index: Int = 1) -> (last: CGFloat?, commits: [Int]) {
+            var s = Swipe(), last: CGFloat?, commits: [Int] = []
+            for (dx, phase) in steps {
+                let r = s.feed(dx: dx, dt: dt, phase: phase, width: w, count: count, index: index)
+                last = r.offset
+                if let c = r.commit { commits.append(c) }
+            }
+            return (last, commits)
+        }
+        // Slow, so the flick rule never fires and the distance rule is what is being tested.
+        func slow(_ total: CGFloat, steps: Int = 20) -> [(CGFloat, Swipe.Phase)] {
+            [(0, .began)] + (0..<steps).map { _ in (total / CGFloat(steps), Swipe.Phase.changed) }
+                + [(0, .ended)]
+        }
+
+        assert("the strip tracks the fingers one for one",
+               swipe([(0, .began), (-30, .changed), (-30, .changed)]).last == -60)
+        assert("nothing is committed while the fingers are still down",
+               swipe([(0, .began), (-200, .changed)]).commits.isEmpty)
+        assert("a short slow drag springs back rather than switching",
+               swipe(slow(-w * 0.3, steps: 60), dt: 0.05).commits.isEmpty)
+        assert("past a third of the sidebar, fingers up switches to the next space",
+               swipe(slow(-w * 0.4, steps: 60), dt: 0.05).commits == [1])
+        assert("dragging the other way goes to the previous space",
+               swipe(slow(w * 0.4, steps: 60), dt: 0.05).commits == [-1])
+        assert("a short fast flick commits on velocity alone",
+               swipe([(0, .began), (-20, .changed), (-20, .changed), (0, .ended)],
+                     dt: 1.0 / 120).commits == [1])
+        assert("a flick back the way it came is a cancellation, not a commit",
+               swipe([(0, .began), (-200, .changed), (150, .changed), (0, .ended)],
+                     dt: 1.0 / 120).commits.isEmpty)
+        assert("the strip never travels further than one sidebar width",
+               swipe([(0, .began), (-2000, .changed)]).last == -w)
+
+        // Rubber band at the ends.
+        assert("the first space gives only a fraction of the travel rightwards",
+               swipe([(0, .began), (100, .changed)], index: 0).last == 30)
+        assert("and never past the cap",
+               swipe([(0, .began), (1000, .changed)], index: 0).last == w * Swipe.bandCap)
+        assert("the first space still tracks fully leftwards, where there is a space to go to",
+               swipe([(0, .began), (-100, .changed)], index: 0).last == -100)
+        assert("the last space rubber-bands leftwards",
+               swipe([(0, .began), (-100, .changed)], index: 2).last == -30)
+        assert("a rubber-banded gesture commits nothing, however far it went",
+               swipe(slow(1000, steps: 60), dt: 0.05, index: 0).commits.isEmpty)
+        assert("a lone space has nowhere to go and only ever bands",
+               swipe([(0, .began), (-500, .changed)], count: 1, index: 0).last == -w * Swipe.bandCap)
+
+        // Momentum, and one commit per gesture.
+        assert("momentum after the fingers leave moves nothing",
+               swipe([(0, .began), (-200, .changed), (0, .ended), (-400, .momentum)]).last == nil)
+        assert("a whole momentum tail switches space exactly once",
+               swipe([(0, .began), (-200, .changed), (0, .ended)]
+                       + Array(repeating: (-400, Swipe.Phase.momentum), count: 8),
+                     dt: 0.05).commits == [1])
+        var once = Swipe()
+        _ = once.feed(dx: 0, dt: 0, phase: .began, width: w, count: 3, index: 1)
+        _ = once.feed(dx: -200, dt: 0.05, phase: .changed, width: w, count: 3, index: 1)
+        assert("the first fingers-up commits",
+               once.feed(dx: 0, dt: 0, phase: .ended, width: w, count: 3, index: 1).commit == 1)
+        assert("a second fingers-up in the same gesture does not",
+               once.feed(dx: 0, dt: 0, phase: .ended, width: w, count: 3, index: 1).commit == nil)
+        assert("and the strip is not dragged any further either",
+               once.feed(dx: -99, dt: 0.05, phase: .changed, width: w, count: 3, index: 1).offset == nil)
+        assert("a new gesture re-arms it",
+               once.feed(dx: 0, dt: 0, phase: .began, width: w, count: 3, index: 1).offset == 0
+                   && once.armed)
+        assert("fingers up on an untouched strip springs back rather than committing",
+               swipe([(0, .began), (0, .ended)]).commits.isEmpty)
+        assert("travel is signed, so left then right cancels out",
+               swipe([(0, .began), (-30, .changed), (30, .changed)]).last == 0)
 
         return out
     }

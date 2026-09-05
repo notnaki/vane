@@ -287,6 +287,31 @@ enum Look {
         return Color(.sRGB, red: c.r, green: c.g, blue: c.b)
     }
 
+    /// Two grounds mixed, `fraction` of the way from the first to the second. Straight linear
+    /// interpolation in sRGB rather than through hue: the two washes are both nearly black
+    /// (or nearly white), so the arc a hue interpolation takes between them is a detour
+    /// through colours neither Space wears.
+    /// Pure, so `selfcheck --pure` can prove the ends and the middle.
+    nonisolated static func mixed(_ a: (r: Double, g: Double, b: Double),
+                                  _ b: (r: Double, g: Double, b: Double),
+                                  _ fraction: Double) -> (r: Double, g: Double, b: Double) {
+        let f = min(max(fraction, 0), 1)
+        return (a.r + (b.r - a.r) * f, a.g + (b.g - a.g) * f, a.b + (b.b - a.b) * f)
+    }
+
+    /// The window's ground part-way between two Spaces, for the tint cross-fade under a live
+    /// swipe: the sidebar has to already be wearing some of the Space the fingers are pulling
+    /// in, or the colour arrives after the content and the switch reads as two events.
+    /// At `fraction` 0 this is exactly `groundColor(hex:dark:strength:)`.
+    static func groundColor(hex: String, towards other: String, fraction: Double,
+                            dark: Bool, strength: Double) -> Color {
+        guard let a = ground(hex: hex, dark: dark, strength: strength),
+              let b = ground(hex: other, dark: dark, strength: strength)
+        else { return groundColor(hex: hex, dark: dark, strength: strength) }
+        let c = mixed(a, b, fraction)
+        return Color(.sRGB, red: c.r, green: c.g, blue: c.b)
+    }
+
     /// `#RRGGBB` → hue (0…1), saturation, brightness. Nil for anything else.
     nonisolated static func hsb(hex: String) -> (h: Double, s: Double, b: Double)? {
         var v: UInt64 = 0
@@ -474,6 +499,24 @@ extension Look {
         out.append(("Arc's default lavender resolves in both appearances",
                     ground(hex: "#6E7DD2", dark: true) != nil && ground(hex: "#6E7DD2", dark: false) != nil))
         out.append(("a colour that is not #RRGGBB has no ground", ground(hex: "sky", dark: true) == nil))
+
+        // The tint cross-fade a live Space swipe drags the ground through.
+        let red = ground(hex: "#D9564F", dark: true)!, green = ground(hex: "#4CAF6E", dark: true)!
+        func sameGround(_ a: (r: Double, g: Double, b: Double),
+                        _ b: (r: Double, g: Double, b: Double)) -> Bool {
+            near(a.r, b.r * 255) && near(a.g, b.g * 255) && near(a.b, b.b * 255)
+        }
+        out.append(("no swipe means the space's own ground, untouched",
+                    mixed(red, green, 0) == red))
+        out.append(("a completed swipe means the neighbour's",
+                    sameGround(mixed(red, green, 1), green)))
+        out.append(("half way is half way on every channel", {
+            let m = mixed(red, green, 0.5)
+            return near(m.r, (red.r + green.r) / 2 * 255) && near(m.g, (red.g + green.g) / 2 * 255)
+                && near(m.b, (red.b + green.b) / 2 * 255)
+        }()))
+        out.append(("a rubber band past the end cannot push the ground past the neighbour",
+                    sameGround(mixed(red, green, 4), green) && mixed(red, green, -4) == red))
         out.append(("hsb round-trips a pure red", {
             guard let h = hsb(hex: "#FF0000") else { return false }
             let c = rgb(h: h.h, s: h.s, b: h.b)

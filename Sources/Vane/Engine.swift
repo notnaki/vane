@@ -1149,6 +1149,20 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// come in from the right), -1 for an earlier one. Arc slides in the direction of travel.
     @Published private(set) var spaceDirection = 1
 
+    /// How far sideways the Space-owned sidebar sections are being held right now, in points;
+    /// 0 when nothing is happening. A two-finger swipe writes the fingers' travel here and the
+    /// sidebar reads it, which is what makes the strip follow the fingers instead of waiting
+    /// for them to finish. See `Spaces.Swipe`.
+    @Published var spaceDrag: CGFloat = 0
+
+    /// True from the moment a Space swipe claims the strip until its spring has settled.
+    ///
+    /// Not simply `spaceDrag != 0`: the commit hands the incoming Space's sections the offset
+    /// its preview was already sitting at and springs *that* to zero, so the one update in
+    /// which `currentSpaceID` changes must still know a swipe is what changed it — otherwise
+    /// the sidebar's own slide transition plays on top of a slide that has already happened.
+    @Published var spaceSwiping = false
+
     /// Same thing a `spaceRevision` bump does, for the code outside `update(space:)` that
     /// edits `spaces.json` directly — a move, a reorder, a delete.
     func spacesChanged() { spaceRevision += 1 }

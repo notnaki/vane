@@ -12,6 +12,11 @@ extension Look {
     /// The strip sliding sideways as the Space changes. A touch longer than `appear`: it is
     /// the whole column moving, and at 0.15 it read as a flicker rather than as travel.
     static let spaceSlide = Animation.easeOut(duration: 0.24)
+    /// The strip finishing a swipe: the rest of the travel after the fingers leave, and the
+    /// spring back when they did not go far enough. A spring rather than an ease because the
+    /// gesture handed it a velocity and an ease throws that away — the strip has to leave the
+    /// fingers at the speed they left it at.
+    static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
     /// The dot's hit target — `Look.dot` is 6pt, which is not a thing anyone can hit or
     /// drop a tab onto.
     static let spaceDotHit: CGFloat = 20
@@ -342,6 +347,7 @@ extension View {
 
 private struct SpaceSlide: ViewModifier {
     @ObservedObject var store: TabStore
+    @ObservedObject private var sidebar = SidebarWidth.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
@@ -354,7 +360,86 @@ private struct SpaceSlide: ViewModifier {
             .transition(.asymmetric(
                 insertion: .move(edge: forwards ? .trailing : .leading).combined(with: .opacity),
                 removal: .move(edge: forwards ? .leading : .trailing).combined(with: .opacity)))
-            .animation(reduceMotion ? nil : Look.spaceSlide, value: store.currentSpaceID)
+            // A swipe has already carried the sections to where the new Space's preview was
+            // standing; letting this run on top would slide the same content a second time.
+            .animation(reduceMotion || store.spaceSwiping ? nil : Look.spaceSlide,
+                       value: store.currentSpaceID)
+            .offset(x: store.spaceDrag)
+            // An overlay, not a second row in a stack: the preview must not be allowed to
+            // make the scroll view's content taller or wider than the Space's own sections.
+            // The scroll view clips it, which is what turns it into a strip coming in from
+            // off the sidebar's edge.
+            .overlay(alignment: .topLeading) { preview }
+    }
+
+    /// The Space the fingers are pulling in, drawn one sidebar width from the current one so
+    /// the two move as a single strip. Nothing at either end of the list: the rubber band's
+    /// whole point is that there is nothing over there to show.
+    @ViewBuilder private var preview: some View {
+        let drag = store.spaceDrag
+        if drag != 0, let space = neighbour(of: drag) {
+            SpacePreviewList(space: space)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .offset(x: drag + (drag < 0 ? sidebar.width : -sidebar.width))
+                .allowsHitTesting(false)
+                // Decorative: it is the Space the user is *about* to be in, and VoiceOver
+                // announcing a list that may spring straight back is noise.
+                .accessibilityHidden(true)
+        }
+    }
+
+    private func neighbour(of drag: CGFloat) -> Space? {
+        let list = store.spaces
+        guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return nil }
+        let n = drag < 0 ? i + 1 : i - 1
+        return list.indices.contains(n) ? list[n] : nil
+    }
+}
+
+/// The neighbouring Space's sidebar, as a ghost, for the width of a swipe: its name, its
+/// pinned rows, its tabs.
+///
+/// ponytail: rows built from the urls in `spaces.json`, not from tabs. A Space that is not on
+/// screen has no `Tab` objects and no web views, and making them so the user can glance at
+/// them mid-swipe would mean loading another Space's pages in order to slide past them.
+/// Ceiling: a site never visited has no cached favicon, and the label is the host rather than
+/// the page's own title — a history lookup keyed on the url would fix the second.
+private struct SpacePreviewList: View {
+    let space: Space
+
+    /// As many rows as a sidebar can show at once. Past that the preview is scrolled-off
+    /// content nobody sees, costing a favicon lookup each.
+    private static let cap = 16
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Look.rowGap) {
+            HStack(spacing: Look.rowSpacing) {
+                Image(systemName: space.icon ?? "cloud").font(Look.icon)
+                Text(space.name).font(Look.text)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Look.inkSecondary)
+            .padding(.horizontal, Look.rowInset)
+            .frame(height: Look.rowHeight)
+            ForEach(urls, id: \.absoluteString) { row($0) }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var urls: [URL] {
+        Array(((space.pinnedTabURLs ?? []) + space.tabURLs).prefix(Self.cap))
+    }
+
+    private func row(_ url: URL) -> some View {
+        HStack(spacing: Look.rowSpacing) {
+            SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
+            Text(url.host()?.replacingOccurrences(of: "www.", with: "") ?? url.absoluteString)
+                .font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, Look.rowInset)
+        .padding(.trailing, Look.rowTrailingInset)
+        .frame(height: Look.rowHeight)
     }
 }
 
@@ -372,18 +457,40 @@ private struct SpaceSwipe: ViewModifier {
 /// The scroll-wheel monitor behind the swipe. A local `NSEvent` monitor rather than a view
 /// that overrides `scrollWheel(with:)`: the sidebar's `ScrollView` is an `NSScrollView` and
 /// gets the event first, so anything sitting behind it never sees one.
+///
+/// Its only job is to turn `NSEvent`s into `Spaces.Swipe`'s vocabulary and to put the answer
+/// on the store. Everything that can be got wrong — the threshold, the velocity, the band at
+/// the ends, the one-commit rule — lives in the pure state machine, where `check()` can hold
+/// it to account.
 @MainActor final class SwipeMonitor {
     private var monitor: Any?
     private var swipe = Spaces.Swipe()
+    /// The previous event's timestamp, for the velocity. 0 means "no gesture in flight".
+    private var last: TimeInterval = 0
+    /// Whether this gesture belongs to the sidebar. Decided once, at the top of the gesture,
+    /// and then kept — see `mine`.
+    private var claimed = false
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
             guard let store, self.mine(event, store) else { return event }
-            let ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
-            if let direction = self.swipe.feed(dx: event.scrollingDeltaX, ended: ended) {
-                store.cycleSpace(direction)
-                rebuild()
+            let list = store.spaces
+            let index = list.firstIndex { $0.id == store.currentSpaceID } ?? 0
+            let width = SidebarWidth.shared.width
+            let phase = Self.phase(of: event)
+            let dt = self.last > 0 ? event.timestamp - self.last : 0
+            self.last = event.timestamp
+            let out = self.swipe.feed(dx: event.scrollingDeltaX, dt: dt, phase: phase,
+                                      width: width, count: list.count, index: index)
+            if let offset = out.offset {
+                store.spaceSwiping = true
+                store.spaceDrag = offset             // straight on, no animation: it is the fingers
+            }
+            if let direction = out.commit {
+                self.land(direction, from: index, in: list, width: width, store: store)
+            } else if phase == .ended {
+                self.settle(store)
             }
             return nil              // swallowed, so the tab list does not scroll sideways too
         }
@@ -394,14 +501,76 @@ private struct SpaceSwipe: ViewModifier {
         monitor = nil
     }
 
+    private static func phase(of event: NSEvent) -> Spaces.Swipe.Phase {
+        if !event.momentumPhase.isEmpty { return .momentum }
+        if event.phase.contains(.began) { return .began }
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) { return .ended }
+        return .changed
+    }
+
+    /// Over the line: run the rest of the travel out under the spring and swap the Space at
+    /// the far end, where the preview is already standing exactly where the real sections
+    /// are about to be — which is the whole reason the swap is invisible.
+    private func land(_ direction: Int, from index: Int, in list: [Space],
+                      width: CGFloat, store: TabStore) {
+        guard list.indices.contains(index + direction) else { return settle(store) }
+        let target = list[index + direction]
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            store.spaceDrag = 0
+            store.spaceSwiping = false          // a cut, not a slide: `SpaceSlide` will not animate
+            store.switchTo(space: target)
+            rebuild()
+            return
+        }
+        withAnimation(Look.spaceSpring) {
+            store.spaceDrag = -CGFloat(direction) * width
+        } completion: {
+            // `spaceSwiping` is still true here, which is what keeps `SpaceSlide`'s own
+            // transition off this update; the offset going back to zero in the same breath
+            // lands the incoming sections on the preview they replace.
+            store.switchTo(space: target)
+            store.spaceDrag = 0
+            rebuild()
+            DispatchQueue.main.async { store.spaceSwiping = false }
+        }
+    }
+
+    /// Not far enough, or nowhere to go: the strip goes home.
+    private func settle(_ store: TabStore) {
+        guard store.spaceDrag != 0 else { store.spaceSwiping = false; return }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            store.spaceDrag = 0
+            store.spaceSwiping = false
+            return
+        }
+        withAnimation(Look.spaceSpring) { store.spaceDrag = 0 } completion: {
+            store.spaceSwiping = false
+        }
+    }
+
     /// A horizontal trackpad swipe, over this window's sidebar. Everything else — a mouse
     /// wheel, a vertical scroll, a scroll over the page — is left alone.
     private func mine(_ event: NSEvent, _ store: TabStore) -> Bool {
         guard event.hasPreciseScrollingDeltas, event.window === store.window,
               store.sidebarShown, event.locationInWindow.x < SidebarWidth.shared.width
         else { return false }
-        // 1.5, not 1: a swipe down a long tab list drifts sideways, and at parity that drift
-        // switched Space on the way past.
-        return abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 1.5
+        if event.phase.contains(.began) {
+            claimed = false
+            last = 0
+            swipe = Spaces.Swipe()
+        }
+        // Claimed once and then held for the whole gesture, momentum tail included. The
+        // fingers-up event carries no deltas at all, so deciding again on it would answer
+        // "not horizontal" and drop the end of every swipe on the floor — which is exactly
+        // what left the old monitor stuck after one switch.
+        if !claimed {
+            // 1.5, not 1: a swipe down a long tab list drifts sideways, and at parity that
+            // drift switched Space on the way past.
+            claimed = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 1.5
+            // The gesture's first horizontal event is also its beginning as far as the state
+            // machine is concerned: `.began` itself carries no deltas and was let through.
+            if claimed { swipe = Spaces.Swipe(); last = 0 }
+        }
+        return claimed
     }
 }
