@@ -39,12 +39,27 @@ extension Prefs {
         var url: String
         var title: String
         var at: Date
+        /// The Space the tab was in when it left, so Restore puts it back there rather than
+        /// into whatever Space the window happens to be showing (Arc v1.17).
+        ///
+        /// Optional — and `littleArc` with it — because that is what keeps an entry written
+        /// by an older build readable: a synthesised decoder gives an Optional property
+        /// `decodeIfPresent` for free, and applies no default to a non-optional one.
+        var space: UUID?
+        /// Archived out of a Little Arc window, which is what the Library's "Little Arc"
+        /// filter chip sorts on.
+        var littleArc: Bool?
         var id: String { url }
+        var isLittleArc: Bool { littleArc == true }
     }
 
-    /// Older entries fall off the end. Arc keeps everything; two hundred is where a list
-    /// nobody scrolls stops being worth the bytes.
-    static let limit = 200
+    /// Older entries fall off the end. Arc keeps every archived tab.
+    /// ponytail: two thousand rather than all of them. The list is one JSON blob in
+    /// UserDefaults, read whole the first time a profile's archive is touched; 2000 entries
+    /// is ~300 KB and better than a year of closing five tabs a day, which is far enough
+    /// down a list nobody scrolls. Ceiling: the two-thousand-and-first close drops the
+    /// oldest entry. The upgrade is a table in the history database beside `visits`.
+    static let limit = 2000
 
     private static var caches: [UUID: Archive] = [:]
     static func shared(for profileID: UUID) -> Archive {
@@ -69,10 +84,13 @@ extension Prefs {
         UserDefaults.standard.set(data, forKey: ProfileManager.defaultsKey("archivedTabs", profileID))
     }
 
-    func add(url: URL, title: String, at: Date = .now) {
+    func add(url: URL, title: String, at: Date = .now,
+             space: UUID? = nil, littleArc: Bool = false) {
         entries = Archive.merged(entries, adding: Entry(url: url.absoluteString,
                                                         title: title.isEmpty ? url.absoluteString : title,
-                                                        at: at),
+                                                        at: at,
+                                                        space: space,
+                                                        littleArc: littleArc ? true : nil),
                                  limit: Archive.limit)
         save()
     }
@@ -139,6 +157,22 @@ extension Prefs {
         out.append(("the list is capped, oldest off the end",
                     merged([a, b], adding: Entry(url: "https://c.example", title: "C", at: t0),
                            limit: 2).count == 2))
+
+        // The on-disk format: an archive written before entries knew about Spaces must still
+        // decode, or upgrading would empty everybody's Library.
+        let old = Data(#"[{"url":"https://a.example","title":"A","at":0}]"#.utf8)
+        let decoded = try? JSONDecoder().decode([Entry].self, from: old)
+        out.append(("an entry written before Spaces and Little Arc existed still decodes",
+                    decoded?.count == 1 && decoded?.first?.space == nil
+                        && decoded?.first?.isLittleArc == false))
+        out.append(("a new entry round-trips its Space and its Little Arc flag", {
+            var e = a
+            e.space = UUID()
+            e.littleArc = true
+            guard let d = try? JSONEncoder().encode([e]),
+                  let back = try? JSONDecoder().decode([Entry].self, from: d) else { return false }
+            return back == [e] && back[0].isLittleArc
+        }()))
 
         let hour: TimeInterval = 3600
         out.append(("an idle Today tab is due after the interval",
