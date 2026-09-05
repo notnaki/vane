@@ -137,15 +137,14 @@ extension SiteControlModel {
             // switch, and a dead toggle is a promise Vane cannot keep. Upgrade path the day
             // WebKit exposes one: a third `.permission` row keyed exactly like these two.
             Row(id: .pictureInPicture, title: "Picture in Picture", glyph: "pip",
-                control: .toggle(pictureInPicture),
-                note: pictureInPicture ? nil : "Detaches the biggest video on the page."),
+                control: .toggle(pictureInPicture)),
             Row(id: .zoom, title: "Zoom", glyph: "textformat.size",
                 control: .zoom(PillState.zoomLabel(zoom) ?? "100%")),
             Row(id: .blocker, title: "Block Ads", glyph: "shield",
                 control: .toggle(blocking),
                 // Honest rather than flattering: Vane's blocker is one compiled rule list
                 // attached per profile, so there is no per-site answer to give here.
-                note: "Applies to every site in this profile."),
+                note: "Every site in this profile."),
             Row(id: .reader, title: "Reader Mode", glyph: "doc.plaintext",
                 control: .toggle(reader),
                 note: reader || readerAvailable ? nil : "This page has no article to read.",
@@ -399,7 +398,8 @@ extension SiteControlModel {
 
         // The blocker row is honest about its reach.
         out.append(("the ad blocker row admits it is not per site",
-                    m.rows.first { $0.id == .blocker }?.note?.contains("every site") == true))
+                    m.rows.first { $0.id == .blocker }?.note?.lowercased()
+                        .contains("every site in this profile") == true))
         out.append(("…and is never inert, because it does work",
                     m.rows.first { $0.id == .blocker }?.inert == false))
 
@@ -558,7 +558,9 @@ private struct SiteControlRow: View {
         case .toggle(let on):
             Toggle("", isOn: Binding(get: { on },
                                      set: { _ in SiteControl.act(row.id, on: tab, model: model) }))
-                .labelsHidden().controlSize(.mini).disabled(row.inert)
+                // A switch, not the checkbox a bare `Toggle` renders as in a popover: this
+                // is a setting that takes effect as it is flipped, not a box on a form.
+                .toggleStyle(.switch).labelsHidden().controlSize(.mini).disabled(row.inert)
                 .accessibilityHidden(true)          // the row already reads as a button
         case .permission(let answer):
             Picker("", selection: Binding(
