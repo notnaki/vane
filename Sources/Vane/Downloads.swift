@@ -971,7 +971,7 @@ import WebKit
 
     /// Where this profile files its downloads. A stored folder that has since been deleted
     /// or renamed is not an error the user should meet as a failed download.
-    static func directory(for id: UUID, defaults: UserDefaults = .standard,
+    static func directory(for id: UUID, defaults: UserDefaults = .vane,
                           fm: FileManager = .default) -> URL {
         guard let path = defaults.string(forKey: directoryKey(id)), !path.isEmpty else {
             return systemDownloads
@@ -984,16 +984,16 @@ import WebKit
     }
 
     /// Nil resets to the system folder rather than storing an empty path.
-    static func setDirectory(_ url: URL?, for id: UUID, defaults: UserDefaults = .standard) {
+    static func setDirectory(_ url: URL?, for id: UUID, defaults: UserDefaults = .vane) {
         guard let url else { return defaults.removeObject(forKey: directoryKey(id)) }
         defaults.set(url.path, forKey: directoryKey(id))
     }
 
-    static func askEveryTime(for id: UUID, defaults: UserDefaults = .standard) -> Bool {
+    static func askEveryTime(for id: UUID, defaults: UserDefaults = .vane) -> Bool {
         defaults.bool(forKey: askKey(id))
     }
 
-    static func setAskEveryTime(_ on: Bool, for id: UUID, defaults: UserDefaults = .standard) {
+    static func setAskEveryTime(_ on: Bool, for id: UUID, defaults: UserDefaults = .vane) {
         defaults.set(on, forKey: askKey(id))
     }
 

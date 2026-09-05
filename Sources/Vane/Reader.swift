@@ -35,17 +35,17 @@ import WebKit
     /// is the only knob still reachable once the original DOM is gone.
     static var fontSize: Int {
         get {
-            let v = UserDefaults.standard.integer(forKey: "readerFontSize")
+            let v = UserDefaults.vane.integer(forKey: "readerFontSize")
             return v == 0 ? 19 : clampSize(v)
         }
-        set { UserDefaults.standard.set(clampSize(newValue), forKey: "readerFontSize") }
+        set { UserDefaults.vane.set(clampSize(newValue), forKey: "readerFontSize") }
     }
 
     /// Serif by default — this is a reading view, and the point of it is to not look like a
     /// web page.
     static var serif: Bool {
-        get { UserDefaults.standard.object(forKey: "readerSerif") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "readerSerif") }
+        get { UserDefaults.vane.object(forKey: "readerSerif") as? Bool ?? true }
+        set { UserDefaults.vane.set(newValue, forKey: "readerSerif") }
     }
 
     static func clampSize(_ v: Int) -> Int { min(max(v, 13), 32) }
@@ -522,13 +522,13 @@ import WebKit
         let dataImg = render([Node(e: "img", a: ["src": "data:image/gif;base64,R0lGOD"])], base: base)
 
         // Preferences round-trip. Restored so `check()` leaves no footprint.
-        let (oldSize, oldSerif) = (UserDefaults.standard.object(forKey: "readerFontSize"),
-                                   UserDefaults.standard.object(forKey: "readerSerif"))
+        let (oldSize, oldSerif) = (UserDefaults.vane.object(forKey: "readerFontSize"),
+                                   UserDefaults.vane.object(forKey: "readerSerif"))
         defer {
-            UserDefaults.standard.set(oldSize, forKey: "readerFontSize")
-            UserDefaults.standard.set(oldSerif, forKey: "readerSerif")
+            UserDefaults.vane.set(oldSize, forKey: "readerFontSize")
+            UserDefaults.vane.set(oldSerif, forKey: "readerSerif")
         }
-        UserDefaults.standard.removeObject(forKey: "readerFontSize")
+        UserDefaults.vane.removeObject(forKey: "readerFontSize")
         let defaultSize = fontSize
         fontSize = 24
         let roundTrippedSize = fontSize

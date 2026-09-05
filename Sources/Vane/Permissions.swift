@@ -11,7 +11,7 @@ import WebKit
 @MainActor enum SitePermissions {
 
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
-    private static var defaults: UserDefaults = .standard
+    private static var defaults: UserDefaults = .vane
 
     /// nonisolated so `parse` can be, and `parse` is nonisolated so the key format can be
     /// asserted anywhere. An immutable string is safe from any thread.

@@ -8,15 +8,15 @@ import SwiftUI
     /// Empty means "whatever the current search engine's front page is", so switching
     /// engines moves the homepage with it until the user pins one down.
     static var homepage: URL {
-        let stored = UserDefaults.standard.string(forKey: "homepage") ?? ""
+        let stored = UserDefaults.vane.string(forKey: "homepage") ?? ""
         return Search.url(for: stored) ?? Search.current.home ?? Search.defaultEngine.home!
     }
 
     /// Off is a real preference (a fresh window every launch), so it persists; on is the
     /// behaviour main.swift already had.
     static var restoreSession: Bool {
-        get { UserDefaults.standard.object(forKey: "restoreSession") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "restoreSession") }
+        get { UserDefaults.vane.object(forKey: "restoreSession") as? Bool ?? true }
+        set { UserDefaults.vane.set(newValue, forKey: "restoreSession") }
     }
 
     /// Settings › Links. Little Arc is Arc's default and Vane's: a link from Mail or Slack
@@ -24,7 +24,7 @@ import SwiftUI
     /// rather than a Bool so the Picker in `LinksPane` has something to tag its rows with,
     /// and so a third target (Arc's "Most Recent Space") can be added without a migration.
     static var openLinksInLittleArc: Bool {
-        UserDefaults.standard.string(forKey: LinkTarget.key) != LinkTarget.currentSpace
+        UserDefaults.vane.string(forKey: LinkTarget.key) != LinkTarget.currentSpace
     }
 
     /// Settings › Links, and on the way Arc has it: a link out of a Favourite or a Pinned
@@ -80,7 +80,11 @@ enum LinkTarget {
         // Before the hosting view: the pane retitles the window as it appears, and it can
         // only do that once `window` is the one it is inside.
         window = w
-        w.contentView = NSHostingView(rootView: SettingsView(selection: selection))
+        // Every `@AppStorage` in this file binds to `UserDefaults.standard` unless told
+        // otherwise, which would leave a test instance's Settings toggles in the user's own
+        // preferences. `UserDefaults.vane` *is* `.standard` in normal use; see Store.swift.
+        w.contentView = NSHostingView(rootView: SettingsView(selection: selection)
+            .defaultAppStorage(.vane))
         // Position first, autosave second: setFrameUsingName reports whether there was one.
         if !w.setFrameUsingName("VaneSettings") { w.center() }
         w.setFrameAutosaveName("VaneSettings")
@@ -583,10 +587,17 @@ private struct ProfilesPane: View {
             ForEach(spaces) { space in
                 SettingsRow(space.name) {
                     Button {
-                        manager.deleteSpace(space.id, in: profile.id)
+                        // The sidebar's own Delete Space, minus the alert: the pages go to
+                        // the Archive and the folder shape is forgotten. This used to call
+                        // `deleteSpace` bare, which dropped both.
+                        Spaces.delete(space.id, in: profile.id)
                         reload(); rebuild()
                     } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
+                        // Arc greys "Delete Space" out on the last one: a profile always has
+                        // a Space, because every tab in a browser window lives in one. The
+                        // sidebar's own Delete Space is disabled on the same rule.
+                        .disabled(spaces.count < 2)
                         .accessibilityLabel("Delete the space \(space.name)")
                 }
             }

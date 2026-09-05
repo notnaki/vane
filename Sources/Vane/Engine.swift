@@ -742,24 +742,23 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // handed to a window that is in a Space opens *in* that Space rather than replacing
         // it, which is what "new windows open in the current space" means.
         let urls = space.map { s in s.tabURLs + urls.filter { !s.tabURLs.contains($0) } } ?? urls
-        // What stays belongs to the profile, not to a window, so only the first window of
-        // that profile gets it back — and the session's copy of those same urls is dropped
-        // so they don't come up twice.
-        // A Little Arc does not count: it is not a window the profile's pinned rows belong
-        // to, and letting it be "the first one" would cost the next real window its rows.
-        let firstOfProfile = TabStore.all
-            .filter { $0.profileID == profileID && !$0.isPrivate && !$0.isLittle }.count == 1
-        let mine = !isPrivate && !isLittle && firstOfProfile
         // Favourites are the one thing every Space shares, so they come from the profile
         // whether this window is in a Space or not. `Spaces.favourites` also folds any
         // per-space grid an older spaces.json still carries into that one list.
         // A Little Arc has no sidebar to put either section in, and nothing it does may
         // move the profile's grid — so it starts with the one page it was handed.
         let favourites = isPrivate || isLittle ? [] : Spaces.favourites(for: profileID)
-        let pinned = isLittle ? []
-            : (space?.pinnedTabURLs ?? (mine ? TabStore.stayingURLs(.pinned, for: profileID) : []))
+        // Pinned rows belong to the Space, full stop: a browser window always has one, and a
+        // Little Arc or a private window has neither a Space nor rows to restore.
+        let pinned = space?.pinnedTabURLs ?? []
         // A space carries its own per-tab state in a sidecar; a window restore is handed one.
-        let parked = space.map { Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory) } ?? parked
+        // Merged rather than swapped, the sidecar winning: on the launch that migrates a
+        // profile into its first Space there is no sidecar yet, and the session's own titles
+        // and scroll offsets are all there is.
+        let parked = space.map {
+            Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory)
+                .merging(parked) { sidecar, _ in sidecar }
+        } ?? parked
         restore(favourites, as: .favourite, parked: parked)
         // The Pinned section is not a list any more but a shape — folders and the tabs in
         // them — so its tabs come up in the order the folders draw them.
@@ -784,9 +783,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         ProfileManager.defaultsKey("lastSpace", profileID)
     }
 
+    /// Just the id, for a caller that already has the profile's Spaces in hand —
+    /// `Spaces.resolve`, which would otherwise re-read spaces.json to hand one straight back.
+    nonisolated static func lastSpaceID(for profileID: UUID,
+                                        defaults: UserDefaults = .vane) -> UUID? {
+        defaults.string(forKey: lastSpaceKey(profileID)).flatMap(UUID.init(uuidString:))
+    }
+
     static func lastSpace(for profileID: UUID) -> Space? {
-        guard let raw = UserDefaults.standard.string(forKey: lastSpaceKey(profileID)),
-              let id = UUID(uuidString: raw) else { return nil }
+        guard let id = lastSpaceID(for: profileID) else { return nil }
         return ProfileManager.shared.spaces(for: profileID).first { $0.id == id }
     }
 
@@ -796,9 +801,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         guard !isPrivate, !isLittle else { return }
         let key = TabStore.lastSpaceKey(profileID)
         if let id = currentSpaceID {
-            UserDefaults.standard.set(id.uuidString, forKey: key)
+            UserDefaults.vane.set(id.uuidString, forKey: key)
         } else {
-            UserDefaults.standard.removeObject(forKey: key)
+            UserDefaults.vane.removeObject(forKey: key)
         }
     }
 
@@ -1069,21 +1074,22 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         }
     }
 
-    /// ponytail: the two staying sections' urls in UserDefaults, deliberately not in
-    /// session.json — the session is per-window and is rewritten by whichever window closed
-    /// last, while favourites and pinned tabs have to outlive all of them. Ceiling: one set
-    /// per profile, so favouriting in two windows at once means last writer wins.
+    /// Where the Favourites grid is written: UserDefaults, deliberately not session.json —
+    /// the session is per-window and is rewritten by whichever window closed last, while
+    /// the grid has to outlive all of them. Ceiling: one grid per profile, so favouriting
+    /// in two windows at once means last writer wins.
     ///
     /// The default profile keeps the un-suffixed `pinnedTabs` key for its *favourites*: that
     /// key predates the split between Favourites and Pinned, and pointing it anywhere else
     /// would drop every existing user's grid on the floor for the sake of a tidier name.
+    ///
+    /// `.pinned` names the old `pinnedRows` key, which nothing writes any more: Pinned rows
+    /// belong to a Space, and every browser window is in one. `ProfileManager.ensureSpaces`
+    /// is the last reader — it migrates that key into the profile's first Space and deletes
+    /// it. ponytail: the key name stays here rather than moving, so there is one place that
+    /// says what a profile's defaults are called.
     static func defaultsKey(_ kind: TabKind, _ profileID: UUID) -> String {
         ProfileManager.defaultsKey(kind == .favourite ? "pinnedTabs" : "pinnedRows", profileID)
-    }
-
-    static func stayingURLs(_ kind: TabKind, for profileID: UUID) -> [URL] {
-        (UserDefaults.standard.stringArray(forKey: defaultsKey(kind, profileID)) ?? [])
-            .compactMap(URL.init(string:))
     }
 
     /// What is written down for a favourite or a pinned tab: the page it is on. Only web
@@ -1109,16 +1115,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         }
         let favourites = urls(.favourite), pinned = urls(.pinned)
         // Arc: the only thing Spaces share is Favourites. The grid belongs to the profile and
-        // is written there from every window; the Pinned rows belong to whichever Space this
-        // window is showing, and only fall back to the profile outside one.
-        UserDefaults.standard.set(favourites, forKey: TabStore.defaultsKey(.favourite, profileID))
-        if let id = currentSpaceID, var space = spaces.first(where: { $0.id == id }) {
-            space.pinnedURLs = []          // migrated out; see Spaces.favourites
-            space.pinnedTabURLs = pinned.compactMap(URL.init(string:))
-            ProfileManager.shared.updateSpace(space)
-            return
-        }
-        UserDefaults.standard.set(pinned, forKey: TabStore.defaultsKey(.pinned, profileID))
+        // is written there from every window; the Pinned rows belong to the Space this window
+        // is showing — and it is always showing one, so there is no profile-level fallback.
+        UserDefaults.vane.set(favourites, forKey: TabStore.defaultsKey(.favourite, profileID))
+        guard let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
+        else { return }
+        space.pinnedURLs = []          // migrated out; see Spaces.favourites
+        space.pinnedTabURLs = pinned.compactMap(URL.init(string:))
+        ProfileManager.shared.updateSpace(space)
     }
 
     // MARK: Spaces
@@ -1198,7 +1202,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         space.pinnedTabURLs = urls { $0.kind == .pinned }
         saveShape()                        // and the folders those urls are arranged in
         ProfileManager.shared.updateSpace(space)
-        UserDefaults.standard.set(urls { $0.kind == .favourite }.map(\.absoluteString),
+        UserDefaults.vane.set(urls { $0.kind == .favourite }.map(\.absoluteString),
                                   forKey: TabStore.defaultsKey(.favourite, profileID))
         // Scroll position and back/forward list, in a sidecar — `Space` is another file's
         // Codable struct and is not mine to widen. Keyed by url, which is what
@@ -1227,7 +1231,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // empty window claiming to be in a Space. Every route into here is shared with the
         // browser window (the palette's Space rows, ⌃1–9, ⌥⌘←/→, the Spaces menu), so the
         // refusal belongs here rather than at each of them.
-        guard !isLittle, space.profileID == profileID, space.id != currentSpaceID else { return }
+        // A private window is spaceless the way Arc's incognito is: letting one switch would
+        // put a Space's tabs in a window that writes nothing back, and claim in the footer
+        // to be showing a Space it can never save.
+        guard !isLittle, !isPrivate, space.profileID == profileID,
+              space.id != currentSpaceID else { return }
         saveCurrentSpace()
         // Which way the strip slides. Set before the switch so the sidebar's transition and
         // the tint cross-fade are already pointing the right way when the list changes.
@@ -1249,6 +1257,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         if space.tabURLs.isEmpty { openPalette(.newTab) }
         rememberSpace()
         extensions.sync()
+    }
+
+    /// A Space deleted from another window, from Settings or from the Library leaves this
+    /// window pointing at one that is not on disk. An ordinary window always shows a Space,
+    /// so it falls into a survivor rather than drawing a sidebar with no heading and a
+    /// Pinned section it can never save. The tabs it was showing went to the Archive with
+    /// the Space, which is where `switchTo` emptying the strip leaves the user looking.
+    func resolveStaleSpace() {
+        guard !isPrivate, !isLittle, currentSpace == nil, let first = spaces.first else { return }
+        switchTo(space: first)
     }
 
     /// ⌥⌘→ / ⌥⌘←: the next or previous space in this profile's list, wrapping round. A
@@ -1278,9 +1296,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         switchTo(space: space)
     }
 
-    /// Create a space in this window's profile and move this window into it, carrying the
-    /// tabs that are already open — which is what "new space" means from a window's point of
-    /// view. Returns nil for a private window, which has no profile storage to write to.
+    /// Create a space in this window's profile and move this window into it, leaving the
+    /// tabs that are already open behind in the Space they belong to — Arc's new Space is
+    /// empty. Returns nil for a private window, which has no profile storage to write to.
     /// `name` defaults to Arc's placeholder because Arc's `+` does not ask: the Space appears
     /// straight away and the name field is already focused inside it. See `NewSpaceButton`.
     @discardableResult
@@ -1291,17 +1309,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         saveCurrentSpace()
         let space = ProfileManager.shared.createSpace(name: name, in: profileID)
         spaceDirection = 1                 // a new Space is always the last one
-        if currentSpaceID != nil {
-            // Arc's new Space is *empty*. Switching into it is what empties the strip; moving
-            // `currentSpaceID` by hand would have written this window's open tabs into the new
-            // Space as well as leaving them in the old one, so they showed up in both.
-            switchTo(space: space)
-        } else {
-            // Outside any Space there is nothing to switch away from, and what is already open
-            // is what the first Space is made of.
-            currentSpaceID = space.id
-            saveCurrentSpace()
-        }
+        // Switching into it is what empties the strip; moving `currentSpaceID` by hand would
+        // have written this window's open tabs into the new Space as well as leaving them in
+        // the old one, so they showed up in both. There is no second branch for a window
+        // outside every Space any more — an ordinary window is always in one.
+        switchTo(space: space)
         palette = nil                      // the editor is the thing to look at, not the bar
         rememberSpace()
         editingSpace = space.id            // opens the inline name/icon/colour editor

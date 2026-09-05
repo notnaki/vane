@@ -20,6 +20,78 @@ enum Spaces {
         "airplane", "car", "cup.and.saucer", "sparkles", "moon", "sun.max",
     ]
 
+    // MARK: - Every tab lives in a Space
+
+    /// Arc's rule, and the one this half of the file exists for: a browser window always
+    /// shows a Space, so a profile always has one to show. Vane used to let both be nil —
+    /// a window opened with no Space kept its pinned rows in a profile-level `pinnedRows`
+    /// key and its Today tabs in the session file, which is a second, invisible Space that
+    /// nothing could name, switch to or move a tab out of.
+    ///
+    /// This is the Space such a profile is folded into, once. Named after the profile (the
+    /// default profile is already called "Personal", which is Arc's name for the first
+    /// Space) and wearing its colour, so the migration is invisible rather than a Space
+    /// called "New Space" appearing out of nowhere.
+    ///
+    /// Pure, because it is the one function that can lose somebody's pinned tabs: `pinned`
+    /// is what the old profile-level key held and `today` is what the session file held,
+    /// and everything web-shaped in either has to come out the other side exactly once.
+    static func firstSpace(id: UUID = UUID(), profileID: UUID, name: String, colorHex: String?,
+                           pinned: [URL], today: [URL]) -> Space {
+        func web(_ list: [URL], skipping seen: inout Set<String>) -> [URL] {
+            list.filter { $0.scheme?.hasPrefix("http") == true && seen.insert($0.absoluteString).inserted }
+        }
+        var seen = Set<String>()
+        // Pinned first, so a url that was both a pinned row and an open tab stays pinned:
+        // the tab it also was comes back as that pinned row.
+        let rows = web(pinned, skipping: &seen)
+        let tabs = web(today, skipping: &seen)
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return Space(id: id, name: trimmed.isEmpty ? "Personal" : trimmed, profileID: profileID,
+                     tabURLs: tabs, pinnedURLs: [], pinnedTabURLs: rows,
+                     colorHex: colorHex, icon: "cloud")
+    }
+
+    /// Rows that were stranded at profile level, appended to a Space's Pinned section: web
+    /// pages only, never a second copy of one already there, and the Space's own order kept
+    /// in front. Pure — this is the other function that can silently lose somebody's pinned
+    /// tabs.
+    static func mergedPins(_ existing: [URL], _ stranded: [URL]) -> [URL] {
+        var seen = Set(existing.map(\.absoluteString))
+        return existing + stranded.filter {
+            $0.scheme?.hasPrefix("http") == true && seen.insert($0.absoluteString).inserted
+        }
+    }
+
+    /// Which Space an ordinary window opens in: the one it was asked for, else the profile's
+    /// last-used one, else its first. Nil only for a profile with no Spaces at all, which
+    /// `ProfileManager.ensureSpaces` is what makes impossible.
+    ///
+    /// A Space that is not in `all` is not a Space this profile can show — it was deleted,
+    /// or belongs to somebody else — so the request is answered with a real one rather than
+    /// with a window pointing at a Space that is not on disk.
+    ///
+    /// Pure so the rule can be proved without a window server; `resolve` is the one line of
+    /// I/O around it.
+    static func pick(asked: Space?, last: UUID?, from all: [Space]) -> Space? {
+        if let asked, all.contains(where: { $0.id == asked.id }) { return asked }
+        return all.first { $0.id == last } ?? all.first
+    }
+
+    /// `pick`, against the profile's real Spaces — creating and migrating its first one if
+    /// it has none. Private windows never come through here: Arc's incognito has no Spaces
+    /// either, and a window that writes nothing down must not create a Space as a side
+    /// effect of being opened.
+    ///
+    /// Deliberately no session tabs: opening a window is not restoring a session, and
+    /// folding session.json in here would resurrect the pages a user refused with "Start
+    /// Fresh" — permanently, because the Space is then what holds them. `Session.restore` is
+    /// the one caller that passes them.
+    @MainActor static func resolve(_ asked: Space?, for profile: Profile) -> Space? {
+        let all = ProfileManager.shared.ensureSpaces(for: profile)
+        return pick(asked: asked, last: TabStore.lastSpaceID(for: profile.id), from: all)
+    }
+
     // MARK: - Favourites are global
 
     /// Arc caps the grid at twelve tiles.
@@ -48,14 +120,14 @@ enum Spaces {
     /// nothing left to merge.
     @MainActor static func favourites(for profileID: UUID) -> [URL] {
         let key = TabStore.defaultsKey(.favourite, profileID)
-        let existing = (UserDefaults.standard.stringArray(forKey: key) ?? [])
+        let existing = (UserDefaults.vane.stringArray(forKey: key) ?? [])
             .compactMap(URL.init(string:))
         let spaces = ProfileManager.shared.spaces(for: profileID)
         guard spaces.contains(where: { !$0.pinnedURLs.isEmpty }) else {
             return Array(existing.prefix(favouritesCap))
         }
         let merged = mergedFavourites(existing: existing, perSpace: spaces.map(\.pinnedURLs))
-        UserDefaults.standard.set(merged.map(\.absoluteString), forKey: key)
+        UserDefaults.vane.set(merged.map(\.absoluteString), forKey: key)
         var cleared = spaces
         for i in cleared.indices { cleared[i].pinnedURLs = [] }
         ProfileManager.shared.saveSpaces(cleared, for: profileID)
@@ -79,7 +151,10 @@ enum Spaces {
     /// for. Ceiling: the moved tab loses its scroll position and back/forward list.
     @MainActor static func move(_ id: Tab.ID, to spaceID: UUID, as kind: TabKind,
                                 from store: TabStore) {
-        guard let tab = store.tabs.first(where: { $0.id == id }),
+        // A private window has no Space and writes nothing down; moving one of its tabs into
+        // a Space would put a page the user asked not to be remembered into spaces.json.
+        guard !store.isPrivate,
+              let tab = store.tabs.first(where: { $0.id == id }),
               let url = tab.currentURL, url.scheme?.hasPrefix("http") == true,
               var space = store.spaces.first(where: { $0.id == spaceID }),
               space.id != store.currentSpaceID
@@ -116,6 +191,26 @@ enum Spaces {
     }
 
     // MARK: - Deleting
+
+    /// Deleting a Space, everything except the asking: its pages to the Archive, the folder
+    /// shape forgotten, the Space gone. One function so the sidebar's "Delete Space" and
+    /// Settings' minus button cannot disagree about what deleting means — Settings used to
+    /// drop the pages and leave the folders behind.
+    ///
+    /// Refused on a profile's last Space, which is the model's half of Arc greying the item
+    /// out: a profile with no Space is the state this file exists to prevent. Returns
+    /// whether it happened, so the caller knows whether to switch the window somewhere.
+    @discardableResult
+    @MainActor static func delete(_ id: UUID, in profileID: UUID) -> Bool {
+        let all = ProfileManager.shared.spaces(for: profileID)
+        // Read the Space back rather than trusting the caller's copy: what is on disk is
+        // what is about to be deleted, and it is newer than the copy a menu was built from.
+        guard all.count > 1, let space = all.first(where: { $0.id == id }) else { return false }
+        archiveContents(of: space)
+        ProfileManager.shared.deleteSpace(id, in: profileID)
+        TabStore.forgetShape(space: id, profileID: profileID)
+        return true
+    }
 
     /// Arc puts a deleted Space's tabs in the Archive rather than dropping them: the Space is
     /// gone, the pages are still findable in the Library.
@@ -164,6 +259,64 @@ enum Spaces {
         var out: [(String, Bool)] = []
         func assert(_ name: String, _ ok: Bool) { out.append((name, ok)) }
         func u(_ s: String) -> URL { URL(string: "https://example.com/\(s)")! }
+
+        // Every tab lives in a Space: the Space a spaceless profile is folded into.
+        let pid = UUID()
+        let first = firstSpace(profileID: pid, name: "Personal", colorHex: "#6E7DD2",
+                               pinned: [u("p1"), u("p2")], today: [u("t1"), u("t2")])
+        assert("a migrated profile's first space is named after the profile",
+               first.name == "Personal" && first.profileID == pid)
+        assert("it wears the profile's colour and Arc's default icon",
+               first.colorHex == "#6E7DD2" && first.icon == "cloud")
+        assert("the profile-level pinned rows become the space's Pinned section",
+               first.pinnedTabURLs?.map(\.lastPathComponent) == ["p1", "p2"])
+        assert("the spaceless session tabs become the space's Today tabs",
+               first.tabURLs.map(\.lastPathComponent) == ["t1", "t2"])
+        assert("favourites are not migrated in — they are the profile's, in every space",
+               first.pinnedURLs.isEmpty)
+        assert("a url that was both pinned and open stays pinned, and is not also a tab",
+               firstSpace(profileID: pid, name: "P", colorHex: nil,
+                          pinned: [u("a")], today: [u("a"), u("b")]).tabURLs
+                   .map(\.lastPathComponent) == ["b"])
+        assert("the same page twice in the session comes back once",
+               firstSpace(profileID: pid, name: "P", colorHex: nil,
+                          pinned: [], today: [u("a"), u("a")]).tabURLs.count == 1)
+        assert("a blank or non-web tab is not a page to migrate",
+               firstSpace(profileID: pid, name: "P", colorHex: nil, pinned: [],
+                          today: [URL(string: "about:blank")!, u("a")]).tabURLs.count == 1)
+        assert("a profile with nothing to migrate still gets its space",
+               firstSpace(profileID: pid, name: "Work", colorHex: nil, pinned: [], today: [])
+                   .name == "Work")
+        assert("a profile whose name is blank falls back to Arc's \u{201C}Personal\u{201D}",
+               firstSpace(profileID: pid, name: "  ", colorHex: nil, pinned: [], today: []).name
+                   == "Personal")
+
+        // …and which Space an ordinary window resolves to.
+        let a = Space(name: "A", profileID: pid), b = Space(name: "B", profileID: pid)
+        assert("a window asked for a space opens in it",
+               pick(asked: b, last: a.id, from: [a, b])?.id == b.id)
+        assert("a window asked for none opens in the profile's last-used space",
+               pick(asked: nil, last: b.id, from: [a, b])?.id == b.id)
+        assert("with no last-used space it opens in the first",
+               pick(asked: nil, last: nil, from: [a, b])?.id == a.id)
+        assert("a last-used space that has since been deleted falls back to the first",
+               pick(asked: nil, last: UUID(), from: [a, b])?.id == a.id)
+        assert("only a profile with no spaces at all resolves to nothing",
+               pick(asked: nil, last: nil, from: []) == nil)
+        assert("a space that is not this profile's is not opened just because it was asked for",
+               pick(asked: Space(name: "Gone", profileID: pid), last: b.id, from: [a, b])?.id == b.id)
+
+        // Pinned rows stranded at profile level, merged into a Space that already exists.
+        assert("stranded rows go after the space's own, in their own order",
+               mergedPins([u("a")], [u("b"), u("c")]).map(\.lastPathComponent) == ["a", "b", "c"])
+        assert("a stranded row the space already pins is not pinned twice",
+               mergedPins([u("a"), u("b")], [u("b")]).map(\.lastPathComponent) == ["a", "b"])
+        assert("the same stranded row listed twice lands once",
+               mergedPins([], [u("a"), u("a")]).count == 1)
+        assert("a blank or non-web stranded row is not a page to pin",
+               mergedPins([], [URL(string: "about:blank")!, u("a")]).map(\.lastPathComponent) == ["a"])
+        assert("nothing stranded leaves the space's rows exactly as they are",
+               mergedPins([u("a"), u("b")], []).map(\.lastPathComponent) == ["a", "b"])
 
         // Favourites migration: the union, in space order, deduped, capped.
         assert("the profile's own favourites come first",

@@ -160,10 +160,11 @@ extension VaneWindow {
         let profile = profile ?? space.flatMap { s in
             ProfileManager.shared.profiles.first { $0.id == s.profileID }
         } ?? ProfileManager.shared.active
-        // Arc opens a new window in the Space you are looking at, and comes back up after a
-        // relaunch in the Space you left. A session file holds tabs, not Spaces, so the
-        // profile's last Space is what says which one that was.
-        let space = space ?? (isPrivate ? nil : TabStore.lastSpace(for: profile.id))
+        // Arc's rule: every tab in a browser window lives in a Space, so an ordinary window
+        // always resolves to one — the Space it was asked for, else the profile's last-used
+        // one, else its first, and the profile is given a first one if it has none. A
+        // private window is Arc's incognito: no Space, nothing written down.
+        let space = isPrivate ? nil : Spaces.resolve(space, for: profile)
         let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space,
                              parked: parked)
         let window = VaneWindow(
@@ -213,6 +214,10 @@ extension VaneWindow {
         } else if name.isEmpty || !window.setFrameUsingName(name) {
             window.center()
         }
+        // ponytail: AppKit writes this frame into its own defaults domain, not
+        // `UserDefaults.vane`, so a `VANE_DATA_DIR` instance still inherits the real app's
+        // window size. Cosmetic, and the upgrade path is saving the frame ourselves — a
+        // whole second frame-restoration path for a window that opens in the right place.
         window.setFrameAutosaveName(name)
 
         let delegate = WindowDelegate(store)
@@ -286,16 +291,23 @@ extension VaneWindow {
         /// Each window's split views, as the urls of their panes. Optional, so a v2 file —
         /// written before splits existed — still decodes into a session with none.
         var splits: [[Split.Saved]]?
+        /// Which Space each window was showing, aligned index-for-index with `windows`.
+        /// Optional so a session written before this existed still decodes, and `""` for a
+        /// window that was in none — which only a pre-migration file can contain.
+        var spaces: [String]?
     }
 
-    /// v3 adds the splits. v2 is a dictionary so it is self-describing; v1 was a bare
-    /// `[[String]]` of urls and is still read, because a session written by the previous
-    /// build has to come back — just without the extra fidelity.
+    /// v3 adds the splits and the per-window Space. v2 is a dictionary so it is
+    /// self-describing; v1 was a bare `[[String]]` of urls and is still read, because a
+    /// session written by the previous build has to come back — just without the extra
+    /// fidelity.
     /// ponytail: no writer for v1 or v2. Downgrading loses the session once, and a browser
     /// that can be downgraded mid-session is not a thing anyone does twice.
-    static func encode(_ windows: [[Entry]], splits: [[Split.Saved]] = []) -> Data? {
+    static func encode(_ windows: [[Entry]], splits: [[Split.Saved]] = [],
+                       spaces: [String] = []) -> Data? {
         try? JSONEncoder().encode(Disk(version: 3, windows: windows,
-                                       splits: splits.contains { !$0.isEmpty } ? splits : nil))
+                                       splits: splits.contains { !$0.isEmpty } ? splits : nil,
+                                       spaces: spaces.isEmpty ? nil : spaces))
     }
 
     static func decode(_ data: Data) -> [[Entry]] { disk(data).windows }
@@ -304,12 +316,35 @@ extension VaneWindow {
     /// predates them.
     static func decodeSplits(_ data: Data) -> [[Split.Saved]] { disk(data).splits ?? [] }
 
-    private static func disk(_ data: Data) -> (windows: [[Entry]], splits: [[Split.Saved]]?) {
+    /// The Space each of `decode`'s windows was in, padded to the same length so the two
+    /// lists can be zipped whatever wrote the file.
+    static func decodeSpaces(_ data: Data) -> [UUID?] {
+        let d = disk(data)
+        let ids = d.spaces ?? []
+        return d.windows.indices.map { i in
+            ids.indices.contains(i) ? UUID(uuidString: ids[i]) : nil
+        }
+    }
+
+    private static func disk(_ data: Data)
+        -> (windows: [[Entry]], splits: [[Split.Saved]]?, spaces: [String]?) {
         if let disk = try? JSONDecoder().decode(Disk.self, from: data) {
-            return (disk.windows, disk.splits)
+            return (disk.windows, disk.splits, disk.spaces)
         }
         let legacy = (try? JSONSerialization.jsonObject(with: data)) as? [[String]] ?? []
-        return (legacy.map { $0.map { Entry(url: $0) } }, nil)
+        return (legacy.map { $0.map { Entry(url: $0) } }, nil, nil)
+    }
+
+    /// Every page the session file holds for a profile, in window order and deduped. What
+    /// the one-off migration folds into the profile's first Space: before the Space existed
+    /// these tabs were the whole of "the window's tabs", written nowhere else.
+    static func urls(for profileID: UUID, in dir: URL = Store.directory) -> [URL] {
+        guard let data = try? Data(contentsOf: ProfileManager.sessionURL(for: profileID, in: dir))
+        else { return [] }
+        var seen = Set<String>()
+        return decode(data).flatMap { $0 }
+            .compactMap { URL(string: $0.url) }
+            .filter { seen.insert($0.absoluteString).inserted }
     }
 
     /// url → what we knew about it, for `TabStore.init`. Entries with neither a title nor a
@@ -330,7 +365,7 @@ extension VaneWindow {
     /// closed keeps the session it already had — only profiles with a live window are
     /// rewritten, so quitting from profile B does not erase profile A's session.
     static func save() {
-        var byProfile: [UUID: [(entries: [Entry], splits: [Split.Saved])]] = [:]
+        var byProfile: [UUID: [(entries: [Entry], splits: [Split.Saved], space: String)]] = [:]
         // Nothing private is written down, and neither is a Little Arc: it is a link
         // someone followed once, not a window to come back up in.
         for store in TabStore.all where !store.isPrivate && !store.isLittle {
@@ -344,13 +379,15 @@ extension VaneWindow {
                 return Entry(url: u.absoluteString, title: snap.title,
                              state: snap.state?.base64EncodedString())
             }
-            byProfile[store.profileID, default: []].append((entries, store.savedSplits))
+            byProfile[store.profileID, default: []]
+                .append((entries, store.savedSplits, store.currentSpaceID?.uuidString ?? ""))
         }
         for (profileID, windows) in byProfile {
-            // Windows are dropped in pairs, so a window's splits never end up filed under
-            // the next window's tabs.
+            // Windows are dropped as whole rows, so a window's splits and its Space never
+            // end up filed under the next window's tabs.
             let kept = windows.filter { !$0.entries.isEmpty }
-            guard let data = encode(kept.map(\.entries), splits: kept.map(\.splits))
+            guard let data = encode(kept.map(\.entries), splits: kept.map(\.splits),
+                                    spaces: kept.map(\.space))
             else { continue }
             try? data.write(to: file(profileID))
         }
@@ -362,11 +399,23 @@ extension VaneWindow {
         let profile = profile ?? ProfileManager.shared.active
         guard let data = try? Data(contentsOf: file(profile.id)) else { return false }
         let saved = decodeSplits(data)
+        // Each window comes back into the Space it was in. `Windows.open` resolves the rest:
+        // a window whose Space is gone — or a session written before Spaces were per-window —
+        // lands in the profile's last-used one.
+        // The one place session urls may be migrated into a Space: this is the session being
+        // restored, so folding a pre-Spaces file's tabs in is right. `Spaces.resolve` — every
+        // other way a window opens — passes none, or "Start Fresh" would put back exactly the
+        // pages it was told not to.
+        let spaces = ProfileManager.shared.ensureSpaces(
+            for: profile, sessionTabs: urls(for: profile.id, in: Store.directory))
+        let inSpace = decodeSpaces(data)
         let windows = decode(data).enumerated().filter { !$0.element.isEmpty }
         guard !windows.isEmpty else { return false }
         for (i, entries) in windows {
             let store = Windows.open(urls: entries.compactMap { URL(string: $0.url) },
-                                     profile: profile, parked: parked(entries))
+                                     profile: profile,
+                                     space: spaces.first { $0.id == inSpace[i] },
+                                     parked: parked(entries))
             // After the window exists, because a split is named by its panes' urls and the
             // tabs that carry them are made by `TabStore.init`.
             store.applySplits(saved.indices.contains(i) ? saved[i] : [])

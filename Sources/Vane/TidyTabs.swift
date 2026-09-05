@@ -60,18 +60,18 @@ import Foundation
     /// in defaults should not be able to offer at every second tab or never offer at all.
     static var threshold: Int {
         get {
-            let v = UserDefaults.standard.object(forKey: "tidyTabsThreshold") as? Int ?? 6
+            let v = UserDefaults.vane.object(forKey: "tidyTabsThreshold") as? Int ?? 6
             return min(max(v, 2), 50)
         }
-        set { UserDefaults.standard.set(min(max(newValue, 2), 50), forKey: "tidyTabsThreshold") }
+        set { UserDefaults.vane.set(min(max(newValue, 2), 50), forKey: "tidyTabsThreshold") }
     }
 
     /// Defaults on. Unlike the AI features this one has no hardware or privacy story to gate
     /// on — the fallback works everywhere — and it never acts on its own: `shouldOffer` only
     /// says "there is something to offer", the user still has to say yes.
     static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: "tidyTabs") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "tidyTabs") }
+        get { UserDefaults.vane.object(forKey: "tidyTabs") as? Bool ?? true }
+        set { UserDefaults.vane.set(newValue, forKey: "tidyTabs") }
     }
 
     /// A name longer than this is not a group name, it is a sentence. Deliberately tighter
@@ -475,14 +475,14 @@ import Foundation
         assert("an empty window plans nothing", plan(candidates: []).isEmpty)
 
         // --- Threshold, including the exclusions ---
-        let stored = (UserDefaults.standard.object(forKey: "tidyTabs"),
-                      UserDefaults.standard.object(forKey: "tidyTabsThreshold"))
+        let stored = (UserDefaults.vane.object(forKey: "tidyTabs"),
+                      UserDefaults.vane.object(forKey: "tidyTabsThreshold"))
         defer {
-            UserDefaults.standard.set(stored.0, forKey: "tidyTabs")
-            UserDefaults.standard.set(stored.1, forKey: "tidyTabsThreshold")
+            UserDefaults.vane.set(stored.0, forKey: "tidyTabs")
+            UserDefaults.vane.set(stored.1, forKey: "tidyTabsThreshold")
         }
-        UserDefaults.standard.removeObject(forKey: "tidyTabs")
-        UserDefaults.standard.removeObject(forKey: "tidyTabsThreshold")
+        UserDefaults.vane.removeObject(forKey: "tidyTabs")
+        UserDefaults.vane.removeObject(forKey: "tidyTabsThreshold")
         assert("the threshold defaults to six", threshold == 6)
         assert("tidying is on by default", enabled)
         threshold = 9

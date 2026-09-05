@@ -19,7 +19,7 @@ import WebKit
 @MainActor enum HTTPSOnly {
 
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
-    static var defaults: UserDefaults = .standard
+    static var defaults: UserDefaults = .vane
 
     // MARK: - The preference
 

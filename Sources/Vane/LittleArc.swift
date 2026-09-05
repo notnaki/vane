@@ -239,13 +239,15 @@ import SwiftUI
 
     static func spaceMenu(_ store: TabStore) -> NSMenu {
         let menu = NSMenu()
-        let spaces = ProfileManager.shared.spaces(for: store.profileID)
+        // Spaces only. There is no "Open in Window" row any more: a browser window is always
+        // in a Space, so "put this in a window" and "put this in a Space" are the same
+        // question, and the answer this window is offering is which Space. `ensureSpaces`
+        // is what makes the list never empty.
+        let spaces = ProfileManager.shared.ensureSpaces(for: store.profile)
+        // The main window's Space is the default, and with no window open the one the
+        // profile was last left in — which is where a browser window would come up anyway.
         let showing = Windows.current(in: store.profileID)?.currentSpaceID
-        // A profile with no Spaces still has a window, and "put this in it" is still the
-        // thing the user is asking for.
-        if spaces.isEmpty {
-            menu.addItem(entry("Open in Window") { move(store, to: nil) })
-        }
+            ?? TabStore.lastSpaceID(for: store.profileID) ?? spaces[0].id
         for space in spaces {
             let row = entry(space.name) { move(store, to: space) }
             row.state = space.id == showing ? .on : .off

@@ -25,7 +25,7 @@ import Foundation
 @MainActor enum InstantLinks {
 
     /// Swapped out by `check()` so the assertions never touch the user's real preferences.
-    static var defaults = UserDefaults.standard
+    static var defaults = UserDefaults.vane
 
     /// ON by default, unlike remote suggestions. The gesture *is* the consent: a user who
     /// never presses Shift+Return never sends a byte, and a user who does has asked for

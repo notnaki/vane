@@ -25,7 +25,7 @@ import WebKit
     /// longer resolves — folder deleted, volume gone, or a pre-sandbox plain path that the
     /// sandbox will not grant — is dropped from the stored list rather than retried forever.
     @discardableResult
-    static func urls(_ key: String, in defaults: UserDefaults = .standard) -> [URL] {
+    static func urls(_ key: String, in defaults: UserDefaults = .vane) -> [URL] {
         let stored = raw(key, in: defaults)
         var kept: [Data] = []
         var out: [URL] = []
@@ -38,7 +38,7 @@ import WebKit
         return out
     }
 
-    static func paths(_ key: String, in defaults: UserDefaults = .standard) -> [String] {
+    static func paths(_ key: String, in defaults: UserDefaults = .vane) -> [String] {
         urls(key, in: defaults).map(\.path)
     }
 
@@ -46,7 +46,7 @@ import WebKit
     /// remembered — the honest answer to "can this be reopened next launch", and a caller
     /// must not write down a path it cannot reopen.
     @discardableResult
-    static func add(_ url: URL, to key: String, in defaults: UserDefaults = .standard) -> Bool {
+    static func add(_ url: URL, to key: String, in defaults: UserDefaults = .vane) -> Bool {
         guard let data = bookmark(url) else { return false }
         var all = raw(key, in: defaults)
         guard !all.contains(where: { same($0, url) }) else { return true }
@@ -56,7 +56,7 @@ import WebKit
         return true
     }
 
-    static func remove(path: String, from key: String, in defaults: UserDefaults = .standard) {
+    static func remove(path: String, from key: String, in defaults: UserDefaults = .vane) {
         let url = URL(fileURLWithPath: path)
         defaults.set(raw(key, in: defaults).filter { !same($0, url) }, forKey: key)
         accessing.remove(url.resolvingSymlinksInPath().path)
@@ -149,7 +149,7 @@ import WebKit
         guard let defaults = UserDefaults(suiteName: suite) else {
             return [("scratch defaults suite is available", false)]
         }
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.vane.removePersistentDomain(forName: suite) }
         let key = "folders"
 
         assert("a user-picked folder can be bookmarked", add(folder, to: key, in: defaults))
@@ -217,6 +217,11 @@ import WebKit
     /// *is* the legacy folder), when it has already run, or when there is nothing to copy.
     static func migrateIfNeeded(into container: URL) {
         let fm = FileManager.default
+        // A test instance is not an upgraded install. `VANE_DATA_DIR` exists so a debug
+        // build can run on data of its own; copying the user's real folder into it is
+        // exactly what it is there to prevent — and it is how two Spaces the user had named
+        // "asd" turned up in a data dir that had just been created empty.
+        guard Store.overrideDirectory == nil else { return }
         guard container.standardizedFileURL != legacy.standardizedFileURL else { return }
         let stamp = container.appendingPathComponent(".migrated-from-legacy")
         guard !fm.fileExists(atPath: stamp.path) else { return }
@@ -423,7 +428,7 @@ struct Space: Identifiable, Codable, Equatable {
             Passwords.deleteAll(profileID: id)
             for key in ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey,
                         HTTPSOnly.exceptionsKey] {
-                UserDefaults.standard.removeObject(forKey: Self.defaultsKey(key, id))
+                UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
             Self.eraseWebsiteData(for: id)
         }
@@ -553,10 +558,70 @@ struct Space: Identifiable, Codable, Equatable {
         return all.filter { $0.profileID == profileID }
     }
 
-    func saveSpaces(_ spaces: [Space], for profileID: UUID) {
+    /// Returns whether the list actually reached the disk. Almost every caller ignores it —
+    /// a failed write means the Space keeps the shape it had — but the migration below has
+    /// to know, because it deletes the only other copy of what it just wrote.
+    @discardableResult
+    func saveSpaces(_ spaces: [Space], for profileID: UUID) -> Bool {
         let owned = spaces.filter { $0.profileID == profileID }
-        guard let data = try? JSONEncoder().encode(owned) else { return }
-        try? data.write(to: Self.spacesURL(for: profileID, in: directory))
+        guard let data = try? JSONEncoder().encode(owned) else { return false }
+        do { try data.write(to: Self.spacesURL(for: profileID, in: directory)) } catch { return false }
+        return true
+    }
+
+    /// The profile's Spaces, guaranteed non-empty, with anything the profile was keeping
+    /// *outside* a Space folded in.
+    ///
+    /// In Arc a profile always has at least one Space and a browser window always shows it.
+    /// A profile that has none is either brand new or predates that rule, and in the second
+    /// case it has tabs to account for: the pinned rows Vane kept in a profile-level
+    /// defaults key, and the Today tabs the caller hands in from the session file.
+    ///
+    /// The key is the awkward half. It was written by *any* window whose `currentSpaceID`
+    /// was nil or stale, so a profile can have Spaces **and** a stranded set of rows — and
+    /// nothing reads that key any more, so leaving it there loses those tabs for good.
+    /// So the merge is unconditional: with Spaces already present the rows go into the
+    /// last-used one (else the first), never into a Space of their own.
+    ///
+    /// The key is only removed once the Spaces holding those rows are demonstrably on disk.
+    /// If the write failed there is nothing honest to hand back, so the profile's Spaces are
+    /// returned as they were and the key is left for the next launch to try again — one
+    /// launch in the old spaceless shape beats a silently emptied Pinned section.
+    ///
+    /// `sessionTabs` is *only* ever the session being restored. Every other caller passes
+    /// nothing: reading the session file here would fold the pages a user just refused
+    /// ("Start Fresh", or `restoreSession` off) into their Space permanently.
+    ///
+    /// `spaces(for:)` above stays a plain read: it is called from a private window's chrome
+    /// and from `check()`, and neither may create a Space as a side effect of looking.
+    @discardableResult
+    func ensureSpaces(for profile: Profile, defaults: UserDefaults = .vane,
+                      sessionTabs: [URL] = []) -> [Space] {
+        let key = TabStore.defaultsKey(.pinned, profile.id)
+        let stranded = (defaults.stringArray(forKey: key) ?? []).compactMap(URL.init(string:))
+        let existing = spaces(for: profile.id)
+
+        if !existing.isEmpty {
+            guard !stranded.isEmpty else { return existing }
+            // The Space the user was last looking at is the one those rows were pinned in
+            // front of; the first Space is the fallback when that is gone.
+            let last = TabStore.lastSpaceID(for: profile.id, defaults: defaults)
+            var merged = existing
+            let i = merged.firstIndex { $0.id == last } ?? 0
+            merged[i].pinnedTabURLs = Spaces.mergedPins(merged[i].pinnedTabURLs ?? [], stranded)
+            guard saveSpaces(merged, for: profile.id),
+                  spaces(for: profile.id) == merged else { return existing }
+            defaults.removeObject(forKey: key)
+            return merged
+        }
+
+        let space = Spaces.firstSpace(profileID: profile.id, name: profile.name,
+                                      colorHex: profile.colorHex, pinned: stranded,
+                                      today: sessionTabs)
+        guard saveSpaces([space], for: profile.id),
+              spaces(for: profile.id).contains(where: { $0.id == space.id }) else { return existing }
+        defaults.removeObject(forKey: key)
+        return [space]
     }
 
     @discardableResult
@@ -667,6 +732,67 @@ struct Space: Identifiable, Codable, Equatable {
         pm.updateSpace(edited)
         pm.deleteSpace(reading.id, in: work.id)
         assert("a deleted space is gone", pm.spaces(for: work.id).isEmpty)
+
+        // Arc's rule: every tab in a browser window lives in a Space, so a profile always
+        // has one. `work` has just been emptied, which is exactly the state a profile that
+        // predates the rule is in — its tabs kept in a profile-level defaults key and in the
+        // session file. Both have to come back inside the Space that is made for it.
+        // A throwaway suite, so the real preferences are never read or written here.
+        let suite = "vane.check.\(UUID().uuidString)"
+        if let defaults = UserDefaults(suiteName: suite) {
+            defer { UserDefaults.vane.removePersistentDomain(forName: suite) }
+            let rowsKey = TabStore.defaultsKey(.pinned, work.id)
+            defaults.set(["https://pinned.example/one"], forKey: rowsKey)
+            let made = pm.ensureSpaces(for: pm.profiles.first { $0.id == work.id }!,
+                                       defaults: defaults,
+                                       sessionTabs: [URL(string: "https://open.example/two")!])
+            assert("a profile with no spaces is given exactly one", made.count == 1
+                   && pm.spaces(for: work.id).count == 1)
+            assert("it is named after the profile and wears its colour",
+                   made[0].name == "School" && made[0].colorHex == pm.profiles.first { $0.id == work.id }?.colorHex)
+            assert("the profile-level pinned rows moved into it",
+                   made[0].pinnedTabURLs?.first?.absoluteString == "https://pinned.example/one")
+            assert("the spaceless session tabs moved into it",
+                   made[0].tabURLs.first?.absoluteString == "https://open.example/two")
+            assert("the profile-level pinnedRows key is deleted, so nothing hands them back twice",
+                   defaults.stringArray(forKey: rowsKey) == nil)
+            assert("migrating twice makes no second space",
+                   pm.ensureSpaces(for: pm.profiles.first { $0.id == work.id }!,
+                                   defaults: defaults, sessionTabs: []).map(\.id) == [made[0].id])
+            assert("a profile that already has a space is left exactly as it is",
+                   pm.ensureSpaces(for: pm.profiles.first { $0.id == defaultID }!,
+                                   defaults: defaults, sessionTabs: []).map(\.name) == ["Inbox"])
+
+            // The nastier half: main wrote `pinnedRows` from *any* window whose Space was
+            // nil or stale, so a profile can have Spaces and a stranded set of rows at once.
+            // Nothing reads that key any more, so leaving it there loses those tabs for good.
+            let inboxKey = TabStore.defaultsKey(.pinned, defaultID)
+            defaults.set(["https://stranded.example/row"], forKey: inboxKey)
+            let inbox = pm.ensureSpaces(for: pm.profiles.first { $0.id == defaultID }!,
+                                        defaults: defaults, sessionTabs: [])
+            assert("stranded rows on a profile that already has spaces are not left behind",
+                   inbox.first?.pinnedTabURLs?.map(\.absoluteString)
+                       == ["https://stranded.example/row"])
+            assert("...and they go into an existing space rather than making a second one",
+                   inbox.count == 1 && inbox.first?.name == "Inbox")
+            assert("...and the key goes with them", defaults.stringArray(forKey: inboxKey) == nil)
+
+            // The write has to land before the only other copy is deleted. A manager whose
+            // directory is a *file* cannot write anything, which is the whole failure mode.
+            let wall = root.appendingPathComponent("not-a-directory")
+            try? Data("x".utf8).write(to: wall)
+            let stuck = ProfileManager(directory: wall, sandboxed: true)
+            let orphan = Profile(name: "Unwritable")
+            let orphanKey = TabStore.defaultsKey(.pinned, orphan.id)
+            defaults.set(["https://kept.example/row"], forKey: orphanKey)
+            assert("a migration that cannot reach the disk invents no space",
+                   stuck.ensureSpaces(for: orphan, defaults: defaults, sessionTabs: []).isEmpty)
+            assert("...and leaves the rows where the next launch will find them",
+                   defaults.stringArray(forKey: orphanKey) == ["https://kept.example/row"])
+        } else {
+            assert("a throwaway defaults suite can be made", false)
+        }
+        pm.saveSpaces([], for: work.id)
         pm.updateSpace(edited)
 
         // A profile's files must actually be on disk before deletion can prove anything.
@@ -745,7 +871,7 @@ struct Space: Identifiable, Codable, Equatable {
         let keepDB = dbURL(for: defaultID, in: dir)
         let keepDBSize = (try? fm.attributesOfItem(atPath: keepDB.path)[.size] as? Int) ?? nil
         // Read-only: the real user's pinned tabs, never written by this check.
-        let keepPins = UserDefaults.standard.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]
+        let keepPins = UserDefaults.vane.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]
         let survivors = pm.profiles.map(\.id)
 
         // MARK: the throwaway, populated the way a used profile is
@@ -761,9 +887,9 @@ struct Space: Identifiable, Codable, Equatable {
         pm.createSpace(name: "Scratch", in: victim)
         let victimKeys = ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey]
             .map { defaultsKey($0, victim) }
-        UserDefaults.standard.set(["https://pinned.example"], forKey: victimKeys[0])
-        UserDefaults.standard.set(false, forKey: victimKeys[1])
-        UserDefaults.standard.set([Data("bookmark".utf8)], forKey: victimKeys[2])
+        UserDefaults.vane.set(["https://pinned.example"], forKey: victimKeys[0])
+        UserDefaults.vane.set(false, forKey: victimKeys[1])
+        UserDefaults.vane.set([Data("bookmark".utf8)], forKey: victimKeys[2])
 
         // A website data store only exists on disk once something is written into it.
         // Scoped so the only strong reference left is the manager's own cache — which is
@@ -803,7 +929,7 @@ struct Space: Identifiable, Codable, Equatable {
                !fm.fileExists(atPath: sessionURL(for: victim, in: dir).path)
                && !fm.fileExists(atPath: spacesURL(for: victim, in: dir).path))
         assert("deleting a profile deletes its UserDefaults keys",
-               victimKeys.allSatisfy { UserDefaults.standard.object(forKey: $0) == nil })
+               victimKeys.allSatisfy { UserDefaults.vane.object(forKey: $0) == nil })
         // Before the cookies are read back, because reading them re-creates the store and
         // would re-register the identifier.
         //
@@ -830,7 +956,7 @@ struct Space: Identifiable, Codable, Equatable {
                && ((try? fm.attributesOfItem(atPath: keepDB.path)[.size] as? Int) ?? nil) == keepDBSize)
         assert("another profile's favicon cache survives", fm.fileExists(atPath: keepIcon.path))
         assert("another profile's UserDefaults keys survive",
-               (UserDefaults.standard.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]) == keepPins)
+               (UserDefaults.vane.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]) == keepPins)
         assert("another profile's website data store survives",
                WKWebsiteDataStore.default().isPersistent)
         assert("the profile list is back to exactly the profiles that were there before",

@@ -63,8 +63,8 @@ import WebKit
 
     /// Off is a real preference; on is the default because a preview is the feature.
     static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: "linkPreviews") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "linkPreviews") }
+        get { UserDefaults.vane.object(forKey: "linkPreviews") as? Bool ?? true }
+        set { UserDefaults.vane.set(newValue, forKey: "linkPreviews") }
     }
 
     // MARK: - Dials

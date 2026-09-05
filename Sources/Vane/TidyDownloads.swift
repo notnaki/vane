@@ -23,8 +23,8 @@ import WebKit
     /// feature. Arc ships this one off too. `AppleAI.enabled` defaults on because it only
     /// ever *adds* text to a UI; this one edits the filesystem, so it asks first.
     static var enabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "tidyDownloads") }   // absent == false
-        set { UserDefaults.standard.set(newValue, forKey: "tidyDownloads") }
+        get { UserDefaults.vane.bool(forKey: "tidyDownloads") }   // absent == false
+        set { UserDefaults.vane.set(newValue, forKey: "tidyDownloads") }
     }
 
     // MARK: - Naming, the deterministic half
@@ -550,9 +550,9 @@ import WebKit
         assert("a refused rename leaves nothing to undo", !canUndo(same))
 
         // --- The switch ---
-        let stored = UserDefaults.standard.object(forKey: "tidyDownloads")
-        defer { UserDefaults.standard.set(stored, forKey: "tidyDownloads") }
-        UserDefaults.standard.removeObject(forKey: "tidyDownloads")
+        let stored = UserDefaults.vane.object(forKey: "tidyDownloads")
+        defer { UserDefaults.vane.set(stored, forKey: "tidyDownloads") }
+        UserDefaults.vane.removeObject(forKey: "tidyDownloads")
         let byDefault = enabled
         enabled = true
         let on = enabled

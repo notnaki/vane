@@ -81,8 +81,8 @@ import FoundationModels
     /// bill, so there is no privacy trade for the user to opt into. Off is honoured
     /// instantly and everywhere, because every feature routes through `ready` below.
     static var enabled: Bool {
-        get { UserDefaults.standard.object(forKey: "appleAI") as? Bool ?? isAvailable }
-        set { UserDefaults.standard.set(newValue, forKey: "appleAI") }
+        get { UserDefaults.vane.object(forKey: "appleAI") as? Bool ?? isAvailable }
+        set { UserDefaults.vane.set(newValue, forKey: "appleAI") }
     }
 
     /// The single gate. Nothing below calls the model without it.
@@ -606,10 +606,10 @@ import FoundationModels
                inputBudget > transcriptBudget)
 
         // --- The master switch. Restored, so check() leaves no footprint. ---
-        let stored = UserDefaults.standard.object(forKey: "appleAI")
-        defer { UserDefaults.standard.set(stored, forKey: "appleAI") }
+        let stored = UserDefaults.vane.object(forKey: "appleAI")
+        defer { UserDefaults.vane.set(stored, forKey: "appleAI") }
 
-        UserDefaults.standard.removeObject(forKey: "appleAI")
+        UserDefaults.vane.removeObject(forKey: "appleAI")
         let byDefault = enabled
         enabled = true
         let onRoundTrip = enabled

@@ -23,8 +23,8 @@ extension Prefs {
     /// On by default. Thirty idle tabs are thirty WebContent processes and ~2 GB; every
     /// other browser made this call years ago.
     static var suspendTabs: Bool {
-        get { UserDefaults.standard.object(forKey: "suspendTabs") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "suspendTabs") }
+        get { UserDefaults.vane.object(forKey: "suspendTabs") as? Bool ?? true }
+        set { UserDefaults.vane.set(newValue, forKey: "suspendTabs") }
     }
 
     /// How long a background tab has to sit untouched before it is torn down. 30 minutes:
@@ -32,10 +32,10 @@ extension Prefs {
     /// over lunch is gone. Zero or negative in defaults means "use the default".
     static var suspendAfter: TimeInterval {
         get {
-            let v = UserDefaults.standard.double(forKey: "suspendAfter")
+            let v = UserDefaults.vane.double(forKey: "suspendAfter")
             return v > 0 ? v : 30 * 60
         }
-        set { UserDefaults.standard.set(newValue, forKey: "suspendAfter") }
+        set { UserDefaults.vane.set(newValue, forKey: "suspendAfter") }
     }
 }
 
@@ -380,7 +380,7 @@ extension Prefs {
                SpaceState.url(for: profile, in: root).lastPathComponent == "spacestate.json")
 
         // MARK: defaults
-        let defaults = UserDefaults.standard
+        let defaults = UserDefaults.vane
         let hadToggle = defaults.object(forKey: "suspendTabs")
         let hadInterval = defaults.object(forKey: "suspendAfter")
         defer {

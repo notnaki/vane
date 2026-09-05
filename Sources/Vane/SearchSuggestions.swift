@@ -27,7 +27,7 @@ import Foundation
 @MainActor enum SearchSuggestions {
 
     /// Swapped out by `check()` so the assertions never touch the user's real preferences.
-    static var defaults = UserDefaults.standard
+    static var defaults = UserDefaults.vane
 
     /// OFF by default — see the privacy note above. `object(forKey:)` is not consulted
     /// because there is no third state: absent means off, which is what `bool` returns.

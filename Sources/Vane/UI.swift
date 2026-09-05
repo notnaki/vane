@@ -945,14 +945,21 @@ private struct SpaceRow: View {
             .accessibilityAction(named: "Rename Space") { renameSpace(space, in: store) }
             .accessibilityAction(named: "Change Space Icon") { icons = true }
             .accessibilityAction(named: "Edit Theme Color") { theme = true }
-        } else {
-            // A window outside any space still has this row, wearing the profile's name:
-            // the list below it needs its heading, and the sidebar its shape.
-            row("cloud", nil, store.profile.name)
+        } else if store.isPrivate {
+            // A private window is in no Space by design, and the list below it still needs
+            // its heading. No click, no rename, no context menu — there is nothing to act on.
+            row("eyeglasses", nil, store.profile.name)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Space")
+            .accessibilityLabel("Private window")
             .accessibilityValue(store.profile.name)
-            .accessibilityHint("This window is not in a space. The plus button below makes one.")
+            .accessibilityHint("A private window is in no space and keeps nothing.")
+        } else {
+            // An ordinary window pointing at a Space that is no longer there: deleted from
+            // another window, from Settings or from the Library. It has one frame of the
+            // profile's name and then falls into a surviving Space — see `resolveStaleSpace`.
+            row("cloud", nil, store.profile.name)
+            .task { store.resolveStaleSpace() }
+            .accessibilityHidden(true)
         }
     }
 
@@ -1003,6 +1010,9 @@ private struct SpaceMenu: View {
                 }
             }
         }
+        // Moving a Space out is a delete on this side, so the last one is as un-movable as
+        // it is un-deletable: a profile always has a Space.
+        .disabled(store.spaces.count < 2)
         Divider()
         Button("New Folder") { store.newFolder() }
         Divider()
@@ -1033,12 +1043,7 @@ private struct SpaceMenu: View {
     a.buttons.last?.hasDestructiveAction = true
     guard a.runModal() == .alertSecondButtonReturn else { return }
     let survivor = store.spaces.first { $0.id != space.id }
-    // Arc archives a deleted Space's tabs rather than dropping them. Read the space back
-    // first: what is on disk is what is about to be deleted, and it is newer than the copy
-    // the menu was built from.
-    Spaces.archiveContents(of: store.spaces.first { $0.id == space.id } ?? space)
-    ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
-    TabStore.forgetShape(space: space.id, profileID: space.profileID)
+    guard Spaces.delete(space.id, in: space.profileID) else { return }
     if let survivor { store.switchTo(space: survivor) }
     rebuild()
 }
@@ -1048,7 +1053,11 @@ private struct SpaceMenu: View {
 /// another profile opens it in a window there and closes this one, rather than trying to
 /// re-home a live WKWebsiteDataStore. Ceiling: the window's position is not carried over.
 @MainActor private func moveSpace(_ space: Space, to profile: Profile, from store: TabStore) {
-    guard profile.id != space.profileID else { return }
+    // The source profile is losing a Space, so the same rule as Delete applies: never its
+    // last one. Without this the profile is left with none, this window's close writes its
+    // tabs into that profile's session, and the next window there invents a Space holding a
+    // second copy of every page that just moved out.
+    guard profile.id != space.profileID, store.spaces.count > 1 else { return }
     store.saveCurrentSpace()
     ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
     var moved = space
@@ -1194,9 +1203,9 @@ private struct SpaceTheme: View {
     }
 }
 
-/// One dot per space, the current one wearing the space's own icon. A window with no spaces
-/// still shows a dot — it is standing on the profile's default set of tabs, which is a space
-/// in all but name.
+/// One dot per space, the current one wearing the space's own icon. There is no "no spaces"
+/// case any more: an ordinary window is always in a Space, so exactly one dot is always the
+/// current one. Only a private window has none, and it does not draw this at all.
 private struct SpaceDots: View {
     @EnvironmentObject var store: TabStore
     @State private var icons = false
@@ -1207,12 +1216,7 @@ private struct SpaceDots: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if store.spaces.isEmpty {
-                Circle().fill(.tint).frame(width: Look.dot, height: Look.dot)
-                    .accessibilityLabel("This space")
-            } else {
-                ForEach(store.spaces) { dot($0) }
-            }
+            ForEach(store.spaces) { dot($0) }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
@@ -2009,9 +2013,14 @@ private struct BottomRow: View {
             LibraryButton(archive: Archive.shared(for: store.profileID),
                           downloads: Downloads.manager(for: store.profileID))
             Spacer(minLength: 0)
-            SpaceDots()
-            Spacer(minLength: 0)
-            NewSpaceButton()
+            // A private window has no Spaces — Arc's incognito has none either — so there
+            // is nothing to draw dots for and nothing a `+` could make. The row keeps its
+            // height regardless: nothing in the sidebar's chrome may come and go.
+            if !store.isPrivate {
+                SpaceDots()
+                Spacer(minLength: 0)
+                NewSpaceButton()
+            }
         }
         .font(Look.icon)
         .frame(height: Look.footer)

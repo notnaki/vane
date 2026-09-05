@@ -32,6 +32,9 @@ import WebKit
     /// WebKit persists the inspector's dock side in the host app's own defaults.
     /// 0 = bottom, 1 = right, 2 = left. Registered rather than set, so dragging the
     /// inspector somewhere else writes a real value that wins from then on.
+    /// `.standard` and not `UserDefaults.vane`: WebKit reads this key out of the host app's
+    /// own domain itself, so registering it anywhere else registers it where nobody looks.
+    /// It is a default, never a write, so a test instance leaves nothing behind either way.
     static func configure() {
         UserDefaults.standard.register(defaults: [
             "__WebInspectorPageGroupLevel1__.WebKit2InspectorAttachmentSide": 1
@@ -59,14 +62,14 @@ import WebKit
     ]
 
     static var userAgent: String {
-        get { UserDefaults.standard.string(forKey: "userAgent") ?? safariUA }
-        set { UserDefaults.standard.set(newValue, forKey: "userAgent"); apply() }
+        get { UserDefaults.vane.string(forKey: "userAgent") ?? safariUA }
+        set { UserDefaults.vane.set(newValue, forKey: "userAgent"); apply() }
     }
 
     /// Defaults on: this is a browser, and Chrome does not hide its dev tools either.
     static var inspectorEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "inspector") as? Bool ?? true }
-        set { UserDefaults.standard.set(newValue, forKey: "inspector"); apply() }
+        get { UserDefaults.vane.object(forKey: "inspector") as? Bool ?? true }
+        set { UserDefaults.vane.set(newValue, forKey: "inspector"); apply() }
     }
 
     static func apply() {

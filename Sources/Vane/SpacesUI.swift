@@ -85,7 +85,9 @@ struct SpaceName: View {
         }
         menu.addItem(item)
     }
-    if !store.spaces.isEmpty { menu.addItem(.separator()) }
+    // Always a separator: the list above it is never empty. A profile always has at least
+    // one Space, and this menu only ever hangs off a window that is showing one.
+    menu.addItem(.separator())
     let new = NSMenuItem(title: "New Space", action: #selector(MenuAction.fire), keyEquivalent: "")
     let make = MenuAction { store.newSpace(); rebuild() }
     new.target = make
@@ -309,7 +311,9 @@ struct MoveToSpaceMenu: View {
     let tab: Tab
 
     var body: some View {
-        let others = store.spaces.filter { $0.id != store.currentSpaceID }
+        // Never in a private window: it is in no Space, so every Space in the profile would
+        // look like somewhere to move to — and moving there writes the page down.
+        let others = store.isPrivate ? [] : store.spaces.filter { $0.id != store.currentSpaceID }
         if !others.isEmpty {
             Menu("Move to Space") {
                 ForEach(others) { space in

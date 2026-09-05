@@ -509,7 +509,7 @@ import WebKit
         }
 
         let suite = "vane-extcheck-\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.vane.removePersistentDomain(forName: suite) }
         expect("a bookmarked folder round-trips through UserDefaults") {
             guard let defaults = UserDefaults(suiteName: suite) else { return false }
             return ScopedPaths.add(good, to: "folders", in: defaults)

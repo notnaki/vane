@@ -421,7 +421,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     enum Priority: String, Codable, Sendable { case browser, page }
 
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
-    static var defaults: UserDefaults = .standard
+    static var defaults: UserDefaults = .vane
     private static let storeKey = "keybindings.v1"
 
     private struct Saved: Codable {
