@@ -217,6 +217,10 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
             guard let groups = await TidyTabs.plan(for: s) else { return }
             TidyTabs.apply(groups, to: s)
             rebuild()                     // so Undo Tidy Tabs enables
+            // Only if anything moved: a tidy that changed nothing has nothing to undo.
+            if TidyTabs.canUndo(s) {
+                Toasts.show("Tidied tabs", action: ("Undo", { TidyTabs.undo(s); rebuild() }), in: s)
+            }
         }
     }
     tidy.isEnabled = store.map(TidyTabs.shouldOffer) ?? false
@@ -243,13 +247,13 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     }
     favourite.isEnabled = store?.active != nil
     pin.isEnabled = store?.active != nil
-    // Arc walks the sidebar with ⌥⌘↑/↓ and holds ⌃⇥ for the switcher, which is an MRU
-    // overlay there and plain sidebar order here until that overlay exists (audit P1).
+    // Arc walks the sidebar with ⌥⌘↑/↓ and holds ⌃⇥ for the switcher: the MRU row in
+    // TabSwitcher.swift, which every further ⌃⇥ steps through until ⌃ comes up.
     let navigation = [
         item(.previousTab) { Windows.current?.cycle(-1) },
         item(.nextTab) { Windows.current?.cycle(1) },
-        item(.tabSwitcher) { Windows.current?.cycle(1) },
-        item(.tabSwitcherBackwards) { Windows.current?.cycle(-1) },
+        item(.tabSwitcher) { TabSwitching.shared.step(1) },
+        item(.tabSwitcherBackwards) { TabSwitching.shared.step(-1) },
     ]
     return [favourite, pin, .separator(), tidy, undo, clear, .separator()] + navigation
 }
@@ -312,6 +316,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(u.absoluteString, forType: .string)
     axAnnounce("Link copied.")
+    Toasts.show("Copied URL")
 }
 
 /// ⇧⌘K, and the sidebar's `Clear`: today's tabs go to the archive, not to the bin.
@@ -393,7 +398,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         .separator(),
         // Arc's ⌘W: a Today tab is archived rather than destroyed, and a favourite or a
         // pinned tab just loses its page and stays in the sidebar.
-        item(.closeTab) { if let s = Windows.current, let c = s.current { s.archive(c) } },
+        item(.closeTab) { Windows.current?.archiveWithToast() },
         responderItem(.closeWindow, #selector(NSWindow.performClose(_:))) {
             NSApp.keyWindow?.performClose(nil)
         },

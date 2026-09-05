@@ -244,6 +244,8 @@ private struct WebCard: View {
         .overlay(alignment: .bottomLeading) {
             if let tab = store.active { StatusBarView(tab: tab).padding(Look.statusInset) }
         }
+        // ⌃⇥: the recent tabs, centred on the page rather than on the window.
+        .overlay { TabSwitcherOverlay() }
         .clipShape(.rect(cornerRadius: Look.cardRadius))
         // No inset on the leading edge while the sidebar is docked: the sidebar's own
         // padding already leaves the gap, and doubling it reads as a misaligned card.
@@ -324,6 +326,10 @@ private struct Sidebar: View {
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.footerInset)
         .padding(.top, Look.topInset)
+        // Toasts slide up from under the footer and sit just above it, over the list.
+        .overlay(alignment: .bottom) {
+            ToastHost().padding(.bottom, Look.footer + Look.footerInset + Look.inset)
+        }
         .frame(width: sidebar.width, alignment: .leading)
         // Under everything in the sidebar, so a row, a button or the pill takes the pointer
         // first and only the bare ground picks the window up.
@@ -538,6 +544,7 @@ private struct PillBody: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(u.absoluteString, forType: .string)
         axAnnounce("Link copied.")
+        Toasts.show("Copied URL", in: store)
     }
 }
 
@@ -1482,7 +1489,7 @@ private struct TabRowTrailing: View {
 
 /// A site's own icon, with a fallback symbol standing in until it arrives (or forever, for
 /// a page that has none).
-private struct SiteIcon: View {
+struct SiteIcon: View {
     let icon: NSImage?
     var fallback = "globe"
     var size: CGFloat = 16

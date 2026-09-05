@@ -339,7 +339,11 @@ import WebKit
             if itemTitles.count > 32 { itemTitles.removeAll() }
             itemTitles[item.id] = t
         }
-        Task { @MainActor in await rename(item, in: downloads) }
+        Task { @MainActor in
+            guard await rename(item, in: downloads) else { return }
+            // The toast's arrow, as promised above `undoLog`: the only way back, and only now.
+            Toasts.show("Renamed to \(item.name)", action: ("Undo", { undo(item, in: downloads) }))
+        }
     }
 
     // MARK: - Offline check

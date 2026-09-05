@@ -1160,6 +1160,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         palette = nil                      // the editor is the thing to look at, not the bar
         rememberSpace()
         editingSpace = space.id            // opens the inline name/icon/colour editor
+        Toasts.show("New Space created", in: self)
         return spaces.first { $0.id == space.id } ?? space
     }
 }
