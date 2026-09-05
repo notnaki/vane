@@ -214,6 +214,10 @@ extension VaneWindow {
         } else if name.isEmpty || !window.setFrameUsingName(name) {
             window.center()
         }
+        // ponytail: AppKit writes this frame into its own defaults domain, not
+        // `UserDefaults.vane`, so a `VANE_DATA_DIR` instance still inherits the real app's
+        // window size. Cosmetic, and the upgrade path is saving the frame ourselves — a
+        // whole second frame-restoration path for a window that opens in the right place.
         window.setFrameAutosaveName(name)
 
         let delegate = WindowDelegate(store)
