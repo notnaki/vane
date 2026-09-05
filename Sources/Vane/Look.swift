@@ -328,6 +328,20 @@ enum Look {
     static let statusMaxChars = 72
     /// A favourite tile appearing or leaving the grid grows in place rather than sliding.
     static let tileAppearScale: CGFloat = 0.6
+
+    // The recent tab switcher (⌃⇥): up to five cards in a row over the page, a favicon
+    // over two lines of title each.
+    static let switcherCard: CGFloat = 120
+    static let switcherCardHeight: CGFloat = 92
+    static let switcherIcon: CGFloat = 24
+    /// ⌃ held shorter than this is a tap — switch, but never draw the row.
+    static let switcherDelay: Double = 0.15
+
+    // Toasts: a pill above the sidebar's footer, gone after `toastDuration` unless hovered.
+    static let toastHeight: CGFloat = 32
+    static let toastDuration: Double = 3
+    /// How much of the space's colour washes over the pill's dark ground.
+    static let toastTint: Double = 0.45
 }
 
 extension Look {
