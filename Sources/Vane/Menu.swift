@@ -369,13 +369,14 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     ]
 }
 
-/// Arc's Window ▸ Show All Little Arc Windows. Greyed out with none open, which is most of
-/// the time — and the windows themselves are in the list below it, because AppKit files
-/// every titled window into this menu on its own.
+/// Arc's Window ▸ Show All Little Arc Windows: they all come to the front together, or they
+/// all get out of the way together. The windows themselves are in the list below it, because
+/// AppKit files every titled window into this menu on its own.
+/// ponytail: not greyed out with none open. NSMenu auto-enables any item whose target
+/// answers its action, so greying this would take a `validateMenuItem:` on Menu.swift's
+/// closure holder — for a row that already does nothing when there is nothing to show.
 @MainActor private func littleArcWindows() -> NSMenuItem {
-    let entry = item("Show All Little Arc Windows", "") { LittleArc.toggleAll() }
-    entry.isEnabled = !LittleArc.windows.isEmpty
-    return entry
+    item("Show All Little Arc Windows", "") { LittleArc.toggleAll() }
 }
 
 /// Menus carry live state (checkmarks, the bookmarks and history lists), so they are

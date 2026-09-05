@@ -69,6 +69,11 @@ import SwiftUI
         window.toolbar = NSToolbar(identifier: "VaneEmpty")
         window.toolbarStyle = .unifiedCompact
         window.tabbingMode = .disallowed
+        // A window made in code is `isReleasedWhenClosed` by default, which under ARC is an
+        // over-release: closing one crashed in `-[_NSWindowTransformAnimation dealloc]`,
+        // the close animation reaching a window that had already been freed. `SettingsWindow`
+        // turns it off for the same reason.
+        window.isReleasedWhenClosed = false
         window.isOpaque = false
         window.backgroundColor = NSColor.black.withAlphaComponent(0.001)
         window.contentView = NSHostingView(rootView: LittleArcView()
@@ -78,7 +83,16 @@ import SwiftUI
         // frame autosave: a Little Arc is not a window the user arranges, it is one that
         // appears in the middle of the screen with the thing they clicked in it.
         window.center()
-        if windows.count > 1 { window.cascadeTopLeft(from: window.frame.origin) }
+        // Two links from the same message must not land exactly on top of each other. The
+        // list is of the Little Arcs that already have a window; this one gets its own on
+        // the line below, so `last` is the one before it.
+        // ponytail: not `cascadeTopLeft(from:)` — that puts the window *at* the point it is
+        // given, so handing it the last window's corner stacked the two exactly.
+        if let previous = windows.last {
+            let step = Look.inset * 3
+            window.setFrameTopLeftPoint(NSPoint(x: previous.frame.minX + step,
+                                                y: previous.frame.maxY - step))
+        }
 
         let delegate = Delegate(store)
         keptDelegates.append(delegate)
@@ -164,12 +178,21 @@ import SwiftUI
     /// the shortcut open exactly the same list — SwiftUI has no way to open a `Menu` from a
     /// key press.
     static func pickSpace(_ store: TabStore) {
-        guard let view = store.window?.contentView else { return }
-        // Under the bar's trailing end, which is where the button is.
-        let at = NSPoint(x: view.bounds.maxX - Look.inset,
-                         y: view.bounds.maxY - Look.littleTopInset - Look.pillHeight)
-        spaceMenu(store).popUp(positioning: nil, at: at, in: view)
+        guard let window = store.window else { return }
+        // Under the bar's trailing end, which is where the button is. In screen coordinates
+        // (`in: nil`) rather than the content view's: an NSHostingView is flipped and the
+        // same arithmetic would have put the menu at the other end of the window.
+        let frame = window.frame
+        let at = NSPoint(x: frame.maxX - Look.inset - menuWidth,
+                         y: frame.maxY - Look.littleTopInset - Look.pillHeight)
+        spaceMenu(store).popUp(positioning: nil, at: at, in: nil)
     }
+
+    /// How far left of the window's trailing edge the menu is hung, so it drops under the
+    /// button rather than off the side of the screen. ponytail: a number, not the button's
+    /// measured frame — reading that back out of SwiftUI is an anchor preference and a
+    /// coordinate space for one popover position. AppKit clamps it to the screen anyway.
+    private static let menuWidth: CGFloat = 180
 
     static func spaceMenu(_ store: TabStore) -> NSMenu {
         let menu = NSMenu()

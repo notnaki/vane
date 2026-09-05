@@ -786,11 +786,13 @@ struct CommandField: NSViewRepresentable {
     }
 
     /// Every window, not just this one — a tab you are looking for is as likely to be
-    /// behind another window as in front of you.
+    /// behind another window as in front of you. Private windows and Little Arcs are the
+    /// exceptions, and only from the outside: each is listed in its own bar and nowhere else.
     private func tabRows() -> [PaletteRow] {
         var out: [PaletteRow] = []
         let manyWindows = TabStore.all.count > 1
-        for (w, other) in TabStore.all.enumerated() where !other.isPrivate || other === store {
+        for (w, other) in TabStore.all.enumerated()
+        where other === store || !(other.isPrivate || other.isLittle) {
             for tab in other.tabs {
                 let place = manyWindows ? "Window \(w + 1)" : ""
                 let detail = [tab.address, place].filter { !$0.isEmpty }.joined(separator: " — ")
