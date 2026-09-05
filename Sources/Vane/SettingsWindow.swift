@@ -26,6 +26,14 @@ import SwiftUI
     static var openLinksInLittleArc: Bool {
         UserDefaults.standard.string(forKey: LinkTarget.key) != LinkTarget.currentSpace
     }
+
+    /// Settings › Links, and on the way Arc has it: a link out of a Favourite or a Pinned
+    /// tab opens *over* the window rather than navigating the tab away from the place it is
+    /// supposed to be. Absent means on, so the key is only ever written by someone turning
+    /// it off. What it decides, exactly, is `Peek.route`.
+    static var peekLinks: Bool {
+        UserDefaults.standard.object(forKey: Peek.prefKey) as? Bool ?? true
+    }
 }
 
 /// The two answers the Links pane's "Open links from other apps in" offers.
@@ -765,6 +773,8 @@ private struct LinksPane: View {
     // `Prefs.openLinksInLittleArc` reads this; the default is written nowhere, so an
     // unset key and "little" have to mean the same thing on both sides.
     @AppStorage(LinkTarget.key) private var externalLinks = LinkTarget.littleArc
+    // `Prefs.peekLinks` reads this, and reads an unset key as on — so does this default.
+    @AppStorage(Peek.prefKey) private var peekLinks = true
     @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
     // Absent = off. Deliberately not defaulted on: turning this on sends what you type to
     // the search engine before you press Return.
@@ -798,6 +808,19 @@ private struct LinksPane: View {
                          + "it, then close it with \u{2318}W — or press \u{2318}O to keep it as a "
                          + "tab in a Space. Current Space puts every link straight into the "
                          + "window you already have open.")
+            }
+
+            SettingsCard {
+                SettingsRow("Open links from Favourites and Pinned tabs in Peek") {
+                    Toggle("", isOn: $peekLinks).labelsHidden()
+                }
+                Footnote("A Peek is the page floating over your window: the tab you clicked "
+                         + "in stays on the site you keep it on. Links to the same site "
+                         + "still open in the tab. \u{21E7}-click peeks any link; \u{2318}O "
+                         + "keeps a Peek as a tab beside the one it came from, and Escape, "
+                         + "\u{2318}W or a click outside throws it away — Archive ▸ "
+                         + "Reopen Last Peek brings the last one back. Off keeps every link "
+                         + "in its tab, \u{21E7}-click included.")
             }
 
             SettingsCard {

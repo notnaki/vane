@@ -74,22 +74,30 @@ extension TabStore {
         return kinds[i] == .today ? i + 1 : firstToday
     }
 
-    /// Open a url in a new tab beside the current one. `focus` false leaves the user where
-    /// they were, which is the whole point of ⌘-click.
-    func openBeside(_ url: URL, focus: Bool) {
-        let opener = current
+    /// An empty tab, placed beside `opener`. ⌘-click loads a url into it; Peek's ⌘O parks
+    /// its page into it instead — which is the only reason the placement is separable from
+    /// `openBeside` at all.
+    @discardableResult
+    func newTabBeside(_ opener: Tab.ID?) -> Tab {
         // One animation for the append and the move, so the row grows in beside its opener
         // rather than appearing at the bottom and flying up.
         Motion.list {
             let tab = newBlankTab()          // appends, and takes focus
-            tab.web.load(URLRequest(url: url))
             if let from = tabs.firstIndex(where: { $0.id == tab.id }) {
                 let moved = tabs.remove(at: from)
                 let dest = TabStore.insertionIndexBeside(
                     current: tabs.firstIndex { $0.id == opener }, kinds: tabs.map(\.kind))
                 tabs.insert(moved, at: min(dest, tabs.count))
             }
+            return tab
         }
+    }
+
+    /// Open a url in a new tab beside the current one. `focus` false leaves the user where
+    /// they were, which is the whole point of ⌘-click.
+    func openBeside(_ url: URL, focus: Bool) {
+        let opener = current
+        newTabBeside(opener).web.load(URLRequest(url: url))
         if !focus {
             current = opener
             axAnnounce("Opened in a background tab.")

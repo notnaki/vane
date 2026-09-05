@@ -76,6 +76,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// A link the user asked for *beside* this tab — ⌘-click, middle-click, `target=_blank`.
     /// The Bool is whether to go there; ⌘-click deliberately does not.
     var onOpenBeside: ((URL, Bool) -> Void)?
+    /// A link this tab should show *over* the window instead of going to — see Peek.swift.
+    /// Left nil in a window with nowhere to float one, which is what keeps the test in
+    /// `decidePolicyFor` a single condition rather than a list of exceptions.
+    var onPeek: ((URL) -> Void)?
 
     let isPrivate: Bool
     /// Which profile's data this tab reads and writes. Never changes for the life of the tab.
@@ -391,7 +395,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// loadSimulatedRequest, not loadHTMLString: it leaves the failed url in the address bar
     /// and in `location`, so the page's own Try Again button retries the right thing.
     private func show(_ error: Error, in w: WKWebView) {
-        guard ErrorPage.shouldShow(error) else { return }
+        guard ErrorPage.shouldShow(error) else {
+            // Nothing to draw and nothing coming: the navigation was cancelled — by a
+            // download, by a policy decision — and a Peek opened for it would sit there as
+            // an empty card with no way to know it was finished. See Peek.swift.
+            Peek.dismissIfBlank(self)
+            return
+        }
         let failed = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL
             ?? URL(string: address)
         guard let failed else { return }
@@ -464,6 +474,33 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             open(url, intent.focus)
             return
         }
+        // A link out of a favourite or a pinned tab that leads somewhere else, or any link
+        // ⇧-clicked: it opens over the window and this tab stays where it is. Also before
+        // HTTPS-only — the Peek's own page is vetted when it loads. See Peek.swift.
+        //
+        // Only a navigation of the *main* frame. `targetFrame` is nil for `target=_blank`,
+        // which WebKit is about to hand to `createWebViewWith` and `onOpenBeside` — Arc
+        // opens those beside the tab, not in a Peek — and it is a subframe for a link
+        // inside an iframe, which cancelling would have peeked an ad's destination over the
+        // whole window instead of loading it in the box it belongs to.
+        //
+        // `from` is the frame that fired the click rather than `w.url`, which a navigation
+        // already in flight may have moved on; a subframe aiming at the top is judged
+        // against the page it is replacing, since the tab's site is what "the place you
+        // keep" means, not the embed's.
+        if navigationAction.navigationType == .linkActivated,
+           navigationAction.targetFrame?.isMainFrame == true,
+           let url = navigationAction.request.url, let peek = onPeek {
+            let source = navigationAction.sourceFrame
+            let from = (source.isMainFrame ? source.request.url : nil) ?? w.url ?? url
+            if Peek.route(sourceKind: kind, from: from, to: url,
+                          modifiers: navigationAction.modifierFlags,
+                          enabled: Prefs.peekLinks) == .peek {
+                decisionHandler(.cancel)
+                peek(url)
+                return
+            }
+        }
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             decisionHandler(.allow)
@@ -498,11 +535,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func webView(_ w: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
         Downloads.manager(for: profileID).attach(download)
+        Peek.dismissIfBlank(self)      // a Peek opened for a download has no page to show
     }
 
     func webView(_ w: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
         TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
         Downloads.manager(for: profileID).attach(download)
+        Peek.dismissIfBlank(self)
     }
 
     func toggleBookmark() {
@@ -827,6 +866,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         t.onOpenBeside = { [weak self] u, focus in
             guard let self else { return }
             if isLittle { LittleArc.open(u) } else { openBeside(u, focus: focus) }
+        }
+        // A Peek floats over a window with a sidebar in it. A Little Arc — or a Peek itself —
+        // is already one floating page, so a link in it has nothing to float over and simply
+        // navigates.
+        if !isLittle {
+            t.onPeek = { [weak self, weak t] u in
+                guard let self, let t else { return }
+                Peek.open(u, from: t, in: self)
+            }
         }
         Motion.list { tabs.append(t) }
         current = t.id
