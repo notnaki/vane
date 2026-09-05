@@ -223,7 +223,12 @@ struct WebCard: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            if let tab = store.active {
+            // A split is one card holding several pages; everything that floats over the
+            // page — find, the save prompt, the status bar — still belongs to `store.active`,
+            // which *is* the active pane's tab.
+            if let split = store.activeSplit {
+                SplitPanes(split: split)
+            } else if let tab = store.active {
                 WebView(web: tab.web).id(tab.id)
             } else {
                 // No tabs: nothing to draw. The glass ground shows through, like the sidebar.
@@ -238,6 +243,9 @@ struct WebCard: View {
             }
             .padding(.horizontal, 14)
             .padding(.top, 10)
+            // Last in the stack, so it is above the page: a dragged sidebar tab lands on the
+            // card's edge bands as a new pane. Only in the tree while a drag is in flight.
+            SplitDropWell()
         }
         // The status bar: the hovered link's url, bottom-left, inside the card's clip the
         // way Arc's sits on the page rather than under it.
@@ -768,11 +776,11 @@ private enum DropSide { case before, after }
 /// dropped on it.
 @MainActor final class Dragging: ObservableObject {
     static let shared = Dragging()
-    @Published var tab: Tab.ID?
+    @Published var tab: Tab.ID? { didSet { watch() } }
     /// A folder row being dragged among the pinned rows. Never both at once — a drag is one
     /// thing — but two fields rather than an enum keeps every existing `dragging.tab` read
     /// meaning exactly what it did.
-    @Published var folder: Folder.ID?
+    @Published var folder: Folder.ID? { didSet { watch() } }
     /// Whether one of ours is in flight at all, which is what the drop lines and the
     /// sidebar's catch-all delegate care about.
     var active: Bool { tab != nil || folder != nil }
@@ -782,8 +790,39 @@ private enum DropSide { case before, after }
     /// the drop leaves the drag running forever, and a drag that never ends makes
     /// `SidebarDrop` stand aside from every later url and file drop.
     func take() -> (tab: Tab.ID?, folder: Folder.ID?) {
-        defer { tab = nil; folder = nil }
+        defer { end() }
         return (tab, folder)
+    }
+
+    func end() { tab = nil; folder = nil }
+
+    /// The other end of a drag that no `performDrop` ever sees: released on the desktop, on
+    /// the sidebar's bare ground, or in the middle of the page card, where the answer is "not
+    /// here" rather than a drop. The flag it leaves behind is not cosmetic — `SplitDropWell`
+    /// mounts a real dragging destination over the whole page while it is set.
+    ///
+    /// ponytail: a mouse-up monitor rather than an `NSDraggingSource` conformance, which
+    /// would mean owning the drag session instead of `.onDrag`. Cleared on the *next* turn of
+    /// the run loop, because the drop AppKit is about to deliver still has to be able to read
+    /// what is being dragged. Ceiling: a drag ended by anything but the button coming up — a
+    /// Space switch, say — still waits for the next mouse-up.
+    private var monitors: [Any] = []
+
+    private func watch() {
+        guard active else {
+            monitors.forEach(NSEvent.removeMonitor)
+            monitors = []
+            return
+        }
+        guard monitors.isEmpty else { return }
+        let local = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.end() } }
+            return event
+        }
+        let global = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.end() } }
+        }
+        monitors = [local, global].compactMap { $0 }
     }
 }
 
@@ -1241,7 +1280,9 @@ private struct PinnedRow: View {
             if let folder = row.entry.folder {
                 FolderRow(folder: folder)
             } else if let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab }) {
-                TabRow(tab: tab)
+                // StripRow, not TabRow: a pinned tab that is a pane of a split is drawn as
+                // the split's one row, at its lead pane's place.
+                StripRow(tab: tab)
             }
         }
         .padding(.leading, CGFloat(row.depth) * Look.folderIndent)
@@ -1541,7 +1582,7 @@ private struct OpenTabs: View {
     var body: some View {
         let open = store.tabs.filter { $0.kind == .today }
         VStack(spacing: Look.rowGap) {
-            ForEach(open) { TabRow(tab: $0).transition(.rowCollapse) }
+            ForEach(open) { StripRow(tab: $0) }
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
         // tabs instead of announcing an anonymous stack.
@@ -1554,6 +1595,118 @@ private struct OpenTabs: View {
     }
 }
 
+/// One line of the strip: a tab's row — unless the tab is a pane of a split, in which case
+/// the split owns one row between all of its panes and draws it where its first pane sits.
+private struct StripRow: View {
+    @EnvironmentObject var store: TabStore
+    let tab: Tab
+
+    var body: some View {
+        if let split = store.split(containing: tab.id) {
+            if store.leadPane(split) == tab.id {
+                SplitRow(split: split, lead: tab).transition(.rowCollapse)
+            }
+        } else {
+            TabRow(tab: tab).transition(.rowCollapse)
+        }
+    }
+}
+
+/// A split as one sidebar row, in Arc's shape: the panes' favicons overlapping where a
+/// favicon goes, and the active pane's title.
+///
+/// ponytail: no rename and no pin. Arc lets you name a split and pin it; Vane's row is a way
+/// back into the split and nothing more — the panes keep their own names, and closing the
+/// last-but-one pane hands the row back to the tab it was. Upgrade path: give `Split` a title
+/// and a `TabKind` of its own and it becomes a fourth kind of strip item.
+private struct SplitRow: View {
+    @EnvironmentObject var store: TabStore
+    let split: Split
+    /// The pane whose place in the strip this row stands in — what a drag of the row moves
+    /// and what a drop beside it lands next to.
+    let lead: Tab
+    @State private var side: DropSide?
+    @Environment(\.strip) private var strip
+
+    var body: some View {
+        let panes = split.tabs.compactMap { id in store.tabs.first { $0.id == id } }
+        let selected = split.tabs.contains { $0 == store.current }
+        let active = panes.first { $0.id == split.activeTab } ?? panes.first
+        let title = active.map { TidyTitles.title(for: $0) } ?? "Split View"
+        SidebarRow(selected: selected, action: { store.focusPane(split.activeTab) }) {
+            SplitIcons(panes: panes)
+        } label: {
+            Text(title)
+        } trailing: {
+            if let active { TabRowTrailing(tab: active, selected: selected, pane: true) }
+        }
+        // Everything a tab's row does with a drag, keyed on the pane whose place this is: a
+        // split is one item in the strip, so it reorders and takes drops like one.
+        .overlay(alignment: side == .after ? .bottom : .top) {
+            DropLine(on: side != nil, axis: .vertical)
+        }
+        .inStrip(lead.id, strip)
+        .help("Split view of \(panes.count) tabs")
+        .onDrag { dragPayload(lead) } preview: {
+            HStack(spacing: Look.rowSpacing) {
+                SplitIcons(panes: panes)
+                Text(title).lineLimit(1).font(Look.rowTitle)
+            }
+            .padding(.horizontal, Look.rowInset).padding(.vertical, 4)
+        }
+        .onDrop(of: [.plainText],
+                delegate: TabDrop(store: store, target: lead, into: lead.kind,
+                                  axis: .vertical, extent: Look.rowHeight, side: $side))
+        .contextMenu { SplitMenu(store: store, split: split) }
+        // One element for the whole split, the way one row is one thing: how many panes and
+        // which one is showing, with moving between them as an action rather than as a
+        // second element to find.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Split View")
+        .accessibilityValue("\(panes.count) panes, showing \(title)")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint("Shows this split view.")
+        .accessibilityAction(named: "Next Pane") { store.focusNextPane() }
+        .accessibilityAction(named: "Swap") { store.swapPanes(split) }
+        .accessibilityAction(named: "Separate All Tabs") { store.separateSplit(split) }
+        .accessibilityAction(named: "Close Pane") {
+            if let active { store.close(active.id) }
+        }
+    }
+}
+
+/// The panes' favicons, overlapping, so one row says how many pages it holds without a count.
+///
+/// ponytail: two icons at most, whatever the split holds. Four of them are 49pt of leading
+/// slot against every other row's 16, and a title that starts a third of the way across the
+/// sidebar is worse than one that does not say "four" out loud — the row's own value says how
+/// many panes there are. The slot is clamped as well as capped, so even the two overlap
+/// inside a tab icon's width.
+private struct SplitIcons: View {
+    let panes: [Tab]
+    var body: some View {
+        HStack(spacing: -Look.splitIconLap) {
+            ForEach(panes.prefix(2)) { TabIcon(tab: $0) }
+        }
+        .frame(width: Look.tileIcon, alignment: .leading)
+    }
+}
+
+/// The right-click menu on a split's row: what can be done to the split as a whole. What can
+/// be done to one pane is on that pane's own tab menu, which is where it was before it
+/// became a pane.
+private struct SplitMenu: View {
+    let store: TabStore
+    let split: Split
+
+    var body: some View {
+        Button("Swap") { store.swapPanes(split) }
+        Button("Separate All Tabs") { store.separateSplit(split) }
+        Divider()
+        Button("Close Split View") { split.tabs.forEach { store.archive($0) } }
+    }
+}
+
 private struct TabRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
@@ -1562,7 +1715,7 @@ private struct TabRow: View {
 
     var body: some View {
         let selected = store.current == tab.id
-        SidebarRow(selected: selected, action: { store.current = tab.id }) {
+        SidebarRow(selected: selected, action: select) {
             TabIcon(tab: tab)
         } label: {
             // Arc's in-row rename: the title becomes a field and the row keeps its shape.
@@ -1619,6 +1772,20 @@ private struct TabRow: View {
         }
     }
 
+    /// Arc's ⌥-click: the tab opens *beside* the one you are looking at, in a split, instead
+    /// of replacing it.
+    /// ponytail: `NSEvent.modifierFlags` read at the moment of the tap rather than a
+    /// modifier-aware gesture. SwiftUI's tap carries no flags, and the only alternative is a
+    /// second hit-testing layer over every row. Ceiling: it reads the *current* state of the
+    /// keyboard, so a modifier released inside the same click's few milliseconds is missed.
+    private func select() {
+        if NSEvent.modifierFlags.contains(.option), store.current != tab.id {
+            store.addPane(tab.id)
+        } else {
+            store.current = tab.id
+        }
+    }
+
     private func closeOthers() {
         // Favourites and pinned tabs are not "other tabs" — they stay whatever happens.
         for t in store.tabs where t.id != tab.id && t.kind == .today { store.archive(t.id) }
@@ -1652,6 +1819,8 @@ private struct TabMenu: View {
         Button("Reload") { tab.reload() }
             .disabled(tab.currentURL == nil)
         Button(TabAudio.isMuted(tab) ? "Unmute" : "Mute") { TabAudio.toggleMute(tab) }
+        Divider()
+        SplitItems(store: store, tab: tab)
         Divider()
         switch tab.kind {
         case .favourite:
@@ -1714,12 +1883,40 @@ private struct TabMenu: View {
     }
 }
 
+/// The split-view corner of a tab's menu, in Arc's words: "Add Split View" when there is no
+/// split to join, "Add to Split" when there is. Its own view because it is the one part of
+/// the menu that has to ask the window what is split at the moment it opens.
+private struct SplitItems: View {
+    let store: TabStore
+    @ObservedObject var tab: Tab
+
+    var body: some View {
+        if let split = store.split(containing: tab.id) {
+            Button("Swap") { store.swapPanes(split) }
+            Button("Separate All Tabs") { store.separateSplit(split) }
+            Button(Command.removeSplit.title) { store.archive(tab.id) }
+        } else if let active = store.activeSplit {
+            Button("Add to Split") { store.addPane(tab.id, beside: active.activeTab) }
+                .disabled(active.isFull)
+        } else {
+            // On the tab you are already looking at there is nothing to split it *with*, so
+            // this is the same thing ⌃⇧= does: a new pane, with the bar up over it.
+            Button(Command.addSplit.title) {
+                if store.current == tab.id { store.addSplit() } else { store.addPane(tab.id) }
+            }
+        }
+    }
+}
+
 /// The speaker and the close button. Split out only because one expression with both of
 /// them plus the row's own modifiers stopped type-checking in reasonable time.
 private struct TabRowTrailing: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
     let selected: Bool
+    /// On a split's row the × closes the pane the row is showing, not a whole tab's worth of
+    /// row — so it says so, in the tooltip and to VoiceOver.
+    var pane = false
     @Environment(\.rowHovering) private var hovering
 
     var body: some View {
@@ -1736,8 +1933,9 @@ private struct TabRowTrailing: View {
                 Button { store.close(tab.id) } label: {
                     Image(systemName: "xmark").font(Look.rowGlyph)
                 }
-                .help("Close Tab (⌘W)")
-                .accessibilityLabel("Close \(TidyTitles.title(for: tab))")
+                .help(pane ? "Close Pane (⌘W)" : "Close Tab (⌘W)")
+                .accessibilityLabel((pane ? "Close pane " : "Close ")
+                                    + TidyTitles.title(for: tab))
                 // Grows in under the pointer rather than popping: the row's own hover
                 // animation carries it.
                 .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))

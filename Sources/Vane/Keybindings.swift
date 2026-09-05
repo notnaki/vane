@@ -183,6 +183,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case tidyTabs, undoTidyTabs, clearTabs
     case favouriteTab, pinTab
     case muteTab
+    case addSplit, removeSplit, nextPane
     case commandPalette, searchTabs
     // Window / Help
     case minimizeWindow
@@ -282,6 +283,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .favouriteTab: "Favourite Tab"
         case .pinTab: "Pin Tab"
         case .muteTab: "Mute Tab"
+        case .addSplit: "Add Split View"
+        case .removeSplit: "Remove Split"
+        case .nextPane: "Next Pane"
         case .commandPalette: "Search…"
         case .searchTabs: "Search Tabs…"
         case .minimizeWindow: "Minimize"
@@ -390,6 +394,12 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .tidyTabs:         Keybinding("t", [.command, .control])
         case .undoTidyTabs:     .unassigned
         case .muteTab:          Keybinding("m", [.command, .option])
+        // Arc's three, as they print on a US layout: ⌃⇧= sends "+" and ⌃⇧- sends "_", and
+        // `Keybinding.init` folds the shift into the glyph it already produced — the same
+        // fold Zoom In's ⌘+ has always relied on.
+        case .addSplit:         Keybinding("+", [.control, .shift])
+        case .removeSplit:      Keybinding("_", [.control, .shift])
+        case .nextPane:         Keybinding("n", [.control, .shift])
         case .commandPalette:   Keybinding("p", [.command, .shift])
         case .searchTabs:       Keybinding("a", [.command, .shift])
         case .viewHistory:      Keybinding("y", .command)
@@ -756,6 +766,11 @@ extension Keybindings {
             ("Command Palette defaults to ⇧⌘P", binding(for: .commandPalette).display == "⇧⌘P"),
             ("Zoom In defaults to ⌘+", binding(for: .zoomIn).display == "⌘+"),
             ("Import Passwords ships unbound", binding(for: .importPasswords).display == "---"),
+            // Arc's split keys. ⌃⇧= and ⌃⇧- arrive as ⌃+ and ⌃_ because the shifted glyph
+            // already carries the shift — the same fold ⌘+ has always gone through.
+            ("Add Split View defaults to Arc's ⌃⇧=", binding(for: .addSplit).display == "⌃+"),
+            ("Remove Split defaults to Arc's ⌃⇧-", binding(for: .removeSplit).display == "⌃_"),
+            ("Next Pane defaults to ⌃⇧N", binding(for: .nextPane).display == "⌃⇧N"),
         ]
 
         // Conflicts.

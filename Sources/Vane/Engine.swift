@@ -600,6 +600,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @Published var renamingFolder: UUID? {
         didSet { if renamingFolder != nil { renamingTab = nil } }
     }
+    /// The window's split views: 2–4 of the tabs above shown side by side in one page card
+    /// and as one sidebar row. Ids, not tabs, so a split survives its panes moving section,
+    /// being renamed or being suspended. Everything done to them is in SplitView.swift.
+    @Published var splits: [Split] = []
     /// Counts the archives that land in one burst, so Clear can sweep rows out one after
     /// another. See `archive`.
     private let bursts = Motion.Burst()
@@ -610,6 +614,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             if let t = tabs.first(where: { $0.id == current }) { t.lastActive = .now; t.resume() }
             // The tab being left behind starts its idle clock now, not when it was opened.
             if let old = tabs.first(where: { $0.id == oldValue }) { old.lastActive = .now }
+            // Selecting a pane by any route at all — ⌘1–9, ⌃⇥, ⌥⌘↑↓, a favourite tile, the
+            // command bar — is what the split means by "the active pane". Keeping it here
+            // rather than in each of those callers is the only way the two cannot drift.
+            if let id = current, let i = splits.firstIndex(where: { $0.contains(id) }) {
+                splits[i] = splits[i].focusing(id)
+            }
             extensions.sync()
         }
     }
@@ -876,7 +886,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         }
         if renamingTab == id { renamingTab = nil }
         extensions.sync()
-        if current == id { current = outcome.next.map { tabs[$0].id } }
+        // A split loses a pane with the tab, and a split down to one pane is a plain tab
+        // again. Its remaining pane is a better answer than "the neighbouring row": the user
+        // is looking at the rest of the split, not at the list.
+        let pane = dropPane(id)
+        if current == id { current = pane ?? outcome.next.map { tabs[$0].id } }
     }
 
     /// What closing the tab at `i` does, as pure index math over the strip's kinds. A
@@ -1161,6 +1175,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // Not close(): that pushes onto the reopen stack and closes the window on the last tab.
         // Favourites are the profile's, not the Space's, so their tabs stay exactly as they
         // are — Arc's grid does not so much as blink when you swipe between Spaces.
+        // Every pane whose tab is about to go leaves its split first; otherwise `splits`
+        // keeps ids of tabs that no longer exist, and a split holding a favourite would draw
+        // one pane and a divider into nothing.
+        for tab in tabs where tab.kind != .favourite { dropPane(tab.id) }
         tabs.removeAll { $0.kind != .favourite }
         currentSpaceID = space.id
         applySpaceAppearance()          // the new space may be pinned to light or dark

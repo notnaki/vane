@@ -137,8 +137,11 @@ extension Prefs {
 
     static var allTabs: [Tab] { TabStore.all.flatMap(\.tabs) }
 
+    /// On screen in some window — which for a split view is every one of its panes, not just
+    /// the one the keyboard is in. Tearing down the pane beside the one being read is exactly
+    /// the blank half of a split nobody would file a bug about twice.
     private static func isActive(_ tab: Tab) -> Bool {
-        TabStore.all.contains { $0.current == tab.id }
+        TabStore.all.contains { $0.current == tab.id || $0.activeSplit?.contains(tab.id) == true }
     }
 
     /// The cheap facts: everything that can be read without talking to the web content

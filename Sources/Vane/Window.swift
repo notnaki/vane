@@ -283,21 +283,33 @@ extension VaneWindow {
     private struct Disk: Codable {
         var version: Int
         var windows: [[Entry]]
+        /// Each window's split views, as the urls of their panes. Optional, so a v2 file —
+        /// written before splits existed — still decodes into a session with none.
+        var splits: [[Split.Saved]]?
     }
 
-    /// v2 is a dictionary so it is self-describing. v1 was a bare `[[String]]` of urls and
-    /// is still read, because a session written by the previous build has to come back —
-    /// just without the extra fidelity.
-    /// ponytail: no writer for v1. Downgrading loses the session once, and a browser that
-    /// can be downgraded mid-session is not a thing anyone does twice.
-    static func encode(_ windows: [[Entry]]) -> Data? {
-        try? JSONEncoder().encode(Disk(version: 2, windows: windows))
+    /// v3 adds the splits. v2 is a dictionary so it is self-describing; v1 was a bare
+    /// `[[String]]` of urls and is still read, because a session written by the previous
+    /// build has to come back — just without the extra fidelity.
+    /// ponytail: no writer for v1 or v2. Downgrading loses the session once, and a browser
+    /// that can be downgraded mid-session is not a thing anyone does twice.
+    static func encode(_ windows: [[Entry]], splits: [[Split.Saved]] = []) -> Data? {
+        try? JSONEncoder().encode(Disk(version: 3, windows: windows,
+                                       splits: splits.contains { !$0.isEmpty } ? splits : nil))
     }
 
-    static func decode(_ data: Data) -> [[Entry]] {
-        if let disk = try? JSONDecoder().decode(Disk.self, from: data) { return disk.windows }
+    static func decode(_ data: Data) -> [[Entry]] { disk(data).windows }
+
+    /// Each window's splits, in the same order as `decode`'s windows. Empty for a file that
+    /// predates them.
+    static func decodeSplits(_ data: Data) -> [[Split.Saved]] { disk(data).splits ?? [] }
+
+    private static func disk(_ data: Data) -> (windows: [[Entry]], splits: [[Split.Saved]]?) {
+        if let disk = try? JSONDecoder().decode(Disk.self, from: data) {
+            return (disk.windows, disk.splits)
+        }
         let legacy = (try? JSONSerialization.jsonObject(with: data)) as? [[String]] ?? []
-        return legacy.map { $0.map { Entry(url: $0) } }
+        return (legacy.map { $0.map { Entry(url: $0) } }, nil)
     }
 
     /// url → what we knew about it, for `TabStore.init`. Entries with neither a title nor a
@@ -318,7 +330,7 @@ extension VaneWindow {
     /// closed keeps the session it already had — only profiles with a live window are
     /// rewritten, so quitting from profile B does not erase profile A's session.
     static func save() {
-        var byProfile: [UUID: [[Entry]]] = [:]
+        var byProfile: [UUID: [(entries: [Entry], splits: [Split.Saved])]] = [:]
         // Nothing private is written down, and neither is a Little Arc: it is a link
         // someone followed once, not a window to come back up in.
         for store in TabStore.all where !store.isPrivate && !store.isLittle {
@@ -332,10 +344,14 @@ extension VaneWindow {
                 return Entry(url: u.absoluteString, title: snap.title,
                              state: snap.state?.base64EncodedString())
             }
-            byProfile[store.profileID, default: []].append(entries)
+            byProfile[store.profileID, default: []].append((entries, store.savedSplits))
         }
         for (profileID, windows) in byProfile {
-            guard let data = encode(windows.filter { !$0.isEmpty }) else { continue }
+            // Windows are dropped in pairs, so a window's splits never end up filed under
+            // the next window's tabs.
+            let kept = windows.filter { !$0.entries.isEmpty }
+            guard let data = encode(kept.map(\.entries), splits: kept.map(\.splits))
+            else { continue }
             try? data.write(to: file(profileID))
         }
     }
@@ -345,11 +361,15 @@ extension VaneWindow {
     static func restore(profile: Profile? = nil) -> Bool {
         let profile = profile ?? ProfileManager.shared.active
         guard let data = try? Data(contentsOf: file(profile.id)) else { return false }
-        let windows = decode(data).filter { !$0.isEmpty }
+        let saved = decodeSplits(data)
+        let windows = decode(data).enumerated().filter { !$0.element.isEmpty }
         guard !windows.isEmpty else { return false }
-        for entries in windows {
-            Windows.open(urls: entries.compactMap { URL(string: $0.url) }, profile: profile,
-                         parked: parked(entries))
+        for (i, entries) in windows {
+            let store = Windows.open(urls: entries.compactMap { URL(string: $0.url) },
+                                     profile: profile, parked: parked(entries))
+            // After the window exists, because a split is named by its panes' urls and the
+            // tabs that carry them are made by `TabStore.init`.
+            store.applySplits(saved.indices.contains(i) ? saved[i] : [])
         }
         return !TabStore.all.isEmpty
     }
