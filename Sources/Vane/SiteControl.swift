@@ -94,7 +94,11 @@ extension SiteControlModel {
     /// sidebar's chrome does not move.
     var glyph: String {
         if siteless { return "globe" }
-        return insecure ? PillState.glyph(scheme: scheme) : "lock"
+        if insecure { return PillState.glyph(scheme: scheme) }
+        // Only https has earned a closed lock. A host on some other scheme — a custom one,
+        // a `vane:` page — is not encrypted and is not "not secure" either; it gets the
+        // neutral globe rather than a padlock promising something nobody checked.
+        return scheme?.lowercased() == "https" ? "lock" : "globe"
     }
 
     /// The header's second line. Says *which* kind of not-secure, because "you clicked
@@ -136,6 +140,11 @@ extension SiteControlModel {
             // hook on macOS — nothing asks, so there is nothing to remember and nothing to
             // switch, and a dead toggle is a promise Vane cannot keep. Upgrade path the day
             // WebKit exposes one: a third `.permission` row keyed exactly like these two.
+            // ponytail: the switch is offered whatever the page holds, because whether
+            // there is a detachable video is a question only the page can answer and only
+            // asynchronously — `window.__vanePiP()` returns 'unsupported' and the switch
+            // springs back. Upgrade path: publish that answer onto `Tab` from the same
+            // script that already reports the mode, and this row gets `inert` like Reader's.
             Row(id: .pictureInPicture, title: "Picture in Picture", glyph: "pip",
                 control: .toggle(pictureInPicture)),
             Row(id: .zoom, title: "Zoom", glyph: "textformat.size",
@@ -213,9 +222,12 @@ extension SiteControlModel {
     @Published private(set) var revision = 0
 
     private init() {
+        // `assumeIsolated` would trap if this ever arrived off the main queue; a hop costs
+        // nothing here, since all it does is invalidate two small views. Weak self rather
+        // than `SiteChanges.shared`, which is still being assigned while this init runs.
         NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
-        ) { _ in MainActor.assumeIsolated { SiteChanges.shared.revision &+= 1 } }
+        ) { [weak self] _ in Task { @MainActor in self?.revision &+= 1 } }
     }
 
     func bump() { revision &+= 1 }
@@ -224,24 +236,33 @@ extension SiteControlModel {
 /// The side that writes. Split from the view so a row's action is one named call.
 @MainActor enum SiteControl {
 
-    static func act(_ id: SiteControlModel.RowID, on tab: Tab, model: SiteControlModel) {
+    /// The host the popover is about, as the model keys everything on.
+    static func host(of tab: Tab) -> String { tab.currentURL?.host() ?? "" }
+
+    /// Every case reads the setting it is about to flip *now*, rather than inverting what
+    /// the model said when the row was drawn. A popover can sit open across a navigation,
+    /// a second window, or the modal permission prompt, and a stale `!on` writes the value
+    /// the user is already looking at back over the one that changed underneath them.
+    static func act(_ id: SiteControlModel.RowID, on tab: Tab) {
+        let host = host(of: tab)
         switch id {
-        case .camera:     cycle(.camera, model.camera, host: model.host)
-        case .microphone: cycle(.microphone, model.microphone, host: model.host)
+        case .camera:     cycle(.camera, host: host)
+        case .microphone: cycle(.microphone, host: host)
         case .pictureInPicture: PictureInPicture.toggle(tab)
         case .zoom: Zoom.reset(tab)
-        case .blocker: Blocker.setEnabled(!model.blocking, for: tab.profileID)
+        case .blocker: Blocker.setEnabled(!Blocker.enabled(for: tab.profileID), for: tab.profileID)
         case .reader: Reader.toggle(tab)
-        case .ext(let i): setExtension(i, to: !model.extensions[i].allowed, on: tab)
-        case .clearData: clearSiteData(host: model.host, tab: tab)
-        case .developer: setDeveloper(!model.developer, on: tab)
+        case .ext(let i): toggleExtension(i, on: tab)
+        case .clearData: clearSiteData(host: host, tab: tab)
+        case .developer: setDeveloper(!tab.web.isInspectable, on: tab)
         }
         SiteChanges.shared.bump()
     }
 
     /// The permission row's own control is a picker; this is what a click on the row body
     /// does, so the keyboard and VoiceOver have a route that is not a menu.
-    private static func cycle(_ type: WKMediaCaptureType, _ current: Bool?, host: String) {
+    private static func cycle(_ type: WKMediaCaptureType, host: String) {
+        let current = SitePermissions.effective(host: host, type: type)
         set(type, to: current == nil ? true : (current == true ? false : nil), host: host)
     }
 
@@ -251,11 +272,13 @@ extension SiteControlModel {
         SiteChanges.shared.bump()
     }
 
-    /// Per-site extension access. WebKit turns the url into a match pattern for us, so
-    /// "allow this extension here" is one call and does not need a pattern built by hand.
-    static func setExtension(_ index: Int, to allowed: Bool, on tab: Tab) {
+    /// Per-site extension access, flipped from what this extension can see right now.
+    /// WebKit turns the url into a match pattern for us, so "allow this extension here" is
+    /// one call and does not need a pattern built by hand.
+    static func toggleExtension(_ index: Int, on tab: Tab) {
         let contexts = tab.extensions.installed
         guard contexts.indices.contains(index), let url = tab.currentURL else { return }
+        let allowed = !contexts[index].hasAccess(to: url)
         contexts[index].setPermissionStatus(allowed ? .grantedExplicitly : .deniedExplicitly,
                                             for: url)
     }
@@ -263,8 +286,20 @@ extension SiteControlModel {
     /// Web Inspector for this tab only. `Settings.inspectorEnabled` is the global default
     /// this starts from; flipping it here is deliberately not written back, so turning the
     /// inspector on for one page does not turn it on for the whole browser.
+    ///
+    /// Both halves, because they are different switches: `isInspectable` opens the view to
+    /// Safari's Develop menu, while "Inspect Element" and the in-app inspector window are
+    /// gated on the `developerExtrasEnabled` preference — the same KVC hop
+    /// `Tab.configuration` makes, and the reason setting only the first did nothing
+    /// visible. It takes effect on the live page, with no reload.
+    ///
+    /// ponytail: the intent lives on the web view, not on the Tab, so suspending the tab
+    /// or changing the global setting (which rebuild or re-apply to the view) puts it back
+    /// to `Settings.inspectorEnabled`. Upgrade path: a `developerMode: Bool?` on Tab that
+    /// `attach()` re-applies, which is a field, a line in `attach`, and a line here.
     static func setDeveloper(_ on: Bool, on tab: Tab) {
         tab.web.isInspectable = on
+        tab.web.configuration.preferences.setValue(on, forKey: "developerExtrasEnabled")
     }
 
     /// Cookies, storage and caches belonging to this host, and the answers Vane itself is
@@ -277,26 +312,39 @@ extension SiteControlModel {
         alert.messageText = "Clear the data “\(host)” has stored?"
         alert.informativeText = "Cookies, local storage and cached files for this site and its "
             + "subdomains go, and you will be signed out of it. Vane also forgets the camera, "
-            + "microphone and zoom answers you gave this site. History and passwords are not "
-            + "touched."
+            + "microphone and zoom answers you gave this site, any certificate warning you "
+            + "clicked through for it, and its exemption from HTTPS-only mode. History and "
+            + "passwords are not touched."
         alert.addButton(withTitle: "Clear")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         SitePermissions.reset(host: host)
         Zoom.forget(host: host, profile: tab.profileID)
+        // The header advertises both of these — "a certificate problem was accepted here",
+        // and http that HTTPS-only was told to allow. Clearing a site cannot leave standing
+        // the two decisions that made it less safe than the others.
+        CertificateTrust.forget(host: host)
+        HTTPSOnly.forget(host: host, profileID: tab.profileID)
+        done(host)
+
         let store = tab.web.configuration.websiteDataStore
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         store.fetchDataRecords(ofTypes: types) { records in
             let mine = records.filter { SiteControlModel.covers(record: $0.displayName, host: host) }
             guard !mine.isEmpty else { return }
-            store.removeData(ofTypes: types, for: mine) {
-                MainActor.assumeIsolated {
-                    axAnnounce("Cleared the data stored by \(host).")
-                    SiteChanges.shared.bump()
-                }
-            }
+            // `assumeIsolated` would trap here: WebKit does not promise this completion a
+            // queue, and a fetch that lands off the main one would take the app with it.
+            store.removeData(ofTypes: types, for: mine) { Task { @MainActor in done(host) } }
         }
+    }
+
+    /// Said once when the answers go and again when WebKit's records follow, because the
+    /// two land seconds apart and a site with no stored data at all never reaches the
+    /// second — the user still cleared something, and still has to hear so.
+    private static func done(_ host: String) {
+        axAnnounce("Cleared the data stored by \(host).")
+        SiteChanges.shared.bump()
     }
 
     // MARK: - check
@@ -333,6 +381,15 @@ extension SiteControlModel {
         plain.scheme = "http"
         out.append(("http reads as not encrypted", plain.connection == "Not secure — this page is not encrypted"))
         out.append(("…and wears the broken lock", plain.glyph == "lock.slash"))
+        // A lock is a claim about encryption, and only https has made one.
+        var other = m
+        other.scheme = "vane"
+        out.append(("a host on some other scheme gets no padlock", other.glyph == "globe"))
+        out.append(("…and is not called insecure either", !other.insecure))
+        out.append(("…and says what it is rather than promising security",
+                    other.connection == "Not a web page"))
+        out.append(("HTTPS in capitals still earns the lock",
+                    { var c = m; c.scheme = "HTTPS"; return c.glyph == "lock" }()))
 
         // www. is dropped in the title, the way the pill drops it.
         var www = m
@@ -469,7 +526,7 @@ struct SiteControlPopover: View {
                     .padding(.bottom, Look.inset)
             } else {
                 ForEach(model.rows) { row in
-                    SiteControlRow(row: row, tab: tab, model: model)
+                    SiteControlRow(row: row, tab: tab, host: model.host)
                 }
             }
         }
@@ -491,15 +548,12 @@ struct SiteControlPopover: View {
             }
             .aspectRatio(contentMode: .fit)
             .frame(width: Look.rowIcon, height: Look.rowIcon)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: Look.captionGap) {
                 Text(model.siteless ? "This Page" : model.title)
                     .font(Look.heading).foregroundStyle(Look.inkPrimary).lineLimit(1)
                 Text(model.connection)
                     .font(Look.caption)
-                    // The one place a colour is not `Look.ink`: "not secure" is a warning,
-                    // and a warning in the same grey as everything else is not one.
-                    .foregroundStyle(model.insecure ? AnyShapeStyle(.orange)
-                                                    : AnyShapeStyle(Look.inkTertiary))
+                    .foregroundStyle(model.insecure ? Look.warning : Look.inkTertiary)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
@@ -516,9 +570,14 @@ struct SiteControlPopover: View {
 private struct SiteControlRow: View {
     let row: SiteControlModel.Row
     let tab: Tab
-    let model: SiteControlModel
+    /// Only for the permission picker, which names the site it is answering for. Every
+    /// other action reads the state it is flipping at click time — see `SiteControl.act`.
+    let host: String
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// A modal alert must not open over a live popover, so Clear Site Data closes this
+    /// first and runs on the next turn of the loop.
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         HStack(spacing: Look.rowSpacing) {
@@ -526,38 +585,64 @@ private struct SiteControlRow: View {
                 .font(Look.symbol)
                 .frame(width: Look.rowIcon)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: Look.captionGap) {
                 Text(row.title).font(Look.rowTitle).lineLimit(1)
                 if let note = row.note {
                     Text(note).font(Look.caption).foregroundStyle(Look.inkQuiet)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: Look.rowGap)
             control
         }
         .foregroundStyle(row.inert ? Look.inkDisabled : Look.inkPrimary)
         .padding(.horizontal, Look.rowInset)
-        .padding(.vertical, 6)
+        .padding(.vertical, Look.rowPadding)
         .frame(minHeight: Look.rowHeight)
         .background(hovering && !row.inert ? Look.hovered : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 && !row.inert }
-        .onTapGesture { if !row.inert { SiteControl.act(row.id, on: tab, model: model) } }
+        .onTapGesture(perform: press)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(row.title)
         .accessibilityValue(axValue)
         .accessibilityAddTraits(.isButton)
-        .accessibilityHint(row.note ?? "")
+        .accessibilityHint(hint)
+        .accessibilityActions {
+            // The stepper's own buttons are inside an element VoiceOver is told to ignore,
+            // so its two actions have to be published by the row itself — otherwise the
+            // only zoom a screen reader can reach is the row's tap, which is Actual Size.
+            if case .zoom = row.control {
+                Button("Zoom In") { Zoom.zoomIn(tab); SiteChanges.shared.bump() }
+                Button("Zoom Out") { Zoom.zoomOut(tab); SiteChanges.shared.bump() }
+            }
+        }
+    }
+
+    private func press() {
+        guard !row.inert else { return }
+        guard case .action = row.control else { return SiteControl.act(row.id, on: tab) }
+        dismiss()
+        Task { @MainActor in SiteControl.act(row.id, on: tab) }
+    }
+
+    /// What the row is about to do, when that is not obvious from its title — and, on the
+    /// two rows that do something a tap cannot be taken back from, what it costs.
+    private var hint: String {
+        switch row.control {
+        case .zoom:   "Resets the page to actual size. Zoom In and Zoom Out are also available."
+        case .action: "Signs you out of this site and forgets what it stored. This cannot be undone."
+        default:      row.note ?? ""
+        }
     }
 
     @ViewBuilder private var control: some View {
         switch row.control {
         case .toggle(let on):
             Toggle("", isOn: Binding(get: { on },
-                                     set: { _ in SiteControl.act(row.id, on: tab, model: model) }))
+                                     set: { _ in SiteControl.act(row.id, on: tab) }))
                 // A switch, not the checkbox a bare `Toggle` renders as in a popover: this
                 // is a setting that takes effect as it is flipped, not a box on a form.
                 .toggleStyle(.switch).labelsHidden().controlSize(.mini).disabled(row.inert)
@@ -566,16 +651,16 @@ private struct SiteControlRow: View {
             Picker("", selection: Binding(
                 get: { PermissionAnswer(answer) },
                 set: { SiteControl.set(row.id == .camera ? .camera : .microphone,
-                                       to: $0.value, host: model.host) })) {
+                                       to: $0.value, host: host) })) {
                 ForEach(PermissionAnswer.allCases) { Text($0.title).tag($0) }
             }
             .labelsHidden().fixedSize().controlSize(.small)
             .accessibilityHidden(true)
         case .zoom(let label):
-            HStack(spacing: 2) {
+            HStack(spacing: Look.stepGap) {
                 StepButton(glyph: "minus") { Zoom.zoomOut(tab); SiteChanges.shared.bump() }
                 Text(label).font(Look.caption).monospacedDigit()
-                    .frame(width: 38)
+                    .frame(width: Look.stepLabel)
                     .accessibilityHidden(true)
                 StepButton(glyph: "plus") { Zoom.zoomIn(tab); SiteChanges.shared.bump() }
             }
@@ -603,7 +688,7 @@ private struct StepButton: View {
         Button(action: action) {
             Image(systemName: glyph)
                 .font(Look.caption)
-                .frame(width: Look.control - 4, height: Look.control - 8)
+                .frame(width: Look.step, height: Look.step)
                 .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
                 .contentShape(.rect)
         }

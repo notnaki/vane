@@ -123,6 +123,21 @@ enum Look {
     /// The Site Control Center popover. Wide enough for "Picture in Picture" and its switch
     /// on one line, and no wider — it hangs off the address pill, not off the window.
     static let siteWidth: CGFloat = 300
+    /// The mark on the pill's site glyph when the site holds a permission, and how far
+    /// outside the glyph's box it sits: a badge on the lock, not a second glyph beside it.
+    static let badge: CGFloat = 5
+    static let badgeOffset: CGFloat = 3
+    /// Between a title and the caption under it — a site row and the popover's header.
+    static let captionGap: CGFloat = 2
+    /// A site row's vertical padding. Derived so a row with one line of title is exactly
+    /// `rowHeight` tall with a `control` in it, and a row with a caption grows from there.
+    static let rowPadding: CGFloat = (rowHeight - control) / 2
+    /// The zoom stepper: a square −/+ a step inside `control` so it is never taller than
+    /// the popup buttons beside it, the gap around the label, and the label's own width,
+    /// fixed at "100%" so stepping does not shift the buttons under the pointer.
+    static let step: CGFloat = control - 4
+    static let stepGap: CGFloat = 2
+    static let stepLabel: CGFloat = 38
 
     static let text = Font.system(size: 13)
     /// A sidebar row's title, the space's name, New Tab: Arc sets these a point larger than
@@ -186,6 +201,11 @@ enum Look {
     /// Profiles list, where the selected row is the one whose controls are shown. Arc's is
     /// a whisper of blue (29,34,46 on 27).
     static let accentSelected = Color.accentColor.opacity(0.10)
+
+    /// Something is wrong with the page rather than with the chrome: a connection that is
+    /// not secure. The one colour in the window that is not `ink` or the user's accent,
+    /// because a warning set in the same grey as everything else is not a warning.
+    static let warning = Color.orange
 
     /// The one-pixel lines: dividers, field borders.
     static let hairline = ink(0.08)

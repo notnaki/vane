@@ -441,13 +441,19 @@ private struct AddressPill: View {
 /// Split from `PillBody` only so the tab can be observed; the empty pill has none.
 private struct LiveAddressPill: View {
     @ObservedObject var tab: Tab
+    /// The site glyph's badge is not on the tab: it is a remembered permission, written by
+    /// a modal prompt that has no route back into this view. See `SiteChanges`.
+    @ObservedObject private var changes = SiteChanges.shared
 
     var body: some View {
-        let scheme = tab.currentURL?.scheme
+        // Built *here*, where the tab is observed, and handed down as a value. Built inside
+        // the glyph instead, SwiftUI would be free to skip that view's body across a
+        // navigation — its one stored property, the Tab, is unchanged — and leave the lock
+        // and the badge describing the page before last.
+        let site = SiteControlModel(tab)
         PillBody(tab: tab, host: host, address: tab.address,
                  reader: tab.readerAvailable || Reader.isOn(tab), readerOn: Reader.isOn(tab),
-                 insecure: PillState.insecure(scheme: scheme, onlySecureContent: tab.secureContent,
-                                              trusted: tab.certificateTrusted),
+                 site: site,
                  zoom: PillState.zoomLabel(tab.zoom))
     }
 
@@ -468,8 +474,9 @@ private struct PillBody: View {
     let address: String
     let reader: Bool
     let readerOn: Bool
-    /// Arc's warning on a page that is not secure; a plain lock on one that is.
-    var insecure = false
+    /// The page as the Site Control Center sees it: which glyph the pill leads with,
+    /// whether it is badged, and what the popover will say. Empty with no tab.
+    var site = SiteControlModel()
     /// "125%" while the page is zoomed, nil at 100 %. Clicking it puts the page back.
     var zoom: String?
     @State private var hovering = false
@@ -511,7 +518,7 @@ private struct PillBody: View {
 
     private var content: some View {
         HStack(spacing: 8) {
-            SiteGlyph(tab: tab)
+            SiteGlyph(tab: tab, site: site)
             if reader, let tab { ReaderGlyph(tab: tab, on: readerOn) }
             // Secondary ink, the way Arc sets the host (179 on 84): the address is a
             // label for the page, not a title among titles.
@@ -528,7 +535,7 @@ private struct PillBody: View {
     /// The address, and the two things the glyph and the chip say about it.
     private var axValue: String {
         var s = address.isEmpty ? "Empty" : address
-        if insecure { s += ", not secure" }
+        if site.insecure { s += ", not secure" }
         if let zoom { s += ", zoomed to \(zoom)" }
         return s
     }
@@ -586,29 +593,30 @@ private struct PillHoverGlyphs: View {
 /// is not a control.
 private struct SiteGlyph: View {
     let tab: Tab?
-    /// So the badge lights up the moment a permission prompt is answered, which happens in
-    /// a modal alert with no route back into this view. See `SiteChanges`.
-    @ObservedObject private var changes = SiteChanges.shared
+    /// Passed in rather than derived, so this view redraws whenever the page does — see
+    /// the note in `LiveAddressPill`. `SiteControlModel` is `Equatable`, so an unchanged
+    /// page still costs nothing.
+    let site: SiteControlModel
     @State private var open = false
 
     var body: some View {
-        let model = SiteControlModel(tab)
         Button { open.toggle() } label: {
-            Image(systemName: model.glyph)
+            Image(systemName: site.glyph)
                 // Tiny on purpose: it says "this site holds a grant", and anything bigger
                 // would read as a warning about the connection instead.
                 .overlay(alignment: .topTrailing) {
-                    if model.badge != nil {
-                        Circle().fill(Color.accentColor).frame(width: 5, height: 5)
-                            .offset(x: 3, y: -2)
+                    if site.badge != nil {
+                        Circle().fill(Color.accentColor)
+                            .frame(width: Look.badge, height: Look.badge)
+                            .offset(x: Look.badgeOffset, y: -Look.badgeOffset)
                     }
                 }
         }
         .buttonStyle(.plain)
         .disabled(tab == nil)
-        .help(model.siteless ? "Site Controls" : "\(model.title) — \(model.connection)")
+        .help(site.siteless ? "Site Controls" : "\(site.title) — \(site.connection)")
         .accessibilityLabel("Site Controls")
-        .accessibilityValue([model.connection, model.badge].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityValue([site.connection, site.badge].compactMap { $0 }.joined(separator: ", "))
         .accessibilityHint("Shows what this site is allowed to do, and its zoom, extensions and data.")
         .popover(isPresented: $open, arrowEdge: .bottom) {
             if let tab { SiteControlPopover(tab: tab) }

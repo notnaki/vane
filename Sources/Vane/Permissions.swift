@@ -51,11 +51,22 @@ import WebKit
         defaults.set(allow, forKey: key(host: host, type: type))
     }
 
-    /// What this site may do with one device, counting the pair grant that covers it. A
-    /// site that once said yes to "camera and microphone" *has* said yes to the camera, and
-    /// the Site Control Center would be lying if it showed that row as unanswered.
+    /// What this site may do with one device, counting the answers that cover it.
+    ///
+    /// It reads both ways, because a page asks whichever way it likes. A site that once
+    /// said yes to "camera and microphone" *has* said yes to the camera, and the Site
+    /// Control Center would be lying if it showed that row as unanswered. And a site
+    /// answered device by device — which is the only way the panel can answer it — has
+    /// been answered about the pair too: allowed only if both halves are, so one Block is
+    /// enough to refuse `getUserMedia({ video, audio })` without asking again.
     static func effective(host: String, type: WKMediaCaptureType) -> Bool? {
-        remembered(host: host, type: type) ?? remembered(host: host, type: .cameraAndMicrophone)
+        if let own = remembered(host: host, type: type) { return own }
+        guard type == .cameraAndMicrophone else {
+            return remembered(host: host, type: .cameraAndMicrophone)
+        }
+        guard let camera = remembered(host: host, type: .camera),
+              let microphone = remembered(host: host, type: .microphone) else { return nil }
+        return camera && microphone
     }
 
     /// The Site Control Center's three answers: Allow, Block, or nil for "ask me again".
@@ -265,6 +276,22 @@ import WebKit
                         effective(host: "pair.example", type: .camera) == false))
         results.append(("…and the untouched one keeps the yes it was given",
                         effective(host: "pair.example", type: .microphone) == true))
+        resetAll()
+        set(host: "both.example", type: .camera, answer: true)
+        set(host: "both.example", type: .microphone, answer: true)
+        results.append(("two separate Allows answer for the pair, so it is not asked again",
+                        effective(host: "both.example", type: .cameraAndMicrophone) == true))
+        set(host: "both.example", type: .microphone, answer: false)
+        results.append(("…and one Block refuses the pair rather than granting half of it",
+                        effective(host: "both.example", type: .cameraAndMicrophone) == false))
+        set(host: "both.example", type: .microphone, answer: nil)
+        results.append(("…while one unanswered device leaves the pair unanswered",
+                        effective(host: "both.example", type: .cameraAndMicrophone) == nil))
+        results.append(("an explicit pair answer still beats what the singles add up to",
+                        { remember(host: "both.example", type: .microphone, allow: true)
+                          remember(host: "both.example", type: .cameraAndMicrophone, allow: false)
+                          return effective(host: "both.example", type: .cameraAndMicrophone) == false }()))
+
         results.append(("a site with no host cannot be answered for",
                         { set(host: "", type: .camera, answer: true); return all().allSatisfy { !$0.host.isEmpty } }()))
 
