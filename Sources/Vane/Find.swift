@@ -25,6 +25,12 @@ import WebKit
     /// Which match is showing, 1-based. 0 means "none" — nothing typed, or no match.
     @Published private(set) var index = 0
 
+    /// Typing "banana" starts six searches, and each one awaits WebKit twice. They can
+    /// finish in any order, so without this the count on screen is whichever search
+    /// happened to land last — "1 of 2", from the "b" nobody meant to search for. Every run
+    /// takes a ticket, and a run whose ticket has been superseded writes nothing.
+    private var generation = 0
+
     // MARK: Sessions
 
     /// One session per window: two windows each searching for something different is the
@@ -88,13 +94,20 @@ import WebKit
         return out + "\""
     }
 
-    /// Counts occurrences the way the page reads, per text node, skipping the nodes that
-    /// are markup rather than words.
-    static func countScript(_ text: String) -> String {
+    /// Counts the matches on the page **and** which one the selection is sitting on, in one
+    /// walk over the text nodes — so the two numbers can never disagree with each other.
+    /// Returns `[total, position]`, position being 1-based, or 0 when nothing is selected.
+    ///
+    /// Measuring rather than counting steps is the whole point: WebKit searches from the
+    /// current selection, and a reload, an Escape, or a click on the page drops that
+    /// selection. A position we incremented ourselves would then be confidently wrong.
+    static func measureScript(_ text: String) -> String {
         """
         (function (q) {
-          if (!q || !document.body) { return 0; }
+          if (!q || !document.body) { return [0, 0]; }
           var needle = q.toLowerCase();
+          var sel = window.getSelection();
+          var mark = (sel && sel.rangeCount) ? sel.getRangeAt(0) : null;
           var walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
             acceptNode: function (n) {
               var p = n.parentNode, tag = p ? p.nodeName : '';
@@ -104,12 +117,23 @@ import WebKit
               return NodeFilter.FILTER_ACCEPT;
             }
           });
-          var node, total = 0;
+          var node, total = 0, upTo = 0;
           while ((node = walk.nextNode())) {
             var hay = node.nodeValue.toLowerCase(), at = 0;
-            while ((at = hay.indexOf(needle, at)) !== -1) { total++; at += needle.length; }
+            while ((at = hay.indexOf(needle, at)) !== -1) {
+              total++;
+              if (mark) {
+                var here = document.createRange();
+                here.setStart(node, at);
+                here.setEnd(node, at);
+                // Every match that starts at or before the selection, the current one
+                // included: that count is the position of the current one.
+                if (here.compareBoundaryPoints(Range.START_TO_START, mark) <= 0) { upTo++; }
+              }
+              at += needle.length;
+            }
           }
-          return total;
+          return [total, upTo];
         })(\(quote(text)));
         """
     }
@@ -119,6 +143,8 @@ import WebKit
     /// A fresh search: the query changed, so recount and land on the first match after the
     /// caret. Anything else is a step through what was already counted.
     func run(_ text: String, in tab: Tab, forward: Bool = true, fresh: Bool = false) async {
+        generation += 1
+        let ticket = generation
         query = text
         guard !text.isEmpty else {
             count = 0
@@ -126,23 +152,35 @@ import WebKit
             clearHighlight(in: tab)
             return
         }
-        if fresh { count = await matches(text, in: tab) }
         let hit = await tab.find(text, forward: forward)
+        guard ticket == generation else { return }
         guard hit else {
             // WebKit found nothing, so whatever the counter said, there is nothing to be on.
             count = 0
             index = 0
             return
         }
-        // A page whose text WebKit finds but the walker cannot see (a shadow root, an
-        // iframe) would otherwise show "0 matches" over a highlighted match.
-        if count == 0 { count = 1 }
-        index = fresh ? 1 : Self.step(index: index, count: count, forward: forward)
+        let answer = await measure(text, in: tab)
+        guard ticket == generation else { return }
+        guard let measured = answer, measured.count > 0 else {
+            // A page the walker cannot read the way WebKit does — a PDF, a shadow root, an
+            // iframe — still has a highlighted match, so say so rather than "0 matches",
+            // and fall back to stepping the position ourselves.
+            count = max(count, 1)
+            index = fresh ? 1 : Self.step(index: index, count: count, forward: forward)
+            return
+        }
+        count = measured.count
+        index = max(1, measured.index)
     }
 
-    private func matches(_ text: String, in tab: Tab) async -> Int {
-        let value = try? await tab.web.evaluateJavaScript(Self.countScript(text))
-        return (value as? Int) ?? (value as? NSNumber)?.intValue ?? 0
+    /// `[total, position]` off the page, or nil when the page cannot answer.
+    private func measure(_ text: String, in tab: Tab) async -> (count: Int, index: Int)? {
+        let value = try? await tab.web.evaluateJavaScript(Self.measureScript(text))
+        guard let pair = value as? [Any], pair.count == 2 else { return nil }
+        func number(_ any: Any) -> Int? { (any as? Int) ?? (any as? NSNumber)?.intValue }
+        guard let total = number(pair[0]), let at = number(pair[1]) else { return nil }
+        return (total, at)
     }
 
     /// Esc leaves no highlight behind: WebKit's find *is* a selection, so dropping the
@@ -169,7 +207,7 @@ import WebKit
     // MARK: Offline check
 
     static func check() -> [(String, Bool)] {
-        let script = countScript("a\"b")
+        let script = measureScript("a\"b")
         return [
             ("nothing typed says nothing", label(index: 0, count: 0, query: "") == ""),
             ("a match reads as n of m", label(index: 3, count: 12, query: "q") == "3 of 12"),
@@ -201,9 +239,14 @@ import WebKit
             ("a quote in the query is escaped", quote("a\"b") == "\"a\\\"b\""),
             ("a backslash in the query is escaped", quote("a\\b") == "\"a\\\\b\""),
             ("a newline in the query is escaped", quote("a\nb") == "\"a\\nb\""),
-            ("the counting script cannot be broken out of",
+            ("the measuring script cannot be broken out of",
              !script.contains("(\"a\"b\")") && script.contains("\"a\\\"b\"")),
-            ("the counting script skips markup nodes", script.contains("SCRIPT")),
+            ("the measuring script skips markup nodes", script.contains("SCRIPT")),
+            ("the measuring script asks for the total and the position together",
+             script.contains("return [total, upTo]")),
+            ("…and reads the position off the page's own selection",
+             script.contains("window.getSelection()")
+                && script.contains("compareBoundaryPoints")),
         ]
     }
 }
