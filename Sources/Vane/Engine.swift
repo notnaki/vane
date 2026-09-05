@@ -269,6 +269,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         Zoom.apply(to: self)
     }
 
+    /// The window holding this tab is closing. `suspend` is what drops the KVO observers,
+    /// the script message handlers and the WebContent process; without it `TabAudio`'s
+    /// observer outlives the web view it was watching — a crash, not a leak — the process
+    /// is never given back, and a page handed to another window carries on playing sound
+    /// from a window nobody can see any more.
+    func tearDown() {
+        suspend()
+        TabAudio.forget(id)
+    }
+
     /// Come up already suspended, so restoring thirty tabs costs one WebContent process
     /// instead of thirty. The strip still has a title and a favicon.
     func park(url: URL, _ p: Parked) {
@@ -631,6 +641,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func clearSuggestions() { suggestTask?.cancel(); suggestions = []; suggestionIndex = -1 }
 
     let isPrivate: Bool
+    /// A Little Arc window: one page, no sidebar, no Space. It shares the profile's cookies
+    /// and history — it is the same browser, only a different window — but it owns none of
+    /// the profile's furniture, so it restores no favourites and no pinned rows and is
+    /// never written into the session. See LittleArc.swift.
+    let isLittle: Bool
     /// The profile this window belongs to. A window never changes profile — opening another
     /// profile opens another window.
     let profileID: UUID
@@ -653,8 +668,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// its interactionState. A tab we have state for comes up suspended instead of loading.
     init(isPrivate: Bool = false, urls: [URL] = [],
          profileID: UUID = ProfileManager.shared.active.id, space: Space? = nil,
-         parked: [String: Parked] = [:]) {
+         parked: [String: Parked] = [:], isLittle: Bool = false) {
         self.isPrivate = isPrivate
+        self.isLittle = isLittle
         self.profileID = profileID
         self.currentSpaceID = space?.id
         TabStore.all.append(self)
@@ -668,13 +684,19 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // What stays belongs to the profile, not to a window, so only the first window of
         // that profile gets it back — and the session's copy of those same urls is dropped
         // so they don't come up twice.
-        let firstOfProfile = TabStore.all.filter { $0.profileID == profileID && !$0.isPrivate }.count == 1
-        let mine = !isPrivate && firstOfProfile
+        // A Little Arc does not count: it is not a window the profile's pinned rows belong
+        // to, and letting it be "the first one" would cost the next real window its rows.
+        let firstOfProfile = TabStore.all
+            .filter { $0.profileID == profileID && !$0.isPrivate && !$0.isLittle }.count == 1
+        let mine = !isPrivate && !isLittle && firstOfProfile
         // Favourites are the one thing every Space shares, so they come from the profile
         // whether this window is in a Space or not. `Spaces.favourites` also folds any
         // per-space grid an older spaces.json still carries into that one list.
-        let favourites = isPrivate ? [] : Spaces.favourites(for: profileID)
-        let pinned = space?.pinnedTabURLs ?? (mine ? TabStore.stayingURLs(.pinned, for: profileID) : [])
+        // A Little Arc has no sidebar to put either section in, and nothing it does may
+        // move the profile's grid — so it starts with the one page it was handed.
+        let favourites = isPrivate || isLittle ? [] : Spaces.favourites(for: profileID)
+        let pinned = isLittle ? []
+            : (space?.pinnedTabURLs ?? (mine ? TabStore.stayingURLs(.pinned, for: profileID) : []))
         // A space carries its own per-tab state in a sidecar; a window restore is handed one.
         let parked = space.map { Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory) } ?? parked
         restore(favourites, as: .favourite, parked: parked)
@@ -686,7 +708,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // first Today tab, and with none the column is bare and the search bar is up — the
         // same thing an empty window does, because as far as pages go it is one.
         current = tabs.first { $0.kind == .today }?.id
-        if rest.isEmpty { newTab(nil) }
+        // `openPalette`, not `newTab(nil)`: they do the same thing, but `newTab` on a Little
+        // Arc opens another window, and a window opening itself does not end.
+        if rest.isEmpty { openPalette(.newTab) }
         rememberSpace()
     }
 
@@ -704,7 +728,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     }
 
     private func rememberSpace() {
-        guard !isPrivate else { return }
+        // A Little Arc is in no Space, and must not be read as "the user left this profile
+        // outside every Space" — that would clear the Space the next window comes up in.
+        guard !isPrivate, !isLittle else { return }
         let key = TabStore.lastSpaceKey(profileID)
         if let id = currentSpaceID {
             UserDefaults.standard.set(id.uuidString, forKey: key)
@@ -734,6 +760,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// tab only comes into being when the user searches or opens something from it — a
     /// dismissed bar leaves nothing behind.
     func newTab(_ url: URL?) {
+        // One page per Little Arc: ⌘T, the palette's New Tab and everything else that asks
+        // this window for a tab gets another Little Arc instead of a second page hidden
+        // behind the first. With no url it comes up empty with the search bar over it,
+        // which is what a new window does.
+        if isLittle { LittleArc.open(url); return }
         if let url {
             newBlankTab().web.load(URLRequest(url: url))
         } else {
@@ -765,8 +796,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         t.onNewTab = { [weak self] u in self?.newTab(u) }
         // A popup or a `target=_blank` link belongs next to the page that opened it, not at
         // the bottom of a list of thirty tabs — and it is what the user just asked for, so
-        // it takes focus where a ⌘-click does not.
-        t.onOpenBeside = { [weak self] u, focus in self?.openBeside(u, focus: focus) }
+        // it takes focus where a ⌘-click does not. Out of a Little Arc there is no list to
+        // be beside, and a page that escaped into the sidebar is not what was clicked.
+        t.onOpenBeside = { [weak self] u, focus in
+            guard let self else { return }
+            if isLittle { LittleArc.open(u) } else { openBeside(u, focus: focus) }
+        }
         Motion.list { tabs.append(t) }
         current = t.id
         extensions.sync()
@@ -972,7 +1007,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     }
 
     func savePins() {
-        guard !isPrivate else { return }
+        // A Little Arc holds no favourites and no pinned rows; writing its empty lists down
+        // would erase the profile's.
+        guard !isPrivate, !isLittle else { return }
         func urls(_ kind: TabKind) -> [String] {
             tabs.filter { $0.kind == kind }.compactMap { TabStore.pinURL($0.currentURL) }
         }
@@ -1053,8 +1090,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     /// Write the open tabs back into whichever space this window is showing. No-op when the
     /// window is not in a space, and never for a private window — nothing private is written.
+    /// A Little Arc is neither in a Space nor holding the profile's favourites, and writing
+    /// its one tab down as both would empty the grid and the Space it was opened from.
     func saveCurrentSpace() {
-        guard !isPrivate, let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
+        guard !isPrivate, !isLittle,
+              let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
         else { return }
         func urls(_ keep: (Tab) -> Bool) -> [URL] {
             tabs.filter(keep).compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
@@ -1087,8 +1127,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// rest come up suspended, which is the point.
     func switchTo(space: Space) {
         // A space's profileID is the only link to its profile, so refusing here is what keeps
-        // a window from ever showing another profile's tabs.
-        guard space.profileID == profileID, space.id != currentSpaceID else { return }
+        // a window from ever showing another profile's tabs. A Little Arc is in no Space and
+        // has no strip to rebuild — switching one would throw the page away and leave an
+        // empty window claiming to be in a Space. Every route into here is shared with the
+        // browser window (the palette's Space rows, ⌃1–9, ⌥⌘←/→, the Spaces menu), so the
+        // refusal belongs here rather than at each of them.
+        guard !isLittle, space.profileID == profileID, space.id != currentSpaceID else { return }
         saveCurrentSpace()
         // Which way the strip slides. Set before the switch so the sidebar's transition and
         // the tint cross-fade are already pointing the right way when the list changes.
@@ -1103,7 +1147,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         restore(space.pinnedTabURLs ?? [], as: .pinned, parked: parked)
         for url in space.tabURLs { newBlankTab().open(url, parked: parked[url.absoluteString]) }
         current = tabs.first { $0.kind == .today }?.id
-        if space.tabURLs.isEmpty { newTab(nil) }
+        if space.tabURLs.isEmpty { openPalette(.newTab) }
         rememberSpace()
         extensions.sync()
     }
@@ -1142,7 +1186,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// straight away and the name field is already focused inside it. See `NewSpaceButton`.
     @discardableResult
     func newSpace(named name: String = "New Space") -> Space? {
-        guard !isPrivate else { return nil }
+        // Nor a Little Arc: it would make the Space and then move itself into it, taking the
+        // page with it and leaving the browser window none the wiser.
+        guard !isPrivate, !isLittle else { return nil }
         saveCurrentSpace()
         let space = ProfileManager.shared.createSpace(name: name, in: profileID)
         spaceDirection = 1                 // a new Space is always the last one

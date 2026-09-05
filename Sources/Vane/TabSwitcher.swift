@@ -70,7 +70,8 @@ struct TabSwitcher: Equatable {
     /// ⌃⇥ (+1) and ⌃⇧⇥ (−1): open on the first press, move on every one after.
     func step(_ delta: Int) {
         if state != nil { state?.advance(by: delta); return }
-        guard let s = Windows.current else { return }
+        // The switcher walks a window's strip, and a Little Arc has one page and no strip.
+        guard let s = Windows.main else { return }
         let ids = TabSwitcher.recent(s.tabs.map { ($0.id, $0.lastActive) }, current: s.current)
         guard let fresh = TabSwitcher(recent: ids, current: s.current, delta: delta) else { return }
         store = s

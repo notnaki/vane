@@ -285,7 +285,9 @@ import WebKit
     private var myStores: [TabStore] { TabStore.all.filter { $0.profileID == profileID } }
 
     private var myFocusedStore: TabStore? {
-        guard let current = Windows.current, current.profileID == profileID else { return nil }
+        // An extension's idea of "the active tab" is a tab in the browser window; a Little
+        // Arc is a page passing through and has no row for an extension to act on.
+        guard let current = Windows.main, current.profileID == profileID else { return nil }
         return current
     }
 

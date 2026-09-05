@@ -22,9 +22,11 @@ if args.first == "import", let file = args.dropFirst().first {
 
 Crash.begin()
 
-// `vane <url>` beats a restored session; otherwise pick up where the user left off.
+// `vane <url>` beats a restored session; otherwise pick up where the user left off. The url
+// is routed exactly as a link from any other app is, so `open -a Vane <url>` and a click in
+// Mail land in the same place — a Little Arc, or a window with the page in it.
 if let first = args.first, first.hasPrefix("http"), let u = URL(string: first) {
-    Windows.open(urls: [u])
+    URLHandling.open([u])
 } else if !Prefs.restoreSession || !Crash.offerRestore() {
     Windows.open()
 }
@@ -40,8 +42,12 @@ AppleAI.prewarm()      // first request otherwise pays model load on top of its 
 URLHandling.registerAppleEventHandler()
 app.mainMenu = buildMenu()
 // Rebound keys are resolved here, before AppKit dispatches menu key equivalents. Commands
-// with no registered action fall through untouched.
-NSEvent.addLocalMonitorForEvents(matching: .keyDown) { Keybindings.handle($0) ? nil : $0 }
+// with no registered action fall through untouched. A Little Arc gets first refusal: three
+// of its keys mean something else in a window with a sidebar, and the registry would
+// otherwise answer for them. See LittleArc.handleKey.
+NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+    LittleArc.handleKey($0) || Keybindings.handle($0) ? nil : $0
+}
 app.activate(ignoringOtherApps: true)
 URLHandling.promptIfNotDefaultOnce()
 app.run()

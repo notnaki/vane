@@ -45,10 +45,26 @@ import SwiftUI
 /// The ground itself: nothing to see, one job, and it is the lowest thing in the sidebar so
 /// anything interactive above it takes the pointer first.
 struct WindowDragArea: View {
+    /// Whether *this* patch is counted in the shared total. A patch that goes away while the
+    /// pointer is on it — a Little Arc closing under the pointer, the sidebar sliding out —
+    /// never gets its `onHover(false)`, and the leaked count left the app believing every
+    /// click was on bare ground: a click on a page dragged the window instead of pressing
+    /// the link, and the window it dragged never became key.
+    @State private var counted = false
+
     var body: some View {
         Color.clear
             .contentShape(.rect)
-            .onHover { WindowDragGround.shared.hover($0) }
+            .onHover { over in
+                guard over != counted else { return }      // idempotent, so it cannot double-count
+                counted = over
+                WindowDragGround.shared.hover(over)
+            }
+            .onDisappear {
+                guard counted else { return }
+                counted = false
+                WindowDragGround.shared.hover(false)
+            }
             // Decoration. "Move window" is what the window's own accessibility offers; a
             // second, invisible copy of it in the middle of the tab list is noise.
             .accessibilityHidden(true)

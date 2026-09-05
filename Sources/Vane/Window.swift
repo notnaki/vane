@@ -129,15 +129,27 @@ extension VaneWindow {
 @MainActor enum Windows {
     private static var delegates: [WindowDelegate] = []
 
-    /// The window the menus act on. keyWindow is nil while a sheet or panel is up, so fall
-    /// back to the most recently opened one rather than doing nothing.
+    /// The window in front, whatever kind it is — a Little Arc included, because ⌘L, ⌘R,
+    /// Find and the rest have to act on the window the user is looking at. keyWindow is nil
+    /// while a sheet or panel is up, so fall back to the most recently opened one rather
+    /// than doing nothing; the fallback skips Little Arcs, since a menu item fired with no
+    /// key window meant the browser.
+    /// Anything that moves rows around a sidebar, a Space or the archive wants `main`.
     static var current: TabStore? {
-        TabStore.all.first { $0.window?.isKeyWindow == true } ?? TabStore.all.last
+        TabStore.all.first { $0.window?.isKeyWindow == true } ?? main
+    }
+
+    /// The frontmost ordinary browser window, never a Little Arc. What a link from another
+    /// app opens a tab in, what a Little Arc hands its page over to, and what every menu
+    /// item that needs a sidebar acts on. See LittleArc.swift.
+    static var main: TabStore? {
+        let ordinary = TabStore.all.filter { !$0.isLittle }
+        return ordinary.first { $0.window?.isKeyWindow == true } ?? ordinary.last
     }
 
     /// The window the menus act on, restricted to one profile.
     static func current(in profileID: UUID) -> TabStore? {
-        let mine = TabStore.all.filter { $0.profileID == profileID }
+        let mine = TabStore.all.filter { $0.profileID == profileID && !$0.isLittle }
         return mine.first { $0.window?.isKeyWindow == true } ?? mine.last
     }
 
@@ -173,6 +185,10 @@ extension VaneWindow {
         window.toolbar = NSToolbar(identifier: "VaneEmpty")
         window.toolbarStyle = .unifiedCompact
         window.tabbingMode = .disallowed          // Vane draws its own tabs
+        // A window made in code is `isReleasedWhenClosed` by default, which under ARC is an
+        // over-release — the close animation reaching a window ARC has already freed. See
+        // `LittleArc.open`, where it crashed, and `SettingsWindow`, which turns it off too.
+        window.isReleasedWhenClosed = false
         // The window itself draws nothing: `WindowGlass` inside the content view is the
         // only ground, so the desktop shows through the sidebar and the gap around the page
         // card. An opaque window would paint over it before SwiftUI ever ran.
@@ -240,6 +256,8 @@ extension VaneWindow {
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
                 Session.save()
+                // Then take the pages down with the window: see `Tab.tearDown`.
+                store.tabs.forEach { $0.tearDown() }
                 TabStore.all.removeAll { $0 === store }
                 delegates.removeAll { $0 === self }
             }
@@ -301,7 +319,9 @@ extension VaneWindow {
     /// rewritten, so quitting from profile B does not erase profile A's session.
     static func save() {
         var byProfile: [UUID: [[Entry]]] = [:]
-        for store in TabStore.all where !store.isPrivate {
+        // Nothing private is written down, and neither is a Little Arc: it is a link
+        // someone followed once, not a window to come back up in.
+        for store in TabStore.all where !store.isPrivate && !store.isLittle {
             store.saveCurrentSpace()
             let entries = store.tabs.compactMap { tab -> Entry? in
                 // currentURL, not web.url: a suspended tab has no live page and would

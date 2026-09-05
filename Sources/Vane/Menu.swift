@@ -209,10 +209,12 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
 @MainActor private var tidyTask: Task<Void, Never>?
 
 @MainActor private func tidyItems() -> [NSMenuItem] {
-    let store = Windows.current
+    // `Windows.main`, not `current`: every item here moves rows around a sidebar, and a
+    // Little Arc in front of the browser window has none. See LittleArc.swift.
+    let store = Windows.main
     let tidy = item(.tidyTabs) {
         tidyTask?.cancel()
-        guard let s = Windows.current else { return }
+        guard let s = Windows.main else { return }
         tidyTask = Task { @MainActor in
             guard let groups = await TidyTabs.plan(for: s) else { return }
             let before = s.tabs.map(\.id)
@@ -231,7 +233,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     }
     tidy.isEnabled = store.map(TidyTabs.shouldOffer) ?? false
     let undo = item(.undoTidyTabs) {
-        guard let s = Windows.current else { return }
+        guard let s = Windows.main else { return }
         TidyTabs.undo(s)
         rebuild()
     }
@@ -239,11 +241,11 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     let clear = item(.clearTabs) { clearTabs() }
     clear.isEnabled = store.map { s in s.tabs.contains { $0.kind == .today } } ?? false
     let favourite = item(.favouriteTab) {
-        guard let s = Windows.current, let c = s.current else { return }
+        guard let s = Windows.main, let c = s.current else { return }
         s.toggleFavourite(c)
     }
     let pin = item(.pinTab) {
-        guard let s = Windows.current, let c = s.current else { return }
+        guard let s = Windows.main, let c = s.current else { return }
         s.togglePinned(c)
     }
     // The titles say what the item will do to *this* tab, the way Arc's do.
@@ -311,7 +313,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
 /// sidebar's footer, so both rows land in the same place — and the sidebar has to be
 /// showing for the popover to have anything to hang off.
 @MainActor private func showLibrary() {
-    guard let store = Windows.current else { return }
+    guard let store = Windows.main else { return }
     store.sidebarShown = true
     store.libraryOpen = true
 }
@@ -330,7 +332,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
 /// Arc does — the sidebar stays, the page area goes bare and the search bar is a keystroke
 /// away. Favourites and pinned tabs are untouched.
 @MainActor private func clearTabs() {
-    guard let s = Windows.current else { return }
+    guard let s = Windows.main else { return }
     let doomed = s.tabs.filter { $0.kind == .today }
     guard !doomed.isEmpty else { return }
     doomed.forEach { s.archive($0.id) }
@@ -338,15 +340,17 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
 }
 
 @MainActor private func spaceItems() -> [NSMenuItem] {
-    let store = Windows.current
+    // The Space menu is the browser window's, whatever is in front: a Little Arc is in no
+    // Space and cannot switch into one.
+    let store = Windows.main
     let switchers = (store?.spaces ?? []).map { space in
-        let entry = item(space.name, "") { Windows.current?.switchTo(space: space); rebuild() }
+        let entry = item(space.name, "") { Windows.main?.switchTo(space: space); rebuild() }
         entry.state = store?.currentSpaceID == space.id ? .on : .off
         return entry
     }
     let numbered = (1...9).map { n in
         item(Command(rawValue: "goToSpace\(n)") ?? .goToSpace1) {
-            Windows.current?.switchTo(spaceNumber: n)
+            Windows.main?.switchTo(spaceNumber: n)
             rebuild()
         }
     }
@@ -355,18 +359,31 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     // spaces would be seven dead rows.
     for (i, entry) in numbered.enumerated() where i >= switchers.count { entry.isHidden = true }
     let nav = [
-        item(.previousSpace) { Windows.current?.cycleSpace(-1); rebuild() },
-        item(.nextSpace) { Windows.current?.cycleSpace(1); rebuild() },
+        item(.previousSpace) { Windows.main?.cycleSpace(-1); rebuild() },
+        item(.nextSpace) { Windows.main?.cycleSpace(1); rebuild() },
     ]
     for entry in nav { entry.isEnabled = (store?.spaces.count ?? 0) > 1 }
     return switchers + [.separator()] + nav + numbered + [
         .separator(),
         item(.newSpace) {
             // Arc's New Space appears first and is named in place — see `NewSpaceButton`.
-            _ = Windows.current?.newSpace()
+            _ = Windows.main?.newSpace()
             rebuild()
         },
     ]
+}
+
+/// Arc's Window ▸ Show All Little Arc Windows: they all come to the front together, or they
+/// all get out of the way together. The title says which of the two it will do, so "Show"
+/// never hides — `toggleAll` rebuilds the menu, because its own title is what just changed.
+/// The windows themselves are in the list below it, because AppKit files every titled window
+/// into this menu on its own.
+/// ponytail: not greyed out with none open. NSMenu auto-enables any item whose target
+/// answers its action, so greying this would take a `validateMenuItem:` on Menu.swift's
+/// closure holder — for a row that already does nothing when there is nothing to show.
+@MainActor private func littleArcWindows() -> NSMenuItem {
+    let verb = LittleArc.allShowing ? "Hide" : "Show"
+    return item("\(verb) All Little Arc Windows", "") { LittleArc.toggleAll() }
 }
 
 /// Menus carry live state (checkmarks, the bookmarks and history lists), so they are
@@ -404,7 +421,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         .separator(),
         // Arc's ⌘W: a Today tab is archived rather than destroyed, and a favourite or a
         // pinned tab just loses its page and stays in the sidebar.
-        item(.closeTab) { Windows.current?.archiveWithToast() },
+        item(.closeTab) { Windows.current?.closeOrArchive() },
         responderItem(.closeWindow, #selector(NSWindow.performClose(_:))) {
             NSApp.keyWindow?.performClose(nil)
         },
@@ -567,14 +584,14 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         item(.showDownloads) { showLibrary() },
         .separator(),
         item(.reopenClosedTab) {
-            if let u = ClosedTabs.pop() { (Windows.current ?? Windows.open()).newTab(u) }
+            if let u = ClosedTabs.pop() { (Windows.main ?? Windows.open()).newTab(u) }
         },
         .separator(),
         item("Export History (JSON)…", "") { Export.chooseAndExport(.historyJSON) },
         item("Export History (CSV)…", "") { Export.chooseAndExport(.historyCSV) },
         .separator(),
         item(.clearArchive) {
-            guard let store = Windows.current else { return }
+            guard let store = Windows.main else { return }
             let archive = Archive.shared(for: store.profileID)
             let a = NSAlert()
             a.messageText = "Clear the archive?"
@@ -603,6 +620,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         .separator(),
         item(.showLibrary) { showLibrary() },
         .separator(),
+        littleArcWindows(),
         standard("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))),
     ])
     root.addItem(window)

@@ -58,13 +58,16 @@ import AppKit
     /// NSAppleEventManager does not retain its handlers.
     private static let handler = Handler()
 
-    /// Open in the frontmost window, or a new one if the app is running with none.
+    /// Where a link from another app lands: a Little Arc window (Arc's default, and Vane's),
+    /// or a tab in the frontmost ordinary window. `LittleArc.route` is the decision on its
+    /// own, so it can be proved without a window server.
     static func open(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        if let store = Windows.current {
-            urls.forEach { store.newTab($0) }
-        } else {
-            Windows.open(urls: urls)
+        switch LittleArc.route(preferLittle: Prefs.openLinksInLittleArc,
+                               hasWindow: Windows.main != nil) {
+        case .little:    urls.forEach { LittleArc.open($0) }
+        case .tab:       urls.forEach { Windows.main?.newTab($0) }
+        case .newWindow: Windows.open(urls: urls)
         }
         NSApp.activate(ignoringOtherApps: true)
     }

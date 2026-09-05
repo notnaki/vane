@@ -149,7 +149,7 @@ struct BrowserWindow: View {
 /// around the card, which is what makes the card read as floating on something rather than
 /// sitting in a grey box. A space with no colour of its own wears its profile's — Arc has
 /// no colourless space, and a grey slab was what the old fallback amounted to.
-private struct SpaceGround: View {
+struct SpaceGround: View {
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var profiles: ProfileManager
     @Environment(\.colorScheme) private var scheme
@@ -218,7 +218,7 @@ private struct Shortcuts: View {
 
 /// The web view as a rounded card floating on the window's glass, with everything that
 /// hovers over the page (find, the save-password prompt) inside its clip.
-private struct WebCard: View {
+struct WebCard: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
@@ -372,7 +372,7 @@ private struct TopRow: View {
 /// The page's back, forward and reload. With no page they stay where they are, disabled:
 /// nothing in the sidebar's chrome may come and go because a tab closed — the user read
 /// that as the window emptying out rather than as one tab going away.
-private struct NavButtons: View {
+struct NavButtons: View {
     let tab: Tab?
 
     var body: some View {
@@ -426,7 +426,7 @@ private struct NavGlyphs: View {
 /// search bar, which is the one place in Vane a url or a search is entered.
 /// With no tab it stays, empty: same fill, same height, glyphs disabled, and a click opens
 /// the search bar to make the first tab. The sidebar keeps its shape whatever is open.
-private struct AddressPill: View {
+struct AddressPill: View {
     let tab: Tab?
 
     var body: some View {
