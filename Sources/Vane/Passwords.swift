@@ -341,6 +341,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("reader", Reader.check),
                                ("command palette", Palette.check),
                                ("find in page", Find.check),
+                               ("clear browsing data", BrowsingData.check),
                                ("tab suspension", Suspension.check),
                                ("keybindings", Keybindings.check),
                                ("shortcuts pane", ShortcutsPane.check),

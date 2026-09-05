@@ -100,6 +100,8 @@ import SwiftUI
               pane: { _ in AnyView(GeneralPane()) }),
         .init(id: "profiles", title: "Profiles", icon: "person",
               pane: { AnyView(ProfilesPane(tab: $0)) }),
+        .init(id: "privacy", title: "Privacy", icon: "lock",
+              pane: { _ in AnyView(PrivacyPane()) }),
         .init(id: "max", title: "Max", icon: "sparkles",
               pane: { _ in AnyView(MaxPane()) }),
         .init(id: "links", title: "Links", icon: "link",
@@ -388,6 +390,9 @@ private struct ProfilesPane: View {
     @State private var selected = ProfileManager.shared.active.id
     /// Non-nil while a profile row is an editable field rather than a label.
     @State private var renaming: UUID?
+    /// The Clear Browsing Data dialog, which is a sheet rather than an alert: it has four
+    /// controls and a sentence, and an NSAlert accessory view is a worse way to draw those.
+    @State private var clearing = false
     @State private var draft = ""
     /// The right-hand name field. Separate from `draft` on purpose: focusing a TextField
     /// writes through its binding, so sharing one would put the list row into rename mode
@@ -428,6 +433,9 @@ private struct ProfilesPane: View {
             }
         }
         .onAppear { reload() }
+        .sheet(isPresented: $clearing) {
+            ClearDataSheet(profileID: profile.id, profileName: profile.name)
+        }
         // Not `renaming = nil` here: creating a profile selects it *and* opens its row for
         // renaming, and this fires after both.
         .onChange(of: selected) { reload() }
@@ -612,7 +620,7 @@ private struct ProfilesPane: View {
         SettingsCard(divided: false) {
             VStack(spacing: 0) {
                 DataRow(icon: "lock.fill", tint: .blue, title: "Privacy and Security") {
-                    tab = "advanced"
+                    tab = "privacy"
                 }
                 DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
                     // The same place Menu.swift's Manage Saved Passwords… goes: the items
@@ -621,11 +629,7 @@ private struct ProfilesPane: View {
                         URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
                 }
                 DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
-                    if confirm("Clear the browsing history of “\(profile.name)”?", "Clear",
-                               "Bookmarks and saved passwords are not affected.") {
-                        Store.store(for: profile.id).clearHistory()
-                        rebuild()
-                    }
+                    clearing = true
                 }
             }
             .padding(.vertical, Look.inset / 2)
@@ -683,6 +687,8 @@ private struct DataRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        // The label is an HStack, so VoiceOver would otherwise reach an unnamed button.
+        .accessibilityLabel(title)
     }
 }
 
@@ -927,26 +933,126 @@ private struct AdvancedPane: View {
                          + "macOS — right-click → Inspect Element still works.")
             }
 
+        }
+    }
+}
+
+// MARK: - Privacy and Security
+
+/// Arc's "Privacy and Security" row opens Chromium's privacy page. Vane has no Chromium, so
+/// this is the pane that row means: what is switched on to protect you, what has been
+/// answered on your behalf per site, and the one button that takes it all back.
+private struct PrivacyPane: View {
+    @AppStorage("httpsOnly") private var httpsOnly = true
+    @AppStorage("blockerEnabled") private var blocking = true
+    @AppStorage("searchSuggestions") private var suggestions = false
+    @ObservedObject private var manager = ProfileManager.shared
+    /// Read once per appearance: they come out of UserDefaults, not out of a publisher.
+    @State private var grants: [SitePermissions.Grant] = []
+    @State private var httpExceptions: [String] = []
+    @State private var clearing = false
+
+    private var profile: Profile { manager.active }
+
+    var body: some View {
+        Pane {
             SettingsCard {
-                SettingsRow("Camera and microphone") {
-                    Button("Reset Permissions…") {
-                        if confirm("Forget camera and microphone permissions for every site?",
-                                   "Reset") {
-                            SitePermissions.resetAll()
+                SettingsRow("HTTPS-Only Mode") {
+                    Toggle("", isOn: $httpsOnly).labelsHidden().onChange(of: httpsOnly) { rebuild() }
+                }
+                SettingsRow("Block ads and trackers") {
+                    Toggle("", isOn: $blocking).labelsHidden()
+                        .onChange(of: blocking) { Blocker.refresh(); rebuild() }
+                }
+                SettingsRow("Filter lists") {
+                    Button("Add Filter List…") { Blocker.chooseAndAddList() }
+                }
+                SettingsRow("Search suggestions") {
+                    Toggle("", isOn: $suggestions).labelsHidden()
+                }
+                Footnote("Pages load over an encrypted connection or stop on a warning. Ads and "
+                         + "trackers are blocked from a filter list on device — nothing about "
+                         + "what you visit leaves the machine. Search suggestions are the one "
+                         + "exception: they send what you type to your search engine before you "
+                         + "press Return, and they are off unless you turn them on.")
+            }
+
+            SettingsSection("Site Permissions") {
+                SettingsCard {
+                    if grants.isEmpty && httpExceptions.isEmpty {
+                        Footnote("No site has been given camera or microphone access, and no "
+                                 + "site has been allowed to load without encryption.")
+                    }
+                    ForEach(grants) { grant in
+                        SettingsRow(grant.host) {
+                            Text("\(grant.what): \(grant.allowed ? "Allowed" : "Blocked")")
+                                .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                            Button {
+                                SitePermissions.reset(host: grant.host)
+                                reload()
+                            } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .accessibilityLabel("Forget \(grant.what.lowercased()) for \(grant.host)")
                         }
                     }
-                }
-                SettingsRow("Certificates you trusted anyway") {
-                    Button("Forget Exceptions…") {
-                        if confirm("Forget every certificate you chose to trust anyway?",
-                                   "Forget",
-                                   "Those sites will ask again the next time you visit them.") {
-                            CertificateTrust.forgetAll()
+                    ForEach(httpExceptions, id: \.self) { host in
+                        SettingsRow(host) {
+                            Text("Allowed without encryption")
+                                .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                            Button {
+                                HTTPSOnly.forget(host: host, profileID: profile.id)
+                                reload()
+                            } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                                .accessibilityLabel("Stop allowing \(host) without encryption")
+                        }
+                    }
+                    SettingsRow("Camera and microphone") {
+                        Button("Reset Permissions…") {
+                            if confirm("Forget camera and microphone permissions for every site?",
+                                       "Reset") {
+                                SitePermissions.resetAll()
+                                reload()
+                            }
+                        }
+                        .disabled(grants.isEmpty)
+                    }
+                    SettingsRow("Certificates you trusted anyway") {
+                        Button("Forget Exceptions…") {
+                            if confirm("Forget every certificate you chose to trust anyway?",
+                                       "Forget",
+                                       "Those sites will ask again the next time you visit them.") {
+                                CertificateTrust.forgetAll()
+                            }
                         }
                     }
                 }
             }
+
+            SettingsSection("Your Data") {
+                SettingsCard(divided: false) {
+                    VStack(spacing: 0) {
+                        DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
+                            clearing = true
+                        }
+                        DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
+                            NSWorkspace.shared.open(URL(fileURLWithPath:
+                                "/System/Applications/Utilities/Keychain Access.app"))
+                        }
+                    }
+                    .padding(.vertical, Look.inset / 2)
+                }
+            }
         }
+        .onAppear { reload() }
+        .sheet(isPresented: $clearing) {
+            ClearDataSheet(profileID: profile.id, profileName: profile.name)
+        }
+    }
+
+    private func reload() {
+        grants = SitePermissions.all()
+        httpExceptions = HTTPSOnly.exceptions(profileID: profile.id)
     }
 }
 

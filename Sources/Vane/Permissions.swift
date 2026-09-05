@@ -13,7 +13,9 @@ import WebKit
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
     private static var defaults: UserDefaults = .standard
 
-    private static let prefix = "sitePermission."
+    /// nonisolated so `parse` can be, and `parse` is nonisolated so the key format can be
+    /// asserted anywhere. An immutable string is safe from any thread.
+    nonisolated private static let prefix = "sitePermission."
 
     private static func label(_ type: WKMediaCaptureType) -> String {
         switch type {
@@ -78,6 +80,41 @@ import WebKit
         }
     }
 
+    /// One remembered answer, for the Privacy pane's summary.
+    struct Grant: Identifiable, Equatable, Sendable {
+        let host: String
+        /// "Camera", "Microphone", "Camera and microphone" — the words, not the enum.
+        let what: String
+        let allowed: Bool
+        var id: String { what + "." + host }
+    }
+
+    /// Which key names which grant, or nil when the key is not one of ours. Pure, so the
+    /// summary's parsing is provable — and it is parsing, since the answers are stored one
+    /// key per (site, device) rather than as a list.
+    nonisolated static func parse(key: String) -> (what: String, host: String)? {
+        guard key.hasPrefix(prefix) else { return nil }
+        let rest = key.dropFirst(prefix.count)
+        guard let dot = rest.firstIndex(of: "."), dot != rest.startIndex else { return nil }
+        let kind = String(rest[..<dot]), host = String(rest[rest.index(after: dot)...])
+        guard !host.isEmpty else { return nil }
+        switch kind {
+        case "camera":              return ("Camera", host)
+        case "microphone":          return ("Microphone", host)
+        case "cameraAndMicrophone": return ("Camera and microphone", host)
+        default:                    return nil
+        }
+    }
+
+    /// Every site that has been answered, host order, for the Privacy pane.
+    static func all() -> [Grant] {
+        defaults.dictionaryRepresentation().compactMap { key, value in
+            guard let (what, host) = parse(key: key), let allowed = value as? Bool else { return nil }
+            return Grant(host: host, what: what, allowed: allowed)
+        }
+        .sorted { $0.id < $1.id }
+    }
+
     static func resetAll() {
         for k in defaults.dictionaryRepresentation().keys where k.hasPrefix(prefix) {
             defaults.removeObject(forKey: k)
@@ -136,9 +173,41 @@ import WebKit
         results.append(("reset(host:) does not eat a subdomain",
                         remembered(host: "sub.other.example", type: .camera) == true))
 
+        // The Privacy pane reads the answers back out of the keys, so the keys have to
+        // parse — and nothing that is not one of ours may ever parse.
+        results.append(("a camera key names its site",
+                        parse(key: "sitePermission.camera.example.com").map { $0 == ("Camera", "example.com") } == true))
+        results.append(("a microphone key names its site",
+                        parse(key: "sitePermission.microphone.example.com")?.what == "Microphone"))
+        results.append(("the pair reads as the pair",
+                        parse(key: "sitePermission.cameraAndMicrophone.example.com")?.what
+                            == "Camera and microphone"))
+        results.append(("a host with dots survives the parse",
+                        parse(key: "sitePermission.camera.sub.example.co.uk")?.host
+                            == "sub.example.co.uk"))
+        results.append(("somebody else's preference is not a permission",
+                        parse(key: "homepage") == nil && parse(key: "httpsOnly") == nil))
+        results.append(("a key with no host is not a permission",
+                        parse(key: "sitePermission.camera.") == nil))
+        results.append(("a key with a kind we do not know is not a permission",
+                        parse(key: "sitePermission.location.example.com") == nil))
+
+        remember(host: "listed.example", type: .camera, allow: true)
+        remember(host: "denied.example", type: .microphone, allow: false)
+        let listed = all()
+        results.append(("every answered site is listed",
+                        listed.contains { $0.host == "listed.example" }
+                        && listed.contains { $0.host == "denied.example" }))
+        results.append(("...in a stable order, so the pane does not shuffle",
+                        listed.map(\.id) == listed.map(\.id).sorted()))
+        results.append(("...with what it was answered about, and what the answer was",
+                        listed.contains { $0.host == "denied.example" && $0.what == "Microphone"
+                                          && $0.allowed == false }))
+
         resetAll()
         results.append(("resetAll forgets everything",
                         remembered(host: "not-other.example", type: .camera) == nil))
+        results.append(("...and the summary empties with it", all().isEmpty))
         return results
     }
 }
