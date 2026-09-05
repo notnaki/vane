@@ -501,22 +501,28 @@ extension Look {
         out.append(("a colour that is not #RRGGBB has no ground", ground(hex: "sky", dark: true) == nil))
 
         // The tint cross-fade a live Space swipe drags the ground through.
-        let red = ground(hex: "#D9564F", dark: true)!, green = ground(hex: "#4CAF6E", dark: true)!
-        func sameGround(_ a: (r: Double, g: Double, b: Double),
-                        _ b: (r: Double, g: Double, b: Double)) -> Bool {
+        let red = ground(hex: "#D9564F", dark: true), green = ground(hex: "#4CAF6E", dark: true)
+        /// The two grounds and a fraction, or false if either colour failed to resolve —
+        /// which is itself worth failing on, and beats a force-unwrap in a check.
+        func mixing(_ f: Double, _ ok: (_ m: (r: Double, g: Double, b: Double),
+                                        _ a: (r: Double, g: Double, b: Double),
+                                        _ b: (r: Double, g: Double, b: Double)) -> Bool) -> Bool {
+            red.map { a in green.map { b in ok(mixed(a, b, f), a, b) } == true } == true
+        }
+        func same(_ a: (r: Double, g: Double, b: Double),
+                  _ b: (r: Double, g: Double, b: Double)) -> Bool {
             near(a.r, b.r * 255) && near(a.g, b.g * 255) && near(a.b, b.b * 255)
         }
         out.append(("no swipe means the space's own ground, untouched",
-                    mixed(red, green, 0) == red))
+                    mixing(0) { m, a, _ in m == a }))
         out.append(("a completed swipe means the neighbour's",
-                    sameGround(mixed(red, green, 1), green)))
-        out.append(("half way is half way on every channel", {
-            let m = mixed(red, green, 0.5)
-            return near(m.r, (red.r + green.r) / 2 * 255) && near(m.g, (red.g + green.g) / 2 * 255)
-                && near(m.b, (red.b + green.b) / 2 * 255)
-        }()))
+                    mixing(1) { m, _, b in same(m, b) }))
+        out.append(("half way is half way on every channel", mixing(0.5) { m, a, b in
+            near(m.r, (a.r + b.r) / 2 * 255) && near(m.g, (a.g + b.g) / 2 * 255)
+                && near(m.b, (a.b + b.b) / 2 * 255)
+        }))
         out.append(("a rubber band past the end cannot push the ground past the neighbour",
-                    sameGround(mixed(red, green, 4), green) && mixed(red, green, -4) == red))
+                    mixing(4) { m, _, b in same(m, b) } && mixing(-4) { m, a, _ in m == a }))
         out.append(("hsb round-trips a pure red", {
             guard let h = hsb(hex: "#FF0000") else { return false }
             let c = rgb(h: h.h, s: h.s, b: h.b)

@@ -17,6 +17,9 @@ extension Look {
     /// gesture handed it a velocity and an ease throws that away — the strip has to leave the
     /// fingers at the speed they left it at.
     static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
+    /// How many rows the neighbouring Space's preview draws. Past what a sidebar shows at
+    /// once the rows are scrolled-off content nobody sees, costing a favicon lookup each.
+    static let spacePreviewRows = 16
     /// The dot's hit target — `Look.dot` is 6pt, which is not a thing anyone can hit or
     /// drop a tab onto.
     static let spaceDotHit: CGFloat = 20
@@ -407,11 +410,16 @@ private struct SpaceSlide: ViewModifier {
 private struct SpacePreviewList: View {
     let space: Space
 
-    /// As many rows as a sidebar can show at once. Past that the preview is scrolled-off
-    /// content nobody sees, costing a favicon lookup each.
-    private static let cap = 16
+    /// What a preview row can be. A folder is one row whether it is open or shut: the
+    /// sidebar under the fingers is a shape, and a folder that unpacked itself here would
+    /// push every row below it out of line with the Space it is sliding over.
+    private enum Row {
+        case folder(Folder)
+        case site(URL)
+    }
 
     var body: some View {
+        let rows = self.rows
         VStack(alignment: .leading, spacing: Look.rowGap) {
             HStack(spacing: Look.rowSpacing) {
                 Image(systemName: space.icon ?? "cloud").font(Look.icon)
@@ -421,25 +429,91 @@ private struct SpacePreviewList: View {
             .foregroundStyle(Look.inkSecondary)
             .padding(.horizontal, Look.rowInset)
             .frame(height: Look.rowHeight)
-            ForEach(urls, id: \.absoluteString) { row($0) }
+            // Offsets, not the url: the same page can be pinned and open at once, and two
+            // rows sharing an id makes SwiftUI draw one of them.
+            ForEach(Array(rows.pinned.enumerated()), id: \.offset) { row($0.element) }
+            tidy
+            newTab
+            ForEach(Array(rows.today.enumerated()), id: \.offset) { row($0.element) }
             Spacer(minLength: 0)
         }
     }
 
-    private var urls: [URL] {
-        Array(((space.pinnedTabURLs ?? []) + space.tabURLs).prefix(Self.cap))
+    /// The Space's Pinned section in the shape it was left in, then its Today tabs. The
+    /// shape comes from the same defaults key the real sidebar restores from, so a folder
+    /// previews where it will actually be.
+    private var rows: (pinned: [Row], today: [Row]) {
+        let urls = space.pinnedTabURLs ?? []
+        var pinned: [Row] = []
+        if let shape = TabStore.savedShape(space: space.id, profileID: space.profileID) {
+            for entry in shape.entries where entry.parent == nil {
+                switch entry.row {
+                case .folder(let f): pinned.append(.folder(f))
+                case .tab(let name): if let url = URL(string: name) { pinned.append(.site(url)) }
+                }
+            }
+            // A tab another window moved into this Space while it was shut is in the urls
+            // but not in the shape, and the real sidebar draws it after the rest.
+            let named = Set(shape.tabs)
+            pinned += urls.filter { !named.contains($0.absoluteString) }.map(Row.site)
+        } else {
+            pinned = urls.map(Row.site)
+        }
+        let room = max(0, Look.spacePreviewRows - pinned.count)
+        return (Array(pinned.prefix(Look.spacePreviewRows)),
+                space.tabURLs.prefix(room).map(Row.site))
     }
 
-    private func row(_ url: URL) -> some View {
+    /// The divider under Pinned. Not the real `TidyRow`: its two buttons act on the window's
+    /// own tabs, and a preview has none — the line is the part that holds the shape.
+    private var tidy: some View {
+        HStack(spacing: 8) {
+            Hairline()
+            Text("Tidy | Clear").font(Look.sectionCaption).foregroundStyle(Look.inkTertiary)
+        }
+        .padding(.horizontal, Look.rowInset)
+        .frame(height: Look.tidyRow)
+        .padding(.top, -Look.rowGap)
+        .padding(.bottom, Look.sectionGap - Look.rowGap)
+    }
+
+    private var newTab: some View {
         HStack(spacing: Look.rowSpacing) {
-            SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
-            Text(url.host()?.replacingOccurrences(of: "www.", with: "") ?? url.absoluteString)
-                .font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
+            Image(systemName: "plus").frame(width: Look.rowIcon)
+            Text("New Tab").font(Look.rowTitle).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(Look.inkTertiary)
+        .padding(.leading, Look.rowInset)
+        .padding(.trailing, Look.rowTrailingInset)
+        .frame(height: Look.rowHeight)
+    }
+
+    @ViewBuilder private func row(_ row: Row) -> some View {
+        HStack(spacing: Look.rowSpacing) {
+            switch row {
+            case .folder(let f):
+                Group {
+                    if f.iconIsEmoji { Text(f.icon).font(Look.small) } else { Image(systemName: f.icon) }
+                }
+                .frame(width: Look.tileIcon)
+                Text(f.name).font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
+            case .site(let url):
+                SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
+                Text(Self.name(url)).font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
+            }
             Spacer(minLength: 0)
         }
         .padding(.leading, Look.rowInset)
         .padding(.trailing, Look.rowTrailingInset)
         .frame(height: Look.rowHeight)
+    }
+
+    /// Anchored, so a host that merely contains "www." somewhere — `bewww.example` — keeps
+    /// all of its name.
+    private static func name(_ url: URL) -> String {
+        guard let host = url.host() else { return url.absoluteString }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 }
 
@@ -464,41 +538,97 @@ private struct SpaceSwipe: ViewModifier {
 /// it to account.
 @MainActor final class SwipeMonitor {
     private var monitor: Any?
+    /// Weak, and kept, so `abort` has something to put back when the gesture is taken away
+    /// rather than finished.
+    private weak var store: TabStore?
+    private var watchers: [any NSObjectProtocol] = []
     private var swipe = Spaces.Swipe()
-    /// The previous event's timestamp, for the velocity. 0 means "no gesture in flight".
+    /// The previous event's timestamp, for the velocity. 0 means "no sample yet".
     private var last: TimeInterval = 0
-    /// Whether this gesture belongs to the sidebar. Decided once, at the top of the gesture,
-    /// and then kept — see `mine`.
-    private var claimed = false
+    /// True while the landing spring is running, so a stray second fingers-up cannot spring
+    /// the strip home over the top of it.
+    private var landing = false
+    /// The profile's Spaces as they were when this gesture was claimed. `store.spaces` reads
+    /// and decodes `spaces.json` every time it is touched, and a gesture is a hundred events.
+    private var list: [Space] = []
+
+    /// Which way a gesture turned out to be going. Undecided until it has travelled far
+    /// enough to have an answer — see `mine`.
+    private enum Claim { case undecided, mine, theirs }
+    private var claim = Claim.undecided
+    private var travelled = (h: CGFloat(0), v: CGFloat(0))
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
+        self.store = store
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
             guard let store, self.mine(event, store) else { return event }
-            let list = store.spaces
-            let index = list.firstIndex { $0.id == store.currentSpaceID } ?? 0
-            let width = SidebarWidth.shared.width
             let phase = Self.phase(of: event)
+            let index = self.list.firstIndex { $0.id == store.currentSpaceID } ?? 0
+            let width = SidebarWidth.shared.width
             let dt = self.last > 0 ? event.timestamp - self.last : 0
             self.last = event.timestamp
             let out = self.swipe.feed(dx: event.scrollingDeltaX, dt: dt, phase: phase,
-                                      width: width, count: list.count, index: index)
+                                      width: width, count: self.list.count, index: index)
             if let offset = out.offset {
                 store.spaceSwiping = true
                 store.spaceDrag = offset             // straight on, no animation: it is the fingers
             }
             if let direction = out.commit {
-                self.land(direction, from: index, in: list, width: width, store: store)
-            } else if phase == .ended {
+                self.land(direction, from: index, width: width, store: store)
+            } else if phase == .ended, !self.landing {
+                // Not while landing: a `.cancelled` followed by an `.ended` would otherwise
+                // spring the strip home over the top of the spring taking it the other way.
                 self.settle(store)
             }
+            // The verdict is what carries the fingers-up event, which has no deltas of its
+            // own to be judged on; past the end of the gesture it must not carry the next
+            // one. The momentum tail re-decides itself, on deltas that are still going the
+            // way the fingers were.
+            if phase == .ended || event.momentumPhase.contains(.ended) { self.forget() }
             return nil              // swallowed, so the tab list does not scroll sideways too
+        }
+        // The fingers can be taken away without an `.ended`: ⌘S hides the sidebar mid-swipe
+        // and `mine`'s own guard then drops the rest of the gesture, the window can lose key,
+        // the app can deactivate. Each of those leaves the strip parked sideways with
+        // `spaceSwiping` stuck true, and nothing short of another swipe would put it back.
+        for name in [NSApplication.didResignActiveNotification, NSWindow.didResignKeyNotification] {
+            watchers.append(NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.abort() }
+                })
         }
     }
 
     func remove() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
+        watchers.forEach(NotificationCenter.default.removeObserver)
+        watchers = []
+        abort()
+        store = nil
+    }
+
+    /// Everything a finished gesture forgets, without touching the strip: the next gesture
+    /// starts from scratch whether this one committed, sprang back or was interrupted.
+    private func forget() {
+        swipe = Spaces.Swipe()
+        claim = .undecided
+        travelled = (0, 0)
+        last = 0
+        list = []
+    }
+
+    /// The gesture is gone rather than finished: put the strip back where an idle sidebar
+    /// has it. A cut, not a spring — the fingers have already left, and there is nothing
+    /// left for a spring to be the tail of.
+    func abort() {
+        let landed = landing
+        landing = false
+        forget()
+        guard let store, !landed, store.spaceDrag != 0 || store.spaceSwiping else { return }
+        store.spaceDrag = 0
+        store.spaceSwiping = false
     }
 
     private static func phase(of event: NSEvent) -> Spaces.Swipe.Phase {
@@ -511,8 +641,7 @@ private struct SpaceSwipe: ViewModifier {
     /// Over the line: run the rest of the travel out under the spring and swap the Space at
     /// the far end, where the preview is already standing exactly where the real sections
     /// are about to be — which is the whole reason the swap is invisible.
-    private func land(_ direction: Int, from index: Int, in list: [Space],
-                      width: CGFloat, store: TabStore) {
+    private func land(_ direction: Int, from index: Int, width: CGFloat, store: TabStore) {
         guard list.indices.contains(index + direction) else { return settle(store) }
         let target = list[index + direction]
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
@@ -522,9 +651,22 @@ private struct SpaceSwipe: ViewModifier {
             rebuild()
             return
         }
+        // What the swipe promised to switch away from. A third of a second is long enough
+        // for ⌥⌘←, ⌃1–9, ⌃N or a footer dot to have moved the window somewhere else under
+        // the spring, and switching anyway would silently undo it.
+        let from = store.currentSpaceID
+        landing = true
         withAnimation(Look.spaceSpring) {
             store.spaceDrag = -CGFloat(direction) * width
-        } completion: {
+        } completion: { [weak store] in
+            self.landing = false
+            guard let store, store.window != nil, store.currentSpaceID == from else {
+                // Somebody else got there first, or the window is gone: drop the offset and
+                // leave the Space alone.
+                store?.spaceDrag = 0
+                store?.spaceSwiping = false
+                return
+            }
             // `spaceSwiping` is still true here, which is what keeps `SpaceSlide`'s own
             // transition off this update; the offset going back to zero in the same breath
             // lands the incoming sections on the preview they replace.
@@ -536,11 +678,6 @@ private struct SpaceSwipe: ViewModifier {
     }
 
     /// Not far enough, or nowhere to go: the strip goes home.
-    ///
-    /// ponytail: only a `.ended`/`.cancelled` event brings the strip home, so a gesture whose
-    /// event stream is cut off mid-swipe — which a trackpad does not do, but a synthetic
-    /// event source can — leaves it parked where the last delta put it. Ceiling: a watchdog
-    /// timer, which is a lot of machinery to insure against something the hardware guarantees.
     private func settle(_ store: TabStore) {
         guard store.spaceDrag != 0 else { store.spaceSwiping = false; return }
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
@@ -553,29 +690,49 @@ private struct SpaceSwipe: ViewModifier {
         }
     }
 
-    /// A horizontal trackpad swipe, over this window's sidebar. Everything else — a mouse
-    /// wheel, a vertical scroll, a scroll over the page — is left alone.
+    /// A horizontal trackpad swipe, over this window's sidebar, decided once per gesture.
+    /// Everything else — a mouse wheel, a scroll down the tab list, a scroll over the page,
+    /// anything while the command bar or the Library panel is over the sidebar — is left
+    /// alone for whoever it was meant for.
     private func mine(_ event: NSEvent, _ store: TabStore) -> Bool {
+        // Above the guard on purpose: a gesture that starts over the page card still has to
+        // clear the last one's verdict, or a swipe made over the sidebar goes on claiming
+        // events long after the fingers have moved somewhere else.
+        if event.phase.contains(.began) { forget() }
         guard event.hasPreciseScrollingDeltas, event.window === store.window,
-              store.sidebarShown, event.locationInWindow.x < SidebarWidth.shared.width
+              store.sidebarShown, !store.libraryOpen, store.palette == nil,
+              event.locationInWindow.x < SidebarWidth.shared.width
         else { return false }
-        if event.phase.contains(.began) {
-            claimed = false
-            last = 0
-            swipe = Spaces.Swipe()
+        switch claim {
+        case .mine:   return true
+        case .theirs: return false
+        case .undecided: break
         }
-        // Claimed once and then held for the whole gesture, momentum tail included. The
-        // fingers-up event carries no deltas at all, so deciding again on it would answer
-        // "not horizontal" and drop the end of every swipe on the floor — which is exactly
-        // what left the old monitor stuck after one switch.
-        if !claimed {
-            // 1.5, not 1: a swipe down a long tab list drifts sideways, and at parity that
-            // drift switched Space on the way past.
-            claimed = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 1.5
-            // The gesture's first horizontal event is also its beginning as far as the state
-            // machine is concerned: `.began` itself carries no deltas and was let through.
-            if claimed { swipe = Spaces.Swipe(); last = 0 }
-        }
-        return claimed
+        travelled.h += abs(event.scrollingDeltaX)
+        travelled.v += abs(event.scrollingDeltaY)
+        // A gesture that has gone this far down is a scroll, whatever it does next: a flick
+        // down a long tab list wanders sideways as the fingers roll, and a monitor that
+        // re-asks on every frame will eventually catch one of those wobbles and eat the rest
+        // of the flick.
+        if travelled.v >= Self.verticalVeto { claim = .theirs; return false }
+        // Undecided until there is enough travel to have a direction at all — the opening
+        // frames of any two-finger gesture are a pixel of noise in both axes.
+        guard travelled.h + travelled.v >= Self.lockDistance else { return false }
+        // 1.5, not 1: even a deliberate sideways swipe drifts down a little, and at parity
+        // that drift is enough to lose the toss.
+        claim = travelled.h > travelled.v * 1.5 ? .mine : .theirs
+        guard claim == .mine else { return false }
+        // The first claimed event is the gesture's beginning as far as the state machine is
+        // concerned: the `.began` that opened it carried no deltas and went to the tab list.
+        swipe = Spaces.Swipe()
+        last = 0
+        list = store.spaces
+        return true
     }
+
+    /// Points of travel, in both axes together, before the gesture is given a direction.
+    private static let lockDistance: CGFloat = 10
+    /// …and points *down* after which it can never be a Space swipe, however far it then
+    /// wanders sideways.
+    private static let verticalVeto: CGFloat = 6
 }

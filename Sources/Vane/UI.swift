@@ -1234,19 +1234,22 @@ private struct SpaceDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        // Once per body, not once per dot: `store.spaces` re-reads and decodes `spaces.json`
+        // every time it is touched, and a live swipe redraws this row every frame.
+        let list = store.spaces
+        let lit = weights(list)
         HStack(spacing: 8) {
-            ForEach(store.spaces) { dot($0) }
+            ForEach(list) { dot($0, lit: lit[$0.id] ?? 0) }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
     }
 
-    @ViewBuilder private func dot(_ space: Space) -> some View {
+    /// Both shapes are always in the tree, cross-fading on one number, so a live swipe can
+    /// hand the icon over a fraction at a time. A transition can only be all or nothing, and
+    /// mid-swipe the answer to "which Space are you in" genuinely is "between two".
+    @ViewBuilder private func dot(_ space: Space, lit: Double) -> some View {
         let here = store.currentSpaceID == space.id
-        // Both shapes are always in the tree, cross-fading on one number, so a live swipe can
-        // hand the icon over a fraction at a time. A transition can only be all or nothing,
-        // and mid-swipe the answer to "which Space are you in" genuinely is "between two".
-        let lit = weight(space)
         let over = Binding(get: { dropTarget == space.id },
                            set: { dropTarget = $0 ? space.id : nil })
         ZStack {
@@ -1275,21 +1278,18 @@ private struct SpaceDots: View {
         .accessibilityAction { store.switchTo(space: space) }
     }
 
-    /// How lit a dot is, 0…1. Idle that is 1 for the current Space and 0 for the rest; while
-    /// a swipe is live the current dot hands its icon to the neighbour the fingers are
+    /// How lit each dot is, 0…1. Idle that is 1 for the current Space and 0 for the rest;
+    /// while a swipe is live the current dot hands its icon to the neighbour the fingers are
     /// heading for, in step with them, so the footer says where the gesture will land before
     /// it lands. At the ends nothing is handed over — the strip is only rubber-banding.
-    private func weight(_ space: Space) -> Double {
-        let list = store.spaces
-        guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }),
-              let n = list.firstIndex(where: { $0.id == space.id }) else { return 0 }
+    private func weights(_ list: [Space]) -> [UUID: Double] {
+        guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return [:] }
         let width = SidebarWidth.shared.width
-        guard store.spaceDrag != 0, width > 0 else { return n == i ? 1 : 0 }
+        guard store.spaceDrag != 0, width > 0 else { return [list[i].id: 1] }
         let f = Double(max(-1, min(1, store.spaceDrag / width)))
         let towards = f < 0 ? i + 1 : i - 1
-        guard list.indices.contains(towards) else { return n == i ? 1 : 0 }
-        if n == i { return 1 - abs(f) }
-        return n == towards ? abs(f) : 0
+        guard list.indices.contains(towards) else { return [list[i].id: 1] }
+        return [list[i].id: 1 - abs(f), list[towards].id: abs(f)]
     }
 }
 

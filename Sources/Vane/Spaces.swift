@@ -249,6 +249,15 @@ enum Spaces {
         static let bandGive: CGFloat = 0.3
         /// …and never further than this share of the sidebar, so the band has an end.
         static let bandCap: CGFloat = 0.12
+        /// How much of the new reading each velocity sample carries; the rest is the old
+        /// one. Low enough that the near-zero straggler before fingers-up cannot read as a
+        /// dead stop, high enough that the flick still feels like the last few frames.
+        static let speedSmoothing: CGFloat = 0.6
+        /// The shortest interval a velocity sample is allowed to be measured over, in
+        /// seconds. AppKit coalesces scroll events under load, and two frames' worth of
+        /// travel arriving with a 1ms timestamp gap would otherwise read as ten times the
+        /// speed the fingers were actually going and commit a swipe nobody asked for.
+        static let minInterval: Double = 1.0 / 240
 
         /// Raw finger travel, signed the way `scrollingDeltaX` is: negative means the fingers
         /// went left, which brings on the *next* Space.
@@ -277,7 +286,10 @@ enum Spaces {
             case .changed:
                 guard armed else { return (nil, nil) }
                 travel += dx
-                if dt > 0 { speed = 0.6 * (dx / CGFloat(dt)) + 0.4 * speed }
+                if dt > 0 {
+                    let step = CGFloat(max(dt, Self.minInterval))
+                    speed = Self.speedSmoothing * (dx / step) + (1 - Self.speedSmoothing) * speed
+                }
                 return (Self.offset(travel, width: width, count: count, index: index), nil)
             case .ended:
                 defer { travel = 0; speed = 0 }
@@ -500,6 +512,22 @@ enum Spaces {
                swipe([(0, .began), (0, .ended)]).commits.isEmpty)
         assert("travel is signed, so left then right cancels out",
                swipe([(0, .began), (-30, .changed), (30, .changed)]).last == 0)
+        // The monitor only claims a gesture once it has a direction, which is several events
+        // after the `.began` that opened it — so the state machine is routinely handed a
+        // gesture that starts in the middle.
+        assert("a gesture that arrives without its beginning still tracks",
+               swipe([(-40, .changed), (-40, .changed), (-40, .changed)], dt: 0.05).last == -120)
+        assert("…and still commits on the same rule",
+               swipe([(-40, .changed), (-40, .changed), (-40, .changed), (0, .ended)],
+                     dt: 0.05).commits == [1])
+        // Coalesced events: a crawl's worth of travel delivered with no gap between samples,
+        // which without the floor reads as forty times the speed the fingers were going.
+        assert("a coalesced burst cannot fake a flick",
+               swipe([(0, .began), (-2, .changed), (-2, .changed), (0, .ended)],
+                     dt: 0.0001).commits.isEmpty)
+        assert("…while the same travel at a real frame rate is still just a crawl",
+               swipe([(0, .began), (-2, .changed), (-2, .changed), (0, .ended)],
+                     dt: 1.0 / 120).commits.isEmpty)
 
         return out
     }
