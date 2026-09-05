@@ -564,6 +564,32 @@ struct Space: Identifiable, Codable, Equatable {
         try? data.write(to: Self.spacesURL(for: profileID, in: directory))
     }
 
+    /// The profile's Spaces, guaranteed non-empty: in Arc a profile always has at least one,
+    /// and a browser window always shows it. A profile that has none is either brand new or
+    /// predates this rule, and in the second case it has tabs to account for — the pinned
+    /// rows that were kept in a profile-level defaults key and the Today tabs in its session
+    /// file. Both go into the Space that is made for it, and the old key is deleted, so this
+    /// runs once per profile and never sees anything to migrate again.
+    ///
+    /// `spaces(for:)` above stays a plain read: it is called from a private window's chrome
+    /// and from `check()`, and neither may create a Space as a side effect of looking.
+    @discardableResult
+    func ensureSpaces(for profile: Profile, defaults: UserDefaults = .vane,
+                      sessionTabs: [URL]? = nil) -> [Space] {
+        let existing = spaces(for: profile.id)
+        guard existing.isEmpty else { return existing }
+        let key = TabStore.defaultsKey(.pinned, profile.id)
+        let pinned = (defaults.stringArray(forKey: key) ?? []).compactMap(URL.init(string:))
+        let space = Spaces.firstSpace(profileID: profile.id, name: profile.name,
+                                      colorHex: profile.colorHex, pinned: pinned,
+                                      today: sessionTabs ?? Session.urls(for: profile.id, in: directory))
+        saveSpaces([space], for: profile.id)
+        // Nothing reads `pinnedRows` any more: the rows belong to the Space now, and leaving
+        // the key would hand them back to the next window as a second copy.
+        defaults.removeObject(forKey: key)
+        return [space]
+    }
+
     @discardableResult
     func createSpace(name: String, in profileID: UUID) -> Space {
         let space = Space(name: name, profileID: profileID)
@@ -672,6 +698,40 @@ struct Space: Identifiable, Codable, Equatable {
         pm.updateSpace(edited)
         pm.deleteSpace(reading.id, in: work.id)
         assert("a deleted space is gone", pm.spaces(for: work.id).isEmpty)
+
+        // Arc's rule: every tab in a browser window lives in a Space, so a profile always
+        // has one. `work` has just been emptied, which is exactly the state a profile that
+        // predates the rule is in — its tabs kept in a profile-level defaults key and in the
+        // session file. Both have to come back inside the Space that is made for it.
+        // A throwaway suite, so the real preferences are never read or written here.
+        let suite = "vane.check.\(UUID().uuidString)"
+        if let defaults = UserDefaults(suiteName: suite) {
+            defer { UserDefaults.vane.removePersistentDomain(forName: suite) }
+            let rowsKey = TabStore.defaultsKey(.pinned, work.id)
+            defaults.set(["https://pinned.example/one"], forKey: rowsKey)
+            let made = pm.ensureSpaces(for: pm.profiles.first { $0.id == work.id }!,
+                                       defaults: defaults,
+                                       sessionTabs: [URL(string: "https://open.example/two")!])
+            assert("a profile with no spaces is given exactly one", made.count == 1
+                   && pm.spaces(for: work.id).count == 1)
+            assert("it is named after the profile and wears its colour",
+                   made[0].name == "School" && made[0].colorHex == pm.profiles.first { $0.id == work.id }?.colorHex)
+            assert("the profile-level pinned rows moved into it",
+                   made[0].pinnedTabURLs?.first?.absoluteString == "https://pinned.example/one")
+            assert("the spaceless session tabs moved into it",
+                   made[0].tabURLs.first?.absoluteString == "https://open.example/two")
+            assert("the profile-level pinnedRows key is deleted, so nothing hands them back twice",
+                   defaults.stringArray(forKey: rowsKey) == nil)
+            assert("migrating twice makes no second space",
+                   pm.ensureSpaces(for: pm.profiles.first { $0.id == work.id }!,
+                                   defaults: defaults, sessionTabs: []).map(\.id) == [made[0].id])
+            assert("a profile that already has a space is left exactly as it is",
+                   pm.ensureSpaces(for: pm.profiles.first { $0.id == defaultID }!,
+                                   defaults: defaults, sessionTabs: []).map(\.name) == ["Inbox"])
+        } else {
+            assert("a throwaway defaults suite can be made", false)
+        }
+        pm.saveSpaces([], for: work.id)
         pm.updateSpace(edited)
 
         // A profile's files must actually be on disk before deletion can prove anything.

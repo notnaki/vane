@@ -759,7 +759,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         let pinned = isLittle ? []
             : (space?.pinnedTabURLs ?? (mine ? TabStore.stayingURLs(.pinned, for: profileID) : []))
         // A space carries its own per-tab state in a sidecar; a window restore is handed one.
-        let parked = space.map { Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory) } ?? parked
+        // Merged rather than swapped, the sidecar winning: on the launch that migrates a
+        // profile into its first Space there is no sidecar yet, and the session's own titles
+        // and scroll offsets are all there is.
+        let parked = space.map {
+            Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory)
+                .merging(parked) { sidecar, _ in sidecar }
+        } ?? parked
         restore(favourites, as: .favourite, parked: parked)
         // The Pinned section is not a list any more but a shape — folders and the tabs in
         // them — so its tabs come up in the order the folders draw them.
@@ -784,9 +790,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         ProfileManager.defaultsKey("lastSpace", profileID)
     }
 
+    /// Just the id, for a caller that already has the profile's Spaces in hand —
+    /// `Spaces.resolve`, which would otherwise re-read spaces.json to hand one straight back.
+    nonisolated static func lastSpaceID(for profileID: UUID,
+                                        defaults: UserDefaults = .vane) -> UUID? {
+        defaults.string(forKey: lastSpaceKey(profileID)).flatMap(UUID.init(uuidString:))
+    }
+
     static func lastSpace(for profileID: UUID) -> Space? {
-        guard let raw = UserDefaults.vane.string(forKey: lastSpaceKey(profileID)),
-              let id = UUID(uuidString: raw) else { return nil }
+        guard let id = lastSpaceID(for: profileID) else { return nil }
         return ProfileManager.shared.spaces(for: profileID).first { $0.id == id }
     }
 
@@ -1227,7 +1239,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // empty window claiming to be in a Space. Every route into here is shared with the
         // browser window (the palette's Space rows, ⌃1–9, ⌥⌘←/→, the Spaces menu), so the
         // refusal belongs here rather than at each of them.
-        guard !isLittle, space.profileID == profileID, space.id != currentSpaceID else { return }
+        // A private window is spaceless the way Arc's incognito is: letting one switch would
+        // put a Space's tabs in a window that writes nothing back, and claim in the footer
+        // to be showing a Space it can never save.
+        guard !isLittle, !isPrivate, space.profileID == profileID,
+              space.id != currentSpaceID else { return }
         saveCurrentSpace()
         // Which way the strip slides. Set before the switch so the sidebar's transition and
         // the tint cross-fade are already pointing the right way when the list changes.
@@ -1278,9 +1294,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         switchTo(space: space)
     }
 
-    /// Create a space in this window's profile and move this window into it, carrying the
-    /// tabs that are already open — which is what "new space" means from a window's point of
-    /// view. Returns nil for a private window, which has no profile storage to write to.
+    /// Create a space in this window's profile and move this window into it, leaving the
+    /// tabs that are already open behind in the Space they belong to — Arc's new Space is
+    /// empty. Returns nil for a private window, which has no profile storage to write to.
     /// `name` defaults to Arc's placeholder because Arc's `+` does not ask: the Space appears
     /// straight away and the name field is already focused inside it. See `NewSpaceButton`.
     @discardableResult
@@ -1291,17 +1307,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         saveCurrentSpace()
         let space = ProfileManager.shared.createSpace(name: name, in: profileID)
         spaceDirection = 1                 // a new Space is always the last one
-        if currentSpaceID != nil {
-            // Arc's new Space is *empty*. Switching into it is what empties the strip; moving
-            // `currentSpaceID` by hand would have written this window's open tabs into the new
-            // Space as well as leaving them in the old one, so they showed up in both.
-            switchTo(space: space)
-        } else {
-            // Outside any Space there is nothing to switch away from, and what is already open
-            // is what the first Space is made of.
-            currentSpaceID = space.id
-            saveCurrentSpace()
-        }
+        // Switching into it is what empties the strip; moving `currentSpaceID` by hand would
+        // have written this window's open tabs into the new Space as well as leaving them in
+        // the old one, so they showed up in both. There is no second branch for a window
+        // outside every Space any more — an ordinary window is always in one.
+        switchTo(space: space)
         palette = nil                      // the editor is the thing to look at, not the bar
         rememberSpace()
         editingSpace = space.id            // opens the inline name/icon/colour editor

@@ -946,13 +946,14 @@ private struct SpaceRow: View {
             .accessibilityAction(named: "Change Space Icon") { icons = true }
             .accessibilityAction(named: "Edit Theme Color") { theme = true }
         } else {
-            // A window outside any space still has this row, wearing the profile's name:
-            // the list below it needs its heading, and the sidebar its shape.
-            row("cloud", nil, store.profile.name)
+            // Only a private window reaches this: it is in no Space by design, and the list
+            // below it still needs its heading. No click, no rename, no context menu —
+            // there is no Space here to act on.
+            row("eyeglasses", nil, store.profile.name)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Space")
+            .accessibilityLabel("Private window")
             .accessibilityValue(store.profile.name)
-            .accessibilityHint("This window is not in a space. The plus button below makes one.")
+            .accessibilityHint("A private window is in no space and keeps nothing.")
         }
     }
 
@@ -1194,9 +1195,9 @@ private struct SpaceTheme: View {
     }
 }
 
-/// One dot per space, the current one wearing the space's own icon. A window with no spaces
-/// still shows a dot — it is standing on the profile's default set of tabs, which is a space
-/// in all but name.
+/// One dot per space, the current one wearing the space's own icon. There is no "no spaces"
+/// case any more: an ordinary window is always in a Space, so exactly one dot is always the
+/// current one. Only a private window has none, and it does not draw this at all.
 private struct SpaceDots: View {
     @EnvironmentObject var store: TabStore
     @State private var icons = false
@@ -1207,12 +1208,7 @@ private struct SpaceDots: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if store.spaces.isEmpty {
-                Circle().fill(.tint).frame(width: Look.dot, height: Look.dot)
-                    .accessibilityLabel("This space")
-            } else {
-                ForEach(store.spaces) { dot($0) }
-            }
+            ForEach(store.spaces) { dot($0) }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
@@ -2009,9 +2005,14 @@ private struct BottomRow: View {
             LibraryButton(archive: Archive.shared(for: store.profileID),
                           downloads: Downloads.manager(for: store.profileID))
             Spacer(minLength: 0)
-            SpaceDots()
-            Spacer(minLength: 0)
-            NewSpaceButton()
+            // A private window has no Spaces — Arc's incognito has none either — so there
+            // is nothing to draw dots for and nothing a `+` could make. The row keeps its
+            // height regardless: nothing in the sidebar's chrome may come and go.
+            if !store.isPrivate {
+                SpaceDots()
+                Spacer(minLength: 0)
+                NewSpaceButton()
+            }
         }
         .font(Look.icon)
         .frame(height: Look.footer)

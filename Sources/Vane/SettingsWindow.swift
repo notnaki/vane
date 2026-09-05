@@ -591,6 +591,10 @@ private struct ProfilesPane: View {
                         reload(); rebuild()
                     } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
+                        // Arc greys "Delete Space" out on the last one: a profile always has
+                        // a Space, because every tab in a browser window lives in one. The
+                        // sidebar's own Delete Space is disabled on the same rule.
+                        .disabled(spaces.count < 2)
                         .accessibilityLabel("Delete the space \(space.name)")
                 }
             }
