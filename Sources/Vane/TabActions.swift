@@ -221,17 +221,18 @@ struct SidebarDrop: DropDelegate {
     let store: TabStore
 
     func validateDrop(info: DropInfo) -> Bool {
-        // Our own tab, being reordered. `TabDrop` handles that, and this must not eat it.
-        guard Dragging.shared.tab == nil else { return false }
+        // Our own tab or folder, being reordered. `TabDrop` and `FolderDrop` handle those,
+        // and this must not eat them.
+        guard !Dragging.shared.active else { return false }
         return info.hasItemsConforming(to: [.url, .fileURL, .plainText])
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: Dragging.shared.tab == nil ? .copy : .cancel)
+        DropProposal(operation: Dragging.shared.active ? .cancel : .copy)
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard Dragging.shared.tab == nil else { return false }
+        guard !Dragging.shared.active else { return false }
         // A url first: a link dragged out of a page carries both a url and its own text, and
         // the url is the one that does not have to be guessed at.
         if let provider = info.itemProviders(for: [.url, .fileURL]).first {
