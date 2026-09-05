@@ -818,8 +818,9 @@ private struct LinksPane: View {
                          + "in stays on the site you keep it on. Links to the same site "
                          + "still open in the tab. \u{21E7}-click peeks any link; \u{2318}O "
                          + "keeps a Peek as a tab beside the one it came from, and Escape, "
-                         + "\u{2318}W or a click outside throws it away — \u{2318}Z brings it "
-                         + "back. Off keeps every link in its tab, \u{21E7}-click included.")
+                         + "\u{2318}W or a click outside throws it away — Archive ▸ "
+                         + "Reopen Last Peek brings the last one back. Off keeps every link "
+                         + "in its tab, \u{21E7}-click included.")
             }
 
             SettingsCard {

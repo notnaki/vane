@@ -45,8 +45,8 @@ app.mainMenu = buildMenu()
 // with no registered action fall through untouched. A Little Arc gets first refusal: three
 // of its keys mean something else in a window with a sidebar, and the registry would
 // otherwise answer for them. See LittleArc.handleKey. A Peek is ahead of both, for the same
-// reason and more so: Escape, ⌘O and ⌘Z all mean something else in a window with a sidebar,
-// and only Peek knows whether one is up. See Peek.handleKey.
+// reason: Escape and ⌘O both mean something else in a window with a sidebar, and only
+// Peek knows whether one is up. See Peek.handleKey.
 NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
     Peek.handleKey($0) || LittleArc.handleKey($0) || Keybindings.handle($0) ? nil : $0
 }

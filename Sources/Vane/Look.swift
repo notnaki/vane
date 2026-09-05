@@ -401,7 +401,8 @@ enum Look {
 
     // Peek: a link out of a Favourite or a Pinned tab, floating over the window it came
     // from. Its corner and its shadow are the command bar's — both are surfaces over the
-    // whole window — so the only numbers of its own are how big it is and how long ⌘Z has.
+    // whole window — so the only numbers of its own are how big it is and how long the
+    // offer to bring the last one back stands.
     /// Of the window, each way. Arc's Peek leaves enough of the sidebar showing that it is
     /// obviously a page *over* your window rather than a window of its own.
     static let peekFraction: CGFloat = 0.8
@@ -410,8 +411,8 @@ enum Look {
     /// four fifths of the window, so the strip left over has to read as *behind* on its own,
     /// and at 0.12 it read as a page that had simply gone a shade darker.
     static let peekScrim = Color.black.opacity(0.3)
-    /// How long after a Peek closes ⌘Z and ⇧⌘T still bring it back. Long enough for the
-    /// Escape you did not mean, short enough that it is never a surprise.
+    /// How long after a Peek closes Archive ▸ Reopen Last Peek still offers it. Long
+    /// enough for the Escape you did not mean, short enough that it is never a surprise.
     static let peekReopen: Double = 8
 }
 

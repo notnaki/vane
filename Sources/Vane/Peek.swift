@@ -19,7 +19,7 @@ import WebKit
 /// for free (`addChildWindow`), and is the same shape as `LittleArc` — which is why the two
 /// share this file's neighbour rather than each growing their own hand-off. Ceiling: two
 /// Peeks cannot be open at once; opening a second replaces the first, and the first is what
-/// ⌘Z brings back.
+/// Reopen Last Peek brings back.
 @MainActor enum Peek {
 
     /// Where the Settings › Links toggle is written. `Prefs.peekLinks` reads it; the pane's
@@ -202,7 +202,7 @@ import WebKit
             centre.addObserver(forName: NSWindow.willCloseNotification, object: host, queue: nil) { _ in
                 MainActor.assumeIsolated {
                     close(animated: false)
-                    // …and there is no longer a window for ⌘Z to put one back into.
+                    // …and there is no longer a window to put one back into.
                     lastClosed = nil
                 }
             },
@@ -213,7 +213,7 @@ import WebKit
                    + "\u{2318}O to open it as a tab.")
     }
 
-    /// Where the Peek came from and what was in it, kept so ⌘Z can put it back.
+    /// Where the Peek came from and what was in it, kept so it can be put back.
     ///
     /// The parent is held **weakly**. A strong one outlived every window it named: a closed
     /// Peek pinned the whole browser window's store — its tabs, their WebContent processes,
@@ -277,7 +277,7 @@ import WebKit
         guard let live, live.store.tabs.contains(where: { $0 === tab }), tab.web.url == nil
         else { return }
         close(animated: false)
-        lastClosed = nil          // there was never a page; ⌘Z would bring back the same blank
+        lastClosed = nil          // never a page; reopening would only bring the blank back
     }
 
     // MARK: - ⌘O
@@ -289,33 +289,44 @@ import WebKit
         guard let session = live, let page = LittleArc.page(of: session.store) else { return }
         let target = session.parent
         let moved = target.newTabBeside(session.source)
-        live = nil                                  // the hand-off closes it; don't re-arm ⌘Z
+        live = nil                                  // the hand-off closes it; don't re-arm reopen
         session.watchers.forEach(NotificationCenter.default.removeObserver)
-        // The page is not gone, it is a tab — so there is nothing for ⌘Z to bring back, and
+        // The page is not gone, it is a tab — so there is nothing to bring back, and
         // nothing here to keep the parent's store alive after the tab already does.
         lastClosed = nil
         LittleArc.hand(page, into: moved, of: target, from: session.store, saying: "Opened as a tab.")
         dismantle(session)
     }
 
-    // MARK: - ⌘Z
+    // MARK: - Reopen
 
-    /// Bring the last Peek back, if it was closed a moment ago *in this window*. Arc's undo
-    /// is exactly that narrow: it is for the Escape you did not mean, not a history of
-    /// everything you have ever peeked.
+    /// Whether Archive ▸ Reopen Last Peek has anything to do: one was closed a moment
+    /// ago, none is up now, and the window and tab it belongs to are both still there.
+    static var canReopen: Bool { recoverable != nil }
+
+    /// The record, if it is still good for anything — and dropped where it is not, so a
+    /// stale one never sits there holding on to a window it can no longer use.
+    private static var recoverable: (Closed, TabStore, Tab)? {
+        guard let last = lastClosed, live == nil else { return nil }
+        guard let parent = last.parent, Date.now.timeIntervalSince(last.at) < Look.peekReopen,
+              let source = parent.tabs.first(where: { $0.id == last.source })
+        else { lastClosed = nil; return nil }
+        return (last, parent, source)
+    }
+
+    /// Bring the last Peek back. Arc's undo is exactly this narrow: it is for the Escape you
+    /// did not mean, not a history of everything you have ever peeked.
     ///
-    /// Three gates, all of them about not stealing the key: nothing may already be peeking
-    /// (⌘Z with a Peek up is the page's own undo, not "replace this Peek"), the window in
-    /// front has to be the one the Peek was closed in, and the grace has to be unspent —
-    /// after which the record is dropped rather than left to keep a window's store alive.
+    /// ponytail: a menu item with no key equivalent, where Arc has ⌘Z and ⇧⌘T. ⇧⌘T is
+    /// Reopen Closed Tab and is not ours to take. ⌘Z inside a browser window is almost
+    /// always the page's: a WKWebView owns the responder chain the whole time a page is on
+    /// screen, so "only when nothing is being typed into" cannot be answered synchronously
+    /// from a key event, and the honest version of that guard swallowed the undo of every
+    /// draft anyone was writing. Ceiling: it stays a menu item until something tracks the
+    /// page's own editing focus; Settings ▸ Shortcuts can bind a key to it meanwhile.
+    @discardableResult
     static func reopen() -> Bool {
-        guard let last = lastClosed, live == nil else { return false }
-        guard let parent = last.parent, Date.now.timeIntervalSince(last.at) < Look.peekReopen else {
-            lastClosed = nil
-            return false
-        }
-        guard NSApp.keyWindow === parent.window,
-              let source = parent.tabs.first(where: { $0.id == last.source }) else { return false }
+        guard let (last, parent, source) = recoverable else { return false }
         lastClosed = nil
         open(last.url, from: source, in: parent, parked: last.page)
         return true
@@ -323,44 +334,27 @@ import WebKit
 
     // MARK: - Keys
 
-    /// Escape and ⌘O inside a Peek, plus ⌘Z just after one closed. Taken before the
-    /// keybinding registry, the way `LittleArc.handleKey` is, because all three mean
-    /// something else in a window with a sidebar. ⌘W is not here: `TabStore.closeOrArchive`
-    /// already calls `performClose`, which `PeekWindow` overrides.
+    /// Escape and ⌘O, and only inside a Peek that is the key window. Taken before the
+    /// keybinding registry, the way `LittleArc.handleKey` is, because both mean something
+    /// else in a window with a sidebar. ⌘W is not here: `TabStore.closeOrArchive` already
+    /// calls `performClose`, which `PeekWindow` overrides.
     ///
-    /// ⇧⌘T is deliberately *not* here. It is Reopen Closed Tab, a command about the archive
-    /// that has nothing to do with a Peek, and claiming it for eight seconds after every
-    /// close would have made a global shortcut mean two things depending on what the user
-    /// had done a moment earlier.
+    /// Nothing here fires while no Peek is up, so this costs one comparison on the app's
+    /// key path and can never take a key away from anything else. Reopening is a menu item
+    /// rather than a shortcut — see `reopen`.
     static func handleKey(_ event: NSEvent) -> Bool {
-        guard event.type == .keyDown else { return false }
+        guard event.type == .keyDown, let session = live, session.window.isKeyWindow
+        else { return false }
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
-        let key = event.charactersIgnoringModifiers?.lowercased()
-        if let session = live, session.window.isKeyWindow {
-            // The browser window's own order, kept: Escape stops a page that is still coming
-            // in, and only closes the thing it is in once there is nothing left to stop.
-            if event.keyCode == 53, mods.isEmpty {
-                if !TabActions.stopLoading(in: session.window) { close() }
-                return true
-            }
-            if key == "o", mods == [.command] { openAsTab(); return true }
+        // The browser window's own order, kept: Escape stops a page that is still coming
+        // in, and only closes the thing it is in once there is nothing left to stop.
+        if event.keyCode == 53, mods.isEmpty {
+            if !TabActions.stopLoading(in: session.window) { close() }
+            return true
         }
-        // ⌘Z belongs to whatever has the responder chain. A page's own editor — a Gmail
-        // draft, a code sandbox — lives inside a WKWebView and never reports as `NSText`,
-        // so testing only for that swallowed the undo of everything anyone was typing.
-        guard mods == [.command], key == "z", !editing else { return false }
-        return reopen()
-    }
-
-    /// True while the key window's first responder is somewhere text is being edited: a
-    /// native field, or anywhere inside a web page.
-    private static var editing: Bool {
-        guard let responder = NSApp.keyWindow?.firstResponder else { return false }
-        if responder is NSText { return true }
-        var view = responder as? NSView
-        while let v = view {
-            if v is WKWebView { return true }
-            view = v.superview
+        if mods == [.command], event.charactersIgnoringModifiers?.lowercased() == "o" {
+            openAsTab()
+            return true
         }
         return false
     }
@@ -564,7 +558,7 @@ extension Peek {
              !sameSite(URL(string: "about:blank")!, URL(string: "about:blank")!)),
             ("a peek fills most of the window but not all of it",
              Look.peekFraction > 0.5 && Look.peekFraction < 1),
-            ("\u{2318}Z's grace is a moment, not a session",
+            ("the offer to reopen stands for a moment, not for a session",
              Look.peekReopen > 1 && Look.peekReopen < 60),
         ]
     }

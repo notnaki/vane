@@ -55,6 +55,15 @@ private extension NSMenuItem {
     }
 }
 
+/// Archive ▸ Reopen Last Peek. Greyed out unless there is one to bring back, which is only
+/// true for the moment after a Peek is closed — the menu is rebuilt often enough that the
+/// item is honest about it. See `Peek.reopen`.
+@MainActor private func peekAgain() -> NSMenuItem {
+    let entry = item("Reopen Last Peek", "") { _ = Peek.reopen() }
+    entry.isEnabled = Peek.canReopen
+    return entry
+}
+
 private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
     let m = NSMenu(title: title)
     items.forEach(m.addItem)
@@ -609,6 +618,10 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         item(.reopenClosedTab) {
             if let u = ClosedTabs.pop() { (Windows.main ?? Windows.open()).newTab(u) }
         },
+        // Deliberately without a key equivalent: the shortcuts that would fit — ⌘Z, ⇧⌘T —
+        // already mean something the user would rather keep, and a page's own undo is not
+        // ours to take. Settings ▸ Shortcuts can bind one. See Peek.swift.
+        peekAgain(),
         .separator(),
         item("Export History (JSON)…", "") { Export.chooseAndExport(.historyJSON) },
         item("Export History (CSV)…", "") { Export.chooseAndExport(.historyCSV) },
