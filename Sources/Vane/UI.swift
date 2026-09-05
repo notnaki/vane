@@ -945,15 +945,21 @@ private struct SpaceRow: View {
             .accessibilityAction(named: "Rename Space") { renameSpace(space, in: store) }
             .accessibilityAction(named: "Change Space Icon") { icons = true }
             .accessibilityAction(named: "Edit Theme Color") { theme = true }
-        } else {
-            // Only a private window reaches this: it is in no Space by design, and the list
-            // below it still needs its heading. No click, no rename, no context menu —
-            // there is no Space here to act on.
+        } else if store.isPrivate {
+            // A private window is in no Space by design, and the list below it still needs
+            // its heading. No click, no rename, no context menu — there is nothing to act on.
             row("eyeglasses", nil, store.profile.name)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Private window")
             .accessibilityValue(store.profile.name)
             .accessibilityHint("A private window is in no space and keeps nothing.")
+        } else {
+            // An ordinary window pointing at a Space that is no longer there: deleted from
+            // another window, from Settings or from the Library. It has one frame of the
+            // profile's name and then falls into a surviving Space — see `resolveStaleSpace`.
+            row("cloud", nil, store.profile.name)
+            .task { store.resolveStaleSpace() }
+            .accessibilityHidden(true)
         }
     }
 
@@ -1004,6 +1010,9 @@ private struct SpaceMenu: View {
                 }
             }
         }
+        // Moving a Space out is a delete on this side, so the last one is as un-movable as
+        // it is un-deletable: a profile always has a Space.
+        .disabled(store.spaces.count < 2)
         Divider()
         Button("New Folder") { store.newFolder() }
         Divider()
@@ -1034,12 +1043,7 @@ private struct SpaceMenu: View {
     a.buttons.last?.hasDestructiveAction = true
     guard a.runModal() == .alertSecondButtonReturn else { return }
     let survivor = store.spaces.first { $0.id != space.id }
-    // Arc archives a deleted Space's tabs rather than dropping them. Read the space back
-    // first: what is on disk is what is about to be deleted, and it is newer than the copy
-    // the menu was built from.
-    Spaces.archiveContents(of: store.spaces.first { $0.id == space.id } ?? space)
-    ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
-    TabStore.forgetShape(space: space.id, profileID: space.profileID)
+    guard Spaces.delete(space.id, in: space.profileID) else { return }
     if let survivor { store.switchTo(space: survivor) }
     rebuild()
 }
@@ -1049,7 +1053,11 @@ private struct SpaceMenu: View {
 /// another profile opens it in a window there and closes this one, rather than trying to
 /// re-home a live WKWebsiteDataStore. Ceiling: the window's position is not carried over.
 @MainActor private func moveSpace(_ space: Space, to profile: Profile, from store: TabStore) {
-    guard profile.id != space.profileID else { return }
+    // The source profile is losing a Space, so the same rule as Delete applies: never its
+    // last one. Without this the profile is left with none, this window's close writes its
+    // tabs into that profile's session, and the next window there invents a Space holding a
+    // second copy of every page that just moved out.
+    guard profile.id != space.profileID, store.spaces.count > 1 else { return }
     store.saveCurrentSpace()
     ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
     var moved = space

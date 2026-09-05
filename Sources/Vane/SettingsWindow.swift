@@ -587,7 +587,10 @@ private struct ProfilesPane: View {
             ForEach(spaces) { space in
                 SettingsRow(space.name) {
                     Button {
-                        manager.deleteSpace(space.id, in: profile.id)
+                        // The sidebar's own Delete Space, minus the alert: the pages go to
+                        // the Archive and the folder shape is forgotten. This used to call
+                        // `deleteSpace` bare, which dropped both.
+                        Spaces.delete(space.id, in: profile.id)
                         reload(); rebuild()
                     } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.plain).foregroundStyle(.secondary)

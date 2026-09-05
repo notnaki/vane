@@ -558,34 +558,68 @@ struct Space: Identifiable, Codable, Equatable {
         return all.filter { $0.profileID == profileID }
     }
 
-    func saveSpaces(_ spaces: [Space], for profileID: UUID) {
+    /// Returns whether the list actually reached the disk. Almost every caller ignores it —
+    /// a failed write means the Space keeps the shape it had — but the migration below has
+    /// to know, because it deletes the only other copy of what it just wrote.
+    @discardableResult
+    func saveSpaces(_ spaces: [Space], for profileID: UUID) -> Bool {
         let owned = spaces.filter { $0.profileID == profileID }
-        guard let data = try? JSONEncoder().encode(owned) else { return }
-        try? data.write(to: Self.spacesURL(for: profileID, in: directory))
+        guard let data = try? JSONEncoder().encode(owned) else { return false }
+        do { try data.write(to: Self.spacesURL(for: profileID, in: directory)) } catch { return false }
+        return true
     }
 
-    /// The profile's Spaces, guaranteed non-empty: in Arc a profile always has at least one,
-    /// and a browser window always shows it. A profile that has none is either brand new or
-    /// predates this rule, and in the second case it has tabs to account for — the pinned
-    /// rows that were kept in a profile-level defaults key and the Today tabs in its session
-    /// file. Both go into the Space that is made for it, and the old key is deleted, so this
-    /// runs once per profile and never sees anything to migrate again.
+    /// The profile's Spaces, guaranteed non-empty, with anything the profile was keeping
+    /// *outside* a Space folded in.
+    ///
+    /// In Arc a profile always has at least one Space and a browser window always shows it.
+    /// A profile that has none is either brand new or predates that rule, and in the second
+    /// case it has tabs to account for: the pinned rows Vane kept in a profile-level
+    /// defaults key, and the Today tabs the caller hands in from the session file.
+    ///
+    /// The key is the awkward half. It was written by *any* window whose `currentSpaceID`
+    /// was nil or stale, so a profile can have Spaces **and** a stranded set of rows — and
+    /// nothing reads that key any more, so leaving it there loses those tabs for good.
+    /// So the merge is unconditional: with Spaces already present the rows go into the
+    /// last-used one (else the first), never into a Space of their own.
+    ///
+    /// The key is only removed once the Spaces holding those rows are demonstrably on disk.
+    /// If the write failed there is nothing honest to hand back, so the profile's Spaces are
+    /// returned as they were and the key is left for the next launch to try again — one
+    /// launch in the old spaceless shape beats a silently emptied Pinned section.
+    ///
+    /// `sessionTabs` is *only* ever the session being restored. Every other caller passes
+    /// nothing: reading the session file here would fold the pages a user just refused
+    /// ("Start Fresh", or `restoreSession` off) into their Space permanently.
     ///
     /// `spaces(for:)` above stays a plain read: it is called from a private window's chrome
     /// and from `check()`, and neither may create a Space as a side effect of looking.
     @discardableResult
     func ensureSpaces(for profile: Profile, defaults: UserDefaults = .vane,
-                      sessionTabs: [URL]? = nil) -> [Space] {
-        let existing = spaces(for: profile.id)
-        guard existing.isEmpty else { return existing }
+                      sessionTabs: [URL] = []) -> [Space] {
         let key = TabStore.defaultsKey(.pinned, profile.id)
-        let pinned = (defaults.stringArray(forKey: key) ?? []).compactMap(URL.init(string:))
+        let stranded = (defaults.stringArray(forKey: key) ?? []).compactMap(URL.init(string:))
+        let existing = spaces(for: profile.id)
+
+        if !existing.isEmpty {
+            guard !stranded.isEmpty else { return existing }
+            // The Space the user was last looking at is the one those rows were pinned in
+            // front of; the first Space is the fallback when that is gone.
+            let last = TabStore.lastSpaceID(for: profile.id, defaults: defaults)
+            var merged = existing
+            let i = merged.firstIndex { $0.id == last } ?? 0
+            merged[i].pinnedTabURLs = Spaces.mergedPins(merged[i].pinnedTabURLs ?? [], stranded)
+            guard saveSpaces(merged, for: profile.id),
+                  spaces(for: profile.id) == merged else { return existing }
+            defaults.removeObject(forKey: key)
+            return merged
+        }
+
         let space = Spaces.firstSpace(profileID: profile.id, name: profile.name,
-                                      colorHex: profile.colorHex, pinned: pinned,
-                                      today: sessionTabs ?? Session.urls(for: profile.id, in: directory))
-        saveSpaces([space], for: profile.id)
-        // Nothing reads `pinnedRows` any more: the rows belong to the Space now, and leaving
-        // the key would hand them back to the next window as a second copy.
+                                      colorHex: profile.colorHex, pinned: stranded,
+                                      today: sessionTabs)
+        guard saveSpaces([space], for: profile.id),
+              spaces(for: profile.id).contains(where: { $0.id == space.id }) else { return existing }
         defaults.removeObject(forKey: key)
         return [space]
     }
@@ -728,6 +762,33 @@ struct Space: Identifiable, Codable, Equatable {
             assert("a profile that already has a space is left exactly as it is",
                    pm.ensureSpaces(for: pm.profiles.first { $0.id == defaultID }!,
                                    defaults: defaults, sessionTabs: []).map(\.name) == ["Inbox"])
+
+            // The nastier half: main wrote `pinnedRows` from *any* window whose Space was
+            // nil or stale, so a profile can have Spaces and a stranded set of rows at once.
+            // Nothing reads that key any more, so leaving it there loses those tabs for good.
+            let inboxKey = TabStore.defaultsKey(.pinned, defaultID)
+            defaults.set(["https://stranded.example/row"], forKey: inboxKey)
+            let inbox = pm.ensureSpaces(for: pm.profiles.first { $0.id == defaultID }!,
+                                        defaults: defaults, sessionTabs: [])
+            assert("stranded rows on a profile that already has spaces are not left behind",
+                   inbox.first?.pinnedTabURLs?.map(\.absoluteString)
+                       == ["https://stranded.example/row"])
+            assert("...and they go into an existing space rather than making a second one",
+                   inbox.count == 1 && inbox.first?.name == "Inbox")
+            assert("...and the key goes with them", defaults.stringArray(forKey: inboxKey) == nil)
+
+            // The write has to land before the only other copy is deleted. A manager whose
+            // directory is a *file* cannot write anything, which is the whole failure mode.
+            let wall = root.appendingPathComponent("not-a-directory")
+            try? Data("x".utf8).write(to: wall)
+            let stuck = ProfileManager(directory: wall, sandboxed: true)
+            let orphan = Profile(name: "Unwritable")
+            let orphanKey = TabStore.defaultsKey(.pinned, orphan.id)
+            defaults.set(["https://kept.example/row"], forKey: orphanKey)
+            assert("a migration that cannot reach the disk invents no space",
+                   stuck.ensureSpaces(for: orphan, defaults: defaults, sessionTabs: []).isEmpty)
+            assert("...and leaves the rows where the next launch will find them",
+                   defaults.stringArray(forKey: orphanKey) == ["https://kept.example/row"])
         } else {
             assert("a throwaway defaults suite can be made", false)
         }

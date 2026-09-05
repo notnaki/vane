@@ -1259,6 +1259,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         extensions.sync()
     }
 
+    /// A Space deleted from another window, from Settings or from the Library leaves this
+    /// window pointing at one that is not on disk. An ordinary window always shows a Space,
+    /// so it falls into a survivor rather than drawing a sidebar with no heading and a
+    /// Pinned section it can never save. The tabs it was showing went to the Archive with
+    /// the Space, which is where `switchTo` emptying the strip leaves the user looking.
+    func resolveStaleSpace() {
+        guard !isPrivate, !isLittle, currentSpace == nil, let first = spaces.first else { return }
+        switchTo(space: first)
+    }
+
     /// ⌥⌘→ / ⌥⌘←: the next or previous space in this profile's list, wrapping round. A
     /// window with one space (or none) has nowhere to go, and does nothing.
     func cycleSpace(_ delta: Int) {

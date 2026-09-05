@@ -402,7 +402,12 @@ extension VaneWindow {
         // Each window comes back into the Space it was in. `Windows.open` resolves the rest:
         // a window whose Space is gone — or a session written before Spaces were per-window —
         // lands in the profile's last-used one.
-        let spaces = ProfileManager.shared.ensureSpaces(for: profile)
+        // The one place session urls may be migrated into a Space: this is the session being
+        // restored, so folding a pre-Spaces file's tabs in is right. `Spaces.resolve` — every
+        // other way a window opens — passes none, or "Start Fresh" would put back exactly the
+        // pages it was told not to.
+        let spaces = ProfileManager.shared.ensureSpaces(
+            for: profile, sessionTabs: urls(for: profile.id, in: Store.directory))
         let inSpace = decodeSpaces(data)
         let windows = decode(data).enumerated().filter { !$0.element.isEmpty }
         guard !windows.isEmpty else { return false }

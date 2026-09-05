@@ -424,35 +424,47 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     axAnnounce("Archived \(doomed.count) tab\(doomed.count == 1 ? "" : "s").")
 }
 
+/// The window a Space menu item acts on: the frontmost *ordinary* browser window. A Little
+/// Arc is in no Space and neither is a private window — Arc's incognito has none — and
+/// `Windows.main` in front of a private window handed back the private store, which built a
+/// full list of Spaces with no checkmark on any of them, every row of which did nothing when
+/// picked. Resolved when the item fires rather than captured, so a key equivalent never acts
+/// on the window it was built for after that window has closed.
+@MainActor private func spaceStore() -> TabStore? {
+    Windows.main.flatMap { $0.isPrivate ? nil : $0 }
+}
+
 @MainActor private func spaceItems() -> [NSMenuItem] {
-    // The Space menu is the browser window's, whatever is in front: a Little Arc is in no
-    // Space and cannot switch into one.
-    let store = Windows.main
+    let store = spaceStore()
     let spaces = store?.spaces ?? []
     // Arc's order: New Space, Manage Spaces…, the two arrows, then the Spaces themselves
     // wearing ⌃1…⌃9 — the shortcut sits on the row it switches to, not on a hidden twin.
     let switchers = spaces.enumerated().map { n, space in
-        let entry = item(space.name, "") { Windows.main?.switchTo(space: space); rebuild() }
+        let entry = item(space.name, "") { spaceStore()?.switchTo(space: space); rebuild() }
         entry.state = store?.currentSpaceID == space.id ? .on : .off
         if let command = Command(rawValue: "goToSpace\(n + 1)") {
             let binding = Keybindings.binding(for: command)
             entry.keyEquivalent = binding.menuKeyEquivalent
             entry.keyEquivalentModifierMask = binding.menuModifierMask
-            Keybindings.actions[command] = { Windows.main?.switchTo(spaceNumber: n + 1); rebuild() }
+            Keybindings.actions[command] = { spaceStore()?.switchTo(spaceNumber: n + 1); rebuild() }
         }
         return entry
     }
     let nav = [
-        item(.previousSpace) { Windows.main?.cycleSpace(-1); rebuild() },
-        item(.nextSpace) { Windows.main?.cycleSpace(1); rebuild() },
+        item(.previousSpace) { spaceStore()?.cycleSpace(-1); rebuild() },
+        item(.nextSpace) { spaceStore()?.cycleSpace(1); rebuild() },
     ]
     for entry in nav { entry.isEnabled = spaces.count > 1 }
+    let new = item(.newSpace) {
+        // Arc's New Space appears first and is named in place — see `NewSpaceButton`.
+        _ = spaceStore()?.newSpace()
+        rebuild()
+    }
+    // Greyed rather than silently doing nothing, the way Little Arc's own items are: with
+    // no ordinary window in front there is no Space to make one beside.
+    new.isEnabled = store != nil
     return [
-        item(.newSpace) {
-            // Arc's New Space appears first and is named in place — see `NewSpaceButton`.
-            _ = Windows.main?.newSpace()
-            rebuild()
-        },
+        new,
         // Arc's "Manage Spaces…" is the Library's Spaces view, not a settings pane.
         item("Manage Spaces…", "") { showLibrary(.spaces) },
         .separator(),
@@ -602,7 +614,13 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         // Arc files its developer tools under View; a top-level Develop menu is Safari's.
         menu("Developer", developItems()),
     ]))
-    root.addItem(menu("Spaces", spaceItems()))
+    let spacesMenu = menu("Spaces", spaceItems())
+    // The one menu that greys its own items. `NSMenu.autoenablesItems` is on by default and
+    // re-enables anything whose target answers the action, which quietly undid every
+    // `isEnabled = false` here — so "Previous Space" looked live with one Space, and
+    // "New Space" looked live in front of a private window, which has none to make.
+    spacesMenu.submenu?.autoenablesItems = false
+    root.addItem(spacesMenu)
     root.addItem(menu("Tabs", tidyItems()))
     // Arc's Archive menu, in Arc's order — the recent-pages list it replaces now lives in
     // the History window, where it can be searched instead of being the last 25 rows of a
