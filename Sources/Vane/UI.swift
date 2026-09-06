@@ -94,11 +94,19 @@ struct BrowserWindow: View {
     /// strip blank at the top of its rail, so a panel with no lights beside it is a hole.
     private var chrome: Bool { store.sidebarShown || peeking || store.libraryOpen }
 
+    /// How many Spaces the profile has. Read when that changes, never per frame: `store.spaces`
+    /// decodes spaces.json every time it is touched, and this number feeds the `.animation`
+    /// key the page's slide follows — reading it there put a file read and a JSON decode in
+    /// every frame of a two-finger Space swipe.
+    @State private var spaceCount = 0
+
     /// The rail plus its list column, or — in the Spaces section — a card per Space, up to
-    /// what the page can spare. See `Library.panelWidth`.
+    /// what the page can spare. Zero with the Library shut, so nothing animates on a number
+    /// nobody is looking at. See `Library.panelWidth`.
     private var libraryWidth: CGFloat {
-        Library.panelWidth(section: library.section, spaces: store.spaces.count,
-                           available: windowWidth)
+        guard store.libraryOpen else { return 0 }
+        return Library.panelWidth(section: library.section, spaces: spaceCount,
+                                  private: store.isPrivate, available: windowWidth)
     }
 
     var body: some View {
@@ -138,6 +146,10 @@ struct BrowserWindow: View {
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+        // The one place the Space list is counted: when it changes, and when the Library
+        // opens onto it. `spaceRevision` is bumped by everything that adds or removes one.
+        .onChange(of: store.spaceRevision, initial: true) { spaceCount = store.spaces.count }
+        .onChange(of: store.libraryOpen) { if store.libraryOpen { spaceCount = store.spaces.count } }
         // The page slides over as the panel takes its width, and back when it gives it up —
         // including when the Spaces section widens the panel to fit another card.
         .animation(reduceMotion ? nil : Look.appear, value: libraryWidth)
@@ -2238,7 +2250,9 @@ private struct LibraryButton: View {
             // without opening the Library to look for it.
             .overlay { DownloadRing(downloads: downloads) }
             .buttonStyle(.plain)
-            .foregroundStyle(store.libraryOpen ? Look.inkPrimary : Look.inkSecondary)
+            // Always the footer's own ink: the Library stands where this whole row is, so
+            // there is no state in which the glyph is on screen *and* the Library is open.
+            .foregroundStyle(Look.inkSecondary)
             .help("Library (\(Keybindings.binding(for: .showLibrary).display))")
             .accessibilityLabel("Library")
             .accessibilityValue("\(archive.entries.count) archived, \(downloads.items.count) download\(downloads.items.count == 1 ? "" : "s")")

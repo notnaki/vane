@@ -57,6 +57,10 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// Filter chip beside its field would open an empty menu.
     var filterable: Bool { self == .archived || self == .downloads }
 
+    /// Whether the section has a search field at all. Spaces is a row of cards, not a list,
+    /// so ⌘T over it has nowhere to land and ⌘F must mean the page instead.
+    var searchable: Bool { self != .spaces && self != .history }
+
     /// A private window is in no Space and owns no profile furniture, so the Spaces cards
     /// would have nothing to show and nothing they could safely move.
     func available(private isPrivate: Bool) -> Bool { !(isPrivate && self == .spaces) }
@@ -82,6 +86,11 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     @Published var littleArcOnly = false
     /// The Filter menu's toggle on Downloads: only the rows that are a finished file.
     @Published var completedOnly = false
+    /// The Space whose card should open its naming panel: set by the Library's own `+`, read
+    /// and cleared by the card that turns up for it. `TabStore.editingSpace` cannot be used
+    /// — its popover hangs off the sidebar's footer `+`, which is not in the tree while the
+    /// Library stands where the sidebar does.
+    @Published var naming: UUID?
     /// Bumped to put the keyboard in the pane's search field — on opening, and on ⌘F, which
     /// while the Library is up means this box rather than the find bar over a hidden page.
     /// A counter rather than a Bool: `@FocusState` is the field's, and asking twice in a row
@@ -278,9 +287,12 @@ extension Library {
     /// window: past the cap the cards scroll sideways instead. The cap never bites below the
     /// ordinary width, so a narrow window still gets its list column whole.
     nonisolated static func panelWidth(section: LibrarySection, spaces: Int,
+                                       private isPrivate: Bool = false,
                                        available: CGFloat) -> CGFloat {
         let ordinary = Look.libraryRail + Look.libraryList
-        guard section == .spaces else { return ordinary }
+        // A private window draws no Spaces cards — `open` falls it back to the archive — so
+        // it must not widen for cards another window happens to be looking at.
+        guard section == .spaces, section.available(private: isPrivate) else { return ordinary }
         let cards = CGFloat(max(spaces, 1)) * (Look.spaceCard + Look.spaceCardGap)
         let wanted = Look.libraryRail + Look.spaceCardGap + cards
             + Look.spaceCardGap + Look.libraryField + Look.spaceCardGap
@@ -522,8 +534,9 @@ extension Look {
     /// scanned past.
     static let libraryList: CGFloat = 246
     /// What the page keeps, however many Spaces the Spaces section wants to show side by
-    /// side. Past this the cards scroll instead of the panel growing.
-    static let libraryMinPage: CGFloat = 420
+    /// side. Past this the cards scroll instead of the panel growing. The card's own gaps are
+    /// in it, so this is the width of the *page*, not of the space it is given.
+    static let libraryMinPage: CGFloat = 420 + cardGap * 2
     /// A rail tile: the card under it and the two type sizes. Arc's tile is a glyph with its
     /// name underneath, not a row — and it wears one fill, the card's, never a second one
     /// behind the glyph.
@@ -552,6 +565,10 @@ extension Look {
     /// an `inset` in from each edge of the list column. `Look.check` pins the arithmetic.
     static let mediaColumns = 2
     static let mediaColumn: CGFloat = (libraryList - inset * 3) / 2
+    /// What a thumbnail is decoded to: twice the width it is drawn at, so it is sharp on a
+    /// retina screen and not a byte bigger. A 512px one was four times the pixels for the
+    /// same picture.
+    static let mediaPixels = Int(mediaColumn * 2)
     /// The traffic lights' own strip at the leading edge of the sidebar's top row, which
     /// `TopRow` steps past before its first button.
     static let trafficLights: CGFloat = 62
@@ -592,6 +609,14 @@ struct LibraryPanel: View {
                     .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
             }
         }
+        // Toasts live in the sidebar, and the sidebar is not in the tree while this is: with
+        // nowhere to draw one, ⌘Q's "hold to quit" warning was given invisibly and the app
+        // simply refused to quit. Same place the sidebar puts it, above the footer.
+        .overlay(alignment: .bottom) {
+            ToastHost()
+                .padding(.horizontal, Look.inset)
+                .padding(.bottom, Look.footer + Look.footerInset + Look.inset)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Library")
         .onAppear { axAnnounce("Library, \(library.section.title).") }
@@ -623,9 +648,10 @@ private struct LibraryRail: View {
         VStack(spacing: 0) {
             // The traffic lights' line, blank, the way the sidebar's top row starts blank.
             Spacer().frame(height: Look.topRow)
-            Spacer(minLength: 0)
-            // One block in the middle of the rail rather than spread down it: Arc's tiles
-            // are a group you read at a glance, not a list stretched to the window's height.
+            // Arc's tiles start under the lights and stay there: a group centred in the rail
+            // drifts hundreds of points down a tall window, and the first thing in the
+            // Library ends up in the middle of nowhere.
+            Spacer().frame(height: Look.sectionGap)
             VStack(spacing: Look.rowGap) {
                 ForEach(sections) { section in
                     LibraryTile(section: section, selected: library.section == section) {
@@ -729,7 +755,7 @@ private struct LibraryHead<Filter: View, Actions: View>: View {
                 // label out at the label's own size, so a background put in there is drawn
                 // at the size of the words rather than at the field's.
                 pill(filling: filtering) {
-                    Menu { filter(); Divider(); actions() } label: {
+                    Menu { filter() } label: {
                         HStack(spacing: Look.captionGap * 2) {
                             Image(systemName: "line.3.horizontal.decrease.circle")
                             Text("Filter")
@@ -739,6 +765,15 @@ private struct LibraryHead<Filter: View, Actions: View>: View {
                     }
                     .accessibilityLabel("Filter")
                     .accessibilityValue(filtering ? "On" : "Off")
+                }
+                // Its own control, beside Filter and not inside it. Clear is a destructive
+                // verb, and nobody goes looking for one in a menu called Filter.
+                pill(filling: false) {
+                    Menu { actions() } label: {
+                        Image(systemName: "ellipsis").font(Look.small)
+                            .foregroundStyle(Look.inkSecondary)
+                    }
+                    .accessibilityLabel("More")
                     .accessibilityActions { actions() }
                 }
             }
@@ -1109,6 +1144,9 @@ private struct DownloadVerbs: View {
 private struct MediaPane: View {
     @ObservedObject var downloads: Downloads
     @ObservedObject private var library = Library.shared
+    /// Watched, not read once: a picture that decodes after the wall is drawn changes the
+    /// height the masonry balanced on, so the wall has to be laid out again.
+    @ObservedObject private var thumbnails = Thumbnails.shared
 
     private var items: [Downloads.Item] {
         let now = Date()
@@ -1119,7 +1157,7 @@ private struct MediaPane: View {
     }
 
     var body: some View {
-        let items = items
+        let wall = wall
         LibraryColumn {
             LibraryHead(section: .media, filtering: false, query: $library.query) {
                 EmptyView()
@@ -1127,24 +1165,18 @@ private struct MediaPane: View {
                 EmptyView()
             }
         } content: {
-            if items.isEmpty {
+            if wall.isEmpty {
                 LibraryEmpty(text: downloads.items.contains(where: { Library.isImage(name: $0.name) })
                     ? "No picture matches that."
                     : "No pictures yet — images you save are shown here.")
             } else {
-                // Two columns laid out by hand rather than a `LazyVGrid`: a grid aligns the
-                // pair of cells in a row, so a short picture beside a tall one leaves a hole
-                // under it. `Masonry.place` puts each picture in whichever column is shorter.
-                let columns = Masonry.place(heights: items.map(height), columns: Look.mediaColumns)
                 ScrollView {
                     HStack(alignment: .top, spacing: Look.inset) {
-                        ForEach(0..<Look.mediaColumns, id: \.self) { column in
+                        ForEach(Array(wall.enumerated()), id: \.offset) { _, column in
                             LazyVStack(spacing: Look.inset) {
-                                ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
-                                    if columns.indices.contains(i), columns[i] == column {
-                                        MediaTile(item: item, downloads: downloads,
-                                                  height: height(item))
-                                    }
+                                ForEach(column, id: \.item.id) { cell in
+                                    MediaTile(item: cell.item, downloads: downloads,
+                                              height: cell.height, order: cell.order)
                                 }
                             }
                             .frame(width: Look.mediaColumn)
@@ -1160,11 +1192,39 @@ private struct MediaPane: View {
         .onAppear { downloads.refreshMissing() }
     }
 
-    /// How tall a picture will be at column width, which is what the masonry balances. A
-    /// file whose thumbnail will not decode gets a plate the height of a row.
+    /// One picture's place on the wall. `order` is where it came in the list, which is what
+    /// VoiceOver reads by — a column of views would otherwise be read down one column and
+    /// then down the next, which is not the order anything arrived in.
+    private struct Cell {
+        let item: Downloads.Item
+        let height: CGFloat
+        let order: Int
+    }
+
+    /// The columns, built once: two lists of cells rather than the whole list walked once per
+    /// column. Asking for the thumbnails it has not got yet is part of laying out — the
+    /// heights come from them, so the wall re-places itself as they land.
+    private var wall: [[Cell]] {
+        let items = items
+        var out = [[Cell]](repeating: [], count: Look.mediaColumns)
+        let heights = items.map(height)
+        for (i, column) in Masonry.place(heights: heights, columns: Look.mediaColumns).enumerated()
+        where out.indices.contains(column) {
+            out[column].append(Cell(item: items[i], height: heights[i], order: i))
+        }
+        return out
+    }
+
+    /// How tall a picture will be at column width, which is what the masonry balances. One
+    /// not decoded yet stands at a row's height and asks for itself; `Thumbnails.revision`
+    /// is what brings the wall back to lay it out properly.
     private func height(_ item: Downloads.Item) -> CGFloat {
-        guard let url = item.url, let image = Thumbnails.image(for: url),
-              image.size.width > 0, image.size.height > 0 else { return Look.libraryRow }
+        guard let url = item.url else { return Look.libraryRow }
+        guard let image = thumbnails.image(for: url),
+              image.size.width > 0, image.size.height > 0 else {
+            thumbnails.want(url)
+            return Look.libraryRow
+        }
         return (Look.mediaColumn * image.size.height / image.size.width).rounded()
     }
 }
@@ -1175,12 +1235,16 @@ private struct MediaTile: View {
     @ObservedObject var item: Downloads.Item
     let downloads: Downloads
     let height: CGFloat
+    /// Where this picture came in the list. VoiceOver reads by sort priority, so the two
+    /// columns are read newest-first across both rather than down one and then the other.
+    let order: Int
+    @ObservedObject private var thumbnails = Thumbnails.shared
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
-            if let image = item.url.flatMap(Thumbnails.image(for:)) {
+            if let image = item.url.flatMap(thumbnails.image(for:)) {
                 Image(nsImage: image).resizable().interpolation(.high)
                     .aspectRatio(contentMode: .fill)
             } else {
@@ -1215,37 +1279,82 @@ private struct MediaTile: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { downloads.open(item) }
         .accessibilityActions { DownloadVerbs(item: item, downloads: downloads) }
+        // Higher is read first, so the newest picture leads however the columns fell.
+        .accessibilitySortPriority(Double(-order))
     }
 }
 
-/// Thumbnails for the media grid, made once per file and kept.
+/// Thumbnails for the media wall and for a downloaded picture's row.
 ///
-/// ponytail: ImageIO rather than `NSImage(contentsOf:)`. That one keeps the whole decoded
-/// picture alive behind the small thing on screen — a screen of twelve photos off a phone is
-/// most of a gigabyte — while `CGImageSourceCreateThumbnailAtIndex` decodes straight to the
-/// size asked for and never holds the full frame at all. Keyed by path, so a file replaced
-/// under the same name keeps its old thumbnail until the app restarts; that is the ceiling.
-@MainActor enum Thumbnails {
-    /// Twice the widest a tile can be, so a thumbnail is still sharp on a retina screen.
-    private static let pixels = 512
-    private static var cache: [String: NSImage?] = [:]
+/// Two things this must not do: decode on the main thread, and keep every picture ever
+/// looked at. `CGImageSourceCreateThumbnailAtIndex` on a phone photo is tens of milliseconds
+/// — a wall of twelve of them was a third of a second of dropped frames inside `body` — and
+/// a plain dictionary of them never gives the memory back.
+///
+/// So: the decode runs off the actor and the result lands in an `NSCache` with a cost limit,
+/// which is the one collection AppKit will empty under pressure. Views ask `image(for:)` for
+/// what is already there and `want(_:)` for what is not; `revision` is what tells the wall to
+/// lay itself out again when one arrives.
+///
+/// ponytail: keyed by path, so a file replaced under the same name keeps its old thumbnail
+/// until the cache drops it. That is the ceiling, and it is cheaper than stat-ing every row.
+@MainActor final class Thumbnails: ObservableObject {
+    static let shared = Thumbnails()
 
-    static func image(for url: URL) -> NSImage? {
-        if let hit = cache[url.path] { return hit }
-        let made = make(url)
-        cache[url.path] = made
-        return made
+    /// Bumped when a thumbnail lands. The wall's heights come from these, so it has to be
+    /// told; a tile on its own would only need to redraw.
+    @Published private(set) var revision = 0
+
+    private let cache = NSCache<NSString, NSImage>()
+    private var loading: Set<String> = []
+
+    private init() {
+        // Bytes, roughly: a `mediaPixels`-wide thumbnail is about a quarter of a megabyte, so
+        // this is a few hundred pictures — more than a wall holds, and small enough that the
+        // system can take it back.
+        cache.totalCostLimit = 32 * 1024 * 1024
     }
 
-    private static func make(_ url: URL) -> NSImage? {
+    /// What is already decoded, or nil. Never touches the disk, so it is safe inside `body`.
+    func image(for url: URL) -> NSImage? { cache.object(forKey: url.path as NSString) }
+
+    /// Ask for one. Returns at once; `revision` says when it has arrived.
+    func want(_ url: URL) {
+        let key = url.path
+        guard cache.object(forKey: key as NSString) == nil, !loading.contains(key) else { return }
+        loading.insert(key)
+        Task.detached(priority: .utility) {
+            let made = Thumbnails.decode(url)
+            await MainActor.run { Thumbnails.shared.landed(key, made) }
+        }
+    }
+
+    private func landed(_ key: String, _ made: Decoded?) {
+        loading.remove(key)
+        guard let made else { return }
+        cache.setObject(made.image, forKey: key as NSString, cost: made.bytes)
+        revision &+= 1
+    }
+
+    /// A thumbnail on its way back from the background. `NSImage` is not `Sendable`, but this
+    /// one was made on that thread and handed straight over — nothing else ever held it.
+    private struct Decoded: @unchecked Sendable {
+        let image: NSImage
+        let bytes: Int
+    }
+
+    /// Decoded straight to the size drawn, never to the size stored: ImageIO never holds the
+    /// full frame at all, which is the whole reason this is not `NSImage(contentsOf:)`.
+    private nonisolated static func decode(_ url: URL) -> Decoded? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                   kCGImageSourceCreateThumbnailFromImageAlways: true,
                   kCGImageSourceCreateThumbnailWithTransform: true,
-                  kCGImageSourceThumbnailMaxPixelSize: pixels,
+                  kCGImageSourceThumbnailMaxPixelSize: Look.mediaPixels,
               ] as CFDictionary)
         else { return nil }
-        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        return Decoded(image: NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)),
+                       bytes: cg.width * cg.height * 4)
     }
 }
 
@@ -1277,12 +1386,19 @@ private struct SpacesPane: View {
 
 /// The `+` at the end of the row. Arc's is a plain circle between the cards; ours sits after
 /// them, which is where a new Space is actually added.
+///
+/// It clears `editingSpace` on the way out. `TabStore.newSpace` sets it to open the sidebar's
+/// inline editor, and that editor hangs off the footer's `+` — a button that is not in the
+/// tree while the Library is standing where the sidebar is. Left set, the popover opened on
+/// the sidebar minutes later, for a Space made from here. The naming panel belongs on the new
+/// card instead; see `SpaceCard.editing`.
 private struct NewSpaceCard: View {
     @EnvironmentObject var store: TabStore
+    @ObservedObject private var library = Library.shared
     @State private var hovering = false
 
     var body: some View {
-        Button { _ = store.newSpace() } label: {
+        Button { make() } label: {
             Image(systemName: "plus").font(Look.icon)
                 .foregroundStyle(hovering ? Look.inkPrimary : Look.inkSecondary)
                 .frame(width: Look.libraryField, height: Look.libraryField)
@@ -1295,11 +1411,19 @@ private struct NewSpaceCard: View {
         .help("New Space")
         .accessibilityLabel("New Space")
     }
+
+    private func make() {
+        guard let space = store.newSpace() else { return }
+        store.editingSpace = nil        // the sidebar's editor is not on screen to open
+        library.naming = space.id       // the new card's own pencil opens instead
+        axAnnounce("New Space created.")
+    }
 }
 
 private struct SpaceCard: View {
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var profiles: ProfileManager
+    @ObservedObject private var library = Library.shared
     @Environment(\.colorScheme) private var scheme
     let space: Space
     @State private var over = false
@@ -1308,6 +1432,9 @@ private struct SpaceCard: View {
     /// looked at, not lived in, and persisting it would mean writing another window's Space
     /// shape from here. The folder's own `collapsed` is still honoured on the way in.
     @State private var shut: Set<UUID> = []
+    /// The shape of a Space that is *not* open in a window, read once. `savedShape` is a
+    /// defaults read and a JSON decode; in the body it ran per card on every pointer move.
+    @State private var saved: Pins?
 
     /// The window showing this Space keeps its pages in its strip, with real titles; every
     /// other Space is the url list in spaces.json. `owner` rather than "is it this window's"
@@ -1315,7 +1442,8 @@ private struct SpaceCard: View {
     private var live: TabStore? { Library.owner(of: space.id) }
 
     /// The Pinned section, folders and all, then the Today pages under it — the card is a
-    /// miniature of that Space's own sidebar.
+    /// miniature of that Space's own sidebar. A live Space's shape is already in memory; a
+    /// shut one's came off disk in `reload`.
     private var pinned: [CardRow] {
         if let live {
             let byID = Dictionary(live.tabs.map { ($0.id.uuidString, $0) },
@@ -1325,21 +1453,55 @@ private struct SpaceCard: View {
                                     urls: live.tabs.filter { $0.kind == .pinned }
                                         .compactMap(\.currentURL))
         }
-        return Library.cardRows(shape: TabStore.savedShape(space: space.id,
-                                                           profileID: space.profileID),
-                                urls: space.pinnedTabURLs ?? [])
+        return Library.cardRows(shape: saved, urls: space.pinnedTabURLs ?? [])
+    }
+
+    /// Read when the card appears and whenever the profile's Spaces change, never in `body`.
+    private func reload() {
+        saved = live == nil
+            ? TabStore.savedShape(space: space.id, profileID: space.profileID)
+            : nil
     }
 
     private var today: [URL] {
         live.map { $0.tabs.filter { $0.kind == .today }.compactMap(\.currentURL) } ?? space.tabURLs
     }
 
-    /// The card's own ground: the Space's theme, derived exactly as the window's is, so a
-    /// card and the window it stands for are the same colour.
-    private var ground: Color {
-        Look.groundColor(hex: space.colorHex ?? profiles.profiles.first { $0.id == space.profileID }?.colorHex
-                            ?? store.profile.colorHex,
-                         dark: scheme == .dark, strength: space.tint ?? Look.defaultTint)
+    /// The card's ground, off the same stops `SpaceGround` builds the window's from — so a
+    /// Space the theme editor gave two colours reads as that diagonal here too, rather than
+    /// as a flat wash of whichever one happens to be `colorHex`.
+    ///
+    /// Laid opaque, where the window lays its own at `groundOpacity`: the window has a
+    /// wallpaper behind it to show through and a card has the panel, which is already
+    /// wearing the *current* Space's wash. At 62 % every card would be tinted by the Space
+    /// the window is in rather than by its own.
+    private var stops: [Color] {
+        let mine = Spaces.themeColors(of: space)
+        let list = mine.isEmpty
+            ? [profiles.profiles.first { $0.id == space.profileID }?.colorHex ?? store.profile.colorHex]
+            : mine
+        return Look.groundStops(list, towards: list, fraction: 0, dark: scheme == .dark,
+                                strength: space.tint ?? Look.defaultTint)
+    }
+
+    /// One colour is one even wash; several are the diagonal, exactly as `SpaceGround` mixes
+    /// them. The grain rides on top at the Space's own strength, so a grainy Space looks
+    /// grainy here too.
+    @ViewBuilder private var ground: some View {
+        let stops = stops
+        ZStack {
+            if stops.count > 1 {
+                LinearGradient(colors: stops, startPoint: .topLeading, endPoint: .bottomTrailing)
+            } else {
+                stops.first ?? Color.clear
+            }
+            if let grain = space.grain, grain > 0 {
+                Image(nsImage: Look.grain)
+                    .resizable(resizingMode: .tile)
+                    .interpolation(.none)          // one noisy pixel per pixel; see SpaceGround
+                    .opacity(grain * Look.grainMax)
+            }
+        }
     }
 
     var body: some View {
@@ -1377,17 +1539,28 @@ private struct SpaceCard: View {
         }
         .frame(width: Look.spaceCard)
         .frame(maxHeight: .infinity)
-        // The Space's own ground, then a lift for the one the window is actually in and for
-        // the one a drag is over — the ground is opaque, so a lift has to go over it.
+        // The Space's own ground, then a lift over it — the ground is opaque, so a lift
+        // cannot go under. The card the window is in wears the selection; a card a drag is
+        // merely over wears the hover, which is what every other drop target in the app does.
         .background {
             ZStack {
                 ground
-                if over || space.id == store.currentSpaceID { Look.selected }
+                if space.id == store.currentSpaceID { Look.selected }
+                if over { Look.hovered }
             }
             .clipShape(.rect(cornerRadius: Look.cardRadius))
         }
         .hairline(radius: Look.cardRadius, over ? Look.selectedEdge : Look.cardStroke)
         .onDrop(of: [.utf8PlainText], isTargeted: $over) { drop($0) }
+        .onAppear { reload() }
+        .onChange(of: store.spaceRevision) { reload() }
+        // A Space made from the Library's `+` is named on its own card, not on a sidebar
+        // button that is not on screen. See `NewSpaceCard`.
+        .onChange(of: library.naming, initial: true) {
+            guard library.naming == space.id else { return }
+            editing = true
+            library.naming = nil
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(space.name), \(pinned.count + today.count) page\(pinned.count + today.count == 1 ? "" : "s")")
     }
@@ -1488,6 +1661,7 @@ private struct FolderCardRow: View {
     let shut: Bool
     let toggle: () -> Void
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: Look.captionGap * 3) {
@@ -1509,6 +1683,7 @@ private struct FolderCardRow: View {
         .frame(height: Look.cardRow)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(hovering ? Look.hovered : .clear, in: .rect(cornerRadius: Look.chipRadius))
+        .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture(perform: toggle)
@@ -1869,6 +2044,13 @@ extension Library {
             ("a narrow window still gets the list column whole",
              panelWidth(section: .spaces, spaces: 4, available: 300) == list
                 && panelWidth(section: .archived, spaces: 4, available: 300) == list),
+            ("a private window never widens for Spaces cards it does not draw",
+             panelWidth(section: .spaces, spaces: 4, private: true, available: 2000) == list),
+            ("…and an ordinary one still does",
+             panelWidth(section: .spaces, spaces: 4, private: false, available: 2000) > list),
+            ("only Spaces has no search field of its own",
+             LibrarySection.allCases.filter { !$0.searchable }.map(\.rawValue)
+                == ["spaces", "history"]),
         ]
 
         // A Space card's rows: the saved shape's folders and tabs, then the rest.

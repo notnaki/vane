@@ -46,24 +46,42 @@ extension Downloads.Item {
 /// and the ring is the only thing on the row that moves.
 struct DownloadIcon: View {
     @ObservedObject var item: Downloads.Item
+    @ObservedObject private var thumbnails = Thumbnails.shared
 
     var body: some View {
         if item.status.isLive {
             ProgressRing(fraction: item.fraction, track: true)
-        } else {
-            Image(nsImage: icon).resizable().interpolation(.high)
+        } else if let picture {
+            // A picture fills its square and is cropped to it: a photo letterboxed into a
+            // 20pt box is four grey bars and a stamp.
+            Image(nsImage: picture).resizable().interpolation(.high)
                 .aspectRatio(contentMode: .fill)
                 .clipShape(.rect(cornerRadius: Look.captionGap))
                 .accessibilityHidden(true)
+        } else {
+            // A Finder icon is not square — a .dmg is taller than it is wide — so it is fitted
+            // rather than filled, which would crop its edges off.
+            Image(nsImage: FileIcons.icon(path: item.status == .done ? item.url?.path : nil,
+                                          name: item.name))
+                .resizable().interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .accessibilityHidden(true)
+                .task { ask() }
         }
     }
 
-    /// A picture shows itself; everything else shows the icon the Finder would draw. A
-    /// generic "PNG document" plate says nothing the filename has not already said.
-    private var icon: NSImage {
-        if item.status == .done, let url = item.url, Library.isImage(name: item.name),
-           let thumb = Thumbnails.image(for: url) { return thumb }
-        return FileIcons.icon(path: item.status == .done ? item.url?.path : nil, name: item.name)
+    /// The file itself, once it has been decoded. Nothing here waits for it: the row draws
+    /// the Finder's icon and swaps when the picture lands.
+    private var picture: NSImage? {
+        guard item.status == .done, let url = item.url, Library.isImage(name: item.name)
+        else { return nil }
+        return thumbnails.image(for: url)
+    }
+
+    private func ask() {
+        guard item.status == .done, let url = item.url, Library.isImage(name: item.name)
+        else { return }
+        thumbnails.want(url)
     }
 }
 

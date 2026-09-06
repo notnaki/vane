@@ -367,14 +367,27 @@ private struct FindBarBody: View {
 // MARK: - Opening it
 
 extension TabStore {
-    /// ⌘F, and ⌘G with nothing found yet. The find bar searches the page, and while the
-    /// Library is over the page there is no page on screen to search — so ⌘F there means the
-    /// Library's own search field, which is the box the user is looking at anyway. Without
-    /// this the bar opened invisible behind the Library, swallowed Escape (`LibraryRail`
-    /// stands its cancel action down while the find bar is up) and left the window with no
-    /// way out but the mouse.
+    /// ⌘F, and ⌘G with nothing found yet.
+    ///
+    /// The Library stands beside the page rather than over it, so find-in-page is still the
+    /// answer whenever the keyboard is on the page — which is what makes ⌘F work with the
+    /// Library open at all. It means the Library's *own* field only when the keyboard is
+    /// already in the panel and that section has a field: on Spaces there is nothing to type
+    /// into, and sending ⌘F there would be a dead key.
     func openFind() {
-        if libraryOpen { Library.focusSearch(); return }
+        if libraryOpen, !keyboardOnPage, Library.shared.section.searchable {
+            Library.focusSearch()
+            return
+        }
         findOpen = true
+    }
+
+    /// Whether the first responder is the page rather than the chrome around it. Asked of
+    /// AppKit rather than tracked, because every field in the window can take the keyboard
+    /// and only one of them is the page.
+    var keyboardOnPage: Bool {
+        guard let web = active?.web, let responder = window?.firstResponder as? NSView
+        else { return false }
+        return responder === web || responder.isDescendant(of: web)
     }
 }
