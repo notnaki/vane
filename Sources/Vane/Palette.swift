@@ -76,6 +76,35 @@ enum Palette {
         return out
     }
 
+    /// How much of the actions catalogue this keystroke asks for.
+    enum ActionScope: Equatable {
+        /// No actions at all — the tab search is tabs and nothing else.
+        case none
+        /// The suggested handful, under the tabs, with nothing typed.
+        case top
+        /// Everything the query matches.
+        case matching
+    }
+
+    /// When the bar offers actions. Arc's bar always has some in it: ⌘⇧P opens on a short
+    /// suggested set, and from the first character on it searches the whole catalogue. Vane
+    /// used to hold them back until three characters had been typed, which meant the only
+    /// way to find an action was to already know its name.
+    ///
+    /// ⌘L's bar is the one exception, and only while it is empty: it opens prefilled with
+    /// the page's address, selected, and a list of verbs under a url you are about to
+    /// replace is noise. One character in, it searches actions like every other entry point.
+    /// `filtered` is ⇥ — Arc's actions filter — which is a request for the catalogue itself,
+    /// so an empty query there means "all of them", not "the suggested five".
+    static func actions(query: String, mode: PaletteMode, filtered: Bool = false) -> ActionScope {
+        if filtered { return .matching }
+        if mode == .tabs { return .none }
+        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return mode == .all ? .top : .none
+        }
+        return .matching
+    }
+
     /// ⌘T, ⌘L and ⌘⇧P over a bar that is already up close it (Arc v0.107): the same key that
     /// opened it is the fastest way out, and reopening a bar that never went away is what
     /// makes a browser feel stuck.
@@ -139,6 +168,28 @@ enum Palette {
             ("with nothing typed the bar is still just the tabs",
              arrange(tabs: ["t1"], typed: nil, suggestions: none, ai: nil, rest: none,
                      commands: none) == ["t1"]),
+            ("…with the suggested actions under them",
+             arrange(tabs: ["t1"], typed: nil, suggestions: none, ai: nil, rest: none,
+                     commands: ["c1", "c2"]) == ["t1", "c1", "c2"]),
+
+            // Actions are always in reach (Arc), not held back until three characters.
+            ("⌘⇧P's bar suggests actions before anything is typed",
+             actions(query: "", mode: .all) == .top),
+            ("one character searches the whole catalogue",
+             actions(query: "r", mode: .all) == .matching),
+            ("…in ⌘L's bar too", actions(query: "r", mode: .address) == .matching),
+            ("…and in ⌘T's", actions(query: "r", mode: .newTab) == .matching),
+            ("⌘L's bar stays out of the way while it is still showing the page's address",
+             actions(query: "", mode: .address) == .none),
+            ("whitespace is not a query", actions(query: "   ", mode: .all) == .top),
+            ("the tab search is tabs and nothing else",
+             actions(query: "reload", mode: .tabs) == .none),
+            // ⇥ is Arc's actions filter, and asks for the catalogue rather than the top of it.
+            ("⇥ filters to actions with nothing typed",
+             actions(query: "", mode: .address, filtered: true) == .matching),
+            ("…and keeps filtering to them once something is",
+             actions(query: "re", mode: .address, filtered: true) == .matching),
+            ("…even in the tab search", actions(query: "", mode: .tabs, filtered: true) == .matching),
 
             ("⌘T over a closed bar opens it", toggled(current: nil, pressed: .newTab) == .newTab),
             ("⌘T over an open bar closes it",
@@ -178,7 +229,7 @@ enum Palette {
              rank("zzz", words, key: { $0 }).isEmpty),
             ("rank puts the best match first",
              rank("hn", words, key: { $0 }).first == "Hacker News"),
-        ]
+        ] + PaletteCommand.check()
     }
 }
 
@@ -228,73 +279,6 @@ enum Palette {
     }
 }
 
-// MARK: - Commands
-
-/// A palette entry that is an action rather than a place to go.
-struct PaletteCommand: Identifiable {
-    let id: String
-    let icon: String
-    let title: String
-    let run: @MainActor () -> Void
-
-    init(_ title: String, icon: String, run: @escaping @MainActor () -> Void) {
-        self.id = title
-        self.icon = icon
-        self.title = title
-        self.run = run
-    }
-
-    /// A `var`, not a `let`: features that land later append themselves here, so the
-    /// palette never grows a compile-time dependency on code that does not exist yet — and
-    /// never lists a row that does nothing when activated.
-    @MainActor static var all: [PaletteCommand] = [
-        PaletteCommand("New Tab", icon: "plus") { Windows.current?.newTab(nil) },
-        PaletteCommand("Close Tab", icon: "xmark") {
-            if let s = Windows.current, let c = s.current { s.close(c) }
-        },
-        PaletteCommand("Reload Page", icon: "arrow.clockwise") { Windows.current?.active?.reload() },
-        PaletteCommand("Reopen Closed Tab", icon: "arrow.uturn.left") {
-            if let u = ClosedTabs.pop() { (Windows.current ?? Windows.open()).newTab(u) }
-        },
-        PaletteCommand("Toggle Reader", icon: "doc.plaintext") {
-            Windows.current?.active.map(Reader.toggle)
-        },
-        PaletteCommand("Open Library", icon: "archivebox") { Windows.current?.libraryOpen = true },
-        PaletteCommand("View Archive", icon: "tray.full") { Windows.current?.libraryOpen = true },
-        PaletteCommand("View History", icon: "clock.arrow.circlepath") { HistoryWindow.show() },
-        PaletteCommand("Open Settings", icon: "gearshape") { SettingsWindow.show() },
-        PaletteCommand("Keyboard Shortcuts", icon: "keyboard") { SettingsWindow.show(tab: "shortcuts") },
-    ]
-
-    /// The rows that only make sense against what is in front of you right now: pinning the
-    /// tab you are on, favouriting it, moving it to one of *your* Spaces. They cannot live in
-    /// `all` — a static list cannot know whether this tab is already pinned, and Arc's bar
-    /// says "Unpin Tab" when it is.
-    @MainActor static func contextual() -> [PaletteCommand] {
-        guard let store = Windows.current, let tab = store.active else { return [] }
-        var out: [PaletteCommand] = [
-            PaletteCommand(tab.kind == .pinned ? "Unpin Tab" : "Pin Tab",
-                           icon: tab.kind == .pinned ? "pin.slash" : "pin") {
-                store.togglePinned(tab.id)
-            },
-            PaletteCommand(tab.kind == .favourite ? "Remove from Favourites" : "Add to Favourites",
-                           icon: tab.kind == .favourite ? "star.slash" : "star") {
-                store.toggleFavourite(tab.id)
-            },
-        ]
-        // Arc's "Move to Space ▸" is a submenu; a search bar has no submenus, so it is one
-        // row per Space — which is also the row you can type the Space's name at.
-        guard tab.currentURL?.scheme?.hasPrefix("http") == true else { return out }
-        for space in store.spaces where space.id != store.currentSpaceID {
-            out.append(PaletteCommand("Move to \(space.name)",
-                                      icon: space.icon ?? "square.on.square") {
-                Spaces.move(tab.id, to: space.id, as: .today, from: store)
-            })
-        }
-        return out
-    }
-}
-
 // MARK: - Overlay
 
 /// There is one bar, not three. ⌘L, ⌘T and the address pill open `.address`, ⌘⇧P opens
@@ -334,6 +318,15 @@ private struct PaletteRow: Identifiable {
     var detail: String = ""
     var subtitle: String = ""
     var trailing: String = ""
+    /// The keystroke that does this without opening the bar at all, drawn down the right of
+    /// an action row the way Arc's are. Empty for everything else.
+    var shortcut: String = ""
+    /// The page a row is allowed to forget: a history suggestion, which grows an × on hover
+    /// and answers ⌥⌘⌫. Nil everywhere else — a tab is not a suggestion, an engine's
+    /// completion is not ours to delete, and a bookmark was put there on purpose.
+    /// A url rather than a closure: forgetting is one call on one store, and the view is
+    /// already the thing that has to redraw afterwards.
+    var forget: String? = nil
     /// What VoiceOver calls this row, since the icon says it to everyone else.
     let kind: String
     /// `target` makes — or finds — the tab this row should load into, and is only called by
@@ -355,7 +348,7 @@ private struct PaletteRow: Identifiable {
 /// Internal, not private: the find bar needs the same three things (selected on open, Return
 /// and Shift-Return seen first, focus that stays put), only smaller.
 struct CommandField: NSViewRepresentable {
-    enum Key { case up, down, enter, shiftEnter, commandEnter, tab, escape }
+    enum Key { case up, down, enter, shiftEnter, commandEnter, tab, escape, forget }
 
     @Binding var text: String
     let prompt: String
@@ -430,6 +423,15 @@ struct CommandField: NSViewRepresentable {
             // ⌘Return arrives as insertNewlineIgnoringFieldEditor:, ⇧Return as an ordinary
             // insertNewline:, so both modifiers have to be read off the event that caused it.
             let command = flags.contains(.command)
+            // ⌥⌘⌫ forgets the highlighted suggestion. The field editor turns a delete into
+            // one of three selectors depending on the modifiers held — ⌥⌫ is a word, ⌘⌫ is
+            // the line — so all three are matched and the modifiers are what decide.
+            if flags.contains(.option), flags.contains(.command),
+               [#selector(NSResponder.deleteBackward(_:)),
+                #selector(NSResponder.deleteWordBackward(_:)),
+                #selector(NSResponder.deleteToBeginningOfLine(_:))].contains(selector) {
+                return parent.onKey(.forget)
+            }
             switch selector {
             case #selector(NSResponder.moveUp(_:)):          return parent.onKey(.up)
             case #selector(NSResponder.moveDown(_:)):        return parent.onKey(.down)
@@ -464,6 +466,9 @@ struct CommandField: NSViewRepresentable {
     /// history, and the body runs far more often than the query changes.
     @State private var rows: [PaletteRow] = []
     @State private var hover: String?
+    /// Arc's ⇥: the bar narrows to its actions catalogue and says so with a scope chip in
+    /// the field. Escape takes the filter off before it closes the bar.
+    @State private var actionsOnly = false
     /// The field is held back one frame so it is created with the prefilled address already
     /// in it — an NSTextField can only select text it has.
     @State private var ready = false
@@ -540,16 +545,26 @@ struct CommandField: NSViewRepresentable {
     private var bar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Look.barRowInset) {
-                Image(systemName: "magnifyingglass")
+                Image(systemName: actionsOnly ? "command" : "magnifyingglass")
                     .font(Look.fieldIcon)
                     .foregroundStyle(Look.barPlaceholder)
                     .frame(width: Look.rowIcon)
+                // Arc's scope chip: with ⇥ held on, the field says what it is searching, so
+                // a bar showing nothing but verbs is never a bar that has gone wrong.
+                if actionsOnly {
+                    Text("Actions").font(Look.rowText)
+                        .foregroundStyle(Look.barSelectedText)
+                        .padding(.horizontal, Look.barRowGap * 2)
+                        .padding(.vertical, Look.barRowGap / 2)
+                        .background(Look.barSelected, in: .rect(cornerRadius: Look.chipRadius))
+                        .accessibilityLabel("Searching actions")
+                }
                 if ready {
-                    CommandField(text: $query, prompt: mode.prompt,
+                    CommandField(text: $query, prompt: actionsOnly ? "Run a command…" : mode.prompt,
                                  selectAll: mode == .address,
-                                 label: mode.title,
+                                 label: actionsOnly ? "Actions" : mode.title,
                                  hint: "Type to filter. Up and down arrows choose a result, "
-                                     + "Return opens it, Escape closes.",
+                                     + "Return opens it, Tab searches actions, Escape closes.",
                                  onKey: key)
                 }
             }
@@ -616,8 +631,26 @@ struct CommandField: NSViewRepresentable {
                 Text(row.subtitle).font(Look.text).foregroundStyle(Look.barTrailing).lineLimit(1)
             }
             Spacer(minLength: Look.inset)
+            // Forgetting a suggestion is a hover affordance, the way Arc's is: it appears on
+            // the row under the pointer or the arrow, and stays out of the list otherwise.
+            if row.forget != nil, lit || on {
+                Button { index = i; forget() } label: {
+                    Image(systemName: "xmark")
+                        .font(Look.chipGlyph)
+                        .foregroundStyle(Look.barGlyph)
+                        .frame(width: Look.chip, height: Look.chip)
+                        .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Remove from history")
+            }
             // The verb and its chip travel together, on every row that has one; the
             // selected row's are the bright pair, because that is the one Return presses.
+            if !row.shortcut.isEmpty {
+                Text(row.shortcut).font(Look.rowText)
+                    .foregroundStyle(on ? Look.barSelectedText : Look.barTrailing)
+                    .lineLimit(1).layoutPriority(1)
+            }
             if !row.trailing.isEmpty {
                 Text(row.trailing).font(Look.rowText)
                     .foregroundStyle(on ? Look.barSelectedText : Look.barTrailing)
@@ -655,7 +688,14 @@ struct CommandField: NSViewRepresentable {
         case .down:       move(1)
         case .enter:        activate()
         case .commandEnter: activate(inNewTab: true)
-        case .escape:       close()
+        case .forget:       forget()
+        case .escape:
+            // One Escape takes the actions filter off, the next closes the bar — the same
+            // way Escape leaves a scope before it leaves the search everywhere else.
+            guard actionsOnly else { close(); break }
+            actionsOnly = false
+            axAnnounce("Actions filter off.")
+            refresh()
         case .shiftEnter:
             // Instant Links: skip the results page and open what it would have led to.
             guard mode == .address || mode == .newTab, !typed.isEmpty else { return false }
@@ -663,13 +703,27 @@ struct CommandField: NSViewRepresentable {
             close()
             store.goInstant(typed, from: tab)
         case .tab:
-            // Same gesture the address bar had: hand what was typed to the assistant.
-            guard mode != .tabs, !typed.isEmpty else { return false }
-            let tab = target()
-            close()
-            tab.ask(typed)
+            // Arc's ⇥ narrows the bar to its actions. It used to hand the query to the
+            // assistant instead, which was Vane's own invention and cost the bar the one
+            // gesture Arc users reach for — the assistant keeps its own row, two under what
+            // was typed, which is where Arc puts it and where it can be arrowed onto.
+            actionsOnly.toggle()
+            axAnnounce(actionsOnly ? "Actions" : "All results")
+            refresh()
         }
         return true
+    }
+
+    /// ⌥⌘⌫, and the × the row grows on hover: forget this page. Only history rows carry a
+    /// url to forget — a suggestion you can never get rid of is what makes one embarrassing
+    /// address follow you around for a year.
+    private func forget() {
+        guard rows.indices.contains(index), let url = rows[index].forget else { return }
+        store.history.forget(url: url)
+        axAnnounce("Removed from history.")
+        // The suggestion list is the store's, and it is what has just changed underneath.
+        store.suggest(query)
+        refresh(reset: false)
     }
 
     private var typed: String { query.trimmingCharacters(in: .whitespaces) }
@@ -711,7 +765,10 @@ struct CommandField: NSViewRepresentable {
     private func refresh(reset: Bool = true) {
         var out: [PaletteRow] = []
         let tabs = Palette.rank(query, tabRows(), key: { $0.title + " " + $0.detail })
-        if mode == .tabs {
+        if actionsOnly {
+            // ⇥: the catalogue and nothing else, so the bar reads as one list of verbs.
+            out = commandRows()
+        } else if mode == .tabs {
             out = tabs
         } else {
             // Arc's order (refs 2, 3): a tab you already have open that matches is the
@@ -723,14 +780,12 @@ struct CommandField: NSViewRepresentable {
             // typing two letters means a search far more often than "Close Tab", and three
             // characters is the floor at which a fuzzy match stops being a coincidence.
             // Archived tabs and Spaces are places, so they are searched the moment there is
-            // something to search with; commands are verbs, and three characters is the floor
-            // at which a fuzzy match on one stops being a coincidence.
+            // something to search with. Actions are always in reach — see `Palette.actions`.
             let places = typed.isEmpty ? []
                 : Palette.rank(typed, archiveRows() + spaceRows(), key: { $0.title + " " + $0.detail })
             out = Palette.arrange(
                 tabs: tabs, typed: typedRow(), suggestions: suggestionRows(), ai: aiRow(),
-                rest: places,
-                commands: typed.count >= 3 ? Palette.rank(typed, commandRows(), key: { $0.title }) : [])
+                rest: places, commands: commandRows())
         }
         rows = Array(out.prefix(24))
         index = reset ? 0 : min(index, max(0, rows.count - 1))
@@ -764,7 +819,7 @@ struct CommandField: NSViewRepresentable {
     /// "Open" label; the others are places, shown with their host so two pages with the
     /// same title can be told apart.
     private func suggestionRows() -> [PaletteRow] {
-        store.suggestions.map { s in
+        store.suggestions.map { (s: Suggestion) -> PaletteRow in
             let title = s.title.isEmpty ? s.url : s.title
             let icon = s.completion ? "magnifyingglass" : (s.bookmarked ? "star.fill" : "clock")
             let host = URL(string: s.url)?.host ?? s.url
@@ -775,6 +830,9 @@ struct CommandField: NSViewRepresentable {
                 detail: s.completion ? "" : s.url,
                 subtitle: s.completion || s.title.isEmpty ? "" : host,
                 trailing: s.completion ? "" : "Open",
+                // A completion belongs to the engine and a bookmark was put there on
+                // purpose; only a page you happened to visit is the bar's to forget.
+                forget: s.completion || s.bookmarked ? nil : s.url,
                 kind: s.completion ? "Search suggestion" : (s.bookmarked ? "Bookmark" : "History")
             ) { target in
                 guard let u = URL(string: s.url) else { return }
@@ -838,11 +896,24 @@ struct CommandField: NSViewRepresentable {
         }
     }
 
+    /// The actions catalogue, as much of it as this query asks for. The rows carry the
+    /// keystroke rather than a "Command →" chip: an action row's right-hand side is where
+    /// Arc teaches you the shortcut, and a bar that says "Command" forty times says nothing.
     private func commandRows() -> [PaletteRow] {
-        (PaletteCommand.all + PaletteCommand.contextual()).map { c in
-            PaletteRow(id: "cmd:" + c.id, icon: c.icon, title: c.title,
-                       trailing: "Command", kind: "Command") { _ in c.run() }
+        let scope = Palette.actions(query: query, mode: mode, filtered: actionsOnly)
+        guard scope != .none else { return [] }
+        func rows(_ commands: [PaletteCommand]) -> [PaletteRow] {
+            commands.map { c in
+                PaletteRow(id: "cmd:" + c.id, icon: c.icon, title: c.title,
+                           detail: c.shortcut, shortcut: c.shortcut, kind: "Action") { _ in
+                    c.run()
+                }
+            }
         }
+        guard scope == .matching else { return rows(PaletteCommand.topActions(for: store)) }
+        // Ranked on the title alone: matching the shortcut too would put every ⌘-something
+        // under a query like "d", and the Shortcuts pane is where keys are searched.
+        return rows(Palette.rank(typed, PaletteCommand.all(for: store), key: \.title))
     }
 
     private func aiRow() -> PaletteRow? {

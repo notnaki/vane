@@ -340,8 +340,8 @@ private struct FindBarBody: View {
         case .enter:      search(forward: true)
         case .shiftEnter: search(forward: false)
         case .escape:     close()
-        // Typing is what changes the query; the arrows and Tab belong to the field.
-        case .up, .down, .tab, .commandEnter: return false
+        // Typing is what changes the query; the arrows, Tab and ⌥⌘⌫ belong to the field.
+        case .up, .down, .tab, .commandEnter, .forget: return false
         }
         return true
     }
