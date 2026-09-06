@@ -194,6 +194,12 @@ struct Visit: Identifiable, Hashable, Sendable {
     /// ⌫ in the History window: one line, not every visit to that page.
     func deleteVisit(_ id: Int64) { run("DELETE FROM visits WHERE id = ?", [Int(id)]) }
 
+    /// ⌥⌘⌫ on a suggestion in the command bar, which is the opposite gesture: the bar rolls
+    /// every visit to a page up into one row, so forgetting that row has to forget them all
+    /// or the suggestion comes straight back. Bookmarks are untouched — deleting a
+    /// suggestion is not the same as unbookmarking, and the bar does not offer it on one.
+    func forget(url: String) { run("DELETE FROM visits WHERE url = ?", [url]) }
+
     /// `since: nil` is "all time", which is a DELETE with no WHERE rather than a very old
     /// date — a stored visit with a broken timestamp must not survive "clear everything".
     func clearHistory(since: Date? = nil) {

@@ -322,6 +322,14 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             check("deleting one visit leaves that page's other visits alone", false)
         }
 
+        // ⌥⌘⌫ on a command bar suggestion: the bar rolls a page's visits into one row, so
+        // forgetting that row has to take every visit to it — and leave the other pages be.
+        store.record([(URL(string: "https://swift.org/blog")!, "Swift Blog", day - 172_800)])
+        store.forget(url: "https://swift.org/blog")
+        check("forgetting a suggestion takes every visit to that page with it",
+              store.history(matching: "swift.org").isEmpty)
+        check("…and leaves the other pages alone", store.history(matching: "apple").count == 1)
+
         check("clearHistory empties visits", { store.clearHistory(); return store.recent().isEmpty }())
         try? FileManager.default.removeItem(at: dir)
 
