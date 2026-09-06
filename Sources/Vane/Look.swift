@@ -92,8 +92,6 @@ enum Look {
     static let paneFrameWidth: CGFloat = 2
     /// How much of the card's edge takes a dragged tab as a new pane.
     static let splitDropBand: CGFloat = 0.25
-    /// How far a split row's favicons overlap each other.
-    static let splitIconLap: CGFloat = 5
 
     // Settings. Arc's rows are 43 (86px), its link rows 34, its list rows 32 on a 40 pitch.
     static let settingsRow: CGFloat = 43
@@ -230,6 +228,14 @@ enum Look {
     static let icon = Font.system(size: 16, weight: .medium)
     /// The address pill's two glyphs, a step smaller than the top row's (link 29×29px).
     static let pillGlyph = Font.system(size: 14, weight: .medium)
+    /// A split's row: one row-height container with a pill per pane in it. The inset is what
+    /// makes the pills read as things *in* a row rather than rows of their own, and the
+    /// nested radius follows from it — a corner inside a corner is the outer one less the
+    /// gap between them, or the two curves fight.
+    static let paneInset: CGFloat = 4
+    static let paneGap: CGFloat = 6
+    static var panePillRadius: CGFloat { pillRadius - paneInset }
+
     /// The space's icon at the head of the list (cloud 32×22px).
     static let spaceIcon = Font.system(size: 14)
     /// A symbol standing in a `rowIcon` box where a favicon would be: bar rows, pickers.
@@ -496,6 +502,16 @@ enum Look {
     static let floatShadow = Color.black.opacity(0.3)
     static let floatShadowRadius: CGFloat = 12
     static let floatShadowY: CGFloat = 4
+    /// A row picked up out of the list: a shade bigger with a shadow under it, so it reads
+    /// as held above the sidebar rather than sliding along it. Tighter than `floatShadow` —
+    /// the row is a finger's width off the list, not a window over the page.
+    static let liftScale: CGFloat = 1.04
+    static let liftShadow = Color.black.opacity(0.35)
+    static let liftShadowRadius: CGFloat = 8
+    static let liftShadowY: CGFloat = 3
+    /// How far down the slot a lifted row leaves goes: still a row, plainly not the one in
+    /// your hand.
+    static let lifted: Double = 0.3
 
     // Motion. Short and easing out: a fill should arrive under the pointer, never chase it.
     /// Hover and selection fills.
@@ -534,6 +550,10 @@ enum Look {
     static let switcherIcon: CGFloat = 24
     /// ⌃ held shorter than this is a tap — switch, but never draw the row.
     static let switcherDelay: Double = 0.15
+    /// A press held this long on back or forward opens that direction's history instead of
+    /// stepping once. Long enough that an ordinary click never opens a menu, short enough
+    /// that holding does not feel like waiting for something broken.
+    static let holdDelay: Double = 0.4
 
     // The mini audio player: a pill above the sidebar's footer, a shade taller than a row
     // so the artwork and the transport glyphs sit in it without crowding.
@@ -606,6 +626,16 @@ extension Look {
         out.append(("the footer glyphs sit 24pt above the window's bottom edge",
                     footer / 2 + footerInset == 24))
         out.append(("rows and the bar share one radius", pillRadius == barRadius))
+        out.append(("a pane's pill has room for a favicon and a corner of its own",
+                    panePillRadius > 0 && rowHeight - paneInset * 2 > rowIcon))
+        out.append(("a held back button opens its history well after an ordinary click ends",
+                    holdDelay > switcherDelay && holdDelay <= 0.5))
+        out.append(("a lifted row is a shade bigger, not a different size",
+                    liftScale > 1 && liftScale < 1.1))
+        out.append(("its shadow is tighter than a floating surface's",
+                    liftShadowRadius < floatShadowRadius && liftShadowY < floatShadowY))
+        out.append(("the slot it left is dimmed, not emptied — the list keeps its shape",
+                    lifted > 0 && lifted < 0.5))
         out.append(("the command bar's rows keep Arc's 50pt pitch", barRowHeight + barRowGap == 50))
         // The mini audio player. It sits above the footer inside the sidebar's own padding,
         // so its height is what decides whether the list is ever covered by it.
