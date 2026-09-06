@@ -96,11 +96,14 @@ struct Selection: Equatable, Sendable {
     }
 
     /// Ids that have left the store — a tab archived, closed, or moved to another Space —
-    /// are dropped, so nothing selected is a tab that no longer exists.
-    mutating func keep(_ live: Set<Tab.ID>) {
+    /// are dropped, so nothing selected is a tab that no longer exists. `live` is in strip
+    /// order rather than a set: an anchor whose row has gone hands over to the first
+    /// survivor *in that order*, so the next ⇧-click ranges from the same place twice.
+    mutating func keep(_ live: [Tab.ID]) {
         guard !ids.isEmpty else { return }
-        ids.formIntersection(live)
-        if let a = anchor, !live.contains(a) { anchor = ids.first }
+        let alive = Set(live)
+        ids.formIntersection(alive)
+        if anchor.map(alive.contains) != true { anchor = live.first { ids.contains($0) } }
         if ids.isEmpty { clear() }
     }
 
@@ -116,12 +119,24 @@ extension TabStore {
     /// One section's rows in the order the sidebar draws them. Pinned is `pins.visible` —
     /// folders and folded-away tabs included in the shape, excluded from the ids — and the
     /// other two are simply the strip filtered, since the strip *is* their order.
+    ///
+    /// Only rows that are actually on screen: a run the user cannot see is not a run they
+    /// can draw, and a bulk action over one archives pages they were never shown.
     func section(_ kind: TabKind) -> Selection.Section {
         guard kind == .pinned else {
-            return .init(kind: kind, ids: tabs.filter { $0.kind == kind }.map(\.id))
+            return .init(kind: kind, ids: tabs.filter { $0.kind == kind && hasRow($0.id) }.map(\.id))
         }
         let live = Dictionary(tabs.map { ($0.id.uuidString, $0.id) }, uniquingKeysWith: { a, _ in a })
-        return .init(kind: .pinned, ids: pins.visible.compactMap { $0.entry.tab.flatMap { live[$0] } })
+        return .init(kind: .pinned,
+                     ids: pins.visible.compactMap { $0.entry.tab.flatMap { live[$0] } }.filter(hasRow))
+    }
+
+    /// Whether a tab has a row of its own. A split draws one row between all of its panes, at
+    /// its lead pane's place (see `StripRow`), so the other panes are in the strip but not on
+    /// screen — the same reason a tab inside a folded-up folder is left out of `pins.visible`.
+    func hasRow(_ id: Tab.ID) -> Bool {
+        guard let split = split(containing: id) else { return true }
+        return leadPane(split) == id
     }
 
     /// The section a tab's row is in — the one its ⌘-click and ⇧-click are confined to.
@@ -157,9 +172,12 @@ extension TabStore {
         axAnnounce(selection.announcement)
     }
 
-    /// ⌘A on the sidebar: every tab in the current tab's section.
+    /// ⌘A on the sidebar: every tab in the current tab's section — unless that section is
+    /// Favourites, which draws tiles rather than rows and so would build a selection with
+    /// nothing on screen to show it and no row to click your way out of. Same rule as
+    /// `moveSelection(to:)`; see the ponytail note there.
     func selectAllTabs() {
-        guard let here = current else { return }
+        guard let here = current, tabs.first(where: { $0.id == here })?.kind != .favourite else { return }
         selection.selectAll(in: section(of: here))
         axAnnounce(selection.announcement)
     }
@@ -168,6 +186,18 @@ extension TabStore {
         guard !selection.isEmpty else { return }
         selection.clear()
         axAnnounce(selection.announcement)
+    }
+
+    /// A dragged run has landed. Dragging the selection moves every tab in it into the
+    /// target's section, and a selection still naming the section it came from is one whose
+    /// bulk actions all quietly do nothing — `selectedTabs` looks for its ids in the wrong
+    /// list and finds none. Every drop that can move a tab between sections ends here.
+    ///
+    /// A drag of some *other* row leaves the selection alone: its own tabs have not moved.
+    func selectionLanded(_ moved: [Tab.ID], in kind: TabKind) {
+        guard !selection.isEmpty, moved.contains(where: selection.contains) else { return }
+        // Favourites are tiles, not rows — see the ponytail note on `moveSelection(to:)`.
+        if kind == .favourite { selection.clear() } else { selection.moved(to: kind) }
     }
 
     // MARK: Bulk actions
@@ -211,8 +241,15 @@ extension TabStore {
     func moveSelection(toSpace space: UUID, as kind: TabKind) {
         let ids = selectedTabs.map(\.id)
         guard !ids.isEmpty else { return }
-        selection.clear()
+        // `Spaces.move` closes each tab, and `close` prunes the selection — so it empties
+        // itself. Counted afterwards rather than before: a blank or file tab has no url to
+        // write into a Space and is left where it is, and saying "moved 5" when 3 went is
+        // worse than saying nothing.
         ids.forEach { Spaces.move($0, to: space, as: kind, from: self) }
+        let gone = ids.filter { id in !tabs.contains { $0.id == id } }.count
+        let name = spaces.first { $0.id == space }?.name ?? "the space"
+        axAnnounce(gone == ids.count ? "Moved \(gone) tab\(gone == 1 ? "" : "s") to \(name)."
+                   : "Moved \(gone) of \(ids.count) tabs to \(name).")
     }
 
     /// "Copy N Links": one url per line, in the order the rows are drawn — which is what
@@ -230,7 +267,7 @@ extension TabStore {
     /// rows read top to bottom.
     func splitSelection() {
         let ids = selectedTabs.map(\.id)
-        guard (2...Split.maxPanes).contains(ids.count) else { return }
+        guard selectionFitsSplit, ids.count == selection.count else { return }
         selection.clear()
         var anchor = ids[0]
         for id in ids.dropFirst() {
@@ -239,13 +276,41 @@ extension TabStore {
         }
     }
 
-    /// Whether a selection is big enough for a split and small enough to fit in one.
-    var selectionFitsSplit: Bool { (2...Split.maxPanes).contains(selection.count) }
+    /// Whether a selection is big enough for a split and small enough to fit in one — and
+    /// is not already part of one. A pane cannot be split with itself, and half a split made
+    /// before the refusal is worse than the refusal.
+    var selectionFitsSplit: Bool {
+        (2...Split.maxPanes).contains(selection.count)
+            && !selectedTabs.contains { split(containing: $0.id) != nil }
+    }
 }
 
-// MARK: - ⌘A
+// MARK: - Escape and ⌘A
 
 extension Selection {
+    /// Escape on a window with a selection. Called from `VaneWindow.sendEvent`; true means
+    /// the selection took it.
+    ///
+    /// Everything that puts its own Escape up gets it first, because each of those is a
+    /// thing the user opened *after* making the selection: the command bar, a rename field
+    /// armed on a row, the find bar, and any field editor taking keystrokes. Clearing a
+    /// selection out from under an open command bar and leaving the bar there is the one
+    /// outcome nobody means.
+    ///
+    /// ponytail: `editing`, not `typing` — a focused *page* is not asked about. The sidebar
+    /// takes no focus when a row is clicked, so the page is usually still first responder,
+    /// and gating on that would mean Escape never cleared a selection at all. Ceiling: a
+    /// page using Escape for something of its own loses it while rows are ticked. Upgrade
+    /// path is the same `@FocusState` on the row list that `selectAll` wants.
+    @MainActor static func clear(in window: NSWindow) -> Bool {
+        guard let store = TabStore.all.first(where: { $0.window === window }),
+              !store.selection.isEmpty,
+              store.palette == nil, store.renamingTab == nil, store.renamingFolder == nil,
+              !store.findOpen, !editing(window.firstResponder) else { return false }
+        store.clearSelection()
+        return true
+    }
+
     /// ⌘A belongs to whatever is typing — a url field, a rename field, a text box on the
     /// page — and only falls through to the sidebar when nothing is. Called from
     /// `VaneWindow.sendEvent`; true means the sidebar took it.
@@ -255,15 +320,6 @@ extension Selection {
     /// responder, so there is no state to ask; this is the same question from the other
     /// end. Ceiling: ⌘A anywhere on the chrome selects the section. Upgrade path: give the
     /// row list a real `@FocusState` and ask that instead.
-    /// Escape on a window with a selection. Called from `VaneWindow.sendEvent` ahead of
-    /// everything else Escape can mean; true means the selection took it.
-    @MainActor static func clear(in window: NSWindow) -> Bool {
-        guard let store = TabStore.all.first(where: { $0.window === window }),
-              !store.selection.isEmpty else { return false }
-        store.clearSelection()
-        return true
-    }
-
     @MainActor static func selectAll(in window: NSWindow) -> Bool {
         guard !typing(window.firstResponder),
               let store = TabStore.all.first(where: { $0.window === window }),
@@ -272,8 +328,14 @@ extension Selection {
         return true
     }
 
+    /// A field editor — a url field, a rename field, a text box. Escape is its Cancel.
+    @MainActor private static func editing(_ responder: NSResponder?) -> Bool {
+        responder is NSText || responder is NSTextView
+    }
+
+    /// The above, plus a focused page: ⌘A inside a text box on a website is the website's.
     @MainActor private static func typing(_ responder: NSResponder?) -> Bool {
-        if responder is NSText || responder is NSTextView { return true }
+        if editing(responder) { return true }
         // A focused page's first responder is a private WebKit view *inside* the WKWebView,
         // so the ancestry is the only reliable way to ask.
         var view = responder as? NSView
@@ -283,6 +345,13 @@ extension Selection {
         }
         return false
     }
+}
+
+/// What a ticked row adds to its own value, so VoiceOver says the row is one of several
+/// rather than only that it is selected — which on its own reads the same as "this is the
+/// tab you are on". Empty for a row that is not in a selection, so nothing else changes.
+@MainActor func selectionSuffix(_ ticked: Bool, _ count: Int) -> String {
+    ticked && count > 1 ? ", one of \(count) selected" : ""
 }
 
 // MARK: - The bulk menu
@@ -341,7 +410,10 @@ private struct MoveSelectionToSpaceMenu: View {
     let count: Int
 
     var body: some View {
-        let others = store.spaces.filter { $0.id != store.currentSpaceID }
+        // Never in a private window: it is in no Space, so with `currentSpaceID` nil every
+        // Space in the profile would look like somewhere to move to — and moving there
+        // writes the page down. The same guard `MoveToSpaceMenu` has.
+        let others = store.isPrivate ? [] : store.spaces.filter { $0.id != store.currentSpaceID }
         if !others.isEmpty {
             Menu("Move \(count) Tabs to Space") {
                 ForEach(others) { space in
@@ -427,10 +499,13 @@ extension Selection {
         s = Selection()
         s.range(anchor: nil, to: ids[4], in: today)
         s.range(anchor: nil, to: ids[0], in: today)
-        s.keep(Set(ids[0...2]))
+        s.keep(Array(ids[0...2]))
         out.append(("tabs that left the store leave the selection", s.ids == Set(ids[0...2])))
-        s.keep([ids[1]])
-        out.append(("…and the anchor follows them out", s.anchor == ids[1]))
+        out.append(("the anchor's row survived, so the anchor is left where it was",
+                    s.anchor == ids[0]))
+        s.keep([ids[2], ids[1]])
+        out.append(("an anchor whose row has gone hands over in strip order, not set order",
+                    s.anchor == ids[2] && s.ids == Set(ids[1...2])))
         s.keep([])
         out.append(("a selection whose tabs have all gone is no selection at all",
                     s.isEmpty && s.section == nil))
@@ -454,6 +529,37 @@ extension Selection {
                     s.announcement == "1 tab selected."))
         s.toggle(ids[1], in: today)
         out.append(("two announce in the plural", s.announcement == "2 tabs selected."))
+
+        // Switching Space empties the strip without going through `close`, so `switchTo`
+        // clears by hand (Engine.swift). What must hold afterwards: the next ⌘-click in the
+        // *same* kind starts a new set rather than adding to the one left behind — `toggle`
+        // only resets when the kind differs, so a stale set of the same kind would survive
+        // and the bulk menu would count tabs the window no longer has.
+        s = Selection()
+        s.selectAll(in: today)
+        s.clear()
+        s.toggle(ids[3], in: today)
+        out.append(("a ⌘-click after the selection was cleared holds only that row",
+                    s.ids == [ids[3]] && s.anchor == ids[3]))
+
+        // A pane that is not its split's lead has no row, so the store leaves it out of the
+        // section (`TabStore.hasRow`). Everything downstream has to honour that: a row the
+        // section does not list can be reached by neither ⇧-click nor ⌘A, so no bulk action
+        // can ever name a tab the sidebar never drew.
+        let hidden = ids[2]
+        let drawn = Section(kind: .today, ids: ids.filter { $0 != hidden })
+        s = Selection()
+        s.toggle(ids[0], in: drawn)
+        s.range(anchor: nil, to: hidden, in: drawn)
+        out.append(("⇧-click onto a row the section does not list changes nothing",
+                    s.ids == [ids[0]]))
+        s.range(anchor: nil, to: ids[3], in: drawn)
+        out.append(("…and a run drawn over it steps past it rather than through it",
+                    s.ids == [ids[0], ids[1], ids[3]] && !s.contains(hidden)))
+        s = Selection()
+        s.selectAll(in: drawn)
+        out.append(("⌘A takes the rows the section lists and no others",
+                    s.count == 4 && !s.contains(hidden)))
 
         return out
     }

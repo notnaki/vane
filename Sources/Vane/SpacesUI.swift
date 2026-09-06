@@ -285,8 +285,9 @@ struct SpaceDrop: DropDelegate {
         if Dragging.shared.tab != nil {
             // A dragged multi-select moves as one, in the order its rows were drawn.
             let (tabs, _) = Dragging.shared.takeAll()
+            // `Spaces.move` closes each tab and `close` prunes the selection, so a dragged
+            // selection empties itself and a drag of some other row leaves it alone.
             tabs.forEach { Spaces.move($0, to: space.id, as: .today, from: store) }
-            store.selection.clear()
             axAnnounce(tabs.count == 1 ? "Moved to \(space.name)."
                        : "Moved \(tabs.count) tabs to \(space.name).")
             return true

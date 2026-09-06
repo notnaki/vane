@@ -1002,6 +1002,11 @@ private struct TabDrop: DropDelegate {
             if id != here.id { store.drop(id, onto: here.id, after: after || id != dragged.first) }
             anchor = store.tabs.first { $0.id == id } ?? here
         }
+        // A drop onto a row takes that row's section; with no row it is the empty section's
+        // own. Either way the selection has to be told, or every bulk action on it becomes a
+        // no-op — see `selectionLanded`. The address pill is a `TabDrop` into `.favourite`,
+        // so the grid's "no rows to show it" case comes through here too.
+        store.selectionLanded(dragged, in: target?.kind ?? into)
         return true
     }
 
@@ -1566,6 +1571,9 @@ private struct FolderDrop: DropDelegate {
         case .before: tabs.forEach { store.drop($0, beside: folder.id, after: false) }
         case .after:  tabs.reversed().forEach { store.drop($0, beside: folder.id, after: true) }
         }
+        // A folder is a Pinned row wherever it is dropped, in it or beside it. See
+        // `TabDrop.performDrop`.
+        store.selectionLanded(tabs, in: .pinned)
         return true
     }
 
@@ -1767,9 +1775,13 @@ private struct SplitRow: View {
     var body: some View {
         let panes = split.tabs.compactMap { id in store.tabs.first { $0.id == id } }
         let selected = split.tabs.contains { $0 == store.current }
+        // The split's one row stands for its lead pane in the strip, so that is the id the
+        // selection holds — the other panes have no row to tick.
+        let ticked = store.selection.contains(lead.id)
         let active = panes.first { $0.id == split.activeTab } ?? panes.first
         let title = active.map { TidyTitles.title(for: $0) } ?? "Split View"
-        SidebarRow(selected: selected, action: { store.focusPane(split.activeTab) }) {
+        SidebarRow(selected: selected, ticked: ticked,
+                   action: { store.focusPane(split.activeTab) }) {
             SplitIcons(panes: panes)
         } label: {
             Text(title)
@@ -1793,14 +1805,22 @@ private struct SplitRow: View {
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: lead, into: lead.kind,
                                   axis: .vertical, extent: Look.rowHeight, side: $side))
-        .contextMenu { SplitMenu(store: store, split: split) }
+        // A ticked split row is one of several selected rows, and is about all of them —
+        // exactly as `TabRow` is.
+        .contextMenu {
+            if ticked, store.selection.count > 1 {
+                BulkMenu(store: store, count: store.selection.count, kind: lead.kind)
+            } else {
+                SplitMenu(store: store, split: split)
+            }
+        }
         // One element for the whole split, the way one row is one thing: how many panes and
         // which one is showing, with moving between them as an action rather than as a
         // second element to find.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Split View")
-        .accessibilityValue("\(panes.count) panes, showing \(title)")
-        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityValue(axValue(panes.count, title, ticked))
+        .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Shows this split view.")
         .accessibilityAction(named: "Next Pane") { store.focusNextPane() }
         .accessibilityAction(named: "Swap") { store.swapPanes(split) }
@@ -1808,6 +1828,14 @@ private struct SplitRow: View {
         .accessibilityAction(named: "Close Pane") {
             if let active { store.close(active.id) }
         }
+    }
+}
+
+extension SplitRow {
+    /// Split out because the body stopped type-checking in reasonable time with one more
+    /// string term in it.
+    fileprivate func axValue(_ panes: Int, _ title: String, _ ticked: Bool) -> String {
+        "\(panes) panes, showing \(title)" + selectionSuffix(ticked, store.selection.count)
     }
 }
 
@@ -1902,7 +1930,8 @@ private struct TabRow: View {
         // element the user has to find and then guess the meaning of.
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(TidyTitles.title(for: tab))
-        .accessibilityValue(tabState(tab, in: store))
+        .accessibilityValue(tabState(tab, in: store)
+                            + selectionSuffix(ticked, store.selection.count))
         .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Shows this tab.")
         .accessibilityAction(named: tab.kind == .today ? "Archive Tab" : "Close Tab") {

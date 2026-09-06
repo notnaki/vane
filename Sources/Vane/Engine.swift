@@ -1001,7 +1001,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // A selection may only ever name tabs that exist: one closed under it — by ⌘W, by a
         // bulk archive, by the auto-archive sweep — drops out of it here rather than
         // lingering as an id no row will ever be drawn for.
-        selection.keep(Set(tabs.map(\.id)))
+        selection.keep(tabs.map(\.id))
         extensions.sync()
         // A split loses a pane with the tab, and a split down to one pane is a plain tab
         // again. Its remaining pane is a better answer than "the neighbouring row": the user
@@ -1314,6 +1314,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // one pane and a divider into nothing.
         for tab in tabs where tab.kind != .favourite { dropPane(tab.id) }
         tabs.removeAll { $0.kind != .favourite }
+        // The one place tabs leave the strip without `close` — and so without
+        // `selection.keep`. A selection left pointing at the Space we just walked out of
+        // names rows that are not there: ⌘W finds none of them and quietly does nothing,
+        // and the bulk menu counts tabs the window no longer has.
+        selection.clear()
         currentSpaceID = space.id
         applySpaceAppearance()          // the new space may be pinned to light or dark
         let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
