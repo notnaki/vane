@@ -268,6 +268,37 @@ enum Passwords {
         UserDefaults.vane.set(d, forKey: usedKey(profileID))
     }
 
+    // MARK: Never for this site
+
+    /// Sites the user has said no for. Not a secret and not a credential, so it lives in
+    /// preferences beside the last-used stamps — and being per-profile it follows them.
+    private static func neverKey(_ profileID: UUID) -> String {
+        ProfileManager.defaultsKey("passwordsNeverSaved", profileID)
+    }
+
+    static func neverSaved(profileID: UUID = ProfileManager.activeProfileID) -> [String] {
+        (UserDefaults.vane.stringArray(forKey: neverKey(profileID)) ?? []).sorted()
+    }
+
+    static func isNeverSaved(host: String,
+                             profileID: UUID = ProfileManager.activeProfileID) -> Bool {
+        neverSaved(profileID: profileID).contains(host.lowercased())
+    }
+
+    /// "Never for this site" on the offer. Saying no once is a decision about this password;
+    /// saying never is a decision about the site, so it is the only one that is remembered.
+    static func neverSave(host: String, profileID: UUID = ProfileManager.activeProfileID) {
+        var hosts = Set(neverSaved(profileID: profileID))
+        hosts.insert(host.lowercased())
+        UserDefaults.vane.set(Array(hosts).sorted(), forKey: neverKey(profileID))
+    }
+
+    /// Taking it back, from Settings ▸ Passwords.
+    static func allowSaving(host: String, profileID: UUID = ProfileManager.activeProfileID) {
+        let hosts = neverSaved(profileID: profileID).filter { $0 != host.lowercased() }
+        UserDefaults.vane.set(hosts, forKey: neverKey(profileID))
+    }
+
     /// Renaming an account in the pane is a delete plus a save, and the timestamp is keyed
     /// on the account — so without this, correcting a typo in a username silently demotes
     /// that login to the bottom of its own site's chooser.
@@ -388,6 +419,13 @@ enum Passwords {
              rank([ada, bob], used: ["gone.example\nx": now]).map(\.account) == ["ada", "bob"]),
             ("one account is one account", rank([ada], used: [:]) == [ada]),
             ("nothing saved ranks to nothing", rank([], used: [ada.id: now]).isEmpty),
+
+            ("a new password is offered as a save",
+             PendingSave(host: "example.com", account: "ada", password: "x").title
+                == "Save password for example.com?"),
+            ("…and a replacement says so",
+             PendingSave(host: "example.com", account: "ada", password: "x", update: true).title
+                == "Update the password for example.com?"),
         ]
     }
 }
@@ -397,6 +435,16 @@ struct PendingSave: Equatable {
     let host: String
     let account: String
     let password: String
+    /// This site and account are already saved with a *different* password — so the offer
+    /// is to replace one, which is a different question and gets a different title.
+    var update = false
+
+    /// Said out loud and drawn at the top of the card. Named so the wording can be asserted:
+    /// telling someone you are about to save a password you are in fact about to overwrite
+    /// is the one thing this card must not do.
+    var title: String {
+        update ? "Update the password for \(host)?" : "Save password for \(host)?"
+    }
 }
 
 /// The account list hanging under a login form's username field, when a site has more than
@@ -407,6 +455,9 @@ struct PasswordChoice: Equatable {
     let accounts: [String]
     /// Under the username field, in the web view's own coordinates.
     let anchor: CGRect
+    /// Which row Return would fill. The first is what Chromium highlights, and it is the
+    /// one `Passwords.rank` put there.
+    var selected = 0
 }
 
 @MainActor enum Autofill {

@@ -21,6 +21,9 @@ import SwiftUI
     /// The keychain is not a publisher, so the pane holds its own copy of the *names* and
     /// reloads after every write it makes.
     @State private var logins: [Passwords.Login] = []
+    /// Sites the user answered "Never for This Site" on. Listed so the answer can be taken
+    /// back, which is otherwise a decision with no undo.
+    @State private var never: [String] = []
     @State private var selected: String?
     /// Plaintext the user has authenticated to see, by row id. Dropped when the row is
     /// hidden again, when the pane goes away, and on its own after `revealFor`.
@@ -47,16 +50,18 @@ import SwiftUI
     private var groups: [(host: String, logins: [Passwords.Login])] {
         PasswordsPane.groups(logins, query: query)
     }
+    private var neverShown: [String] { PasswordsPane.matching(never, query: query) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) {
             search
-            if logins.isEmpty {
-                quiet("Passwords you save as you sign in to sites appear here.")
-            } else if groups.isEmpty {
-                quiet("No saved login matches \u{201C}\(query)\u{201D}")
+            if groups.isEmpty && neverShown.isEmpty {
+                quiet(logins.isEmpty && never.isEmpty
+                      ? "Passwords you save as you sign in to sites appear here."
+                      : "Nothing matches \u{201C}\(query)\u{201D}")
             } else {
-                list
+                if !groups.isEmpty { list }
+                if !neverShown.isEmpty { neverCard }
             }
         }
         .padding(.top, Look.inset * 2)
@@ -102,6 +107,27 @@ import SwiftUI
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Saved logins")
+    }
+
+    /// Arc keeps its "Never Saved" list under the passwords themselves, as the answer to
+    /// "why is this site not offering". One row per site, and one button to change the mind.
+    private var neverCard: some View {
+        SettingsSection("Never Saved") {
+            SettingsCard {
+                ForEach(neverShown, id: \.self) { host in
+                    SettingsRow(host) {
+                        Button {
+                            Passwords.allowSaving(host: host, profileID: profileID)
+                            reload()
+                        } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
+                            .accessibilityLabel("Offer to save passwords for \(host) again")
+                    }
+                }
+                Footnote("Vane does not offer to save a password on these sites. Remove one "
+                         + "and it will ask again the next time you sign in there.")
+            }
+        }
     }
 
     private func site(_ host: String, count: Int) -> some View {
@@ -207,6 +233,7 @@ import SwiftUI
 
     private func reload() {
         logins = Passwords.all(profileID: profileID)
+        never = Passwords.neverSaved(profileID: profileID)
         if let selected, !logins.contains(where: { $0.id == selected }) { self.selected = nil }
     }
 
@@ -380,6 +407,12 @@ extension PasswordsPane {
             .sorted { $0.host < $1.host }
     }
 
+    /// The same needle against a bare list of hosts, for the Never Saved card.
+    static func matching(_ hosts: [String], query: String) -> [String] {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return needle.isEmpty ? hosts : hosts.filter { $0.lowercased().contains(needle) }
+    }
+
     /// What VoiceOver is allowed to say about a row: the password only while it is on
     /// screen, which means only after the user authenticated to put it there.
     static func spoken(_ revealed: String?) -> String { revealed ?? "Password hidden" }
@@ -408,6 +441,12 @@ extension PasswordsPane {
             ("search is case-insensitive", groups(all, query: "BOB").count == 1),
             ("whitespace still means everything", groups(all, query: "  ").count == 2),
             ("a query matching nothing draws nothing", groups(all, query: "zzz").isEmpty),
+
+            ("never-saved sites list whole with no query",
+             matching(["a.example", "b.example"], query: "") == ["a.example", "b.example"]),
+            ("…and narrow to the query", matching(["a.example", "b.example"], query: "b")
+                == ["b.example"]),
+            ("…case-insensitively", matching(["A.example"], query: "a.ex") == ["A.example"]),
 
             ("↑ with no selection lands on the last row", move(nil, in: ids, by: -1) == ids.last),
             ("↓ with no selection lands on the first", move(nil, in: ids, by: 1) == ids.first),
@@ -464,22 +503,29 @@ enum ChooserEvent: Equatable {
 }
 
 /// Chromium drops a list of saved accounts under a login form's username field when a site
-/// has more than one; Arc shows Chromium's. This is Vane's, in Vane's own flat idiom rather
-/// than the platform's popover chrome — it is part of the page, not a panel over it.
+/// has more than one; Arc shows Chromium's. This is Vane's: a flat card of rows, the site's
+/// own favicon on each, the account in primary ink and eight bullets after it — the same
+/// shape as a row of Settings ▸ Passwords, so the two read as one feature.
 ///
 /// Drawn as an overlay on the *pane's* web view rather than on the window's card, so a split
 /// shows it over the page it belongs to instead of across its neighbour.
 struct PasswordChooser: View {
     @ObservedObject var tab: Tab
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geo in
             if let choice = tab.passwordChoice,
                let at = PasswordChooser.place(anchor: choice.anchor, in: geo.size,
                                               height: height(of: choice)) {
-                list(choice).offset(x: at.x, y: at.y)
+                card(choice, width: PasswordChooser.width(of: choice.anchor, in: geo.size))
+                    .offset(x: at.x, y: at.y)
+                    .transition(reduceMotion ? .opacity
+                                : .opacity.combined(with: .scale(scale: Look.appearScale,
+                                                                 anchor: .topLeading)))
             }
         }
+        .animation(reduceMotion ? nil : Look.appear, value: tab.passwordChoice)
         // A click on the page, a blur and a scroll all come back from the page itself
         // (see Autofill.script). These two do not, because they never reach it.
         .onReceive(NotificationCenter.default.publisher(
@@ -488,18 +534,34 @@ struct PasswordChooser: View {
             for: NSWindow.didResizeNotification)) { _ in tab.closeChooser(.resign) }
     }
 
+    /// The rows plus the footer. Fixed per account, so nothing shifts as the list is walked.
     private func height(of choice: PasswordChoice) -> CGFloat {
-        CGFloat(choice.accounts.count) * Look.rowHeight
+        CGFloat(choice.accounts.count) * Look.rowHeight + Look.settingsRow
     }
 
-    private func list(_ choice: PasswordChoice) -> some View {
+    private func card(_ choice: PasswordChoice, width: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(choice.accounts.enumerated()), id: \.element) { i, account in
-                if i > 0 { Hairline() }
-                ChooserRow(account: account) { tab.fillChosen(account) }
+                ChooserRow(account: account, host: choice.host,
+                           profileID: tab.profileID, selected: i == choice.selected) {
+                    tab.fillChosen(account)
+                }
             }
+            Hairline()
+            Button {
+                tab.closeChooser(.escape)
+                SettingsWindow.show(tab: "passwords")
+            } label: {
+                Text("Manage Passwords\u{2026}")
+                    .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    .padding(.horizontal, Look.rowInset)
+                    .frame(height: Look.settingsRow, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
         }
-        .frame(width: max(choice.anchor.width, Look.chooserWidth), alignment: .leading)
+        .frame(width: width, alignment: .leading)
         .background(Look.panelFill, in: .rect(cornerRadius: Look.cardRadius))
         .hairline(radius: Look.cardRadius)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
@@ -507,7 +569,8 @@ struct PasswordChooser: View {
         .accessibilityLabel("Saved logins for \(choice.host)")
         // It appears under the field with no focus change, so say so — and say only the
         // usernames, which is all this view ever knows.
-        .onAppear { axAnnounce("\(choice.accounts.count) saved logins for \(choice.host).") }
+        .onAppear { axAnnounce("\(choice.accounts.count) saved logins for \(choice.host). "
+                              + "Up and Down to choose, Return to fill, Escape to dismiss.") }
     }
 }
 
@@ -528,6 +591,12 @@ extension PasswordChooser {
         }
     }
 
+    /// As wide as the field it hangs off, so it reads as part of the form — but never
+    /// narrower than a username needs, and never wider than the pane it is drawn in.
+    static func width(of anchor: CGRect, in viewport: CGSize) -> CGFloat {
+        min(max(anchor.width, Look.chooserWidth), max(Look.chooserWidth, viewport.width))
+    }
+
     /// Where the list actually goes: under the field, and never outside the page.
     ///
     /// Nil for an anchor that is not on screen at all. A page can put its input anywhere,
@@ -537,9 +606,35 @@ extension PasswordChooser {
         guard viewport.width > 0, viewport.height > 0,
               anchor.minX >= 0, anchor.minY >= 0,
               anchor.minX <= viewport.width, anchor.minY <= viewport.height else { return nil }
-        let width = max(anchor.width, Look.chooserWidth)
-        return CGPoint(x: min(max(0, anchor.minX), max(0, viewport.width - width)),
+        let w = width(of: anchor, in: viewport)
+        return CGPoint(x: min(max(0, anchor.minX), max(0, viewport.width - w)),
                        y: min(max(0, anchor.minY), max(0, viewport.height - height)))
+    }
+
+    /// ↑↓ inside the list. Wraps, because it is a menu-shaped popup of two or three rows and
+    /// every menu on the Mac wraps; the settings list, which can be long, clamps instead.
+    static func step(_ index: Int, by delta: Int, of count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        return ((index + delta) % count + count) % count
+    }
+
+    /// ↑↓ and Return while the list is up, taken before Peek's and the keybinding registry's
+    /// — it is the newest thing on screen. Escape is *not* here: it goes through the
+    /// window's own Escape order, with the multi-select and the stop. See `VaneWindow`.
+    @MainActor static func handleKey(_ event: NSEvent) -> Bool {
+        // Only the modifiers a *chord* would use. An arrow key carries .function and
+        // .numericPad of its own, so testing the whole device-independent mask rejects every
+        // arrow there is — which is exactly how this went unnoticed the first time.
+        guard event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+              let store = TabStore.all.first(where: { $0.window === event.window }),
+              let tab = store.active, tab.passwordChoice != nil else { return false }
+        switch event.keyCode {
+        case 126: tab.moveChoice(-1)
+        case 125: tab.moveChoice(1)
+        case 36, 76: tab.fillSelected()
+        default: return false
+        }
+        return true
     }
 
     /// Escape, taken before anything else on the window: the list is the most recent thing
@@ -575,6 +670,13 @@ extension PasswordChooser {
             ("anything else the page says still closes it",
              opens(ChooserEvent(page: "whatever"), sinceFill: 10) == false),
 
+            ("the list is as wide as the field", width(of: mid, in: viewport) == 240),
+            ("…never narrower than a username needs",
+             width(of: CGRect(x: 0, y: 0, width: 40, height: 0), in: viewport)
+                == Look.chooserWidth),
+            ("…and never wider than the pane",
+             width(of: CGRect(x: 0, y: 0, width: 5000, height: 0), in: viewport) == 800),
+
             ("an anchor inside the pane is left where it is",
              place(anchor: mid, in: viewport, height: height) == CGPoint(x: 100, y: 200)),
             ("…one near the right edge is pulled in",
@@ -597,32 +699,152 @@ extension PasswordChooser {
                    in: viewport, height: height) == nil),
             ("a pane with no size draws nothing",
              place(anchor: mid, in: .zero, height: height) == nil),
+
+            ("↓ steps down the list", step(0, by: 1, of: 3) == 1),
+            ("↑ steps up it", step(2, by: -1, of: 3) == 1),
+            ("↓ off the end wraps to the top", step(2, by: 1, of: 3) == 0),
+            ("↑ off the top wraps to the end", step(0, by: -1, of: 3) == 2),
+            ("one row stays put", step(0, by: 1, of: 1) == 0),
+            ("no rows is index zero", step(0, by: 1, of: 0) == 0),
         ]
     }
 }
 
 private struct ChooserRow: View {
     let account: String
+    let host: String
+    let profileID: UUID
+    let selected: Bool
     let fill: () -> Void
     @State private var hovered = false
 
     var body: some View {
         Button(action: fill) {
             HStack(spacing: Look.inset) {
-                Image(systemName: "key.fill").font(Look.glyph)
-                    .foregroundStyle(Look.inkTertiary)
+                SiteIcon(icon: URL(string: "https://" + host).flatMap {
+                    Favicons.cache(for: profileID).icon(for: $0)
+                }, fallback: "key.fill", size: Look.rowIcon)
                 Text(account.isEmpty ? "Saved password" : account)
-                    .font(Look.text).foregroundStyle(Look.inkPrimary).lineLimit(1)
+                    .font(Look.text).foregroundStyle(Look.inkPrimary)
+                    .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: Look.inset)
+                // The same eight bullets the settings list shows, for the same reason: a row
+                // that says only a username does not look like it is offering a password.
+                Text(PasswordsPane.dots).font(Look.caption).foregroundStyle(Look.inkTertiary)
             }
             .padding(.horizontal, Look.rowInset)
             .frame(height: Look.rowHeight)
-            .background(hovered ? Look.hovered : .clear,
+            .background(fill(for: selected, hovered: hovered),
                         in: .rect(cornerRadius: Look.chipRadius))
+            .padding(.horizontal, Look.rowGap / 2)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .accessibilityLabel("Fill \(account)")
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    /// Hover wins over the selection, so the row under the pointer is always the one that
+    /// looks like it will be clicked.
+    private func fill(for selected: Bool, hovered: Bool) -> Color {
+        hovered ? Look.hovered : (selected ? Look.accentSelected : .clear)
+    }
+}
+
+// MARK: - The save offer
+
+/// Asking before storing a credential is the whole trust boundary here — never silent.
+///
+/// A card, not a toast: it carries a decision with three answers, so it is shaped like the
+/// rest of Vane's floating surfaces (Look.cardRadius, the panel fill, a hairline and the
+/// float shadow) and hangs at the top of the page card where the address pill points.
+struct PasswordOffer: View {
+    @ObservedObject var tab: Tab
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Revealing what is about to be saved is a check on Vane, not a secret being handed
+    /// out — it is the user's own password, which they just typed into the page.
+    @State private var revealed = false
+
+    var body: some View {
+        if let p = tab.pendingSave {
+            VStack(alignment: .leading, spacing: Look.inset) {
+                header(p)
+                credential(p)
+                buttons()
+            }
+            .padding(Look.cardInset)
+            .frame(width: Look.offerWidth, alignment: .leading)
+            .background(Look.panelFill, in: .rect(cornerRadius: Look.cardRadius))
+            .hairline(radius: Look.cardRadius)
+            .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius,
+                    y: Look.floatShadowY)
+            .transition(reduceMotion ? .opacity
+                        : .opacity.combined(with: .scale(scale: Look.appearScale, anchor: .top)))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(p.title)
+            // A credential decision is the first thing in the window worth reaching, not the
+            // last. Not .isModal, though: the page underneath stays usable.
+            .accessibilitySortPriority(2)
+            // It appears on its own, with no focus change and no sound — say so.
+            .onAppear { revealed = false; axAnnounce(p.title) }
+        }
+    }
+
+    private func header(_ p: PendingSave) -> some View {
+        HStack(spacing: Look.inset) {
+            SiteIcon(icon: URL(string: "https://" + p.host).flatMap {
+                Favicons.cache(for: tab.profileID).icon(for: $0)
+            }, fallback: "key.fill", size: Look.rowIcon)
+            Text(p.title).font(Look.heading).foregroundStyle(Look.inkPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: Look.inset)
+            Button { tab.pendingSave = nil } label: {
+                Image(systemName: "xmark").font(Look.glyph)
+            }
+            .buttonStyle(.plain).foregroundStyle(Look.inkTertiary)
+            .accessibilityLabel("Not now")
+        }
+    }
+
+    /// What is about to be stored, so "Save" is never a blind yes: the account, and the
+    /// password as bullets until the eye is used.
+    private func credential(_ p: PendingSave) -> some View {
+        HStack(spacing: Look.inset) {
+            Text(p.account.isEmpty ? "No username" : p.account)
+                .font(Look.text).foregroundStyle(Look.inkSecondary)
+                .lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: Look.inset)
+            Text(revealed ? p.password : PasswordsPane.dots)
+                .font(Look.text)
+                .foregroundStyle(revealed ? Look.inkPrimary : Look.inkTertiary)
+                .lineLimit(1).truncationMode(.tail)
+            Button { revealed.toggle() } label: {
+                Image(systemName: revealed ? "eye.slash" : "eye").font(Look.rowGlyph)
+            }
+            .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
+            .accessibilityLabel(revealed ? "Hide password" : "Show password")
+        }
+        .padding(.horizontal, Look.inset)
+        .frame(height: Look.control + Look.inset)
+        .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+        // The password is the user's own and is on its way into their keychain, but it is
+        // still not something VoiceOver should read out unprompted.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(p.account.isEmpty ? "No username" : p.account)
+        .accessibilityValue(PasswordsPane.spoken(revealed ? p.password : nil))
+    }
+
+    private func buttons() -> some View {
+        HStack(spacing: Look.inset) {
+            Button("Never for This Site") { tab.neverSaveHere() }
+                .buttonStyle(.plain).font(Look.text)
+                .foregroundStyle(Look.inkSecondary)
+            Spacer(minLength: Look.inset)
+            Button("Not Now") { tab.pendingSave = nil }
+                .keyboardShortcut(.cancelAction)
+            Button(tab.pendingSave?.update == true ? "Update" : "Save") { tab.confirmSave() }
+                .keyboardShortcut(.defaultAction)
+        }
     }
 }

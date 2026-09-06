@@ -393,7 +393,17 @@ struct WebCard: View {
                 if store.findOpen, let tab = store.active {
                     FindBar(tab: tab).frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                if let tab = store.active, tab.pendingSave != nil { SavePrompt(tab: tab) }
+                // Under the address pill, at the top-right of the page card — where the
+                // find bar goes, and where a browser's own chrome belongs.
+                //
+                // Mounted whether or not there is an offer, and the card decides for itself.
+                // `TabStore` does not republish its tabs' changes, so a `tab.pendingSave !=
+                // nil` test *here* is read once and never again — which is why the save
+                // prompt has never actually appeared. The view has to be the one observing.
+                if let tab = store.active {
+                    PasswordOffer(tab: tab)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
             .padding(.horizontal, 14)
             .padding(.top, 10)
@@ -2203,42 +2213,6 @@ private struct BottomRow: View {
 }
 
 // MARK: - Overlays
-
-/// Asking before storing a credential is the whole trust boundary here — never silent.
-private struct SavePrompt: View {
-    @ObservedObject var tab: Tab
-
-    var body: some View {
-        if let p = tab.pendingSave {
-            HStack(spacing: 12) {
-                Image(systemName: "key.fill").foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Save password for \(p.host)?").font(Look.rowText)
-                    if !p.account.isEmpty {
-                        Text(p.account).font(Look.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Spacer(minLength: 16)
-                Button("Not Now") { tab.pendingSave = nil }
-                Button("Save") { tab.confirmSave() }.keyboardShortcut(.defaultAction)
-            }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .frame(maxWidth: 460)
-            .fixedSize(horizontal: false, vertical: true)
-            .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
-            .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
-            .hairline(radius: Look.cardRadius)
-            .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Save password for \(p.host)?")
-            // A credential decision is the first thing in the window worth reaching, not
-            // the last. Not .isModal, though: the page underneath stays usable.
-            .accessibilitySortPriority(2)
-            // It appears on its own, with no focus change and no sound — say so.
-            .onAppear { axAnnounce("Vane can save the password for \(p.host).") }
-        }
-    }
-}
 
 /// Arc's Library, at the bottom-left corner of the sidebar: the button that slides the
 /// Library panel out over the sidebar. The panel itself is LibraryWindow.swift.

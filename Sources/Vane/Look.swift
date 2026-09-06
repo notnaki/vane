@@ -113,6 +113,9 @@ enum Look {
     /// The saved-account list under a login form's username field, for when the field is
     /// narrower than the usernames it holds.
     static let chooserWidth: CGFloat = 220
+    /// The save-password card at the top of the page. Fixed, so a long host does not make
+    /// the card breathe in and out between one site and the next.
+    static let offerWidth: CGFloat = 340
 
     /// The sidebar's two fixed strips: traffic lights and navigation above, library and
     /// spaces below. Arc's top strip is 45 tall with the lights and glyphs centred at 22.5;

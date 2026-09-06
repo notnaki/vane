@@ -748,20 +748,44 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
               let host = secureHost else { return }
         // A private window is a window that leaves nothing behind, and an offer the user
         // says yes to on autopilot leaves the most personal thing there is.
-        guard !isPrivate else { return }
+        guard !isPrivate, !Passwords.isNeverSaved(host: host, profileID: profileID) else { return }
         let account = (body["account"] as? String) ?? ""
         // Already stored and unchanged — nothing to ask about. Only the account being
         // submitted is decrypted, and only to answer that one question.
-        if Passwords.password(host: host, account: account, profileID: profileID) == password {
-            return
-        }
-        pendingSave = PendingSave(host: host, account: account, password: password)
+        let stored = Passwords.password(host: host, account: account, profileID: profileID)
+        if stored == password { return }
+        pendingSave = PendingSave(host: host, account: account, password: password,
+                                  update: stored != nil)
     }
 
     func confirmSave() {
         guard let p = pendingSave else { return }
         Passwords.save(host: p.host, account: p.account, password: p.password, profileID: profileID)
+        axAnnounce(p.update ? "Password updated." : "Password saved.")
         pendingSave = nil
+    }
+
+    /// "Never for this site". Saying no once is a decision about this password; saying never
+    /// is a decision about the site, so it is the only one of the two that is remembered.
+    func neverSaveHere() {
+        guard let p = pendingSave else { return }
+        Passwords.neverSave(host: p.host, profileID: profileID)
+        axAnnounce("Vane will not offer to save passwords for \(p.host).")
+        pendingSave = nil
+    }
+
+    /// ↑↓ in the account list. Wraps, the way every menu-shaped popup on the Mac does.
+    func moveChoice(_ delta: Int) {
+        guard let choice = passwordChoice else { return }
+        passwordChoice?.selected = PasswordChooser.step(choice.selected, by: delta,
+                                                        of: choice.accounts.count)
+    }
+
+    /// Return in the account list.
+    func fillSelected() {
+        guard let choice = passwordChoice,
+              choice.accounts.indices.contains(choice.selected) else { return }
+        fillChosen(choice.accounts[choice.selected])
     }
 
     func reload()     { web.reload() }

@@ -48,7 +48,8 @@ app.mainMenu = buildMenu()
 // reason: Escape and ⌘O both mean something else in a window with a sidebar, and only
 // Peek knows whether one is up. See Peek.handleKey.
 NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
-    Peek.handleKey($0) || LittleArc.handleKey($0) || Keybindings.handle($0) ? nil : $0
+    PasswordChooser.handleKey($0) || Peek.handleKey($0) || LittleArc.handleKey($0)
+        || Keybindings.handle($0) ? nil : $0
 }
 app.activate(ignoringOtherApps: true)
 URLHandling.promptIfNotDefaultOnce()
