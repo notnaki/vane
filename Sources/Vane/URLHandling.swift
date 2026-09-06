@@ -67,7 +67,11 @@ import AppKit
     /// can perfectly well belong in three different places, which is the point of having them.
     static func open(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        let rest = urls.filter { !AirTraffic.hand($0) }
+        // A loop, not `filter`: `hand` opens windows, and `filter`'s order of evaluation is
+        // not the batch's order to rely on for side effects. Three links from one message
+        // must arrive in the order they were sent.
+        var rest: [URL] = []
+        for url in urls where !AirTraffic.hand(url) { rest.append(url) }
         // `hasWindow` is read after the rules have run: a rule that just opened the first
         // window is exactly why the link under it should become a tab in it.
         if !rest.isEmpty {

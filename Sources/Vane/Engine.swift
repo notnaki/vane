@@ -491,9 +491,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // works from inside a Little Arc and a Peek as well as from a browser window.
         if let intent = TabActions.intent(for: navigationAction),
            let url = navigationAction.request.url {
-            if intent.little {
+            // Main frame only, for the reason the Peek branch below spells out: cancelling
+            // a subframe's navigation would float an ad's destination out of the box it
+            // belongs in, and `target=_blank` is already on its way to `createWebViewWith`.
+            if intent.little, navigationAction.targetFrame?.isMainFrame == true {
                 decisionHandler(.cancel)
-                LittleArc.open(url)
+                // The window this page came out of decides whether the Little Arc is
+                // private — a page lifted out of a Private Window must not start writing
+                // itself into history.
+                LittleArc.open(url, isPrivate: isPrivate)
                 return
             }
             if let open = onOpenBeside {

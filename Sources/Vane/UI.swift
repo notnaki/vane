@@ -1886,7 +1886,14 @@ private struct TabRow: View {
         case .split:  store.addPane(tab.id)
         // A row with no page yet — a parked favourite that has never loaded — has nothing to
         // hand over, so it is shown instead of opening an empty window.
-        case .little: if let url = tab.currentURL { LittleArc.open(url) } else { store.current = tab.id }
+        case .little:
+            // A Private Window's row must not float out into a window that keeps cookies
+            // and writes history — the Little Arc inherits the window's privacy.
+            if let url = tab.currentURL {
+                LittleArc.open(url, isPrivate: store.isPrivate)
+            } else {
+                store.current = tab.id
+            }
         }
     }
 

@@ -110,9 +110,9 @@ import UniformTypeIdentifiers
     /// and one that matched everything would route every link in the browser to whatever
     /// destination happened to be in the picker.
     nonisolated static func matches(url: URL, rule: Rule) -> Bool {
-        let pattern = rule.pattern.trimmingCharacters(in: .whitespaces)
+        let pattern = rule.pattern.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !pattern.isEmpty else { return false }
-        let full = url.absoluteString
+        let full = matchable(url)
         switch rule.match {
         case .contains:
             return full.range(of: pattern, options: .caseInsensitive) != nil
@@ -121,6 +121,52 @@ import UniformTypeIdentifiers
             return host.compare(pattern, options: .caseInsensitive) == .orderedSame
                 || full == pattern
         }
+    }
+
+    /// The url a rule is read against: the real one, with any `user:password@` in front of
+    /// the host taken out.
+    ///
+    /// This is a routing decision, and routing decisions are attacker-reachable — the url
+    /// arrives from another app. `https://github.com@evil.com/` is a page served by
+    /// evil.com, but its `absoluteString` contains the text "github.com", so a rule reading
+    /// the raw string would file an attacker's page under the Space you keep your work in
+    /// and trust. Userinfo is the one part of a url that says nothing about where the page
+    /// came from, so it is the one part a rule never sees.
+    ///
+    /// ponytail: `URLComponents` with the two fields nil'd, not a parser. Ceiling: a url
+    /// `URLComponents` cannot parse is matched as it arrived, which is the behaviour
+    /// everything else in Vane gives such a url too.
+    nonisolated static func matchable(_ url: URL) -> String {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.user != nil || parts.password != nil else { return url.absoluteString }
+        parts.user = nil
+        parts.password = nil
+        return parts.string ?? url.absoluteString
+    }
+
+    /// Dropping the rule `dragged` onto `target` puts it where the target was. Pure over the
+    /// ids, because the arithmetic is the part that is easy to get wrong: removing the
+    /// dragged rule first shifts everything after it down one, so a drag *downwards* has to
+    /// land one slot earlier than the index the target had before the removal. Without the
+    /// adjustment, dragging A onto C in [A, B, C] gives [B, C, A] — the rule ends up past
+    /// the row it was dropped on, and with "first match wins" that is a different browser.
+    ///
+    /// A dropped rule always lands *above* the row it was dropped on, which is what makes
+    /// dragging one up by a row swap the pair. ponytail ceiling: dragging one *down* by a
+    /// single row therefore leaves it exactly where it was — its landing slot is the one it
+    /// already occupies. Upgrade path is a drop indicator that says which half of the row
+    /// the pointer is in, and an "insert below" for the lower half; the card's footnote
+    /// says "move it up" because up is the direction this gesture is exact in.
+    ///
+    /// Nil when the drag was not one of ours (a link, a file, a rule already gone), which is
+    /// what makes such a drop a no-op rather than a scrambled list.
+    nonisolated static func reordered(_ ids: [UUID], moving dragged: UUID,
+                                      onto target: UUID) -> [UUID]? {
+        guard dragged != target, let from = ids.firstIndex(of: dragged),
+              let to = ids.firstIndex(of: target) else { return nil }
+        var out = ids
+        out.insert(out.remove(at: from), at: from < to ? to - 1 : to)
+        return out
     }
 
     // MARK: - Doing it
@@ -137,12 +183,26 @@ import UniformTypeIdentifiers
         case .space(let id):
             open(url, in: spaces.first { $0.id == id })
         case .mostRecentSpace:
-            // The same rule an ordinary new window follows, so "Most Recent Space" and
-            // "wherever a window would have opened" cannot drift apart.
-            open(url, in: Spaces.pick(asked: nil, last: TabStore.lastSpaceID(for: profile.id),
-                                      from: spaces))
+            // "Most recent" means the Space the user is *looking at*, and only failing that
+            // the one the profile was last left in — the same order `LittleArc.spaceMenu`
+            // ticks a row in. Reading the persisted id first would drag the frontmost
+            // window off the Space it is showing to a Space it was in yesterday, tearing
+            // its strip down on the way; asking the live window first makes `switchTo` the
+            // no-op it should be.
+            let last = target(in: profile.id)?.currentSpaceID
+                ?? TabStore.lastSpaceID(for: profile.id)
+            open(url, in: Spaces.pick(asked: nil, last: last, from: spaces))
         }
         return true
+    }
+
+    /// The window a rule may put a tab in: an ordinary one, never a Little Arc and never a
+    /// Private Window. `Windows.current(in:)` excludes only Little Arcs, and a private
+    /// window is spaceless by design — `switchTo` refuses on one, so a link routed there
+    /// would land in whatever that window was showing and the rule would look ignored.
+    private static func target(in profileID: UUID) -> TabStore? {
+        let mine = TabStore.all.filter { $0.profileID == profileID && !$0.isLittle && !$0.isPrivate }
+        return mine.first { $0.window?.isKeyWindow == true } ?? mine.last
     }
 
     /// A link into a named Space: a Today tab in a window showing that Space, switching one
@@ -151,7 +211,7 @@ import UniformTypeIdentifiers
     /// Space" for a profile with no Spaces at all reaches here, and doing nothing would eat
     /// the link, so it falls back to a plain window.
     private static func open(_ url: URL, in space: Space?) {
-        guard let space, let window = Windows.current(in: space.profileID) else {
+        guard let space, let window = target(in: space.profileID) else {
             Windows.open(urls: [url], space: space)
             return
         }
@@ -168,13 +228,30 @@ import UniformTypeIdentifiers
     static let key = "airTrafficRules"
 
     static var rules: [Rule] {
-        get {
-            guard let data = UserDefaults.vane.data(forKey: key) else { return [] }
-            return (try? JSONDecoder().decode([Rule].self, from: data)) ?? []
-        }
+        get { decode(UserDefaults.vane.data(forKey: key)) }
         set {
             guard let data = try? JSONEncoder().encode(newValue) else { return }
             UserDefaults.vane.set(data, forKey: key)
+        }
+    }
+
+    /// Element-wise, because `decode([Rule].self)` is all-or-nothing: one rule written by a
+    /// newer Vane with a match this one has never heard of would decode as nothing, the
+    /// Settings pane would come up empty, and the user's first edit would write that empty
+    /// list back over the lot. A rule that cannot be read is dropped; the ones around it
+    /// keep their turn. Pure, so `selfcheck --pure` can prove exactly that.
+    nonisolated static func decode(_ data: Data?) -> [Rule] {
+        guard let data, let items = try? JSONDecoder().decode([Lenient].self, from: data)
+        else { return [] }
+        return items.compactMap(\.rule)
+    }
+
+    /// One element of the stored array, decoded so that a failure is a value rather than an
+    /// error — `init(from:)` never throws, so the array around it still decodes.
+    private struct Lenient: Decodable {
+        let rule: Rule?
+        init(from decoder: Decoder) throws {
+            rule = try? Rule(from: decoder)
         }
     }
 
@@ -190,7 +267,7 @@ import UniformTypeIdentifiers
         let gh = URL(string: "https://github.com/vane/pulls?q=is%3Aopen")!
         let ex = URL(string: "https://example.com/A")!
 
-        return [
+        var out: [(String, Bool)] = [
             ("a \u{201C}contains\u{201D} rule matches anywhere in the url",
              route(url: gh, rules: [rule(.contains, "pulls", .littleArc)], spaces: spaces)
                 == .littleArc),
@@ -245,12 +322,64 @@ import UniformTypeIdentifiers
                 && Destination(tag: Destination.space(work.id).tag) == .space(work.id)),
             ("a rule round-trips through JSON, which is how it is stored", {
                 let one = rule(.isEqualTo, "figma.com", .space(work.id))
-                guard let data = try? JSONEncoder().encode([one]),
-                      let back = try? JSONDecoder().decode([Rule].self, from: data)
-                else { return false }
-                return back == [one]
+                guard let data = try? JSONEncoder().encode([one]) else { return false }
+                return decode(data) == [one]
             }()),
+            ("userinfo is not part of the url a rule reads", {
+                // `https://github.com@evil.com/` is served by evil.com. A rule that files
+                // github.com under a Space must not file this page there too.
+                let spoof = URL(string: "https://github.com@evil.com/x")!
+                return route(url: spoof, rules: [rule(.contains, "github.com", .littleArc)],
+                             spaces: spaces) == nil
+            }()),
+            ("\u{2026}and the host it really is still matches",
+             route(url: URL(string: "https://github.com@evil.com/x")!,
+                   rules: [rule(.contains, "evil.com", .littleArc)], spaces: spaces)
+                == .littleArc),
+            ("a url with no userinfo is read exactly as it arrived",
+             matchable(gh) == gh.absoluteString),
+            ("a pattern's surrounding whitespace and newlines are ignored",
+             route(url: gh, rules: [rule(.isEqualTo, " github.com \n", .littleArc)],
+                   spaces: spaces) == .littleArc),
         ]
+
+        // Reordering. The arithmetic that decides what "first match wins" means.
+        let (a, b, c) = (UUID(), UUID(), UUID())
+        out += [
+            ("dragging the first rule onto the last one lands it above the last",
+             reordered([a, b, c], moving: a, onto: c) == [b, a, c]),
+            ("dragging the last rule onto the first one puts it first",
+             reordered([a, b, c], moving: c, onto: a) == [c, a, b]),
+            ("dragging a rule one row down leaves it where it was, which is above that row",
+             reordered([a, b, c], moving: a, onto: b) == [a, b, c]),
+            ("dragging a rule one row up swaps the pair",
+             reordered([a, b, c], moving: b, onto: a) == [b, a, c]),
+            ("dragging a rule onto itself is not a move",
+             reordered([a, b, c], moving: a, onto: a) == nil),
+            ("a drag carrying something that is not one of these rules is refused",
+             reordered([a, b, c], moving: UUID(), onto: b) == nil),
+            ("\u{2026}and so is a drop on a rule that is no longer there",
+             reordered([a, b, c], moving: a, onto: UUID()) == nil),
+            ("every rule survives a reorder",
+             reordered([a, b, c], moving: a, onto: c)?.count == 3),
+        ]
+
+        // Decoding. One unreadable rule must not cost the user the rest of the list.
+        let good = #"{"id":"\#(a.uuidString)","match":"contains","pattern":"x","destination":"little"}"#
+        let good2 = #"{"id":"\#(b.uuidString)","match":"isEqualTo","pattern":"y","destination":"recent"}"#
+        let bad = #"{"id":"\#(c.uuidString)","match":"startsWith","pattern":"z","destination":"little"}"#
+        out += [
+            ("a stored list decodes", decode(Data("[\(good),\(good2)]".utf8)).count == 2),
+            ("one rule written by a newer Vane is dropped, not the whole list",
+             decode(Data("[\(good),\(bad),\(good2)]".utf8)).map(\.pattern) == ["x", "y"]),
+            ("\u{2026}and the surviving rules keep their order",
+             decode(Data("[\(bad),\(good2),\(good)]".utf8)).map(\.pattern) == ["y", "x"]),
+            ("a list that is not a list at all decodes as no rules",
+             decode(Data("not json".utf8)).isEmpty),
+            ("nothing stored means no rules", decode(nil).isEmpty),
+        ]
+
+        return out
     }
 }
 
@@ -274,9 +403,14 @@ struct AirTrafficCard: View {
                     // Drag to reorder, because "first match wins" is the whole model and a
                     // list you cannot reorder is one you have to delete and retype.
                     .draggable(rule.id.uuidString)
-                    // macOS 26 favours the `(items, session) -> Void` overload, so the
-                    // "was this one of ours" answer goes nowhere — `move` changing nothing
-                    // is what makes a drag of anything else a no-op rather than an error.
+                    // ponytail: the payload is the rule's id as a plain String, so the row
+                    // lights up for any text drag and not only for another rule. `move`
+                    // refuses anything that is not the id of a rule in this list, so such a
+                    // drop changes nothing — macOS 26 favours the `(items, session) -> Void`
+                    // overload, so that refusal has nowhere to be reported anyway. Ceiling:
+                    // the highlight is keener than the drop. Upgrade path is a `Transferable`
+                    // Rule with its own UTType, which is a type and an exported identifier
+                    // for one settings row.
                     .dropDestination(for: String.self) { items, _ in
                         _ = move(items, above: rule.id)
                     }
@@ -313,11 +447,10 @@ struct AirTrafficCard: View {
     /// any order out of. Returns false when the drag was not one of ours, which is what
     /// makes a dragged link or a dragged file bounce back instead of scrambling the list.
     private func move(_ items: [String], above target: UUID) -> Bool {
-        guard let dragged = items.first.flatMap(UUID.init(uuidString:)), dragged != target,
-              let from = rules.firstIndex(where: { $0.id == dragged }),
-              let to = rules.firstIndex(where: { $0.id == target }) else { return false }
-        let rule = rules.remove(at: from)
-        rules.insert(rule, at: to)
+        guard let dragged = items.first.flatMap(UUID.init(uuidString:)),
+              let order = AirTraffic.reordered(rules.map(\.id), moving: dragged, onto: target)
+        else { return false }
+        rules = order.compactMap { id in rules.first { $0.id == id } }
         return true
     }
 }
@@ -328,6 +461,13 @@ private struct RuleRow: View {
     @Binding var rule: AirTraffic.Rule
     let spaces: [Space]
     let remove: () -> Void
+
+    /// True when the rule points at a Space this profile does not have.
+    private var orphaned: Bool {
+        rule.destination != AirTraffic.Destination.littleTag
+            && rule.destination != AirTraffic.Destination.recentTag
+            && !spaces.contains { $0.id.uuidString == rule.destination }
+    }
 
     var body: some View {
         HStack(spacing: Look.inset) {
@@ -347,6 +487,14 @@ private struct RuleRow: View {
                 // A Space is offered by name; the tag it carries is its id, so renaming one
                 // keeps the rule pointing at it.
                 ForEach(spaces) { Text($0.name).tag($0.id.uuidString) }
+                // A rule aimed at a Space that has since been deleted — or one belonging to
+                // another profile — has no row to select, and a Picker with no matching tag
+                // draws blank. `route` already skips such a rule; this is what says so on
+                // screen, so the fix is to pick a real destination rather than to wonder why
+                // the row does nothing.
+                if orphaned {
+                    Text("Deleted Space").tag(rule.destination)
+                }
             }
             .labelsHidden().fixedSize()
             .accessibilityLabel("Where a matching link opens")

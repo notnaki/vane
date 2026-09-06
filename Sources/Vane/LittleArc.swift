@@ -57,10 +57,17 @@ import SwiftUI
     /// route that needs no permission at all) — deliberately not `CGEvent.tapCreate`, which
     /// is a keylogger as far as the OS is concerned and costs the user an Accessibility or
     /// Input Monitoring grant, which is far too much to ask for one shortcut.
+    ///
+    /// `isPrivate` is passed, never defaulted, by anything that floats a Little Arc off an
+    /// existing window — \u{2325}\u{2318}-click on a link or on a sidebar row. The window it
+    /// came out of may be a Private Window, and a Little Arc that quietly took the
+    /// persistent data store would write that page into history and keep its cookies: the
+    /// one thing that window exists not to do. Peek passes it for the same reason, and a
+    /// link from another app has no window to inherit from, so it takes the default.
     @discardableResult
-    static func open(_ url: URL?) -> TabStore {
+    static func open(_ url: URL?, isPrivate: Bool = false) -> TabStore {
         let profile = ProfileManager.shared.active
-        let store = floatingStore(url, profileID: profile.id)
+        let store = floatingStore(url, profileID: profile.id, isPrivate: isPrivate)
 
         let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
