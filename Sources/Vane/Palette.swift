@@ -53,6 +53,23 @@ enum Palette {
         return hits.map(\.item)
     }
 
+    /// Whether an open tab is a *strong* answer to the query — the kind that deserves to sit
+    /// above "Search Google". A fuzzy subsequence hit is not: typing "gpt" should search, not
+    /// switch to a tab whose title merely contains those letters somewhere. Strong means the
+    /// query is how the title, the host, or a word of the title begins (a word only once the
+    /// query is three characters, so a single letter does not claim every tab).
+    static func strong(_ query: String, title: String, url: String) -> Bool {
+        let q = query.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return false }
+        let t = title.lowercased()
+        if t.hasPrefix(q) { return true }
+        if let host = URL(string: url)?.host?.lowercased() {
+            if host.hasPrefix(q) || host.hasPrefix("www." + q) { return true }
+        }
+        guard q.count >= 3 else { return false }
+        return t.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains { $0.hasPrefix(q) }
+    }
+
     /// The bar's row order, in one place so it can be proved without a window. With nothing
     /// typed the bar is the list of open tabs (ref 2). With a query, the tabs that match lead
     /// — at most `leadingTabs`, so the typed row is never pushed under the fold — then what
@@ -138,6 +155,19 @@ enum Palette {
              opensInNewTab(mode: .address, commandHeld: false, hasActiveTab: false)),
             ("⌘⇧P's bar replaces the page too — it is the same bar",
              !opensInNewTab(mode: .all, commandHeld: false, hasActiveTab: true)),
+            ("a title that begins with the query is a strong tab",
+             strong("git", title: "GitHub", url: "https://github.com")),
+            ("a host that begins with the query is a strong tab",
+             strong("you", title: "Never Gonna Give You Up", url: "https://www.youtube.com/watch")),
+            ("letters found somewhere in the title are not",
+             !strong("gpt", title: "Giant Purple Turtles", url: "https://example.com")),
+            ("a word of the title counts once the query has three letters",
+             strong("tur", title: "Giant Purple Turtles", url: "https://example.com")
+                && !strong("tu", title: "Giant Purple Turtles", url: "https://example.com")),
+            ("nothing typed makes nothing strong", !strong("", title: "GitHub", url: "https://github.com")),
+            ("no strong tab means the search leads and the tabs follow the completions",
+             arrange(tabs: ["t1", "t2"], typed: "q", suggestions: ["s1"], ai: nil, commands: none,
+                     leadingTabs: 0) == ["q", "s1", "t1", "t2"]),
             ("with nothing typed the bar lists the open tabs",
              arrange(tabs: ["t1", "t2"], typed: nil, suggestions: none, ai: nil, commands: none) == ["t1", "t2"]),
             ("a matching tab comes before what was typed",
@@ -848,9 +878,17 @@ struct CommandField: NSViewRepresentable {
             // are places, so they are searched the moment there is something to search with.
             let places = typed.isEmpty ? []
                 : Palette.rank(typed, archiveRows() + spaceRows(), key: { $0.title + " " + $0.detail })
+            // Only a strong match leads, and only one: a search is what two typed letters
+            // mean far more often than "Switch to Tab", so the tabs that merely fuzz-match
+            // wait until after what the engine completes the words to.
+            // A tab row's detail is "address — Window n" when there are several windows.
+            let strong = tabs.filter {
+                Palette.strong(typed, title: $0.title, url: $0.detail.components(separatedBy: " — ")[0])
+            }
+            let weak = tabs.filter { row in !strong.contains { $0.id == row.id } }
             out = Palette.arrange(
-                tabs: tabs, typed: typedRow(), suggestions: suggestionRows(), ai: aiRow(),
-                rest: places, commands: commandRows())
+                tabs: strong + weak, typed: typedRow(), suggestions: suggestionRows(), ai: aiRow(),
+                rest: places, commands: commandRows(), leadingTabs: min(strong.count, 1))
         }
         // A cap so a bar over a hundred open tabs stays a list and not a scroll marathon —
         // but not while ⇥ is on, where the tail of the catalogue is the whole point.
