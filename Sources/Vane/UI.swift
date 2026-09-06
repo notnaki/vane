@@ -83,39 +83,39 @@ struct BrowserWindow: View {
     @State private var peekTask: Task<Void, Never>?
     /// App-wide, so every window's sidebar is the width the user last dragged one to.
     @ObservedObject private var sidebar = SidebarWidth.shared
+    @ObservedObject private var library = Library.shared
+    /// The window's own width, so the Library can be told how much it may take from the
+    /// page. `onGeometryChange` rather than a `GeometryReader` around the stack: the reader
+    /// would have to wrap everything to measure it, and this is one number.
+    @State private var windowWidth: CGFloat = 0
 
     /// Whether the window is showing any chrome at all, which is what the traffic lights
-    /// follow. The Library counts: it covers the sidebar and leaves the lights' own strip
-    /// blank at the top of its rail, so a panel with no lights beside it is a hole.
+    /// follow. The Library counts: it stands where the sidebar does, with the lights' own
+    /// strip blank at the top of its rail, so a panel with no lights beside it is a hole.
     private var chrome: Bool { store.sidebarShown || peeking || store.libraryOpen }
+
+    /// The rail plus its list column, or — in the Spaces section — a card per Space, up to
+    /// what the page can spare. See `Library.panelWidth`.
+    private var libraryWidth: CGFloat {
+        Library.panelWidth(section: library.section, spaces: store.spaces.count,
+                           available: windowWidth)
+    }
 
     var body: some View {
         ZStack(alignment: .leading) {
             WindowGlass()
             SpaceGround()
             HStack(spacing: 0) {
-                // Arc's Library takes the window over rather than floating on it: its rail
-                // stands where the sidebar does and its pane where the page does, at the
-                // same widths, so opening it moves nothing on screen — only what is drawn.
+                // Arc's Library replaces the *sidebar*, not the window: a rail and one list
+                // column stand where the sidebar stood, and the page simply moves over by
+                // the difference in width. Nothing is covered and nothing is unmounted, so
+                // media, the mini player and picture-in-picture carry straight on.
                 if store.libraryOpen {
-                    LibraryRail().frame(width: sidebar.width)
+                    LibraryPanel().frame(width: libraryWidth)
                 } else if store.sidebarShown {
                     Sidebar().frame(width: sidebar.width)
                 }
-                ZStack {
-                    // The card stays in the window under the Library, invisible. Taking a
-                    // web view *out* of the window stops its media dead — that is the whole
-                    // reason `OffscreenPages` exists and why `WebHost.offscreen` is
-                    // `isHidden` rather than a removal — so a Library that unmounted the
-                    // card would silence whatever was playing, drop the mini player and
-                    // kill picture-in-picture on every ⇧⌘L. It is also what leaves a first
-                    // responder for `Library.close` to hand the keyboard back to.
-                    WebCard()
-                        .opacity(store.libraryOpen ? 0 : 1)
-                        .allowsHitTesting(!store.libraryOpen)
-                        .accessibilityHidden(store.libraryOpen)
-                    if store.libraryOpen { LibraryPane() }
-                }
+                WebCard()
             }
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
@@ -137,6 +137,10 @@ struct BrowserWindow: View {
         // safe area at the top. Without this the sidebar's first row sits *below* the
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+        // The page slides over as the panel takes its width, and back when it gives it up —
+        // including when the Spaces section widens the panel to fit another card.
+        .animation(reduceMotion ? nil : Look.appear, value: libraryWidth)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.sidebarShown)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: peeking)
         .animation(reduceMotion ? nil : Look.appear, value: store.libraryOpen)
@@ -421,7 +425,7 @@ struct WebCard: View {
         .clipShape(.rect(cornerRadius: Look.cardRadius))
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
-        // rail stands in the same place and leaves the same gap.
+        // column stands in the same place and leaves the same gap.
         .padding(.leading, store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap)
         .padding([.top, .trailing, .bottom], Look.cardGap)
     }

@@ -1,31 +1,33 @@
 import AppKit
 import SwiftUI
+import ImageIO
 import UniformTypeIdentifiers
 
-/// Arc's Library: everything that has left the window but is not gone — archived tabs,
-/// downloads, every Space's pages, and history — taking the window over while it is open.
-/// A rail of section tiles stands where the sidebar does; the section's rows stand where
-/// the page does.
+/// Arc's Library: everything that has left the window but is not gone — media, downloads,
+/// every Space's pages, and archived tabs. It replaces the *sidebar*, not the window: an
+/// icon rail and one list column beside it, with the page still there to the right, simply
+/// pushed over by the difference in width.
 ///
-/// ponytail: the window's own two columns, not an NSWindow. Arc's Library *is* the browser
-/// window for as long as it is open, and a separate window would need its own store, its own
-/// profile plumbing and its own traffic lights to say the same thing. Ceiling: it cannot be
-/// dragged out onto its own screen; History, which really is a window, is raised rather than
-/// duplicated here.
+/// ponytail: two columns inside the browser window, not an NSWindow. A separate window would
+/// need its own store, its own profile plumbing and its own traffic lights to say the same
+/// thing. Ceiling: it cannot be dragged out onto its own screen; History, which really is a
+/// window, is raised rather than duplicated here.
 
 // MARK: - Sections
 
-/// The rail's four tiles, in Arc's own order, minus the sections Vane has no feature behind.
-/// `history` is the odd one: it is a button, not a pane. The searchable history already
-/// exists as a window (⌘Y) and a second copy of it would be a second thing to keep honest,
-/// so picking it raises that window and leaves the rail on whatever it was showing.
+/// The rail's tiles, in Arc's own order, minus the sections Vane has no feature behind —
+/// Easels and Boosts are whole features, and a tile that opens an apology is worse than no
+/// tile. `history` is the odd one: it is a button, not a pane. The searchable history
+/// already exists as a window (⌘Y) and a second copy of it would be a second thing to keep
+/// honest, so picking it raises that window and leaves the rail on whatever it was showing.
 enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
-    case downloads, spaces, archived, history
+    case media, downloads, spaces, archived, history
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .media:     "Media"
         case .archived:  "Archived Tabs"
         case .downloads: "Downloads"
         case .spaces:    "Spaces"
@@ -36,6 +38,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// Outlined symbols, at tile size: Arc's rail draws the thing itself, not a badge.
     var icon: String {
         switch self {
+        case .media:     "photo.on.rectangle"
         // Not `archivebox`: that is the footer glyph that opens the Library, and a section
         // wearing the same symbol as the button that got you here reads as the same thing.
         case .archived:  "tray.full"
@@ -45,11 +48,16 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The pane's search field. Arc names the section in the placeholder rather than
-    /// putting a title above the field, which is a whole row of chrome saved.
-    var searchPrompt: String { "Search \(title)…" }
+    /// The column's search field. Arc names the section in the placeholder rather than
+    /// putting a title above the field, which is a whole row of chrome saved — and it says
+    /// "Archive", not "Archived Tabs", because that is what fits a 246pt column.
+    var searchPrompt: String { "Search \(self == .archived ? "Archive" : title)…" }
 
-    /// A private window is in no Space and owns no profile furniture, so the Spaces columns
+    /// Whether the column has anything to filter. Media is every picture there is, so a
+    /// Filter chip beside its field would open an empty menu.
+    var filterable: Bool { self == .archived || self == .downloads }
+
+    /// A private window is in no Space and owns no profile furniture, so the Spaces cards
     /// would have nothing to show and nothing they could safely move.
     func available(private isPrivate: Bool) -> Bool { !(isPrivate && self == .spaces) }
 }
@@ -252,6 +260,83 @@ extension Library {
             .replacingOccurrences(of: "www.", with: "", options: .anchored) ?? ""
     }
 
+    /// The Media section: the downloads that are pictures. Arc's Media is every image the
+    /// browser has saved, and Vane keeps no second store for them — a download whose file is
+    /// an image *is* the picture, so the section is the downloads list read through a type
+    /// filter. ponytail ceiling: an image the user looked at but never saved is not here.
+    nonisolated static func isImage(name: String) -> Bool {
+        let ext = URL(fileURLWithPath: name).pathExtension
+        guard !ext.isEmpty, let type = UTType(filenameExtension: ext.lowercased()) else { return false }
+        return type.conforms(to: .image)
+    }
+
+    /// How wide the whole panel is. Every section but Spaces is the rail and one list
+    /// column; Spaces is the rail plus a card per Space and the `+` that makes another, so
+    /// the panel grows with the profile and the page gives up the difference.
+    ///
+    /// Capped, because a profile with ten Spaces would otherwise push the page off the
+    /// window: past the cap the cards scroll sideways instead. The cap never bites below the
+    /// ordinary width, so a narrow window still gets its list column whole.
+    nonisolated static func panelWidth(section: LibrarySection, spaces: Int,
+                                       available: CGFloat) -> CGFloat {
+        let ordinary = Look.libraryRail + Look.libraryList
+        guard section == .spaces else { return ordinary }
+        let cards = CGFloat(max(spaces, 1)) * (Look.spaceCard + Look.spaceCardGap)
+        let wanted = Look.libraryRail + Look.spaceCardGap + cards
+            + Look.spaceCardGap + Look.libraryField + Look.spaceCardGap
+        return max(ordinary, min(wanted, available - Look.libraryMinPage))
+    }
+
+    /// The rows a Space's card draws for its Pinned section: the saved shape's folders and
+    /// tabs in the order it holds them, then anything the shape has never heard of — a tab
+    /// another window pinned into that Space while this one was shut.
+    ///
+    /// The same walk as `TabStore.pinOrder`, but keeping the folders: the card is a
+    /// miniature of that Space's sidebar, and a sidebar without its folders is a flat list
+    /// of pages that does not look like the Space you left.
+    nonisolated static func cardRows(shape: Pins?, urls: [URL]) -> [CardRow] {
+        guard let shape, !shape.entries.isEmpty else {
+            return urls.enumerated().map { CardRow(id: "\($0.offset)", url: $0.element) }
+        }
+        // Counted, not a Set: two pinned tabs can sit on the same page, and matching by
+        // membership alone either drops the second one or invents one that is not there.
+        var left: [String: Int] = [:]
+        for u in urls { left[u.absoluteString, default: 0] += 1 }
+        var out: [CardRow] = []
+        for (i, entry) in shape.entries.enumerated() {
+            switch entry.row {
+            case .folder(let folder):
+                out.append(CardRow(id: folder.id.uuidString, folder: folder,
+                                   parent: entry.parent, depth: shape.depth(of: i)))
+            case .tab(let name):
+                guard let n = left[name], n > 0, let url = URL(string: name) else { continue }
+                left[name] = n - 1
+                out.append(CardRow(id: "\(out.count)|\(name)", url: url,
+                                   parent: entry.parent, depth: shape.depth(of: i)))
+            }
+        }
+        for url in urls {
+            guard let n = left[url.absoluteString], n > 0 else { continue }
+            left[url.absoluteString] = n - 1
+            out.append(CardRow(id: "\(out.count)|\(url.absoluteString)", url: url))
+        }
+        return out
+    }
+
+    /// The rows left once the shut folders have swallowed theirs. A folder is shut when its
+    /// own record says so or when the card's chevron has been clicked; either way everything
+    /// under it goes, however deep.
+    nonisolated static func visible(_ rows: [CardRow], shut: Set<UUID>) -> [CardRow] {
+        var hidden: Set<UUID> = []
+        return rows.filter { row in
+            let buried = row.parent.map { hidden.contains($0) } ?? false
+            if let folder = row.folder, buried || shut.contains(folder.id) {
+                hidden.insert(folder.id)
+            }
+            return !buried
+        }
+    }
+
     /// Where Restore puts a tab back: the Space it was archived from, if that Space is still
     /// there. An entry from before Spaces were recorded, or from a Space since deleted, has
     /// nowhere of its own to go and lands in the window's current Space.
@@ -271,6 +356,59 @@ extension Library {
             .replacingOccurrences(of: "www.", with: "", options: .anchored)
         let path = url.path
         return path.isEmpty || path == "/" ? host : host + path
+    }
+}
+
+/// One row on a Space's card: a folder, or a page, at the depth its folders put it. A value
+/// rather than a view model — `Library.cardRows` builds these from a saved shape and a url
+/// list, which is what makes the walk provable offline.
+struct CardRow: Identifiable, Equatable, Sendable {
+    let id: String
+    var folder: Folder?
+    var url: URL?
+    var parent: UUID?
+    var depth: Int = 0
+}
+
+/// Where each picture goes in a masonry: two columns of their own natural heights, packed
+/// so nothing is left waiting for a tall neighbour.
+///
+/// A grid would row-align the pair, which leaves a hole under whichever of the two is
+/// shorter — a wall of pictures with gaps punched through it. This is the other way round:
+/// the next picture joins whichever column is currently the shorter, so the two columns end
+/// up within one picture's height of each other and there are no holes at all.
+enum Masonry {
+    /// The column each item lands in, in order. `heights` are what the pictures will be at
+    /// column width; a height nobody knows yet counts as whatever it is given, and a
+    /// negative one counts as nothing.
+    ///
+    /// Ties go left, so the first row reads left to right the way a list does.
+    nonisolated static func place(heights: [CGFloat], columns: Int) -> [Int] {
+        guard columns > 1 else { return Array(repeating: 0, count: heights.count) }
+        var totals = [CGFloat](repeating: 0, count: columns)
+        var out: [Int] = []
+        out.reserveCapacity(heights.count)
+        for height in heights {
+            var pick = 0
+            // Strictly shorter, with a hair of slack: two columns a float's width apart are
+            // the same height to the eye, and the left one should keep winning.
+            for c in 1..<columns where totals[c] < totals[pick] - 0.001 { pick = c }
+            out.append(pick)
+            totals[pick] += max(height, 0)
+        }
+        return out
+    }
+
+    /// What each column adds up to, which is what `place` is balancing. Its own function so
+    /// a check can say "the two columns end up within the tallest picture of each other"
+    /// rather than repeating the sum.
+    nonisolated static func totals(heights: [CGFloat], columns: Int) -> [CGFloat] {
+        let placed = place(heights: heights, columns: columns)
+        var out = [CGFloat](repeating: 0, count: max(columns, 1))
+        for (i, height) in heights.enumerated() where placed.indices.contains(i) {
+            out[placed[i]] += max(height, 0)
+        }
+        return out
     }
 }
 
@@ -375,40 +513,105 @@ extension TabStore {
 // MARK: - Geometry
 
 extension Look {
-    /// A section tile in the rail: an outlined symbol over its name. Arc's rail is a column
-    /// of tiles rather than a list of rows — the Library is a place you go, not a menu.
-    static let libraryTile: CGFloat = 68
-    static let libraryTileIcon = Font.system(size: 22)
-    static let libraryTileLabel = Font.system(size: 12, weight: .semibold)
-    /// A Library row: a thumbnail, what the thing is called, and what it is.
-    static let libraryRow: CGFloat = 56
-    static let libraryThumb: CGFloat = 28
-    /// The search field and the Filter button over a pane's list. Taller than a settings
-    /// `control` — it is the one thing on the pane being typed into.
-    static let libraryField: CGFloat = 36
-    /// Above that field, so its centre lands on the traffic lights' own line: the pane runs
-    /// to the window's top edge, so this is measured from there and not from a card's inset.
-    /// `Look.check` pins it.
+    /// The icon rail: a column of section tiles where the sidebar's own leading edge is.
+    /// Wide enough for "Archived Tabs" on one line under its glyph, and no wider — the rail
+    /// is a set of destinations, and the list beside it is what is being read.
+    static let libraryRail: CGFloat = 88
+    /// The list column beside it. Arc's is narrow on purpose: a row is a favicon, a title
+    /// and one grey line, and a title that runs half a window wide is not read, it is
+    /// scanned past.
+    static let libraryList: CGFloat = 246
+    /// What the page keeps, however many Spaces the Spaces section wants to show side by
+    /// side. Past this the cards scroll instead of the panel growing.
+    static let libraryMinPage: CGFloat = 420
+    /// A rail tile: the card under it and the two type sizes. Arc's tile is a glyph with its
+    /// name underneath, not a row — and it wears one fill, the card's, never a second one
+    /// behind the glyph.
+    static let libraryTile: CGFloat = 62
+    static let libraryTileIcon = Font.system(size: 19)
+    static let libraryTileLabel = Font.system(size: 10, weight: .medium)
+    /// A Library row: a favicon or a file icon, a title, and one grey line under it.
+    static let libraryRow: CGFloat = 44
+    static let libraryThumb: CGFloat = 20
+    /// The search field and the Filter chip over the list.
+    static let libraryField: CGFloat = 30
+    /// Above that field, so its centre lands on the traffic lights' own line — the column
+    /// runs to the window's top edge, so this is measured from there. `Look.check` pins it.
     static let libraryHead: CGFloat = lightsCentre - libraryField / 2
-    /// How wide the list itself gets, however wide the window is. A title at one end of a
-    /// 1500pt row and its "…" at the other is not a row anybody can read across; Arc's
-    /// Library keeps its column narrow and lets the ground take the rest.
-    static let libraryColumn: CGFloat = 720
-    /// A Space's column in the Spaces section. Narrow enough that two fit beside the rail;
-    /// ponytail ceiling: a third Space scrolls horizontally rather than the pane growing.
-    static let spaceColumn: CGFloat = 220
+    /// A Space's card in the Spaces section, and the air around it. Each card wears its own
+    /// Space's ground, so the gap between two of them has to read as a gap.
+    static let spaceCard: CGFloat = 180
+    static let spaceCardGap: CGFloat = 10
+    /// A row inside a card: tighter than a Library row, because a card is 180pt wide and a
+    /// Space can have twenty pinned pages.
+    static let cardRow: CGFloat = 28
+    /// How far a folder's contents step in on a card. Half the sidebar's `folderIndent`:
+    /// the card is two thirds the sidebar's width and the same nesting has to fit.
+    static let cardIndent: CGFloat = folderIndent / 2
+    /// The media masonry: two columns of pictures at their own heights, an `inset` apart and
+    /// an `inset` in from each edge of the list column. `Look.check` pins the arithmetic.
+    static let mediaColumns = 2
+    static let mediaColumn: CGFloat = (libraryList - inset * 3) / 2
     /// The traffic lights' own strip at the leading edge of the sidebar's top row, which
     /// `TopRow` steps past before its first button.
     static let trafficLights: CGFloat = 62
 }
 
+// MARK: - The panel
+
+/// Arc's Library replaces the sidebar: an icon rail and one list column standing where the
+/// sidebar stood, with the page still on the right — pushed over by the difference in width
+/// and pushed back when the Library closes. Nothing floats and nothing is covered.
+///
+/// It lives in `BrowserWindow`'s HStack in place of `Sidebar`, which is why it has no shadow
+/// and no scrim, and why the page card never has to be unmounted: the web views stay in the
+/// window, so media, the mini player and picture-in-picture all carry on.
+struct LibraryPanel: View {
+    @EnvironmentObject var store: TabStore
+    @ObservedObject private var library = Library.shared
+
+    var body: some View {
+        HStack(spacing: 0) {
+            LibraryRail()
+            content
+        }
+        // The rail and the air around the list are the window's handle while the Library is
+        // up, exactly as the sidebar is the rest of the time: without this the window could
+        // not be moved at all. A tile, a field or a row takes the hover first, so
+        // `WindowDragGround` only ever says "bare ground" where there is nothing to click.
+        .background(WindowDragArea())
+        // Escape closes it, the way every other surface over the window closes. A zero-size
+        // button rather than `.onExitCommand`: the panel is not focused until something in
+        // it is clicked, and a cancel action is heard either way. It is *not* in the tree
+        // while the command bar is up — that reads Escape itself, and the innermost cancel
+        // action would otherwise win.
+        .background {
+            if store.palette == nil && !store.findOpen {
+                Button("Close Library") { Library.close(store) }
+                    .keyboardShortcut(.cancelAction)
+                    .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Library")
+        .onAppear { axAnnounce("Library, \(library.section.title).") }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch library.section {
+        case .media:     MediaPane(downloads: Downloads.manager(for: store.profileID))
+        case .downloads: DownloadsPane(downloads: Downloads.manager(for: store.profileID))
+        case .spaces where !store.isPrivate: SpacesPane()
+        // History never becomes the section, and Spaces is not offered in a private
+        // window — either way the archive is what a Library with nothing else shows.
+        default: ArchivedTabsPane(archive: Archive.shared(for: store.profileID))
+        }
+    }
+}
+
 // MARK: - The rail
 
-/// Arc's Library takes the window over: the rail stands exactly where the sidebar does —
-/// same width, same ground, the traffic lights on their own line above it — and the pane
-/// stands where the page card does. Both live in `BrowserWindow`'s HStack in place of the
-/// two they replace, which is why neither has a shadow or a scrim: nothing is floating.
-struct LibraryRail: View {
+private struct LibraryRail: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var library = Library.shared
 
@@ -421,16 +624,20 @@ struct LibraryRail: View {
             // The traffic lights' line, blank, the way the sidebar's top row starts blank.
             Spacer().frame(height: Look.topRow)
             Spacer(minLength: 0)
-            ForEach(sections) { section in
-                LibraryTile(section: section, selected: library.section == section) {
-                    Library.open(section, in: store)
-                    // History raises its own window, which announces itself when it takes
-                    // the keyboard; saying "History" here would claim a rail selection that
-                    // never happened.
-                    if section != .history { axAnnounce(section.title) }
+            // One block in the middle of the rail rather than spread down it: Arc's tiles
+            // are a group you read at a glance, not a list stretched to the window's height.
+            VStack(spacing: Look.rowGap) {
+                ForEach(sections) { section in
+                    LibraryTile(section: section, selected: library.section == section) {
+                        Library.open(section, in: store)
+                        // History raises its own window, which announces itself when it
+                        // takes the keyboard; saying "History" here would claim a rail
+                        // selection that never happened.
+                        if section != .history { axAnnounce(section.title) }
+                    }
                 }
-                Spacer(minLength: 0)
             }
+            Spacer(minLength: 0)
             // Arc's way back out is a plain arrow in the corner the Library button was in.
             HStack(spacing: 0) {
                 Button { Library.close(store) } label: { Image(systemName: "arrow.left") }
@@ -444,31 +651,18 @@ struct LibraryRail: View {
         .padding(.horizontal, Look.inset)
         .padding(.top, Look.topInset)
         .padding(.bottom, Look.footerInset)
-        // The rail is the window's handle while the Library is up, exactly as the sidebar is
-        // the rest of the time: without this the window cannot be moved at all. A tile takes
-        // the hover before the ground does, so `WindowDragGround` still says "bare ground".
-        .background(WindowDragArea())
-        // Escape closes it, the way every other surface over the window closes. A zero-size
-        // button rather than `.onExitCommand`: the rail is not focused until something in it
-        // is clicked, and a cancel action is heard either way. It is *not* in the tree while
-        // the command bar or the find bar is up — those two read Escape themselves, and the
-        // innermost cancel action would otherwise win.
-        .background {
-            if store.palette == nil && !store.findOpen {
-                Button("Close Library") { Library.close(store) }
-                    .keyboardShortcut(.cancelAction)
-                    .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
-            }
-        }
+        .frame(width: Look.libraryRail)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Library sections")
-        .onAppear { axAnnounce("Library, \(library.section.title).") }
     }
 }
 
-/// A rail tile: the section's symbol over its name, on a card fill when it is the one being
-/// shown. The fill is the selection's, not a change of ink — a tile that only brightened
-/// would be a label, and this is a place.
+/// A rail tile: the section's outlined glyph with its name underneath, on one card fill when
+/// it is the section being shown.
+///
+/// One fill, not two. A box behind the glyph *and* a plate behind the tile read as two
+/// selections stacked on each other — the glyph is drawn bare and the card is what says
+/// which section this is.
 private struct LibraryTile: View {
     let section: LibrarySection
     let selected: Bool
@@ -477,9 +671,10 @@ private struct LibraryTile: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: Look.captionGap * 3) {
+        VStack(spacing: Look.captionGap * 2) {
             Image(systemName: section.icon).font(Look.libraryTileIcon)
             Text(section.title).font(Look.libraryTileLabel).lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .foregroundStyle(selected ? Look.inkPrimary : Look.inkSecondary)
         .frame(maxWidth: .infinity)
@@ -497,44 +692,14 @@ private struct LibraryTile: View {
     }
 }
 
-// MARK: - The pane
+// MARK: - The list column
 
-/// The section's contents, where the page card would be. It runs to the window's top edge
-/// rather than sitting under the card's inset, because its search field is the top row while
-/// the Library is open and that row belongs on the traffic lights' line.
-struct LibraryPane: View {
-    @EnvironmentObject var store: TabStore
-    @ObservedObject private var library = Library.shared
-
-    var body: some View {
-        Group {
-            switch library.section {
-            case .downloads: DownloadsPane(downloads: Downloads.manager(for: store.profileID))
-            case .spaces where !store.isPrivate: SpacesPane()
-            // History never becomes the section, and Spaces is not offered in a private
-            // window — either way the archive is what a Library with nothing else shows.
-            default: ArchivedTabsPane(archive: Archive.shared(for: store.profileID))
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // The pane's bare ground is the window's handle on this side, the way the sidebar's
-        // is on the other: the head's strip, and the air beside the list. A field, a menu or
-        // a scroll view takes the hover before this does, so `WindowDragGround` only ever
-        // says "bare ground" where there is nothing to click.
-        .background(WindowDragArea())
-        .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
-        .clipShape(.rect(cornerRadius: Look.cardRadius))
-        .padding([.trailing, .bottom], Look.cardGap)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(library.section.title)
-    }
-}
-
-/// The head of a pane: Arc's wide rounded search field, the Filter menu beside it, and the
-/// "…" that holds what is done to the whole list. Filter filters and nothing else — Clear
-/// under a menu called Filter is a destructive verb nobody would look for there.
+/// The head of a column: Arc's rounded search field, the Filter menu beside it on the two
+/// sections that have anything to filter, and the "…" that holds what is done to the whole
+/// list. Filter filters and nothing else — Clear under a menu called Filter is a destructive
+/// verb nobody would look for there.
 private struct LibraryHead<Filter: View, Actions: View>: View {
-    let prompt: String
+    let section: LibrarySection
     let filtering: Bool
     @Binding var query: String
     @ViewBuilder let filter: () -> Filter
@@ -544,66 +709,60 @@ private struct LibraryHead<Filter: View, Actions: View>: View {
     @ObservedObject private var library = Library.shared
 
     var body: some View {
-        HStack(spacing: Look.inset) {
-            HStack(spacing: Look.inset) {
-                Image(systemName: "magnifyingglass").font(Look.fieldIcon)
+        HStack(spacing: Look.inset - 2) {
+            HStack(spacing: Look.inset - 3) {
+                Image(systemName: "magnifyingglass").font(Look.caption)
                     .foregroundStyle(Look.inkTertiary)
-                TextField(prompt, text: $query).textFieldStyle(.plain).font(Look.text)
+                TextField(section.searchPrompt, text: $query)
+                    .textFieldStyle(.plain).font(Look.small)
                     .foregroundStyle(Look.inkPrimary)
                     .focused($focused)
             }
-            .padding(.horizontal, Look.rowInset)
+            .padding(.horizontal, Look.inset)
             .frame(height: Look.libraryField)
             .frame(maxWidth: .infinity)
             .background(Look.controlFill, in: .rect(cornerRadius: Look.pillRadius))
-            .accessibilityLabel(prompt)
+            .accessibilityLabel(section.searchPrompt)
 
-            // The pill is on the Menu, not inside its label: a borderless menu lays its
-            // label out at the label's own size, so a background put in there is drawn at
-            // the size of the words rather than at the field's.
-            pill(filling: filtering) {
-                Menu { filter() } label: {
-                    HStack(spacing: Look.inset - 2) {
-                        Image(systemName: "line.3.horizontal.decrease.circle")
-                        Text("Filter")
+            if section.filterable {
+                // The pill is on the Menu, not inside its label: a borderless menu lays its
+                // label out at the label's own size, so a background put in there is drawn
+                // at the size of the words rather than at the field's.
+                pill(filling: filtering) {
+                    Menu { filter(); Divider(); actions() } label: {
+                        HStack(spacing: Look.captionGap * 2) {
+                            Image(systemName: "line.3.horizontal.decrease.circle")
+                            Text("Filter")
+                        }
+                        .font(Look.small)
+                        .foregroundStyle(filtering ? Look.inkPrimary : Look.inkSecondary)
                     }
-                    .font(Look.text)
-                    .foregroundStyle(filtering ? Look.inkPrimary : Look.inkSecondary)
+                    .accessibilityLabel("Filter")
+                    .accessibilityValue(filtering ? "On" : "Off")
+                    .accessibilityActions { actions() }
                 }
-                .accessibilityLabel("Filter")
-                .accessibilityValue(filtering ? "On" : "Off")
-            }
-            pill(filling: false) {
-                Menu { actions() } label: {
-                    Image(systemName: "ellipsis").font(Look.text)
-                        .foregroundStyle(Look.inkSecondary)
-                }
-                .accessibilityLabel("More")
-                .accessibilityActions { actions() }
             }
         }
-        .padding(.horizontal, Look.cardInset)
+        .padding(.horizontal, Look.inset)
         .padding(.top, Look.libraryHead)
-        .frame(maxWidth: Look.libraryColumn + Look.cardInset * 2, alignment: .leading)
+        .padding(.bottom, Look.inset)
         .onAppear { takeKeyboard() }
         .onChange(of: library.focusToken) { takeKeyboard() }
     }
 
     /// A turn later, not now. `@FocusState` set while the field is still being installed in
     /// the window is dropped, and the keyboard stays where it was — which, the first time the
-    /// Library opens over a page, is the web view behind it: every keystroke would go to a
-    /// page nobody can see.
+    /// Library opens over a page, is the web view: every keystroke would go to the page.
     private func takeKeyboard() {
         DispatchQueue.main.async { focused = true }
     }
 
-    /// Both trailing controls are the same pill at the field's own height.
     private func pill<Label: View>(filling: Bool, @ViewBuilder _ label: () -> Label) -> some View {
         label()
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .padding(.horizontal, Look.rowInset)
+            .padding(.horizontal, Look.inset)
             .frame(height: Look.libraryField)
             .background(filling ? Look.selected : Look.controlFill,
                         in: .rect(cornerRadius: Look.pillRadius))
@@ -617,25 +776,26 @@ private struct LibraryGroupHeader: View {
         Text(title).font(Look.sectionCaption).foregroundStyle(Look.inkQuiet)
             .padding(.horizontal, Look.rowInset)
             .padding(.top, Look.inset)
+            .padding(.bottom, Look.captionGap)
             .accessibilityAddTraits(.isHeader)
     }
 }
 
-/// One quiet line in the middle of the pane. Arc's empty Library is a sentence, not an
+/// One quiet line in the middle of the column. Arc's empty Library is a sentence, not an
 /// illustration — there is nothing here yet, and a picture would not change that.
 private struct LibraryEmpty: View {
     let text: String
     var body: some View {
-        Text(text).font(Look.text).foregroundStyle(Look.inkQuiet)
+        Text(text).font(Look.small).foregroundStyle(Look.inkQuiet)
             .multilineTextAlignment(.center)
-            .padding(.horizontal, Look.paneMargin)
+            .padding(.horizontal, Look.cardInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
-/// A Library row: a thumbnail, a title over what the thing is, and — under the pointer — the
-/// "…" that opens the row's verbs. The row is one accessibility element carrying the same
-/// verbs as named actions rather than a row of buttons to tab through.
+/// A Library row: a favicon or a file icon, a title over what the thing is, and — under the
+/// pointer — the "…" that opens the row's verbs. The row is one accessibility element
+/// carrying the same verbs as named actions rather than a row of buttons to tab through.
 private struct LibraryRow<Leading: View, Actions: View>: View {
     let title: String
     let subtitle: String
@@ -647,14 +807,16 @@ private struct LibraryRow<Leading: View, Actions: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: Look.rowSpacing) {
+        HStack(spacing: Look.inset) {
             leading().frame(width: Look.libraryThumb, height: Look.libraryThumb)
-            VStack(alignment: .leading, spacing: Look.captionGap) {
-                Text(title).font(Look.rowTitle).foregroundStyle(Look.inkPrimary).lineLimit(1)
-                    .truncationMode(.middle)
-                Text(subtitle).font(Look.small).foregroundStyle(Look.inkSecondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 0) {
+                // Tail, not middle: the column is narrow enough that most titles are cut,
+                // and a title read from the front is still recognisable where one with its
+                // middle missing is not.
+                Text(title).font(Look.small).foregroundStyle(Look.inkPrimary).lineLimit(1)
+                Text(subtitle).font(Look.caption).foregroundStyle(Look.inkQuiet).lineLimit(1)
             }
-            Spacer(minLength: Look.inset)
+            Spacer(minLength: Look.captionGap)
             // Always in the layout at its own fixed size, drawn only when the pointer is on
             // the row: opacity costs no space, so a title never shortens as the pointer
             // arrives and no row ever changes shape under it.
@@ -662,11 +824,11 @@ private struct LibraryRow<Leading: View, Actions: View>: View {
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .font(Look.rowGlyph).foregroundStyle(Look.inkSecondary)
+                .font(Look.caption).foregroundStyle(Look.inkSecondary)
                 .opacity(hovering ? 1 : 0)
                 .accessibilityHidden(true)
         }
-        .padding(.horizontal, Look.rowInset)
+        .padding(.horizontal, Look.inset)
         .frame(height: Look.libraryRow)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(hovering ? Look.hovered : .clear, in: .rect(cornerRadius: Look.cardRadius))
@@ -685,8 +847,7 @@ private struct LibraryRow<Leading: View, Actions: View>: View {
 }
 
 /// The list itself: groups a gap apart, rows butted together inside one. No dividers — Arc's
-/// Library separates rows with the hovered row's own card fill and with air, and a hairline
-/// between 56pt rows reads as a table.
+/// Library separates rows with the hovered row's own card fill and with air.
 private struct LibraryList<T, ID: Hashable, Row: View>: View {
     let groups: [(title: String, items: [T])]
     let id: KeyPath<T, ID>
@@ -700,14 +861,27 @@ private struct LibraryList<T, ID: Hashable, Row: View>: View {
                     ForEach(group.items, id: id) { row($0) }
                 }
             }
-            // The same column the head's field sits in, so a row's "…" is a hand's width
-            // from its title however wide the window is.
-            .frame(maxWidth: Look.libraryColumn, alignment: .leading)
-            .padding(.horizontal, Look.cardInset)
+            .padding(.horizontal, Look.inset)
             .padding(.bottom, Look.cardInset)
         }
         .scrollContentBackground(.hidden)
         .scrollIndicators(.automatic)
+    }
+}
+
+/// Every list section's shape: the head, then the list or one quiet line. Its own view so
+/// the three panes cannot drift apart on padding or on where the column's width is set.
+private struct LibraryColumn<Head: View, Body_: View>: View {
+    @ViewBuilder let head: () -> Head
+    @ViewBuilder let content: () -> Body_
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            head()
+            content()
+        }
+        .frame(width: Look.libraryList)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -723,14 +897,15 @@ private struct ArchivedTabsPane: View {
     @State private var groups: [(title: String, items: [Archive.Entry])] = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            LibraryHead(prompt: LibrarySection.archived.searchPrompt,
-                        filtering: library.littleArcOnly, query: $library.query) {
+        LibraryColumn {
+            LibraryHead(section: .archived, filtering: library.littleArcOnly,
+                        query: $library.query) {
                 Toggle("Little Vane only", isOn: $library.littleArcOnly)
                     .help("Only tabs archived from a Little Vane window")
             } actions: {
                 Button("Clear Archive…") { clear() }.disabled(archive.entries.isEmpty)
             }
+        } content: {
             if groups.isEmpty {
                 LibraryEmpty(text: archive.entries.isEmpty
                     ? "Nothing archived yet — a tab you close with \(Keybindings.binding(for: .closeTab).display) is kept here."
@@ -772,20 +947,18 @@ private struct ArchivedRow: View {
     let entry: Archive.Entry
     @ObservedObject var archive: Archive
 
-    /// Where it came from, when it went, and — when it applies — that it was never a tab in
-    /// this window at all. One line, because that is the shape of every Library row.
+    /// The address, as much of it as a 246pt column shows: host and path, the way Arc's
+    /// archive rows read. The time and the Little Vane flag are what the row is *sorted* and
+    /// *filtered* by, so they belong to the group header and the Filter chip, not to a
+    /// second line that would push the address out.
     private var subtitle: String {
-        let host = Library.host(entry.url)
-        return [host.isEmpty ? entry.url : host,
-                HistoryWindow.time(entry.at),
-                entry.isLittleArc ? "Little Vane" : ""]
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
+        URL(string: entry.url).map(Library.label(for:)) ?? entry.url
     }
 
     var body: some View {
         LibraryRow(title: entry.title, subtitle: subtitle,
-                   spoken: "Archived tab, \(subtitle)") {
+                   spoken: "Archived tab, \(subtitle), \(HistoryWindow.time(entry.at))"
+                    + (entry.isLittleArc ? ", Little Vane" : "")) {
             SiteIcon(icon: URL(string: entry.url).flatMap(store.favicons.icon(for:)),
                      size: Look.libraryThumb)
         } actions: {
@@ -817,7 +990,7 @@ private struct DownloadsPane: View {
     @ObservedObject private var library = Library.shared
 
     /// Not cached in `@State`: a running download republishes on every progress tick, so
-    /// the list would be regrouped by a `onChange` on every tick anyway, and the list is
+    /// the list would be regrouped by an `onChange` on every tick anyway, and the list is
     /// capped at `Downloads.historyLimit` rather than at the archive's two thousand.
     private var groups: [(title: String, items: [Downloads.Item])] {
         let rows = downloads.items.filter {
@@ -833,15 +1006,16 @@ private struct DownloadsPane: View {
 
     var body: some View {
         let groups = groups
-        VStack(alignment: .leading, spacing: 0) {
-            LibraryHead(prompt: LibrarySection.downloads.searchPrompt,
-                        filtering: library.completedOnly, query: $library.query) {
+        LibraryColumn {
+            LibraryHead(section: .downloads, filtering: library.completedOnly,
+                        query: $library.query) {
                 Toggle("Completed only", isOn: $library.completedOnly)
                     .help("Hide the downloads that are still arriving or went wrong")
             } actions: {
                 Button("Clear Downloads") { downloads.clear() }
                     .disabled(downloads.items.isEmpty)
             }
+        } content: {
             if groups.isEmpty {
                 LibraryEmpty(text: downloads.items.isEmpty
                     ? "Nothing downloaded yet — files you save are listed here."
@@ -865,30 +1039,7 @@ private struct DownloadListRow: View {
         LibraryRow(title: item.name, subtitle: item.subtitle, spoken: item.spoken) {
             DownloadIcon(item: item)
         } actions: {
-            if item.status == .done {
-                Button("Open") { downloads.open(item) }
-                Button("Show in Finder") { downloads.reveal(item) }
-                if TidyDownloads.canUndo(item) {
-                    Button("Undo Rename") { _ = TidyDownloads.undo(item, in: downloads) }
-                }
-            }
-            if item.status == .running {
-                Button("Pause") { downloads.pause(item) }
-                Button("Cancel") { downloads.cancel(item) }
-            }
-            if item.status == .paused {
-                if downloads.canResume(item) { Button("Resume") { _ = downloads.resume(item) } }
-                Button("Cancel") { downloads.cancel(item) }
-            }
-            if let source = item.source {
-                Button("Copy Link") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(source.absoluteString, forType: .string)
-                    axAnnounce("Link copied.")
-                }
-            }
-            Divider()
-            Button("Remove from List") { downloads.forget(item) }
+            DownloadVerbs(item: item, downloads: downloads)
         } open: {
             // Clicking a finished download opens it, the way clicking one in Arc does; a row
             // that is still arriving has nothing to open yet.
@@ -897,115 +1048,412 @@ private struct DownloadListRow: View {
         // Arc lets a finished download be dragged straight out of the Library into a Finder
         // window or another app. A file promise would be the thorough version; the file is
         // already on disk, so its url is the whole payload.
-        .onDrag { provider() }
+        .onDrag { dragPayload(item, downloads) }
+    }
+}
+
+/// What can be done to one download, in the order the state makes them useful. Shared by the
+/// list row and the media tile, which are two pictures of the same thing.
+private struct DownloadVerbs: View {
+    @ObservedObject var item: Downloads.Item
+    let downloads: Downloads
+
+    var body: some View {
+        if item.status == .done {
+            Button("Open") { downloads.open(item) }
+            Button("Show in Finder") { downloads.reveal(item) }
+            if TidyDownloads.canUndo(item) {
+                Button("Undo Rename") { _ = TidyDownloads.undo(item, in: downloads) }
+            }
+        }
+        if item.status == .running {
+            Button("Pause") { downloads.pause(item) }
+            Button("Cancel") { downloads.cancel(item) }
+        }
+        if item.status == .paused {
+            if downloads.canResume(item) { Button("Resume") { _ = downloads.resume(item) } }
+            Button("Cancel") { downloads.cancel(item) }
+        }
+        if let source = item.source {
+            Button("Copy Link") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(source.absoluteString, forType: .string)
+                axAnnounce("Link copied.")
+            }
+        }
+        Divider()
+        Button("Remove from List") { downloads.forget(item) }
+    }
+}
+
+/// There is nothing to drag out of a row whose file has gone: mark the row instead of
+/// handing the Finder a url that resolves to nothing.
+@MainActor private func dragPayload(_ item: Downloads.Item, _ downloads: Downloads) -> NSItemProvider {
+    guard item.status == .done, let url = item.url,
+          FileManager.default.fileExists(atPath: url.path) else {
+        downloads.refreshMissing()
+        return NSItemProvider()
+    }
+    return NSItemProvider(contentsOf: url) ?? NSItemProvider()
+}
+
+// MARK: - Media
+
+/// Arc's Media: every picture the browser has saved, as a grid rather than a list, because a
+/// picture is recognised by looking at it and a filename tells you nothing about it.
+///
+/// ponytail: the downloads list read through `Library.isImage`, not a store of its own. The
+/// files are already on disk with their dates and their sources; a second index would be a
+/// second thing to keep in step for no answer it could give that this cannot. Ceiling: an
+/// image the user looked at but never downloaded is not here.
+private struct MediaPane: View {
+    @ObservedObject var downloads: Downloads
+    @ObservedObject private var library = Library.shared
+
+    private var items: [Downloads.Item] {
+        let now = Date()
+        return downloads.items
+            .filter { $0.status == .done && Library.isImage(name: $0.name)
+                && Library.matches([$0.name, $0.source?.absoluteString ?? ""], library.query) }
+            .sorted { ($0.completed ?? now) > ($1.completed ?? now) }
     }
 
-    /// There is nothing to drag out of a row whose file has gone: mark the row instead of
-    /// handing the Finder a url that resolves to nothing.
-    private func provider() -> NSItemProvider {
-        guard item.status == .done, let url = item.url,
-              FileManager.default.fileExists(atPath: url.path) else {
-            downloads.refreshMissing()
-            return NSItemProvider()
+    var body: some View {
+        let items = items
+        LibraryColumn {
+            LibraryHead(section: .media, filtering: false, query: $library.query) {
+                EmptyView()
+            } actions: {
+                EmptyView()
+            }
+        } content: {
+            if items.isEmpty {
+                LibraryEmpty(text: downloads.items.contains(where: { Library.isImage(name: $0.name) })
+                    ? "No picture matches that."
+                    : "No pictures yet — images you save are shown here.")
+            } else {
+                // Two columns laid out by hand rather than a `LazyVGrid`: a grid aligns the
+                // pair of cells in a row, so a short picture beside a tall one leaves a hole
+                // under it. `Masonry.place` puts each picture in whichever column is shorter.
+                let columns = Masonry.place(heights: items.map(height), columns: Look.mediaColumns)
+                ScrollView {
+                    HStack(alignment: .top, spacing: Look.inset) {
+                        ForEach(0..<Look.mediaColumns, id: \.self) { column in
+                            LazyVStack(spacing: Look.inset) {
+                                ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
+                                    if columns.indices.contains(i), columns[i] == column {
+                                        MediaTile(item: item, downloads: downloads,
+                                                  height: height(item))
+                                    }
+                                }
+                            }
+                            .frame(width: Look.mediaColumn)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Look.inset)
+                    .padding(.bottom, Look.cardInset)
+                }
+                .scrollContentBackground(.hidden)
+            }
         }
-        return NSItemProvider(contentsOf: url) ?? NSItemProvider()
+        .onAppear { downloads.refreshMissing() }
+    }
+
+    /// How tall a picture will be at column width, which is what the masonry balances. A
+    /// file whose thumbnail will not decode gets a plate the height of a row.
+    private func height(_ item: Downloads.Item) -> CGFloat {
+        guard let url = item.url, let image = Thumbnails.image(for: url),
+              image.size.width > 0, image.size.height > 0 else { return Look.libraryRow }
+        return (Look.mediaColumn * image.size.height / image.size.width).rounded()
+    }
+}
+
+/// One picture, at column width and its own height. Clicking opens it, the way clicking a
+/// finished download does; the pointer brings up the same verbs the list row has.
+private struct MediaTile: View {
+    @ObservedObject var item: Downloads.Item
+    let downloads: Downloads
+    let height: CGFloat
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if let image = item.url.flatMap(Thumbnails.image(for:)) {
+                Image(nsImage: image).resizable().interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                // The file has gone, or is not a picture the decoder knows. A grey plate
+                // beats a torn image or a blank hole.
+                Image(systemName: "photo").font(Look.libraryTileIcon)
+                    .foregroundStyle(Look.inkQuiet)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Look.controlFill)
+            }
+        }
+        .frame(width: Look.mediaColumn, height: height)
+        .clipShape(.rect(cornerRadius: Look.cardRadius))
+        // Over the picture, not around it: a plate behind would have to inset the image and
+        // the column would stop being one clean edge.
+        .overlay {
+            if hovering {
+                RoundedRectangle(cornerRadius: Look.cardRadius).fill(Look.hovered)
+            }
+        }
+        .hairline(radius: Look.cardRadius, hovering ? Look.selectedEdge : .clear)
+        .animation(reduceMotion ? nil : Look.quick, value: hovering)
+        .contentShape(.rect)
+        .onHover { hovering = $0 }
+        .onTapGesture { downloads.open(item) }
+        .onDrag { dragPayload(item, downloads) }
+        .contextMenu { DownloadVerbs(item: item, downloads: downloads) }
+        .help(item.name)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(item.name)
+        .accessibilityValue(item.subtitle)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { downloads.open(item) }
+        .accessibilityActions { DownloadVerbs(item: item, downloads: downloads) }
+    }
+}
+
+/// Thumbnails for the media grid, made once per file and kept.
+///
+/// ponytail: ImageIO rather than `NSImage(contentsOf:)`. That one keeps the whole decoded
+/// picture alive behind the small thing on screen — a screen of twelve photos off a phone is
+/// most of a gigabyte — while `CGImageSourceCreateThumbnailAtIndex` decodes straight to the
+/// size asked for and never holds the full frame at all. Keyed by path, so a file replaced
+/// under the same name keeps its old thumbnail until the app restarts; that is the ceiling.
+@MainActor enum Thumbnails {
+    /// Twice the widest a tile can be, so a thumbnail is still sharp on a retina screen.
+    private static let pixels = 512
+    private static var cache: [String: NSImage?] = [:]
+
+    static func image(for url: URL) -> NSImage? {
+        if let hit = cache[url.path] { return hit }
+        let made = make(url)
+        cache[url.path] = made
+        return made
+    }
+
+    private static func make(_ url: URL) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: pixels,
+              ] as CFDictionary)
+        else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 }
 
 // MARK: - Spaces
 
-/// Arc's "Manage Spaces": every Space of this profile side by side with its pages, and a
-/// page draggable from one column into another.
+/// Arc's "Manage Spaces": every Space of this profile as a card of its own, side by side,
+/// each wearing that Space's ground so the row of cards reads as the row of Spaces the
+/// footer's dots stand for. A page drags from one card into another.
 private struct SpacesPane: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // No search field: a Space is found by looking at four columns, not by typing,
-            // and no New Space button — the sidebar's `+` makes one and names it in place.
-            // No empty state either: a profile always has at least one Space, and the window
-            // this pane is over is showing one. See `ProfileManager.ensureSpaces`.
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: Look.inset) {
-                    ForEach(store.spaces) { SpaceColumn(space: $0) }
-                }
-                .padding(Look.cardInset)
+        // No search field and no empty state: a profile always has at least one Space, and
+        // a Space is found by looking at four cards rather than by typing.
+        ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: Look.spaceCardGap) {
+                ForEach(store.spaces) { SpaceCard(space: $0) }
+                NewSpaceCard()
             }
-            .scrollContentBackground(.hidden)
+            .padding(Look.spaceCardGap)
+            .padding(.top, Look.libraryHead)
         }
+        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Spaces")
     }
 }
 
-private struct SpaceColumn: View {
+/// The `+` at the end of the row. Arc's is a plain circle between the cards; ours sits after
+/// them, which is where a new Space is actually added.
+private struct NewSpaceCard: View {
     @EnvironmentObject var store: TabStore
+    @State private var hovering = false
+
+    var body: some View {
+        Button { _ = store.newSpace() } label: {
+            Image(systemName: "plus").font(Look.icon)
+                .foregroundStyle(hovering ? Look.inkPrimary : Look.inkSecondary)
+                .frame(width: Look.libraryField, height: Look.libraryField)
+                .background(hovering ? Look.hovered : Look.controlFill,
+                            in: .rect(cornerRadius: Look.pillRadius))
+        }
+        .buttonStyle(.plain)
+        .frame(maxHeight: .infinity)
+        .onHover { hovering = $0 }
+        .help("New Space")
+        .accessibilityLabel("New Space")
+    }
+}
+
+private struct SpaceCard: View {
+    @EnvironmentObject var store: TabStore
+    @EnvironmentObject var profiles: ProfileManager
+    @Environment(\.colorScheme) private var scheme
     let space: Space
     @State private var over = false
     @State private var editing = false
+    /// Folders the chevron has shut on this card. ponytail: not written down — a card is
+    /// looked at, not lived in, and persisting it would mean writing another window's Space
+    /// shape from here. The folder's own `collapsed` is still honoured on the way in.
+    @State private var shut: Set<UUID> = []
 
     /// The window showing this Space keeps its pages in its strip, with real titles; every
     /// other Space is the url list in spaces.json. `owner` rather than "is it this window's"
     /// so a Space open in another window reads from that window too.
     private var live: TabStore? { Library.owner(of: space.id) }
 
-    /// Pinned first, then Today, as one list so the rows have one order to be indexed by.
-    private var rows: [(url: URL, pinned: Bool)] {
+    /// The Pinned section, folders and all, then the Today pages under it — the card is a
+    /// miniature of that Space's own sidebar.
+    private var pinned: [CardRow] {
         if let live {
-            return live.tabs.filter { $0.kind == .pinned }.compactMap(\.currentURL).map { ($0, true) }
-                + live.tabs.filter { $0.kind == .today }.compactMap(\.currentURL).map { ($0, false) }
+            let byID = Dictionary(live.tabs.map { ($0.id.uuidString, $0) },
+                                  uniquingKeysWith: { a, _ in a })
+            let shape = live.pins.mapped { byID[$0]?.currentURL?.absoluteString }
+            return Library.cardRows(shape: shape,
+                                    urls: live.tabs.filter { $0.kind == .pinned }
+                                        .compactMap(\.currentURL))
         }
-        return (space.pinnedTabURLs ?? []).map { ($0, true) } + space.tabURLs.map { ($0, false) }
+        return Library.cardRows(shape: TabStore.savedShape(space: space.id,
+                                                           profileID: space.profileID),
+                                urls: space.pinnedTabURLs ?? [])
+    }
+
+    private var today: [URL] {
+        live.map { $0.tabs.filter { $0.kind == .today }.compactMap(\.currentURL) } ?? space.tabURLs
+    }
+
+    /// The card's own ground: the Space's theme, derived exactly as the window's is, so a
+    /// card and the window it stands for are the same colour.
+    private var ground: Color {
+        Look.groundColor(hex: space.colorHex ?? profiles.profiles.first { $0.id == space.profileID }?.colorHex
+                            ?? store.profile.colorHex,
+                         dark: scheme == .dark, strength: space.tint ?? Look.defaultTint)
     }
 
     var body: some View {
-        let rows = rows
-        VStack(alignment: .leading, spacing: Look.inset) {
-            header(rows.count)
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if rows.isEmpty {
-                    Text("No pages").font(Look.caption).foregroundStyle(Look.inkQuiet)
-                        .padding(.horizontal, Look.rowInset).frame(height: Look.linkRow)
+        let pinned = Library.visible(pinned, shut: shut)
+        let today = today
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(pinned) { row in
+                        if let folder = row.folder {
+                            FolderCardRow(folder: folder, depth: row.depth,
+                                          shut: shut.contains(folder.id)) { toggle(folder) }
+                        } else if let url = row.url {
+                            PageRow(space: space, url: url, pinned: true, depth: row.depth)
+                        }
+                    }
+                    if !pinned.isEmpty && !today.isEmpty {
+                        Hairline().padding(.horizontal, Look.inset).padding(.vertical, Look.captionGap * 2)
+                    }
+                    // By position, not by url: the same page can be open in two tabs of one
+                    // Space, and two rows sharing an id is a list that scrolls to nowhere.
+                    ForEach(Array(today.enumerated()), id: \.offset) { _, url in
+                        PageRow(space: space, url: url, pinned: false, depth: 0)
+                    }
+                    if pinned.isEmpty && today.isEmpty {
+                        Text("No pages").font(Look.caption).foregroundStyle(Look.inkQuiet)
+                            .padding(.horizontal, Look.inset).frame(height: Look.cardRow)
+                    }
                 }
-                // By position, not by url: the same page can be open in two tabs of one
-                // Space, and two rows sharing an id is a list that scrolls to nowhere.
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    PageRow(space: space, url: row.url, pinned: row.pinned)
-                }
+                .padding(.horizontal, Look.captionGap * 2)
             }
+            .scrollIndicators(.never)
+            footer
         }
-        .frame(width: Look.spaceColumn)
-        .padding(Look.inset / 2)
-        .background(over ? Look.hovered : .clear, in: .rect(cornerRadius: Look.cardRadius))
+        .frame(width: Look.spaceCard)
+        .frame(maxHeight: .infinity)
+        // The Space's own ground, then a lift for the one the window is actually in and for
+        // the one a drag is over — the ground is opaque, so a lift has to go over it.
+        .background {
+            ZStack {
+                ground
+                if over || space.id == store.currentSpaceID { Look.selected }
+            }
+            .clipShape(.rect(cornerRadius: Look.cardRadius))
+        }
+        .hairline(radius: Look.cardRadius, over ? Look.selectedEdge : Look.cardStroke)
         .onDrop(of: [.utf8PlainText], isTargeted: $over) { drop($0) }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(space.name), \(rows.count) page\(rows.count == 1 ? "" : "s")")
+        .accessibilityLabel("\(space.name), \(pinned.count + today.count) page\(pinned.count + today.count == 1 ? "" : "s")")
     }
 
-    private func header(_ count: Int) -> some View {
-        HStack(spacing: Look.rowSpacing) {
-            Image(systemName: space.icon ?? "cloud").font(Look.spaceIcon)
+    /// The Space's icon and name, whose profile it belongs to, and the pencil that opens the
+    /// same theme editor the sidebar's `+` does — one place in the app renames a Space.
+    private var header: some View {
+        HStack(spacing: Look.captionGap * 3) {
+            Image(systemName: space.icon ?? "cloud").font(Look.caption)
                 .foregroundStyle(Look.inkSecondary)
-            Text(space.name).font(Look.rowTitle).lineLimit(1)
+            Text(space.name).font(Look.small).lineLimit(1)
                 .foregroundStyle(space.id == store.currentSpaceID ? Look.inkPrimary : Look.inkSecondary)
-            Spacer(minLength: Look.inset)
-            // How many pages the Space holds, in the row rather than under it: Arc puts the
-            // count beside the name, and a column with none has to say so before it is read.
-            Text("\(count)").font(Look.caption).foregroundStyle(Look.inkQuiet)
-                .monospacedDigit()
-            Button { editing = true } label: { Image(systemName: "ellipsis") }
-                .buttonStyle(.plain).font(Look.rowGlyph).foregroundStyle(Look.inkTertiary)
+            Spacer(minLength: Look.captionGap)
+            if let profile = profiles.profiles.first(where: { $0.id == space.profileID }) {
+                Text(profile.name).font(Look.caption).lineLimit(1)
+                    .foregroundStyle(Look.inkQuiet)
+                    .padding(.horizontal, Look.captionGap * 2)
+                    .padding(.vertical, 1)
+                    .background(Look.hovered, in: .rect(cornerRadius: Look.chipRadius))
+                    .accessibilityLabel("Profile \(profile.name)")
+            }
+            Button { editing = true } label: { Image(systemName: "pencil") }
+                .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkTertiary)
                 .help("Rename this Space, or change its icon and colour")
                 .accessibilityLabel("Edit \(space.name)")
-                // The sidebar's own editor, so a Space is renamed in one place in the app.
                 .popover(isPresented: $editing, arrowEdge: .bottom) {
                     ThemeEditor(store: store, space: space, naming: true)
                 }
         }
-        .padding(.horizontal, Look.rowInset)
+        .padding(.horizontal, Look.inset)
         .frame(height: Look.rowHeight)
-        .background(space.id == store.currentSpaceID ? Look.selected : Look.hovered,
-                    in: .rect(cornerRadius: Look.pillRadius))
         .contentShape(.rect)
         .onTapGesture { store.switchTo(spaceID: space.id) }
+    }
+
+    /// Arc's card foot: the handle a card is dragged by, and the "…" that holds what is done
+    /// to the Space itself. ponytail ceiling: reordering Spaces is the sidebar's own drag —
+    /// the handle switches to the Space rather than picking the card up.
+    private var footer: some View {
+        HStack(spacing: 0) {
+            Button { store.switchTo(spaceID: space.id) } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkTertiary)
+            .help("Go to \(space.name)")
+            .accessibilityLabel("Go to \(space.name)")
+            Spacer(minLength: 0)
+            // ponytail: no Delete here. The sidebar's Space menu already deletes one, with
+            // its own confirmation, and a second route to the same irreversible thing is a
+            // second place to keep that confirmation honest.
+            Menu {
+                Button("Go to \(space.name)") { store.switchTo(spaceID: space.id) }
+                Button("Rename…") { editing = true }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .font(Look.caption).foregroundStyle(Look.inkTertiary)
+            .accessibilityLabel("\(space.name) actions")
+        }
+        .padding(.horizontal, Look.inset)
+        .frame(height: Look.cardRow)
+    }
+
+    private func toggle(_ folder: Folder) {
+        if shut.contains(folder.id) { shut.remove(folder.id) } else { shut.insert(folder.id) }
     }
 
     /// The payload says which page; `LibraryDragging` says where it started. Both have to
@@ -1032,36 +1480,78 @@ private struct SpaceColumn: View {
     }
 }
 
-/// A page in a Space's column. Not a `LibraryRow`: a column is 220pt wide, where a 56pt row
-/// with a second line of grey under it would be one page filling a third of the column.
+/// A folder on a card: its glyph, its name and the chevron that folds it shut. The rows it
+/// holds are the ones after it at a greater depth — see `Library.visible`.
+private struct FolderCardRow: View {
+    let folder: Folder
+    let depth: Int
+    let shut: Bool
+    let toggle: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: Look.captionGap * 3) {
+            Image(systemName: shut ? "chevron.right" : "chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(Look.inkTertiary)
+                .frame(width: Look.captionGap * 4)
+            if folder.iconIsEmoji {
+                Text(folder.icon).font(Look.caption)
+            } else {
+                Image(systemName: folder.icon).font(Look.caption)
+                    .foregroundStyle(Look.inkSecondary)
+            }
+            Text(folder.name).font(Look.caption).foregroundStyle(Look.inkPrimary).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, Look.inset + CGFloat(depth) * Look.cardIndent)
+        .padding(.trailing, Look.inset)
+        .frame(height: Look.cardRow)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(hovering ? Look.hovered : .clear, in: .rect(cornerRadius: Look.chipRadius))
+        .contentShape(.rect)
+        .onHover { hovering = $0 }
+        .onTapGesture(perform: toggle)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(folder.name)
+        .accessibilityValue(shut ? "Closed" : "Open")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { toggle() }
+    }
+}
+
+/// A page on a Space's card. Not a `LibraryRow`: a card is 180pt wide, where a 44pt row with
+/// a second line of grey under it would be one page filling a fifth of the card.
 private struct PageRow: View {
     @EnvironmentObject var store: TabStore
     let space: Space
     let url: URL
     let pinned: Bool
+    var depth: Int = 0
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// An open tab knows what it is called; a url in spaces.json does not.
+    /// An open tab knows what it is called; a url in spaces.json does not — and neither does
+    /// a pinned tab that has been restored but not loaded, which is most of them in a window
+    /// that has just come up. Either way the address is what the row falls back to.
     private var title: String {
-        store.tabs.first { $0.currentURL == url }.map { TidyTitles.title(for: $0) }
-            ?? Library.label(for: url)
+        if let tab = store.tabs.first(where: { $0.currentURL == url }), !tab.title.isEmpty {
+            return TidyTitles.title(for: tab)
+        }
+        return Library.label(for: url)
     }
 
     var body: some View {
-        HStack(spacing: Look.rowSpacing) {
-            SiteIcon(icon: store.favicons.icon(for: url))
-            Text(title).font(Look.text).foregroundStyle(Look.inkPrimary).lineLimit(1)
-            Spacer(minLength: Look.inset)
-            if pinned {
-                Image(systemName: "pin.fill").font(Look.caption).foregroundStyle(Look.inkQuiet)
-                    .accessibilityHidden(true)
-            }
+        HStack(spacing: Look.captionGap * 3) {
+            SiteIcon(icon: store.favicons.icon(for: url), size: Look.captionGap * 7)
+            Text(title).font(Look.caption).foregroundStyle(Look.inkPrimary).lineLimit(1)
+            Spacer(minLength: Look.captionGap)
         }
-        .padding(.horizontal, Look.rowInset)
-        .frame(height: Look.linkRow)
+        .padding(.leading, Look.inset + CGFloat(depth) * Look.cardIndent)
+        .padding(.trailing, Look.inset)
+        .frame(height: Look.cardRow)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(hovering ? Look.selected : .clear, in: .rect(cornerRadius: Look.pillRadius))
+        .background(hovering ? Look.selected : .clear, in: .rect(cornerRadius: Look.chipRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -1318,16 +1808,155 @@ extension Library {
         out += [
             ("every section has a symbol and a title",
              LibrarySection.allCases.allSatisfy { !$0.icon.isEmpty && !$0.title.isEmpty }),
-            ("the rail is in Arc's order, Downloads first and History last",
+            ("the rail is in Arc's order, Media first and History last",
              LibrarySection.allCases.map(\.rawValue)
-                == ["downloads", "spaces", "archived", "history"]),
-            ("every section's search field names the section",
-             LibrarySection.allCases.allSatisfy { $0.searchPrompt.contains($0.title) }),
+                == ["media", "downloads", "spaces", "archived", "history"]),
+            ("every section's search field names what it is searching",
+             LibrarySection.allCases.allSatisfy { $0.searchPrompt.hasPrefix("Search ") }),
+            ("…and the archive's says Archive, which is what fits the column",
+             LibrarySection.archived.searchPrompt == "Search Archive…"
+                && LibrarySection.media.searchPrompt == "Search Media…"),
+            ("only the two lists with a filter offer a Filter chip",
+             LibrarySection.allCases.filter(\.filterable).map(\.rawValue)
+                == ["downloads", "archived"]),
             ("a private window is offered no Spaces section",
              !LibrarySection.spaces.available(private: true)
-                && LibrarySection.allCases.filter { $0.available(private: true) }.count == 3),
-            ("an ordinary window is offered all four",
+                && LibrarySection.allCases.filter { $0.available(private: true) }.count == 4),
+            ("an ordinary window is offered all five",
              LibrarySection.allCases.allSatisfy { $0.available(private: false) }),
+        ]
+
+        // Media: which downloads are pictures.
+        out += [
+            ("the usual picture formats are media",
+             ["a.jpg", "b.jpeg", "c.png", "d.heic", "e.gif", "f.tiff", "g.webp"]
+                .allSatisfy(isImage(name:))),
+            ("…however they are spelled", isImage(name: "SHOUTING.JPG")),
+            ("a document, an archive or an app is not",
+             !["a.pdf", "b.zip", "c.dmg", "d.txt", "e.xlsx"].contains(where: isImage(name:))),
+            ("a file with no extension is not a picture",
+             !isImage(name: "LICENSE") && !isImage(name: "")),
+            ("nor is one whose extension nobody has declared", !isImage(name: "a.zzzqq")),
+            ("a path is read by its last component, not its first",
+             isImage(name: "holiday.zip/photo.png") && !isImage(name: "photo.png/notes.txt")),
+        ]
+
+        // How wide the panel is. The Spaces section is the only one that grows.
+        let list = Look.libraryRail + Look.libraryList
+        let step = Look.spaceCard + Look.spaceCardGap
+        out += [
+            ("a list section is the rail and one column, whatever the profile holds",
+             LibrarySection.allCases.filter { $0 != .spaces }.allSatisfy {
+                 panelWidth(section: $0, spaces: 7, available: 2000) == list
+             }),
+            ("Spaces is wider than a list section", panelWidth(section: .spaces, spaces: 2,
+                                                               available: 2000) > list),
+            ("…and grows by exactly one card per Space",
+             panelWidth(section: .spaces, spaces: 3, available: 4000)
+                - panelWidth(section: .spaces, spaces: 2, available: 4000) == step),
+            ("one Space is narrower than three",
+             panelWidth(section: .spaces, spaces: 1, available: 4000)
+                < panelWidth(section: .spaces, spaces: 3, available: 4000)),
+            ("a profile with no Spaces still gets a card's worth of room",
+             panelWidth(section: .spaces, spaces: 0, available: 4000)
+                == panelWidth(section: .spaces, spaces: 1, available: 4000)),
+            ("the page always keeps its minimum, however many Spaces there are",
+             panelWidth(section: .spaces, spaces: 20, available: 2000)
+                <= 2000 - Look.libraryMinPage),
+            ("…which is what makes the cards scroll instead of the panel growing",
+             panelWidth(section: .spaces, spaces: 20, available: 2000)
+                == panelWidth(section: .spaces, spaces: 40, available: 2000)),
+            ("a narrow window still gets the list column whole",
+             panelWidth(section: .spaces, spaces: 4, available: 300) == list
+                && panelWidth(section: .archived, spaces: 4, available: 300) == list),
+        ]
+
+        // A Space card's rows: the saved shape's folders and tabs, then the rest.
+        let inbox = Folder(id: UUID(), name: "Inbox")
+        let deep = Folder(id: UUID(), name: "Deep")
+        let a = URL(string: "https://a.example/1")!, b = URL(string: "https://b.example/2")!
+        let c = URL(string: "https://c.example/3")!
+        var shape = Pins()
+        shape.entries = [
+            .init(row: .folder(inbox), parent: nil),
+            .init(row: .tab(a.absoluteString), parent: inbox.id),
+            .init(row: .folder(deep), parent: inbox.id),
+            .init(row: .tab(b.absoluteString), parent: deep.id),
+        ]
+        let rows = cardRows(shape: shape, urls: [a, b, c])
+        out += [
+            ("with no shape a card is its urls, in order, flat",
+             cardRows(shape: nil, urls: [a, b]).map(\.url) == [a, b]
+                && cardRows(shape: nil, urls: [a, b]).allSatisfy { $0.depth == 0 }),
+            ("an empty shape is no shape at all",
+             cardRows(shape: Pins(), urls: [a]).map(\.url) == [a]),
+            ("a shape puts its folders in the list", rows.compactMap(\.folder?.name) == ["Inbox", "Deep"]),
+            ("…and steps its pages in by their nesting",
+             rows.first { $0.url == a }?.depth == 1 && rows.first { $0.url == b }?.depth == 2),
+            ("a page the shape has never heard of lands at the end, at the top level",
+             rows.last?.url == c && rows.last?.depth == 0),
+            ("a page the shape holds but the Space no longer has is dropped",
+             cardRows(shape: shape, urls: [b]).compactMap(\.url) == [b]),
+            ("the same page pinned twice is two rows, not one",
+             cardRows(shape: nil, urls: [a, a]).count == 2
+                && Set(cardRows(shape: nil, urls: [a, a]).map(\.id)).count == 2),
+            ("every row has an id of its own", Set(rows.map(\.id)).count == rows.count),
+        ]
+
+        // Folding a card's folders shut.
+        out += [
+            ("nothing shut shows every row", visible(rows, shut: []).count == rows.count),
+            ("a shut folder keeps its own row and takes its pages with it",
+             visible(rows, shut: [inbox.id]).map(\.id) == [inbox.id.uuidString, rows.last!.id]),
+            ("…however deep they are nested",
+             !visible(rows, shut: [inbox.id]).contains { $0.url == b }),
+            ("shutting the inner folder leaves the outer one open",
+             visible(rows, shut: [deep.id]).compactMap(\.url) == [a, c]
+                && visible(rows, shut: [deep.id]).compactMap(\.folder?.name) == ["Inbox", "Deep"]),
+            ("a folder id that is not on the card changes nothing",
+             visible(rows, shut: [UUID()]).count == rows.count),
+        ]
+
+        // The media masonry: two columns packed by height, not a grid of rows.
+        let two = Look.mediaColumns
+        out += [
+            ("nothing to place places nothing", Masonry.place(heights: [], columns: two).isEmpty),
+            ("the first picture goes on the left",
+             Masonry.place(heights: [100], columns: two) == [0]),
+            ("…and the second beside it, because the right column is still empty",
+             Masonry.place(heights: [100, 100], columns: two) == [0, 1]),
+            ("the third goes under whichever of the two is shorter",
+             Masonry.place(heights: [200, 100, 50], columns: two) == [0, 1, 1]),
+            ("…and a tall one does not stop the short column filling up",
+             Masonry.place(heights: [400, 50, 50, 50], columns: two) == [0, 1, 1, 1]),
+            ("equal columns go left, so the first row reads left to right",
+             Masonry.place(heights: [100, 100, 100, 100], columns: two) == [0, 1, 0, 1]),
+            ("every picture lands in exactly one column",
+             Masonry.place(heights: [30, 90, 10, 70, 50], columns: two).count == 5),
+            ("…and in a real column",
+             Masonry.place(heights: [30, 90, 10, 70, 50], columns: two)
+                .allSatisfy { (0..<two).contains($0) }),
+            ("the columns come out within the tallest picture of each other", {
+                let heights: [CGFloat] = [120, 40, 300, 60, 90, 45, 210, 30]
+                let totals = Masonry.totals(heights: heights, columns: two)
+                return abs(totals[0] - totals[1]) <= heights.max()!
+            }()),
+            ("the running totals are the heights, nothing lost and nothing counted twice", {
+                let heights: [CGFloat] = [120, 40, 300, 60, 90]
+                return Masonry.totals(heights: heights, columns: two).reduce(0, +)
+                    == heights.reduce(0, +)
+            }()),
+            ("a picture of no height changes nothing about where the next one goes",
+             Masonry.place(heights: [0, 100, 100], columns: two)
+                == Masonry.place(heights: [0, 100, 100], columns: two)
+                && Masonry.totals(heights: [0, 100], columns: two).reduce(0, +) == 100),
+            ("a negative height counts as nothing rather than pulling a column up",
+             Masonry.totals(heights: [-50, 100], columns: two).reduce(0, +) == 100),
+            ("one column is a plain list", Masonry.place(heights: [1, 2, 3], columns: 1) == [0, 0, 0]),
+            ("…and so is a nonsense column count",
+             Masonry.place(heights: [1, 2], columns: 0) == [0, 0]),
+            ("three columns fill left to right before anything doubles up",
+             Masonry.place(heights: [10, 10, 10, 10], columns: 3) == [0, 1, 2, 0]),
         ]
         return out
     }

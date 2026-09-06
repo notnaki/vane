@@ -51,12 +51,19 @@ struct DownloadIcon: View {
         if item.status.isLive {
             ProgressRing(fraction: item.fraction, track: true)
         } else {
-            Image(nsImage: FileIcons.icon(path: item.status == .done ? item.url?.path : nil,
-                                          name: item.name))
-                .resizable().interpolation(.high)
-                .aspectRatio(contentMode: .fit)
+            Image(nsImage: icon).resizable().interpolation(.high)
+                .aspectRatio(contentMode: .fill)
+                .clipShape(.rect(cornerRadius: Look.captionGap))
                 .accessibilityHidden(true)
         }
+    }
+
+    /// A picture shows itself; everything else shows the icon the Finder would draw. A
+    /// generic "PNG document" plate says nothing the filename has not already said.
+    private var icon: NSImage {
+        if item.status == .done, let url = item.url, Library.isImage(name: item.name),
+           let thumb = Thumbnails.image(for: url) { return thumb }
+        return FileIcons.icon(path: item.status == .done ? item.url?.path : nil, name: item.name)
     }
 }
 
