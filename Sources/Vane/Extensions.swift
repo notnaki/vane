@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import WebKit
 
 // MARK: - Wiring (read this before touching Engine.swift)
@@ -118,6 +119,9 @@ import WebKit
         if let path = loaded.first(where: { $0.context === context })?.path {
             ScopedPaths.remove(path: path, from: myKey)
             claimed.remove(path)
+            // An uninstalled extension must not keep a slot in the pill: the cap is three,
+            // and a pin nothing can fill would silently cost one of them.
+            setPins(pins.filter { $0 != path })
         }
         loaded.removeAll { $0.context === context }
         if loaded.isEmpty { poller?.invalidate(); poller = nil }   // no timer is started any more
@@ -197,6 +201,83 @@ import WebKit
     /// Per profile, so an extension installed in one profile is not loaded into another.
     static func key(for profileID: UUID) -> String {
         ProfileManager.defaultsKey(baseKey, profileID)
+    }
+
+    // MARK: Actions
+    //
+    // An extension's *action* is its button: the icon, the badge and the enabled flag it
+    // sets with `browser.action.*`, all of them per tab. Vane draws it in two places — a
+    // row in the Site Control Center, and a glyph in the address pill once pinned — and
+    // both go through here so the anchoring and the private-window rule are decided once.
+
+    /// The extensions a tab may show. A private window offers only the ones that have been
+    /// let into private browsing: WebKit gates every other extension API on the same flag,
+    /// so a button for one of them would be a button that does nothing.
+    func visible(in tab: Tab?) -> [WKWebExtensionContext] {
+        guard let tab else { return [] }
+        return installed.filter { !tab.isPrivate || $0.hasAccessToPrivateData }
+    }
+
+    /// The action as *this tab* sees it. The default action (`for: nil`) is the wrong one to
+    /// draw: the badge a page's content script just set lives on the tab's.
+    func action(_ context: WKWebExtensionContext, for tab: Tab?) -> WKWebExtension.Action? {
+        context.action(for: shim(tab))
+    }
+
+    /// Run an action the way a click on its button does — fire its event, or present its
+    /// popup hanging off `view`. `performAction` also marks the tab as having had a user
+    /// gesture, which is what `activeTab` extensions actually wait for.
+    func run(_ context: WKWebExtensionContext, for tab: Tab?, from view: NSView?) {
+        popupAnchor = view
+        context.performAction(for: shim(tab))
+    }
+
+    /// The button that was clicked, held weakly and only until the popup opens: WebKit calls
+    /// back on the next turn of the loop, by which time the row may already be gone.
+    private weak var popupAnchor: NSView?
+
+    private func shim(_ tab: Tab?) -> (any WKWebExtensionTab)? {
+        guard let tab, let store = store(holding: tab) else { return nil }
+        return adapter(for: tab, in: store)
+    }
+
+    // MARK: Pinned to the pill
+
+    private var pinKey: String { ProfileManager.defaultsKey(ExtensionPins.key, profileID) }
+
+    /// The stored pin list, untouched: an extension uninstalled and put back keeps its place.
+    var pins: [String] { UserDefaults.vane.stringArray(forKey: pinKey) ?? [] }
+
+    private func setPins(_ paths: [String]) {
+        UserDefaults.vane.set(paths, forKey: pinKey)
+        SiteChanges.shared.bump()
+    }
+
+    /// What the pill draws, in pin order, capped — and in a private window, only what is
+    /// allowed there.
+    func pinned(in tab: Tab?) -> [WKWebExtensionContext] {
+        let allowed = visible(in: tab)
+        let live = loaded.filter { pair in allowed.contains { $0 === pair.context } }
+        return ExtensionPins.visible(stored: pins, installed: live.map(\.path))
+            .compactMap { path in live.first { $0.path == path }?.context }
+    }
+
+    func isPinned(_ context: WKWebExtensionContext) -> Bool {
+        path(of: context).map(pins.contains) ?? false
+    }
+
+    /// True when the pill has room. False is the cap being reached, which the menu item says
+    /// out loud rather than quietly dropping somebody else's pin.
+    var canPin: Bool { pins.count < ExtensionPins.cap }
+
+    func togglePin(_ context: WKWebExtensionContext) {
+        guard let path = path(of: context),
+              let next = ExtensionPins.toggled(path, in: pins) else { return }
+        setPins(next)
+    }
+
+    func path(of context: WKWebExtensionContext) -> String? {
+        loaded.first { $0.context === context }?.path
     }
 
     // MARK: UI
@@ -403,12 +484,28 @@ import WebKit
     func webExtensionController(_ controller: WKWebExtensionController,
                                 presentActionPopup action: WKWebExtension.Action,
                                 for context: WKWebExtensionContext) async throws {
-        guard let popover = action.popupPopover, let anchor = myFocusedStore?.window?.contentView
-        else { return }
-        // ponytail: no toolbar button to hang this off yet, so it points at the top-right of
-        // the content view. Upgrade path: anchor it to the real button once UI.swift has one.
+        guard let popover = action.popupPopover else { return }
+        defer { popupAnchor = nil }
+        // The button that ran the action: the pill's pinned glyph, or the extension's row in
+        // the Site Control Center. Each window — a Little Vane and a private one included —
+        // hands over its own, so a popup never opens over the wrong pill.
+        if let anchor = popupAnchor, anchor.window != nil {
+            return popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        }
+        // Nothing was clicked: an extension opened its own popup from a background script.
+        // The top of the window is where a toolbar would be, which is the honest fallback.
+        guard let anchor = myFocusedStore?.window?.contentView else { return }
         let rect = NSRect(x: anchor.bounds.maxX - 40, y: anchor.bounds.maxY - 8, width: 32, height: 4)
         popover.show(relativeTo: rect, of: anchor, preferredEdge: .minY)
+    }
+
+    /// Live badges and icons. WebKit says when an extension has changed its action, so the
+    /// pill's glyph and the popover's row redraw off that rather than off a timer — the same
+    /// bump the per-site switches use.
+    func webExtensionController(_ controller: WKWebExtensionController,
+                                didUpdate action: WKWebExtension.Action,
+                                forExtensionContext context: WKWebExtensionContext) {
+        SiteChanges.shared.bump()
     }
 
     func webExtensionController(_ controller: WKWebExtensionController,
@@ -538,6 +635,147 @@ import WebKit
         }
 
         return results
+    }
+}
+
+// MARK: - Pinning an action to the pill
+
+/// Which extensions show their action button in the address pill, and what it may say.
+/// Pure: the order, the cap and the badge's truncation are rules rather than state, so
+/// `selfcheck --pure` proves them with no extension to load and no window to draw in.
+///
+/// ponytail: paths, not `WKWebExtensionContext.uniqueIdentifier` — that identifier is a
+/// fresh UUID on every load unless the app assigns one, while the folder path is what
+/// `ExtensionHost` already writes down and already keeps unique per profile.
+enum ExtensionPins {
+    /// Three. The pill is a sidebar-width button holding a host, a zoom chip and two hover
+    /// glyphs; a fourth extension icon starts eating the address. Asking for a fourth is
+    /// refused out loud (the menu item says the bar is full) rather than pushing one out.
+    static let cap = 3
+
+    static let key = "pinnedExtensions"
+
+    /// The stored order, minus anything no longer installed, then capped — filtered first,
+    /// so an uninstalled extension does not spend one of the three slots.
+    static func visible(stored: [String], installed: [String]) -> [String] {
+        let live = Set(installed)
+        return Array(stored.filter(live.contains).prefix(cap))
+    }
+
+    /// Pin at the end, unpin from anywhere. `nil` is the cap: no room, nothing written.
+    /// Unpinning is always allowed, cap or no cap.
+    static func toggled(_ path: String, in stored: [String]) -> [String]? {
+        if stored.contains(path) { return stored.filter { $0 != path } }
+        guard stored.count < cap else { return nil }
+        return stored + [path]
+    }
+
+    /// What a badge reads on a 16pt glyph. An extension can set its badge to anything —
+    /// "1", "99+", or a sentence — and four characters is what fits before the icon under
+    /// it stops being visible. Empty is no badge, which is what WebKit means by "".
+    static func badge(_ text: String) -> String? {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        return t.count <= 4 ? t : String(t.prefix(3)) + "…"
+    }
+
+    /// The rules, proved offline.
+    nonisolated static func check() -> [(String, Bool)] {
+        var out: [(String, Bool)] = []
+        let all = ["a", "b", "c", "d"]
+        out.append(("the pill holds three pinned extensions", cap == 3))
+        out.append(("a pin whose extension is gone takes no slot",
+                    visible(stored: ["gone", "a", "b"], installed: all) == ["a", "b"]))
+        out.append(("…and the ones that remain keep the order they were pinned in",
+                    visible(stored: ["c", "a"], installed: all) == ["c", "a"]))
+        out.append(("a fourth pin is not drawn even if one is stored",
+                    visible(stored: all, installed: all).count == cap))
+        out.append(("nothing pinned draws nothing", visible(stored: [], installed: all).isEmpty))
+        out.append(("pinning appends, so the pill does not reshuffle",
+                    toggled("c", in: ["a", "b"]) == ["a", "b", "c"]))
+        out.append(("unpinning from the middle leaves the others in order",
+                    toggled("b", in: ["a", "b", "c"]) == ["a", "c"]))
+        out.append(("a fourth pin is refused rather than pushing one out",
+                    toggled("d", in: ["a", "b", "c"]) == nil))
+        out.append(("…and unpinning still works at the cap",
+                    toggled("a", in: ["a", "b", "c"]) == ["b", "c"]))
+        out.append(("an empty badge is no badge", badge("") == nil))
+        out.append(("…and so is a badge of spaces", badge("  ") == nil))
+        out.append(("a count is shown as it is", badge("7") == "7"))
+        out.append(("99+ fits", badge("99+") == "99+"))
+        out.append(("four characters still fit", badge("1234") == "1234"))
+        out.append(("a longer badge is truncated rather than overflowing the glyph",
+                    badge("12345") == "123…"))
+        out.append(("…and a sentence never grows past four characters",
+                    badge("blocked 12 trackers")?.count == 4))
+        out.append(("surrounding whitespace is not mistaken for a character",
+                    badge(" 3 ") == "3"))
+        return out
+    }
+}
+
+/// An extension action's button face: its icon at `Look.rowIcon` with its badge on it. One
+/// view, because the Site Control Center's row and the pill's pinned glyph draw the same
+/// button — and because the badge belongs *on* the icon, not beside it.
+struct ActionIcon: View {
+    let context: WKWebExtensionContext
+    let tab: Tab?
+    /// Already truncated by `ExtensionPins.badge`. Nil is no badge.
+    let badge: String?
+
+    var body: some View {
+        let box = CGSize(width: Look.rowIcon, height: Look.rowIcon)
+        // WebKit falls back to the extension's own icon when there is no action icon; this
+        // falls back again to a puzzle piece for an extension whose icons will not load.
+        let image = tab?.extensions.action(context, for: tab)?.icon(for: box)
+            ?? context.webExtension.icon(for: box)
+        glyph(image)
+            .frame(width: Look.rowIcon, height: Look.rowIcon)
+            .overlay(alignment: .topTrailing) { mark }
+    }
+
+    @ViewBuilder private func glyph(_ image: NSImage?) -> some View {
+        if let image {
+            Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+        } else {
+            Image(systemName: "puzzlepiece.extension").resizable().aspectRatio(contentMode: .fit)
+        }
+    }
+
+    @ViewBuilder private var mark: some View {
+        if let badge {
+            Text(badge)
+                .font(Look.badgeText).monospacedDigit().foregroundStyle(.white)
+                .padding(.horizontal, Look.badgeInset)
+                .frame(minWidth: Look.badgeHeight, minHeight: Look.badgeHeight)
+                .background(Color.accentColor, in: .capsule)
+                .fixedSize()
+                .offset(x: Look.badgeOffset, y: -Look.badgeOffset)
+        }
+    }
+}
+
+/// The AppKit view an action popup hangs off, handed to `ExtensionHost` without SwiftUI
+/// having to own it — the trick `HoldMenu` plays for the back/forward menu.
+@MainActor final class ActionAnchor: ObservableObject {
+    private(set) weak var view: NSView?
+    fileprivate func adopt(_ view: NSView) { self.view = view }
+}
+
+private struct ActionAnchorView: NSViewRepresentable {
+    let holder: ActionAnchor
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        holder.adopt(view)
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) {}
+}
+
+extension View {
+    /// Marks this view as the thing an extension popup should point at.
+    @MainActor func actionAnchor(_ holder: ActionAnchor) -> some View {
+        background { ActionAnchorView(holder: holder) }
     }
 }
 

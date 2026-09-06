@@ -199,6 +199,13 @@ enum Look {
     /// outside the glyph's box it sits: a badge on the lock, not a second glyph beside it.
     static let badge: CGFloat = 5
     static let badgeOffset: CGFloat = 3
+    /// An extension action's badge — a count drawn *on* its icon rather than a glyph beside
+    /// it, so a pinned extension costs the pill one glyph's width and not two.
+    static let badgeHeight: CGFloat = 11
+    static let badgeInset: CGFloat = 3
+    /// What a button that is drawn but cannot be pressed fades to: an extension action its
+    /// own extension has disabled for this page.
+    static let dimmed: Double = 0.4
     /// Between a title and the caption under it — a site row and the popover's header.
     static let captionGap: CGFloat = 2
     /// A site row's vertical padding. Derived so a row with one line of title is exactly
@@ -240,6 +247,9 @@ enum Look {
     static let spaceIcon = Font.system(size: 14)
     /// A symbol standing in a `rowIcon` box where a favicon would be: bar rows, pickers.
     static let symbol = Font.system(size: 13)
+    /// The digits in an extension action's badge. Small enough that "99+" still leaves the
+    /// icon under it recognisable.
+    static let badgeText = Font.system(size: 8, weight: .semibold)
     /// A glyph inside a small tile: a link row's coloured square.
     static let glyph = Font.system(size: 12, weight: .semibold)
     /// The "→" in a chip.

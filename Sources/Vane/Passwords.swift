@@ -704,6 +704,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("error pages", ErrorPage.check), ("site permissions", SitePermissions.check),
                                ("site control center", SiteControl.check),
                                ("extensions", ExtensionHost.check),
+                               ("pinned extension actions", ExtensionPins.check),
                                ("profiles + spaces", ProfileManager.check),
                                ("spaces", Spaces.check),
                                ("search engines", Search.check),

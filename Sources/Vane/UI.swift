@@ -729,6 +729,12 @@ private struct PillBody: View {
             // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
             // They sit past a Spacer, so arriving and leaving never moves the host.
             if hovering { PillHoverGlyphs(enabled: tab != nil, copyLink: copyLink) }
+            // Pinned extension actions, last: everything after the Spacer is flush right, so
+            // the *last* item is the one the hover glyphs appearing beside it cannot move —
+            // and a button that slides out from under the pointer as you reach for it is not
+            // a button. The host gives up their width once, when one is pinned, never on
+            // hover, and nothing at all is reserved while none are.
+            if let tab { PinnedExtensions(tab: tab) }
         }
     }
 
@@ -826,6 +832,58 @@ private struct SiteGlyph: View {
             if let tab { SiteControlPopover(tab: tab) }
         }
     }
+}
+
+/// Arc's pinned extensions: an extension's action button, in the pill. Up to
+/// `ExtensionPins.cap` of them, in the order they were pinned, and in a private window only
+/// the extensions that have been let into private browsing.
+///
+/// ponytail: no reserved slot. An unpinned browser's pill is exactly the pill it was, and
+/// the width goes when the pin is made rather than being held empty against the chance of
+/// one — the pill's own glyphs (the lock, the chip) are the stable chrome here.
+private struct PinnedExtensions: View {
+    let tab: Tab
+    /// A badge is not on the tab: the extension sets it, and `ExtensionHost`'s
+    /// `didUpdate` delegate bumps this. No timer.
+    @ObservedObject private var changes = SiteChanges.shared
+
+    var body: some View {
+        ForEach(tab.extensions.pinned(in: tab), id: \.uniqueIdentifier) { context in
+            ExtensionGlyph(tab: tab, context: context)
+        }
+    }
+}
+
+/// One pinned extension's action, as a glyph in the pill: its icon, its badge, and a click
+/// that runs it — opening its popup against this pill, so a Little Vane and a private
+/// window each get their own.
+private struct ExtensionGlyph: View {
+    let tab: Tab
+    let context: WKWebExtensionContext
+    @StateObject private var anchor = ActionAnchor()
+
+    var body: some View {
+        let action = tab.extensions.action(context, for: tab)
+        let badge = action.flatMap { ExtensionPins.badge($0.badgeText) }
+        // `browser.action.disable()` for this page: drawn, dim, and not pressable. It stays
+        // in the pill — a glyph that came and went with the page would move the address.
+        let live = action?.isEnabled ?? true
+        Button { tab.extensions.run(context, for: tab, from: anchor.view) } label: {
+            ActionIcon(context: context, tab: tab, badge: badge).contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(!live)
+        .opacity(live ? 1 : Look.dimmed)
+        .actionAnchor(anchor)
+        .contextMenu { Button("Unpin from Address Bar") { tab.extensions.togglePin(context) } }
+        .help(name)
+        .accessibilityLabel(name)
+        .accessibilityValue(badge ?? "")
+        .accessibilityHint("Runs this extension on this page.")
+        .accessibilityAction(named: "Unpin from Address Bar") { tab.extensions.togglePin(context) }
+    }
+
+    private var name: String { context.webExtension.displayName ?? "Extension" }
 }
 
 /// "125%" in the pill while the page is zoomed. A click is Actual Size.

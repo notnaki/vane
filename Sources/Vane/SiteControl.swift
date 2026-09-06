@@ -23,6 +23,14 @@ struct SiteControlModel: Equatable, Sendable {
     struct Ext: Equatable, Sendable {
         let name: String
         let allowed: Bool
+        /// What `browser.action.setBadgeText` put on the button for this tab, truncated to
+        /// what a 16pt glyph holds. Nil is no badge.
+        var badge: String?
+        /// `browser.action.disable()`. The button greys out; the access switch beside it
+        /// does not, because "may this extension see this site" is still a live question.
+        var enabled = true
+        /// Its action is also a glyph in the address pill.
+        var pinned = false
     }
 
     /// Empty for anything with no site to control: nothing loaded, a file, about:blank.
@@ -72,6 +80,11 @@ extension SiteControlModel {
         var note: String?
         /// Greyed and unclickable. `note` says why.
         var inert = false
+        /// A mark on the row's icon: an extension action's badge.
+        var badge: String?
+        /// The icon is drawn dim and the row's tap does nothing, but the row is not inert —
+        /// its switch still works. A disabled extension action, and only that.
+        var dim = false
     }
 
     /// No host is no site: a `file://` page, `about:blank`, or no tab at all. The popover
@@ -160,8 +173,13 @@ extension SiteControlModel {
                 inert: !(reader || readerAvailable)),
         ]
         for (i, ext) in extensions.enumerated() {
-            out.append(Row(id: .ext(i), title: ext.name, glyph: "puzzlepiece.extension",
-                           control: .toggle(ext.allowed)))
+            out.append(Row(id: .ext(i), title: ext.name,
+                           // The fallback only: the view draws the action's own icon when
+                           // WebKit can load one, which is nearly always.
+                           glyph: "puzzlepiece.extension",
+                           control: .toggle(ext.allowed),
+                           note: ext.enabled ? nil : "Not available on this page.",
+                           badge: ext.badge, dim: !ext.enabled))
         }
         out.append(Row(id: .clearData, title: "Clear Site Data…", glyph: "trash",
                        control: .action))
@@ -202,8 +220,14 @@ extension SiteControlModel {
         blocking = Blocker.enabled(for: tab.profileID)
         reader = Reader.isOn(tab)
         readerAvailable = tab.readerAvailable
-        extensions = tab.extensions.installed.map {
-            Ext(name: $0.webExtension.displayName ?? "Extension", allowed: $0.hasAccess(to: url))
+        let host = tab.extensions
+        extensions = host.visible(in: tab).map { context in
+            let action = host.action(context, for: tab)
+            return Ext(name: context.webExtension.displayName ?? "Extension",
+                       allowed: context.hasAccess(to: url),
+                       badge: action.flatMap { ExtensionPins.badge($0.badgeText) },
+                       enabled: action?.isEnabled ?? true,
+                       pinned: host.isPinned(context))
         }
         developer = tab.web.isInspectable
     }
@@ -272,15 +296,35 @@ extension SiteControlModel {
         SiteChanges.shared.bump()
     }
 
+    /// The extensions the rows are indexed against — the same list the model built itself
+    /// from, so `.ext(2)` is the third row and not the third *installed* extension, which
+    /// differ in a private window.
+    static func contexts(on tab: Tab) -> [WKWebExtensionContext] { tab.extensions.visible(in: tab) }
+
     /// Per-site extension access, flipped from what this extension can see right now.
     /// WebKit turns the url into a match pattern for us, so "allow this extension here" is
     /// one call and does not need a pattern built by hand.
     static func toggleExtension(_ index: Int, on tab: Tab) {
-        let contexts = tab.extensions.installed
+        let contexts = contexts(on: tab)
         guard contexts.indices.contains(index), let url = tab.currentURL else { return }
         let allowed = !contexts[index].hasAccess(to: url)
         contexts[index].setPermissionStatus(allowed ? .grantedExplicitly : .deniedExplicitly,
                                             for: url)
+    }
+
+    /// Press the extension's action button: fire its event, or open its popup hanging off
+    /// the row that was clicked.
+    static func runExtension(_ index: Int, on tab: Tab, from anchor: NSView?) {
+        let contexts = contexts(on: tab)
+        guard contexts.indices.contains(index) else { return }
+        tab.extensions.run(contexts[index], for: tab, from: anchor)
+    }
+
+    /// Show this extension's action in the address pill, or stop showing it.
+    static func pinExtension(_ index: Int, on tab: Tab) {
+        let contexts = contexts(on: tab)
+        guard contexts.indices.contains(index) else { return }
+        tab.extensions.togglePin(contexts[index])
     }
 
     /// Web Inspector for this tab only. `Settings.inspectorEnabled` is the global default
@@ -479,6 +523,30 @@ extension SiteControlModel {
                     extRows.map(\.control) == [.toggle(true), .toggle(false)]))
         out.append(("…and indexed so the right one is toggled",
                     extRows.map(\.id) == [.ext(0), .ext(1)]))
+        // The action button on the row: its badge, and what an extension disabling it does.
+        out.append(("an extension with no badge does not draw one",
+                    extRows.allSatisfy { $0.badge == nil }))
+        var badged = m
+        badged.extensions = [.init(name: "uBlock", allowed: true, badge: "12")]
+        out.append(("a badge set for this tab reaches the row",
+                    badged.rows.first { $0.id == .ext(0) }?.badge == "12"))
+        var off = m
+        off.extensions = [.init(name: "uBlock", allowed: true, enabled: false)]
+        let offRow = off.rows.first { $0.id == .ext(0) }
+        out.append(("an action its extension disabled is drawn dim", offRow?.dim == true))
+        out.append(("…and says so rather than just greying out",
+                    offRow?.note == "Not available on this page."))
+        out.append(("…but the row is not inert, because its access switch still works",
+                    offRow?.inert == false))
+        out.append(("…and that switch still reads the site's answer",
+                    offRow?.control == .toggle(true)))
+        out.append(("a live action is neither dim nor noted",
+                    extRows.allSatisfy { !$0.dim && $0.note == nil }))
+        var pinnedExt = m
+        pinnedExt.extensions = [.init(name: "uBlock", allowed: true, pinned: true),
+                                .init(name: "Dark Reader", allowed: true)]
+        out.append(("the model says which extensions are pinned to the pill",
+                    pinnedExt.extensions.map(\.pinned) == [true, false]))
 
         // Developer mode.
         out.append(("developer mode is off by default in the model", control(m, .developer) == .toggle(false)))
@@ -578,12 +646,14 @@ private struct SiteControlRow: View {
     /// A modal alert must not open over a live popover, so Clear Site Data closes this
     /// first and runs on the next turn of the loop.
     @Environment(\.dismiss) private var dismiss
+    /// An extension's popup hangs off this row, not off the top of the window.
+    @StateObject private var anchor = ActionAnchor()
 
     var body: some View {
         HStack(spacing: Look.rowSpacing) {
-            Image(systemName: row.glyph)
-                .font(Look.symbol)
-                .frame(width: Look.rowIcon)
+            icon
+                .frame(width: Look.rowIcon, height: Look.rowIcon)
+                .opacity(row.dim ? Look.dimmed : 1)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Look.captionGap) {
                 Text(row.title).font(Look.rowTitle).lineLimit(1)
@@ -603,8 +673,10 @@ private struct SiteControlRow: View {
                     in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
+        .actionAnchor(anchor)
         .onHover { hovering = $0 && !row.inert }
         .onTapGesture(perform: press)
+        .contextMenu { pinItem }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(row.title)
         .accessibilityValue(axValue)
@@ -618,11 +690,53 @@ private struct SiteControlRow: View {
                 Button("Zoom In") { Zoom.zoomIn(tab); SiteChanges.shared.bump() }
                 Button("Zoom Out") { Zoom.zoomOut(tab); SiteChanges.shared.bump() }
             }
+            // The pin lives in a context menu, which is not a route a screen reader has.
+            pinItem
         }
+    }
+
+    /// An extension row leads with the extension's own action icon, badge and all, drawn in
+    /// the same 16pt box a favicon or an SF Symbol would be. The image is read here rather
+    /// than carried in the model: an `NSImage` is neither `Sendable` nor `Equatable`, and
+    /// the model is both.
+    @ViewBuilder private var icon: some View {
+        if let context = extRow?.context {
+            ActionIcon(context: context, tab: tab, badge: row.badge)
+        } else {
+            Image(systemName: row.glyph).font(Look.symbol)
+        }
+    }
+
+    /// Arc's "pin to the address bar", per extension. Capped at three, and the item says so
+    /// rather than going quietly dead.
+    @ViewBuilder private var pinItem: some View {
+        if let (i, context) = extRow {
+            let pinned = tab.extensions.isPinned(context)
+            let full = !pinned && !tab.extensions.canPin
+            Button(full ? "Address Bar Is Full — \(ExtensionPins.cap) Pinned"
+                        : pinned ? "Unpin from Address Bar" : "Pin to Address Bar") {
+                SiteControl.pinExtension(i, on: tab)
+            }
+            .disabled(full)
+        }
+    }
+
+    /// The extension this row stands for, if it stands for one, with the index the model
+    /// gave it — which is an index into `SiteControl.contexts(on:)` and nothing else.
+    private var extRow: (index: Int, context: WKWebExtensionContext)? {
+        guard case .ext(let i) = row.id else { return nil }
+        let all = SiteControl.contexts(on: tab)
+        return all.indices.contains(i) ? (i, all[i]) : nil
     }
 
     private func press() {
         guard !row.inert else { return }
+        // An extension row is its action button: the click runs the extension, and the
+        // switch beside it is what still answers "may it see this site".
+        if case .ext(let i) = row.id {
+            guard !row.dim else { return }
+            return SiteControl.runExtension(i, on: tab, from: anchor.view)
+        }
         guard case .action = row.control else { return SiteControl.act(row.id, on: tab) }
         dismiss()
         Task { @MainActor in SiteControl.act(row.id, on: tab) }
@@ -631,10 +745,13 @@ private struct SiteControlRow: View {
     /// What the row is about to do, when that is not obvious from its title — and, on the
     /// two rows that do something a tap cannot be taken back from, what it costs.
     private var hint: String {
+        if case .ext = row.id, !row.dim {
+            return "Runs this extension here. The switch beside it says whether it may see this site."
+        }
         switch row.control {
-        case .zoom:   "Resets the page to actual size. Zoom In and Zoom Out are also available."
-        case .action: "Signs you out of this site and forgets what it stored. This cannot be undone."
-        default:      row.note ?? ""
+        case .zoom:   return "Resets the page to actual size. Zoom In and Zoom Out are also available."
+        case .action: return "Signs you out of this site and forgets what it stored. This cannot be undone."
+        default:      return row.note ?? ""
         }
     }
 
