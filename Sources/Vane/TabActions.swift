@@ -377,25 +377,40 @@ extension Look {
     static let iconRing: CGFloat = 22
 }
 
+/// How far along something is, drawn as a ring from noon. Two places wear one: the footer
+/// glyph, for every download at once, and a Library row, for its own — and a row's has a
+/// track behind it because it sits on the pane's ground rather than on a glyph.
+///
+/// Always decoration: whatever it is drawn on already says in words how far along it is.
+struct ProgressRing: View {
+    let fraction: Double
+    var track = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            if track { Circle().stroke(Look.hairline, lineWidth: 2) }
+            Circle()
+                .trim(from: 0, to: Swift.max(fraction, 0.02))    // never an invisible ring
+                .stroke(.tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))                   // noon, the way a clock runs
+                .animation(reduceMotion ? nil : Look.quick, value: fraction)
+        }
+        .frame(width: Look.iconRing, height: Look.iconRing)
+        .accessibilityHidden(true)
+    }
+}
+
 /// A determinate ring around the Library glyph while anything is downloading. Arc puts the
 /// progress in the footer; Vane had it only inside the popover, so a download the user had
 /// walked away from was invisible.
 struct DownloadRing: View {
     @ObservedObject var downloads: Downloads
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if let fraction = TabActions.downloadFraction(
             downloads.items.filter { $0.state == .running }.map(\.fraction)) {
-            Circle()
-                .trim(from: 0, to: Swift.max(fraction, 0.02))    // never an invisible ring
-                .stroke(.tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .rotationEffect(.degrees(-90))                   // noon, the way a clock runs
-                .frame(width: Look.iconRing, height: Look.iconRing)
-                .animation(reduceMotion ? nil : Look.quick, value: fraction)
-                // The button it sits on already says how many downloads there are and how
-                // they are doing; a ring with its own label would say it twice.
-                .accessibilityHidden(true)
+            ProgressRing(fraction: fraction)
         }
     }
 }

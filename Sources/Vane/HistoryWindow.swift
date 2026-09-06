@@ -208,6 +208,42 @@ private struct HistoryView: View {
     }
 }
 
+// MARK: - Writing a date
+
+/// Formatted dates, without building a `DateFormatter` per row.
+///
+/// A `DateFormatter` costs about as much to make as it costs to format a hundred dates with,
+/// and the Library regroups on every keystroke over as many as `Archive.limit` entries, each
+/// of which asks for a day header and a time. One formatter per (template, locale, time
+/// zone), kept for the life of the process.
+///
+/// ponytail: a lock around the whole call rather than an actor or a `@MainActor` cache.
+/// `DateFormatter` is not safe to *use* from two threads either, so handing one out would
+/// only move the problem; and the rules that call this are `nonisolated` so that
+/// `selfcheck --pure` can drive them without a main actor to hop to.
+enum DateText {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: DateFormatter] = [:]
+
+    static func string(_ date: Date, template: String, calendar: Calendar) -> String {
+        let key = "\(template)\u{1}\(calendar.locale?.identifier ?? "")\u{1}\(calendar.timeZone.identifier)"
+        lock.lock()
+        defer { lock.unlock() }
+        let formatter: DateFormatter
+        if let cached = cache[key] {
+            formatter = cached
+        } else {
+            formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.locale = calendar.locale ?? .current
+            formatter.setLocalizedDateFormatFromTemplate(template)
+            cache[key] = formatter
+        }
+        return formatter.string(from: date)
+    }
+}
+
 // MARK: - The rules, as pure functions
 
 extension HistoryWindow {
@@ -237,22 +273,13 @@ extension HistoryWindow {
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
            calendar.isDate(date, inSameDayAs: yesterday) { return "Yesterday" }
         let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: now)
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.locale = calendar.locale ?? .current
-        formatter.setLocalizedDateFormatFromTemplate(sameYear ? "EEEEdMMMM" : "EEEEdMMMMy")
-        return formatter.string(from: date)
+        return DateText.string(date, template: sameYear ? "EEEEdMMMM" : "EEEEdMMMMy",
+                               calendar: calendar)
     }
 
     /// The time column: the clock, in whatever shape the user's locale writes it.
     nonisolated static func time(_ date: Date, calendar: Calendar = .current) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.locale = calendar.locale ?? .current
-        formatter.setLocalizedDateFormatFromTemplate("jmm")
-        return formatter.string(from: date)
+        DateText.string(date, template: "jmm", calendar: calendar)
     }
 }
 

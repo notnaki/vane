@@ -19,7 +19,7 @@ import SwiftUI
         set { UserDefaults.vane.set(newValue, forKey: "restoreSession") }
     }
 
-    /// Settings › Links. Little Arc is Arc's default and Vane's: a link from Mail or Slack
+    /// Settings › Links. Little Vane (Arc's Little Arc) is Arc's default and Vane's: a link
     /// is something you look at once, not a tab you meant to collect. Stored as a string
     /// rather than a Bool so the Picker in `LinksPane` has something to tag its rows with,
     /// and so a third target (Arc's "Most Recent Space") can be added without a migration.
@@ -823,12 +823,12 @@ private struct LinksPane: View {
             SettingsCard {
                 SettingsRow("Open links from other apps in") {
                     Picker("", selection: $externalLinks) {
-                        Text("Little Arc").tag(LinkTarget.littleArc)
+                        Text("Little Vane").tag(LinkTarget.littleArc)
                         Text("Current Space").tag(LinkTarget.currentSpace)
                     }
                     .labelsHidden().fixedSize()
                 }
-                Footnote("A Little Arc is a small window with one page and no sidebar: read "
+                Footnote("A Little Vane is a small window with one page and no sidebar: read "
                          + "it, then close it with \u{2318}W — or press \u{2318}O to keep it as a "
                          + "tab in a Space. Current Space puts every link straight into the "
                          + "window you already have open.")

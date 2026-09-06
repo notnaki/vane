@@ -46,8 +46,8 @@ extension Prefs {
         /// by an older build readable: a synthesised decoder gives an Optional property
         /// `decodeIfPresent` for free, and applies no default to a non-optional one.
         var space: UUID?
-        /// Archived out of a Little Arc window, which is what the Library's "Little Arc"
-        /// filter chip sorts on.
+        /// Archived out of a Little Vane window (Arc's Little Arc), which is what the
+        /// Library's "Little Vane only" filter sorts on.
         var littleArc: Bool?
         var id: String { url }
         var isLittleArc: Bool { littleArc == true }

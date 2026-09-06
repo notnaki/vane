@@ -196,11 +196,11 @@ import WebKit
         guard let store = Windows.current, let tab = store.active else { return }
         let session = session(for: store)
         guard !session.query.isEmpty else {
-            store.findOpen = true
+            store.openFind()
             return
         }
         let text = session.query
-        if !store.findOpen { store.findOpen = true }
+        if !store.findOpen { store.openFind() }
         Task { await session.run(text, in: tab, forward: forward) }
     }
 
@@ -361,5 +361,20 @@ private struct FindBarBody: View {
     private func close() {
         session.clearHighlight(in: tab)
         store.findOpen = false
+    }
+}
+
+// MARK: - Opening it
+
+extension TabStore {
+    /// ⌘F, and ⌘G with nothing found yet. The find bar searches the page, and while the
+    /// Library is over the page there is no page on screen to search — so ⌘F there means the
+    /// Library's own search field, which is the box the user is looking at anyway. Without
+    /// this the bar opened invisible behind the Library, swallowed Escape (`LibraryRail`
+    /// stands its cancel action down while the find bar is up) and left the window with no
+    /// way out but the mouse.
+    func openFind() {
+        if libraryOpen { Library.focusSearch(); return }
+        findOpen = true
     }
 }

@@ -503,6 +503,17 @@ extension Look {
                     minAutoPiP.width >= 200 && minAutoPiP.height >= 120))
         out.append(("the bar's icon column is centred at 30",
                     barInset + barRowInset + rowIcon / 2 == 30))
+        // The Library's pane runs to the window's top edge, so its search field's centre is
+        // its own top padding plus half its height — and that has to be the lights' line, or
+        // the top of the window reads as two rows that nearly agree.
+        out.append(("the Library's search field is centred on the traffic lights' line",
+                    libraryHead + libraryField / 2 == lightsCentre))
+        out.append(("…with room above it, so the field is not pushed off the top",
+                    libraryHead > 0))
+        out.append(("a Library row is taller than a sidebar row, with air around its thumbnail",
+                    libraryRow > rowHeight && libraryRow - libraryThumb >= inset * 2))
+        out.append(("the list column is narrower than the bar, so a row reads across",
+                    libraryColumn < barWidth))
 
         // The ground. Tolerances are ±2/255: what a screenshot can be measured to.
         func near(_ v: Double, _ want: Double) -> Bool { abs(v * 255 - want) <= 2 }
