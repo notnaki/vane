@@ -34,6 +34,18 @@ private final class Act: NSObject {
     return entry
 }
 
+/// File ▸ Print… prints the page, not the window. `printView:` down the responder chain
+/// reached whatever view was first responder — the sidebar's chrome, or the command bar's
+/// field — so this asks the active tab's web view for its own print operation instead.
+@MainActor private func printPage() {
+    guard let store = Windows.current, let web = store.active?.web,
+          let window = store.window else { return }
+    let op = web.printOperation(with: .shared)
+    // WebKit hands back a print view with no size; left alone it prints a blank sheet.
+    op.view?.frame = web.bounds
+    op.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+}
+
 /// Items that must stay first-responder dispatched, so they grey out correctly, but whose
 /// key still comes from the registry — with an equivalent action for the monitor.
 @MainActor private func responderItem(_ command: Command, _ action: Selector,
@@ -536,9 +548,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         },
         .separator(),
         item(.savePageAs) { savePageAs() },
-        responderItem(.printPage, #selector(NSView.printView(_:))) {
-            NSApp.sendAction(#selector(NSView.printView(_:)), to: nil, from: nil)
-        },
+        item(.printPage) { printPage() },
         item(.sharePage) { sharePage() },
     ]))
     root.addItem(menu("Edit", [
