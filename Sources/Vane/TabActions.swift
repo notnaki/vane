@@ -82,8 +82,10 @@ enum TabActions {
     /// full-screen video and dismissing its own menu are all Escape, and all of them matter
     /// more than a stop that has nothing to stop.
     @MainActor static func stopLoading(in window: NSWindow?) -> Bool {
+        // With the command bar up, Escape belongs to the bar; the same rule `Selection.clear`
+        // follows, so a first Escape never vanishes into a stop the user did not ask for.
         guard let store = TabStore.all.first(where: { $0.window === window }),
-              let tab = store.active, tab.loading else { return false }
+              store.palette == nil, let tab = store.active, tab.loading else { return false }
         tab.stop()
         axAnnounce("Stopped loading.")
         return true
