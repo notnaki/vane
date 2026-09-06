@@ -48,6 +48,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @Published var favicon: NSImage?
     /// The link under the pointer, for the status bar. nil when nothing is hovered.
     @Published var hoveredLink: String?
+    /// The page has a caret in something of its own — an input, a textarea, a
+    /// contenteditable. Kept current by the page itself (see `PageFocus`) so the key monitor
+    /// can ask without an await: it is what stops ⌘← navigating out of a half-typed comment.
+    /// Deliberately not `@Published`: nothing draws it, and on a page that moves focus as
+    /// you type a published flag is a redraw per keystroke.
+    var editableFocused = false
     /// `web.pageZoom`, republished: the pill's zoom chip. Zoom.swift writes it.
     @Published var zoom = 1.0
     /// WebKit's `hasOnlySecureContent` and whether `serverTrust` evaluates — the pill's
@@ -125,6 +131,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         cfg.userContentController.addUserScript(
             WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
+        // Document *start* and every frame: the listeners have to be in place before a page
+        // can autofocus its search box, and a comment box is as often in an iframe as not.
+        cfg.userContentController.addUserScript(
+            WKUserScript(source: PageFocus.script, injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false))
         return WKWebView(frame: .zero, configuration: cfg)
     }
 
@@ -140,10 +151,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: MediaTray.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: StatusBar.messageName)
+        web.configuration.userContentController.add(WeakHandler(self), name: PageFocus.messageName)
         // A fresh web view has no page to be insecure about.
         secureContent = true
         certificateTrusted = true
         hoveredLink = nil
+        editableFocused = false
         web.customUserAgent = Settings.userAgent
         web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
         web.allowsBackForwardNavigationGestures = true
@@ -397,6 +410,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         Previews.shared.cancel()      // the link that raised it is gone
+        // Whatever was focused belongs to the page being left; the incoming one says so
+        // itself as soon as its script runs.
+        editableFocused = false
         loading = true
         progress = 0.08        // a sliver immediately, so the bar never appears to stall at 0
     }
@@ -599,6 +615,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             return
         }
         if m.name == StatusBar.messageName { hoveredLink = StatusBar.link(from: m.body); return }
+        if m.name == PageFocus.messageName { editableFocused = PageFocus.focused(from: m.body); return }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
             if body["gone"] as? Bool == true { Previews.shared.cancel(); return }

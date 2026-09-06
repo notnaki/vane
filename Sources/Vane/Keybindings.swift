@@ -647,10 +647,27 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// display, `conflicts` still compares the one the user can change, and rebinding Back
     /// leaves the arrows where Arc has them. Ceiling: the alias is not rebindable and not
     /// listed in the Shortcuts pane.
-    static let aliases: [Command: Keybinding] = [
+    ///
+    /// Anything added here inherits the two guards in `alias(_:fieldEditor:pageEditable:)`,
+    /// which is the point of the table: a chord a text field could want must not be claimed
+    /// by the browser while one is being typed into.
+    nonisolated static let aliases: [Command: Keybinding] = [
         .back: Keybinding("\u{F702}", .command),
         .forward: Keybinding("\u{F703}", .command),
     ]
+
+    /// Which command an alias chord fires, or nil when something that types should keep the
+    /// keystroke: a field editor in the chrome (the url bar, a rename field, the find bar), or
+    /// an input, textarea or contenteditable on the page. One rule said about the two places
+    /// a caret can be — ⌘← belongs to the caret wherever there is one, and navigating away
+    /// from a half-filled form is the one outcome nobody means.
+    ///
+    /// Pure, so `selfcheck --pure` can prove the guards with no page and no first responder.
+    nonisolated static func alias(_ b: Keybinding, fieldEditor: Bool,
+                                  pageEditable: Bool) -> Command? {
+        guard !fieldEditor, !pageEditable else { return nil }
+        return aliases.first { $0.value == b }?.key
+    }
 
     /// Install with:
     ///   NSEvent.addLocalMonitorForEvents(matching: .keyDown) { Keybindings.handle($0) ? nil : $0 }
@@ -670,22 +687,31 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// The alias chords, tried only after the real bindings — a user who rebinds something
     /// onto ⌘← gets what they asked for, and Arc's arrows are what is left.
     ///
-    /// ⌘← in a url field, a rename field or the find bar is Home, and taking it would break
-    /// editing text in the chrome, so a field editor keeps it.
-    ///
-    /// ponytail: the *page* is not asked. This monitor runs ahead of AppKit's dispatch, so
-    /// Vane wins ⌘← even inside a text box on a website, where WebKit would have moved the
-    /// caret to the start of the line — measured, not assumed. Asking the page first needs
-    /// an async round trip into WebKit per keystroke and a synchronous answer here, which is
-    /// the same wall `priority(for:) == .page` documents. Ceiling: use ⌘[ (or ⌃A, which
-    /// WebKit also takes) for line-start inside a web text field.
+    /// Both guards are read here, synchronously, because this monitor runs *ahead* of
+    /// AppKit's dispatch: without them Vane would win ⌘← before WebKit ever saw it, and a
+    /// user typing in a comment box would lose the box. The page's half is a flag the page
+    /// keeps up to date on its own — see `PageFocus` — rather than a round trip per key.
     private static func alias(_ b: Keybinding) -> Bool {
         let r = NSApp.keyWindow?.firstResponder
-        guard !(r is NSText), !(r is NSTextView),
-              let cmd = aliases.first(where: { $0.value == b })?.key,
+        guard let cmd = alias(b, fieldEditor: r is NSText || r is NSTextView,
+                              pageEditable: focusedTab()?.editableFocused == true),
               let action = actions[cmd] else { return false }
         action()
         return true
+    }
+
+    /// The tab whose page holds the keyboard, by walking up from the first responder to the
+    /// WKWebView it lives inside. Not "the window's current tab": a split view has two live
+    /// pages, and only the one being typed in may keep the chord.
+    private static func focusedTab() -> Tab? {
+        var view = NSApp.keyWindow?.firstResponder as? NSView
+        while let v = view {
+            if let web = v as? WKWebView {
+                return TabStore.all.lazy.flatMap(\.tabs).first { $0.web === web }
+            }
+            view = v.superview
+        }
+        return nil
     }
 
     private static func webContentHasFocus() -> Bool {
@@ -695,6 +721,63 @@ enum Command: String, CaseIterable, Codable, Sendable {
             view = v.superview
         }
         return false
+    }
+}
+
+// MARK: - Is the page being typed into
+
+/// Whether the page has a caret in something of its own — an input, a textarea, a
+/// contenteditable — kept as a flag on the Tab so a key monitor can ask synchronously.
+///
+/// WebKit has no synchronous "what is focused" API: `document.activeElement` is an
+/// `evaluateJavaScript` away, and a key monitor has to answer before the keystroke moves on.
+/// So the page reports its own focus as it changes — two listeners and a boolean — and Swift
+/// caches the last answer. The same shape as `StatusBar`'s hovered link, and for the same
+/// reason.
+///
+/// ponytail: one flag per tab, not a description of *what* is focused. The only question
+/// anyone asks is "would this keystroke be typing", and a boolean answers it. Ceiling: a
+/// focus that changes in the same turn as the keystroke (a page moving focus on keydown) is
+/// read one event late, and a page inside a cross-origin iframe that blocks user scripts
+/// reports nothing at all.
+enum PageFocus {
+    static let messageName = "vaneedit"
+
+    /// All frames — a comment box is as likely to be in an iframe as not. `focusout` fires
+    /// *before* focus lands, so it re-reads on the next turn rather than trusting
+    /// `activeElement` mid-move; the trailing call covers a field that is focused before the
+    /// listeners exist (`autofocus`, or a bfcache restore that re-runs the script).
+    static let script = """
+    (function () {
+      if (window.__vaneEdit) return; window.__vaneEdit = true;
+      var last = null;
+      var plain = " button submit reset checkbox radio file image range color hidden ";
+      function editable(el) {
+        if (!el) return false;
+        var tag = (el.tagName || "").toLowerCase();
+        if (tag === "textarea") return true;
+        if (tag === "input") {
+          return plain.indexOf(" " + ((el.type || "text").toLowerCase()) + " ") < 0;
+        }
+        return !!el.isContentEditable;
+      }
+      function send() {
+        var v = editable(document.activeElement);
+        if (v === last) return;
+        last = v;
+        try { webkit.messageHandlers.\(messageName).postMessage(v); } catch (e) {}
+      }
+      document.addEventListener("focusin", send, true);
+      document.addEventListener("focusout", function () { setTimeout(send, 0); }, true);
+      send();
+    })();
+    """
+
+    /// The message body as the flag. Anything unexpected reads as "nothing focused": only
+    /// our own script posts here and it only ever posts a boolean, and a flag left stuck at
+    /// true would take the arrows away from that tab for the life of the page.
+    nonisolated static func focused(from body: Any) -> Bool {
+        (body as? Bool) ?? (body as? NSNumber)?.boolValue ?? false
     }
 }
 
@@ -916,7 +999,8 @@ extension Keybindings {
         reset(.find)
         out.append(("reset clears the priority too", priority(for: .find) == .browser))
 
-        // Arc's second chord for Back and Forward.
+        // Arc's second chord for Back and Forward, and the two guards on it.
+        let left = Keybinding("\u{F702}", .command), right = Keybinding("\u{F703}", .command)
         out += [
             ("Back and Forward also answer to ⌘← and ⌘→",
              aliases[.back]?.display == "⌘←" && aliases[.forward]?.display == "⌘→"),
@@ -927,6 +1011,27 @@ extension Keybindings {
             ("⌥⌘← is still Previous Space, not Back",
              command(for: Keybinding("\u{F702}", [.command, .option])) == .previousSpace
                 && command(for: Keybinding("\u{F703}", [.command, .option])) == .nextSpace),
+            ("with nothing typing, ⌘← goes back and ⌘→ goes forward",
+             alias(left, fieldEditor: false, pageEditable: false) == .back
+                && alias(right, fieldEditor: false, pageEditable: false) == .forward),
+            ("a field editor in the chrome keeps ⌘← for the caret",
+             alias(left, fieldEditor: true, pageEditable: false) == nil
+                && alias(right, fieldEditor: true, pageEditable: false) == nil),
+            ("a text field on the page keeps it too — navigating out of a half-typed form is the one outcome nobody means",
+             alias(left, fieldEditor: false, pageEditable: true) == nil
+                && alias(right, fieldEditor: false, pageEditable: true) == nil),
+            ("both at once is still nothing",
+             alias(left, fieldEditor: true, pageEditable: true) == nil),
+            ("a chord that is not an alias is not one however the guards stand",
+             alias(Keybinding("t", .command), fieldEditor: false, pageEditable: false) == nil),
+            // The page's half of the guard, as it arrives over the message handler.
+            ("the page reporting a focused field sets the flag", PageFocus.focused(from: true)),
+            ("…and reporting a blur clears it", !PageFocus.focused(from: false)),
+            ("a message that is not a boolean reads as nothing focused",
+             !PageFocus.focused(from: "yes")),
+            ("the script listens in every frame and reads the field kind, not just the tag",
+             PageFocus.script.contains("focusin") && PageFocus.script.contains("focusout")
+                && PageFocus.script.contains("isContentEditable")),
         ]
 
         // Routing, minus the NSEvent (which needs an app to be meaningful).
