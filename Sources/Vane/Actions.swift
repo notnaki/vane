@@ -112,7 +112,12 @@ extension PaletteCommand {
                 PaletteCommand(.zoomOut, icon: "minus.magnifyingglass"),
                 PaletteCommand(.actualSize, icon: "1.magnifyingglass"),
                 PaletteCommand(.sharePage, icon: "square.and.arrow.up", title: "Share…"),
-                PaletteCommand(.printPage, icon: "printer"),
+                // No Print row. `.printPage` is dispatched down the responder chain as
+                // `printView:`, and nothing in that chain prints the *page* — ⌘P off the
+                // menu prints the window's chrome today, and out of the bar it printed the
+                // command bar itself. Save Page As is the row that actually produces the
+                // document. Restore this the day Print goes through
+                // `WKWebView.printOperation(with:)`, which is Menu.swift's fix to make.
                 PaletteCommand(.savePageAs, icon: "square.and.arrow.down"),
                 PaletteCommand("Rename Tab", icon: "pencil") { TabActions.renameTab(tab) },
                 PaletteCommand("Duplicate Tab", icon: "plus.square.on.square") {
@@ -260,7 +265,7 @@ extension PaletteCommand {
         .newTab, .newLittleArc, .reopenClosedTab, .newWindow, .newPrivateWindow,
         .copyPageURL, .reload, .hardReload, .find, .closeTab, .back, .forward,
         .showReader, .pictureInPicture, .muteTab, .zoomIn, .zoomOut, .actualSize,
-        .sharePage, .printPage, .savePageAs, .showWebInspector,
+        .sharePage, .savePageAs, .showWebInspector,
         .toggleSidebar, .pinTab, .favouriteTab, .addSplit, .removeSplit, .nextPane,
         .tidyTabs, .clearTabs, .newSpace, .nextSpace, .previousSpace,
         .showLibrary, .viewArchive, .viewHistory, .showDownloads,
