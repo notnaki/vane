@@ -282,12 +282,18 @@ enum Spaces {
         (min(max(value, 0), 1) - 0.5) * dialSweep
     }
 
-    /// …and back: where the finger is relative to the knob's centre, as a value. In the dead
-    /// quarter it clamps to whichever end it is nearer, so dragging round the bottom parks
-    /// the dial at 0 or 1 instead of jumping across.
-    static func dialValue(dx: Double, dy: Double) -> Double {
-        guard dx != 0 || dy != 0 else { return 0.5 }
-        return min(max(atan2(dx, -dy) / dialSweep + 0.5, 0), 1)
+    /// Where a point sits about the knob's centre: radians clockwise from straight up.
+    static func dialRadians(dx: Double, dy: Double) -> Double { atan2(dx, -dy) }
+
+    /// The knob turned from one angle to the next. Deliberately *relative* — the value moves
+    /// by however far the finger swept, from wherever the knob already was — so a click on the
+    /// dial moves nothing, and a sweep through the dead quarter at the bottom parks at the end
+    /// it came from instead of snapping across to the other one.
+    static func dialTurn(from: Double, to: Double, value: Double) -> Double {
+        var delta = to - from
+        if delta > .pi { delta -= 2 * .pi }
+        if delta < -.pi { delta += 2 * .pi }
+        return min(max(value + delta / dialSweep, 0), 1)
     }
 
     // MARK: - Two-finger swipe
@@ -539,8 +545,13 @@ enum Spaces {
                        } == true
                    } == true
                } == true)
-        assert("a grey has no hue to place, so it lands on the top edge",
+        // The canvas is a lossy view of a colour, which is why the editor keeps the dragged
+        // dot's own place in hand rather than re-deriving it from the hex it just wrote.
+        assert("a grey has no hue to read back, so it reads as the unsaturated top edge",
                themePoint(hex: "#808080").map { $0.y == 0 } == true)
+        assert("both ends of the hue axis are the same colour, so a place cannot be recovered",
+               themeHex(x: 0, y: 1) == themeHex(x: 1, y: 1)
+                   && themePoint(hex: themeHex(x: 1, y: 1)).map { $0.x == 0 } == true)
         assert("a dot dragged off the canvas stops at the edge rather than wrapping",
                themeHex(x: -3, y: 4) == themeHex(x: 0, y: 1))
         assert("a colour that is not #RRGGBB has no place on the canvas",
@@ -552,18 +563,29 @@ enum Spaces {
         assert("+ on a space with no colour still adds a real one",
                Look.hsb(hex: nextThemeColor(after: [])) != nil)
 
-        // The grain dial: three quarters of a turn, clockwise from bottom-left.
-        assert("the dial's ends and middle round-trip", [0, 0.25, 0.5, 0.75, 1].allSatisfy { v in
-            abs(dialValue(dx: sin(dialAngle(v)), dy: -cos(dialAngle(v))) - v) < 0.001
+        // The grain dial: three quarters of a turn, clockwise from bottom-left, and turned
+        // by how far the finger sweeps rather than by where it lands.
+        assert("straight up is the middle of the sweep", dialAngle(0.5) == 0)
+        assert("the sweep's ends are a dead quarter apart at the bottom",
+               abs(dialAngle(1) - dialAngle(0) - dialSweep) < 0.001)
+        assert("a point straight up is at angle zero", dialRadians(dx: 0, dy: -1) == 0)
+        assert("…and one to the right is a quarter turn clockwise",
+               abs(dialRadians(dx: 1, dy: 0) - .pi / 2) < 0.001)
+        assert("a drawn angle and a measured one agree", [0, 0.25, 0.5, 0.75, 1].allSatisfy { v in
+            abs(dialRadians(dx: sin(dialAngle(v)), dy: -cos(dialAngle(v))) - dialAngle(v)) < 0.001
         })
-        assert("straight up is the middle of the sweep",
-               abs(dialValue(dx: 0, dy: -1) - 0.5) < 0.001)
-        assert("the far left of the knob is a sixth of the way round the sweep",
-               abs(dialValue(dx: -1, dy: 0) - 1.0 / 6) < 0.001)
-        assert("the dead quarter at the bottom clamps rather than jumping across",
-               dialValue(dx: -0.1, dy: 1) == 0 && dialValue(dx: 0.1, dy: 1) == 1)
-        assert("a finger on the knob's own centre asks for nothing",
-               dialValue(dx: 0, dy: 0) == 0.5)
+        assert("a knob that has not been swept keeps its value",
+               dialTurn(from: 1, to: 1, value: 0.4) == 0.4)
+        assert("a sweep of the whole range turns the knob from one end to the other",
+               abs(dialTurn(from: dialAngle(0), to: dialAngle(0) + dialSweep / 2,
+                            value: 0) - 0.5) < 0.001)
+        assert("sweeping backwards turns it back",
+               abs(dialTurn(from: 0, to: -dialSweep / 4, value: 0.5) - 0.25) < 0.001)
+        assert("a sweep across the wrap takes the short way round, not the long one",
+               abs(dialTurn(from: 3.0, to: -3.0, value: 0.5) - (0.5 + (2 * .pi - 6) / dialSweep))
+                   < 0.001)
+        assert("sweeping past an end parks there rather than snapping to the other one",
+               dialTurn(from: 0, to: 3, value: 0.95) == 1 && dialTurn(from: 0, to: -3, value: 0.05) == 0)
 
         // The swipe. A 300pt sidebar with three Spaces, standing in the middle one, unless
         // an assertion says otherwise.

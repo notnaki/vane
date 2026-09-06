@@ -153,9 +153,12 @@ enum Look {
     /// The fine grid printed on it: pitch and dot.
     static let themeGrid: CGFloat = 10
     static let themeGridDot: CGFloat = 1
-    /// A draggable colour dot and its white ring (90px at 2x).
+    /// A draggable colour dot and the ring round it (90px at 2x).
     static let themeDot: CGFloat = 44
     static let themeRing: CGFloat = 3
+    /// The ring on the chosen preset, and how far it stands off the swatch.
+    static let themeSelectRing: CGFloat = 2
+    static let themeRingGap: CGFloat = 3
     /// A preset circle (58px at 2x) and how many fit a page between the two chevrons.
     static let swatch: CGFloat = 30
     static let swatchPage = 8
@@ -165,18 +168,25 @@ enum Look {
     static let themeThumb = CGSize(width: 24, height: 46)
     /// The sinusoid's amplitude at full intensity, how many waves fit the track, and what is
     /// left of the amplitude past the thumb.
-    static let themeWave: CGFloat = 9
+    static let themeWave: CGFloat = 11
     static let themeWaves: Double = 8
-    static let themeWaveRest: CGFloat = 0.3
+    /// Past the thumb the sinusoid flattens out entirely, the way Arc's does: the wave is
+    /// the strength, so there is nothing left of it past where the strength stops.
+    static let themeWaveRest: CGFloat = 0
+    static let themeWaveWidth: CGFloat = 4
     /// The grain dial: the knob, the dotted ring round it, and how many dots the ring has.
     static let themeDial: CGFloat = 46
     static let themeDialRing: CGFloat = 74
     static let themeDialDots = 32
-    /// Its pointer.
-    static let themeMarker = CGSize(width: 12, height: 5)
+    /// Its pointer: a pill out on the dotted ring, at the angle the knob is turned to.
+    static let themeMarker = CGSize(width: 14, height: 7)
     /// The slider's thumb and the dial's pointer. `ink`, not white: Arc's popover is
     /// always dark, and a white pill on a Space pinned to light is a thumb nobody can see.
     static let themeThumbInk = ink(0.9)
+    /// A popover's own ground. NSPopover hands its content a translucent material, so a panel
+    /// that draws nothing of its own has the window's wash streaking through it. Opaque and
+    /// appearance-following, which no `ink` alpha over nothing can be.
+    static let panelFill = Color(nsColor: .windowBackgroundColor)
 
     /// The Site Control Center popover. Wide enough for "Picture in Picture" and its switch
     /// on one line, and no wider — it hangs off the address pill, not off the window.
@@ -386,22 +396,26 @@ enum Look {
     /// Ceiling: the tile repeats every 64pt, which at these opacities is invisible.
     @MainActor static let grain: NSImage = {
         let n = 64
-        var pixels = [UInt8](repeating: 0, count: n * n * 4)
+        // The context owns its own buffer: a Swift array's pointer is only valid inside
+        // `withUnsafeMutableBytes`, and `makeImage()` reads it after that closure returns.
+        guard let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let pixels = ctx.data?.bindMemory(to: UInt8.self, capacity: ctx.bytesPerRow * n)
+        else { return NSImage() }
         // A fixed seed, so the tile is the same every launch and never flickers between two
         // windows drawing it at once.
         var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
-        for i in 0..<(n * n) {
-            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-            let v = UInt8(truncatingIfNeeded: seed >> 33)
-            // Premultiplied white: the alpha is the noise, so the tile lightens the ground
-            // where it is bright and leaves it alone where it is not.
-            for c in 0..<4 { pixels[i * 4 + c] = v }
+        for y in 0..<n {
+            for x in 0..<n {
+                seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+                let v = UInt8(truncatingIfNeeded: seed >> 33)
+                // Premultiplied white: the alpha is the noise, so the tile lightens the
+                // ground where it is bright and leaves it alone where it is not.
+                for c in 0..<4 { pixels[y * ctx.bytesPerRow + x * 4 + c] = v }
+            }
         }
-        guard let ctx = pixels.withUnsafeMutableBytes({ buffer in
-            CGContext(data: buffer.baseAddress, width: n, height: n, bitsPerComponent: 8,
-                      bytesPerRow: n * 4, space: CGColorSpaceCreateDeviceRGB(),
-                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        }), let image = ctx.makeImage() else { return NSImage() }
+        guard let image = ctx.makeImage() else { return NSImage() }
         return NSImage(cgImage: image, size: CGSize(width: n, height: n))
     }()
 

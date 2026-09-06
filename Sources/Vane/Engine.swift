@@ -1181,9 +1181,31 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     /// Every space in this window's profile. A space belongs to exactly one profile, so this
     /// is the complete list a window can ever switch between.
-    var spaces: [Space] { ProfileManager.shared.spaces(for: profileID) }
+    var spaces: [Space] {
+        var all = ProfileManager.shared.spaces(for: profileID)
+        if let live = previewSpace, let i = all.firstIndex(where: { $0.id == live.id }) {
+            all[i] = live
+        }
+        return all
+    }
 
-    var currentSpace: Space? { spaces.first { $0.id == currentSpaceID } }
+    /// The space this window is showing. Answers from `previewSpace` without touching the
+    /// disk at all when that is the one being asked for, which is what lets the theme
+    /// editor repaint the window on every frame of a drag for free.
+    var currentSpace: Space? {
+        if let live = previewSpace, live.id == currentSpaceID { return live }
+        return spaces.first { $0.id == currentSpaceID }
+    }
+
+    /// A space being edited right now and not yet written down. The theme editor puts every
+    /// frame of a drag here so the window's ground follows the fingers, and writes the space
+    /// once when they leave: spaces.json is not a place to put sixty frames a second, and
+    /// the slider this replaced wrote it on every tick.
+    ///
+    /// ponytail: an override, not a cache — `spaces` still reads the file, so a space another
+    /// window changed still shows up on the next redraw. Ceiling: while a drag is live, a
+    /// redraw of the footer dots decodes the file once, which is what it always did.
+    @Published var previewSpace: Space?
 
     /// Bumped whenever a space's name, icon or theme changes. `spaces` reads the file every
     /// time, so without a published counter nothing in the sidebar would know to redraw.
@@ -1237,6 +1259,8 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     /// The one way the chrome edits a space: save it, tell the views, and re-apply the look.
     func update(space: Space) {
+        // Whatever a drag was previewing has just been written down, or superseded.
+        if previewSpace?.id == space.id { previewSpace = nil }
         ProfileManager.shared.updateSpace(space)
         spaceRevision += 1
         applySpaceAppearance()
