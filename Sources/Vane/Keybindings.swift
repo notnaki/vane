@@ -692,10 +692,16 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// user typing in a comment box would lose the box. The page's half is a flag the page
     /// keeps up to date on its own — see `PageFocus` — rather than a round trip per key.
     private static func alias(_ b: Keybinding) -> Bool {
+        // Cheapest question first: every keystroke in the app comes through here, and only
+        // two chords are worth walking the responder chain for.
+        guard aliases.values.contains(b) else { return false }
         let r = NSApp.keyWindow?.firstResponder
         guard let cmd = alias(b, fieldEditor: r is NSText || r is NSTextView,
                               pageEditable: focusedTab()?.editableFocused == true),
               let action = actions[cmd] else { return false }
+        // The alias is the same command, so it obeys the same priority: someone who has given
+        // Back to the page has given it both chords, not one.
+        if priority(for: cmd) == .page, webContentHasFocus() { return false }
         action()
         return true
     }
@@ -727,29 +733,43 @@ enum Command: String, CaseIterable, Codable, Sendable {
 // MARK: - Is the page being typed into
 
 /// Whether the page has a caret in something of its own — an input, a textarea, a
-/// contenteditable — kept as a flag on the Tab so a key monitor can ask synchronously.
+/// contenteditable — kept on the Tab so a key monitor can ask synchronously.
 ///
 /// WebKit has no synchronous "what is focused" API: `document.activeElement` is an
 /// `evaluateJavaScript` away, and a key monitor has to answer before the keystroke moves on.
-/// So the page reports its own focus as it changes — two listeners and a boolean — and Swift
-/// caches the last answer. The same shape as `StatusBar`'s hovered link, and for the same
-/// reason.
+/// So the page reports its own focus as it changes and Swift caches the last answer — the
+/// same shape as `StatusBar`'s hovered link, and for the same reason.
 ///
-/// ponytail: one flag per tab, not a description of *what* is focused. The only question
-/// anyone asks is "would this keystroke be typing", and a boolean answers it. Ceiling: a
-/// focus that changes in the same turn as the keystroke (a page moving focus on keydown) is
-/// read one event late, and a page inside a cross-origin iframe that blocks user scripts
-/// reports nothing at all.
-enum PageFocus {
+/// **Per frame, not per tab.** Each frame reports about itself, so one boolean would be
+/// last-writer-wins: clicking from an iframe's field into a top-level one posts `true` from
+/// the top frame and then, one turn later, `false` from the iframe's deferred focusout — and
+/// the tab would look idle with a caret in it. So a frame identifies itself and the Tab keeps
+/// the *set* of frames reporting a caret; anything in it means "typing".
+///
+/// Its own content world, like `PictureInPicture`: `__vaneEdit` is then not on the page's
+/// `window` at all, and a page cannot null out `webkit.messageHandlers` to make Vane believe
+/// its field is not focused.
+///
+/// ponytail: a token per frame and a set per tab, not a description of *what* is focused.
+/// The only question anyone asks is "would this keystroke be typing". Ceiling: focus that
+/// moves in the same turn as the keystroke is read one event late; a frame torn down without
+/// firing `pagehide` or `unload` leaves its token behind until the next top-level navigation
+/// (which clears the set); and a page whose frames block user scripts reports nothing.
+@MainActor enum PageFocus {
     static let messageName = "vaneedit"
 
-    /// All frames — a comment box is as likely to be in an iframe as not. `focusout` fires
+    /// Out of the page's reach — see the note above.
+    static let world = WKContentWorld.world(name: "vane-edit")
+
+    /// All frames: a comment box is as likely to be in an iframe as not. `focusout` fires
     /// *before* focus lands, so it re-reads on the next turn rather than trusting
-    /// `activeElement` mid-move; the trailing call covers a field that is focused before the
-    /// listeners exist (`autofocus`, or a bfcache restore that re-runs the script).
+    /// `activeElement` mid-move; the trailing call covers a field focused before the listeners
+    /// existed (`autofocus`, or a bfcache restore re-running the script); `pagehide`/`unload`
+    /// take the frame's token back out when the frame goes.
     static let script = """
     (function () {
       if (window.__vaneEdit) return; window.__vaneEdit = true;
+      var frame = "f" + Math.random().toString(36).slice(2) + Date.now().toString(36);
       var last = null;
       var plain = " button submit reset checkbox radio file image range color hidden ";
       function editable(el) {
@@ -761,23 +781,34 @@ enum PageFocus {
         }
         return !!el.isContentEditable;
       }
-      function send() {
-        var v = editable(document.activeElement);
+      function post(v) {
         if (v === last) return;
         last = v;
-        try { webkit.messageHandlers.\(messageName).postMessage(v); } catch (e) {}
+        try {
+          webkit.messageHandlers.\(messageName).postMessage({ frame: frame, editable: v });
+        } catch (e) {}
       }
+      function send() { post(editable(document.activeElement)); }
       document.addEventListener("focusin", send, true);
       document.addEventListener("focusout", function () { setTimeout(send, 0); }, true);
+      window.addEventListener("pagehide", function () { post(false); });
+      window.addEventListener("unload", function () { post(false); });
       send();
     })();
     """
 
-    /// The message body as the flag. Anything unexpected reads as "nothing focused": only
-    /// our own script posts here and it only ever posts a boolean, and a flag left stuck at
-    /// true would take the arrows away from that tab for the life of the page.
-    nonisolated static func focused(from body: Any) -> Bool {
-        (body as? Bool) ?? (body as? NSNumber)?.boolValue ?? false
+    /// One frame's report folded into the tab's set: the frame is in it while it says it has
+    /// a caret and out of it the moment it says it has not. A body that is not one of our own
+    /// messages changes nothing — leaving the set as it was is the only answer that cannot
+    /// invent a caret or take a real one away.
+    static func frames(_ body: Any, in set: Set<String>) -> Set<String> {
+        guard let msg = body as? [String: Any], let frame = msg["frame"] as? String,
+              !frame.isEmpty else { return set }
+        let editable = (msg["editable"] as? Bool) ?? (msg["editable"] as? NSNumber)?.boolValue
+        guard let editable else { return set }
+        var out = set
+        if editable { out.insert(frame) } else { out.remove(frame) }
+        return out
     }
 }
 
@@ -1024,14 +1055,46 @@ extension Keybindings {
              alias(left, fieldEditor: true, pageEditable: true) == nil),
             ("a chord that is not an alias is not one however the guards stand",
              alias(Keybinding("t", .command), fieldEditor: false, pageEditable: false) == nil),
-            // The page's half of the guard, as it arrives over the message handler.
-            ("the page reporting a focused field sets the flag", PageFocus.focused(from: true)),
-            ("…and reporting a blur clears it", !PageFocus.focused(from: false)),
-            ("a message that is not a boolean reads as nothing focused",
-             !PageFocus.focused(from: "yes")),
-            ("the script listens in every frame and reads the field kind, not just the tag",
+        ]
+
+        // The page's half of the guard, as it arrives over the message handler. Per frame,
+        // because each frame only ever speaks for itself.
+        func report(_ frame: String, _ editable: Bool, _ set: Set<String>) -> Set<String> {
+            PageFocus.frames(["frame": frame, "editable": editable], in: set)
+        }
+        let top = "f-top", inner = "f-iframe"
+        out += [
+            ("a frame reporting a caret puts itself in the set",
+             report(top, true, []) == [top]),
+            ("…and reporting a blur takes itself back out",
+             report(top, false, [top]).isEmpty),
+            // The ordering that a single flag got wrong: focus moves from an iframe's field to
+            // a top-level one, and the iframe's deferred focusout lands *after* the top
+            // frame's focusin.
+            ("a frame's blur does not clear another frame's caret", {
+                var live: Set<String> = [inner]        // typing in the iframe
+                live = report(top, true, live)         // clicked into a top-level field
+                live = report(inner, false, live)      // the iframe's deferred focusout
+                return live == [top]
+            }()),
+            ("two frames with carets both have to go quiet before the tab is idle", {
+                var live = report(top, true, [])
+                live = report(inner, true, live)
+                live = report(top, false, live)
+                return live == [inner]
+            }()),
+            ("the same frame saying it twice is still one frame",
+             report(top, true, [top]) == [top]),
+            ("a body that is not one of our messages changes nothing",
+             PageFocus.frames("yes", in: [top]) == [top]
+                && PageFocus.frames(["frame": top], in: [top]) == [top]
+                && PageFocus.frames(["editable": true], in: [top]) == [top]
+                && PageFocus.frames(["frame": "", "editable": true], in: []).isEmpty),
+            ("the script identifies its frame, listens in the capture phase, and lets go on unload",
              PageFocus.script.contains("focusin") && PageFocus.script.contains("focusout")
-                && PageFocus.script.contains("isContentEditable")),
+                && PageFocus.script.contains("isContentEditable")
+                && PageFocus.script.contains("pagehide") && PageFocus.script.contains("unload")
+                && PageFocus.script.contains("frame: frame")),
         ]
 
         // Routing, minus the NSEvent (which needs an app to be meaningful).

@@ -184,7 +184,14 @@ import WebKit
     /// Every place the per-tab sink is fired goes through here, so the hooks cannot be
     /// forgotten at one of them. `playing` is recomputed here for the same reason.
     private static func tell(_ id: UUID, _ audible: Bool, playing: Bool) {
-        if playing { playingIDs.insert(id) } else { playingIDs.remove(id) }
+        if playing {
+            playingIDs.insert(id)
+        } else if playingIDs.remove(id) != nil {
+            // It has just gone quiet, so stamp the tab: that is where the auto-archive clock
+            // starts. A tab nobody clicked but everybody listened to is not an idle tab.
+            // See `Archive.idle`.
+            Suspension.allTabs.first { $0.id == id }?.lastQuiet = .now
+        }
         sinks[id]?(audible)
         for o in observers { o(id) }
     }

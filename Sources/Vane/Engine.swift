@@ -48,12 +48,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @Published var favicon: NSImage?
     /// The link under the pointer, for the status bar. nil when nothing is hovered.
     @Published var hoveredLink: String?
-    /// The page has a caret in something of its own — an input, a textarea, a
+    /// The frames of this page that say they hold a caret — an input, a textarea, a
     /// contenteditable. Kept current by the page itself (see `PageFocus`) so the key monitor
     /// can ask without an await: it is what stops ⌘← navigating out of a half-typed comment.
+    /// A set rather than a flag because each frame only ever speaks for itself.
     /// Deliberately not `@Published`: nothing draws it, and on a page that moves focus as
     /// you type a published flag is a redraw per keystroke.
-    var editableFocused = false
+    var editableFrames: Set<String> = []
+    /// Anywhere in this page is being typed into.
+    var editableFocused: Bool { !editableFrames.isEmpty }
     /// `web.pageZoom`, republished: the pill's zoom chip. Zoom.swift writes it.
     @Published var zoom = 1.0
     /// WebKit's `hasOnlySecureContent` and whether `serverTrust` evaluates — the pill's
@@ -69,8 +72,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// True while this tab has no live page — see `suspend()`. Published so anything that
     /// wants to badge the strip can, but nothing does: suspension is meant to be invisible.
     @Published private(set) var suspended = false
-    /// Last time the user was looking at this tab. The only input to the idle clock.
+    /// Last time the user was looking at this tab. The MRU order behind ⌃⇥ and the media
+    /// tray's tie-break as well as an input to the idle clock, which is why nothing but a
+    /// real visit ever writes it.
     var lastActive = Date.now
+    /// When this tab last stopped making noise — written by `TabAudio`, read only by the
+    /// auto-archive sweep. A tab that played for eight hours has not been idle for eight
+    /// hours, and `Archive.idle` starts its clock here. `.distantPast` until it plays.
+    var lastQuiet = Date.distantPast
     /// Where a suspended tab is parked, and the state it comes back with.
     private(set) var parkedURL: URL?
     private var parkedState: Data?
@@ -135,7 +144,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // can autofocus its search box, and a comment box is as often in an iframe as not.
         cfg.userContentController.addUserScript(
             WKUserScript(source: PageFocus.script, injectionTime: .atDocumentStart,
-                         forMainFrameOnly: false))
+                         forMainFrameOnly: false, in: PageFocus.world))
         return WKWebView(frame: .zero, configuration: cfg)
     }
 
@@ -151,12 +160,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         web.configuration.userContentController.add(WeakHandler(self), name: TabAudio.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: MediaTray.messageName)
         web.configuration.userContentController.add(WeakHandler(self), name: StatusBar.messageName)
-        web.configuration.userContentController.add(WeakHandler(self), name: PageFocus.messageName)
+        web.configuration.userContentController.add(WeakHandler(self),
+                                                    contentWorld: PageFocus.world,
+                                                    name: PageFocus.messageName)
         // A fresh web view has no page to be insecure about.
         secureContent = true
         certificateTrusted = true
         hoveredLink = nil
-        editableFocused = false
+        editableFrames = []
         web.customUserAgent = Settings.userAgent
         web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
         web.allowsBackForwardNavigationGestures = true
@@ -247,6 +258,8 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         old.configuration.userContentController.removeScriptMessageHandler(forName: TabAudio.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: MediaTray.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
+        old.configuration.userContentController.removeScriptMessageHandler(
+            forName: PageFocus.messageName, contentWorld: PageFocus.world)
         old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
         // ponytail: `old` is never deallocated — it survives at a high retain count, so
         // Tab.close() has to use `_close` SPI to give the process back. The retainer is
@@ -410,9 +423,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         Previews.shared.cancel()      // the link that raised it is gone
-        // Whatever was focused belongs to the page being left; the incoming one says so
-        // itself as soon as its script runs.
-        editableFocused = false
+        // Whatever was focused belongs to the page being left, frames and all; the incoming
+        // one says so itself as soon as its script runs in each of them.
+        editableFrames = []
         loading = true
         progress = 0.08        // a sliver immediately, so the bar never appears to stall at 0
     }
@@ -615,7 +628,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             return
         }
         if m.name == StatusBar.messageName { hoveredLink = StatusBar.link(from: m.body); return }
-        if m.name == PageFocus.messageName { editableFocused = PageFocus.focused(from: m.body); return }
+        if m.name == PageFocus.messageName {
+            editableFrames = PageFocus.frames(m.body, in: editableFrames)
+            return
+        }
         if m.name == Previews.messageName {
             guard let body = m.body as? [String: Any] else { return }
             if body["gone"] as? Bool == true { Previews.shared.cancel(); return }
@@ -1324,8 +1340,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // And which tab the Space is being left on, so switching back lands on it rather
         // than on whatever is first. Written here rather than in `switchTo` so the swipe
         // commit, the Spaces menu, ⌥⌘←/→ and ⌃1–9 all get it — every one of them saves
-        // first. Only a web page is worth coming back to; see `Spaces.rememberTab`.
-        Spaces.rememberTab(active?.currentURL.flatMap {
+        // first. Only a web page is worth coming back to (see `Spaces.rememberTab`), and
+        // never a favourite: the grid is the profile's, so every Space would remember the
+        // same tile and land on it. See `Spaces.landing`.
+        let leftOn = active.flatMap { $0.kind == .favourite ? nil : $0.currentURL }
+        Spaces.rememberTab(leftOn.flatMap {
             $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
         }, in: id)
     }
@@ -1376,7 +1395,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // the first Today tab, the first pinned row, and finally an empty pill.
         current = Spaces.landing(on: tabs.map { ($0.currentURL?.absoluteString, $0.kind) },
                                  last: Spaces.lastTab(in: space.id)).map { tabs[$0].id }
-        if space.tabURLs.isEmpty { openPalette(.newTab) }
+        // Only when the landing found nothing at all. A Space of pinned rows and no Today
+        // tabs lands on a row, and the command bar over the page it just opened would be a
+        // bar nobody asked for.
+        if current == nil { openPalette(.newTab) }
         rememberSpace()
         extensions.sync()
     }

@@ -129,6 +129,18 @@ extension Prefs {
         return idle >= after
     }
 
+    /// When the idle clock starts: the later of "the user was last here" and "the sound
+    /// stopped". Without the second, a tab that played for eight hours would be archived the
+    /// moment it fell quiet, because idle has only ever meant "not clicked".
+    ///
+    /// A stamp of its own rather than re-touching `lastActive` on every sweep: that field is
+    /// the tab switcher's MRU order and the media tray's tie-break as well, and a playing tab
+    /// that kept stamping itself would float to the top of both without anyone having touched
+    /// it. `TabAudio` writes `lastQuiet` the moment playback stops; see `TabAudio.tell`.
+    nonisolated static func idle(now: Date, lastActive: Date, lastQuiet: Date) -> TimeInterval {
+        now.timeIntervalSince(max(lastActive, lastQuiet))
+    }
+
     // MARK: Running
 
     /// Called off `Suspension`'s one timer — see `Suspension.begin`. A minute of slop on a
@@ -138,18 +150,13 @@ extension Prefs {
         guard after > 0 else { return }
         for store in TabStore.all where !store.isPrivate {
             let active = store.current
-            for tab in store.tabs {
-                // Playing counts as being used: without this, a tab that played for eight
-                // hours would be archived the second it fell quiet, because "idle" only ever
-                // meant "not clicked". The clock restarts when the noise stops, which is
-                // exactly what re-stamping it on every sweep does — the sweep runs a minute,
-                // and a minute of slop on a twelve-hour rule is beneath noticing.
-                if TabAudio.isPlaying(tab) { tab.lastActive = now; continue }
-                guard due(kind: tab.kind,
-                          idle: now.timeIntervalSince(tab.lastActive),
-                          after: after,
-                          active: tab.id == active,
-                          loaded: tab.currentURL != nil) else { continue }
+            for tab in store.tabs where due(kind: tab.kind,
+                                            idle: idle(now: now, lastActive: tab.lastActive,
+                                                       lastQuiet: tab.lastQuiet),
+                                            after: after,
+                                            active: tab.id == active,
+                                            loaded: tab.currentURL != nil,
+                                            playing: TabAudio.isPlaying(tab)) {
                 store.archive(tab.id)
             }
         }
@@ -210,10 +217,21 @@ extension Prefs {
         }
         out.append(("a tab playing media is never auto-archived", !sweepable(noisy, idle: 400 * hour)))
         out.append(("the tab beside it still is", sweepable(quiet, idle: 400 * hour)))
-        // What re-stamping `lastActive` while a tab plays buys: the clock starts from quiet,
-        // so eight hours of playback are not eight hours of idling.
-        out.append(("a tab that has just gone quiet starts its clock from there",
-                    !sweepable(quiet, idle: 0)))
+
+        // Where the idle clock starts. `lastQuiet` is what stops eight hours of playback
+        // being read as eight hours of idling the moment the sound stops.
+        let clicked = t0, stopped = t0.addingTimeInterval(8 * hour)
+        out.append(("the clock runs from the last click when nothing ever played",
+                    idle(now: stopped, lastActive: clicked, lastQuiet: .distantPast) == 8 * hour))
+        out.append(("…and from the moment the sound stopped when it did",
+                    idle(now: stopped, lastActive: clicked, lastQuiet: stopped) == 0))
+        out.append(("a tab that has just gone quiet is not archived on the next sweep",
+                    !due(kind: .today,
+                         idle: idle(now: stopped, lastActive: clicked, lastQuiet: stopped),
+                         after: 12 * hour, active: false, loaded: true)))
+        out.append(("a click after the sound stopped still wins",
+                    idle(now: stopped.addingTimeInterval(hour), lastActive: stopped.addingTimeInterval(hour),
+                         lastQuiet: stopped) == 0))
         out.append(("every offered interval but Never is a real duration",
                     Prefs.archiveChoices.filter { $0.after > 0 }.count == 4
                         && Prefs.archiveChoices.last?.after == 0))

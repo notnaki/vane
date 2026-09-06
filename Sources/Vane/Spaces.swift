@@ -102,9 +102,19 @@ enum Spaces {
     /// survive: the first Today tab, then the first pinned row, then nothing at all — an
     /// empty pill over a Space with no pages is a real answer, and the chrome stays put.
     ///
+    /// A favourite is never landed on, whatever was written down: the grid belongs to the
+    /// profile and shows in every Space, so landing there would answer "which of this Space's
+    /// tabs?" with a tab that is not the Space's at all — and every Space would land on the
+    /// same tile. `rememberTab` refuses to write one for the same reason.
+    ///
     /// Pure, so `selfcheck --pure` can prove the ladder without a window.
+    /// ponytail: the same url twice in a Space lands on the first of them. Telling them apart
+    /// needs a stable per-tab id in the Space file, which is a format change to remember which
+    /// of two identical pages you were reading.
     static func landing(on tabs: [(url: String?, kind: TabKind)], last: String?) -> Int? {
-        if let last, let i = tabs.firstIndex(where: { $0.url == last }) { return i }
+        if let last, let i = tabs.firstIndex(where: { $0.url == last && $0.kind != .favourite }) {
+            return i
+        }
         return tabs.firstIndex { $0.kind == .today } ?? tabs.firstIndex { $0.kind == .pinned }
     }
 
@@ -247,6 +257,7 @@ enum Spaces {
         archiveContents(of: space)
         ProfileManager.shared.deleteSpace(id, in: profileID)
         TabStore.forgetShape(space: id, profileID: profileID)
+        rememberTab(nil, in: id)       // and the row saying which tab it was left on
         return true
     }
 
