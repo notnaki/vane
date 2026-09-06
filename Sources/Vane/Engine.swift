@@ -98,7 +98,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
         super.init()
         attach()
-        if let url { web.load(URLRequest(url: url)) }
+        if let url { go(url) }
     }
 
     /// A WKWebView with nothing in it. WebKit does not spawn a WebContent process until
@@ -156,7 +156,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
                     // A suspended tab keeps the title it was parked with — the strip must
                     // not flicker back to "New Tab" the moment the page goes away.
                     guard let self, !self.suspended else { return }
-                    self.title = w.title?.isEmpty == false ? w.title! : "New Tab"
+                    self.title = Files.title(page: w.title, url: w.url)
                     if !self.isPrivate, let u = w.url { self.history.retitle(u, title: self.title) }
                     self.extensions.sync()
                 }
@@ -275,7 +275,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         guard suspended else { return }
         suspended = false
         if let parkedState { web.interactionState = parkedState }
-        if web.url == nil, let parkedURL { web.load(URLRequest(url: parkedURL)) }
+        if web.url == nil, let parkedURL { go(parkedURL) }
         parkedState = nil
         parkedURL = nil
         // interactionState restores a page without running a navigation, so didCommit
@@ -308,7 +308,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     /// Load it now, or park it if we know enough about it to draw it without loading.
     func open(_ url: URL, parked p: Parked?) {
-        if let p, Prefs.suspendTabs { park(url: url, p) } else { web.load(URLRequest(url: url)) }
+        if let p, Prefs.suspendTabs { park(url: url, p) } else { go(url) }
     }
 
     func isPlayingMedia() async -> Bool {
@@ -413,7 +413,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     /// loadSimulatedRequest, not loadHTMLString: it leaves the failed url in the address bar
     /// and in `location`, so the page's own Try Again button retries the right thing.
-    private func show(_ error: Error, in w: WKWebView) {
+    func show(_ error: Error, in w: WKWebView) {
         guard ErrorPage.shouldShow(error) else {
             // Nothing to draw and nothing coming: the navigation was cancelled — by a
             // download, by a policy decision — and a Peek opened for it would sit there as
@@ -881,9 +881,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // this window for a tab gets another Little Arc instead of a second page hidden
         // behind the first. With no url it comes up empty with the search bar over it,
         // which is what a new window does.
-        if isLittle { LittleArc.open(url); return }
+        if isLittle { LittleArc.open(url, isPrivate: isPrivate); return }
         if let url {
-            newBlankTab().web.load(URLRequest(url: url))
+            newBlankTab().go(url)
         } else {
             openPalette(.newTab)
         }
@@ -917,7 +917,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // be beside, and a page that escaped into the sidebar is not what was clicked.
         t.onOpenBeside = { [weak self] u, focus in
             guard let self else { return }
-            if isLittle { LittleArc.open(u) } else { openBeside(u, focus: focus) }
+            if isLittle { LittleArc.open(u, isPrivate: isPrivate) } else { openBeside(u, focus: focus) }
         }
         // A Peek floats over a window with a sidebar in it. A Little Arc — or a Peek itself —
         // is already one floating page, so a link in it has nothing to float over and simply

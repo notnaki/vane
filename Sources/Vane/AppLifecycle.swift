@@ -34,6 +34,19 @@ import AppKit
         Windows.open()
     }
 
+    /// Finder ▸ Open With ▸ Vane, `open -a Vane report.pdf`, and a file dropped on the Dock
+    /// icon. Routed through `URLHandling.open` rather than opened here, so a PDF from Finder
+    /// lands wherever a link from Mail would — an Air Traffic Control rule, a Little Arc, or
+    /// a tab in the front window, per the Open-links-in preference.
+    ///
+    /// ponytail: the delegate method, which is what URLHandling.swift's note said to do the
+    /// day a delegate existed for other reasons. AppKit installs its own `odoc` handler when
+    /// it starts up and calls this; the hand-rolled Apple Event handler that used to answer
+    /// it is gone with this.
+    func application(_ app: NSApplication, open urls: [URL]) {
+        URLHandling.open(urls)
+    }
+
     /// Right-clicking the Dock icon. The two things anyone wants from there, and the two the
     /// File menu leads with.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {

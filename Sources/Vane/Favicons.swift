@@ -58,6 +58,9 @@ import WebKit
 
     /// Call on didFinish: asks the page which icon it declares, falls back to /favicon.ico.
     func load(for tab: Tab) {
+        // A local file has no host to fetch an icon from; Finder's own icon for the
+        // document is what it is recognised by everywhere else on the Mac.
+        if let url = tab.web.url, url.isFileURL { tab.favicon = Files.icon(for: url); return }
         guard let url = tab.web.url, let key = Favicons.key(for: url) else { tab.favicon = nil; return }
         if let img = memory[key] ?? readDisk(key) {
             memory[key] = img

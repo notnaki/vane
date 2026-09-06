@@ -379,7 +379,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("pinned folders", Pins.check),
                                ("split view", Split.check),
                                ("mini audio player", MediaTray.check),
-                               ("multi-select", Selection.check)] {
+                               ("multi-select", Selection.check),
+                               ("local files", Files.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }
@@ -417,6 +418,20 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         if pureOnly {
             print(failures == 0 ? "\nPASS (pure)" : "\n\(failures) FAILED")
             exit(failures == 0 ? 0 : 1)
+        }
+
+        // Not pure: it reads the running bundle's Info.plist, and the bare binary out of
+        // .build has none. Two lists of the same UTIs — make-app.sh's CFBundleDocumentTypes
+        // and Files.types — are exactly the pair that drifts, and drift here is silent:
+        // Finder offers a type Vane then refuses to draw, or Vane draws one Finder never
+        // offers. Skipped rather than failed with no bundle, which is what the app runs as.
+        print("declared document types")
+        if let types = Bundle.main.object(forInfoDictionaryKey: "CFBundleDocumentTypes") as? [[String: Any]] {
+            let declared = Set(types.flatMap { $0["LSItemContentTypes"] as? [String] ?? [] })
+            check("Info.plist declares exactly what Files.opens will open",
+                  declared == Set(Files.types.map(\.identifier)))
+        } else {
+            print("  --    no bundle (running the bare binary), nothing to compare")
         }
 
         print("keychain round-trip")

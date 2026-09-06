@@ -373,7 +373,15 @@ struct WebCard: View {
                 WebView(web: tab.web).id(tab.id)
             } else {
                 // No tabs: nothing to draw. The glass ground shows through, like the sidebar.
+                // With nothing mounted there is also no WKWebView to argue with over a
+                // dropped file, so the bare card is the one part of the page area that can
+                // take one: dropping a PDF on a window showing nothing is not ambiguous.
+                // Everywhere else files go to the sidebar — see `SidebarDrop`.
                 Color.clear
+                    .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                        Files.openDropped(providers, in: store)
+                        return true
+                    }
             }
             OffscreenPages()
             if let tab = store.active { LoadingBar(tab: tab) }
@@ -610,13 +618,11 @@ private struct LiveAddressPill: View {
                  zoom: PillState.zoomLabel(tab.zoom))
     }
 
-    /// The host alone, the way Arc shows it — the scheme and `www.` are noise the user has
-    /// never needed to read.
+    /// The host alone, the way Arc shows it — or a local file's own name. See
+    /// `Files.pillLabel`, which is where both are decided.
     private var host: String {
-        guard let h = tab.currentURL?.host() else {
-            return tab.address.isEmpty ? "Search or Enter URL" : tab.address
-        }
-        return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
+        if let label = Files.pillLabel(tab.currentURL) { return label }
+        return tab.address.isEmpty ? "Search or Enter URL" : tab.address
     }
 }
 

@@ -46,13 +46,35 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       <key>CFBundleURLSchemes</key>       <array><string>http</string><string>https</string></array>
     </dict>
   </array>
+  <!-- Finder ▸ Open With ▸ Vane. Every type here is one WebKit already draws, so claiming
+       it costs no code of ours; Files.swift keeps the same list. Alternate rank throughout:
+       Vane offers to open a PDF, it does not take it away from Preview. -->
   <key>CFBundleDocumentTypes</key>
   <array>
+    <dict>
+      <key>CFBundleTypeName</key>         <string>PDF Document</string>
+      <key>CFBundleTypeRole</key>         <string>Viewer</string>
+      <key>LSHandlerRank</key>            <string>Alternate</string>
+      <key>LSItemContentTypes</key>       <array><string>com.adobe.pdf</string></array>
+    </dict>
     <dict>
       <key>CFBundleTypeName</key>         <string>HTML Document</string>
       <key>CFBundleTypeRole</key>         <string>Viewer</string>
       <key>LSHandlerRank</key>            <string>Alternate</string>
       <key>LSItemContentTypes</key>       <array><string>public.html</string><string>public.xhtml</string></array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>         <string>Image</string>
+      <key>CFBundleTypeRole</key>         <string>Viewer</string>
+      <key>LSHandlerRank</key>            <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.png</string>
+        <string>public.jpeg</string>
+        <string>public.svg-image</string>
+        <string>com.compuserve.gif</string>
+        <string>org.webmproject.webp</string>
+      </array>
     </dict>
   </array>
   <key>NSCameraUsageDescription</key>     <string>Websites you visit can ask to use your camera.</string>
@@ -80,4 +102,8 @@ fi
 codesign -d --entitlements - --xml "$APP" 2>&1 | grep -q "com.apple.security.app-sandbox" \
   || { echo "FAIL: com.apple.security.app-sandbox is not in the signature"; exit 1; }
 
+# Deliberately no `lsregister -f`: it force-registers whatever bundle was just built under
+# the shared bundle id, so a build in a worktree would take over the user's http/https
+# default and run against their real container. Launch Services registers the bundle the
+# first time it is launched with `open`, which is how anyone actually runs it.
 echo "OK: built $APP (sandboxed) — open with: open $APP"
