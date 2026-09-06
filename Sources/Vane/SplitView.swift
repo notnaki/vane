@@ -436,6 +436,9 @@ private struct Pane: View {
 
     var body: some View {
         WebView(web: tab.web).id(tab.id)
+            // Anchored to a field in *this* pane's page, so it is drawn on the pane. On the
+            // card it would hang over the neighbour at whatever offset this page asked for.
+            .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
             // A pane is on screen whether or not the keyboard is in it, so a pane that comes
             // back from the session parked has to wake up rather than sit there blank.
             .onAppear { tab.resume() }

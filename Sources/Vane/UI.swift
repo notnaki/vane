@@ -370,7 +370,11 @@ struct WebCard: View {
             if let split = store.activeSplit {
                 SplitPanes(split: split)
             } else if let tab = store.active {
+                // The list of saved accounts hangs off a field *in this page*, so it is an
+                // overlay on the page and not on the window's card — which is also what puts
+                // it in the right pane in a split. See SplitView's own `Pane`.
                 WebView(web: tab.web).id(tab.id)
+                    .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
             } else {
                 // No tabs: nothing to draw. The glass ground shows through, like the sidebar.
                 // With nothing mounted there is also no WKWebView to argue with over a
@@ -384,9 +388,6 @@ struct WebCard: View {
                     }
             }
             OffscreenPages()
-            // Inside the card's clip and above the page, but positioned against the page
-            // rather than floated over its top edge: it hangs off a field in the form.
-            if let tab = store.active, tab.passwordChoice != nil { PasswordChooser(tab: tab) }
             if let tab = store.active { LoadingBar(tab: tab) }
             VStack(spacing: 8) {
                 if store.findOpen, let tab = store.active {

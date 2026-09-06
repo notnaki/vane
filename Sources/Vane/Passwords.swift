@@ -8,12 +8,12 @@ import WebKit
 /// user's login and is already the right place for a password. Settings ▸ Passwords is the
 /// management UI over it; Keychain Access.app still opens exactly the same items.
 enum Passwords {
-    /// One saved login. A value rather than a tuple because the list draws rows from these,
-    /// and a row needs an identity that survives an edit to the password.
-    struct Credential: Identifiable, Hashable, Sendable {
+    /// One saved login as everything outside this file knows it: which site, which account.
+    /// Deliberately *not* the password — a password is read one item at a time, at the
+    /// moment something actually needs it, and is never held anywhere that outlives the use.
+    struct Login: Identifiable, Hashable, Sendable {
         let host: String
         let account: String
-        let password: String
         /// Host and account are the keychain's own primary key for the item, so they are
         /// also what "the same login" means everywhere else — last-used included.
         var id: String { Passwords.key(host: host, account: account) }
@@ -68,13 +68,55 @@ enum Passwords {
         return q
     }
 
+    // MARK: Scope
+
+    /// Whether an item carrying this security domain belongs to `scope`.
+    ///
+    /// The whole point of a separate function: "no security domain" is not expressible as a
+    /// `SecItemCopyMatching` query, so a default-profile query matches *every* profile's and
+    /// every test instance's item for the same host, and the narrowing has to be done by
+    /// hand on the results. Getting it wrong fails open — you read, overwrite or delete
+    /// somebody else's login — so it lives in one place and is asserted.
+    static func owns(scope: String?, itemDomain: String?) -> Bool {
+        scope == nil ? (itemDomain ?? "").isEmpty : itemDomain == scope
+    }
+
+    /// The persistent reference of the one item this profile owns for host+account.
+    ///
+    /// Everything that touches a single item goes through here, because a plain
+    /// host+account query is exactly the one that fails open for the default profile.
+    /// A persistent ref names *that* item and nothing else, so the read or the delete that
+    /// follows cannot land on a neighbour.
+    private static func ref(host: String, account: String, profileID: UUID) -> Data? {
+        var q = query(host: host, account: account, profileID: profileID)
+        q[kSecReturnAttributes as String] = true
+        q[kSecReturnPersistentRef as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitAll
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
+              let items = out as? [[String: Any]] else { return nil }
+        let scope = domain(profileID)
+        return items.first {
+            owns(scope: scope, itemDomain: $0[kSecAttrSecurityDomain as String] as? String)
+        }?[kSecValuePersistentRef as String] as? Data
+    }
+
+    // MARK: Reading and writing
+
     static func save(host: String, account: String, password: String,
                      profileID: UUID = ProfileManager.activeProfileID) {
-        SecItemDelete(query(host: host, account: account, profileID: profileID) as CFDictionary)
+        // Add first, then drop the old item: a failed add must not leave the login gone.
+        // The add fails with errSecDuplicateItem when one is already there, which is the
+        // signal to update it in place instead.
         var add = query(host: host, account: account, profileID: profileID)
         add[kSecValueData as String] = Data(password.utf8)
         add[kSecAttrLabel as String] = "\(host) (Vane)"
-        SecItemAdd(add as CFDictionary, nil)
+        let status = SecItemAdd(add as CFDictionary, nil)
+        if status == errSecDuplicateItem, let existing = ref(host: host, account: account,
+                                                            profileID: profileID) {
+            SecItemUpdate([kSecValuePersistentRef as String: existing] as CFDictionary,
+                          [kSecValueData as String: Data(password.utf8)] as CFDictionary)
+        }
         invalidate()
     }
 
@@ -82,24 +124,43 @@ enum Passwords {
     /// chooser would put first — see `matches`.
     static func lookup(host: String,
                        profileID: UUID = ProfileManager.activeProfileID) -> (account: String, password: String)? {
-        guard let hit = matches(host: host, profileID: profileID).first else { return nil }
-        return (hit.account, hit.password)
+        guard let hit = matches(host: host, profileID: profileID).first,
+              let secret = password(host: hit.host, account: hit.account, profileID: profileID)
+        else { return nil }
+        return (hit.account, secret)
     }
 
     /// Every saved login for one host, best first: whatever was filled here most recently,
     /// then the never-used ones alphabetically. More than one is what raises the chooser on
     /// the page; one keeps the old fill-and-go behaviour.
+    ///
+    /// Names only. The page needs to know *whether* there is a choice long before anything
+    /// needs a password, and answering that must not decrypt anything.
     static func matches(host: String,
-                        profileID: UUID = ProfileManager.activeProfileID) -> [Credential] {
+                        profileID: UUID = ProfileManager.activeProfileID) -> [Login] {
         rank(all(profileID: profileID).filter { $0.host == host },
              used: lastUsed(profileID: profileID))
+    }
+
+    /// One password, decrypted here and now. The only door to plaintext in the app; nothing
+    /// caches what comes back out of it.
+    static func password(host: String, account: String,
+                         profileID: UUID = ProfileManager.activeProfileID) -> String? {
+        guard let ref = ref(host: host, account: account, profileID: profileID) else { return nil }
+        var out: CFTypeRef?
+        guard SecItemCopyMatching([
+            kSecClass as String: kSecClassInternetPassword,
+            kSecValuePersistentRef as String: ref,
+            kSecReturnData as String: true,
+        ] as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// The order rule itself, taking its inputs rather than reading them, so it is provable
     /// headless. Ties on the same instant — two fills inside one clock tick — fall back to
     /// the alphabet rather than to whatever order the keychain handed the items over in.
-    static func rank(_ credentials: [Credential], used: [String: Date]) -> [Credential] {
-        credentials.sorted { a, b in
+    static func rank(_ logins: [Login], used: [String: Date]) -> [Login] {
+        logins.sorted { a, b in
             switch (used[a.id], used[b.id]) {
             case let (x?, y?): x == y ? a.account < b.account : x > y
             case (_?, nil): true
@@ -109,16 +170,17 @@ enum Passwords {
         }
     }
 
-    /// Every credential Vane created for this profile. Lives here, beside `creator` and
-    /// `domain`, because a second copy of that query elsewhere silently returns nothing the
-    /// day either of them changes.
+    /// Which logins this profile has — sites and usernames, no secrets. Lives here, beside
+    /// `creator` and `owns`, because a second copy of that query elsewhere silently returns
+    /// nothing, or somebody else's items, the day either of them changes.
     ///
-    /// Read through a cache: the Passwords pane asks for the whole list on every keystroke
-    /// in its search field, and every item comes back decrypted. Any write through this
-    /// file drops the cache; a change made *outside* Vane — Keychain Access, another window
-    /// of a second instance — is only picked up on the next launch. ponytail: that is the
-    /// ceiling; the upgrade path is a keychain change notification.
-    static func all(profileID: UUID = ProfileManager.activeProfileID) -> [Credential] {
+    /// Read through a cache, and the cache holds *only* what this returns: the pane asks for
+    /// the whole list on every keystroke in its search field, and a cache of decrypted
+    /// passwords sitting in a process for its whole life is exactly what a password manager
+    /// must not be. Any write through this file drops it; a change made outside Vane —
+    /// Keychain Access, another instance — is picked up on the next launch. ponytail: that
+    /// is the ceiling; the upgrade path is a keychain change notification.
+    static func all(profileID: UUID = ProfileManager.activeProfileID) -> [Login] {
         cacheLock.lock()
         let hit = cached[profileID]
         cacheLock.unlock()
@@ -132,7 +194,7 @@ enum Passwords {
 
     /// `nonisolated(unsafe)` plus an explicit lock, for the same reason `UserDefaults.vane`
     /// is: the keychain is reachable from any thread and this is only a read-through copy.
-    private nonisolated(unsafe) static var cached: [UUID: [Credential]] = [:]
+    private nonisolated(unsafe) static var cached: [UUID: [Login]] = [:]
     private static let cacheLock = NSLock()
 
     private static func invalidate() {
@@ -141,12 +203,7 @@ enum Passwords {
         cacheLock.unlock()
     }
 
-    /// Two passes on purpose. `kSecMatchLimitAll` together with `kSecReturnData` is
-    /// undefined behaviour on macOS and in practice comes back empty for keychain items —
-    /// which is a silent, total failure: an empty list looks exactly like "nothing saved".
-    /// So the sweep asks for attributes only, and each password is then read the way a
-    /// single login has always been read.
-    private static func fetch(profileID: UUID) -> [Credential] {
+    private static func fetch(profileID: UUID) -> [Login] {
         var q: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
             kSecAttrCreator as String: creator,
@@ -160,35 +217,26 @@ enum Passwords {
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
               let items = out as? [[String: Any]] else { return [] }
 
-        return items.compactMap { item -> Credential? in
-            guard let host = item[kSecAttrServer as String] as? String else { return nil }
-            // "no security domain" is not expressible as a query, so the real app's default
-            // profile filters other profiles' — and any test instance's — items out here.
-            let itemDomain = item[kSecAttrSecurityDomain as String] as? String ?? ""
-            if scope == nil && !itemDomain.isEmpty { return nil }
-            let account = item[kSecAttrAccount as String] as? String ?? ""
-            guard let password = secret(host: host, account: account, profileID: profileID)
+        return items.compactMap { item -> Login? in
+            guard let host = item[kSecAttrServer as String] as? String,
+                  owns(scope: scope, itemDomain: item[kSecAttrSecurityDomain as String] as? String)
             else { return nil }
-            return Credential(host: host, account: account, password: password)
+            return Login(host: host, account: item[kSecAttrAccount as String] as? String ?? "")
         }.sorted { ($0.host, $0.account) < ($1.host, $1.account) }
-    }
-
-    private static func secret(host: String, account: String, profileID: UUID) -> String? {
-        var q = query(host: host, account: account, profileID: profileID)
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data else { return nil }
-        return String(decoding: data, as: UTF8.self)
     }
 
     @discardableResult
     static func delete(host: String, account: String,
                        profileID: UUID = ProfileManager.activeProfileID) -> Bool {
         defer { invalidate(); forgetUse(host: host, account: account, profileID: profileID) }
-        return SecItemDelete(query(host: host, account: account,
-                                   profileID: profileID) as CFDictionary) == errSecSuccess
+        // By reference, not by host+account: the default profile's query also matches every
+        // other profile's item for the same site, and a delete that hits one of those is a
+        // login silently gone from a profile the user was not even looking at.
+        guard let ref = ref(host: host, account: account, profileID: profileID) else { return false }
+        return SecItemDelete([
+            kSecClass as String: kSecClassInternetPassword,
+            kSecValuePersistentRef as String: ref,
+        ] as CFDictionary) == errSecSuccess
     }
 
     // MARK: Last used
@@ -217,6 +265,17 @@ enum Passwords {
     private static func forgetUse(host: String, account: String, profileID: UUID) {
         var d = UserDefaults.vane.dictionary(forKey: usedKey(profileID)) ?? [:]
         guard d.removeValue(forKey: key(host: host, account: account)) != nil else { return }
+        UserDefaults.vane.set(d, forKey: usedKey(profileID))
+    }
+
+    /// Renaming an account in the pane is a delete plus a save, and the timestamp is keyed
+    /// on the account — so without this, correcting a typo in a username silently demotes
+    /// that login to the bottom of its own site's chooser.
+    static func renameUse(host: String, from: String, to: String,
+                          profileID: UUID = ProfileManager.activeProfileID) {
+        var d = UserDefaults.vane.dictionary(forKey: usedKey(profileID)) ?? [:]
+        guard let when = d.removeValue(forKey: key(host: host, account: from)) else { return }
+        d[key(host: host, account: to)] = when
         UserDefaults.vane.set(d, forKey: usedKey(profileID))
     }
 
@@ -269,8 +328,8 @@ enum Passwords {
         guard SecItemCopyMatching(all as CFDictionary, &out) == errSecSuccess,
               let items = out as? [[String: Any]] else { return }
         for item in items {
-            let d = item[kSecAttrSecurityDomain as String] as? String ?? ""
-            guard d.isEmpty, let host = item[kSecAttrServer as String] as? String,
+            guard owns(scope: nil, itemDomain: item[kSecAttrSecurityDomain as String] as? String),
+                  let host = item[kSecAttrServer as String] as? String,
                   let account = item[kSecAttrAccount as String] as? String else { continue }
             delete(host: host, account: account, profileID: profileID)
         }
@@ -278,9 +337,10 @@ enum Passwords {
 
     // MARK: check
 
-    /// The two rules that decide whose credentials this process can see and which of them a
-    /// login form is offered first. Both are pure, and both are the kind of thing that fails
-    /// silently: a namespace collision hands a test instance the user's real logins, and a
+    /// The three rules that decide whose credentials this process can see, which of them
+    /// counts as ours, and which one a login form is offered first. All pure, and all the
+    /// kind of thing that fails silently: a namespace collision hands a test instance the
+    /// user's real logins, a bad scope test reads or deletes another profile's item, and a
     /// bad ordering just puts the wrong username in the box.
     static func check() -> [(String, Bool)] {
         let other = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -290,10 +350,8 @@ enum Passwords {
         let testB = namespace(profileID: ProfileManager.defaultID, dataDir: "/tmp/b")
         let testAOther = namespace(profileID: other, dataDir: "/tmp/a")
 
-        func cred(_ account: String) -> Credential {
-            Credential(host: "example.com", account: account, password: "x")
-        }
-        let (ada, bob, cam) = (cred("ada"), cred("bob"), cred("cam"))
+        func login(_ account: String) -> Login { Login(host: "example.com", account: account) }
+        let (ada, bob, cam) = (login("ada"), login("bob"), login("cam"))
         let now = Date(timeIntervalSince1970: 1_700_000_000)
 
         return [
@@ -305,6 +363,17 @@ enum Passwords {
             ("…and profiles inside one still differ", testA != testAOther),
             ("the same data dir is stable across launches",
              testA == namespace(profileID: ProfileManager.defaultID, dataDir: "/tmp/a")),
+
+            // The scope test. Every read, write and delete of a single item hangs off this,
+            // and every wrong answer here is somebody else's password.
+            ("the default profile owns an item with no domain", owns(scope: nil, itemDomain: nil)),
+            ("…and an empty domain is the same as none", owns(scope: nil, itemDomain: "")),
+            ("…but not another profile's item",
+             owns(scope: nil, itemDomain: realOther) == false),
+            ("…and not a test instance's item", owns(scope: nil, itemDomain: testA) == false),
+            ("a profile owns only its own domain", owns(scope: realOther, itemDomain: realOther)),
+            ("…not an undomained one", owns(scope: realOther, itemDomain: nil) == false),
+            ("…and not another profile's", owns(scope: realOther, itemDomain: testAOther) == false),
 
             ("with nothing used, accounts are alphabetical",
              rank([cam, ada, bob], used: [:]).map(\.account) == ["ada", "bob", "cam"]),
@@ -340,7 +409,12 @@ struct PasswordChoice: Equatable {
     let anchor: CGRect
 }
 
-enum Autofill {
+@MainActor enum Autofill {
+    /// Its own content world, like PictureInPicture's. Nothing this script defines is on the
+    /// page's `window`, so a hostile page cannot replace `__vaneFill` with a function that
+    /// keeps whatever it is handed, and cannot post its own messages to `vanepw`.
+    static let world = WKContentWorld.world(name: "vane-passwords")
+
     /// Injected at document end, main frame only — a password field inside a cross-origin
     /// iframe is not ours to touch.
     static let script = """
@@ -374,22 +448,32 @@ enum Autofill {
         return { x: r.left, y: r.bottom, w: r.width };
       }
       window.__vaneAnchor = function () { return JSON.stringify(anchor()); };
+      function send(m) { webkit.messageHandlers.vanepw.postMessage(m); }
+      function ours(el) { var p = pair(document); return !!p && (el === p.user || el === p.pass); }
       // Chromium drops its list of saved accounts under the username field the moment you
-      // focus it, and Arc inherits that. Capture phase: a site that stops the event from
-      // bubbling must not also stop the browser's own chrome from appearing.
+      // focus it, and Arc inherits that. Capture phase throughout: a site that stops these
+      // events from bubbling must not also stop the browser's own chrome from appearing —
+      // or, worse, from going away again.
       document.addEventListener('focusin', function (e) {
-        var p = pair(document);
-        if (!p || (e.target !== p.user && e.target !== p.pass)) { return; }
+        if (!ours(e.target)) { return; }
         var a = anchor();
-        if (a) { webkit.messageHandlers.vanepw.postMessage({ focus: true, x: a.x, y: a.y, w: a.w }); }
+        if (a) { send({ focus: true, x: a.x, y: a.y, w: a.w }); }
       }, true);
+      // Everything that means "not interested any more". The list is anchored to a point
+      // that stops being true the moment any of these happens, so each one closes it.
+      document.addEventListener('focusout', function (e) {
+        if (ours(e.target)) { send({ dismiss: 'blur' }); }
+      }, true);
+      document.addEventListener('mousedown', function (e) {
+        if (!ours(e.target)) { send({ dismiss: 'click' }); }
+      }, true);
+      window.addEventListener('scroll', function () { send({ dismiss: 'scroll' }); }, true);
+      // A single-page app changes the form under us without a navigation.
+      window.addEventListener('popstate', function () { send({ dismiss: 'navigate' }); });
       function offer() {
         var p = pair(document);
         if (!p || !p.pass.value) { return; }
-        webkit.messageHandlers.vanepw.postMessage({
-          account: p.user ? p.user.value : '',
-          password: p.pass.value
-        });
+        send({ account: p.user ? p.user.value : '', password: p.pass.value });
       }
       document.addEventListener('submit', offer, true);
       // Plenty of logins never fire submit — a button posts via fetch and then navigates.
@@ -597,7 +681,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("hold ⌘Q to quit", QuitHold.check),
                                ("local files", Files.check),
                                ("saved passwords", Passwords.check),
-                               ("passwords pane", PasswordsPane.check)] {
+                               ("passwords pane", PasswordsPane.check),
+                               ("password chooser", PasswordChooser.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }
@@ -664,10 +749,11 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         print("autofill script")
         let cfg = Tab.configuration()
         cfg.userContentController.addUserScript(
-            WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+            WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
+                         forMainFrameOnly: true, in: Autofill.world))
         let b = Bridge()
         bridge = b
-        cfg.userContentController.add(b, name: "vanepw")
+        cfg.userContentController.add(b, contentWorld: Autofill.world, name: "vanepw")
         let w = WKWebView(frame: .init(x: 0, y: 0, width: 600, height: 400), configuration: cfg)
         w.navigationDelegate = b
         web = w
@@ -683,13 +769,23 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         }
 
         b.onLoaded = {
-            w.evaluateJavaScript(Autofill.fillJS(account: user, password: pass)) { filled, _ in
+            // In the script's own world, like the app does it — the page world has no
+            // `__vaneFill` at all any more, which is the point of the world.
+            w.evaluateJavaScript(Autofill.fillJS(account: user, password: pass),
+                                 in: nil, in: Autofill.world) { result in
+                let filled = try? result.get()
                 check("fill reports a form was found", (filled as? Bool) == true)
                 w.evaluateJavaScript("window.__state()") { state, _ in
                     let s = (state as? String) ?? ""
                     check("username reached component state", s.contains(user))
                     check("password reached component state", s.contains(pass))
                     check("decoy text field was not mistaken for the username", !s.contains("decoy"))
+                    // The whole point of the content world: a page cannot replace the fill
+                    // hook with one that keeps whatever the browser hands it.
+                    w.evaluateJavaScript("typeof window.__vaneFill + \" \" + typeof window.__vaneAnchor") { kinds, _ in
+                        check("the page's own world cannot see the autofill hooks",
+                              (kinds as? String) == "undefined undefined")
+                    }
                     w.evaluateJavaScript("document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}))") { _, _ in
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                             check("submit offered the credential back to the app", b.offered?.0 == user && b.offered?.1 == pass)
@@ -710,8 +806,11 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         var onLoaded: (() -> Void)?
         func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) { onLoaded?() }
         func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
-            guard let b = m.body as? [String: Any] else { return }
-            offered = ((b["account"] as? String) ?? "", (b["password"] as? String) ?? "")
+            // The same handler now carries focus and dismiss notices. Only an offer has a
+            // password in it, and only an offer is what this check is watching for.
+            guard let b = m.body as? [String: Any], b["focus"] == nil, b["dismiss"] == nil,
+                  let password = b["password"] as? String else { return }
+            offered = ((b["account"] as? String) ?? "", password)
         }
     }
 }

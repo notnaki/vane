@@ -81,13 +81,14 @@ final class VaneWindow: NSWindow {
     /// deliberately does not use `isMovableByWindowBackground`, which cannot tell the
     /// difference and moved the window from a drag on a tab row.
     override func sendEvent(_ event: NSEvent) {
-        // Escape drops a multi-select first — it is the most recent thing the user did, and
-        // so the thing they mean — then stops a page that is still coming in, and *only*
-        // then, so a page's own dialog, menu or full-screen video keeps its Escape the rest
-        // of the time.
+        // Escape takes the saved-account list down first — it is the newest thing on screen
+        // and the one thing the user cannot dismiss any other way — then drops a
+        // multi-select, then stops a page that is still coming in, and *only* then, so a
+        // page's own dialog, menu or full-screen video keeps its Escape the rest of the time.
         if event.type == .keyDown, event.keyCode == 53,
            MainActor.assumeIsolated({
-               Selection.clear(in: self) || TabActions.stopLoading(in: self)
+               PasswordChooser.dismiss(in: self) || Selection.clear(in: self)
+                   || TabActions.stopLoading(in: self)
            }) { return }
         // ⌘A takes the current tab's whole section — but only when nothing that types has
         // the focus, which is the whole of `Selection.selectAll`'s job.
