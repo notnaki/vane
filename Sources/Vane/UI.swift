@@ -1204,9 +1204,9 @@ private struct SpaceMenu: View {
     @Binding var theme: Bool
 
     var body: some View {
-        Button("Change Space Icon…") { icons = true }
+        Button("Change Space Icon…") { open($icons) }
         Button("Rename Space…") { renameSpace(space, in: store) }
-        Button("Edit Theme Color…") { theme = true }
+        Button("Edit Theme Color…") { open($theme) }
         Menu("Set Profile") {
             ForEach(ProfileManager.shared.profiles) { profile in
                 Button { moveSpace(space, to: profile, from: store) } label: {
@@ -1231,6 +1231,18 @@ private struct SpaceMenu: View {
         Button("Delete Space") { deleteSpace(space, in: store) }
             .disabled(store.spaces.count < 2)
     }
+}
+
+/// Opens a panel a menu item asked for, one turn of the run loop later.
+///
+/// A menu item's action runs while the menu is still on its way out, and a popover asked for
+/// there is asked for against a view AppKit has not given the pointer back to yet: SwiftUI
+/// takes the flag and drops the presentation. The panel then only turns up when something
+/// else happens to redraw the row it hangs off — which is why "Edit Theme Color…" showed
+/// nothing until the space's name was pressed again. By the next turn the menu has gone and
+/// the popover opens where it was asked for.
+@MainActor private func open(_ flag: Binding<Bool>) {
+    DispatchQueue.main.async { MainActor.assumeIsolated { flag.wrappedValue = true } }
 }
 
 /// Arc renames a Space in the sidebar, not in a dialog: this only arms the field, and
@@ -1323,8 +1335,12 @@ private struct SpaceIcons: View {
 /// current one. Only a private window has none, and it does not draw this at all.
 private struct SpaceDots: View {
     @EnvironmentObject var store: TabStore
-    @State private var icons = false
-    @State private var theme = false
+    /// *Which* dot's panel is open, not merely whether one is. Every dot draws its own
+    /// `.popover`, so on one shared flag all of them asked to present at once and SwiftUI
+    /// gave the panel to the last dot in the row: right-clicking any other dot opened the
+    /// editor on the *last* Space's colours, hanging off the last Space's dot.
+    @State private var icons: UUID?
+    @State private var theme: UUID?
     /// Which dot a drag is over, so only that one lights up.
     @State private var dropTarget: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1348,6 +1364,10 @@ private struct SpaceDots: View {
         let here = store.currentSpaceID == space.id
         let over = Binding(get: { dropTarget == space.id },
                            set: { dropTarget = $0 ? space.id : nil })
+        let showIcons = Binding(get: { icons == space.id },
+                                set: { icons = $0 ? space.id : nil })
+        let showTheme = Binding(get: { theme == space.id },
+                                set: { theme = $0 ? space.id : nil })
         ZStack {
             Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
                 .opacity(1 - lit)
@@ -1365,9 +1385,11 @@ private struct SpaceDots: View {
         .onDrag { spaceDragPayload(space) }
         .onDrop(of: [.plainText], delegate: SpaceDrop(store: store, space: space, over: over))
         .help(space.name)
-        .contextMenu { SpaceMenu(store: store, space: space, icons: $icons, theme: $theme) }
-        .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
-        .popover(isPresented: $theme) { ThemeEditor(store: store, space: space) }
+        .contextMenu {
+            SpaceMenu(store: store, space: space, icons: showIcons, theme: showTheme)
+        }
+        .popover(isPresented: showIcons) { SpaceIcons(store: store, space: space) }
+        .popover(isPresented: showTheme) { ThemeEditor(store: store, space: space) }
         .accessibilityLabel(space.name)
         .accessibilityAddTraits(here ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Switches to this space.")
