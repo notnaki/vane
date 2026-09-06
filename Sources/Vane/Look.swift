@@ -144,10 +144,49 @@ enum Look {
     /// a 250pt sidebar — which is the same reason `Pins.maxDepth` stops where it does.
     static let folderIndent: CGFloat = 14
 
-    /// The theme editor popover: seven swatches an `inset` apart, plus its margins. A swatch
-    /// is Arc's, measured off ref 8 at 2x.
-    static let swatch: CGFloat = 24
-    static let themeWidth: CGFloat = swatch * 7 + inset * 6 + inset * 4
+    /// The theme editor popover, measured off `arc-ref/arc-theme-editor.png` at 2x: a 350pt
+    /// panel over a near-square dot-grid canvas, a row of preset circles under it, and the
+    /// intensity slider beside the grain dial along the bottom.
+    static let themeWidth: CGFloat = 350
+    /// The canvas' height; its width is whatever the panel leaves (690px at 2x = 345).
+    static let themeCanvas: CGFloat = 300
+    /// The fine grid printed on it: pitch and dot.
+    static let themeGrid: CGFloat = 10
+    static let themeGridDot: CGFloat = 1
+    /// A draggable colour dot and the ring round it (90px at 2x).
+    static let themeDot: CGFloat = 44
+    static let themeRing: CGFloat = 3
+    /// The ring on the chosen preset, and how far it stands off the swatch.
+    static let themeSelectRing: CGFloat = 2
+    static let themeRingGap: CGFloat = 3
+    /// A preset circle (58px at 2x) and how many fit a page between the two chevrons.
+    static let swatch: CGFloat = 30
+    static let swatchPage = 8
+    /// The intensity slider: a `themeTrack`-tall pill with a sinusoid along it and a thumb
+    /// standing proud of it, the way Arc's does.
+    static let themeTrack: CGFloat = 30
+    static let themeThumb = CGSize(width: 24, height: 46)
+    /// The sinusoid's amplitude at full intensity, how many waves fit the track, and what is
+    /// left of the amplitude past the thumb.
+    static let themeWave: CGFloat = 11
+    static let themeWaves: Double = 8
+    /// Past the thumb the sinusoid flattens out entirely, the way Arc's does: the wave is
+    /// the strength, so there is nothing left of it past where the strength stops.
+    static let themeWaveRest: CGFloat = 0
+    static let themeWaveWidth: CGFloat = 4
+    /// The grain dial: the knob, the dotted ring round it, and how many dots the ring has.
+    static let themeDial: CGFloat = 46
+    static let themeDialRing: CGFloat = 74
+    static let themeDialDots = 32
+    /// Its pointer: a pill out on the dotted ring, at the angle the knob is turned to.
+    static let themeMarker = CGSize(width: 14, height: 7)
+    /// The slider's thumb and the dial's pointer. `ink`, not white: Arc's popover is
+    /// always dark, and a white pill on a Space pinned to light is a thumb nobody can see.
+    static let themeThumbInk = ink(0.9)
+    /// A popover's own ground. NSPopover hands its content a translucent material, so a panel
+    /// that draws nothing of its own has the window's wash streaking through it. Opaque and
+    /// appearance-following, which no `ink` alpha over nothing can be.
+    static let panelFill = Color(nsColor: .windowBackgroundColor)
 
     /// The Site Control Center popover. Wide enough for "Picture in Picture" and its switch
     /// on one line, and no wider — it hangs off the address pill, not off the window.
@@ -316,6 +355,73 @@ enum Look {
         let c = mixed(a, b, fraction)
         return Color(.sRGB, red: c.r, green: c.g, blue: c.b)
     }
+
+    /// A Space's ground as gradient stops. One colour is one stop — a flat wash, bit for bit
+    /// what every Space had before the editor could hold more than one — and several are the
+    /// diagonal Arc mixes across the window. Pure.
+    nonisolated static func stops(_ colors: [String], dark: Bool, strength: Double = defaultTint)
+        -> [(r: Double, g: Double, b: Double)] {
+        colors.compactMap { ground(hex: $0, dark: dark, strength: strength) }
+    }
+
+    /// The same, dragged `fraction` of the way towards the Space a swipe is pulling in. The
+    /// shorter palette repeats its last colour rather than losing a stop: a two-colour Space
+    /// swiped into a one-colour one arrives as a flat wash, instead of the gradient
+    /// collapsing to half its length halfway through the gesture.
+    nonisolated static func stops(_ a: [String], towards b: [String], fraction: Double,
+                                  dark: Bool, strength: Double)
+        -> [(r: Double, g: Double, b: Double)] {
+        let from = stops(a, dark: dark, strength: strength)
+        let to = stops(b, dark: dark, strength: strength)
+        guard !from.isEmpty, !to.isEmpty, fraction != 0 else { return from }
+        let f = min(max(fraction, 0), 1)
+        return (0..<max(from.count, to.count)).map {
+            mixed(from[min($0, from.count - 1)], to[min($0, to.count - 1)], f)
+        }
+    }
+
+    /// `stops`, as colours a gradient can be built from.
+    static func groundStops(_ a: [String], towards b: [String], fraction: Double,
+                            dark: Bool, strength: Double) -> [Color] {
+        stops(a, towards: b, fraction: fraction, dark: dark, strength: strength)
+            .map { Color(.sRGB, red: $0.r, green: $0.g, blue: $0.b) }
+    }
+
+    /// A tile of static noise, laid over the ground at `grain` × `grainMax`. Arc's themes
+    /// have a faint film grain over the wash; this is that, and nothing else.
+    ///
+    /// ponytail: one 64pt tile of white pixels at a fixed pseudo-random alpha, generated
+    /// once and tiled by the image view. Deliberately *static* — a per-frame shader would be
+    /// a real graphics project, and grain that crawls is a distraction rather than a texture.
+    /// Ceiling: the tile repeats every 64pt, which at these opacities is invisible.
+    @MainActor static let grain: NSImage = {
+        let n = 64
+        // The context owns its own buffer: a Swift array's pointer is only valid inside
+        // `withUnsafeMutableBytes`, and `makeImage()` reads it after that closure returns.
+        guard let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let pixels = ctx.data?.bindMemory(to: UInt8.self, capacity: ctx.bytesPerRow * n)
+        else { return NSImage() }
+        // A fixed seed, so the tile is the same every launch and never flickers between two
+        // windows drawing it at once.
+        var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+        for y in 0..<n {
+            for x in 0..<n {
+                seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+                let v = UInt8(truncatingIfNeeded: seed >> 33)
+                // Premultiplied white: the alpha is the noise, so the tile lightens the
+                // ground where it is bright and leaves it alone where it is not.
+                for c in 0..<4 { pixels[y * ctx.bytesPerRow + x * 4 + c] = v }
+            }
+        }
+        guard let image = ctx.makeImage() else { return NSImage() }
+        return NSImage(cgImage: image, size: CGSize(width: n, height: n))
+    }()
+
+    /// How much of the noise a `grain` of 1 actually shows. Past this it stops reading as a
+    /// texture on the wash and starts reading as a broken screen.
+    static let grainMax: Double = 0.09
 
     /// `#RRGGBB` → hue (0…1), saturation, brightness. Nil for anything else.
     nonisolated static func hsb(hex: String) -> (h: Double, s: Double, b: Double)? {
@@ -564,6 +670,42 @@ extension Look {
         }))
         out.append(("a rubber band past the end cannot push the ground past the neighbour",
                     mixing(4) { m, _, b in same(m, b) } && mixing(-4) { m, a, _ in m == a }))
+        // Several colours: the gradient the theme editor's extra dots make.
+        out.append(("one colour is one stop, and it is the flat wash it always was",
+                    stops(["#5A9BD5"], dark: true).count == 1
+                        && stops(["#5A9BD5"], dark: true).first.map { s in
+                            blue.map { same(s, $0) } == true } == true))
+        out.append(("each colour brings its own stop, in the order they were picked",
+                    stops(["#D9564F", "#4CAF6E"], dark: true).count == 2
+                        && red.map { a in same(stops(["#D9564F", "#4CAF6E"], dark: true)[0], a) } == true))
+        out.append(("a colour that is not #RRGGBB is not a stop",
+                    stops(["#4CAF6E", "sky"], dark: true).count == 1))
+        out.append(("a space with no colours has no stops and so no ground",
+                    stops([], dark: true).isEmpty))
+        out.append(("no swipe leaves every stop exactly where it was",
+                    stops(["#D9564F", "#4CAF6E"], towards: ["#5A9BD5"], fraction: 0,
+                          dark: true, strength: defaultTint).count == 2))
+        out.append(("a completed swipe into a one-colour space is that one colour, twice",
+                    blue.map { b in
+                        let s = stops(["#D9564F", "#4CAF6E"], towards: ["#5A9BD5"], fraction: 1,
+                                      dark: true, strength: defaultTint)
+                        return s.count == 2 && same(s[0], b) && same(s[1], b)
+                    } == true))
+        out.append(("swiping the other way pads the short palette rather than dropping a stop",
+                    stops(["#5A9BD5"], towards: ["#D9564F", "#4CAF6E"], fraction: 0.5,
+                          dark: true, strength: defaultTint).count == 2))
+        out.append(("half a swipe is half way on every stop",
+                    red.map { a in blue.map { b in
+                        let s = stops(["#D9564F"], towards: ["#5A9BD5"], fraction: 0.5,
+                                      dark: true, strength: defaultTint)
+                        return s.count == 1 && near(s[0].r, (a.r + b.r) / 2 * 255)
+                    } == true } == true))
+        out.append(("a rubber band past the end cannot push the stops past the neighbour",
+                    blue.map { b in
+                        let s = stops(["#D9564F"], towards: ["#5A9BD5"], fraction: 9,
+                                      dark: true, strength: defaultTint)
+                        return s.count == 1 && same(s[0], b)
+                    } == true))
         out.append(("hsb round-trips a pure red", {
             guard let h = hsb(hex: "#FF0000") else { return false }
             let c = rgb(h: h.h, s: h.s, b: h.b)

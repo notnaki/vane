@@ -233,6 +233,10 @@ extension VaneWindow {
         delegates.append(delegate)
         window.delegate = delegate
         store.window = window
+        // Here, not only in `BrowserWindow.onAppear`: the content view appears before the
+        // window is on the store, so a Space pinned to light or dark came up wearing the
+        // system's appearance until something else edited it.
+        store.applySpaceAppearance()
         window.makeKeyAndOrderFront(nil)
         return store
     }

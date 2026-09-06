@@ -997,7 +997,7 @@ private struct SpaceColumn: View {
                 .accessibilityLabel("Edit \(space.name)")
                 // The sidebar's own editor, so a Space is renamed in one place in the app.
                 .popover(isPresented: $editing, arrowEdge: .bottom) {
-                    SpaceEditor(store: store, space: space)
+                    ThemeEditor(store: store, space: space, naming: true)
                 }
         }
         .padding(.horizontal, Look.rowInset)

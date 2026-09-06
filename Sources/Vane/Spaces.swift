@@ -222,6 +222,80 @@ enum Spaces {
         }
     }
 
+    // MARK: - The theme
+
+    /// How many colours a Space's ground is mixed from at most. Arc's editor caps its canvas
+    /// at three dots and so does this: a fourth band across a 250pt sidebar is a stop nobody
+    /// can see, and the "+" that made it would be a button that does nothing visible.
+    static let maxThemeColors = 3
+
+    /// A Space's colours, first one first. A Space that predates the gradient has only
+    /// `colorHex`, and reads as the one-colour theme it is.
+    static func themeColors(of space: Space) -> [String] {
+        let list = space.colors ?? []
+        return list.isEmpty ? (space.colorHex.map { [$0] } ?? []) : list
+    }
+
+    /// …and the one way to set them, so `colorHex` never drifts out of step with the list it
+    /// is the first of. Everything that only knows about one colour reads `colorHex`.
+    static func setThemeColors(_ list: [String], on space: inout Space) {
+        let capped = Array(list.prefix(maxThemeColors))
+        space.colors = capped.isEmpty ? nil : capped
+        space.colorHex = capped.first
+    }
+
+    /// Where a colour sits on the editor's canvas: x is its hue, y its saturation, both 0…1.
+    ///
+    /// ponytail: two axes for three channels, and brightness is the one dropped —
+    /// `Look.ground` throws it away anyway (a Space's wash is its hue and saturation at a
+    /// fixed 14 % or 96 % brightness), so the field carries exactly the two channels the
+    /// window can actually show. Ceiling: a dot dragged off a dark preset comes back at full
+    /// brightness, which is the same ground and a brighter dot.
+    static func themePoint(hex: String) -> (x: Double, y: Double)? {
+        Look.hsb(hex: hex).map { (x: $0.h, y: $0.s) }
+    }
+
+    /// …and back. Off the edges is clamped rather than wrapped: a dot dragged out of the
+    /// canvas should stop at the edge, not reappear at the other one.
+    static func themeHex(x: Double, y: Double) -> String {
+        let c = Look.rgb(h: min(max(x, 0), 1), s: min(max(y, 0), 1), b: 1)
+        return String(format: "#%02X%02X%02X", Int((c.r * 255).rounded()),
+                      Int((c.g * 255).rounded()), Int((c.b * 255).rounded()))
+    }
+
+    /// The colour "+" adds: the last one, a fifth of the way round the wheel and saturated
+    /// enough to tell apart, so a new dot always makes a gradient you can see rather than a
+    /// second dot hiding under the first.
+    static func nextThemeColor(after list: [String]) -> String {
+        guard let last = list.last, let p = themePoint(hex: last) else {
+            return themeHex(x: 0.6, y: 0.7)
+        }
+        return themeHex(x: (p.x + 0.2).truncatingRemainder(dividingBy: 1), y: max(p.y, 0.35))
+    }
+
+    /// The grain dial's sweep: three quarters of a turn. The dead quarter is at the bottom,
+    /// where a knob that went the whole way round would flip 1 back to 0 under the finger.
+    static let dialSweep = Double.pi * 1.5
+
+    /// Radians clockwise from straight up for a 0…1 dial value.
+    static func dialAngle(_ value: Double) -> Double {
+        (min(max(value, 0), 1) - 0.5) * dialSweep
+    }
+
+    /// Where a point sits about the knob's centre: radians clockwise from straight up.
+    static func dialRadians(dx: Double, dy: Double) -> Double { atan2(dx, -dy) }
+
+    /// The knob turned from one angle to the next. Deliberately *relative* — the value moves
+    /// by however far the finger swept, from wherever the knob already was — so a click on the
+    /// dial moves nothing, and a sweep through the dead quarter at the bottom parks at the end
+    /// it came from instead of snapping across to the other one.
+    static func dialTurn(from: Double, to: Double, value: Double) -> Double {
+        var delta = to - from
+        if delta > .pi { delta -= 2 * .pi }
+        if delta < -.pi { delta += 2 * .pi }
+        return min(max(value + delta / dialSweep, 0), 1)
+    }
+
     // MARK: - Two-finger swipe
 
     /// The horizontal swipe on the sidebar, as a state machine over scroll deltas so the
@@ -436,6 +510,82 @@ enum Spaces {
                reordered([1, 2, 3], from: 0, to: 3) == [2, 3, 1])
         assert("an out-of-range drag is refused rather than crashing",
                reordered([1, 2, 3], from: 9, to: 0) == [1, 2, 3])
+
+        // The theme. What the editor's canvas, its "+"/"−" and its grain dial write down.
+        var themed = Space(name: "T", profileID: pid, colorHex: "#4CAF6E")
+        assert("a space that predates the gradient reads as the one colour it has",
+               themeColors(of: themed) == ["#4CAF6E"])
+        assert("a space with no colour at all has no stops to mix",
+               themeColors(of: Space(name: "T", profileID: pid)).isEmpty)
+        setThemeColors(["#4CAF6E", "#5A9BD5"], on: &themed)
+        assert("the list is what a space with several colours reads back",
+               themeColors(of: themed) == ["#4CAF6E", "#5A9BD5"])
+        assert("…and colorHex is kept as the first of them, for everything that knows one",
+               themed.colorHex == "#4CAF6E")
+        setThemeColors(["#4CAF6E", "#5A9BD5", "#E48FB1", "#E3C34A"], on: &themed)
+        assert("a fourth colour is refused rather than stored", themed.colors?.count == maxThemeColors)
+        setThemeColors([], on: &themed)
+        assert("clearing the colours clears both fields, not just the list",
+               themed.colors == nil && themed.colorHex == nil && themeColors(of: themed).isEmpty)
+
+        // The canvas: x is hue, y is saturation.
+        assert("a fully saturated red is at the left edge, at the bottom",
+               themePoint(hex: "#FF0000").map { $0.x == 0 && $0.y == 1 } == true)
+        assert("dragging down saturates: the top edge is white, whatever the hue",
+               themeHex(x: 0.35, y: 0) == "#FFFFFF" && themeHex(x: 0.9, y: 0) == "#FFFFFF")
+        assert("the bottom-left corner is that same pure red back again",
+               themeHex(x: 0, y: 1) == "#FF0000")
+        assert("a colour round-trips through the canvas",
+               themePoint(hex: "#00FF00").map { themeHex(x: $0.x, y: $0.y) == "#00FF00" } == true)
+        assert("…and so does the ground it makes, which is all the window shows of it",
+               Look.hsb(hex: "#5A9BD5").map { c in
+                   themePoint(hex: "#5A9BD5").map { p in
+                       Look.hsb(hex: themeHex(x: p.x, y: p.y)).map {
+                           abs($0.h - c.h) < 0.01 && abs($0.s - c.s) < 0.01
+                       } == true
+                   } == true
+               } == true)
+        // The canvas is a lossy view of a colour, which is why the editor keeps the dragged
+        // dot's own place in hand rather than re-deriving it from the hex it just wrote.
+        assert("a grey has no hue to read back, so it reads as the unsaturated top edge",
+               themePoint(hex: "#808080").map { $0.y == 0 } == true)
+        assert("both ends of the hue axis are the same colour, so a place cannot be recovered",
+               themeHex(x: 0, y: 1) == themeHex(x: 1, y: 1)
+                   && themePoint(hex: themeHex(x: 1, y: 1)).map { $0.x == 0 } == true)
+        assert("a dot dragged off the canvas stops at the edge rather than wrapping",
+               themeHex(x: -3, y: 4) == themeHex(x: 0, y: 1))
+        assert("a colour that is not #RRGGBB has no place on the canvas",
+               themePoint(hex: "sky") == nil)
+        assert("the colour + adds is a different one, so the gradient is visible",
+               nextThemeColor(after: ["#4CAF6E"]) != "#4CAF6E")
+        assert("…and it is saturated enough to be a stop rather than a grey",
+               Look.hsb(hex: nextThemeColor(after: ["#FFFFFF"])).map { $0.s > 0.3 } == true)
+        assert("+ on a space with no colour still adds a real one",
+               Look.hsb(hex: nextThemeColor(after: [])) != nil)
+
+        // The grain dial: three quarters of a turn, clockwise from bottom-left, and turned
+        // by how far the finger sweeps rather than by where it lands.
+        assert("straight up is the middle of the sweep", dialAngle(0.5) == 0)
+        assert("the sweep's ends are a dead quarter apart at the bottom",
+               abs(dialAngle(1) - dialAngle(0) - dialSweep) < 0.001)
+        assert("a point straight up is at angle zero", dialRadians(dx: 0, dy: -1) == 0)
+        assert("…and one to the right is a quarter turn clockwise",
+               abs(dialRadians(dx: 1, dy: 0) - .pi / 2) < 0.001)
+        assert("a drawn angle and a measured one agree", [0, 0.25, 0.5, 0.75, 1].allSatisfy { v in
+            abs(dialRadians(dx: sin(dialAngle(v)), dy: -cos(dialAngle(v))) - dialAngle(v)) < 0.001
+        })
+        assert("a knob that has not been swept keeps its value",
+               dialTurn(from: 1, to: 1, value: 0.4) == 0.4)
+        assert("a sweep of the whole range turns the knob from one end to the other",
+               abs(dialTurn(from: dialAngle(0), to: dialAngle(0) + dialSweep / 2,
+                            value: 0) - 0.5) < 0.001)
+        assert("sweeping backwards turns it back",
+               abs(dialTurn(from: 0, to: -dialSweep / 4, value: 0.5) - 0.25) < 0.001)
+        assert("a sweep across the wrap takes the short way round, not the long one",
+               abs(dialTurn(from: 3.0, to: -3.0, value: 0.5) - (0.5 + (2 * .pi - 6) / dialSweep))
+                   < 0.001)
+        assert("sweeping past an end parks there rather than snapping to the other one",
+               dialTurn(from: 0, to: 3, value: 0.95) == 1 && dialTurn(from: 0, to: -3, value: 0.05) == 0)
 
         // The swipe. A 300pt sidebar with three Spaces, standing in the middle one, unless
         // an assertion says otherwise.

@@ -281,11 +281,19 @@ struct Space: Identifiable, Codable, Equatable {
     var icon: String?
     var appearance: String?
     var tint: Double?
+    /// Every colour the ground is mixed from, first one first. `colorHex` is that first
+    /// colour, kept in step by `Spaces.setThemeColors`, so a space written before the theme
+    /// editor could hold more than one still reads as a one-colour theme and everything that
+    /// only knows about one — the footer dot, the toast, the Spaces menu — is untouched.
+    var colors: [String]?
+    /// How much static noise the ground wears, 0…1. See `Look.grain`.
+    var grain: Double?
 
     init(id: UUID = UUID(), name: String, profileID: UUID,
          tabURLs: [URL] = [], pinnedURLs: [URL] = [], pinnedTabURLs: [URL]? = nil,
          colorHex: String? = nil, icon: String? = nil,
-         appearance: String? = nil, tint: Double? = nil) {
+         appearance: String? = nil, tint: Double? = nil,
+         colors: [String]? = nil, grain: Double? = nil) {
         self.id = id
         self.name = name
         self.profileID = profileID
@@ -296,6 +304,8 @@ struct Space: Identifiable, Codable, Equatable {
         self.icon = icon
         self.appearance = appearance
         self.tint = tint
+        self.colors = colors
+        self.grain = grain
     }
 }
 
@@ -718,16 +728,29 @@ struct Space: Identifiable, Codable, Equatable {
                (try? JSONDecoder().decode([Space].self, from: Data(legacySpace.utf8)))?.first
                    .map { $0.name == "Old" && $0.icon == nil && $0.colorHex == nil
                           && $0.appearance == nil && $0.tint == nil } == true)
+        assert("…and a space written before the gradient and the grain did too, with defaults",
+               (try? JSONDecoder().decode([Space].self, from: Data(legacySpace.utf8)))?.first
+                   .map { $0.colors == nil && $0.grain == nil } == true)
+        let oneColour = ##"[{"id":"\##(UUID().uuidString)","name":"Old","profileID":"\##(work.id.uuidString)","tabURLs":[],"pinnedURLs":[],"colorHex":"#4CAF6E"}]"##
+        assert("an older one-colour space reads as a one-colour theme, not as no theme",
+               (try? JSONDecoder().decode([Space].self, from: Data(oneColour.utf8)))?.first
+                   .map { Spaces.themeColors(of: $0) == ["#4CAF6E"] } == true)
         var themed = edited
         themed.icon = "leaf"
         themed.colorHex = "#4FA07A"
         themed.appearance = "dark"
         themed.tint = 0.4
+        themed.colors = ["#4FA07A", "#5A9BD5"]
+        themed.grain = 0.6
         pm.updateSpace(themed)
         assert("a space's icon, colour, appearance and tint round-trip",
                pm.spaces(for: work.id).first.map {
                    $0.icon == "leaf" && $0.colorHex == "#4FA07A"
                    && $0.appearance == "dark" && $0.tint == 0.4
+               } == true)
+        assert("…and so do its extra gradient colours and its grain",
+               pm.spaces(for: work.id).first.map {
+                   $0.colors == ["#4FA07A", "#5A9BD5"] && $0.grain == 0.6
                } == true)
         pm.updateSpace(edited)
         pm.deleteSpace(reading.id, in: work.id)
