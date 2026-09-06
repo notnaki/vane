@@ -638,12 +638,43 @@ enum Command: String, CaseIterable, Codable, Sendable {
         return Command.allCases.first { Keybindings.binding(for: $0) == binding }
     }
 
+    /// A second chord for a command, on top of the one the menu shows and the Shortcuts pane
+    /// rebinds. Arc binds Back and Forward to both ⌘[ / ⌘] and ⌘← / ⌘→, and the arrows are
+    /// the pair most people reach for.
+    ///
+    /// ponytail: a two-row table read only by `handle`, rather than a second binding per
+    /// command everywhere. `binding(for:)` still answers with the one chord a menu item can
+    /// display, `conflicts` still compares the one the user can change, and rebinding Back
+    /// leaves the arrows where Arc has them. Ceiling: the alias is not rebindable and not
+    /// listed in the Shortcuts pane.
+    ///
+    /// Anything added here inherits the two guards in `alias(_:fieldEditor:pageEditable:)`,
+    /// which is the point of the table: a chord a text field could want must not be claimed
+    /// by the browser while one is being typed into.
+    nonisolated static let aliases: [Command: Keybinding] = [
+        .back: Keybinding("\u{F702}", .command),
+        .forward: Keybinding("\u{F703}", .command),
+    ]
+
+    /// Which command an alias chord fires, or nil when something that types should keep the
+    /// keystroke: a field editor in the chrome (the url bar, a rename field, the find bar), or
+    /// an input, textarea or contenteditable on the page. One rule said about the two places
+    /// a caret can be — ⌘← belongs to the caret wherever there is one, and navigating away
+    /// from a half-filled form is the one outcome nobody means.
+    ///
+    /// Pure, so `selfcheck --pure` can prove the guards with no page and no first responder.
+    nonisolated static func alias(_ b: Keybinding, fieldEditor: Bool,
+                                  pageEditable: Bool) -> Command? {
+        guard !fieldEditor, !pageEditable else { return nil }
+        return aliases.first { $0.value == b }?.key
+    }
+
     /// Install with:
     ///   NSEvent.addLocalMonitorForEvents(matching: .keyDown) { Keybindings.handle($0) ? nil : $0 }
     /// True means "consumed" — the caller must swallow the event.
     static func handle(_ event: NSEvent) -> Bool {
-        guard event.type == .keyDown, let b = Keybinding(event: event),
-              let cmd = command(for: b), let action = actions[cmd] else { return false }
+        guard event.type == .keyDown, let b = Keybinding(event: event) else { return false }
+        guard let cmd = command(for: b), let action = actions[cmd] else { return alias(b) }
         // ponytail: WKWebView gives no synchronous "did the page take it?", so `.page`
         // means "hands off whenever web content has focus" and Vane's action is simply
         // unreachable there. Ceiling: doing better needs a JS keydown listener reporting
@@ -653,6 +684,42 @@ enum Command: String, CaseIterable, Codable, Sendable {
         return true
     }
 
+    /// The alias chords, tried only after the real bindings — a user who rebinds something
+    /// onto ⌘← gets what they asked for, and Arc's arrows are what is left.
+    ///
+    /// Both guards are read here, synchronously, because this monitor runs *ahead* of
+    /// AppKit's dispatch: without them Vane would win ⌘← before WebKit ever saw it, and a
+    /// user typing in a comment box would lose the box. The page's half is a flag the page
+    /// keeps up to date on its own — see `PageFocus` — rather than a round trip per key.
+    private static func alias(_ b: Keybinding) -> Bool {
+        // Cheapest question first: every keystroke in the app comes through here, and only
+        // two chords are worth walking the responder chain for.
+        guard aliases.values.contains(b) else { return false }
+        let r = NSApp.keyWindow?.firstResponder
+        guard let cmd = alias(b, fieldEditor: r is NSText || r is NSTextView,
+                              pageEditable: focusedTab()?.editableFocused == true),
+              let action = actions[cmd] else { return false }
+        // The alias is the same command, so it obeys the same priority: someone who has given
+        // Back to the page has given it both chords, not one.
+        if priority(for: cmd) == .page, webContentHasFocus() { return false }
+        action()
+        return true
+    }
+
+    /// The tab whose page holds the keyboard, by walking up from the first responder to the
+    /// WKWebView it lives inside. Not "the window's current tab": a split view has two live
+    /// pages, and only the one being typed in may keep the chord.
+    private static func focusedTab() -> Tab? {
+        var view = NSApp.keyWindow?.firstResponder as? NSView
+        while let v = view {
+            if let web = v as? WKWebView {
+                return TabStore.all.lazy.flatMap(\.tabs).first { $0.web === web }
+            }
+            view = v.superview
+        }
+        return nil
+    }
+
     private static func webContentHasFocus() -> Bool {
         var view = NSApp.keyWindow?.firstResponder as? NSView
         while let v = view {
@@ -660,6 +727,88 @@ enum Command: String, CaseIterable, Codable, Sendable {
             view = v.superview
         }
         return false
+    }
+}
+
+// MARK: - Is the page being typed into
+
+/// Whether the page has a caret in something of its own — an input, a textarea, a
+/// contenteditable — kept on the Tab so a key monitor can ask synchronously.
+///
+/// WebKit has no synchronous "what is focused" API: `document.activeElement` is an
+/// `evaluateJavaScript` away, and a key monitor has to answer before the keystroke moves on.
+/// So the page reports its own focus as it changes and Swift caches the last answer — the
+/// same shape as `StatusBar`'s hovered link, and for the same reason.
+///
+/// **Per frame, not per tab.** Each frame reports about itself, so one boolean would be
+/// last-writer-wins: clicking from an iframe's field into a top-level one posts `true` from
+/// the top frame and then, one turn later, `false` from the iframe's deferred focusout — and
+/// the tab would look idle with a caret in it. So a frame identifies itself and the Tab keeps
+/// the *set* of frames reporting a caret; anything in it means "typing".
+///
+/// Its own content world, like `PictureInPicture`: `__vaneEdit` is then not on the page's
+/// `window` at all, and a page cannot null out `webkit.messageHandlers` to make Vane believe
+/// its field is not focused.
+///
+/// ponytail: a token per frame and a set per tab, not a description of *what* is focused.
+/// The only question anyone asks is "would this keystroke be typing". Ceiling: focus that
+/// moves in the same turn as the keystroke is read one event late; a frame torn down without
+/// firing `pagehide` or `unload` leaves its token behind until the next top-level navigation
+/// (which clears the set); and a page whose frames block user scripts reports nothing.
+@MainActor enum PageFocus {
+    static let messageName = "vaneedit"
+
+    /// Out of the page's reach — see the note above.
+    static let world = WKContentWorld.world(name: "vane-edit")
+
+    /// All frames: a comment box is as likely to be in an iframe as not. `focusout` fires
+    /// *before* focus lands, so it re-reads on the next turn rather than trusting
+    /// `activeElement` mid-move; the trailing call covers a field focused before the listeners
+    /// existed (`autofocus`, or a bfcache restore re-running the script); `pagehide`/`unload`
+    /// take the frame's token back out when the frame goes.
+    static let script = """
+    (function () {
+      if (window.__vaneEdit) return; window.__vaneEdit = true;
+      var frame = "f" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      var last = null;
+      var plain = " button submit reset checkbox radio file image range color hidden ";
+      function editable(el) {
+        if (!el) return false;
+        var tag = (el.tagName || "").toLowerCase();
+        if (tag === "textarea") return true;
+        if (tag === "input") {
+          return plain.indexOf(" " + ((el.type || "text").toLowerCase()) + " ") < 0;
+        }
+        return !!el.isContentEditable;
+      }
+      function post(v) {
+        if (v === last) return;
+        last = v;
+        try {
+          webkit.messageHandlers.\(messageName).postMessage({ frame: frame, editable: v });
+        } catch (e) {}
+      }
+      function send() { post(editable(document.activeElement)); }
+      document.addEventListener("focusin", send, true);
+      document.addEventListener("focusout", function () { setTimeout(send, 0); }, true);
+      window.addEventListener("pagehide", function () { post(false); });
+      window.addEventListener("unload", function () { post(false); });
+      send();
+    })();
+    """
+
+    /// One frame's report folded into the tab's set: the frame is in it while it says it has
+    /// a caret and out of it the moment it says it has not. A body that is not one of our own
+    /// messages changes nothing — leaving the set as it was is the only answer that cannot
+    /// invent a caret or take a real one away.
+    static func frames(_ body: Any, in set: Set<String>) -> Set<String> {
+        guard let msg = body as? [String: Any], let frame = msg["frame"] as? String,
+              !frame.isEmpty else { return set }
+        let editable = (msg["editable"] as? Bool) ?? (msg["editable"] as? NSNumber)?.boolValue
+        guard let editable else { return set }
+        var out = set
+        if editable { out.insert(frame) } else { out.remove(frame) }
+        return out
     }
 }
 
@@ -880,6 +1029,73 @@ extension Keybindings {
         out.append(("priority is per command", priority(for: .newTab) == .browser))
         reset(.find)
         out.append(("reset clears the priority too", priority(for: .find) == .browser))
+
+        // Arc's second chord for Back and Forward, and the two guards on it.
+        let left = Keybinding("\u{F702}", .command), right = Keybinding("\u{F703}", .command)
+        out += [
+            ("Back and Forward also answer to ⌘← and ⌘→",
+             aliases[.back]?.display == "⌘←" && aliases[.forward]?.display == "⌘→"),
+            ("the arrows are a second chord, not a rebind: ⌘[ and ⌘] still stand",
+             binding(for: .back).display == "⌘[" && binding(for: .forward).display == "⌘]"),
+            ("no command ships bound to the alias chords, so nothing is shadowed",
+             aliases.values.allSatisfy { command(for: $0) == nil }),
+            ("⌥⌘← is still Previous Space, not Back",
+             command(for: Keybinding("\u{F702}", [.command, .option])) == .previousSpace
+                && command(for: Keybinding("\u{F703}", [.command, .option])) == .nextSpace),
+            ("with nothing typing, ⌘← goes back and ⌘→ goes forward",
+             alias(left, fieldEditor: false, pageEditable: false) == .back
+                && alias(right, fieldEditor: false, pageEditable: false) == .forward),
+            ("a field editor in the chrome keeps ⌘← for the caret",
+             alias(left, fieldEditor: true, pageEditable: false) == nil
+                && alias(right, fieldEditor: true, pageEditable: false) == nil),
+            ("a text field on the page keeps it too — navigating out of a half-typed form is the one outcome nobody means",
+             alias(left, fieldEditor: false, pageEditable: true) == nil
+                && alias(right, fieldEditor: false, pageEditable: true) == nil),
+            ("both at once is still nothing",
+             alias(left, fieldEditor: true, pageEditable: true) == nil),
+            ("a chord that is not an alias is not one however the guards stand",
+             alias(Keybinding("t", .command), fieldEditor: false, pageEditable: false) == nil),
+        ]
+
+        // The page's half of the guard, as it arrives over the message handler. Per frame,
+        // because each frame only ever speaks for itself.
+        func report(_ frame: String, _ editable: Bool, _ set: Set<String>) -> Set<String> {
+            PageFocus.frames(["frame": frame, "editable": editable], in: set)
+        }
+        let top = "f-top", inner = "f-iframe"
+        out += [
+            ("a frame reporting a caret puts itself in the set",
+             report(top, true, []) == [top]),
+            ("…and reporting a blur takes itself back out",
+             report(top, false, [top]).isEmpty),
+            // The ordering that a single flag got wrong: focus moves from an iframe's field to
+            // a top-level one, and the iframe's deferred focusout lands *after* the top
+            // frame's focusin.
+            ("a frame's blur does not clear another frame's caret", {
+                var live: Set<String> = [inner]        // typing in the iframe
+                live = report(top, true, live)         // clicked into a top-level field
+                live = report(inner, false, live)      // the iframe's deferred focusout
+                return live == [top]
+            }()),
+            ("two frames with carets both have to go quiet before the tab is idle", {
+                var live = report(top, true, [])
+                live = report(inner, true, live)
+                live = report(top, false, live)
+                return live == [inner]
+            }()),
+            ("the same frame saying it twice is still one frame",
+             report(top, true, [top]) == [top]),
+            ("a body that is not one of our messages changes nothing",
+             PageFocus.frames("yes", in: [top]) == [top]
+                && PageFocus.frames(["frame": top], in: [top]) == [top]
+                && PageFocus.frames(["editable": true], in: [top]) == [top]
+                && PageFocus.frames(["frame": "", "editable": true], in: []).isEmpty),
+            ("the script identifies its frame, listens in the capture phase, and lets go on unload",
+             PageFocus.script.contains("focusin") && PageFocus.script.contains("focusout")
+                && PageFocus.script.contains("isContentEditable")
+                && PageFocus.script.contains("pagehide") && PageFocus.script.contains("unload")
+                && PageFocus.script.contains("frame: frame")),
+        ]
 
         // Routing, minus the NSEvent (which needs an app to be meaningful).
         out.append(("a binding resolves to its command", command(for: Keybinding("t", .command)) == .newTab))

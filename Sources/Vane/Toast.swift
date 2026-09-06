@@ -36,6 +36,14 @@ import SwiftUI
             if items.count > 1 + Queue.waiting { items.remove(at: 1) }
         }
 
+        /// In front of whatever is showing rather than behind it: for a toast that answers
+        /// a keystroke made a moment ago, waiting its turn behind "Archived …" would put it
+        /// on screen after the moment it is describing has gone.
+        mutating func jump(_ toast: Toast) {
+            items.insert(toast, at: 0)
+            if items.count > 1 + Queue.waiting { items.removeLast() }
+        }
+
         mutating func dismiss() {
             if !items.isEmpty { items.removeFirst() }
         }
@@ -57,6 +65,14 @@ import SwiftUI
         let wasEmpty = shared.queue.current == nil
         shared.queue.push(Toast(text: text, action: action, owner: store.map(ObjectIdentifier.init)))
         if wasEmpty { shared.schedule() }
+    }
+
+    /// `show`, for the one toast that cannot wait: it goes in front of whatever is up and
+    /// its own clock starts now. The ⌘Q warning is the only caller — it is the answer to a
+    /// keystroke, and an answer that arrives after the hold it asks for is not one.
+    static func showNow(_ text: String, in store: TabStore?) {
+        shared.queue.jump(Toast(text: text, action: nil, owner: store.map(ObjectIdentifier.init)))
+        shared.schedule()
     }
 
     /// The pill was pressed: run the verb, then take the toast away — "Undo" twice is not a
@@ -157,6 +173,10 @@ extension Toasts {
                     q.items.map(\.id) == [a.id, c.id]))
         q.dismiss()
         out.append(("dismissing shows what was waiting", q.current?.id == c.id))
+        let urgent = Toast(text: "urgent", action: nil)
+        q.jump(urgent)
+        out.append(("a toast that cannot wait goes in front of the one showing",
+                    q.current?.id == urgent.id))
         q.dismiss()
         q.dismiss()
         out.append(("dismissing past empty is harmless", q.current == nil))

@@ -772,6 +772,10 @@ private struct SiteGlyph: View {
                 }
         }
         .buttonStyle(.plain)
+        // A broken lock drawn in the same grey as the host beside it is not a warning. Only
+        // a live insecure page tints: with no tab there is nothing to warn about, and the
+        // glyph keeps the ink `PillBody` hands down, dimmed with the rest of the pill.
+        .foregroundStyle(tab != nil && site.insecure ? Look.warning : Look.inkSecondary)
         .disabled(tab == nil)
         .help(site.siteless ? "Site Controls" : "\(site.title) — \(site.connection)")
         .accessibilityLabel("Site Controls")
