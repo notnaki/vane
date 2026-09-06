@@ -59,6 +59,19 @@ struct Split: Equatable, Sendable {
     var isFull: Bool { tabs.count >= Split.maxPanes }
     func contains(_ id: UUID) -> Bool { tabs.contains(id) }
 
+    /// Whose place in the strip a split's one row stands in: the first of its panes to
+    /// appear there, skipping favourites (a tile, not a row — see `TabStore.leadPane`), and
+    /// falling back to its first pane when every one of them is a favourite.
+    ///
+    /// Pure, and the only statement of the rule: `TabStore.leadPane` is the store's wrapper,
+    /// `StripRow` draws the row for the id it returns, and `TabStore.hasRow` leaves every
+    /// other pane out of a section's order. Three readers of one rule, held here rather than
+    /// written out three times and left to drift — a pane a selection can reach but the
+    /// sidebar never drew is a bulk action over pages the user was not shown.
+    static func lead(of panes: [UUID], strip: [(id: UUID, kind: TabKind)]) -> UUID? {
+        strip.first { panes.contains($0.id) && $0.kind != .favourite }?.id ?? panes.first
+    }
+
     /// A pane joins beside `anchor` — the pane the user asked from — and takes focus, the
     /// way Arc slides the new page in next to the one it came from. A full split, or a tab
     /// that is already a pane, changes nothing.
@@ -203,7 +216,7 @@ struct Split: Equatable, Sendable {
     /// A split of nothing but favourites falls back to its first pane, so the row exists
     /// beside the tiles rather than the split having no way back into it at all.
     func leadPane(_ split: Split) -> Tab.ID? {
-        tabs.first { split.contains($0.id) && $0.kind != .favourite }?.id ?? split.tabs.first
+        Split.lead(of: split.tabs, strip: tabs.map { ($0.id, $0.kind) })
     }
 
     /// Splits are disjoint, so any pane that was in the old one names it. `key` is a tab the
@@ -837,6 +850,25 @@ extension Split {
         let round = (try? JSONEncoder().encode(saved))
             .flatMap { try? JSONDecoder().decode(Split.Saved.self, from: $0) }
         out.append(("a saved split round-trips through the session file", round == saved))
+
+        // Which pane owns the split's one row. `StripRow` draws it, and `TabStore.hasRow`
+        // keeps the panes that do not own it out of a section's order, so a ⇧-click or ⌘A
+        // can never reach a tab the sidebar did not draw.
+        let strip: [(id: UUID, kind: TabKind)] =
+            [(a, .today), (b, .today), (c, .today), (d, .today)]
+        out += [
+            ("the split's row stands at its first pane's place in the strip",
+             Split.lead(of: [b, c], strip: strip) == b),
+            ("…which is the strip's order, not the split's",
+             Split.lead(of: [c, b], strip: strip) == b),
+            ("a favourite pane is a tile, so the row goes to the next pane along",
+             Split.lead(of: [b, c], strip: [(b, .favourite), (c, .today)]) == c),
+            ("a split of nothing but favourites still has a row, at its first pane",
+             Split.lead(of: [b, c], strip: [(b, .favourite), (c, .favourite)]) == b),
+            ("a pane that is not in the strip at all cannot own the row",
+             Split.lead(of: [e, b], strip: strip) == b),
+            ("no panes, no row", Split.lead(of: [], strip: strip) == nil),
+        ]
         return out
     }
 }
