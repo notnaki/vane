@@ -274,7 +274,12 @@ struct AirTrafficCard: View {
                     // Drag to reorder, because "first match wins" is the whole model and a
                     // list you cannot reorder is one you have to delete and retype.
                     .draggable(rule.id.uuidString)
-                    .dropDestination(for: String.self) { items, _ in move(items, above: rule.id) }
+                    // macOS 26 favours the `(items, session) -> Void` overload, so the
+                    // "was this one of ours" answer goes nowhere — `move` changing nothing
+                    // is what makes a drag of anything else a no-op rather than an error.
+                    .dropDestination(for: String.self) { items, _ in
+                        _ = move(items, above: rule.id)
+                    }
             }
             HStack(spacing: Look.inset) {
                 Button {
