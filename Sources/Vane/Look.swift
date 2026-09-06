@@ -110,6 +110,9 @@ enum Look {
     /// Side margin of a settings pane, and the Profiles pane's list column.
     static let paneMargin: CGFloat = inset * 4
     static let profileListWidth: CGFloat = 230
+    /// The saved-account list under a login form's username field, for when the field is
+    /// narrower than the usernames it holds.
+    static let chooserWidth: CGFloat = 220
 
     /// The sidebar's two fixed strips: traffic lights and navigation above, library and
     /// spaces below. Arc's top strip is 45 tall with the lights and glyphs centred at 22.5;

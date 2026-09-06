@@ -190,9 +190,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         item(.importPasswords) { PasswordImport.chooseAndImport() },
         .separator(),
         item("Export Passwords…", "") { Export.chooseAndExport(.passwords) },
-        item(.manageSavedPasswords) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
-        },
+        item(.manageSavedPasswords) { SettingsWindow.show(tab: "passwords") },
     ]
 }
 

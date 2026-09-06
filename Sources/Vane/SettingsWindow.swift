@@ -120,6 +120,8 @@ enum LinkTarget {
               pane: { _ in AnyView(GeneralPane()) }),
         .init(id: "profiles", title: "Profiles", icon: "person",
               pane: { AnyView(ProfilesPane(tab: $0)) }),
+        .init(id: "passwords", title: "Passwords", icon: "key",
+              pane: { _ in AnyView(PasswordsPane()) }),
         .init(id: "privacy", title: "Privacy", icon: "lock",
               pane: { _ in AnyView(PrivacyPane()) }),
         .init(id: "max", title: "Max", icon: "sparkles",
@@ -669,10 +671,8 @@ private struct ProfilesPane: View {
                     tab = "privacy"
                 }
                 DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
-                    // The same place Menu.swift's Manage Saved Passwords… goes: the items
-                    // are real keychain items, and Keychain Access is the editor for those.
-                    NSWorkspace.shared.open(
-                        URL(fileURLWithPath: "/System/Applications/Utilities/Keychain Access.app"))
+                    // The same place Menu.swift's Manage Saved Passwords… goes.
+                    tab = "passwords"
                 }
                 DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
                     clearing = true
@@ -1118,8 +1118,7 @@ private struct PrivacyPane: View {
                             clearing = true
                         }
                         DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
-                            NSWorkspace.shared.open(URL(fileURLWithPath:
-                                "/System/Applications/Utilities/Keychain Access.app"))
+                            SettingsWindow.show(tab: "passwords")
                         }
                     }
                     .padding(.vertical, Look.inset / 2)

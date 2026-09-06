@@ -384,6 +384,9 @@ struct WebCard: View {
                     }
             }
             OffscreenPages()
+            // Inside the card's clip and above the page, but positioned against the page
+            // rather than floated over its top edge: it hangs off a field in the form.
+            if let tab = store.active, tab.passwordChoice != nil { PasswordChooser(tab: tab) }
             if let tab = store.active { LoadingBar(tab: tab) }
             VStack(spacing: 8) {
                 if store.findOpen, let tab = store.active {

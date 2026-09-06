@@ -37,6 +37,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @Published var canGoForward = false
     /// A password the page just submitted, waiting on the user to approve saving it.
     @Published var pendingSave: PendingSave?
+    /// The account list hanging under this page's login form, when the site has more than
+    /// one saved login. Nil the rest of the time, which is most of the time.
+    @Published var passwordChoice: PasswordChoice?
     @Published var bookmarked = false
     /// Whether this page has an article worth reading — drives the toolbar button.
     @Published var readerAvailable = false
@@ -415,10 +418,52 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         return h
     }
 
+    /// One saved login fills straight in, the way it always has. Several put the list under
+    /// the username field and wait — guessing which of your two accounts you meant is worse
+    /// than asking, and it is what Arc does.
     func fillPassword() {
-        guard let host = secureHost,
-              let hit = Passwords.lookup(host: host, profileID: profileID) else { return }
-        web.evaluateJavaScript(Autofill.fillJS(account: hit.account, password: hit.password))
+        guard let host = secureHost else { return }
+        let hits = Passwords.matches(host: host, profileID: profileID)
+        guard hits.count > 1 else {
+            if let one = hits.first { fill(one) }
+            return
+        }
+        web.evaluateJavaScript("window.__vaneAnchor && window.__vaneAnchor()") { [weak self] r, _ in
+            guard let json = (r as? String)?.data(using: .utf8),
+                  let rect = try? JSONSerialization.jsonObject(with: json) as? [String: Double]
+            else { return }
+            self?.offerChoice(host: host, accounts: hits.map(\.account), at: rect)
+        }
+    }
+
+    /// Fills both fields and remembers the choice, so this account leads the list next time.
+    func fill(_ credential: Passwords.Credential) {
+        passwordChoice = nil
+        Passwords.recordUse(host: credential.host, account: credential.account,
+                            profileID: profileID)
+        web.evaluateJavaScript(Autofill.fillJS(account: credential.account,
+                                               password: credential.password))
+    }
+
+    /// The chooser's row action: the password is fetched here rather than carried around in
+    /// view state, so it exists for exactly as long as the fill takes.
+    func fillChosen(_ account: String) {
+        guard let choice = passwordChoice,
+              let hit = Passwords.matches(host: choice.host, profileID: profileID)
+                  .first(where: { $0.account == account })
+        else { passwordChoice = nil; return }
+        fill(hit)
+    }
+
+    /// `{x, y, w}` in CSS pixels under the username field, scaled by the page zoom into the
+    /// web view's own coordinates. ponytail: no scroll or transform tracking — the anchor is
+    /// read when the list opens, and the list closes on the next navigation or Escape.
+    private func offerChoice(host: String, accounts: [String], at r: [String: Double]) {
+        guard let x = r["x"], let y = r["y"], let w = r["w"] else { return }
+        let z = web.pageZoom
+        passwordChoice = PasswordChoice(
+            host: host, accounts: accounts,
+            anchor: CGRect(x: x * z, y: y * z, width: w * z, height: 0))
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -426,6 +471,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // Whatever was focused belongs to the page being left, frames and all; the incoming
         // one says so itself as soon as its script runs in each of them.
         editableFrames = []
+        passwordChoice = nil          // …and so is the form the account list was anchored to
         loading = true
         progress = 0.08        // a sliver immediately, so the bar never appears to stall at 0
     }
@@ -643,13 +689,24 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             if let active = PictureInPicture.state(from: m.body) { pictureInPicture = active }
             return
         }
-        guard let body = m.body as? [String: Any],
-              let password = body["password"] as? String, !password.isEmpty,
+        guard let body = m.body as? [String: Any] else { return }
+        // The username field was focused. Nothing happens unless this site has more than one
+        // saved login — one still fills from the menu command, silently.
+        if body["focus"] as? Bool == true {
+            guard let host = secureHost else { return }
+            let hits = Passwords.matches(host: host, profileID: profileID)
+            guard hits.count > 1 else { return }
+            offerChoice(host: host, accounts: hits.map(\.account),
+                        at: body.compactMapValues { $0 as? Double })
+            return
+        }
+        guard let password = body["password"] as? String, !password.isEmpty,
               let host = secureHost else { return }
         let account = (body["account"] as? String) ?? ""
-        // Already stored and unchanged — nothing to ask about.
-        if let hit = Passwords.lookup(host: host, profileID: profileID),
-           hit.account == account, hit.password == password { return }
+        // Already stored and unchanged — nothing to ask about. Every account for the host,
+        // not just the best one: with two logins, signing in as the other must stay quiet.
+        if Passwords.matches(host: host, profileID: profileID)
+            .contains(where: { $0.account == account && $0.password == password }) { return }
         pendingSave = PendingSave(host: host, account: account, password: password)
     }
 
