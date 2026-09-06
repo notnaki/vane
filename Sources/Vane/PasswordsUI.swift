@@ -28,6 +28,12 @@ import SwiftUI
     /// Plaintext the user has authenticated to see, by row id. Dropped when the row is
     /// hidden again, when the pane goes away, and on its own after `revealFor`.
     @State private var revealed: [String: String] = [:]
+    /// The timers that take them away again, so re-revealing a row restarts its minute
+    /// instead of leaving the first timer to blank it early.
+    @State private var forgetting: [String: Task<Void, Never>] = [:]
+    /// One line of feedback when a write is refused. Non-nil is rare and always the user's
+    /// business — a silent no here is a password they think they changed and did not.
+    @State private var problem: String?
     /// The row being edited, and its two fields. Held apart from `logins` on purpose: Cancel
     /// is then free, and the draft password can be wiped without touching the store.
     @State private var editing: String?
@@ -55,6 +61,11 @@ import SwiftUI
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) {
             search
+            if let problem {
+                Text(problem).font(Look.text).foregroundStyle(Look.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Look.cardInset)
+            }
             if groups.isEmpty && neverShown.isEmpty {
                 quiet(logins.isEmpty && never.isEmpty
                       ? "Passwords you save as you sign in to sites appear here."
@@ -238,6 +249,8 @@ import SwiftUI
     }
 
     private func forgetSecrets() {
+        for task in forgetting.values { task.cancel() }
+        forgetting.removeAll()
         revealed.removeAll()
         draftPassword = ""
         editing = nil
@@ -246,15 +259,21 @@ import SwiftUI
     /// Hiding needs no permission; showing does — and what comes back is held for a minute
     /// and then dropped, whether or not anybody is still looking at this window.
     private func toggleReveal(_ login: Passwords.Login) {
-        if revealed.removeValue(forKey: login.id) != nil { return }
+        if revealed.removeValue(forKey: login.id) != nil {
+            forgetting.removeValue(forKey: login.id)?.cancel()
+            return
+        }
         Passwords.authenticate("show the password for \(login.host)") { ok in
             guard ok, let plain = Passwords.password(host: login.host, account: login.account,
                                                      profileID: profileID) else { return }
             revealed[login.id] = plain
             axAnnounce("Password for \(login.host) shown.")
-            Task {
+            forgetting.removeValue(forKey: login.id)?.cancel()
+            forgetting[login.id] = Task {
                 try? await Task.sleep(for: PasswordsPane.revealFor)
+                guard !Task.isCancelled else { return }
                 revealed[login.id] = nil
+                forgetting[login.id] = nil
             }
         }
     }
@@ -319,8 +338,22 @@ import SwiftUI
         // and quietly keeping the old one while the field says otherwise is worse than
         // refusing.
         guard !draftPassword.isEmpty, !account.isEmpty else { return }
-        Passwords.save(host: login.host, account: account, password: draftPassword,
-                       profileID: profileID)
+        // Renaming onto an account this site already has would silently fold the two logins
+        // into one and take the other one's password with it. That is a delete wearing a
+        // rename's clothes, so it is refused rather than guessed at.
+        if let clash = PasswordsPane.renameClash(logins, host: login.host,
+                                                 from: login.account, to: account) {
+            problem = clash
+            axAnnounce(clash)
+            return
+        }
+        guard Passwords.save(host: login.host, account: account, password: draftPassword,
+                             profileID: profileID) else {
+            problem = PasswordsPane.saveFailed(host: login.host)
+            axAnnounce(problem ?? "")
+            return
+        }
+        problem = nil
         if account != login.account {
             Passwords.renameUse(host: login.host, from: login.account, to: account,
                                 profileID: profileID)
@@ -407,6 +440,25 @@ extension PasswordsPane {
             .sorted { $0.host < $1.host }
     }
 
+    /// Why a rename is refused, or nil when it is fine. Named so the wording can be
+    /// asserted, and pure so the rule is not buried in a view.
+    static func renameClash(_ logins: [Passwords.Login], host: String,
+                           from: String, to: String) -> String? {
+        guard from != to,
+              logins.contains(where: { $0.host == host && $0.account == to })
+        else { return nil }
+        return "\(host) already has a login for \u{201C}\(to)\u{201D}. "
+            + "Delete that one first, or pick another username."
+    }
+
+    /// Why a save is refused. The keychain's primary key ignores the creator code, so
+    /// another app's item for the same site and account is in the way and there is nothing
+    /// of Vane's to replace.
+    static func saveFailed(host: String) -> String {
+        "Vane could not save that password. Another app may already have a login for "
+            + "\(host) in your keychain."
+    }
+
     /// The same needle against a bare list of hosts, for the Never Saved card.
     static func matching(_ hosts: [String], query: String) -> [String] {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
@@ -447,6 +499,18 @@ extension PasswordsPane {
             ("…and narrow to the query", matching(["a.example", "b.example"], query: "b")
                 == ["b.example"]),
             ("…case-insensitively", matching(["A.example"], query: "a.ex") == ["A.example"]),
+
+            ("renaming to a free username is fine",
+             renameClash(all, host: "mail.example", from: "ada@example.com", to: "cam") == nil),
+            ("…renaming onto an existing one is refused",
+             renameClash(all, host: "mail.example", from: "ada@example.com",
+                         to: "bob@example.com")?.contains("bob@example.com") == true),
+            ("…and the same site on another host is not a clash",
+             renameClash(all, host: "bank.example", from: "ada", to: "bob@example.com") == nil),
+            ("…leaving a username alone is never a clash",
+             renameClash(all, host: "mail.example", from: "ada@example.com",
+                         to: "ada@example.com") == nil),
+            ("a refused save names the site", saveFailed(host: "x.example").contains("x.example")),
 
             ("↑ with no selection lands on the last row", move(nil, in: ids, by: -1) == ids.last),
             ("↓ with no selection lands on the first", move(nil, in: ids, by: 1) == ids.first),
@@ -515,14 +579,21 @@ struct PasswordChooser: View {
 
     var body: some View {
         GeometryReader { geo in
-            if let choice = tab.passwordChoice,
-               let at = PasswordChooser.place(anchor: choice.anchor, in: geo.size,
-                                              height: height(of: choice)) {
-                card(choice, width: PasswordChooser.width(of: choice.anchor, in: geo.size))
-                    .offset(x: at.x, y: at.y)
-                    .transition(reduceMotion ? .opacity
-                                : .opacity.combined(with: .scale(scale: Look.appearScale,
-                                                                 anchor: .topLeading)))
+            if let choice = tab.passwordChoice {
+                if let at = PasswordChooser.place(
+                    anchor: choice.anchor, in: geo.size,
+                    height: PasswordChooser.height(rows: choice.accounts.count)) {
+                    card(choice, width: PasswordChooser.width(of: choice.anchor, in: geo.size))
+                        .offset(x: at.x, y: at.y)
+                        .onHover { tab.chooserHovered = $0 }
+                        .transition(reduceMotion ? .opacity
+                                    : .opacity.combined(with: .scale(scale: Look.appearScale,
+                                                                     anchor: .topLeading)))
+                } else {
+                    // The pane resized, or a split closed, under an anchor that is no longer
+                    // on it. Open and invisible is the state this must never sit in.
+                    Color.clear.onAppear { tab.closeChooser(.resign) }
+                }
             }
         }
         .animation(reduceMotion ? nil : Look.appear, value: tab.passwordChoice)
@@ -532,11 +603,9 @@ struct PasswordChooser: View {
             for: NSWindow.didResignKeyNotification)) { _ in tab.closeChooser(.resign) }
         .onReceive(NotificationCenter.default.publisher(
             for: NSWindow.didResizeNotification)) { _ in tab.closeChooser(.resign) }
-    }
-
-    /// The rows plus the footer. Fixed per account, so nothing shifts as the list is walked.
-    private func height(of choice: PasswordChoice) -> CGFloat {
-        CGFloat(choice.accounts.count) * Look.rowHeight + Look.settingsRow
+        .onChange(of: tab.passwordChoice == nil) { if tab.passwordChoice == nil {
+            tab.chooserHovered = false
+        } }
     }
 
     private func card(_ choice: PasswordChoice, width: CGFloat) -> some View {
@@ -544,7 +613,7 @@ struct PasswordChooser: View {
             ForEach(Array(choice.accounts.enumerated()), id: \.element) { i, account in
                 ChooserRow(account: account, host: choice.host,
                            profileID: tab.profileID, selected: i == choice.selected) {
-                    tab.fillChosen(account)
+                    tab.fillChosen(host: choice.host, account: account)
                 }
             }
             Hairline()
@@ -583,12 +652,23 @@ extension PasswordChooser {
     static let refillGrace: TimeInterval = 1
 
     /// The dismiss rule, whole, in one place. Focus is the only thing that opens the list;
-    /// everything else closes it.
-    static func opens(_ event: ChooserEvent, sinceFill: TimeInterval) -> Bool {
+    /// everything else closes it — except the blur caused by pressing a row, which is the
+    /// mouse-*down* of the click that is about to pick that row. Closing on it loses every
+    /// click the list exists for, so a blur with the pointer inside the list is ignored.
+    static func opens(_ event: ChooserEvent, sinceFill: TimeInterval,
+                      pointerInside: Bool = false) -> Bool {
         switch event {
         case .focus: sinceFill >= refillGrace
-        case .blur, .click, .scroll, .navigate, .resign, .tabSwitch, .escape, .filled: false
+        case .blur: pointerInside
+        case .click, .scroll, .navigate, .resign, .tabSwitch, .escape, .filled: false
         }
+    }
+
+    /// The rows plus the footer. Fixed per account, so nothing shifts as the list is walked,
+    /// and known before the list is drawn — `Engine` needs it to decide whether the list
+    /// would be on screen at all.
+    static func height(rows: Int) -> CGFloat {
+        CGFloat(rows) * Look.rowHeight + Look.settingsRow
     }
 
     /// As wide as the field it hangs off, so it reads as part of the form — but never
@@ -656,6 +736,10 @@ extension PasswordChooser {
             ("…but not straight after a fill", opens(.focus, sinceFill: 0) == false),
             ("…and the grace window does end", opens(.focus, sinceFill: refillGrace)),
             ("blur closes it", opens(.blur, sinceFill: 10) == false),
+            ("…unless it is the click on a row that caused it",
+             opens(.blur, sinceFill: 10, pointerInside: true)),
+            ("…and a click still closes it, pointer or no pointer",
+             opens(.click, sinceFill: 10, pointerInside: true) == false),
             ("a click elsewhere closes it", opens(.click, sinceFill: 10) == false),
             ("scrolling closes it", opens(.scroll, sinceFill: 10) == false),
             ("navigating closes it", opens(.navigate, sinceFill: 10) == false),
@@ -706,6 +790,9 @@ extension PasswordChooser {
             ("↑ off the top wraps to the end", step(0, by: -1, of: 3) == 2),
             ("one row stays put", step(0, by: 1, of: 1) == 0),
             ("no rows is index zero", step(0, by: 1, of: 0) == 0),
+
+            ("two rows and a footer is a known height",
+             PasswordChooser.height(rows: 2) == Look.rowHeight * 2 + Look.settingsRow),
         ]
     }
 }

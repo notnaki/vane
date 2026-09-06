@@ -103,21 +103,29 @@ enum Passwords {
 
     // MARK: Reading and writing
 
+    /// True when the credential is stored. It can fail: the keychain's primary key for an
+    /// Internet password does not include the creator code, so another app's item for the
+    /// same site and account collides with ours — the add is refused, and there is nothing
+    /// of Vane's to update in its place. Silent failure there is a password the user
+    /// believes is saved and is not.
+    @discardableResult
     static func save(host: String, account: String, password: String,
-                     profileID: UUID = ProfileManager.activeProfileID) {
-        // Add first, then drop the old item: a failed add must not leave the login gone.
-        // The add fails with errSecDuplicateItem when one is already there, which is the
-        // signal to update it in place instead.
+                     profileID: UUID = ProfileManager.activeProfileID) -> Bool {
+        defer { invalidate() }
+        // Add first, then update: a failed add must not leave the login gone. The add comes
+        // back errSecDuplicateItem when one is already there, which is the signal to replace
+        // its data in place — but only if that item is *ours*, which `ref` is what decides.
         var add = query(host: host, account: account, profileID: profileID)
         add[kSecValueData as String] = Data(password.utf8)
         add[kSecAttrLabel as String] = "\(host) (Vane)"
         let status = SecItemAdd(add as CFDictionary, nil)
-        if status == errSecDuplicateItem, let existing = ref(host: host, account: account,
-                                                            profileID: profileID) {
-            SecItemUpdate([kSecValuePersistentRef as String: existing] as CFDictionary,
-                          [kSecValueData as String: Data(password.utf8)] as CFDictionary)
-        }
-        invalidate()
+        if status == errSecSuccess { return true }
+        guard status == errSecDuplicateItem,
+              let existing = ref(host: host, account: account, profileID: profileID)
+        else { return false }
+        return SecItemUpdate([kSecValuePersistentRef as String: existing] as CFDictionary,
+                             [kSecValueData as String: Data(password.utf8)] as CFDictionary)
+            == errSecSuccess
     }
 
     /// Nil when nothing is stored. With several accounts for one host this is the one the
@@ -499,7 +507,11 @@ struct PasswordChoice: Equatable {
         return { x: r.left, y: r.bottom, w: r.width };
       }
       window.__vaneAnchor = function () { return JSON.stringify(anchor()); };
-      function send(m) { webkit.messageHandlers.vanepw.postMessage(m); }
+      var listOpen = false;
+      function send(m) {
+        listOpen = !!m.focus;
+        webkit.messageHandlers.vanepw.postMessage(m);
+      }
       function ours(el) { var p = pair(document); return !!p && (el === p.user || el === p.pass); }
       // Chromium drops its list of saved accounts under the username field the moment you
       // focus it, and Arc inherits that. Capture phase throughout: a site that stops these
@@ -518,7 +530,11 @@ struct PasswordChoice: Equatable {
       document.addEventListener('mousedown', function (e) {
         if (!ours(e.target)) { send({ dismiss: 'click' }); }
       }, true);
-      window.addEventListener('scroll', function () { send({ dismiss: 'scroll' }); }, true);
+      // Only while the list is actually up. A scroll handler that posts on every wheel
+      // event of every page, forever, is a message per frame for a list that is not there.
+      window.addEventListener('scroll', function () {
+        if (listOpen) { send({ dismiss: 'scroll' }); }
+      }, true);
       // A single-page app changes the form under us without a navigation.
       window.addEventListener('popstate', function () { send({ dismiss: 'navigate' }); });
       function offer() {

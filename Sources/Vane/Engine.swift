@@ -470,21 +470,29 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         }
     }
 
-    /// The chooser's row action.
-    func fillChosen(_ account: String) {
-        guard let choice = passwordChoice,
-              let hit = Passwords.matches(host: choice.host, profileID: profileID)
-                  .first(where: { $0.account == account })
+    /// The chooser's row action. It carries its own host and account rather than reading
+    /// `passwordChoice`, because by the time a click completes the list may already be gone:
+    /// the mouse-*down* takes first responder off the web view, the page reports that as a
+    /// blur, and the blur is a dismiss. Reading the state here lost every click.
+    func fillChosen(host: String, account: String) {
+        guard let hit = Passwords.matches(host: host, profileID: profileID)
+            .first(where: { $0.account == account })
         else { closeChooser(.filled); return }
         fill(hit)
     }
+
+    /// Whether the pointer is over the list. Set by the view; read by `closeChooser` for the
+    /// one blur that must not close it — the one caused by pressing a row.
+    var chooserHovered = false
 
     /// Everything that closes the list goes through here, so the rule lives in exactly one
     /// place — `PasswordChooser.opens` — and cannot drift between the page's events, the
     /// window's, and the keyboard's.
     func closeChooser(_ event: ChooserEvent) {
         guard passwordChoice != nil,
-              !PasswordChooser.opens(event, sinceFill: Date.now.timeIntervalSince(lastFilledAt))
+              !PasswordChooser.opens(event,
+                                     sinceFill: Date.now.timeIntervalSince(lastFilledAt),
+                                     pointerInside: chooserHovered)
         else { return }
         passwordChoice = nil
     }
@@ -497,9 +505,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         guard PasswordChooser.opens(.focus, sinceFill: Date.now.timeIntervalSince(lastFilledAt)),
               let x = r["x"], let y = r["y"], let w = r["w"] else { return }
         let z = web.pageZoom
-        passwordChoice = PasswordChoice(
-            host: host, accounts: accounts,
-            anchor: CGRect(x: x * z, y: y * z, width: w * z, height: 0))
+        let anchor = CGRect(x: x * z, y: y * z, width: w * z, height: 0)
+        // Open only if it would actually be on the page. `place` refuses an anchor outside
+        // the viewport, and a list that is "open" but drawn nowhere is worse than no list at
+        // all: the keyboard handler still swallows the arrows and Return still fills, with
+        // nothing on screen to say why.
+        guard PasswordChooser.place(anchor: anchor, in: web.bounds.size,
+                                    height: PasswordChooser.height(rows: accounts.count)) != nil
+        else { return }
+        passwordChoice = PasswordChoice(host: host, accounts: accounts, anchor: anchor)
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -760,8 +774,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     func confirmSave() {
         guard let p = pendingSave else { return }
-        Passwords.save(host: p.host, account: p.account, password: p.password, profileID: profileID)
-        axAnnounce(p.update ? "Password updated." : "Password saved.")
+        let stored = Passwords.save(host: p.host, account: p.account, password: p.password,
+                                    profileID: profileID)
+        axAnnounce(stored ? (p.update ? "Password updated." : "Password saved.")
+                          : PasswordsPane.saveFailed(host: p.host))
         pendingSave = nil
     }
 
@@ -785,7 +801,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func fillSelected() {
         guard let choice = passwordChoice,
               choice.accounts.indices.contains(choice.selected) else { return }
-        fillChosen(choice.accounts[choice.selected])
+        fillChosen(host: choice.host, account: choice.accounts[choice.selected])
     }
 
     func reload()     { web.reload() }
