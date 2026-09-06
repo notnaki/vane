@@ -36,7 +36,9 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// Outlined symbols, at tile size: Arc's rail draws the thing itself, not a badge.
     var icon: String {
         switch self {
-        case .archived:  "archivebox"
+        // Not `archivebox`: that is the footer glyph that opens the Library, and a section
+        // wearing the same symbol as the button that got you here reads as the same thing.
+        case .archived:  "tray.full"
         case .downloads: "arrow.down.circle"
         case .spaces:    "square.on.square"
         case .history:   "clock"
@@ -72,13 +74,27 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     @Published var littleArcOnly = false
     /// The Filter menu's toggle on Downloads: only the rows that are a finished file.
     @Published var completedOnly = false
+    /// Bumped to put the keyboard in the pane's search field — on opening, and on ⌘F, which
+    /// while the Library is up means this box rather than the find bar over a hidden page.
+    /// A counter rather than a Bool: `@FocusState` is the field's, and asking twice in a row
+    /// has to be heard twice.
+    @Published private(set) var focusToken = 0
+
+    func focusSearch() { focusToken &+= 1 }
+
+    /// ⌘F while the Library is over the page. Its own entry point so `TabStore.openFind`
+    /// does not have to reach into the singleton.
+    static func focusSearch() { shared.focusSearch() }
 
     /// Opening at a section — the footer glyph, the Archive menu, ⇧⌘J, "Manage Spaces…".
-    static func open(_ section: LibrarySection, in store: TabStore?) {
+    static func open(_ requested: LibrarySection, in store: TabStore?) {
         // History is a window of its own. Raising it must not become the rail's section,
         // or every later ⇧⌘L would raise it again.
-        guard section != .history else { HistoryWindow.show(); return }
-        guard let store, section.available(private: store.isPrivate) else { return }
+        guard requested != .history else { HistoryWindow.show(); return }
+        guard let store else { return }
+        // A private window has no Spaces, and ⇧⌘L must still open *something*: falling back
+        // beats a keystroke that silently does nothing and a rail with no tile lit.
+        let section = requested.available(private: store.isPrivate) ? requested : .archived
         // A filter belongs to the visit, not to the user: a Library opened fresh shows
         // everything, the way a reopened Finder window is not still filtered.
         if !store.libraryOpen {
@@ -89,7 +105,12 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         // downloads must not still be filtering the archive a click later.
         if !store.libraryOpen || shared.section != section { shared.query = "" }
         shared.section = section
+        // The find bar searches the page, and the page is about to be covered by this. A bar
+        // left open would be invisible, would still be eating Escape, and would have nothing
+        // to search.
+        store.findOpen = false
         store.libraryOpen = true
+        shared.focusSearch()
     }
 
     /// ⇧⌘L and the footer glyph: the same keystroke that opened it closes it again.
@@ -150,8 +171,7 @@ extension Library {
     /// same, and the alternative is a "4 weeks ago" bucket that means nothing to anybody.
     nonisolated static func bucket(_ date: Date, now: Date = .now,
                                    calendar: Calendar = .current) -> String {
-        let day = calendar.startOfDay(for: date), today = calendar.startOfDay(for: now)
-        let days = calendar.dateComponents([.day], from: day, to: today).day ?? 0
+        let days = daysBack(date, now: now, calendar: calendar)
         switch days {
         case ..<1:    return "Today"            // and anything dated in the future
         case 1:       return "Yesterday"
@@ -161,12 +181,35 @@ extension Library {
         default:
             let sameYear = calendar.component(.year, from: date)
                 == calendar.component(.year, from: now)
-            let formatter = DateFormatter()
-            formatter.calendar = calendar
-            formatter.timeZone = calendar.timeZone
-            formatter.locale = calendar.locale ?? .current
-            formatter.setLocalizedDateFormatFromTemplate(sameYear ? "MMMM" : "MMMMy")
-            return formatter.string(from: date)
+            return DateText.string(date, template: sameYear ? "MMMM" : "MMMMy",
+                                   calendar: calendar)
+        }
+    }
+
+    /// Whole days from `date` to `now`, counted between the two days rather than in seconds,
+    /// so an hour lost or gained to daylight saving cannot move a row into the next bucket.
+    nonisolated static func daysBack(_ date: Date, now: Date, calendar: Calendar) -> Int {
+        calendar.dateComponents([.day],
+                                from: calendar.startOfDay(for: date),
+                                to: calendar.startOfDay(for: now)).day ?? 0
+    }
+
+    /// The same answer as `bucket`, as a number nothing has to be formatted to work out.
+    /// Two dates under one header share a key, and `grouped` compares keys — so a month's
+    /// name is written once per group rather than once per row, which on a two-thousand-row
+    /// archive being regrouped at every keystroke is the whole cost of the list.
+    nonisolated static func bucketKey(_ date: Date, now: Date, calendar: Calendar) -> Int {
+        let days = daysBack(date, now: now, calendar: calendar)
+        switch days {
+        case ..<1:    return 0
+        case 1:       return 1
+        case 2...6:   return days                       // 2…6
+        case 7...13:  return 7
+        case 14...27: return 20 + days / 7              // 22, 23
+        default:
+            // Month and year, so October 2022 and October 2023 are never one group.
+            return 1000 + calendar.component(.year, from: date) * 12
+                + calendar.component(.month, from: date)
         }
     }
 
@@ -177,9 +220,14 @@ extension Library {
                                        now: Date = .now, calendar: Calendar = .current)
         -> [(title: String, items: [T])] {
         var out: [(title: String, items: [T])] = []
+        var key: Int?
         for item in items.sorted(by: { date($0) > date($1) }) {
-            let title = bucket(date(item), now: now, calendar: calendar)
-            if out.last?.title != title { out.append((title, [])) }
+            let at = date(item)
+            let next = bucketKey(at, now: now, calendar: calendar)
+            if next != key {
+                out.append((bucket(at, now: now, calendar: calendar), []))
+                key = next
+            }
             out[out.count - 1].items.append(item)
         }
         return out
@@ -338,11 +386,19 @@ extension Look {
     /// The search field and the Filter button over a pane's list. Taller than a settings
     /// `control` — it is the one thing on the pane being typed into.
     static let libraryField: CGFloat = 36
+    /// Above that field, so its centre lands on the traffic lights' own line: the pane runs
+    /// to the window's top edge, so this is measured from there and not from a card's inset.
+    /// `Look.check` pins it.
+    static let libraryHead: CGFloat = lightsCentre - libraryField / 2
+    /// How wide the list itself gets, however wide the window is. A title at one end of a
+    /// 1500pt row and its "…" at the other is not a row anybody can read across; Arc's
+    /// Library keeps its column narrow and lets the ground take the rest.
+    static let libraryColumn: CGFloat = 720
     /// A Space's column in the Spaces section. Narrow enough that two fit beside the rail;
     /// ponytail ceiling: a third Space scrolls horizontally rather than the pane growing.
     static let spaceColumn: CGFloat = 220
-    /// The traffic lights' own strip at the top of the window. The rail stands where the
-    /// sidebar does, so its first row has to start after them exactly as `TopRow`'s does.
+    /// The traffic lights' own strip at the leading edge of the sidebar's top row, which
+    /// `TopRow` steps past before its first button.
     static let trafficLights: CGFloat = 62
 }
 
@@ -368,7 +424,10 @@ struct LibraryRail: View {
             ForEach(sections) { section in
                 LibraryTile(section: section, selected: library.section == section) {
                     Library.open(section, in: store)
-                    axAnnounce(section.title)
+                    // History raises its own window, which announces itself when it takes
+                    // the keyboard; saying "History" here would claim a rail selection that
+                    // never happened.
+                    if section != .history { axAnnounce(section.title) }
                 }
                 Spacer(minLength: 0)
             }
@@ -385,6 +444,10 @@ struct LibraryRail: View {
         .padding(.horizontal, Look.inset)
         .padding(.top, Look.topInset)
         .padding(.bottom, Look.footerInset)
+        // The rail is the window's handle while the Library is up, exactly as the sidebar is
+        // the rest of the time: without this the window cannot be moved at all. A tile takes
+        // the hover before the ground does, so `WindowDragGround` still says "bare ground".
+        .background(WindowDragArea())
         // Escape closes it, the way every other surface over the window closes. A zero-size
         // button rather than `.onExitCommand`: the rail is not focused until something in it
         // is clicked, and a cancel action is heard either way. It is *not* in the tree while
@@ -436,8 +499,9 @@ private struct LibraryTile: View {
 
 // MARK: - The pane
 
-/// The section's contents, where the page card would be. It carries the card's own fill and
-/// corner because it *is* the card while the Library is open — the window keeps its shape.
+/// The section's contents, where the page card would be. It runs to the window's top edge
+/// rather than sitting under the card's inset, because its search field is the top row while
+/// the Library is open and that row belongs on the traffic lights' line.
 struct LibraryPane: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var library = Library.shared
@@ -453,23 +517,31 @@ struct LibraryPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // The pane's bare ground is the window's handle on this side, the way the sidebar's
+        // is on the other: the head's strip, and the air beside the list. A field, a menu or
+        // a scroll view takes the hover before this does, so `WindowDragGround` only ever
+        // says "bare ground" where there is nothing to click.
+        .background(WindowDragArea())
         .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
         .clipShape(.rect(cornerRadius: Look.cardRadius))
-        .padding([.top, .trailing, .bottom], Look.cardGap)
+        .padding([.trailing, .bottom], Look.cardGap)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(library.section.title)
     }
 }
 
-/// The head of a pane: Arc's wide rounded search field, and the Filter menu beside it.
-/// ponytail: the Filter menu carries the section's own toggle *and* its Clear, because one
-/// control in the corner beats two, and both are things you do to the list rather than to
-/// a row. Ceiling: a section with several filters wants a real popover.
-private struct LibraryHead<Filter: View>: View {
+/// The head of a pane: Arc's wide rounded search field, the Filter menu beside it, and the
+/// "…" that holds what is done to the whole list. Filter filters and nothing else — Clear
+/// under a menu called Filter is a destructive verb nobody would look for there.
+private struct LibraryHead<Filter: View, Actions: View>: View {
     let prompt: String
     let filtering: Bool
     @Binding var query: String
     @ViewBuilder let filter: () -> Filter
+    @ViewBuilder let actions: () -> Actions
+    /// The keyboard lands here when the Library opens and when ⌘F is pressed over it.
+    @FocusState private var focused: Bool
+    @ObservedObject private var library = Library.shared
 
     var body: some View {
         HStack(spacing: Look.inset) {
@@ -478,6 +550,7 @@ private struct LibraryHead<Filter: View>: View {
                     .foregroundStyle(Look.inkTertiary)
                 TextField(prompt, text: $query).textFieldStyle(.plain).font(Look.text)
                     .foregroundStyle(Look.inkPrimary)
+                    .focused($focused)
             }
             .padding(.horizontal, Look.rowInset)
             .frame(height: Look.libraryField)
@@ -488,26 +561,52 @@ private struct LibraryHead<Filter: View>: View {
             // The pill is on the Menu, not inside its label: a borderless menu lays its
             // label out at the label's own size, so a background put in there is drawn at
             // the size of the words rather than at the field's.
-            Menu { filter() } label: {
-                HStack(spacing: Look.inset - 2) {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                    Text("Filter")
+            pill(filling: filtering) {
+                Menu { filter() } label: {
+                    HStack(spacing: Look.inset - 2) {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                        Text("Filter")
+                    }
+                    .font(Look.text)
+                    .foregroundStyle(filtering ? Look.inkPrimary : Look.inkSecondary)
                 }
-                .font(Look.text)
-                .foregroundStyle(filtering ? Look.inkPrimary : Look.inkSecondary)
+                .accessibilityLabel("Filter")
+                .accessibilityValue(filtering ? "On" : "Off")
             }
+            pill(filling: false) {
+                Menu { actions() } label: {
+                    Image(systemName: "ellipsis").font(Look.text)
+                        .foregroundStyle(Look.inkSecondary)
+                }
+                .accessibilityLabel("More")
+                .accessibilityActions { actions() }
+            }
+        }
+        .padding(.horizontal, Look.cardInset)
+        .padding(.top, Look.libraryHead)
+        .frame(maxWidth: Look.libraryColumn + Look.cardInset * 2, alignment: .leading)
+        .onAppear { takeKeyboard() }
+        .onChange(of: library.focusToken) { takeKeyboard() }
+    }
+
+    /// A turn later, not now. `@FocusState` set while the field is still being installed in
+    /// the window is dropped, and the keyboard stays where it was — which, the first time the
+    /// Library opens over a page, is the web view behind it: every keystroke would go to a
+    /// page nobody can see.
+    private func takeKeyboard() {
+        DispatchQueue.main.async { focused = true }
+    }
+
+    /// Both trailing controls are the same pill at the field's own height.
+    private func pill<Label: View>(filling: Bool, @ViewBuilder _ label: () -> Label) -> some View {
+        label()
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
             .padding(.horizontal, Look.rowInset)
             .frame(height: Look.libraryField)
-            .background(filtering ? Look.selected : Look.controlFill,
+            .background(filling ? Look.selected : Look.controlFill,
                         in: .rect(cornerRadius: Look.pillRadius))
-            .accessibilityLabel("Filter")
-            .accessibilityValue(filtering ? "On" : "Off")
-        }
-        .padding(.horizontal, Look.cardInset)
-        .padding(.top, Look.cardInset)
     }
 }
 
@@ -570,7 +669,7 @@ private struct LibraryRow<Leading: View, Actions: View>: View {
         .padding(.horizontal, Look.rowInset)
         .frame(height: Look.libraryRow)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(hovering ? Look.selected : .clear, in: .rect(cornerRadius: Look.cardRadius))
+        .background(hovering ? Look.hovered : .clear, in: .rect(cornerRadius: Look.cardRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -601,7 +700,10 @@ private struct LibraryList<T, ID: Hashable, Row: View>: View {
                     ForEach(group.items, id: id) { row($0) }
                 }
             }
-            .padding(.horizontal, Look.inset)
+            // The same column the head's field sits in, so a row's "…" is a hand's width
+            // from its title however wide the window is.
+            .frame(maxWidth: Look.libraryColumn, alignment: .leading)
+            .padding(.horizontal, Look.cardInset)
             .padding(.bottom, Look.cardInset)
         }
         .scrollContentBackground(.hidden)
@@ -626,7 +728,7 @@ private struct ArchivedTabsPane: View {
                         filtering: library.littleArcOnly, query: $library.query) {
                 Toggle("Little Vane only", isOn: $library.littleArcOnly)
                     .help("Only tabs archived from a Little Vane window")
-                Divider()
+            } actions: {
                 Button("Clear Archive…") { clear() }.disabled(archive.entries.isEmpty)
             }
             if groups.isEmpty {
@@ -723,7 +825,10 @@ private struct DownloadsPane: View {
                 && Library.matches([$0.name, $0.source?.absoluteString ?? ""], library.query)
         }
         // A row still arriving has no completion date: it is happening now, so it is today.
-        return Library.grouped(rows, by: { $0.completed ?? .now })
+        // One `now` for the whole sort — `.now` inside the comparator gives two in-flight
+        // rows a different answer every time they are compared, and they swap on each tick.
+        let now = Date()
+        return Library.grouped(rows, by: { $0.completed ?? now }, now: now)
     }
 
     var body: some View {
@@ -733,7 +838,7 @@ private struct DownloadsPane: View {
                         filtering: library.completedOnly, query: $library.query) {
                 Toggle("Completed only", isOn: $library.completedOnly)
                     .help("Hide the downloads that are still arriving or went wrong")
-                Divider()
+            } actions: {
                 Button("Clear Downloads") { downloads.clear() }
                     .disabled(downloads.items.isEmpty)
             }
@@ -1066,6 +1171,34 @@ extension Library {
              header(400).contains("2022") && !header(40).contains("2023")),
             ("every header is a different thing to read",
              Set([0, 1, 2, 7, 14, 40].map(header)).count == 6),
+            ("the key agrees with the header, every day for a year",
+             (0...365).allSatisfy { a in
+                 (0...365).allSatisfy { b in
+                     let sameKey = bucketKey(daysAgo(a), now: now, calendar: calendar)
+                         == bucketKey(daysAgo(b), now: now, calendar: calendar)
+                     return sameKey == (header(a) == header(b))
+                 }
+             }),
+        ]
+
+        // Daylight saving. A day is a day, not 86 400 seconds: on the two nights a year that
+        // are 23 or 25 hours long, counting in seconds slides every older row one bucket.
+        var london = Calendar(identifier: .gregorian)
+        london.timeZone = TimeZone(identifier: "Europe/London")!
+        london.locale = Locale(identifier: "en_GB")
+        // Sunday 29 October 2023, 02:00 local — the hour Britain puts the clocks back.
+        let afterDST = Date(timeIntervalSince1970: 1_698_600_000)   // 29 Oct 2023, 17:20 UTC
+        func londonDays(_ n: Int) -> Date {
+            london.date(byAdding: .day, value: -n,
+                        to: london.startOfDay(for: afterDST).addingTimeInterval(43_200))!
+        }
+        out += [
+            ("a day that gained an hour is still yesterday",
+             bucket(londonDays(1), now: afterDST, calendar: london) == "Yesterday"),
+            ("…and the day before it is still two days ago",
+             bucket(londonDays(2), now: afterDST, calendar: london) == "2 days ago"),
+            ("a week across the clocks going back is still a week",
+             bucket(londonDays(8), now: afterDST, calendar: london) == "1 week ago"),
         ]
 
         // Grouping, on those headers.
@@ -1089,6 +1222,12 @@ extension Library {
             ("…which a week-wide header proves: eight and nine days back share a group",
              grouped([entry(7, -8 * 86_400), entry(8, -9 * 86_400)],
                      by: \.at, now: now, calendar: calendar).count == 1),
+            ("the same month a year apart is two groups, not one",
+             grouped([daysAgo(40), daysAgo(400)], by: { $0 }, now: now, calendar: calendar)
+                .count == 2),
+            ("…and one of them says which year",
+             grouped([daysAgo(40), daysAgo(400)], by: { $0 }, now: now, calendar: calendar)
+                .map(\.title) == [header(40), header(400)]),
             ("the grouping is generic: any row with a date groups the same way",
              grouped([daysAgo(0), daysAgo(1)], by: { $0 }, now: now, calendar: calendar)
                 .map(\.title) == ["Today", "Yesterday"]),

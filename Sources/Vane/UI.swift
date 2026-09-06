@@ -102,7 +102,20 @@ struct BrowserWindow: View {
                 } else if store.sidebarShown {
                     Sidebar().frame(width: sidebar.width)
                 }
-                if store.libraryOpen { LibraryPane() } else { WebCard() }
+                ZStack {
+                    // The card stays in the window under the Library, invisible. Taking a
+                    // web view *out* of the window stops its media dead — that is the whole
+                    // reason `OffscreenPages` exists and why `WebHost.offscreen` is
+                    // `isHidden` rather than a removal — so a Library that unmounted the
+                    // card would silence whatever was playing, drop the mini player and
+                    // kill picture-in-picture on every ⇧⌘L. It is also what leaves a first
+                    // responder for `Library.close` to hand the keyboard back to.
+                    WebCard()
+                        .opacity(store.libraryOpen ? 0 : 1)
+                        .allowsHitTesting(!store.libraryOpen)
+                        .accessibilityHidden(store.libraryOpen)
+                    if store.libraryOpen { LibraryPane() }
+                }
             }
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
@@ -136,6 +149,12 @@ struct BrowserWindow: View {
         // always ends the peek, and the lights follow the row that is actually there.
         .onChange(of: store.sidebarShown) { peekTask?.cancel(); peeking = false; showTrafficLights(chrome) }
         .onChange(of: peeking) { showTrafficLights(chrome) }
+        // Opening the Library ends any peek in flight, for the same reason: the lights
+        // belong to the rail's row now, not to a panel sliding in behind it.
+        .onChange(of: store.libraryOpen) {
+            if store.libraryOpen { peekTask?.cancel(); peeking = false }
+            showTrafficLights(chrome)
+        }
         .onAppear { store.applySpaceAppearance() }
         // In .background so it costs no layout: the buttons are still in the view tree and
         // in the responder chain, which is all .keyboardShortcut needs.
@@ -157,7 +176,9 @@ struct BrowserWindow: View {
     }
 
     @ViewBuilder private var floatingSidebar: some View {
-        if !store.sidebarShown && peeking {
+        // Never over the Library: the panel would cover the rail, and the traffic lights
+        // would follow the peeked panel's inset line off the rail's own row.
+        if !store.sidebarShown && peeking && !store.libraryOpen {
             Sidebar()
                 .frame(width: sidebar.width)
                 // The same near-opaque ground as the command bar: this one floats over
@@ -331,9 +352,10 @@ struct WebCard: View {
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
         .clipShape(.rect(cornerRadius: Look.cardRadius))
-        // No inset on the leading edge while the sidebar is docked: the sidebar's own
-        // padding already leaves the gap, and doubling it reads as a misaligned card.
-        .padding(.leading, store.sidebarShown ? 0 : Look.cardGap)
+        // No inset on the leading edge while the sidebar is docked — its own padding
+        // already leaves the gap, and doubling it reads as a misaligned card. The Library's
+        // rail stands in the same place and leaves the same gap.
+        .padding(.leading, store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap)
         .padding([.top, .trailing, .bottom], Look.cardGap)
     }
 }

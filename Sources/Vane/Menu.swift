@@ -564,7 +564,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"),
         .separator(),
         menu("Find", [
-            item(.find) { Windows.current?.findOpen = true },
+            item(.find) { Windows.current?.openFind() },
             // Not `finderItem`: Vane's find bar is WebKit's search, not an NSTextFinder,
             // so these run the bar's own next/previous — which is also what the ⌘G the
             // event monitor sees runs. See Find.advance.
