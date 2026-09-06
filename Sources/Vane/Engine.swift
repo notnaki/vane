@@ -442,7 +442,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     // 4: per-site camera/microphone. WebKit owns the geolocation prompt itself, so there
     // is no location equivalent to implement here.
-    func webView(_ w: WKWebView, didReceive challenge: URLAuthenticationChallenge) async
+    func webView(_ w: WKWebView, respondTo challenge: URLAuthenticationChallenge) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
         await CertificateTrust.handle(challenge: challenge)
     }

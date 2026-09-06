@@ -366,6 +366,12 @@ import WebKit
         out.append(("the shown fingerprint is the same bytes, grouped",
                     spaced(f1).replacingOccurrences(of: " ", with: "") == f1
                     && spaced(f1).split(separator: " ").count == 32))
+        // The whole file is dead code unless WebKit can find the delegate method. The Swift
+        // async spelling of this requirement is `respondTo:`, not `didReceive:` — the wrong
+        // name compiles, satisfies nothing, and WebKit then fails every bad certificate and
+        // every HTTP login itself. This is the assertion that would have caught it.
+        out.append(("Tab answers WebKit's authentication-challenge selector",
+                    Tab.instancesRespond(to: NSSelectorFromString("webView:didReceiveAuthenticationChallenge:completionHandler:"))))
         return out
     }
 }
