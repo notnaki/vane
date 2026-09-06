@@ -129,7 +129,7 @@ extension TabStore {
     /// they were, which is the whole point of ⌘-click.
     func openBeside(_ url: URL, focus: Bool) {
         let opener = current
-        newTabBeside(opener).web.load(URLRequest(url: url))
+        newTabBeside(opener).go(url)
         if !focus {
             current = opener
             axAnnounce("Opened in a background tab.")
@@ -314,7 +314,14 @@ struct SidebarDrop: DropDelegate {
         if Dragging.shared.active { _ = Dragging.shared.take(); return false }
         // A url first: a link dragged out of a page carries both a url and its own text, and
         // the url is the one that does not have to be guessed at.
-        if let provider = info.itemProviders(for: [.url, .fileURL]).first {
+        // Files first, and all of them: a file drag carries `.url` too, so the other branch
+        // would take it and hand `file:///…` to the search engine, and a five-file drop is
+        // five tabs. `Files.opens` is the only thing that decides which of them Vane can
+        // draw — `DropInfo` cannot be asked for a url without waiting, so a folder is let
+        // this far and refused there rather than by a second, differently-worded test here.
+        let files = info.itemProviders(for: [.fileURL])
+        if !files.isEmpty { Files.openDropped(files, in: store); return true }
+        if let provider = info.itemProviders(for: [.url]).first {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
                 Task { @MainActor in TabActions.openDropped(url.absoluteString, in: store) }

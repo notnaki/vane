@@ -5,39 +5,13 @@ import AppKit
 /// through a GetURL Apple Event, so without this handler Vane launches and shows a blank
 /// window instead of the link.
 ///
-/// ponytail: an Apple Event handler rather than an NSApplicationDelegate. main.swift has no
-/// delegate to hang `application(_:open:)` off, and adding one to catch two events is more
-/// machinery than the events are worth. Upgrade path: if a delegate ever exists for other
-/// reasons, delete `handler` and move these two bodies onto it.
+/// ponytail: an Apple Event handler for GetURL only. There is no delegate method for it that
+/// does not also swallow `odoc`, and files are better served by the real one —
+/// `AppLifecycle.application(_:open:)`, which is where Finder ▸ Open With lands.
 ///
 /// Info.plist keys make-app.sh must emit for any of this to take effect — LaunchServices
-/// only offers an app as a browser if the bundle *declares* the schemes:
-///
-///   <key>CFBundleURLTypes</key>
-///   <array>
-///     <dict>
-///       <key>CFBundleURLName</key>            <string>Web site URL</string>
-///       <key>CFBundleTypeRole</key>           <string>Viewer</string>
-///       <key>CFBundleURLSchemes</key>
-///       <array>
-///         <string>http</string>
-///         <string>https</string>
-///       </array>
-///     </dict>
-///   </array>
-///   <key>CFBundleDocumentTypes</key>
-///   <array>
-///     <dict>
-///       <key>CFBundleTypeName</key>           <string>HTML Document</string>
-///       <key>CFBundleTypeRole</key>           <string>Viewer</string>
-///       <key>LSHandlerRank</key>              <string>Alternate</string>
-///       <key>LSItemContentTypes</key>
-///       <array>
-///         <string>public.html</string>
-///         <string>public.xhtml</string>
-///       </array>
-///     </dict>
-///   </array>
+/// only offers an app as a browser if the bundle *declares* the schemes, and only lists it
+/// in Open With if the bundle declares the document types. `Files.types` is the same list.
 @MainActor enum URLHandling {
 
     // MARK: - Incoming urls
@@ -48,11 +22,8 @@ import AppKit
         manager.setEventHandler(handler, andSelector: #selector(Handler.getURL(_:withReply:)),
                                 forEventClass: AEEventClass(kInternetEventClass),
                                 andEventID: AEEventID(kAEGetURL))
-        // We declare public.html, so "Open With → Vane" on a .html file has to work too;
-        // AppKit turns that into an odoc event that nothing would otherwise answer.
-        manager.setEventHandler(handler, andSelector: #selector(Handler.openDocuments(_:withReply:)),
-                                forEventClass: AEEventClass(kCoreEventClass),
-                                andEventID: AEEventID(kAEOpenDocuments))
+        // Files — "Open With → Vane" on a PDF or an .html — are `odoc`, and AppKit's own
+        // handler for that calls `application(_:open:)` on the delegate. See AppLifecycle.
     }
 
     /// NSAppleEventManager does not retain its handlers.
@@ -66,6 +37,14 @@ import AppKit
     /// The rules are asked per url rather than for the batch: three links arriving together
     /// can perfectly well belong in three different places, which is the point of having them.
     static func open(_ urls: [URL]) {
+        // A local file only if Vane can draw it. A GetURL/odoc event is attacker-reachable
+        // and Launch Services is not the only thing that can send one, so `open -a Vane
+        // archive.zip` must not reach a tab — WebKit would treat an unrenderable file as a
+        // download and copy it into ~/Downloads.
+        // Filtered in place rather than partitioned, because the order of the batch is the
+        // order the links were sent in and the loop below relies on it.
+        let openable = Set(Files.opens(urls))
+        let urls = urls.filter { !$0.isFileURL || openable.contains($0) }
         guard !urls.isEmpty else { return }
         // A loop, not `filter`: `hand` opens windows, and `filter`'s order of evaluation is
         // not the batch's order to rely on for side effects. Three links from one message
@@ -106,17 +85,6 @@ import AppKit
                 guard let raw, let url = URLHandling.normalize(raw) else { return }
                 URLHandling.open([url])
             }
-        }
-
-        @objc func openDocuments(_ event: NSAppleEventDescriptor, withReply reply: NSAppleEventDescriptor) {
-            var files: [URL] = []
-            if let list = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)) {
-                // Apple Event lists are 1-based, and a single file arrives unwrapped.
-                files = list.numberOfItems == 0
-                    ? [list.fileURLValue].compactMap { $0 }
-                    : (1...list.numberOfItems).compactMap { list.atIndex($0)?.fileURLValue }
-            }
-            MainActor.assumeIsolated { URLHandling.open(files) }
         }
     }
 

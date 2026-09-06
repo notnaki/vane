@@ -372,7 +372,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     panel.message = "Open a file in a new tab"
     guard panel.runModal() == .OK, let url = panel.url else { return }
     let store = Windows.current ?? Windows.open()
-    store.newBlankTab().web.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+    store.newBlankTab().go(url)
 }
 
 /// ⇧⌘S. ponytail: one format — a web archive, the same single file Safari's Save As
