@@ -482,7 +482,7 @@ private struct RuleRow: View {
                 .accessibilityLabel("What this rule matches")
             Text("open in").font(Look.text).foregroundStyle(Look.inkPrimary)
             Picker("", selection: $rule.destination) {
-                Text("Little Arc").tag(AirTraffic.Destination.littleTag)
+                Text("Little Vane").tag(AirTraffic.Destination.littleTag)
                 Text("Most Recent Space").tag(AirTraffic.Destination.recentTag)
                 // A Space is offered by name; the tag it carries is its id, so renaming one
                 // keeps the rule pointing at it.

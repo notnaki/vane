@@ -94,21 +94,24 @@ struct BrowserWindow: View {
             WindowGlass()
             SpaceGround()
             HStack(spacing: 0) {
-                if store.sidebarShown { Sidebar().frame(width: sidebar.width) }
-                WebCard()
+                // Arc's Library takes the window over rather than floating on it: its rail
+                // stands where the sidebar does and its pane where the page does, at the
+                // same widths, so opening it moves nothing on screen — only what is drawn.
+                if store.libraryOpen {
+                    LibraryRail().frame(width: sidebar.width)
+                } else if store.sidebarShown {
+                    Sidebar().frame(width: sidebar.width)
+                }
+                if store.libraryOpen { LibraryPane() } else { WebCard() }
             }
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
-            if store.sidebarShown {
+            // Not while the Library is up: the rail is not the sidebar, and is not dragged.
+            if store.sidebarShown && !store.libraryOpen {
                 SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth / 2)
             }
             edgeStrip
             floatingSidebar
-            // Arc's Library slides out of the window's leading edge over the sidebar. The
-            // page card behind it does not move — nothing about the HStack changes.
-            if store.libraryOpen {
-                LibraryPanel().transition(.move(edge: .leading).combined(with: .opacity))
-            }
             // Last, so the search bar composites over the sidebar as well as the page.
             if let mode = store.palette {
                 PaletteView(mode: mode) { dismissPalette() }

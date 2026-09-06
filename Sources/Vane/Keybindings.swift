@@ -201,7 +201,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         switch self {
         case .newWindow: "New Window"
         case .newPrivateWindow: "New Private Window"
-        case .newLittleArc: "New Little Arc Window"
+        case .newLittleArc: "New Little Vane Window"
         case .newTab: "New Tab"
         case .reopenClosedTab: "Reopen Closed Tab"
         case .closeTab: "Archive Tab"

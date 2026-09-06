@@ -1,11 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// Arc's "Little Arc": a link from another app opens in a small floating window with one
-/// page and one row of chrome, instead of landing as a tab in whatever window happened to
-/// be in front. The bet is that most links from Mail, Slack or Terminal are read once and
-/// closed — putting them in the sidebar makes the user tidy up after every message they
-/// read. ⌘W throws it away; "Open in ▸" is the one gesture that says "actually, keep this",
+/// Little Vane (Arc's "Little Arc"): a link from another app opens in a small floating
+/// window with one page and one row of chrome, instead of landing as a tab in whatever
+/// window happened to be in front. The bet is that most links from Mail, Slack or Terminal
+/// are read once and closed — putting them in the sidebar makes the user tidy up after
+/// every message they read. ⌘W throws it away; "Open in ▸" is the one gesture that says "actually, keep this",
 /// and only then does it become a tab in a Space.
 ///
 /// It is the same browser: the same profile, cookies, history and extensions. What it is
@@ -73,7 +73,7 @@ import SwiftUI
             contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false)
-        window.title = "Little Arc"
+        window.title = "Little Vane"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         // Same trick as `Windows.open`: an empty compact toolbar gets AppKit's own idea of
@@ -408,7 +408,7 @@ struct LittleArcView: View {
 }
 
 /// The window's title is the page's, so AppKit lists a Little Arc in the Window menu by
-/// what is in it rather than by a row of identical "Little Arc"s. Its own view because only
+/// what is in it rather than by a row of identical "Little Vane"s. Its own view because only
 /// something observing the tab hears the title land.
 private struct TitleSync: View {
     @ObservedObject var tab: Tab
@@ -418,7 +418,7 @@ private struct TitleSync: View {
         Color.clear
             .frame(width: 0, height: 0)
             .onChange(of: tab.title, initial: true) {
-                store.window?.title = tab.title.isEmpty ? "Little Arc" : tab.title
+                store.window?.title = tab.title.isEmpty ? "Little Vane" : tab.title
             }
             .accessibilityHidden(true)
     }
@@ -445,7 +445,7 @@ struct LittleArcBar: View {
         // The bar is this window's title bar, the way the sidebar is the browser window's.
         .background(WindowDragArea())
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Little Arc")
+        .accessibilityLabel("Little Vane")
     }
 }
 
