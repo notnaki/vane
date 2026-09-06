@@ -330,6 +330,7 @@ private struct GeneralPane: View {
     // writing it here is the whole of the preference. Its name comes from there, so the
     // toggle and the reader cannot end up on two different keys.
     @AppStorage(PictureInPicture.prefKey) private var autoPiP = true
+    @AppStorage("warnBeforeQuit") private var warnQuit = true
     @State private var restore = Prefs.restoreSession
     @State private var archiveAfter = Prefs.archiveAfter
     @State private var isDefault = URLHandling.isDefaultBrowser
@@ -348,6 +349,11 @@ private struct GeneralPane: View {
                 SettingsRow("Reopen windows and tabs on launch") {
                     Toggle("", isOn: $restore).labelsHidden()
                         .onChange(of: restore) { Prefs.restoreSession = restore }
+                }
+                // AppLifecycle reads this key on every terminate, so writing it here is the
+                // whole of the preference.
+                SettingsRow("Warn before quitting (\(Keybinding("q", .command).display))") {
+                    Toggle("", isOn: $warnQuit).labelsHidden()
                 }
                 SettingsRow("Auto-archive today's tabs") {
                     Picker("", selection: $archiveAfter) {

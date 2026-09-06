@@ -92,6 +92,44 @@ enum Spaces {
         return pick(asked: asked, last: TabStore.lastSpaceID(for: profile.id), from: all)
     }
 
+    // MARK: - The tab a Space is left on
+
+    /// Arc lands you back on the tab you were reading, not on whatever happens to be first:
+    /// swiping to Work and back to Personal puts the same page in front of you again.
+    ///
+    /// `tabs` is the strip as it has just been rebuilt, in sidebar order; `last` is the url
+    /// written down when the Space was left. The fallbacks are the ones the sidebar has to
+    /// survive: the first Today tab, then the first pinned row, then nothing at all — an
+    /// empty pill over a Space with no pages is a real answer, and the chrome stays put.
+    ///
+    /// Pure, so `selfcheck --pure` can prove the ladder without a window.
+    static func landing(on tabs: [(url: String?, kind: TabKind)], last: String?) -> Int? {
+        if let last, let i = tabs.firstIndex(where: { $0.url == last }) { return i }
+        return tabs.firstIndex { $0.kind == .today } ?? tabs.firstIndex { $0.kind == .pinned }
+    }
+
+    /// Where `landing`'s `last` comes from, and goes.
+    ///
+    /// ponytail: one defaults dictionary, space id → url, next door to `lastSpace` — which
+    /// is this same idea one level up. Not a field on `Space`: spaces.json is another file's
+    /// Codable struct, every window rewrites it, and this is pure cache — delete it and
+    /// Spaces still switch, just landing on the first tab the way they used to. Ceiling: a
+    /// deleted Space leaves its row behind (~60 bytes), and a Space open in two windows
+    /// remembers whichever one left it last.
+    private static let lastTabKey = "lastSpaceTab"
+
+    static func lastTab(in space: UUID, defaults: UserDefaults = .vane) -> String? {
+        (defaults.dictionary(forKey: lastTabKey) as? [String: String])?[space.uuidString]
+    }
+
+    /// A `url` of nil is "nothing worth coming back to" — a blank tab, a local file, a
+    /// `vane:` page — and forgets the Space's row rather than writing one that never matches.
+    static func rememberTab(_ url: String?, in space: UUID, defaults: UserDefaults = .vane) {
+        var all = (defaults.dictionary(forKey: lastTabKey) as? [String: String]) ?? [:]
+        all[space.uuidString] = url
+        defaults.set(all, forKey: lastTabKey)
+    }
+
     // MARK: - Favourites are global
 
     /// Arc caps the grid at twelve tiles.
@@ -457,6 +495,50 @@ enum Spaces {
                pick(asked: nil, last: nil, from: []) == nil)
         assert("a space that is not this profile's is not opened just because it was asked for",
                pick(asked: Space(name: "Gone", profileID: pid), last: b.id, from: [a, b])?.id == b.id)
+
+        // …and which *tab* it lands on once it is showing. The strip as `switchTo` rebuilds
+        // it: the profile's favourites, then the Space's pinned rows, then its Today tabs.
+        let strip: [(url: String?, kind: TabKind)] = [
+            ("https://fav.example", .favourite),
+            ("https://pin.example", .pinned),
+            ("https://t1.example", .today),
+            ("https://t2.example", .today),
+        ]
+        assert("switching back lands on the tab the space was left on",
+               landing(on: strip, last: "https://t2.example") == 3)
+        assert("…even when that tab is a pinned row",
+               landing(on: strip, last: "https://pin.example") == 1)
+        assert("a space nobody has left yet lands on its first Today tab",
+               landing(on: strip, last: nil) == 2)
+        assert("a remembered page that is no longer open falls back the same way",
+               landing(on: strip, last: "https://gone.example") == 2)
+        assert("a space with only pinned rows lands on the first of them",
+               landing(on: Array(strip.prefix(2)), last: nil) == 1)
+        assert("a space with nothing but favourites lands on nothing: the pill goes empty",
+               landing(on: Array(strip.prefix(1)), last: nil) == nil)
+        assert("an empty space lands on nothing", landing(on: [], last: "https://t1.example") == nil)
+        assert("a blank tab has no url and is never landed on by name",
+               landing(on: [(nil, .today), ("https://t1.example", .today)], last: nil) == 0)
+
+        // The row itself, against a throwaway suite: the user's own defaults are never read.
+        let suite = "vane.check.spaces.\(ProcessInfo.processInfo.processIdentifier)"
+        if let scratch = UserDefaults(suiteName: suite) {
+            defer { scratch.removePersistentDomain(forName: suite) }
+            assert("a space nobody has left yet remembers nothing",
+                   lastTab(in: a.id, defaults: scratch) == nil)
+            rememberTab("https://t2.example", in: a.id, defaults: scratch)
+            rememberTab("https://other.example", in: b.id, defaults: scratch)
+            assert("leaving a space writes down the tab it was left on",
+                   lastTab(in: a.id, defaults: scratch) == "https://t2.example")
+            assert("each space remembers its own",
+                   lastTab(in: b.id, defaults: scratch) == "https://other.example")
+            rememberTab(nil, in: a.id, defaults: scratch)
+            assert("leaving a space on a blank tab forgets rather than writing a row that never matches",
+                   lastTab(in: a.id, defaults: scratch) == nil
+                       && lastTab(in: b.id, defaults: scratch) == "https://other.example")
+        } else {
+            assert("scratch defaults suite is available", false)
+        }
 
         // Pinned rows stranded at profile level, merged into a Space that already exists.
         assert("stranded rows go after the space's own, in their own order",

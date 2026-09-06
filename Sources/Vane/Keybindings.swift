@@ -638,17 +638,52 @@ enum Command: String, CaseIterable, Codable, Sendable {
         return Command.allCases.first { Keybindings.binding(for: $0) == binding }
     }
 
+    /// A second chord for a command, on top of the one the menu shows and the Shortcuts pane
+    /// rebinds. Arc binds Back and Forward to both ⌘[ / ⌘] and ⌘← / ⌘→, and the arrows are
+    /// the pair most people reach for.
+    ///
+    /// ponytail: a two-row table read only by `handle`, rather than a second binding per
+    /// command everywhere. `binding(for:)` still answers with the one chord a menu item can
+    /// display, `conflicts` still compares the one the user can change, and rebinding Back
+    /// leaves the arrows where Arc has them. Ceiling: the alias is not rebindable and not
+    /// listed in the Shortcuts pane.
+    static let aliases: [Command: Keybinding] = [
+        .back: Keybinding("\u{F702}", .command),
+        .forward: Keybinding("\u{F703}", .command),
+    ]
+
     /// Install with:
     ///   NSEvent.addLocalMonitorForEvents(matching: .keyDown) { Keybindings.handle($0) ? nil : $0 }
     /// True means "consumed" — the caller must swallow the event.
     static func handle(_ event: NSEvent) -> Bool {
-        guard event.type == .keyDown, let b = Keybinding(event: event),
-              let cmd = command(for: b), let action = actions[cmd] else { return false }
+        guard event.type == .keyDown, let b = Keybinding(event: event) else { return false }
+        guard let cmd = command(for: b), let action = actions[cmd] else { return alias(b) }
         // ponytail: WKWebView gives no synchronous "did the page take it?", so `.page`
         // means "hands off whenever web content has focus" and Vane's action is simply
         // unreachable there. Ceiling: doing better needs a JS keydown listener reporting
         // defaultPrevented back over a message handler, i.e. an async round-trip per key.
         if priority(for: cmd) == .page, webContentHasFocus() { return false }
+        action()
+        return true
+    }
+
+    /// The alias chords, tried only after the real bindings — a user who rebinds something
+    /// onto ⌘← gets what they asked for, and Arc's arrows are what is left.
+    ///
+    /// ⌘← in a url field, a rename field or the find bar is Home, and taking it would break
+    /// editing text in the chrome, so a field editor keeps it.
+    ///
+    /// ponytail: the *page* is not asked. This monitor runs ahead of AppKit's dispatch, so
+    /// Vane wins ⌘← even inside a text box on a website, where WebKit would have moved the
+    /// caret to the start of the line — measured, not assumed. Asking the page first needs
+    /// an async round trip into WebKit per keystroke and a synchronous answer here, which is
+    /// the same wall `priority(for:) == .page` documents. Ceiling: use ⌘[ (or ⌃A, which
+    /// WebKit also takes) for line-start inside a web text field.
+    private static func alias(_ b: Keybinding) -> Bool {
+        let r = NSApp.keyWindow?.firstResponder
+        guard !(r is NSText), !(r is NSTextView),
+              let cmd = aliases.first(where: { $0.value == b })?.key,
+              let action = actions[cmd] else { return false }
         action()
         return true
     }
@@ -880,6 +915,19 @@ extension Keybindings {
         out.append(("priority is per command", priority(for: .newTab) == .browser))
         reset(.find)
         out.append(("reset clears the priority too", priority(for: .find) == .browser))
+
+        // Arc's second chord for Back and Forward.
+        out += [
+            ("Back and Forward also answer to ⌘← and ⌘→",
+             aliases[.back]?.display == "⌘←" && aliases[.forward]?.display == "⌘→"),
+            ("the arrows are a second chord, not a rebind: ⌘[ and ⌘] still stand",
+             binding(for: .back).display == "⌘[" && binding(for: .forward).display == "⌘]"),
+            ("no command ships bound to the alias chords, so nothing is shadowed",
+             aliases.values.allSatisfy { command(for: $0) == nil }),
+            ("⌥⌘← is still Previous Space, not Back",
+             command(for: Keybinding("\u{F702}", [.command, .option])) == .previousSpace
+                && command(for: Keybinding("\u{F703}", [.command, .option])) == .nextSpace),
+        ]
 
         // Routing, minus the NSEvent (which needs an app to be meaningful).
         out.append(("a binding resolves to its command", command(for: Keybinding("t", .command)) == .newTab))

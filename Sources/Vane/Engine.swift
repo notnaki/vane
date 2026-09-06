@@ -1304,6 +1304,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             parked[key.absoluteString] = t.snapshot
         }
         Suspension.SpaceState.save(parked, space: id, profileID: profileID, in: Store.directory)
+        // And which tab the Space is being left on, so switching back lands on it rather
+        // than on whatever is first. Written here rather than in `switchTo` so the swipe
+        // commit, the Spaces menu, ⌥⌘←/→ and ⌃1–9 all get it — every one of them saves
+        // first. Only a web page is worth coming back to; see `Spaces.rememberTab`.
+        Spaces.rememberTab(active?.currentURL.flatMap {
+            $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
+        }, in: id)
     }
 
     /// Save the outgoing space, then rebuild the strip from the incoming one. A window shows
@@ -1348,7 +1355,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
         restorePins(urls: space.pinnedTabURLs ?? [], parked: parked)
         for url in space.tabURLs { newBlankTab().open(url, parked: parked[url.absoluteString]) }
-        current = tabs.first { $0.kind == .today }?.id
+        // Arc lands on the tab this Space was left on; `Spaces.landing` is the ladder down to
+        // the first Today tab, the first pinned row, and finally an empty pill.
+        current = Spaces.landing(on: tabs.map { ($0.currentURL?.absoluteString, $0.kind) },
+                                 last: Spaces.lastTab(in: space.id)).map { tabs[$0].id }
         if space.tabURLs.isEmpty { openPalette(.newTab) }
         rememberSpace()
         extensions.sync()

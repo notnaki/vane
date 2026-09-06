@@ -547,6 +547,10 @@ enum Look {
     // Toasts: a pill above the sidebar's footer, gone after `toastDuration` unless hovered.
     static let toastHeight: CGFloat = 32
     static let toastDuration: Double = 3
+    /// How long ⌘Q has to be held before the app quits. A second is long enough that the
+    /// ⌘Q meant for the tab beside ⌘W is only a toast, and short enough that holding it
+    /// deliberately never feels like waiting. See `QuitHold`.
+    static let quitHold: Double = 1
     /// How much of the space's colour washes over the pill's dark ground.
     static let toastTint: Double = 0.45
 

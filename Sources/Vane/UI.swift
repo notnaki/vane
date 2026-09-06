@@ -772,6 +772,9 @@ private struct SiteGlyph: View {
                 }
         }
         .buttonStyle(.plain)
+        // A broken lock drawn in the same grey as the host beside it is not a warning. Only
+        // the insecure marks tint; everything else keeps the ink `PillBody` hands down.
+        .foregroundStyle(site.insecure ? Look.warning : Look.inkSecondary)
         .disabled(tab == nil)
         .help(site.siteless ? "Site Controls" : "\(site.title) — \(site.connection)")
         .accessibilityLabel("Site Controls")

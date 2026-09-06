@@ -119,9 +119,13 @@ extension Prefs {
     /// the tab someone is looking at, and never a tab with nothing loaded — an empty tab has
     /// no page to remember, so archiving it would silently delete it.
     /// `after` of 0 or less is "never".
+    ///
+    /// `playing` is Arc's media exemption (v0.75): a tab with media running is never taken,
+    /// whether or not it is muted — the page you left playing is the one page you are most
+    /// obviously still using, and it is the one whose idle clock never advances on its own.
     nonisolated static func due(kind: TabKind, idle: TimeInterval, after: TimeInterval,
-                                active: Bool, loaded: Bool) -> Bool {
-        guard after > 0, kind == .today, loaded, !active else { return false }
+                                active: Bool, loaded: Bool, playing: Bool = false) -> Bool {
+        guard after > 0, kind == .today, loaded, !active, !playing else { return false }
         return idle >= after
     }
 
@@ -134,11 +138,18 @@ extension Prefs {
         guard after > 0 else { return }
         for store in TabStore.all where !store.isPrivate {
             let active = store.current
-            for tab in store.tabs where due(kind: tab.kind,
-                                            idle: now.timeIntervalSince(tab.lastActive),
-                                            after: after,
-                                            active: tab.id == active,
-                                            loaded: tab.currentURL != nil) {
+            for tab in store.tabs {
+                // Playing counts as being used: without this, a tab that played for eight
+                // hours would be archived the second it fell quiet, because "idle" only ever
+                // meant "not clicked". The clock restarts when the noise stops, which is
+                // exactly what re-stamping it on every sweep does — the sweep runs a minute,
+                // and a minute of slop on a twelve-hour rule is beneath noticing.
+                if TabAudio.isPlaying(tab) { tab.lastActive = now; continue }
+                guard due(kind: tab.kind,
+                          idle: now.timeIntervalSince(tab.lastActive),
+                          after: after,
+                          active: tab.id == active,
+                          loaded: tab.currentURL != nil) else { continue }
                 store.archive(tab.id)
             }
         }
@@ -189,6 +200,20 @@ extension Prefs {
                     !due(kind: .today, idle: 400 * hour, after: 12 * hour, active: false, loaded: false)))
         out.append(("\"Never\" means never",
                     !due(kind: .today, idle: 4000 * hour, after: 0, active: false, loaded: true)))
+
+        // The media exemption, driven off a stand-in for `TabAudio.playingIDs`.
+        let noisy = UUID(), quiet = UUID()
+        let playing: Set<UUID> = [noisy]
+        func sweepable(_ id: UUID, idle: TimeInterval) -> Bool {
+            due(kind: .today, idle: idle, after: 12 * hour, active: false, loaded: true,
+                playing: playing.contains(id))
+        }
+        out.append(("a tab playing media is never auto-archived", !sweepable(noisy, idle: 400 * hour)))
+        out.append(("the tab beside it still is", sweepable(quiet, idle: 400 * hour)))
+        // What re-stamping `lastActive` while a tab plays buys: the clock starts from quiet,
+        // so eight hours of playback are not eight hours of idling.
+        out.append(("a tab that has just gone quiet starts its clock from there",
+                    !sweepable(quiet, idle: 0)))
         out.append(("every offered interval but Never is a real duration",
                     Prefs.archiveChoices.filter { $0.after > 0 }.count == 4
                         && Prefs.archiveChoices.last?.after == 0))
