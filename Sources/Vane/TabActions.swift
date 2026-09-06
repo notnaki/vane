@@ -60,12 +60,18 @@ enum TabActions {
     ///
     /// Splitting a row that is already the one on screen would be a split of a pane with
     /// itself, so that falls back to showing it — which is a no-op, and the right one.
-    enum RowClick: Equatable { case show, split, little }
+    /// `tick` and `range` are Arc's multi-select: ⌘ puts the row in the selection or takes
+    /// it out, ⇧ takes the run from the last row clicked. See Selection.swift.
+    enum RowClick: Equatable { case show, split, little, tick, range }
 
-    static func rowClick(option: Bool, command: Bool, isCurrent: Bool) -> RowClick {
-        guard option else { return .show }
-        if command { return .little }
-        return isCurrent ? .show : .split
+    static func rowClick(option: Bool, command: Bool, shift: Bool = false,
+                         isCurrent: Bool) -> RowClick {
+        // ⌥ is Arc's "open this somewhere else" prefix and outranks the selection modifiers:
+        // ⌥⌘-click hands the page to a Little Arc rather than ticking the row.
+        if option { return command ? .little : (isCurrent ? .show : .split) }
+        if command { return .tick }
+        if shift { return .range }
+        return .show
     }
 
     /// Escape while a page is still coming in. Arc stops the load; every other browser does
@@ -178,8 +184,16 @@ extension TabActions {
              rowClick(option: true, command: true, isCurrent: false) == .little),
             ("…including the row already on screen, which is the point of taking it out",
              rowClick(option: true, command: true, isCurrent: true) == .little),
-            ("⌘ without ⌥ leaves the row alone",
-             rowClick(option: false, command: true, isCurrent: false) == .show),
+            ("⌘ without ⌥ ticks the row into the selection",
+             rowClick(option: false, command: true, isCurrent: false) == .tick),
+            ("⇧ takes the run from the last row clicked",
+             rowClick(option: false, command: false, shift: true, isCurrent: false) == .range),
+            ("⌥ outranks both, so ⌥⌘-click is still a Little Arc and not a tick",
+             rowClick(option: true, command: true, shift: true, isCurrent: false) == .little),
+            ("…and ⌥⇧-click is still a split",
+             rowClick(option: true, command: false, shift: true, isCurrent: false) == .split),
+            ("⌘ outranks ⇧, the way it does in a list of files",
+             rowClick(option: false, command: true, shift: true, isCurrent: false) == .tick),
         ]
 
         // Insertion. The strip is always sorted favourite → pinned → today.

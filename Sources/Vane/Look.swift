@@ -230,6 +230,11 @@ enum Look {
     /// Profiles list, where the selected row is the one whose controls are shown. Arc's is
     /// a whisper of blue (29,34,46 on 27).
     static let accentSelected = Color.accentColor.opacity(0.10)
+    /// Multi-select: every ticked row wears `selected`, so the one actually being shown
+    /// needs something the others do not have. A hairline in the accent rather than a
+    /// brighter fill — a third step of grey between `selected` and white would read as a
+    /// different material, while the accent is already the window's word for "this one".
+    static let selectedEdge = Color.accentColor.opacity(0.55)
 
     /// Something is wrong with the page rather than with the chrome: a connection that is
     /// not secure. The one colour in the window that is not `ink` or the user's accent,

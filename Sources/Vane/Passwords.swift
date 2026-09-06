@@ -370,7 +370,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("toasts", Toasts.check),
                                ("pinned folders", Pins.check),
                                ("split view", Split.check),
-                               ("mini audio player", MediaTray.check)] {
+                               ("mini audio player", MediaTray.check),
+                               ("multi-select", Selection.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }
