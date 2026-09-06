@@ -626,10 +626,17 @@ extension Look {
                     libraryHead + libraryField / 2 == lightsCentre))
         out.append(("…with room above it, so the field is not pushed off the top",
                     libraryHead > 0))
-        out.append(("a Library row is taller than a sidebar row, with air around its thumbnail",
-                    libraryRow > rowHeight && libraryRow - libraryThumb >= inset * 2))
-        out.append(("the list column is narrower than the bar, so a row reads across",
-                    libraryColumn < barWidth))
+        out.append(("a Library row holds its thumbnail with air around it",
+                    libraryRow - libraryThumb >= inset * 2))
+        out.append(("the panel is the sidebar's width and a bit, not the whole window",
+                    libraryRail + libraryList > sidebarWidth
+                        && libraryRail + libraryList < sidebarWidth * 2))
+        out.append(("a Space's card is narrower than the list column beside the rail",
+                    spaceCard < libraryList))
+        out.append(("the media masonry's two columns and their gaps fill the list column",
+                    mediaColumn * CGFloat(mediaColumns) + inset * 3 == libraryList))
+        out.append(("a rail tile fits inside the rail with its margins",
+                    libraryTile + inset * 2 <= libraryRail))
 
         // The ground. Tolerances are ±2/255: what a screenshot can be measured to.
         func near(_ v: Double, _ want: Double) -> Bool { abs(v * 255 - want) <= 2 }
