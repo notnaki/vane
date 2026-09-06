@@ -525,7 +525,10 @@ enum Look {
     /// The tab list changing shape: a row arriving, leaving, or moving between sections. A
     /// touch of spring, the way Arc's rows settle, but short enough that ⌘W ⌘W ⌘W never
     /// queues up behind itself.
-    static let list = Animation.spring(duration: 0.28, bounce: 0.12)
+    /// The duration is spelled out because the row you are dragging glides into its slot
+    /// when you let go, and the real row can only come back once it has arrived.
+    static let listSeconds: Double = 0.28
+    static let list = Animation.spring(duration: listSeconds, bounce: 0.12)
     /// Clear sweeps Today's rows out one after another: each row leaves this much after the
     /// one above it, and a long list stops staggering past `sweepCap` so forty tabs do not
     /// take two seconds to go.
@@ -630,6 +633,8 @@ extension Look {
                     panePillRadius > 0 && rowHeight - paneInset * 2 > rowIcon))
         out.append(("a held back button opens its history well after an ordinary click ends",
                     holdDelay > switcherDelay && holdDelay <= 0.5))
+        out.append(("a dragged row settles in about the time the list takes to reshape",
+                    listSeconds > 0 && listSeconds <= 0.4))
         out.append(("a lifted row is a shade bigger, not a different size",
                     liftScale > 1 && liftScale < 1.1))
         out.append(("its shadow is tighter than a floating surface's",
