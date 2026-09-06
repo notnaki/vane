@@ -56,6 +56,9 @@ struct DownloadIcon: View {
             // 20pt box is four grey bars and a stamp.
             Image(nsImage: picture).resizable().interpolation(.high)
                 .aspectRatio(contentMode: .fill)
+                // Sized *before* it is clipped: filled to the box and then cut to it, or a
+                // wide photo spills out of the row and over the title beside it.
+                .frame(width: Look.libraryThumb, height: Look.libraryThumb)
                 .clipShape(.rect(cornerRadius: Look.captionGap))
                 .accessibilityHidden(true)
         } else {

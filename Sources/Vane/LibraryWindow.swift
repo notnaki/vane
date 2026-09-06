@@ -744,7 +744,7 @@ private struct LibraryHead<Filter: View, Actions: View>: View {
                     .foregroundStyle(Look.inkPrimary)
                     .focused($focused)
             }
-            .padding(.horizontal, Look.inset)
+            .padding(.horizontal, Look.captionGap * 3)
             .frame(height: Look.libraryField)
             .frame(maxWidth: .infinity)
             .background(Look.controlFill, in: .rect(cornerRadius: Look.pillRadius))
