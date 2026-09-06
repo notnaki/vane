@@ -130,8 +130,15 @@ struct ThemeEditor: View {
         .accessibilityHidden(true)
     }
 
+    /// A dot's travel is the canvas inset by its own radius, so a colour at either end of a
+    /// channel still draws as a whole dot inside the field rather than half over its edge.
+    private func field(_ size: CGSize) -> CGSize {
+        CGSize(width: max(size.width - Look.themeDot, 1), height: max(size.height - Look.themeDot, 1))
+    }
+
     private func dot(_ i: Int, _ hex: String, in size: CGSize) -> some View {
         let p = Spaces.themePoint(hex: hex) ?? (x: 0.5, y: 0.5)
+        let travel = field(size)
         return Circle()
             .fill(Color(hex: hex) ?? .gray)
             .overlay { Circle().strokeBorder(.white, lineWidth: Look.themeRing) }
@@ -142,12 +149,13 @@ struct ThemeEditor: View {
                 .onChanged { drag in
                     selected = i
                     var list = colors
-                    guard list.indices.contains(i), size.width > 0, size.height > 0 else { return }
-                    list[i] = Spaces.themeHex(x: drag.location.x / size.width,
-                                              y: drag.location.y / size.height)
+                    guard list.indices.contains(i) else { return }
+                    list[i] = Spaces.themeHex(x: (drag.location.x - Look.themeDot / 2) / travel.width,
+                                              y: (drag.location.y - Look.themeDot / 2) / travel.height)
                     edit { Spaces.setThemeColors(list, on: &$0) }
                 })
-            .position(x: p.x * size.width, y: p.y * size.height)
+            .position(x: Look.themeDot / 2 + p.x * travel.width,
+                      y: Look.themeDot / 2 + p.y * travel.height)
             .accessibilityLabel("Theme colour \(i + 1)")
             .accessibilityValue(hex)
     }
@@ -320,7 +328,7 @@ private struct WaveSlider: View {
                 wave
                     .padding(.horizontal, Look.themeThumb.width / 2)
                 Capsule()
-                    .fill(.white)
+                    .fill(Look.themeThumbInk)
                     .frame(width: Look.themeThumb.width, height: Look.themeThumb.height)
                     .position(x: x, y: geo.size.height / 2)
             }
@@ -414,7 +422,7 @@ private struct GrainDial: View {
     /// and rotated from there, so the one number in it is the dial's own angle.
     private var marker: some View {
         Capsule()
-            .fill(.white)
+            .fill(Look.themeThumbInk)
             .frame(width: Look.themeMarker.width, height: Look.themeMarker.height)
             .offset(x: -(Look.themeDial / 2 + Look.themeMarker.width / 2))
             .rotationEffect(.radians(Spaces.dialAngle(value) + .pi / 2))

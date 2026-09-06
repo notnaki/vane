@@ -165,15 +165,18 @@ enum Look {
     static let themeThumb = CGSize(width: 24, height: 46)
     /// The sinusoid's amplitude at full intensity, how many waves fit the track, and what is
     /// left of the amplitude past the thumb.
-    static let themeWave: CGFloat = 6
-    static let themeWaves: Double = 5
-    static let themeWaveRest: CGFloat = 0.35
+    static let themeWave: CGFloat = 9
+    static let themeWaves: Double = 8
+    static let themeWaveRest: CGFloat = 0.3
     /// The grain dial: the knob, the dotted ring round it, and how many dots the ring has.
     static let themeDial: CGFloat = 46
     static let themeDialRing: CGFloat = 74
     static let themeDialDots = 32
     /// Its pointer.
     static let themeMarker = CGSize(width: 12, height: 5)
+    /// The slider's thumb and the dial's pointer. `ink`, not white: Arc's popover is
+    /// always dark, and a white pill on a Space pinned to light is a thumb nobody can see.
+    static let themeThumbInk = ink(0.9)
 
     /// The Site Control Center popover. Wide enough for "Picture in Picture" and its switch
     /// on one line, and no wider — it hangs off the address pill, not off the window.
