@@ -484,14 +484,29 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// scheme from here — WebKit does not let the delegate rewrite the request.
     func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-        // ⌘-click, ⇧⌘-click and middle-click are a request for a tab, not for this page to
-        // go somewhere. Before HTTPS-only, because the new tab does its own load and gets
-        // its own vetting.
+        // ⌘-click, ⇧⌘-click and middle-click are a request for a tab, and ⌥⌘-click one for a
+        // Little Arc — not for this page to go somewhere. Before HTTPS-only, because the new
+        // tab or window does its own load and gets its own vetting.
+        // A Little Arc needs no `onOpenBeside`: it is a window of its own, so the gesture
+        // works from inside a Little Arc and a Peek as well as from a browser window.
         if let intent = TabActions.intent(for: navigationAction),
-           let url = navigationAction.request.url, let open = onOpenBeside {
-            decisionHandler(.cancel)
-            open(url, intent.focus)
-            return
+           let url = navigationAction.request.url {
+            // Main frame only, for the reason the Peek branch below spells out: cancelling
+            // a subframe's navigation would float an ad's destination out of the box it
+            // belongs in, and `target=_blank` is already on its way to `createWebViewWith`.
+            if intent.little, navigationAction.targetFrame?.isMainFrame == true {
+                decisionHandler(.cancel)
+                // The window this page came out of decides whether the Little Arc is
+                // private — a page lifted out of a Private Window must not start writing
+                // itself into history.
+                LittleArc.open(url, isPrivate: isPrivate)
+                return
+            }
+            if let open = onOpenBeside {
+                decisionHandler(.cancel)
+                open(url, intent.focus)
+                return
+            }
         }
         // A link out of a favourite or a pinned tab that leads somewhere else, or any link
         // ⇧-clicked: it opens over the window and this tab stays where it is. Also before

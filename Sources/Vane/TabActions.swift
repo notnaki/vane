@@ -8,10 +8,12 @@ import WebKit
 enum TabActions {
 
     /// What a click on a link should do, given the modifiers it was made with.
-    /// `focus` is only meaningful when `beside` is true.
+    /// `focus` is only meaningful when `beside` is true, and neither is when `little` is.
     struct Intent: Equatable {
         let beside: Bool
         let focus: Bool
+        /// ⌥⌘-click: the link goes into a Little Arc instead of into this window at all.
+        var little = false
     }
 
     /// `WKNavigationAction.buttonNumber` is a *mask*, not an index, whatever its name says:
@@ -29,9 +31,15 @@ enum TabActions {
     /// ⌘ opens beside and stays put — the point of ⌘-click is to keep reading and collect
     /// links as you go. ⇧⌘ opens beside and goes there. A middle-click is ⌘-click with the
     /// wheel, the way every other browser has it.
-    static func intent(command: Bool, shift: Bool, button: Int) -> Intent? {
+    ///
+    /// ⌥⌘ is Arc's "I want to read this, not keep it": the link floats off into a Little Arc
+    /// rather than becoming a tab this window now has to be tidied of. It is tested before ⌘
+    /// on its own, and a middle-click with ⌥ held is still a plain background tab — the wheel
+    /// is not a gesture anyone combines with a modifier on purpose.
+    static func intent(command: Bool, option: Bool = false, shift: Bool, button: Int) -> Intent? {
         if button == middleButton { return Intent(beside: true, focus: false) }
         guard command else { return nil }
+        if option { return Intent(beside: false, focus: false, little: true) }
         return Intent(beside: true, focus: shift)
     }
 
@@ -40,8 +48,24 @@ enum TabActions {
     @MainActor static func intent(for action: WKNavigationAction) -> Intent? {
         guard action.navigationType == .linkActivated else { return nil }
         return intent(command: action.modifierFlags.contains(.command),
+                      option: action.modifierFlags.contains(.option),
                       shift: action.modifierFlags.contains(.shift),
                       button: action.buttonNumber)
+    }
+
+    /// A click on a *sidebar row*, which has no link in it and so cannot go through `intent`.
+    /// Arc's three answers, and the order they have to be tested in: ⌥⌘ hands the row's page
+    /// to a Little Arc, ⌥ on its own splits it in beside what you are reading, anything else
+    /// simply shows it.
+    ///
+    /// Splitting a row that is already the one on screen would be a split of a pane with
+    /// itself, so that falls back to showing it — which is a no-op, and the right one.
+    enum RowClick: Equatable { case show, split, little }
+
+    static func rowClick(option: Bool, command: Bool, isCurrent: Bool) -> RowClick {
+        guard option else { return .show }
+        if command { return .little }
+        return isCurrent ? .show : .split
     }
 
     /// Escape while a page is still coming in. Arc stops the load; every other browser does
@@ -128,6 +152,34 @@ extension TabActions {
              intent(command: false, shift: false, button: 2) == nil),
             ("…and neither is the left one, which is 1 and not 0",
              intent(command: false, shift: false, button: 1) == nil),
+            ("⌥⌘-click sends the link to a Little Arc, not to a tab",
+             intent(command: true, option: true, shift: false, button: plain)
+                == Intent(beside: false, focus: false, little: true)),
+            ("…⇧ on top of it changes nothing: there is nothing to focus",
+             intent(command: true, option: true, shift: true, button: plain)?.little == true),
+            ("⌥-click without ⌘ is not a link gesture at all — it is the split",
+             intent(command: false, option: true, shift: false, button: plain) == nil),
+            ("a plain ⌘-click is still a tab beside, not a Little Arc",
+             intent(command: true, shift: false, button: plain)?.little == false),
+            ("a middle-click with ⌥ held is still a background tab",
+             intent(command: true, option: true, shift: false, button: middleButton)
+                == Intent(beside: true, focus: false)),
+        ]
+
+        // The sidebar row's version of the same table.
+        out += [
+            ("a plain click on a row shows it",
+             rowClick(option: false, command: false, isCurrent: false) == .show),
+            ("⌥-click on a row splits it in beside what you are reading",
+             rowClick(option: true, command: false, isCurrent: false) == .split),
+            ("…but ⌥-clicking the row already on screen does not split it with itself",
+             rowClick(option: true, command: false, isCurrent: true) == .show),
+            ("⌥⌘-click on a row hands its page to a Little Arc",
+             rowClick(option: true, command: true, isCurrent: false) == .little),
+            ("…including the row already on screen, which is the point of taking it out",
+             rowClick(option: true, command: true, isCurrent: true) == .little),
+            ("⌘ without ⌥ leaves the row alone",
+             rowClick(option: false, command: true, isCurrent: false) == .show),
         ]
 
         // Insertion. The strip is always sorted favourite → pinned → today.

@@ -47,12 +47,27 @@ import SwiftUI
 
     /// One url, one window. Called once per url, so three links arriving together are three
     /// Little Arcs — which is what Arc does, and what "one page per window" means.
-    /// `url` is nil for a Little Arc opened with nothing in it — ⌘T from inside one, which
-    /// comes up empty with the search bar over it, the same as a new window does.
+    /// `url` is nil for a Little Arc opened with nothing in it — ⌘T from inside one, and
+    /// File ▸ New Little Arc Window (⌥⌘N), which come up empty with the search bar over the
+    /// page, the same as a new window does. `TabStore.init` is what opens that bar.
+    ///
+    /// ponytail: ⌥⌘N is an ordinary rebindable command, so it only fires while Vane is
+    /// frontmost. Arc's is system-wide. Ceiling: from another app you have to switch to Vane
+    /// first. Upgrade path is `RegisterEventHotKey` (Carbon, still supported, and the only
+    /// route that needs no permission at all) — deliberately not `CGEvent.tapCreate`, which
+    /// is a keylogger as far as the OS is concerned and costs the user an Accessibility or
+    /// Input Monitoring grant, which is far too much to ask for one shortcut.
+    ///
+    /// `isPrivate` is passed, never defaulted, by anything that floats a Little Arc off an
+    /// existing window — \u{2325}\u{2318}-click on a link or on a sidebar row. The window it
+    /// came out of may be a Private Window, and a Little Arc that quietly took the
+    /// persistent data store would write that page into history and keep its cookies: the
+    /// one thing that window exists not to do. Peek passes it for the same reason, and a
+    /// link from another app has no window to inherit from, so it takes the default.
     @discardableResult
-    static func open(_ url: URL?) -> TabStore {
+    static func open(_ url: URL?, isPrivate: Bool = false) -> TabStore {
         let profile = ProfileManager.shared.active
-        let store = floatingStore(url, profileID: profile.id)
+        let store = floatingStore(url, profileID: profile.id, isPrivate: isPrivate)
 
         let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
