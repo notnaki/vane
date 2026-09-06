@@ -1182,7 +1182,10 @@ private struct PaneStrip: View {
             }
             // A split's row is still a row: the pane making the noise says so and can be
             // muted from here, and the × closes the pane the row is showing.
-            if live, let voice { TabRowTrailing(tab: voice, selected: selected, pane: true) }
+            if live, let voice {
+                TabRowTrailing(tab: voice, selected: selected, pane: true,
+                               closes: panes.first { $0.id == split.activeTab })
+            }
         }
         .padding(Look.paneInset)
         .frame(height: Look.rowHeight)
@@ -2478,9 +2481,14 @@ private struct TabRowTrailing: View {
     /// On a split's row the × closes the pane the row is showing, not a whole tab's worth of
     /// row — so it says so, in the tooltip and to VoiceOver.
     var pane = false
+    /// The tab the × closes. On a split's row the speaker follows whichever pane is making
+    /// the noise, but the × — like ⌘W and the row's "Close Pane" action — closes the pane
+    /// the row is showing, which may be a different one.
+    var closes: Tab? = nil
     @Environment(\.rowHovering) private var hovering
 
     var body: some View {
+        let closing = closes ?? tab
         HStack(spacing: 8) {
             if tab.audible || TabAudio.isMuted(tab) {
                 Button { TabAudio.toggleMute(tab) } label: {
@@ -2491,12 +2499,12 @@ private struct TabRowTrailing: View {
                 .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
             if hovering || selected {
-                Button { store.close(tab.id) } label: {
+                Button { store.close(closing.id) } label: {
                     Image(systemName: "xmark").font(Look.rowGlyph)
                 }
                 .help(pane ? "Close Pane (⌘W)" : "Close Tab (⌘W)")
                 .accessibilityLabel((pane ? "Close pane " : "Close ")
-                                    + TidyTitles.title(for: tab))
+                                    + TidyTitles.title(for: closing))
                 // Grows in under the pointer rather than popping: the row's own hover
                 // animation carries it.
                 .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
