@@ -589,6 +589,10 @@ private struct NavGlyphs: View {
     let back: Bool
     let forward: Bool
     let loading: Bool
+    /// One per glyph, and kept across redraws: the AppKit view the menu hangs off is
+    /// reached through it, and a new holder every frame would lose that view.
+    @StateObject private var backMenu = HoldMenu()
+    @StateObject private var forwardMenu = HoldMenu()
 
     var body: some View {
         // Icon-only, so each one carries its own label and tooltip — without them
@@ -598,10 +602,17 @@ private struct NavGlyphs: View {
                 .disabled(!back)
                 .help("Back (⌘[)")
                 .accessibilityLabel("Back")
+                // Arc: hold it, or right-click it, for the pages behind this one.
+                .holdMenu(backMenu, enabled: back, named: "Show History") {
+                    tab.flatMap { NavHistory.menu(for: $0, back: true) }
+                }
             Button { tab?.forward() } label: { Image(systemName: "arrow.right") }
                 .disabled(!forward)
                 .help("Forward (⌘])")
                 .accessibilityLabel("Forward")
+                .holdMenu(forwardMenu, enabled: forward, named: "Show History") {
+                    tab.flatMap { NavHistory.menu(for: $0, back: false) }
+                }
             Button { loading ? tab?.stop() : tab?.reload() } label: {
                 Image(systemName: loading ? "xmark" : "arrow.clockwise")
             }
@@ -871,7 +882,7 @@ private struct FavoriteTile: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
     @State private var hovering = false
-    @State private var side: DropSide?
+    @State private var side: Landing.Band?
     @State private var width: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.strip) private var strip
@@ -948,8 +959,6 @@ private struct FavoriteTile: View {
 // MARK: Drag and drop
 
 /// Which side of its target a drop will land on.
-private enum DropSide { case before, after }
-
 /// The tab being dragged, for the whole app. A drag never leaves the process, so a drop
 /// reads it straight back rather than round-tripping the item provider — which is
 /// asynchronous, and would leave `dropUpdated` unable to say whether this is one of ours.
@@ -970,9 +979,24 @@ private enum DropSide { case before, after }
     /// one-tab drag, so `tab` — the row actually grabbed, and the one the drag preview and
     /// every existing reader is about — keeps meaning exactly what it did.
     @Published var tabs: [Tab.ID] = []
+    /// Where the dragged row sits *now* — it moves as the pointer crosses its neighbours,
+    /// so this follows it. `Landing` treats it as no move at all, which is what stops the
+    /// live reorder oscillating around the row's own slot. Not published: only the drop
+    /// delegates read it, and publishing it would redraw every row on every pointer move.
+    var at: Landing.Spot?
+    /// Puts the row back where the drag found it. A live reorder has already moved it by the
+    /// time anything is dropped, so a drag that ends with no drop — Escape, or the button
+    /// coming up over nothing — has a real change to undo rather than nothing to do.
+    var undo: (@MainActor () -> Void)?
     /// Whether one of ours is in flight at all, which is what the drop lines and the
     /// sidebar's catch-all delegate care about.
     var active: Bool { tab != nil || folder != nil }
+
+    /// Whether this row is the one in the air, and so is not drawn where it sits.
+    /// ponytail: one row only. A dragged *run* keeps every row of it on screen — taking five
+    /// out at once leaves a hole the size of the selection and says nothing useful about
+    /// where they are going. Upgrade path: lift the run and stack its previews.
+    func lifted(_ id: Tab.ID) -> Bool { tab == id && tabs.count <= 1 }
 
     /// What is being dragged, and the end of the drag in the same breath. Every
     /// `performDrop` calls this first: a delegate that reads the flag and then *refuses*
@@ -990,7 +1014,18 @@ private enum DropSide { case before, after }
         return (tabs.isEmpty ? [tab].compactMap { $0 } : tabs, folder)
     }
 
-    func end() { tab = nil; folder = nil; tabs = [] }
+    func end() {
+        Motion.list {
+            tab = nil; folder = nil; tabs = []; at = nil; undo = nil
+        }
+    }
+
+    /// The end of a drag that no `performDrop` ever saw. The row has been moving as the
+    /// pointer went, so "nothing happened" has to be made true rather than assumed.
+    func cancel() {
+        if tab != nil, let undo { Motion.list(undo) }
+        end()
+    }
 
     /// The other end of a drag that no `performDrop` ever sees: released on the desktop, on
     /// the sidebar's bare ground, or in the middle of the page card, where the answer is "not
@@ -1012,11 +1047,11 @@ private enum DropSide { case before, after }
         }
         guard monitors.isEmpty else { return }
         let local = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.end() } }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.cancel() } }
             return event
         }
         let global = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.end() } }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.cancel() } }
         }
         monitors = [local, global].compactMap { $0 }
     }
@@ -1025,7 +1060,11 @@ private enum DropSide { case before, after }
 /// ponytail: `.onDrag`/`.onDrop` with a delegate rather than `.draggable`/`.dropDestination`.
 /// The Transferable pair cannot say which side of the target the pointer is on, so it can
 /// only ever drop *onto* a tab, never before or after it; this one gets the location.
-@MainActor private func dragPayload(_ tab: Tab, in store: TabStore? = nil) -> NSItemProvider {
+/// `at` is the row's own place in its section — the one place a drop cannot move it to, and
+/// the slot the live reorder keeps under the pointer. The favourites grid passes none: a
+/// tile is not a row in a section's list.
+@MainActor private func dragPayload(_ tab: Tab, in store: TabStore? = nil,
+                                    at spot: Landing.Spot? = nil) -> NSItemProvider {
     // Published on the next turn, not now: a state change inside the drag's own start
     // re-renders the row under the pointer, and SwiftUI drops the drag with it.
     let id = tab.id
@@ -1033,15 +1072,50 @@ private enum DropSide { case before, after }
     // drawn; grabbing any other row drags that row alone and leaves the selection be —
     // which is how Finder behaves, and what stops a drag quietly moving tabs off screen.
     let set = store?.selection.contains(id) == true ? store?.selectedTabs.map(\.id) ?? [] : []
-    // All three set, so a flag left behind by a drag that ended outside any of our targets —
+    let undo = store.map { restore(tab, in: $0) }
+    // All of it set, so a flag left behind by a drag that ended outside any of our targets —
     // dropped on the desktop, say, where no `performDrop` ever runs — is cleared by the
     // next drag rather than outliving the session.
     DispatchQueue.main.async {
-        Dragging.shared.tab = id
-        Dragging.shared.folder = nil
-        Dragging.shared.tabs = set
+        Motion.list {
+            Dragging.shared.tab = id
+            Dragging.shared.folder = nil
+            Dragging.shared.tabs = set
+            Dragging.shared.at = spot
+            Dragging.shared.undo = undo
+        }
     }
     return NSItemProvider(object: id.uuidString as NSString)
+}
+
+/// Putting a row back where a drag found it. Captured as its neighbour rather than as an
+/// index: the live reorder moves only the dragged row, so every other row keeps its place
+/// and "after the tab that was above me" still names the same gap however far the drag has
+/// wandered. `drop` restores the section too, since it takes its target's kind.
+///
+/// ponytail: no snapshot of the whole order. One row moved is one row to move back, and a
+/// saved order would have to be reconciled with every tab opened or closed mid-drag.
+@MainActor private func restore(_ tab: Tab, in store: TabStore) -> @MainActor () -> Void {
+    let id = tab.id, kind = tab.kind
+    let section = store.tabs.filter { $0.kind == kind }
+    let here = section.firstIndex { $0.id == id }
+    let anchor: (Tab.ID, Bool)? = here.flatMap { i in
+        if i > 0 { return (section[i - 1].id, true) }
+        return section.count > 1 ? (section[i + 1].id, false) : nil
+    }
+    return { [weak store] in
+        guard let store else { return }
+        // The only row in its section has no neighbour to be put back beside; all it can
+        // have lost is which section it is in.
+        if let anchor {
+            store.drop(id, onto: anchor.0, after: anchor.1)
+        } else {
+            store.move(id, to: kind)
+        }
+        // The row is back in the section it started in, so the selection has to be told the
+        // same thing a drop tells it — a cancelled drag must leave nothing behind.
+        store.selectionLanded([id], in: kind)
+    }
 }
 
 /// The 2pt line a drop will land on, at one edge of its target. `on` is the target's own
@@ -1059,6 +1133,132 @@ private struct DropLine: View {
     }
 }
 
+/// The row that is in the air. The preview under the pointer is the row you are moving; this
+/// is the slot it came from, dimmed so the list still reads as having somewhere to put it
+/// back. It keeps its height and its drop target on purpose: the live reorder brings the row
+/// to the pointer, and the pointer has to land on something that says "nothing to do".
+///
+/// ponytail: opacity, not height, and not the row itself moving. Drawing the real row under
+/// the pointer instead of a preview is what Arc does and what this wanted to be; the row
+/// stops being drawn at all the moment it is offset inside its own row transition, and
+/// chasing that is not worth a broken drag. Ceiling: a preview image follows the pointer
+/// rather than the row.
+private struct Lifted: ViewModifier {
+    let id: Tab.ID
+    @ObservedObject private var dragging = Dragging.shared
+
+    func body(content: Content) -> some View {
+        content.opacity(dragging.lifted(id) ? Look.lifted : 1)
+    }
+}
+
+/// A split's row: the panes as pills in one row-height container, sharing its width. The
+/// pane you are in is the lighter pill, and clicking any of them shows the split with that
+/// pane focused — which is the only reason the row has more than one thing in it.
+///
+/// ponytail: equal widths rather than widths from the titles. A row whose columns move as
+/// pages load their titles is a row you cannot aim at, and four panes have to fit a sidebar
+/// either way, so the truncation is the answer at every count.
+private struct PaneStrip: View {
+    /// Passed in rather than read from the environment, as `SpaceMenu`'s is: this is also
+    /// built for the drag preview, which AppKit renders outside the view hierarchy, and a
+    /// missing `@EnvironmentObject` there is a crash rather than a blank row.
+    let store: TabStore
+    let split: Split
+    let panes: [Tab]
+    let selected: Bool
+    let ticked: Bool
+    /// The preview is a picture of the row, not the row: nothing in it is pressable, and the
+    /// close button would be a lie.
+    var live = true
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: Look.paneGap) {
+            ForEach(Array(panes.enumerated()), id: \.element.id) { i, pane in
+                PanePill(store: store, tab: pane, active: pane.id == split.activeTab,
+                         index: i, of: panes.count)
+            }
+            // A split's row is still a row: the pane making the noise says so and can be
+            // muted from here, and the × closes the pane the row is showing.
+            if live, let voice { TabRowTrailing(tab: voice, selected: selected, pane: true) }
+        }
+        .padding(Look.paneInset)
+        .frame(height: Look.rowHeight)
+        .background(fill, in: .rect(cornerRadius: Look.pillRadius))
+        .hairline(radius: Look.pillRadius, ticked && selected ? Look.selectedEdge : .clear)
+        .animation(reduceMotion ? nil : Look.quick, value: hovering)
+        .contentShape(.rect)
+        .onHover { hovering = $0 }
+        .onTapGesture { store.focusPane(split.activeTab) }
+        .environment(\.rowHovering, hovering)
+    }
+
+    /// Which pane the row's trailing glyphs are about. Whichever one is making the noise —
+    /// that is the pane you are looking for when a sidebar starts talking — and otherwise
+    /// the one on screen, whose × is the one a split's row has always closed.
+    /// ponytail: worked out here rather than in the body. The same expression inside a
+    /// `ViewBuilder` took the type checker minutes.
+    private var voice: Tab? {
+        panes.first { $0.audible || TabAudio.isMuted($0) }
+            ?? panes.first { $0.id == split.activeTab }
+    }
+
+    /// The container wears the row's own states, exactly as `SidebarRow` does.
+    private var fill: Color {
+        selected || ticked ? Look.selected : (hovering ? Look.hovered : .clear)
+    }
+}
+
+/// One pane of a split, in the strip. Its own element for VoiceOver, because a pane is a
+/// page you can go to and a row with four of them is four places, not one.
+private struct PanePill: View {
+    /// See `PaneStrip`: handed in, because this is drawn in the drag preview too.
+    let store: TabStore
+    @ObservedObject var tab: Tab
+    let active: Bool
+    let index: Int
+    let of: Int
+
+    var body: some View {
+        HStack(spacing: Look.rowSpacing) {
+            TabIcon(tab: tab, size: Look.rowIcon)
+            Text(TidyTitles.title(for: tab))
+                .font(Look.rowTitle)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundStyle(Look.inkPrimary)
+        }
+        .padding(.horizontal, Look.paneInset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: Look.rowHeight - Look.paneInset * 2)
+        // The pane being looked at is the lighter one; the rest are a step quieter, so the
+        // row says which page the card is showing without a second mark to read.
+        .background(active ? Look.selected : Look.hovered,
+                    in: .rect(cornerRadius: Look.panePillRadius))
+        .contentShape(.rect)
+        .onTapGesture { store.focusPane(tab.id) }
+        .help(tab.title)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(TidyTitles.title(for: tab))
+        .accessibilityValue("Pane \(index + 1) of \(of)" + (active ? ", showing" : ""))
+        .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint("Shows this pane of the split view.")
+    }
+}
+
+extension View {
+    /// A row that lifts out of the list while it is being dragged.
+    func lifted(_ id: Tab.ID) -> some View { modifier(Lifted(id: id)) }
+    /// The drag preview: the row held a shade above the sidebar. AppKit renders this into
+    /// the image that follows the pointer, so the shadow has to be inside it.
+    func liftedPreview() -> some View {
+        scaleEffect(Look.liftScale)
+            .shadow(color: Look.liftShadow, radius: Look.liftShadowRadius, y: Look.liftShadowY)
+    }
+}
+
 /// One drop target for a tile, a row and the empty grid. `target` nil is the placeholder,
 /// which simply pins. The side is the half of the target the pointer is in — left/right
 /// across `extent` for a tile, top/bottom of `Look.rowHeight` for a row — and is published
@@ -1071,25 +1271,34 @@ private struct TabDrop: DropDelegate {
     let into: TabKind
     let axis: Axis
     let extent: CGFloat
-    @Binding var side: DropSide?
+    @Binding var side: Landing.Band?
+    /// This row's place in its section, and how many rows the section draws — what turns the
+    /// pointer inside one row into a place in the whole list. Nil for a tile in the
+    /// favourites grid and for the two placeholder targets, which stand for a section rather
+    /// than a row in one.
+    var row: Int?
+    var rows = 0
 
     func validateDrop(info: DropInfo) -> Bool {
         // A folder only ever lands among the pinned rows, so every other target refuses it
         // rather than quietly dropping it somewhere it cannot be drawn.
         if Dragging.shared.folder != nil { return target?.kind == .pinned }
-        guard let dragging = Dragging.shared.tab else { return false }
-        return dragging != target?.id
+        // The dragged row's own slot takes the drop too, and answers "nothing to do".
+        // Refusing it would hand the pointer to whatever is under the list the moment the
+        // live reorder brings the row back beneath it.
+        return Dragging.shared.tab != nil
     }
-    func dropEntered(info: DropInfo) { side = which(info) }
+    func dropEntered(info: DropInfo) { track(info) }
     func dropUpdated(info: DropInfo) -> DropProposal? {
         guard Dragging.shared.active else { return DropProposal(operation: .cancel) }
-        side = which(info)
+        track(info)
         return DropProposal(operation: .move)
     }
     func dropExited(info: DropInfo) { side = nil }
 
     func performDrop(info: DropInfo) -> Bool {
-        let after = which(info) == .after
+        let where_ = place(info)?.band
+        let after = where_ == .after
         side = nil
         // Read once and cleared *before* anything can refuse the drop. A drag left set here
         // outlives the gesture, and `SidebarDrop` then stands aside from every url and file
@@ -1101,6 +1310,29 @@ private struct TabDrop: DropDelegate {
             return true
         }
         guard !dragged.isEmpty else { return false }
+        // Whatever the drop turns out to mean, these tabs have landed in this section — the
+        // live reorder may have carried them here rows ago — and the selection has to be
+        // told, or every bulk action on it becomes a silent no-op. See `selectionLanded`. A
+        // `defer`, because the quietest landing of all is the one that returns first.
+        defer { store.selectionLanded(dragged, in: target?.kind ?? into) }
+        // Let go where the row already is — including wherever the live reorder has already
+        // put it — and the drop is over: taken, so the drag ends, and answered, so nothing
+        // else is offered it. The list is already right.
+        guard let where_ else { return true }
+        // Arc's "drop a tab on a tab": the two go side by side. `addPane` is the same door
+        // ⌃⇧= and a drop on the page card use, so the four-pane ceiling and the thing it
+        // says when you reach it are written down once.
+        if where_ == .onto, let target {
+            for id in dragged {
+                // A split draws one row, at its lead pane's place, so a pane from the other
+                // section would be a row in two lists. It joins the target's section first.
+                if store.tabs.first(where: { $0.id == id })?.kind != target.kind {
+                    store.drop(id, onto: target.id, after: true)
+                }
+                store.addPane(id, beside: target.id)
+            }
+            return true
+        }
         // A dropped selection lands as a run in the order its rows were drawn. Dropping
         // *before* the target means each next tab goes after the one just placed, so the run
         // keeps its order instead of arriving inside out.
@@ -1112,19 +1344,74 @@ private struct TabDrop: DropDelegate {
             if id != here.id { store.drop(id, onto: here.id, after: after || id != dragged.first) }
             anchor = store.tabs.first { $0.id == id } ?? here
         }
-        // A drop onto a row takes that row's section; with no row it is the empty section's
-        // own. Either way the selection has to be told, or every bulk action on it becomes a
-        // no-op — see `selectionLanded`. The address pill is a `TabDrop` into `.favourite`,
-        // so the grid's "no rows to show it" case comes through here too.
-        store.selectionLanded(dragged, in: target?.kind ?? into)
         return true
     }
 
-    private func which(_ info: DropInfo) -> DropSide {
-        switch axis {
-        case .horizontal: info.location.x > extent / 2 ? .after : .before
-        case .vertical:   info.location.y > Look.rowHeight / 2 ? .after : .before
+    /// What a row is offering: which of its three bands the pointer is in and, for the two
+    /// edges, the index the dragged row would end up at. Worked out once, because `track`
+    /// moves the row there and `performDrop` reads the band, and the two must not be able to
+    /// disagree about the same pointer.
+    private struct Offer { var band: Landing.Band; var to: Int? }
+
+    /// What this row is offering the pointer, or nil for nothing at all. A tile in the
+    /// favourites grid has two halves and no middle — a row of icons has nothing to split.
+    private func place(_ info: DropInfo) -> Offer? {
+        // The thing being dragged, over itself: nothing to offer, whichever way the target is
+        // laid out. On a row this is what makes the live reorder settle; on a favourite's
+        // tile it is what stops the grid drawing a drop line on the tile in your hand.
+        if let id = Dragging.shared.tab, id == target?.id { return nil }
+        guard axis == .vertical, let target else {
+            return Offer(band: info.location.x > extent / 2 ? .after : .before, to: nil)
         }
+        let band = Landing.band(y: info.location.y, height: Look.rowHeight)
+        if band == .onto { return canSplit(with: target) ? Offer(band: .onto, to: nil) : nil }
+        // The source is only a source in its own section: dragged into the other one it is a
+        // new row, and every boundary there is a real move.
+        let at = Dragging.shared.at
+        let source = at?.kind == into ? at?.index : nil
+        guard let to = Landing.move(row: row ?? 0, band: band, source: source) else { return nil }
+        return Offer(band: band, to: to)
+    }
+
+    /// Whether dropping onto this row would make a split anyone wants. A full one has no
+    /// room; a pane of the dragged tab's own split is already beside it.
+    private func canSplit(with target: Tab) -> Bool {
+        guard Dragging.shared.folder == nil, let id = Dragging.shared.tab else { return false }
+        if store.split(containing: id)?.contains(target.id) == true { return false }
+        let panes = store.split(containing: target.id)?.tabs.count ?? 1
+        let coming = max(Dragging.shared.tabs.count, 1)
+        return Landing.roomToSplit(panes: panes) >= coming
+    }
+
+    /// Arc reorders while you drag, not when you let go: crossing into a neighbour's edge
+    /// moves the row there and then, and the list settles into its new shape under the
+    /// pointer. What keeps it still afterwards is `Landing.move` — the move puts the row's
+    /// own slot under the pointer, and its own slot is not a place to land.
+    ///
+    /// ponytail: `store.drop` once per crossing, the same call a released drop makes. In
+    /// Pinned that writes `pins.json` each time, so dragging the length of a long list is one
+    /// small write per row passed — the debounce for that belongs in `savePins`, not here,
+    /// where it would have to know what a drag is.
+    ///
+    /// A dragged *run* keeps the drop line and lands on release: moving five rows on every pointer crossing is five reorders a frame, and the
+    /// run's own rows would be crossing each other as it went. Upgrade path: move the run as
+    /// a block once `store.drop` can take one.
+    private func track(_ info: DropInfo) {
+        let offer = place(info)
+        side = offer?.band
+        guard axis == .vertical, let offer, let to = offer.to, let target,
+              let id = Dragging.shared.tab,
+              // A run keeps the line and lands on release: moving five rows on every pointer
+              // crossing is five reorders a frame, with the run's own rows crossing each
+              // other as they go. So does a split's row — `store.drop` moves one tab and a
+              // split is several, so walking its lead past a sibling would swap which pane
+              // the row stands for and leave it looking as though nothing had happened.
+              Dragging.shared.tabs.count <= 1, store.split(containing: id) == nil
+        else { return }
+        store.drop(id, onto: target.id, after: offer.band == .after)
+        Dragging.shared.at = Landing.Spot(kind: into, index: to)
+        // The row is where the line would have pointed, so there is no line to draw.
+        side = nil
     }
 }
 
@@ -1284,7 +1571,6 @@ private struct SpaceIcons: View {
     let space: Space
     @Environment(\.dismiss) private var dismiss
 
-
     var body: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.fixed(Look.rowHeight), spacing: 6), count: 6),
                   spacing: 6) {
@@ -1401,13 +1687,25 @@ private struct PinnedTabs: View {
 
     var body: some View {
         // Drawn from `store.pins`, not from the strip: a folder is not a tab, and the order
-        // the rows are in is the folders’, which is what `Pins` is for.
-        let rows = store.pins.visible
+        // the rows are in is the folders’, which is what `Pins` is for. Only the entries that
+        // actually draw a row are counted — a pinned pane that is not its split's lead, and
+        // an entry whose tab has gone, draw nothing, and a place in the list counted in
+        // entries rather than rows lands beside the wrong one. See `OpenTabs`.
+        let rows = store.pins.visible.filter { row in
+            if row.entry.folder != nil { return true }
+            guard let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab })
+            else { return false }
+            guard let split = store.split(containing: tab.id) else { return true }
+            return store.leadPane(split) == tab.id
+        }
         // Empty is nothing, as in Arc: the divider follows the space’s name. The way in is
         // a drop on the space row, ⌘D, a tab’s own Pin action, or New Folder.
         if !rows.isEmpty {
             VStack(spacing: Look.rowGap) {
-                ForEach(rows) { PinnedRow(row: $0).transition(.rowCollapse) }
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    PinnedRow(row: row, index: index, rows: rows.count)
+                        .transition(.rowCollapse)
+                }
             }
             .contextMenu { Button("New Folder") { store.newFolder() } }
             .accessibilityElement(children: .contain)
@@ -1423,6 +1721,9 @@ private struct PinnedTabs: View {
 private struct PinnedRow: View {
     @EnvironmentObject var store: TabStore
     let row: Pins.Visible
+    /// Its place among the pinned rows, and how many there are — see `TabDrop.row`.
+    let index: Int
+    let rows: Int
 
     var body: some View {
         Group {
@@ -1431,7 +1732,7 @@ private struct PinnedRow: View {
             } else if let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab }) {
                 // StripRow, not TabRow: a pinned tab that is a pane of a split is drawn as
                 // the split's one row, at its lead pane's place.
-                StripRow(tab: tab)
+                StripRow(tab: tab, index: index, rows: rows)
             }
         }
         .padding(.leading, CGFloat(row.depth) * Look.folderIndent)
@@ -1439,7 +1740,7 @@ private struct PinnedRow: View {
 }
 
 /// Which part of a folder row a drop is over: its edges reorder, its middle puts the thing
-/// inside. A tab row has only two halves (`DropSide`) because there is no inside to have.
+/// inside. A tab row has the same three (`Landing.Band`): its middle is the tab itself.
 private enum FolderZone { case before, inside, after }
 
 /// A folder in the Pinned section: its glyph, its name and a chevron that says whether it is
@@ -1542,7 +1843,17 @@ private struct FolderMenu: View {
 /// row out from under it.
 @MainActor private func folderDragPayload(_ folder: Folder) -> NSItemProvider {
     let id = folder.id
-    DispatchQueue.main.async { Dragging.shared.folder = id; Dragging.shared.tab = nil }
+    // All four set, for the reason `dragPayload` sets all of its: a flag left behind by a
+    // drag that ended outside every target outlives the gesture otherwise.
+    DispatchQueue.main.async {
+        Motion.list {
+            Dragging.shared.folder = id
+            Dragging.shared.tab = nil
+            Dragging.shared.tabs = []
+            Dragging.shared.at = nil
+            Dragging.shared.undo = nil
+        }
+    }
     return NSItemProvider(object: id.uuidString as NSString)
 }
 
@@ -1742,8 +2053,16 @@ private struct OpenTabs: View {
 
     var body: some View {
         let open = store.tabs.filter { $0.kind == .today }
+        // The tabs that actually draw a row: a split is one row between all of its panes, and
+        // a place in the list has to be counted in rows or it lands beside the wrong one.
+        let rows = open.filter { tab in
+            guard let split = store.split(containing: tab.id) else { return true }
+            return store.leadPane(split) == tab.id
+        }
         VStack(spacing: Look.rowGap) {
-            ForEach(open) { StripRow(tab: $0) }
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, tab in
+                StripRow(tab: tab, index: index, rows: rows.count)
+            }
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
         // tabs instead of announcing an anonymous stack.
@@ -1761,15 +2080,47 @@ private struct OpenTabs: View {
 private struct StripRow: View {
     @EnvironmentObject var store: TabStore
     let tab: Tab
+    /// Its place in the section it is drawn in, and how many rows that section draws — see
+    /// `TabDrop.row`.
+    var index: Int?
+    var rows = 0
+    private var spot: Landing.Spot? { index.map { Landing.Spot(kind: tab.kind, index: $0) } }
+    @State private var side: Landing.Band?
 
     var body: some View {
-        if let split = store.split(containing: tab.id) {
-            if store.leadPane(split) == tab.id {
-                SplitRow(split: split, lead: tab).transition(.rowCollapse)
+        Group {
+            if let split = store.split(containing: tab.id) {
+                // The transition stays on the row, not on the Group: a pane that is not the
+                // lead draws nothing, and a height pinned around nothing is a phantom row.
+                if store.leadPane(split) == tab.id {
+                    SplitRow(split: split, lead: tab, spot: spot).transition(.rowCollapse)
+                }
+            } else {
+                TabRow(tab: tab, spot: spot).transition(.rowCollapse)
             }
-        } else {
-            TabRow(tab: tab).transition(.rowCollapse)
         }
+        .lifted(tab.id)
+        // One drop target for the row, whichever of the two draws it: a split is one item in
+        // the strip, so it reorders and takes drops exactly as a tab does.
+        //
+        // The line is only for the drops that have not already happened — a run, and the
+        // favourites grid. A single row has moved by the time the pointer gets here, so
+        // there is nothing left to point at.
+        .overlay(alignment: side == .after ? .bottom : .top) {
+            DropLine(on: side == .before || side == .after, axis: .vertical)
+        }
+        // "Drop it on this one and the two go side by side." A ring rather than a fill: a
+        // selected row is already filled, and a row that changed size under the pointer
+        // would move the thing being aimed at.
+        .overlay {
+            RoundedRectangle(cornerRadius: Look.pillRadius)
+                .strokeBorder(.tint, lineWidth: Look.dropLine)
+                .opacity(side == .onto ? 1 : 0)
+        }
+        .onDrop(of: [.plainText],
+                delegate: TabDrop(store: store, target: tab, into: tab.kind,
+                                  axis: .vertical, extent: Look.rowHeight, side: $side,
+                                  row: index, rows: rows))
     }
 }
 
@@ -1786,7 +2137,8 @@ private struct SplitRow: View {
     /// The pane whose place in the strip this row stands in — what a drag of the row moves
     /// and what a drop beside it lands next to.
     let lead: Tab
-    @State private var side: DropSide?
+    /// Its place in the strip, so a drag can say where it started — see `Landing`.
+    var spot: Landing.Spot?
     @Environment(\.strip) private var strip
 
     var body: some View {
@@ -1797,31 +2149,22 @@ private struct SplitRow: View {
         let ticked = store.selection.contains(lead.id)
         let active = panes.first { $0.id == split.activeTab } ?? panes.first
         let title = active.map { TidyTitles.title(for: $0) } ?? "Split View"
-        SidebarRow(selected: selected, ticked: ticked,
-                   action: { store.focusPane(split.activeTab) }) {
-            SplitIcons(panes: panes)
-        } label: {
-            Text(title)
-        } trailing: {
-            if let active { TabRowTrailing(tab: active, selected: selected, pane: true) }
-        }
+        // Arc's split row: one row-height container with a pill per pane in it, side by
+        // side and sharing the width. Not `SidebarRow` — a row with one title is the wrong
+        // shape for a split, which has as many titles as it has panes.
+        PaneStrip(store: store, split: split, panes: panes, selected: selected, ticked: ticked)
         // Everything a tab's row does with a drag, keyed on the pane whose place this is: a
         // split is one item in the strip, so it reorders and takes drops like one.
-        .overlay(alignment: side == .after ? .bottom : .top) {
-            DropLine(on: side != nil, axis: .vertical)
-        }
         .inStrip(lead.id, strip)
         .help("Split view of \(panes.count) tabs")
-        .onDrag { dragPayload(lead, in: store) } preview: {
-            HStack(spacing: Look.rowSpacing) {
-                SplitIcons(panes: panes)
-                Text(title).lineLimit(1).font(Look.rowTitle)
-            }
-            .padding(.horizontal, Look.rowInset).padding(.vertical, 4)
+        .onDrag {
+            dragPayload(lead, in: store, at: spot)
+        } preview: {
+            PaneStrip(store: store, split: split, panes: panes,
+                      selected: true, ticked: false, live: false)
+                .frame(width: Look.sidebarWidth - Look.inset * 2)
+                .liftedPreview()
         }
-        .onDrop(of: [.plainText],
-                delegate: TabDrop(store: store, target: lead, into: lead.kind,
-                                  axis: .vertical, extent: Look.rowHeight, side: $side))
         // A ticked split row is one of several selected rows, and is about all of them —
         // exactly as `TabRow` is.
         .contextMenu {
@@ -1831,14 +2174,14 @@ private struct SplitRow: View {
                 SplitMenu(store: store, split: split)
             }
         }
-        // One element for the whole split, the way one row is one thing: how many panes and
-        // which one is showing, with moving between them as an action rather than as a
-        // second element to find.
-        .accessibilityElement(children: .ignore)
+        // A container of panes, not one flattened row: each pill is a page you can go to,
+        // and VoiceOver should be able to step through them and say which is showing. What
+        // belongs to the split rather than to any one pane — how many panes there are, and
+        // the things that rearrange or end them — stays here, on the container.
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Split View")
         .accessibilityValue(axValue(panes.count, title, ticked))
-        .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
-        .accessibilityHint("Shows this split view.")
+        .accessibilityAddTraits(selected || ticked ? .isSelected : [])
         .accessibilityAction(named: "Next Pane") { store.focusNextPane() }
         .accessibilityAction(named: "Swap") { store.swapPanes(split) }
         .accessibilityAction(named: "Separate All Tabs") { store.separateSplit(split) }
@@ -1853,23 +2196,6 @@ extension SplitRow {
     /// string term in it.
     fileprivate func axValue(_ panes: Int, _ title: String, _ ticked: Bool) -> String {
         "\(panes) panes, showing \(title)" + selectionSuffix(ticked, store.selection.count)
-    }
-}
-
-/// The panes' favicons, overlapping, so one row says how many pages it holds without a count.
-///
-/// ponytail: two icons at most, whatever the split holds. Four of them are 49pt of leading
-/// slot against every other row's 16, and a title that starts a third of the way across the
-/// sidebar is worse than one that does not say "four" out loud — the row's own value says how
-/// many panes there are. The slot is clamped as well as capped, so even the two overlap
-/// inside a tab icon's width.
-private struct SplitIcons: View {
-    let panes: [Tab]
-    var body: some View {
-        HStack(spacing: -Look.splitIconLap) {
-            ForEach(panes.prefix(2)) { TabIcon(tab: $0) }
-        }
-        .frame(width: Look.tileIcon, alignment: .leading)
     }
 }
 
@@ -1891,7 +2217,8 @@ private struct SplitMenu: View {
 private struct TabRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
-    @State private var side: DropSide?
+    /// Its place in the strip, so a drag can say where it started — see `Landing`.
+    var spot: Landing.Spot?
     @Environment(\.strip) private var strip
 
     var body: some View {
@@ -1909,15 +2236,13 @@ private struct TabRow: View {
         } trailing: {
             TabRowTrailing(tab: tab, selected: selected)
         }
-        // The drop target is the whole row, so the line shows which side it will land on.
-        .overlay(alignment: side == .after ? .bottom : .top) {
-            DropLine(on: side != nil, axis: .vertical)
-        }
         .inStrip(tab.id, strip)
         .help(tab.title)
-        .onDrag { dragPayload(tab, in: store) } preview: {
-            // Drag preview: the row alone would drag the whole list's background with it.
-            // Dragging a selection says how many are coming, since only one row is drawn.
+        .onDrag {
+            dragPayload(tab, in: store, at: spot)
+        } preview: {
+            // The row alone would drag the whole list's background with it. Dragging a
+            // selection says how many are coming, since only one row is drawn.
             HStack(spacing: Look.rowSpacing) {
                 TabIcon(tab: tab)
                 Text(ticked && store.selection.count > 1
@@ -1925,10 +2250,8 @@ private struct TabRow: View {
                     .lineLimit(1).font(Look.rowTitle)
             }
             .padding(.horizontal, Look.rowInset).padding(.vertical, 4)
+            .liftedPreview()
         }
-        .onDrop(of: [.plainText],
-                delegate: TabDrop(store: store, target: tab, into: tab.kind,
-                                  axis: .vertical, extent: Look.rowHeight, side: $side))
         // Arc's double-click-to-rename. Simultaneous, so the row's own single tap still
         // selects the tab first — which is what Arc does too, and what makes the rename
         // apply to the tab you are looking at.

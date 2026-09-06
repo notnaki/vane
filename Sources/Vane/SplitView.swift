@@ -688,7 +688,7 @@ private final class DropWellView: NSView {
     /// Next turn, not now, so a drop AppKit is still delivering elsewhere can read it first.
     override func draggingEnded(_ sender: any NSDraggingInfo) {
         onZone?(nil)
-        DispatchQueue.main.async { MainActor.assumeIsolated { Dragging.shared.end() } }
+        DispatchQueue.main.async { MainActor.assumeIsolated { Dragging.shared.cancel() } }
     }
 
     /// `onDrop` ends the drag first and answers afterwards — a delegate that reads the flag
