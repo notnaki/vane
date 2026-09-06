@@ -37,6 +37,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @Published var canGoForward = false
     /// A password the page just submitted, waiting on the user to approve saving it.
     @Published var pendingSave: PendingSave?
+    /// The account list hanging under this page's login form, when the site has more than
+    /// one saved login. Nil the rest of the time, which is most of the time.
+    @Published var passwordChoice: PasswordChoice?
+    /// When this tab last filled a password. Filling moves the focus out of the page and
+    /// back, which is another focusin — see `PasswordChooser.refillGrace`.
+    private var lastFilledAt = Date.distantPast
     @Published var bookmarked = false
     /// Whether this page has an article worth reading — drives the toolbar button.
     @Published var readerAvailable = false
@@ -121,7 +127,8 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     private static func freshWebView(isPrivate: Bool, profileID: UUID) -> WKWebView {
         let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID)
         cfg.userContentController.addUserScript(
-            WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+            WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
+                         forMainFrameOnly: true, in: Autofill.world))
         cfg.userContentController.addUserScript(
             WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         // All frames, unlike the password script: an embedded player lives in an iframe.
@@ -152,7 +159,8 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// and the KVO that republishes WebKit's state. Runs at init and again on every resume,
     /// because suspension swaps the web view out from under all of it.
     private func attach() {
-        web.configuration.userContentController.add(WeakHandler(self), name: "vanepw")
+        web.configuration.userContentController.add(WeakHandler(self),
+                                                    contentWorld: Autofill.world, name: "vanepw")
         web.configuration.userContentController.add(WeakHandler(self),
                                                     contentWorld: PictureInPicture.world,
                                                     name: PictureInPicture.messageName)
@@ -251,7 +259,8 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         old.stopLoading()
         old.uiDelegate = nil
         old.navigationDelegate = nil
-        old.configuration.userContentController.removeScriptMessageHandler(forName: "vanepw")
+        old.configuration.userContentController.removeScriptMessageHandler(
+            forName: "vanepw", contentWorld: Autofill.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: Previews.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PictureInPicture.messageName, contentWorld: PictureInPicture.world)
@@ -415,10 +424,96 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         return h
     }
 
-    func fillPassword() {
-        guard let host = secureHost,
-              let hit = Passwords.lookup(host: host, profileID: profileID) else { return }
-        web.evaluateJavaScript(Autofill.fillJS(account: hit.account, password: hit.password))
+    /// One saved login fills straight in, the way it always has. Several put the list under
+    /// the username field and wait — guessing which of your two accounts you meant is worse
+    /// than asking, and it is what Arc does.
+    ///
+    /// Names only until something is chosen: deciding *whether* to ask decrypts nothing.
+    func fillPassword(announcing: Bool = false) {
+        guard let host = secureHost else {
+            if announcing { axAnnounce("No saved password for this page.") }
+            return
+        }
+        let hits = Passwords.matches(host: host, profileID: profileID)
+        guard hits.count > 1 else {
+            if let one = hits.first {
+                fill(one)
+            } else if announcing {
+                axAnnounce("No saved password for \(host).")
+            }
+            return
+        }
+        web.evaluateJavaScript("window.__vaneAnchor && window.__vaneAnchor()",
+                               in: nil, in: Autofill.world) { [weak self] result in
+            guard case let .success(value) = result, let raw = value as? String,
+                  let json = raw.data(using: .utf8),
+                  let rect = try? JSONSerialization.jsonObject(with: json) as? [String: Double]
+            else { return }
+            self?.openChooser(host: host, accounts: hits.map(\.account), at: rect)
+        }
+    }
+
+    /// Fills both fields and remembers the choice, so this account leads the list next time.
+    /// The password is read here and nowhere else, and lives exactly as long as the call.
+    func fill(_ login: Passwords.Login) {
+        closeChooser(.filled)
+        lastFilledAt = .now
+        guard let password = Passwords.password(host: login.host, account: login.account,
+                                                profileID: profileID) else { return }
+        Passwords.recordUse(host: login.host, account: login.account, profileID: profileID)
+        web.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password),
+                               in: nil, in: Autofill.world) { result in
+            // The script says whether it found a form. Silence on a page with no sign-in
+            // form is indistinguishable from a fill that went somewhere invisible.
+            guard case let .success(value) = result, (value as? Bool) == false else { return }
+            Task { @MainActor in axAnnounce("No sign-in form on this page.") }
+        }
+    }
+
+    /// The chooser's row action. It carries its own host and account rather than reading
+    /// `passwordChoice`, because by the time a click completes the list may already be gone:
+    /// the mouse-*down* takes first responder off the web view, the page reports that as a
+    /// blur, and the blur is a dismiss. Reading the state here lost every click.
+    func fillChosen(host: String, account: String) {
+        guard let hit = Passwords.matches(host: host, profileID: profileID)
+            .first(where: { $0.account == account })
+        else { closeChooser(.filled); return }
+        fill(hit)
+    }
+
+    /// Whether the pointer is over the list. Set by the view; read by `closeChooser` for the
+    /// one blur that must not close it — the one caused by pressing a row.
+    var chooserHovered = false
+
+    /// Everything that closes the list goes through here, so the rule lives in exactly one
+    /// place — `PasswordChooser.opens` — and cannot drift between the page's events, the
+    /// window's, and the keyboard's.
+    func closeChooser(_ event: ChooserEvent) {
+        guard passwordChoice != nil,
+              !PasswordChooser.opens(event,
+                                     sinceFill: Date.now.timeIntervalSince(lastFilledAt),
+                                     pointerInside: chooserHovered)
+        else { return }
+        passwordChoice = nil
+    }
+
+    /// `{x, y, w}` in CSS pixels under the username field, scaled by the page zoom into the
+    /// web view's own coordinates; `PasswordChooser.place` then keeps it inside the pane.
+    /// ponytail: the anchor is read once, when the list opens — nothing tracks the element
+    /// after that, which is why every scroll, blur and click closes the list instead.
+    private func openChooser(host: String, accounts: [String], at r: [String: Double]) {
+        guard PasswordChooser.opens(.focus, sinceFill: Date.now.timeIntervalSince(lastFilledAt)),
+              let x = r["x"], let y = r["y"], let w = r["w"] else { return }
+        let z = web.pageZoom
+        let anchor = CGRect(x: x * z, y: y * z, width: w * z, height: 0)
+        // Open only if it would actually be on the page. `place` refuses an anchor outside
+        // the viewport, and a list that is "open" but drawn nowhere is worse than no list at
+        // all: the keyboard handler still swallows the arrows and Return still fills, with
+        // nothing on screen to say why.
+        guard PasswordChooser.place(anchor: anchor, in: web.bounds.size,
+                                    height: PasswordChooser.height(rows: accounts.count)) != nil
+        else { return }
+        passwordChoice = PasswordChoice(host: host, accounts: accounts, anchor: anchor)
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -426,6 +521,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // Whatever was focused belongs to the page being left, frames and all; the incoming
         // one says so itself as soon as its script runs in each of them.
         editableFrames = []
+        closeChooser(.navigate)       // …and so is the form the account list was anchored to
         loading = true
         progress = 0.08        // a sliver immediately, so the bar never appears to stall at 0
     }
@@ -488,6 +584,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
         Zoom.apply(to: self)
+        closeChooser(.navigate)       // a redirect lands here without a fresh provisional
     }
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
@@ -643,20 +740,68 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             if let active = PictureInPicture.state(from: m.body) { pictureInPicture = active }
             return
         }
-        guard let body = m.body as? [String: Any],
-              let password = body["password"] as? String, !password.isEmpty,
+        guard let body = m.body as? [String: Any] else { return }
+        // The page saying the list is no longer wanted: a blur, a click elsewhere, a scroll,
+        // or a history move inside a single-page app.
+        if let why = body["dismiss"] as? String {
+            closeChooser(ChooserEvent(page: why))
+            return
+        }
+        // The username field was focused. Nothing happens unless this site has more than one
+        // saved login — one still fills from the menu command, silently. Names only: nothing
+        // is decrypted to answer "is there a choice here".
+        if body["focus"] as? Bool == true {
+            guard let host = secureHost else { return }
+            let hits = Passwords.matches(host: host, profileID: profileID)
+            guard hits.count > 1 else { return }
+            openChooser(host: host, accounts: hits.map(\.account),
+                        at: body.compactMapValues { $0 as? Double })
+            return
+        }
+        guard let password = body["password"] as? String, !password.isEmpty,
               let host = secureHost else { return }
+        // A private window is a window that leaves nothing behind, and an offer the user
+        // says yes to on autopilot leaves the most personal thing there is.
+        guard !isPrivate, !Passwords.isNeverSaved(host: host, profileID: profileID) else { return }
         let account = (body["account"] as? String) ?? ""
-        // Already stored and unchanged — nothing to ask about.
-        if let hit = Passwords.lookup(host: host, profileID: profileID),
-           hit.account == account, hit.password == password { return }
-        pendingSave = PendingSave(host: host, account: account, password: password)
+        // Already stored and unchanged — nothing to ask about. Only the account being
+        // submitted is decrypted, and only to answer that one question.
+        let stored = Passwords.password(host: host, account: account, profileID: profileID)
+        if stored == password { return }
+        pendingSave = PendingSave(host: host, account: account, password: password,
+                                  update: stored != nil)
     }
 
     func confirmSave() {
         guard let p = pendingSave else { return }
-        Passwords.save(host: p.host, account: p.account, password: p.password, profileID: profileID)
+        let stored = Passwords.save(host: p.host, account: p.account, password: p.password,
+                                    profileID: profileID)
+        axAnnounce(stored ? (p.update ? "Password updated." : "Password saved.")
+                          : PasswordsPane.saveFailed(host: p.host))
         pendingSave = nil
+    }
+
+    /// "Never for this site". Saying no once is a decision about this password; saying never
+    /// is a decision about the site, so it is the only one of the two that is remembered.
+    func neverSaveHere() {
+        guard let p = pendingSave else { return }
+        Passwords.neverSave(host: p.host, profileID: profileID)
+        axAnnounce("Vane will not offer to save passwords for \(p.host).")
+        pendingSave = nil
+    }
+
+    /// ↑↓ in the account list. Wraps, the way every menu-shaped popup on the Mac does.
+    func moveChoice(_ delta: Int) {
+        guard let choice = passwordChoice else { return }
+        passwordChoice?.selected = PasswordChooser.step(choice.selected, by: delta,
+                                                        of: choice.accounts.count)
+    }
+
+    /// Return in the account list.
+    func fillSelected() {
+        guard let choice = passwordChoice,
+              choice.accounts.indices.contains(choice.selected) else { return }
+        fillChosen(host: choice.host, account: choice.accounts[choice.selected])
     }
 
     func reload()     { web.reload() }
@@ -726,7 +871,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             // Task: SwiftUI reads `tab.web` on this same turn of the run loop.
             if let t = tabs.first(where: { $0.id == current }) { t.lastActive = .now; t.resume() }
             // The tab being left behind starts its idle clock now, not when it was opened.
-            if let old = tabs.first(where: { $0.id == oldValue }) { old.lastActive = .now }
+            if let old = tabs.first(where: { $0.id == oldValue }) {
+                old.lastActive = .now
+                old.closeChooser(.tabSwitch)   // a list anchored to a page nobody is looking at
+            }
             // Selecting a pane by any route at all — ⌘1–9, ⌃⇥, ⌥⌘↑↓, a favourite tile, the
             // command bar — is what the split means by "the active pane". Keeping it here
             // rather than in each of those callers is the only way the two cannot drift.

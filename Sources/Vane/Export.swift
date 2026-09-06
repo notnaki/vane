@@ -229,8 +229,10 @@ import UniformTypeIdentifiers
     static func savedPasswords(profileID: UUID = ProfileManager.activeProfileID) -> [PasswordImport.Entry] {
         // Passwords owns the definition of "a credential Vane created"; duplicating its
         // creator code and security-domain rule here would break silently if either moved.
-        Passwords.all(profileID: profileID).map {
-            PasswordImport.Entry(host: $0.host, account: $0.account, password: $0.password)
+        Passwords.all(profileID: profileID).compactMap { login in
+            Passwords.password(host: login.host, account: login.account, profileID: profileID)
+                .map { PasswordImport.Entry(host: login.host, account: login.account,
+                                            password: $0) }
         }
     }
 
