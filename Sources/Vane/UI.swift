@@ -234,38 +234,70 @@ struct SpaceGround: View {
 
     var body: some View {
         let dark = scheme == .dark
-        // One even wash, not a bottom-weighted gradient: the gradient's strongest band
-        // landed in the 8pt gap under the card, where it read as a fat coloured bar
-        // along the card's bottom edge rather than as the sidebar's tint.
         // Always in the tree, so switching space cross-fades one colour into the next
         // instead of cutting — the fade *is* what says the whole window changed space.
         // While a two-finger swipe is live the wash is dragged towards the Space being pulled
         // in, by the same fraction the strip has travelled: the colour has to arrive with the
         // content, or one switch reads as two events.
-        Look.groundColor(hex: hex, towards: pulled.hex, fraction: pulled.fraction, dark: dark,
-                         strength: store.currentSpace?.tint ?? Look.defaultTint)
-            .opacity(Look.groundOpacity(dark: dark))
-            .animation(reduceMotion ? nil : Look.appear, value: store.currentSpaceID)
-            .animation(reduceMotion ? nil : Look.appear, value: store.spaceRevision)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        ZStack {
+            wash(dark: dark).opacity(Look.groundOpacity(dark: dark))
+            grain
+        }
+        .animation(reduceMotion ? nil : Look.appear, value: store.currentSpaceID)
+        .animation(reduceMotion ? nil : Look.appear, value: store.spaceRevision)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
-    private var hex: String { store.currentSpace?.colorHex ?? store.profile.colorHex }
+    /// One colour is one even wash — deliberately not a bottom-weighted gradient: that one's
+    /// strongest band landed in the 8pt gap under the card, where it read as a fat coloured
+    /// bar along the card's bottom edge rather than as the sidebar's tint. Several colours
+    /// are the theme editor's extra dots, mixed across the window's diagonal at that same
+    /// strength.
+    @ViewBuilder private func wash(dark: Bool) -> some View {
+        let stops = Look.groundStops(colors, towards: pulled.colors, fraction: pulled.fraction,
+                                     dark: dark,
+                                     strength: store.currentSpace?.tint ?? Look.defaultTint)
+        if stops.count > 1 {
+            LinearGradient(colors: stops, startPoint: .topLeading, endPoint: .bottomTrailing)
+        } else {
+            stops.first ?? .clear
+        }
+    }
 
-    /// The Space the fingers are pulling in and how much of it is already showing. `(hex, 0)`
-    /// whenever nothing is being dragged, or at the ends where the strip only rubber-bands —
-    /// which leaves the idle look bit-for-bit what it was.
-    private var pulled: (hex: String, fraction: Double) {
+    /// The Space's grain over the wash: a tile of static noise at the strength the editor's
+    /// dial was left at, and nothing at all at zero — which is every Space that has never
+    /// been themed.
+    @ViewBuilder private var grain: some View {
+        let amount = store.currentSpace?.grain ?? 0
+        if amount > 0 {
+            Image(nsImage: Look.grain)
+                .resizable(resizingMode: .tile)
+                .opacity(amount * Look.grainMax)
+        }
+    }
+
+    /// The current Space's colours, falling back to its profile's — Arc has no colourless
+    /// space, and a grey slab was what the old fallback amounted to.
+    private var colors: [String] {
+        let list = store.currentSpace.map(Spaces.themeColors(of:)) ?? []
+        return list.isEmpty ? [store.profile.colorHex] : list
+    }
+
+    /// The Space the fingers are pulling in and how much of it is already showing: the
+    /// current Space's own colours at fraction 0 whenever nothing is being dragged, or at the
+    /// ends where the strip only rubber-bands — which leaves the idle look untouched.
+    private var pulled: (colors: [String], fraction: Double) {
         let width = SidebarWidth.shared.width
         let list = store.spaces
         guard store.spaceDrag != 0, width > 0,
               let i = list.firstIndex(where: { $0.id == store.currentSpaceID })
-        else { return (hex, 0) }
+        else { return (colors, 0) }
         let f = Double(max(-1, min(1, store.spaceDrag / width)))
         let n = f < 0 ? i + 1 : i - 1
-        guard list.indices.contains(n) else { return (hex, 0) }
-        return (list[n].colorHex ?? store.profile.colorHex, abs(f))
+        guard list.indices.contains(n) else { return (colors, 0) }
+        let next = Spaces.themeColors(of: list[n])
+        return (next.isEmpty ? [store.profile.colorHex] : next, abs(f))
     }
 }
 
@@ -1060,7 +1092,7 @@ private struct SpaceRow: View {
             .onTapGesture { showSpaceList(store) }
             .contextMenu { SpaceMenu(store: store, space: space, icons: $icons, theme: $theme) }
             .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
-            .popover(isPresented: $theme) { SpaceTheme(store: store, space: space) }
+            .popover(isPresented: $theme) { ThemeEditor(store: store, space: space) }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Space")
             .accessibilityValue(space.name)
@@ -1233,99 +1265,6 @@ private struct SpaceIcons: View {
     }
 }
 
-/// Arc's theme editor, minus the parts that are a graphics project rather than a control.
-/// ponytail: no 2D gradient picker and no grain dial. One colour, one strength and a
-/// light/dark switch is the whole model behind `ThemeTint`; a second colour and a noise
-/// texture would need a real gradient renderer before they could mean anything.
-private struct SpaceTheme: View {
-    let store: TabStore
-    let space: Space
-
-    var body: some View {
-        VStack(spacing: Look.inset * 2) {
-            appearance
-            swatches
-            strength
-        }
-        .padding(Look.inset * 2)
-        // Sized here, not by the popover: NSPopover takes the hosting view's first fitting
-        // size, which for a flexible grid plus a slider came out narrower than the content
-        // and clipped the row at the bottom.
-        .frame(width: Look.themeWidth)
-        .fixedSize()
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Theme colour")
-    }
-
-    private var appearance: some View {
-        HStack(spacing: 10) {
-            mode(nil, "sparkles", "Automatic")
-            mode("light", "sun.max", "Light")
-            mode("dark", "moon", "Dark")
-        }
-    }
-
-    private func mode(_ value: String?, _ symbol: String, _ label: String) -> some View {
-        Button { edit { $0.appearance = value } } label: {
-            Image(systemName: symbol)
-                .font(Look.symbol)
-                .frame(width: Look.topRow + Look.pillRadius, height: Look.topRow)
-                .background(space.appearance == value ? Look.selected : .clear,
-                            in: .rect(cornerRadius: Look.pillRadius))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .help(label)
-        .accessibilityLabel(label)
-        .accessibilityAddTraits(space.appearance == value ? [.isButton, .isSelected] : .isButton)
-    }
-
-    private var swatches: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.fixed(Look.swatch), spacing: Look.inset), count: 7),
-                  spacing: Look.inset) {
-            ForEach(Look.themeSwatches, id: \.self) { hex in
-                swatch(hex)
-            }
-        }
-    }
-
-    private func swatch(_ hex: String) -> some View {
-        Circle()
-            .fill(Color(hex: hex) ?? .gray)
-            .frame(width: Look.swatch, height: Look.swatch)
-            // Arc's ring stands off the swatch (ref 8) rather than lying on its edge, so
-            // the chosen colour is still a full disc.
-            .overlay {
-                Circle().strokeBorder(.primary, lineWidth: 2)
-                    .padding(-4)
-                    .opacity(space.colorHex == hex ? 1 : 0)
-            }
-            .contentShape(.circle)
-            .onTapGesture { edit { $0.colorHex = hex; $0.tint = $0.tint ?? Look.defaultTint } }
-            .accessibilityLabel("Theme colour \(hex)")
-            .accessibilityAddTraits(space.colorHex == hex ? [.isButton, .isSelected] : .isButton)
-    }
-
-    private var strength: some View {
-        HStack(spacing: Look.inset + 2) {
-            Image(systemName: "circle.lefthalf.filled").font(Look.caption).foregroundStyle(.secondary)
-            Slider(value: Binding(get: { space.tint ?? Look.defaultTint },
-                                  set: { v in edit { $0.tint = v } }), in: 0...1)
-                .accessibilityLabel("Colour strength")
-            Button("None") { edit { $0.colorHex = nil } }
-                .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
-                .fixedSize()
-                .accessibilityLabel("No theme colour")
-        }
-    }
-
-    private func edit(_ change: (inout Space) -> Void) {
-        var copy = space
-        change(&copy)
-        store.update(space: copy)
-    }
-}
-
 /// One dot per space, the current one wearing the space's own icon. There is no "no spaces"
 /// case any more: an ordinary window is always in a Space, so exactly one dot is always the
 /// current one. Only a private window has none, and it does not draw this at all.
@@ -1375,7 +1314,7 @@ private struct SpaceDots: View {
         .help(space.name)
         .contextMenu { SpaceMenu(store: store, space: space, icons: $icons, theme: $theme) }
         .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
-        .popover(isPresented: $theme) { SpaceTheme(store: store, space: space) }
+        .popover(isPresented: $theme) { ThemeEditor(store: store, space: space) }
         .accessibilityLabel(space.name)
         .accessibilityAddTraits(here ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Switches to this space.")
