@@ -361,8 +361,26 @@ struct CommandField: NSViewRepresentable {
     /// Return true to swallow the key; false lets the field editor have it.
     let onKey: (Key) -> Bool
 
+    /// ⌥⌘⌫ never reaches `doCommandBySelector`: the field editor has no action bound to that
+    /// combination, so AppKit drops it before the delegate is asked. Anything carrying ⌘ is
+    /// offered to `performKeyEquivalent` first, though, which is the one place a text field
+    /// gets to see it — and the field has to be a subclass to override it.
+    final class BarField: NSTextField {
+        var onForget: () -> Bool = { false }
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first?.value
+            if mods.contains(.command), mods.contains(.option),
+               scalar == 0x7F || scalar == 0x08, onForget() { return true }
+            return super.performKeyEquivalent(with: event)
+        }
+    }
+
     func makeNSView(context: Context) -> NSTextField {
-        let f = NSTextField(string: text)
+        let f = BarField(string: text)
+        f.onForget = { [weak coordinator = context.coordinator] in
+            coordinator?.parent.onKey(.forget) ?? false
+        }
         f.delegate = context.coordinator
         f.isBordered = false
         f.drawsBackground = false
@@ -381,6 +399,10 @@ struct CommandField: NSViewRepresentable {
         // keep calling into the state the view had when it was first made.
         context.coordinator.parent = self
         if f.stringValue != text { f.stringValue = text }
+        // The prompt is not fixed for the life of the field: ⇥ turns the bar into an
+        // actions search and says so here as well as in the scope chip.
+        if f.placeholderString != prompt { f.placeholderString = prompt }
+        if f.accessibilityLabel() != label { f.setAccessibilityLabel(label) }
         // Once only — otherwise every keystroke would reselect what was just typed.
         guard !context.coordinator.focused else { return }
         context.coordinator.focused = true
@@ -423,9 +445,10 @@ struct CommandField: NSViewRepresentable {
             // ⌘Return arrives as insertNewlineIgnoringFieldEditor:, ⇧Return as an ordinary
             // insertNewline:, so both modifiers have to be read off the event that caused it.
             let command = flags.contains(.command)
-            // ⌥⌘⌫ forgets the highlighted suggestion. The field editor turns a delete into
-            // one of three selectors depending on the modifiers held — ⌥⌫ is a word, ⌘⌫ is
-            // the line — so all three are matched and the modifiers are what decide.
+            // ⌥⌘⌫ arrives here only on the layouts where the field editor has an action
+            // bound to it — ⌥⌫ is a word, ⌘⌫ is the line, and the pair is often nothing at
+            // all. `BarField.performKeyEquivalent` is the route that always sees it; this
+            // one costs three lines and covers the case where AppKit got there first.
             if flags.contains(.option), flags.contains(.command),
                [#selector(NSResponder.deleteBackward(_:)),
                 #selector(NSResponder.deleteWordBackward(_:)),
@@ -776,11 +799,10 @@ struct CommandField: NSViewRepresentable {
             // what you typed, what the engine and your own history complete it to, the
             // assistant, the rest of the tabs. Sections rather than one ranked pool: the
             // order *is* the ranking, and a fuzzy score must never be able to move "what
-            // you actually typed" around. Commands are a tail, never a headline — someone
-            // typing two letters means a search far more often than "Close Tab", and three
-            // characters is the floor at which a fuzzy match stops being a coincidence.
-            // Archived tabs and Spaces are places, so they are searched the moment there is
-            // something to search with. Actions are always in reach — see `Palette.actions`.
+            // you actually typed" around. Actions are a tail, never a headline — someone
+            // typing two letters means a search far more often than "Archive Tab" — but
+            // they are always *there*, from the first character on. Archived tabs and Spaces
+            // are places, so they are searched the moment there is something to search with.
             let places = typed.isEmpty ? []
                 : Palette.rank(typed, archiveRows() + spaceRows(), key: { $0.title + " " + $0.detail })
             out = Palette.arrange(
