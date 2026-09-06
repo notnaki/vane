@@ -79,15 +79,12 @@ extension PaletteCommand {
             PaletteCommand(.newWindow, icon: "macwindow"),
             PaletteCommand(.newPrivateWindow, icon: "eyeglasses"),
         ]
-        // ponytail: not offered out of a private window, because `LittleArc.open` always
-        // makes an ordinary one — a row that quietly leaves private browsing is the worst
-        // kind of row. Ceiling lifts the moment `open` takes an `isPrivate:`, which #55 is
-        // adding; then this is one argument, not a filter.
-        if !store.isPrivate {
-            out.insert(PaletteCommand("New Little Arc", icon: "rectangle.on.rectangle") {
-                LittleArc.open(nil)
-            }, at: 1)
-        }
+        // The one row that carries the window it was opened from: ⌥⌘N out of a private
+        // window has to stay private, and a menu item has no window to ask. In an ordinary
+        // window `store.isPrivate` is false and this is the menu item's own closure.
+        out.insert(PaletteCommand(.newLittleArc, icon: "rectangle.on.rectangle") {
+            LittleArc.open(nil, isPrivate: store.isPrivate)
+        }, at: 1)
 
         // The page in front of you. Everything here needs somewhere to act, and a window
         // showing nothing has nowhere.
@@ -215,6 +212,19 @@ extension PaletteCommand {
         Array(all(for: store).prefix(topCount))
     }
 
+    /// A menu item whose row has to know something the menu item cannot: which window the
+    /// bar was opened in. It keeps the command's id, title and key — so the row still reads
+    /// and prints as that menu item — and supplies its own closure. Only for that: two
+    /// spellings of one action is exactly how the bar and the menu drift apart.
+    init(_ command: Command, icon: String, title: String? = nil,
+         run: @escaping @MainActor () -> Void) {
+        self.id = command.rawValue
+        self.icon = icon
+        self.title = title ?? command.title
+        self.command = command
+        self.run = run
+    }
+
     /// A row whose title is written here but whose action, key and enabled-ness belong to a
     /// menu item: Pin/Unpin and Favourite/Unfavourite say what they will do to *this* tab,
     /// the way Arc's menu items do, while still running the registry's closure.
@@ -247,7 +257,7 @@ extension PaletteCommand {
     /// This is the list Menu.swift must keep registering. It is written down rather than
     /// derived because there is nothing to derive it from — see the ceiling on `init`.
     static let registered: [Command] = [
-        .newTab, .reopenClosedTab, .newWindow, .newPrivateWindow,
+        .newTab, .newLittleArc, .reopenClosedTab, .newWindow, .newPrivateWindow,
         .copyPageURL, .reload, .hardReload, .find, .closeTab, .back, .forward,
         .showReader, .pictureInPicture, .muteTab, .zoomIn, .zoomOut, .actualSize,
         .sharePage, .printPage, .savePageAs, .showWebInspector,
