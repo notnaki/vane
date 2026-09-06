@@ -28,9 +28,12 @@ struct PaletteCommand: Identifiable {
         return binding.isAssigned ? binding.display : ""
     }
 
-    /// An action of the bar's own: no menu item, no shortcut, no registry entry.
-    init(_ title: String, icon: String, run: @escaping @MainActor () -> Void) {
-        self.id = title
+    /// An action of the bar's own: no menu item, no shortcut, no registry entry. `id`
+    /// defaults to the title, which is unique for every fixed row; the rows built from the
+    /// user's own data pass one, because two Spaces may well share a name.
+    init(_ title: String, icon: String, id: String? = nil,
+         run: @escaping @MainActor () -> Void) {
+        self.id = id ?? title
         self.icon = icon
         self.title = title
         self.command = nil
@@ -72,13 +75,19 @@ extension PaletteCommand {
     @MainActor static func all(for store: TabStore) -> [PaletteCommand] {
         var out: [PaletteCommand] = [
             PaletteCommand(.newTab, icon: "plus"),
-            PaletteCommand("New Little Arc", icon: "rectangle.on.rectangle") {
-                LittleArc.open(nil)
-            },
             PaletteCommand(.reopenClosedTab, icon: "arrow.uturn.left"),
             PaletteCommand(.newWindow, icon: "macwindow"),
             PaletteCommand(.newPrivateWindow, icon: "eyeglasses"),
         ]
+        // ponytail: not offered out of a private window, because `LittleArc.open` always
+        // makes an ordinary one — a row that quietly leaves private browsing is the worst
+        // kind of row. Ceiling lifts the moment `open` takes an `isPrivate:`, which #55 is
+        // adding; then this is one argument, not a filter.
+        if !store.isPrivate {
+            out.insert(PaletteCommand("New Little Arc", icon: "rectangle.on.rectangle") {
+                LittleArc.open(nil)
+            }, at: 1)
+        }
 
         // The page in front of you. Everything here needs somewhere to act, and a window
         // showing nothing has nowhere.
@@ -171,7 +180,8 @@ extension PaletteCommand {
             if let tab = store.active, tab.currentURL?.scheme?.hasPrefix("http") == true {
                 for space in store.spaces where space.id != store.currentSpaceID {
                     out.append(PaletteCommand("Move Tab to \(space.name)",
-                                              icon: space.icon ?? "square.on.square") {
+                                              icon: space.icon ?? "square.on.square",
+                                              id: "moveToSpace:" + space.id.uuidString) {
                         Spaces.move(tab.id, to: space.id, as: .today, from: store)
                     })
                 }
@@ -189,7 +199,8 @@ extension PaletteCommand {
                 SettingsWindow.show(tab: "links")
             },
             PaletteCommand(.vaneHelp, icon: "questionmark.circle", title: "Help Center"),
-            PaletteCommand("Quit Vane", icon: "power") { NSApp.terminate(nil) },
+            // No Quit row. Arc's palette has none, and for the reason you would guess: it
+            // would sit one Return away from every half-finished download in the window.
         ]
     }
 
@@ -247,23 +258,28 @@ extension PaletteCommand {
     ]
 
     static func check() -> [(String, Bool)] {
-        let titles = MainActor.assumeIsolated { registered.map(\.title) }
-        let shortcuts = MainActor.assumeIsolated {
-            registered.map { PaletteCommand($0, icon: "").shortcut }
+        let titles = registered.map(\.title)
+        // `defaultBinding`, never `Keybindings.binding(for:)`: this runs in the `--pure`
+        // set, and reading the store would read — and its migration could *write* — the
+        // preferences of whoever is running the release gate. Somebody with New Tab
+        // rebound would fail a check about the shipped catalogue. What is asserted here is
+        // the shipped default and the rule `shortcut` applies to it: an assigned binding
+        // prints, an unassigned one prints nothing at all.
+        func shipped(_ command: Command) -> String {
+            command.defaultBinding.isAssigned ? command.defaultBinding.display : ""
         }
+        let shortcuts = registered.map(shipped)
         return [
             ("the catalogue is Arc's dozens, not a handful", registered.count >= 35),
             ("no action is listed twice", Set(registered).count == registered.count),
             ("every action has a title", titles.allSatisfy { !$0.isEmpty }),
             // The whole point of going through the registry: the row prints the key the
             // menu item wears, so rebinding one moves both.
-            ("an action prints the shortcut its menu item wears",
-             MainActor.assumeIsolated { PaletteCommand(.newTab, icon: "").shortcut } == "⌘T"),
+            ("an action prints the shortcut its menu item wears", shipped(.newTab) == "⌘T"),
             // Arc leaves that side of the row blank rather than writing out a placeholder,
             // and plenty of these ship unbound — Favourite Tab among them.
             ("an unbound action prints nothing, not `---`",
-             MainActor.assumeIsolated { PaletteCommand(.favouriteTab, icon: "").shortcut }.isEmpty
-                && !shortcuts.contains("---")),
+             shipped(.favouriteTab).isEmpty && !shortcuts.contains("---")),
             ("…but most of the catalogue does carry a key",
              shortcuts.filter { !$0.isEmpty }.count > registered.count / 2),
 

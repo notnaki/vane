@@ -46,7 +46,11 @@ import WebKit
 
     /// True when the SPI is actually there, so the menu can disable itself rather than
     /// silently doing nothing.
-    static var available: Bool { WKWebView().responds(to: Selector(("_inspector"))) }
+    ///
+    /// A `let`, not a computed property: answering it costs a whole WKWebView, and the
+    /// command bar now asks on every keystroke while it builds its actions catalogue. The
+    /// answer is a property of the OS this process is running on and cannot change under us.
+    static let available: Bool = WKWebView().responds(to: Selector(("_inspector")))
 }
 
 /// The handful of preferences that exist so far. ponytail: UserDefaults directly, no

@@ -184,10 +184,15 @@ enum Palette {
             ("whitespace is not a query", actions(query: "   ", mode: .all) == .top),
             ("the tab search is tabs and nothing else",
              actions(query: "reload", mode: .tabs) == .none),
-            // ⇥ is Arc's actions filter, and asks for the catalogue rather than the top of it.
-            ("⇥ filters to actions with nothing typed",
-             actions(query: "", mode: .address, filtered: true) == .matching),
-            ("…and keeps filtering to them once something is",
+            // ⇥ is Arc's actions filter, and asks for the catalogue rather than the top of
+            // it — whatever opened the bar, and whatever is in the field. (The field is
+            // emptied on the way in: see the `.tab` case. ⌘L's bar is never empty, and its
+            // prefilled url ranked against the catalogue matches no action at all.)
+            ("⇥ hands the bar to the catalogue whichever key opened it",
+             actions(query: "", mode: .address, filtered: true) == .matching
+                && actions(query: "", mode: .all, filtered: true) == .matching
+                && actions(query: "", mode: .newTab, filtered: true) == .matching),
+            ("…and keeps filtering to them once something is typed at the scope",
              actions(query: "re", mode: .address, filtered: true) == .matching),
             ("…even in the tab search", actions(query: "", mode: .tabs, filtered: true) == .matching),
 
@@ -370,7 +375,8 @@ struct CommandField: NSViewRepresentable {
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
             let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first?.value
-            if mods.contains(.command), mods.contains(.option),
+            // Exactly ⌥⌘, not "at least": ⌃⌥⌘⌫ belongs to whoever bound it.
+            if mods == [.command, .option],
                scalar == 0x7F || scalar == 0x08, onForget() { return true }
             return super.performKeyEquivalent(with: event)
         }
@@ -449,7 +455,8 @@ struct CommandField: NSViewRepresentable {
             // bound to it — ⌥⌫ is a word, ⌘⌫ is the line, and the pair is often nothing at
             // all. `BarField.performKeyEquivalent` is the route that always sees it; this
             // one costs three lines and covers the case where AppKit got there first.
-            if flags.contains(.option), flags.contains(.command),
+            // Equality, not `contains`: ⌃⌥⌘⌫ is somebody else's shortcut, not this one.
+            if flags.intersection(.deviceIndependentFlagsMask) == [.option, .command],
                [#selector(NSResponder.deleteBackward(_:)),
                 #selector(NSResponder.deleteWordBackward(_:)),
                 #selector(NSResponder.deleteToBeginningOfLine(_:))].contains(selector) {
@@ -458,7 +465,10 @@ struct CommandField: NSViewRepresentable {
             switch selector {
             case #selector(NSResponder.moveUp(_:)):          return parent.onKey(.up)
             case #selector(NSResponder.moveDown(_:)):        return parent.onKey(.down)
-            case #selector(NSResponder.insertTab(_:)):       return parent.onKey(.tab)
+            // ⇥ and ⇧⇥ both toggle the actions scope. Backtab has to be caught as well as
+            // tab, or ⇧⇥ walks first responder out of the bar and into the sidebar behind it.
+            case #selector(NSResponder.insertTab(_:)),
+                 #selector(NSResponder.insertBacktab(_:)):   return parent.onKey(.tab)
             case #selector(NSResponder.cancelOperation(_:)): return parent.onKey(.escape)
             case #selector(NSResponder.insertNewline(_:)),
                  #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)):
@@ -551,7 +561,10 @@ struct CommandField: NSViewRepresentable {
             withAnimation(motion(Look.appear)) { shown = true }
         }
         .onChange(of: query) {
-            if mode != .tabs { store.suggest(query) }
+            // Not while scoped to actions: the catalogue is local, and asking the engine
+            // for completions to "reload pa" is a network round-trip for rows the scope
+            // will not show anyway.
+            if mode != .tabs, !actionsOnly { store.suggest(query) }
             refresh()
         }
         // Completions land later than the keystroke that asked for them; the list has to
@@ -572,23 +585,28 @@ struct CommandField: NSViewRepresentable {
                     .font(Look.fieldIcon)
                     .foregroundStyle(Look.barPlaceholder)
                     .frame(width: Look.rowIcon)
-                // Arc's scope chip: with ⇥ held on, the field says what it is searching, so
-                // a bar showing nothing but verbs is never a bar that has gone wrong.
+                if ready {
+                    CommandField(text: $query, prompt: actionsOnly ? "Run a command…" : mode.prompt,
+                                 selectAll: mode == .address,
+                                 label: actionsOnly ? "Actions" : mode.title,
+                                 hint: "Type to filter. Up and down arrows choose a result, "
+                                     + "Return opens it, Tab searches actions, "
+                                     + "Option-Command-Delete forgets a history result, "
+                                     + "Escape closes.",
+                                 onKey: key)
+                }
+                // The scope chip: with ⇥ on, the field says what it is searching, so a bar
+                // showing nothing but verbs never reads as a bar that has gone wrong.
+                // Trailing, not leading: a chip in front of the field would push the text
+                // sideways the moment ⇥ was pressed, and the caret is where the eye is.
                 if actionsOnly {
                     Text("Actions").font(Look.rowText)
                         .foregroundStyle(Look.barSelectedText)
                         .padding(.horizontal, Look.barRowGap * 2)
                         .padding(.vertical, Look.barRowGap / 2)
                         .background(Look.barSelected, in: .rect(cornerRadius: Look.chipRadius))
+                        .fixedSize()
                         .accessibilityLabel("Searching actions")
-                }
-                if ready {
-                    CommandField(text: $query, prompt: actionsOnly ? "Run a command…" : mode.prompt,
-                                 selectAll: mode == .address,
-                                 label: actionsOnly ? "Actions" : mode.title,
-                                 hint: "Type to filter. Up and down arrows choose a result, "
-                                     + "Return opens it, Tab searches actions, Escape closes.",
-                                 onKey: key)
                 }
             }
             // The same two insets a row has, so the field's icon sits over the rows' icons.
@@ -655,8 +673,10 @@ struct CommandField: NSViewRepresentable {
             }
             Spacer(minLength: Look.inset)
             // Forgetting a suggestion is a hover affordance, the way Arc's is: it appears on
-            // the row under the pointer or the arrow, and stays out of the list otherwise.
-            if row.forget != nil, lit || on {
+            // the row under the pointer or the arrow, and stays out of the way otherwise.
+            // Its width is held whether or not it is drawn, so arriving over a row does not
+            // shove "Open" sideways — the chrome stays put and only the ink changes.
+            if row.forget != nil {
                 Button { index = i; forget() } label: {
                     Image(systemName: "xmark")
                         .font(Look.chipGlyph)
@@ -665,7 +685,11 @@ struct CommandField: NSViewRepresentable {
                         .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
                 }
                 .buttonStyle(.plain)
+                .opacity(lit || on ? 1 : 0)
+                .allowsHitTesting(lit || on)
+                .animation(motion(Look.quick), value: lit || on)
                 .accessibilityLabel("Remove from history")
+                .accessibilityHidden(!(lit || on))
             }
             // The verb and its chip travel together, on every row that has one; the
             // selected row's are the bright pair, because that is the one Return presses.
@@ -711,7 +735,9 @@ struct CommandField: NSViewRepresentable {
         case .down:       move(1)
         case .enter:        activate()
         case .commandEnter: activate(inNewTab: true)
-        case .forget:       forget()
+        // The only key here that can decline: on a row with nothing to forget, ⌥⌘⌫ is
+        // still the field editor's delete and must go back to it rather than be eaten.
+        case .forget:       return forget()
         case .escape:
             // One Escape takes the actions filter off, the next closes the bar — the same
             // way Escape leaves a scope before it leaves the search everywhere else.
@@ -730,7 +756,15 @@ struct CommandField: NSViewRepresentable {
             // assistant instead, which was Vane's own invention and cost the bar the one
             // gesture Arc users reach for — the assistant keeps its own row, two under what
             // was typed, which is where Arc puts it and where it can be arrowed onto.
+            //
+            // Entering the scope empties the field. Whatever is in it was typed at places,
+            // and ⌘L's bar comes up prefilled with the page's whole url — ranked against
+            // the catalogue that matches no action at all, which is a scope showing an
+            // empty list with a live Return. Leaving puts nothing back: the field is where
+            // you type, and it is now empty.
             actionsOnly.toggle()
+            query = ""
+            store.clearSuggestions()
             axAnnounce(actionsOnly ? "Actions" : "All results")
             refresh()
         }
@@ -739,14 +773,17 @@ struct CommandField: NSViewRepresentable {
 
     /// ⌥⌘⌫, and the × the row grows on hover: forget this page. Only history rows carry a
     /// url to forget — a suggestion you can never get rid of is what makes one embarrassing
-    /// address follow you around for a year.
-    private func forget() {
-        guard rows.indices.contains(index), let url = rows[index].forget else { return }
+    /// address follow you around for a year. False when this row has nothing to forget, so
+    /// the keystroke goes back to the field editor instead of vanishing.
+    @discardableResult
+    private func forget() -> Bool {
+        guard rows.indices.contains(index), let url = rows[index].forget else { return false }
         store.history.forget(url: url)
         axAnnounce("Removed from history.")
         // The suggestion list is the store's, and it is what has just changed underneath.
         store.suggest(query)
         refresh(reset: false)
+        return true
     }
 
     private var typed: String { query.trimmingCharacters(in: .whitespaces) }
@@ -771,9 +808,15 @@ struct CommandField: NSViewRepresentable {
         let row = rows[index]
         // Dismiss first: a command may close this very window.
         close()
+        // …and then wait a turn. `close()` only sets `store.palette = nil`; the overlay and
+        // its field editor are still first responder until SwiftUI's next pass, and an
+        // action dispatched down the responder chain would land on the *bar* rather than on
+        // the page — File ▸ Print's `printView:` printed the command bar, not the web view.
+        // One runloop turn is all it takes for the bar to go away and the page to be back.
+        //
         // The tab is made lazily, inside the row: a command row opens nothing, and eagerly
         // making a tab for it would leave a blank one behind.
-        row.run { target(inNewTab: inNewTab) }
+        DispatchQueue.main.async { row.run { target(inNewTab: inNewTab) } }
     }
 
     /// The suggestion list belongs to the window, not to this view, so it has to be handed
@@ -809,7 +852,9 @@ struct CommandField: NSViewRepresentable {
                 tabs: tabs, typed: typedRow(), suggestions: suggestionRows(), ai: aiRow(),
                 rest: places, commands: commandRows())
         }
-        rows = Array(out.prefix(24))
+        // A cap so a bar over a hundred open tabs stays a list and not a scroll marathon —
+        // but not while ⇥ is on, where the tail of the catalogue is the whole point.
+        rows = actionsOnly ? out : Array(out.prefix(24))
         index = reset ? 0 : min(index, max(0, rows.count - 1))
         guard reset else { return }
         axAnnounce(rows.isEmpty ? "No results" : "\(rows.count) result\(rows.count == 1 ? "" : "s")")
