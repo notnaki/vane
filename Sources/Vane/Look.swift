@@ -31,8 +31,20 @@ enum Look {
     /// Inside a row: from its fill to the favicon, and from the favicon to the title.
     static let rowInset: CGFloat = 10
     static let rowSpacing: CGFloat = 11
-    /// From a row's fill to its trailing glyph (the close ×).
+    /// From a row's fill to its trailing edge: the close ×'s target on a tab row, and simply
+    /// where the title's box stops on the rows that have no glyph at all — New Tab, and the
+    /// Space preview's rows in `SpacesUI`. Left where it was when the × grew a target
+    /// (`rowTarget`), which is a square around a much smaller glyph: the × now reads a few
+    /// points further in than it did, and buying that back by trimming the inset would move
+    /// the trailing edge of every row in the app, including the ones with nothing in it.
     static let rowTrailingInset: CGFloat = 12
+    /// A row's trailing glyphs — the speaker and the close × — are pressable squares, not
+    /// bare glyphs. `rowGlyph` draws an × 15×13 in a 36pt row: a third of the row's height
+    /// to aim at, and a near miss is not nothing, because the row answers a click of its
+    /// own by *showing* the tab. Missing the × switches to the tab you were closing, which
+    /// is why "the × doesn't really work" is what it feels like. A control's worth of square
+    /// is the target; the glyph is only what you can see of it.
+    static let rowTarget: CGFloat = control
     /// From the address pill's fill to its host text.
     static let pillInset: CGFloat = 14
     /// Between the pill's glyphs and the host between them. An action badge is sized against
@@ -659,6 +671,17 @@ extension Look {
                     dimmed > 0 && dimmed < 1))
         out.append(("a pane's pill has room for a favicon and a corner of its own",
                     panePillRadius > 0 && rowHeight - paneInset * 2 > rowIcon))
+        // A row's × is a button sitting inside a bigger button: the row itself. Anything
+        // smaller than a control is a glyph you have to aim at, and the row catches the miss
+        // by *showing* the tab you were trying to close.
+        out.append(("a row's × is something to aim at: a control, not a bare glyph",
+                    rowTarget >= control && rowTarget < rowHeight))
+        // Two `rowSpacing` gaps sit between a row's title and its trailing glyphs — the
+        // label, the Spacer that can go to nothing, and the glyphs — so a title that
+        // truncates stops clear of the × rather than running under it.
+        out.append(("a long row title stops clear of the ×, not under it",
+                    rowSpacing * 2 >= rowInset
+                        && rowTarget + rowSpacing * 2 + rowTrailingInset < sidebarWidth))
         out.append(("a held back button opens its history well after an ordinary click ends",
                     holdDelay > switcherDelay && holdDelay <= 0.5))
         out.append(("a dragged row settles in about the time the list takes to reshape",
