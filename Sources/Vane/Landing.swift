@@ -67,6 +67,26 @@ enum Landing {
         min(max(y, 0), height)
     }
 
+    /// The same, worked out after the fact. A drag reports its first location a flick later
+    /// than the button went down — on a fast one, two rows later — so the answer is not the
+    /// row-local y there but the pointer's place in the section with the distance it has
+    /// travelled since taken back off it, measured from the top of the row it started in.
+    nonisolated static func grab(pointer: CGFloat, travelled: CGFloat, source: CGFloat,
+                                 height: CGFloat) -> CGFloat {
+        grab(y: pointer - travelled - source, height: height)
+    }
+
+    /// Whether letting go glides the held row into a slot or simply lands it. Three things
+    /// have to hold: the list has been moving the row live, so there *is* a slot waiting;
+    /// the drop left it there rather than moving it again (a split, a folder, another
+    /// section, a page's split well); and the row in the air and the slot are in the same
+    /// section, or the glide would cross from one list's overlay to the other's.
+    nonisolated static func settles(live: Bool, landed: Bool,
+                                    air: TabKind?, at: TabKind?) -> Bool {
+        guard live, landed, let air, let at else { return false }
+        return air == at
+    }
+
     /// Where the held row is drawn: hanging from the pointer by wherever it was picked up,
     /// and kept inside the section, so a row dragged off the end of the list stops at the
     /// last slot rather than floating away over whatever is below.
@@ -131,6 +151,26 @@ extension Landing {
              grab(y: 12, height: 36) == 12),
             ("…and cannot be picked up outside itself",
              grab(y: -4, height: 36) == 0 && grab(y: 99, height: 36) == 36),
+            ("a flick that reports its first location two rows on still knows where it "
+             + "was picked up",
+             grab(pointer: pointer(row: 4, y: 20, height: 36, gap: 5), travelled: 82,
+                  source: slot(row: 2, height: 36, gap: 5), height: 36) == 20),
+            ("a drag that has not moved at all is grabbed where the pointer is",
+             grab(pointer: pointer(row: 2, y: 7, height: 36, gap: 5), travelled: 0,
+                  source: slot(row: 2, height: 36, gap: 5), height: 36) == 7),
+
+            // Landing, or gliding into the slot the list has been holding.
+            ("a live-moved row that the drop left alone glides into its slot",
+             settles(live: true, landed: true, air: .today, at: .today)),
+            ("a row the list never moved has no slot to glide into",
+             !settles(live: false, landed: true, air: .today, at: .today)),
+            ("nor has one the drop moved again — a split, a folder, a page's well",
+             !settles(live: true, landed: false, air: .today, at: .today)),
+            ("nor one whose slot is in the other section from the row in the air",
+             !settles(live: true, landed: true, air: .today, at: .pinned)),
+            ("and nothing glides when there is nothing in the air, or nowhere to put it",
+             !settles(live: true, landed: true, air: nil, at: .today)
+                && !settles(live: true, landed: true, air: .today, at: nil)),
             ("a row grabbed in the middle and carried up a row is drawn a row up",
              held(pointer: 135 - 41, grab: 12, rows: 5, height: 36, gap: 5) == 82),
             ("a row carried above the list stops at the first slot",

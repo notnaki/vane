@@ -984,23 +984,22 @@ private struct FavoriteTile: View {
     /// live reorder oscillating around the row's own slot. Not published: only the drop
     /// delegates read it, and publishing it would redraw every row on every pointer move.
     var at: Landing.Spot?
-    /// The row in the air, and where in its section it is drawn. Arc moves the row itself
-    /// rather than a picture of it: `HeldRow` draws this over the list, `.onDrag` is given
-    /// nothing to make a floating preview out of, and the slot the row left stays in the
-    /// stack, dimmed, taking drops. Published, because the whole point is that it follows
-    /// the pointer — only `HeldRow` reads it, so only `HeldRow` is redrawn.
-    struct Air: Equatable { var tab: Tab.ID; var kind: TabKind; var y: CGFloat }
-    @Published var air: Air?
     /// Where in the row it was picked up, so the row stays under the same part of itself
-    /// for the length of the drag. Read once, from the first location the drag reports.
+    /// for the length of the drag, and where the pointer was on screen when it was — see
+    /// `TabDrop.lift`. Not published, for the same reason `at` is not.
     var grab: CGFloat?
+    var grabbedAt: CGFloat?
     /// Whether the list has been keeping this row's slot under the pointer. A run and a
     /// split's row are not live-moved (see `TabDrop.track`), so their slot is wherever the
     /// drop puts them and there is nothing for the held row to glide into: it simply lands.
     var live = false
+    /// The row still gliding into its slot after the drag ended, so the list does not draw
+    /// it twice on the way. Published — but it changes twice a drag, not twice a frame,
+    /// which is the whole reason it is here and not on `Held`.
     /// Puts the row back where the drag found it. A live reorder has already moved it by the
     /// time anything is dropped, so a drag that ends with no drop — Escape, or the button
     /// coming up over nothing — has a real change to undo rather than nothing to do.
+    @Published var settling: Tab.ID?
     var undo: (@MainActor () -> Void)?
     /// Whether one of ours is in flight at all, which is what the drop lines and the
     /// sidebar's catch-all delegate care about.
@@ -1013,22 +1012,27 @@ private struct FavoriteTile: View {
     /// True through the settle as well, when the drag is over but the row is still in the
     /// air on its way to the slot — the list must not draw the same row twice.
     func lifted(_ id: Tab.ID) -> Bool {
-        (tab == id && tabs.count <= 1) || (tab == nil && air?.tab == id)
+        (tab == id && tabs.count <= 1) || settling == id
     }
 
     /// What is being dragged, and the end of the drag in the same breath. Every
     /// `performDrop` calls this first: a delegate that reads the flag and then *refuses*
     /// the drop leaves the drag running forever, and a drag that never ends makes
     /// `SidebarDrop` stand aside from every later url and file drop.
-    func take() -> (tab: Tab.ID?, folder: Folder.ID?) {
-        defer { end() }
+    ///
+    /// `landed` is opt-*in*, and every caller but one leaves it alone: a target that moves
+    /// the tab somewhere of its own — a folder, a Space's dot, the page's split well — has
+    /// made the slot the list was holding meaningless, and the row in the air has to land
+    /// rather than glide into it. Only the sidebar's own no-op drop says otherwise.
+    func take(landed: Bool = false) -> (tab: Tab.ID?, folder: Folder.ID?) {
+        defer { end(landed: landed) }
         return (tab, folder)
     }
 
     /// The same, for a target that can take a whole selection: the dragged tabs in the order
     /// their rows were drawn, which is the order they should land in.
-    func takeAll() -> (tabs: [Tab.ID], folder: Folder.ID?) {
-        defer { end() }
+    func takeAll(landed: Bool = false) -> (tabs: [Tab.ID], folder: Folder.ID?) {
+        defer { end(landed: landed) }
         return (tabs.isEmpty ? [tab].compactMap { $0 } : tabs, folder)
     }
 
@@ -1037,33 +1041,41 @@ private struct FavoriteTile: View {
     /// it glides there, and only when it lands does the real row come back. Handing the row
     /// over the moment the button comes up shows it twice — once scaled, once not — across
     /// whatever gap is left.
-    func end() {
-        // Only a live-moved row has a slot waiting for it. A run, a split's row and a drag
-        // that no drop caught are going somewhere this does not know, so they simply land.
-        let settle = live ? air.flatMap { air in
-            at.map { Air(tab: air.tab, kind: $0.kind,
-                         y: Landing.slot(row: $0.index, height: Look.rowHeight, gap: Look.rowGap)) }
+    func end(landed: Bool = false) {
+        let glide = Landing.settles(live: live, landed: landed,
+                                    air: Held.shared.air?.kind, at: at?.kind)
+        // Where it glides to, or nil for "it lands": nothing waiting, the drop moved it
+        // again, or the user asked for less motion.
+        let home = glide && !Motion.reduced ? at.flatMap { spot in
+            Held.shared.air.map {
+                Held.Air(tab: $0.tab, kind: $0.kind,
+                         y: Landing.slot(row: spot.index,
+                                         height: Look.rowHeight, gap: Look.rowGap))
+            }
         } : nil
-        grab = nil; live = false
+        grab = nil; grabbedAt = nil; live = false
+        settling = home?.tab
         Motion.list {
             tab = nil; folder = nil; tabs = []; at = nil; undo = nil
+            Held.shared.show(home)      // nil fades the row out where it is, and it lands
         }
-        guard let settle, !Motion.reduced else { air = nil; return }
-        Motion.list { air = settle }
+        guard let home else { return }
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(Look.listSeconds))
-            guard let self, air == settle else { return }   // a new drag got here first
-            air = nil
+            // A spring is not at rest at its nominal duration, so the glide is given a
+            // little longer than the list animation before the two are crossfaded: the row
+            // in the air goes as the row in the slot comes back to full, rather than the
+            // one being cut and the other appearing.
+            try? await Task.sleep(for: .seconds(Look.listSeconds + Look.appearDuration))
+            guard let self, settling == home.tab, Held.shared.air == home else { return }
+            withAnimation(Look.appear) { Held.shared.show(nil); settling = nil }
         }
     }
 
     /// The end of a drag that no `performDrop` ever saw. The row has been moving as the
     /// pointer went, so "nothing happened" has to be made true rather than assumed.
     func cancel() {
-        // Nothing to glide into: `undo` puts the row back where the drag found it, which is
-        // not the slot the list has been holding. It goes home, and the row in the air with
-        // it.
-        live = false
+        // `end` without `landed`, so nothing glides: `undo` puts the row back where the drag
+        // found it, which is not the slot the list has been holding.
         if tab != nil, let undo { Motion.list(undo) }
         end()
     }
@@ -1098,6 +1110,26 @@ private struct FavoriteTile: View {
     }
 }
 
+/// Where the row in the air is drawn. On its own object, not on `Dragging`: this changes on
+/// every pointer move, and `Dragging` is observed by every row in the sidebar, every drop
+/// line and every favourite's tile — publishing it there would invalidate all of them a
+/// hundred times a drag, which is the same reason `Dragging.at` is not published either.
+/// `HeldRow` is the only thing that observes this.
+@MainActor final class Held: ObservableObject {
+    static let shared = Held()
+    /// Which tab is in the air, which section's overlay draws it, and how far down that
+    /// section it sits.
+    struct Air: Equatable { var tab: Tab.ID; var kind: TabKind; var y: CGFloat }
+    @Published private(set) var air: Air?
+
+    /// `@Published` fires on equal values too, and a pointer wandering inside one row
+    /// reports the same place over and over, so the write is filtered rather than the read.
+    func show(_ next: Air?) {
+        guard next != air else { return }
+        air = next
+    }
+}
+
 /// ponytail: `.onDrag`/`.onDrop` with a delegate rather than `.draggable`/`.dropDestination`.
 /// The Transferable pair cannot say which side of the target the pointer is on, so it can
 /// only ever drop *onto* a tab, never before or after it; this one gets the location.
@@ -1109,6 +1141,10 @@ private struct FavoriteTile: View {
     // Published on the next turn, not now: a state change inside the drag's own start
     // re-renders the row under the pointer, and SwiftUI drops the drag with it.
     let id = tab.id
+    // Read *now*, while the pointer is still where the button went down. The drag reports
+    // its first location a flick later, and on a fast one that is two rows on — see
+    // `TabDrop.lift`.
+    let from = NSEvent.mouseLocation.y
     // Grabbing a row that is part of a selection drags the selection, in the order it is
     // drawn; grabbing any other row drags that row alone and leaves the selection be —
     // which is how Finder behaves, and what stops a drag quietly moving tabs off screen.
@@ -1124,16 +1160,18 @@ private struct FavoriteTile: View {
             Dragging.shared.tabs = set
             Dragging.shared.at = spot
             Dragging.shared.undo = undo
+            Dragging.shared.grab = nil
+            Dragging.shared.grabbedAt = from
+            Dragging.shared.live = false
+            Dragging.shared.settling = nil
             // The row lifts where it stands. Waiting for the drag's first location would
             // leave the list with a dimmed slot and nothing in the air until the pointer
             // reached a row, which reads as the row having been deleted.
-            Dragging.shared.air = spot.map {
-                Dragging.Air(tab: id, kind: $0.kind,
-                             y: Landing.slot(row: $0.index,
-                                             height: Look.rowHeight, gap: Look.rowGap))
-            }
-            Dragging.shared.grab = nil
-            Dragging.shared.live = false
+            Held.shared.show(spot.map {
+                Held.Air(tab: id, kind: $0.kind,
+                         y: Landing.slot(row: $0.index,
+                                         height: Look.rowHeight, gap: Look.rowGap))
+            })
         }
     }
     return NSItemProvider(object: id.uuidString as NSString)
@@ -1215,26 +1253,36 @@ private struct HeldRow: View {
     @EnvironmentObject var store: TabStore
     /// Which section's overlay this is: the row is only drawn over the list it is in.
     let kind: TabKind
-    @ObservedObject private var dragging = Dragging.shared
+    @ObservedObject private var held = Held.shared
 
     var body: some View {
-        if let air = dragging.air, air.kind == kind,
+        if let air = held.air, air.kind == kind,
            let tab = store.tabs.first(where: { $0.id == air.tab }) {
             row(tab)
                 .frame(height: Look.rowHeight)
                 // Off the ground, so it covers the row it is passing over rather than
-                // reading as two titles printed on top of each other. `barMaterial` is what
-                // every other surface that floats over the page uses.
+                // reading as two titles printed on top of each other. A floating surface is
+                // `barFill` over `barMaterial` everywhere else in the app, and a row is not
+                // the place to invent a second recipe — the fill is what makes it opaque,
+                // the blur only softens what is under it.
+                .background(Look.barFill, in: .rect(cornerRadius: Look.pillRadius))
                 .background(Look.barMaterial, in: .rect(cornerRadius: Look.pillRadius))
                 .padding(.leading, indent(air.tab))
                 .liftedPreview()
                 // Nothing in the air is a target. The slot it left is one, and the live
                 // reorder keeps that slot under the pointer wherever the row has got to.
                 .allowsHitTesting(false)
+                // Nor is it a second row for VoiceOver: the slot it came from is still in
+                // the list, and a drag is a pointer gesture with a menu behind it.
+                .accessibilityHidden(true)
                 // The slot already stands for this tab in the strip's geometry group, and
                 // one source per id is the most it can have.
                 .environment(\.strip, nil)
                 .offset(y: air.y)
+                // It leaves by fading, crossing with the slot coming back to full — see
+                // `Dragging.end`. Cutting it instead shows the row jump out of its own
+                // shadow at the end of every drag.
+                .transition(.opacity)
         }
     }
 
@@ -1406,14 +1454,14 @@ private struct TabDrop: DropDelegate {
         let where_ = place(info)?.band
         let after = where_ == .after
         side = nil
-        // The slot the list has been holding is only where the row ends up if this drop has
-        // nothing left to do; anything else — a split, a section change — moves it again,
-        // so the row lands rather than gliding somewhere it is not going.
-        if where_ != nil { Dragging.shared.live = false }
         // Read once and cleared *before* anything can refuse the drop. A drag left set here
         // outlives the gesture, and `SidebarDrop` then stands aside from every url and file
         // dropped on the sidebar for the rest of the session.
-        let (dragged, folder) = Dragging.shared.takeAll()
+        //
+        // `landed` only when there is nothing left to do — the live reorder has already put
+        // the row where it belongs, so the slot the list is holding is where it ends up and
+        // the row in the air can glide into it. Anything else moves it again.
+        let (dragged, folder) = Dragging.shared.takeAll(landed: where_ == nil)
         if let folder {
             guard let target, target.kind == .pinned else { return false }
             store.move(folder: folder, next: target.id.uuidString, after: after)
@@ -1538,15 +1586,29 @@ private struct TabDrop: DropDelegate {
     /// of its rows on screen and AppKit's picture under the pointer.
     private func lift(_ info: DropInfo) {
         let drag = Dragging.shared
-        guard axis == .vertical, let row, rows > 0, drag.at != nil,
+        guard axis == .vertical, let row, rows > 0, let at = drag.at,
               let id = drag.tab, drag.lifted(id) else { return }
         let pointer = Landing.pointer(row: row, y: info.location.y,
                                       height: Look.rowHeight, gap: Look.rowGap)
-        let grab = drag.grab ?? Landing.grab(y: info.location.y, height: Look.rowHeight)
+        // Worked out once, from the first location the drag reports. That location is a
+        // flick after the button went down — two rows on, if the flick was quick — so the
+        // row-local y there is not where the row was grabbed; the pointer's travel since,
+        // taken back off, is. Screen y counts up and a section's counts down, hence the
+        // subtraction either way round.
+        let now = NSEvent.mouseLocation.y
+        let grab = drag.grab ?? Landing.grab(
+            pointer: pointer,
+            travelled: (drag.grabbedAt ?? now) - now,
+            source: at.kind == into
+                ? Landing.slot(row: at.index, height: Look.rowHeight, gap: Look.rowGap)
+                : pointer - info.location.y,      // dragged in from the other section
+            height: Look.rowHeight)
         drag.grab = grab
-        drag.air = Dragging.Air(tab: id, kind: into,
-                                y: Landing.held(pointer: pointer, grab: grab, rows: rows,
-                                                height: Look.rowHeight, gap: Look.rowGap))
+        // Crossing into the other section makes the slot the list is holding the wrong one
+        // to glide into; `Landing.settles` refuses it, and this is where the two diverge.
+        Held.shared.show(Held.Air(tab: id, kind: into,
+                                  y: Landing.held(pointer: pointer, grab: grab, rows: rows,
+                                                  height: Look.rowHeight, gap: Look.rowGap)))
     }
 }
 
