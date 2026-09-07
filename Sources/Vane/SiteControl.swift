@@ -304,27 +304,22 @@ extension SiteControlModel {
     /// Per-site extension access, flipped from what this extension can see right now.
     /// WebKit turns the url into a match pattern for us, so "allow this extension here" is
     /// one call and does not need a pattern built by hand.
+    ///
+    /// Takes the context, not a row index: the row was drawn from a snapshot of
+    /// `contexts(on:)` and an extension can finish loading between the draw and the click,
+    /// which would slide every index along by one and flip the wrong extension.
+    static func toggleAccess(_ context: WKWebExtensionContext, on tab: Tab) {
+        guard let url = tab.currentURL else { return }
+        let allowed = !context.hasAccess(to: url)
+        context.setPermissionStatus(allowed ? .grantedExplicitly : .deniedExplicitly, for: url)
+    }
+
+    /// The index-keyed way in, for `act` — which is keyed on `RowID` and has nothing else to
+    /// go on. The popover's own rows use their snapshot instead.
     static func toggleExtension(_ index: Int, on tab: Tab) {
-        let contexts = contexts(on: tab)
-        guard contexts.indices.contains(index), let url = tab.currentURL else { return }
-        let allowed = !contexts[index].hasAccess(to: url)
-        contexts[index].setPermissionStatus(allowed ? .grantedExplicitly : .deniedExplicitly,
-                                            for: url)
-    }
-
-    /// Press the extension's action button: fire its event, or open its popup hanging off
-    /// the row that was clicked.
-    static func runExtension(_ index: Int, on tab: Tab, from anchor: NSView?) {
-        let contexts = contexts(on: tab)
-        guard contexts.indices.contains(index) else { return }
-        tab.extensions.run(contexts[index], for: tab, from: anchor)
-    }
-
-    /// Show this extension's action in the address pill, or stop showing it.
-    static func pinExtension(_ index: Int, on tab: Tab) {
-        let contexts = contexts(on: tab)
-        guard contexts.indices.contains(index) else { return }
-        tab.extensions.togglePin(contexts[index])
+        let all = contexts(on: tab)
+        guard all.indices.contains(index) else { return }
+        toggleAccess(all[index], on: tab)
     }
 
     /// Web Inspector for this tab only. `Settings.inspectorEnabled` is the global default
@@ -584,6 +579,10 @@ struct SiteControlPopover: View {
 
     var body: some View {
         let model = SiteControlModel(tab)
+        // One snapshot, taken where the model was built and handed to every row: the model's
+        // `.ext(i)` indexes into *this* list, and re-reading it at click time would let an
+        // extension that finished loading in between renumber the rows under the pointer.
+        let contexts = SiteControl.contexts(on: tab)
         VStack(alignment: .leading, spacing: Look.rowGap) {
             header(model)
             if model.siteless {
@@ -594,7 +593,7 @@ struct SiteControlPopover: View {
                     .padding(.bottom, Look.inset)
             } else {
                 ForEach(model.rows) { row in
-                    SiteControlRow(row: row, tab: tab, host: model.host)
+                    SiteControlRow(row: row, tab: tab, host: model.host, contexts: contexts)
                 }
             }
         }
@@ -641,6 +640,9 @@ private struct SiteControlRow: View {
     /// Only for the permission picker, which names the site it is answering for. Every
     /// other action reads the state it is flipping at click time — see `SiteControl.act`.
     let host: String
+    /// The extensions the popover indexed its rows against, taken once where the model was
+    /// built. `.ext(i)` means `contexts[i]` and nothing else.
+    let contexts: [WKWebExtensionContext]
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// A modal alert must not open over a live popover, so Clear Site Data closes this
@@ -690,6 +692,15 @@ private struct SiteControlRow: View {
                 Button("Zoom In") { Zoom.zoomIn(tab); SiteChanges.shared.bump() }
                 Button("Zoom Out") { Zoom.zoomOut(tab); SiteChanges.shared.bump() }
             }
+            // An extension row's tap runs the extension and its switch is hidden from
+            // VoiceOver (the row already reads as a button), so without this there is no
+            // route at all to the one thing the row is really about: may it see this site.
+            if let ext = extRow, case .toggle(let allowed) = row.control {
+                Button(allowed ? "Deny Access to This Site" : "Allow Access to This Site") {
+                    SiteControl.toggleAccess(ext.context, on: tab)
+                    SiteChanges.shared.bump()
+                }
+            }
             // The pin lives in a context menu, which is not a route a screen reader has.
             pinItem
         }
@@ -701,7 +712,7 @@ private struct SiteControlRow: View {
     /// the model is both.
     @ViewBuilder private var icon: some View {
         if let context = extRow?.context {
-            ActionIcon(context: context, tab: tab, badge: row.badge)
+            ActionIcon(host: tab.extensions, context: context, tab: tab, badge: row.badge)
         } else {
             Image(systemName: row.glyph).font(Look.symbol)
         }
@@ -710,32 +721,31 @@ private struct SiteControlRow: View {
     /// Arc's "pin to the address bar", per extension. Capped at three, and the item says so
     /// rather than going quietly dead.
     @ViewBuilder private var pinItem: some View {
-        if let (i, context) = extRow {
-            let pinned = tab.extensions.isPinned(context)
+        if let ext = extRow {
+            let pinned = tab.extensions.isPinned(ext.context)
             let full = !pinned && !tab.extensions.canPin
             Button(full ? "Address Bar Is Full — \(ExtensionPins.cap) Pinned"
                         : pinned ? "Unpin from Address Bar" : "Pin to Address Bar") {
-                SiteControl.pinExtension(i, on: tab)
+                tab.extensions.togglePin(ext.context)
             }
             .disabled(full)
         }
     }
 
-    /// The extension this row stands for, if it stands for one, with the index the model
-    /// gave it — which is an index into `SiteControl.contexts(on:)` and nothing else.
+    /// The extension this row stands for, if it stands for one — out of the snapshot the
+    /// popover indexed against, never re-read, so the row cannot act on its neighbour.
     private var extRow: (index: Int, context: WKWebExtensionContext)? {
-        guard case .ext(let i) = row.id else { return nil }
-        let all = SiteControl.contexts(on: tab)
-        return all.indices.contains(i) ? (i, all[i]) : nil
+        guard case .ext(let i) = row.id, contexts.indices.contains(i) else { return nil }
+        return (i, contexts[i])
     }
 
     private func press() {
         guard !row.inert else { return }
         // An extension row is its action button: the click runs the extension, and the
         // switch beside it is what still answers "may it see this site".
-        if case .ext(let i) = row.id {
+        if let ext = extRow {
             guard !row.dim else { return }
-            return SiteControl.runExtension(i, on: tab, from: anchor.view)
+            return tab.extensions.run(ext.context, for: tab, from: anchor.view)
         }
         guard case .action = row.control else { return SiteControl.act(row.id, on: tab) }
         dismiss()
@@ -758,8 +768,11 @@ private struct SiteControlRow: View {
     @ViewBuilder private var control: some View {
         switch row.control {
         case .toggle(let on):
-            Toggle("", isOn: Binding(get: { on },
-                                     set: { _ in SiteControl.act(row.id, on: tab) }))
+            Toggle("", isOn: Binding(get: { on }, set: { _ in
+                guard let ext = extRow else { return SiteControl.act(row.id, on: tab) }
+                SiteControl.toggleAccess(ext.context, on: tab)
+                SiteChanges.shared.bump()
+            }))
                 // A switch, not the checkbox a bare `Toggle` renders as in a popover: this
                 // is a setting that takes effect as it is flipped, not a box on a form.
                 .toggleStyle(.switch).labelsHidden().controlSize(.mini).disabled(row.inert)
@@ -787,13 +800,22 @@ private struct SiteControlRow: View {
         }
     }
 
+    /// An extension row's badge is the only thing on it a screen reader would otherwise
+    /// miss entirely: it is drawn on an icon that is `accessibilityHidden`, and "3 blocked"
+    /// is the whole point of the button.
     private var axValue: String {
+        var parts: [String] = []
+        if let badge = row.badge { parts.append("Badge \(badge)") }
         switch row.control {
-        case .toggle(let on):        on ? "On" : "Off"
-        case .permission(let a):     PermissionAnswer(a).title
-        case .zoom(let label):       label
-        case .action:                ""
+        case .toggle(let on):
+            if extRow != nil { parts.append(on ? "Allowed on this site" : "Not allowed on this site") }
+            else { parts.append(on ? "On" : "Off") }
+        case .permission(let a):     parts.append(PermissionAnswer(a).title)
+        case .zoom(let label):       parts.append(label)
+        case .action:                break
         }
+        if row.dim { parts.append("Unavailable on this page") }
+        return parts.joined(separator: ", ")
     }
 }
 

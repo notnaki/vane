@@ -35,6 +35,9 @@ enum Look {
     static let rowTrailingInset: CGFloat = 12
     /// From the address pill's fill to its host text.
     static let pillInset: CGFloat = 14
+    /// Between the pill's glyphs and the host between them. An action badge is sized against
+    /// it: a badge wider than its icon plus this gap would touch the glyph beside it.
+    static let pillGlyphGap: CGFloat = 8
     /// The Tidy | Clear divider row: a caption's height, butted to the row above it, with
     /// `sectionGap` to the New Tab row below. Arc's label centre sits 6.5pt under the last
     /// pinned row and New Tab's top 22.5pt under that.
@@ -200,11 +203,15 @@ enum Look {
     static let badge: CGFloat = 5
     static let badgeOffset: CGFloat = 3
     /// An extension action's badge — a count drawn *on* its icon rather than a glyph beside
-    /// it, so a pinned extension costs the pill one glyph's width and not two.
+    /// it, so a pinned extension costs the pill one glyph's width and not two. Never taller
+    /// than `rowIcon` and never wider than the gap to the next glyph, so "99+" cannot reach
+    /// its neighbour; the type shrinks inside that width instead of the capsule growing.
     static let badgeHeight: CGFloat = 11
     static let badgeInset: CGFloat = 3
+    static let badgeWidth: CGFloat = 20
+    static let badgeShrink: Double = 0.6
     /// What a button that is drawn but cannot be pressed fades to: an extension action its
-    /// own extension has disabled for this page.
+    /// own extension has disabled for this page, or a pinned glyph on a pill with no tab.
     static let dimmed: Double = 0.4
     /// Between a title and the caption under it — a site row and the popover's header.
     static let captionGap: CGFloat = 2
@@ -639,6 +646,17 @@ extension Look {
         out.append(("the footer glyphs sit 24pt above the window's bottom edge",
                     footer / 2 + footerInset == 24))
         out.append(("rows and the bar share one radius", pillRadius == barRadius))
+        // An extension action's badge, which is drawn over the 16pt icon it belongs to.
+        out.append(("an action badge is shorter than the icon it sits on", badgeHeight < rowIcon))
+        out.append(("…and a full one cannot reach the glyph beside it",
+                    badgeWidth + badgeOffset < rowIcon + pillGlyphGap))
+        out.append(("…so its widest is still narrower than a chip", badgeWidth < chip))
+        out.append(("…and it has room for a digit inside its own height",
+                    badgeWidth > badgeHeight && badgeInset * 2 < badgeHeight))
+        out.append(("badge type is the smallest in the app, and shrinks rather than clipping",
+                    badgeShrink > 0 && badgeShrink < 1))
+        out.append(("a button that cannot be pressed fades without disappearing",
+                    dimmed > 0 && dimmed < 1))
         out.append(("a pane's pill has room for a favicon and a corner of its own",
                     panePillRadius > 0 && rowHeight - paneInset * 2 > rowIcon))
         out.append(("a held back button opens its history well after an ordinary click ends",

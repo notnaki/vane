@@ -717,7 +717,7 @@ private struct PillBody: View {
     }
 
     private var content: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Look.pillGlyphGap) {
             SiteGlyph(tab: tab, site: site)
             if reader, let tab { ReaderGlyph(tab: tab, on: readerOn) }
             // Secondary ink, the way Arc sets the host (179 on 84): the address is a
@@ -734,7 +734,7 @@ private struct PillBody: View {
             // and a button that slides out from under the pointer as you reach for it is not
             // a button. The host gives up their width once, when one is pinned, never on
             // hover, and nothing at all is reserved while none are.
-            if let tab { PinnedExtensions(tab: tab) }
+            PinnedExtensions(store: store, tab: tab)
         }
     }
 
@@ -842,14 +842,18 @@ private struct SiteGlyph: View {
 /// the width goes when the pin is made rather than being held empty against the chance of
 /// one — the pill's own glyphs (the lock, the chip) are the stable chrome here.
 private struct PinnedExtensions: View {
-    let tab: Tab
+    /// The window, not the tab, decides which extensions are pinned here: the pill keeps its
+    /// glyphs with no tab open, the way the back and forward buttons keep theirs.
+    let store: TabStore
+    let tab: Tab?
     /// A badge is not on the tab: the extension sets it, and `ExtensionHost`'s
     /// `didUpdate` delegate bumps this. No timer.
     @ObservedObject private var changes = SiteChanges.shared
 
     var body: some View {
-        ForEach(tab.extensions.pinned(in: tab), id: \.uniqueIdentifier) { context in
-            ExtensionGlyph(tab: tab, context: context)
+        let host = ExtensionHost.host(for: store.profileID)
+        ForEach(host.pinned(private: store.isPrivate), id: \.uniqueIdentifier) { context in
+            ExtensionGlyph(host: host, tab: tab, context: context)
         }
     }
 }
@@ -858,29 +862,62 @@ private struct PinnedExtensions: View {
 /// that runs it — opening its popup against this pill, so a Little Vane and a private
 /// window each get their own.
 private struct ExtensionGlyph: View {
-    let tab: Tab
+    let host: ExtensionHost
+    let tab: Tab?
     let context: WKWebExtensionContext
     @StateObject private var anchor = ActionAnchor()
 
     var body: some View {
-        let action = tab.extensions.action(context, for: tab)
-        let badge = action.flatMap { ExtensionPins.badge($0.badgeText) }
-        // `browser.action.disable()` for this page: drawn, dim, and not pressable. It stays
-        // in the pill — a glyph that came and went with the page would move the address.
-        let live = action?.isEnabled ?? true
-        Button { tab.extensions.run(context, for: tab, from: anchor.view) } label: {
-            ActionIcon(context: context, tab: tab, badge: badge).contentShape(.rect)
+        // Every string built before the chain: a modifier chain this long with the work
+        // inline is what the type checker gives up on.
+        let now = state
+        let live: Bool = now.note == nil
+        let help: String = now.note.map { "\(name) — \($0)" } ?? name
+        let value: String = [now.badge, now.note].compactMap { $0 }.joined(separator: ", ")
+        let hint: String = live ? "Runs this extension on this page." : ""
+        glyph(badge: now.badge, live: live)
+            .actionAnchor(anchor)
+            .contextMenu { Button("Unpin from Address Bar") { host.togglePin(context) } }
+            .help(help)
+            // One element: the badge drawn on the icon is a `Text`, and without this it is
+            // published as a second button of its own beside the glyph.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(name)
+            .accessibilityValue(value)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint(hint)
+            .accessibilityAction { press() }
+            .accessibilityAction(named: "Unpin from Address Bar") { host.togglePin(context) }
+    }
+
+    /// A `Button`, which consumes its own click the way the pill's Copy Link glyph does —
+    /// but never `.disabled`, because a disabled button stops hit-testing altogether and the
+    /// click falls through to the pill, which opens the search bar. A glyph that looks
+    /// unpressable must not quietly do something else instead, so it stays live, swallows
+    /// the click and does nothing with it.
+    private func glyph(badge: String?, live: Bool) -> some View {
+        Button(action: press) {
+            ActionIcon(host: host, context: context, tab: tab, badge: badge).contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .disabled(!live)
         .opacity(live ? 1 : Look.dimmed)
-        .actionAnchor(anchor)
-        .contextMenu { Button("Unpin from Address Bar") { tab.extensions.togglePin(context) } }
-        .help(name)
-        .accessibilityLabel(name)
-        .accessibilityValue(badge ?? "")
-        .accessibilityHint("Runs this extension on this page.")
-        .accessibilityAction(named: "Unpin from Address Bar") { tab.extensions.togglePin(context) }
+    }
+
+    /// What the action says about itself right now. `note` is why it is not pressable, and
+    /// nil when it is: a pinned glyph is drawn whatever the window holds — the pill's chrome
+    /// does not come and go — but it only runs on a page, and only while its extension
+    /// leaves the action enabled.
+    private var state: (badge: String?, note: String?) {
+        let action = host.action(context, for: tab)
+        let badge = action.flatMap { ExtensionPins.badge($0.badgeText) }
+        if tab == nil { return (badge, "No page open") }
+        if action?.isEnabled == false { return (badge, "Not available on this page") }
+        return (badge, nil)
+    }
+
+    private func press() {
+        guard let tab, state.note == nil else { return }
+        host.run(context, for: tab, from: anchor.view)
     }
 
     private var name: String { context.webExtension.displayName ?? "Extension" }
