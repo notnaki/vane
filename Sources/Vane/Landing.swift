@@ -46,6 +46,55 @@ enum Landing {
         return landing > source ? landing - 1 : landing
     }
 
+    // MARK: The row in the air
+
+    /// Where the pointer is in the whole section, from where it is in one of its rows. The
+    /// rows are laid out on one pitch, so a row's own index is all it takes to add the two
+    /// up — a drag reports its location inside the row it is over and nothing else.
+    nonisolated static func pointer(row: Int, y: CGFloat, height: CGFloat, gap: CGFloat) -> CGFloat {
+        CGFloat(max(0, row)) * (height + gap) + y
+    }
+
+    /// The top of the row at `index`, in the same measure.
+    nonisolated static func slot(row: Int, height: CGFloat, gap: CGFloat) -> CGFloat {
+        CGFloat(max(0, row)) * (height + gap)
+    }
+
+    /// Where in the row it was picked up. A drag begins with the pointer inside the row it
+    /// grabbed, so the first location it reports says where — clamped, because the location
+    /// can be a hair outside the row it is attributed to.
+    nonisolated static func grab(y: CGFloat, height: CGFloat) -> CGFloat {
+        min(max(y, 0), height)
+    }
+
+    /// The same, worked out after the fact. A drag reports its first location a flick later
+    /// than the button went down — on a fast one, two rows later — so the answer is not the
+    /// row-local y there but the pointer's place in the section with the distance it has
+    /// travelled since taken back off it, measured from the top of the row it started in.
+    nonisolated static func grab(pointer: CGFloat, travelled: CGFloat, source: CGFloat,
+                                 height: CGFloat) -> CGFloat {
+        grab(y: pointer - travelled - source, height: height)
+    }
+
+    /// Whether letting go glides the held row into a slot or simply lands it. Three things
+    /// have to hold: the list has been moving the row live, so there *is* a slot waiting;
+    /// the drop left it there rather than moving it again (a split, a folder, another
+    /// section, a page's split well); and the row in the air and the slot are in the same
+    /// section, or the glide would cross from one list's overlay to the other's.
+    nonisolated static func settles(live: Bool, landed: Bool,
+                                    air: TabKind?, at: TabKind?) -> Bool {
+        guard live, landed, let air, let at else { return false }
+        return air == at
+    }
+
+    /// Where the held row is drawn: hanging from the pointer by wherever it was picked up,
+    /// and kept inside the section, so a row dragged off the end of the list stops at the
+    /// last slot rather than floating away over whatever is below.
+    nonisolated static func held(pointer: CGFloat, grab: CGFloat, rows: Int,
+                                 height: CGFloat, gap: CGFloat) -> CGFloat {
+        min(max(pointer - grab, 0), slot(row: max(0, rows - 1), height: height, gap: gap))
+    }
+
     /// How many more tabs a split of `panes` will take. One is a plain tab, which becomes a
     /// split of two; `Split.maxPanes` is the ceiling, and a full one is not an offer at all.
     nonisolated static func roomToSplit(panes: Int) -> Int { max(0, Split.maxPanes - panes) }
@@ -87,6 +136,54 @@ extension Landing {
              move(row: 2, band: .before, source: nil) == 2
                 && move(row: 2, band: .after, source: nil) == 3),
             ("a nonsense row index moves nothing", move(row: -1, band: .before, source: 0) == nil),
+
+            // The row in the air. Five rows on Arc's 41pt pitch: 36 tall, 5 apart.
+            ("the first row starts at the top of the section", slot(row: 0, height: 36, gap: 5) == 0),
+            ("each row after it is one pitch further down",
+             slot(row: 1, height: 36, gap: 5) == 41 && slot(row: 4, height: 36, gap: 5) == 164),
+            ("a pointer in the first row is where it says it is",
+             pointer(row: 0, y: 12, height: 36, gap: 5) == 12),
+            ("a pointer in a later row is that, plus the rows above it",
+             pointer(row: 3, y: 12, height: 36, gap: 5) == 135),
+            ("a nonsense row index is the top of the list, not a negative offset",
+             pointer(row: -2, y: 12, height: 36, gap: 5) == 12 && slot(row: -2, height: 36, gap: 5) == 0),
+            ("the row hangs from the pointer by the point it was picked up",
+             grab(y: 12, height: 36) == 12),
+            ("…and cannot be picked up outside itself",
+             grab(y: -4, height: 36) == 0 && grab(y: 99, height: 36) == 36),
+            ("a flick that reports its first location two rows on still knows where it "
+             + "was picked up",
+             grab(pointer: pointer(row: 4, y: 20, height: 36, gap: 5), travelled: 82,
+                  source: slot(row: 2, height: 36, gap: 5), height: 36) == 20),
+            ("a drag that has not moved at all is grabbed where the pointer is",
+             grab(pointer: pointer(row: 2, y: 7, height: 36, gap: 5), travelled: 0,
+                  source: slot(row: 2, height: 36, gap: 5), height: 36) == 7),
+
+            // Landing, or gliding into the slot the list has been holding.
+            ("a live-moved row that the drop left alone glides into its slot",
+             settles(live: true, landed: true, air: .today, at: .today)),
+            ("a row the list never moved has no slot to glide into",
+             !settles(live: false, landed: true, air: .today, at: .today)),
+            ("nor has one the drop moved again — a split, a folder, a page's well",
+             !settles(live: true, landed: false, air: .today, at: .today)),
+            ("nor one whose slot is in the other section from the row in the air",
+             !settles(live: true, landed: true, air: .today, at: .pinned)),
+            ("and nothing glides when there is nothing in the air, or nowhere to put it",
+             !settles(live: true, landed: true, air: nil, at: .today)
+                && !settles(live: true, landed: true, air: .today, at: nil)),
+            ("a row grabbed in the middle and carried up a row is drawn a row up",
+             held(pointer: 135 - 41, grab: 12, rows: 5, height: 36, gap: 5) == 82),
+            ("a row carried above the list stops at the first slot",
+             held(pointer: -50, grab: 12, rows: 5, height: 36, gap: 5) == 0),
+            ("a row carried below it stops at the last",
+             held(pointer: 9999, grab: 12, rows: 5, height: 36, gap: 5) == 164),
+            ("the only row in a section has nowhere to be carried",
+             held(pointer: 400, grab: 0, rows: 1, height: 36, gap: 5) == 0),
+            ("a section with no rows at all is not a crash",
+             held(pointer: 400, grab: 0, rows: 0, height: 36, gap: 5) == 0),
+            ("a row held over its own slot is drawn exactly on it",
+             held(pointer: pointer(row: 2, y: 12, height: 36, gap: 5), grab: 12,
+                  rows: 5, height: 36, gap: 5) == slot(row: 2, height: 36, gap: 5)),
 
             // Splitting.
             ("a plain tab has room for the rest of a split",
