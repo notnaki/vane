@@ -2778,6 +2778,15 @@ private struct SplitItems: View {
     }
 }
 
+extension View {
+    /// A row's trailing glyph, given something to aim at. The button *is* the square; the
+    /// glyph is only what you can see of it — see `Look.rowTarget` for why a bare glyph is
+    /// not a target on a row that answers a click of its own.
+    fileprivate func rowTarget() -> some View {
+        frame(width: Look.rowTarget, height: Look.rowTarget).contentShape(.rect)
+    }
+}
+
 /// The speaker and the close button. Split out only because one expression with both of
 /// them plus the row's own modifiers stopped type-checking in reasonable time.
 private struct TabRowTrailing: View {
@@ -2795,18 +2804,23 @@ private struct TabRowTrailing: View {
 
     var body: some View {
         let closing = closes ?? tab
-        HStack(spacing: 8) {
+        // No gap: each glyph now carries its own `Look.rowTarget` square, and two squares
+        // side by side already leave the glyphs inside them a control's worth of air apart.
+        // A gap on top of that would be a strip of bare row between two buttons, which
+        // belongs to the row's own tap and so *shows* the tab from between its two glyphs.
+        HStack(spacing: 0) {
             if tab.audible || TabAudio.isMuted(tab) {
                 Button { TabAudio.toggleMute(tab) } label: {
                     Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
                         .font(Look.rowGlyph)
+                        .rowTarget()
                 }
                 .help(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
                 .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
             if hovering || selected {
                 Button { store.close(closing.id) } label: {
-                    Image(systemName: "xmark").font(Look.rowGlyph)
+                    Image(systemName: "xmark").font(Look.rowGlyph).rowTarget()
                 }
                 .help(pane ? "Close Pane (⌘W)" : "Close Tab (⌘W)")
                 .accessibilityLabel((pane ? "Close pane " : "Close ")
