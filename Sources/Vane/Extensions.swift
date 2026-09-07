@@ -147,6 +147,10 @@ import WebKit
                 prunePins()
             } catch {
                 claimed.remove(folder.path)
+                // Also here: a folder that fails to load is only *settled* once this runs, so
+                // when the failure is the last one outstanding this is the only place the
+                // write-back can happen at all.
+                prunePins()
                 warn("Could not load the extension in \(folder.lastPathComponent).",
                      error.localizedDescription)
             }
@@ -297,6 +301,15 @@ import WebKit
     /// The Tab behind an action, when WebKit says which one it is about.
     private func subject(of action: WKWebExtension.Action) -> Tab? {
         (action.associatedTab as? ExtTab)?.tab
+    }
+
+    /// Everything remembered about one closed tab's buttons, across every extension. `sync`
+    /// drops the tab's shim and its state in the same breath; without this the icon cache —
+    /// and any anchor left by a popup that never opened — would grow by a row per closed tab
+    /// for the life of the process.
+    private func forget(tab id: Tab.ID) {
+        icons = icons.filter { $0.key.tab != id }
+        anchors = anchors.filter { $0.key.tab != id }
     }
 
     /// Everything remembered about one extension's buttons. `tab` of `.some(id)` forgets one
@@ -482,6 +495,7 @@ import WebKit
             if let shim = tabShims[id] { controller.didCloseTab(shim) }
             tabShims[id] = nil
             tabState[id] = nil
+            forget(tab: id)
         }
         announcedTabs.formIntersection(liveTabs)
 
@@ -625,9 +639,9 @@ import WebKit
 
     private var bumpScheduled = false
 
-    /// Whether anybody can see this tab's action. Only a window's *current* tab has a pill,
-    /// and the default action (no tab) is what a pill with no tab draws — so both count and
-    /// a background tab's badge does not.
+    /// Whether anybody can see this tab's action. It tests `current` and nothing else because
+    /// only the current tab has a pill — a background tab's badge is drawn nowhere — and the
+    /// default action (no tab) is what a pill with no tab draws, so that one counts too.
     private func drawn(_ tab: Tab?) -> Bool {
         guard let tab else { return true }
         return myStores.contains { $0.current == tab.id }
