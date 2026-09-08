@@ -105,11 +105,23 @@ import AppKit
     /// confirmation; a refusal there comes back as an error, not a silent no-op.
     static func makeDefaultBrowser() {
         let me = Bundle.main.bundleURL
-        NSWorkspace.shared.setDefaultApplication(at: me, toOpenURLsWithScheme: "http") { _ in }
+        // https alone is what puts up macOS's one "default web browser?" question. Asking
+        // for http in the same breath made a second request race that dialog and fail at
+        // once with "The file couldn't be opened" — an alert over a question the user had
+        // not answered yet. So http follows only once https has been answered, and a
+        // refusal in the system's own dialog is not an error worth a second dialog.
         NSWorkspace.shared.setDefaultApplication(at: me, toOpenURLsWithScheme: "https") { error in
-            // Only the localized text crosses actor boundaries; NSError is not Sendable.
-            guard let reason = error?.localizedDescription else { return }
+            // Only Sendable pieces cross to the main actor; NSError is not.
+            let reason = error?.localizedDescription
+            let refused = (error as NSError?).map {
+                $0.domain == NSCocoaErrorDomain && $0.code == NSUserCancelledError
+            } ?? false
             Task { @MainActor in
+                if reason == nil || isDefaultBrowser {
+                    NSWorkspace.shared.setDefaultApplication(at: me, toOpenURLsWithScheme: "http") { _ in }
+                    return
+                }
+                guard !refused, let reason else { return }
                 let alert = NSAlert()
                 alert.messageText = "Couldn’t make Vane the default browser"
                 alert.informativeText = reason
