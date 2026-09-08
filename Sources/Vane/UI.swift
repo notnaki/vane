@@ -1597,15 +1597,18 @@ private struct TabDrop: DropDelegate {
         // ⌃⇧= and a drop on the page card use, so the four-pane ceiling and the thing it
         // says when you reach it are written down once.
         if where_ == .onto, let target {
-            for id in dragged {
+            // Back to front on the trailing side: every tab of a run joins immediately after
+            // the anchor, so the first one placed ends up last. On the leading side each in
+            // turn joins in front of the anchor and so behind the one before it, which is
+            // already the order they were drawn in.
+            for id in offer?.half == .leading ? dragged : dragged.reversed() {
                 // A split draws one row, at its lead pane's place, so a pane from the other
                 // section would be a row in two lists. It joins the target's section first.
                 if store.tabs.first(where: { $0.id == id })?.kind != target.kind {
                     store.drop(id, onto: target.id, after: true)
                 }
                 // Which half of the row it was let go on says which side of the target the
-                // pane opens on. A run keeps its order either way: each tab in turn joins
-                // in front of the anchor, and so behind the one placed before it.
+                // pane opens on.
                 store.addPane(id, beside: target.id, side: offer?.half ?? .trailing)
             }
             return true
@@ -1643,6 +1646,13 @@ private struct TabDrop: DropDelegate {
         // tile it is what stops the grid drawing a drop line on the tile in your hand.
         if let id = Dragging.shared.tab, id == target?.id { return nil }
         guard axis == .vertical, let target else {
+            // A placeholder stands for a whole section rather than for a row in one, and
+            // `move(_:to:)` refuses a tab that is already in that section — so offering the
+            // drop would be a target that lights up and then does nothing. Nil is the same
+            // answer the dragged row's own slot gives: there is nothing to do, and the row
+            // in the air glides back into the slot the list is holding for it.
+            if target == nil, let id = Dragging.shared.tab,
+               store.tabs.first(where: { $0.id == id })?.kind == into { return nil }
             return Offer(band: info.location.x > extent / 2 ? .after : .before, to: nil)
         }
         let band = Landing.band(y: info.location.y, height: Look.rowHeight)
@@ -2080,13 +2090,12 @@ private struct PinnedSection: View {
             guard let split = store.split(containing: tab.id) else { return true }
             return store.leadPane(split) == tab.id
         }
-        // Empty is nothing, as in Arc: the divider follows the space’s name. The way in is
-        // a drop on the space row, ⌘D, a tab’s own Pin action, or New Folder — and, while a
-        // tab is actually in the air, the well below, which is the only moment an empty
-        // section has anything to say.
-        if rows.isEmpty {
-            PinnedWell()
-        } else {
+        // Empty is nothing, as in Arc: the divider follows the space’s name, and this
+        // section draws no row at all — not even an empty one while a drag is in flight,
+        // which would push the whole strip down a pitch under the pointer and take
+        // `Landing`'s arithmetic with it. The way in is the divider below, which is the end
+        // of this list and takes a drop as one; the space row above; ⌘⇧D; or New Folder.
+        if !rows.isEmpty {
             VStack(spacing: Look.rowGap) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                     PinnedRow(row: row, index: index, rows: rows.count, pr: state(of: row))
@@ -2114,38 +2123,6 @@ private struct PinnedSection: View {
         guard let id = row.entry.tab, let folder = store.pins.folder(holding: id),
               folder.live != nil, let url = store.rowURL(id) else { return nil }
         return live.state(of: url, in: folder)
-    }
-}
-
-/// The empty Pinned section, while a tab is in the air: a row-high well that takes the drop
-/// and pins it. Only during a drag — an empty section is nothing at rest, the way Arc leaves
-/// it, and a permanent "drop tabs here" box is a sign the app has put up to explain itself.
-///
-/// ponytail: no drag-over state of its own. The well appears *because* something is being
-/// dragged, it is the only thing in the section, and it is drawn in the accent already — a
-/// second, lighter shade to say "and now the pointer is on it" is a distinction nobody is
-/// looking for while the row is under their pointer.
-private struct PinnedWell: View {
-    @EnvironmentObject var store: TabStore
-    @ObservedObject private var dragging = Dragging.shared
-
-    var body: some View {
-        // Folders are dragged among the pinned rows, and an empty section has none to be
-        // among: a folder over this well is a drop that would go nowhere.
-        if dragging.tab != nil {
-            Text("Pinned")
-                .font(Look.sectionCaption)
-                .foregroundStyle(Look.inkTertiary)
-                .padding(.horizontal, Look.rowInset)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: Look.rowHeight)
-                .background(Look.dropHalf, in: .rect(cornerRadius: Look.pillRadius))
-                .transition(.rowCollapse)
-                .onDrop(of: [.plainText],
-                        delegate: TabDrop(store: store, target: nil, into: .pinned,
-                                          axis: .horizontal, extent: 0, side: .constant(nil)))
-                .accessibilityHidden(true)      // dragging is a pointer gesture; ⌘⇧D is the rest
-        }
     }
 }
 
@@ -2496,6 +2473,8 @@ extension View {
 /// A hairline, then the two housekeeping actions Arc puts here.
 private struct TidyRow: View {
     @EnvironmentObject var store: TabStore
+    /// Set while a tab that this would actually move is over the divider. See below.
+    @State private var lit: Landing.Band?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -2522,11 +2501,18 @@ private struct TidyRow: View {
         .padding(.bottom, Look.sectionGap - Look.rowGap)
         // The divider is the end of the Pinned list, so a tab let go on it pins, at the end
         // — otherwise the band between the last pinned row and the New Tab row is a hole a
-        // drag can be released into and have nothing happen.
+        // drag can be released into and have nothing happen. It is also the whole of an
+        // empty Pinned section's drop target: the section itself draws nothing, and a well
+        // conjured into the stack mid-drag would shift every row below it by a pitch.
+        //
+        // The line goes at the top, where the last pinned row ends and the drop will land.
+        // Its own state, per row and per window: `Dragging` is process-wide, and a drag in
+        // one window must not light the divider in another.
         .contentShape(.rect)
+        .overlay(alignment: .top) { DropLine(on: lit != nil, axis: .vertical) }
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: nil, into: .pinned,
-                                  axis: .horizontal, extent: 0, side: .constant(nil)))
+                                  axis: .horizontal, extent: 0, side: $lit))
     }
 
     /// The menu item owns this too, so both routes archive rather than destroy.
@@ -2535,15 +2521,19 @@ private struct TidyRow: View {
 
 private struct NewTabRow: View {
     @EnvironmentObject var store: TabStore
+    /// Set while a pinned tab is over this row — the only drag it has anything to do with.
+    @State private var lit: Landing.Band?
 
     var body: some View {
         SidebarRow(icon: "plus", title: "New Tab", selected: false, dimmed: true) { store.newTab(nil) }
             // The other side of the same hole: this row heads the Today list, and a pinned
             // tab let go on it comes back down to the top of it — where `move(_:to:)` puts a
-            // tab it un-pins, which is directly under this row.
+            // tab it un-pins, which is directly under this row. So the line goes at the
+            // bottom, on the gap the tab will land in.
+            .overlay(alignment: .bottom) { DropLine(on: lit != nil, axis: .vertical) }
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: nil, into: .today,
-                                      axis: .horizontal, extent: 0, side: .constant(nil)))
+                                      axis: .horizontal, extent: 0, side: $lit))
             .help("New Tab (\(Keybindings.binding(for: .newTab).display))")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("New Tab")
@@ -2599,7 +2589,9 @@ private struct StripRow: View {
     /// in, and its middle is not the sidebar's.
     @State private var width = Look.sidebarWidth
     /// Which way the window reads. A right-to-left one draws the leading pane on the right,
-    /// so both the half the drop means and the half that is lit have to mirror.
+    /// so the answer mirrors — `DropInfo.location` is in the row's own coordinate space,
+    /// which counts up to the right whichever way the window reads, while the alignment the
+    /// half is drawn with mirrors itself. See `Landing.drawsLeft`.
     @Environment(\.layoutDirection) private var direction
 
     var body: some View {
@@ -2629,19 +2621,24 @@ private struct StripRow: View {
         // would move the thing being aimed at. Inside the ring, the half the dragged tab
         // will take is filled — the row is a small picture of the split it is offering, so
         // which side it opens on is answered before the button comes up rather than after.
+        //
+        // Opacity, not an `if`: the ring fades in and out where it stands rather than being
+        // cut into and out of the tree, and the half under it slides across as the pointer
+        // crosses the middle instead of blinking. `.leading`/`.trailing` are the window's,
+        // not the screen's — SwiftUI mirrors them under a right-to-left layout, which is
+        // exactly the mirror `Landing.side` puts into the answer. See `Landing.drawsLeft`.
         .overlay {
-            if side == .onto {
-                Color.clear.overlay(alignment: half == .trailing ? .trailing : .leading) {
-                    Rectangle().fill(Look.dropHalf)
-                        .frame(width: width / 2)
+            Color.clear
+                .overlay(alignment: half == .trailing ? .trailing : .leading) {
+                    Rectangle().fill(Look.dropHalf).frame(width: width / 2)
                 }
                 .clipShape(.rect(cornerRadius: Look.pillRadius))
                 .overlay {
                     RoundedRectangle(cornerRadius: Look.pillRadius)
                         .strokeBorder(.tint, lineWidth: Look.dropLine)
                 }
+                .opacity(side == .onto ? 1 : 0)
                 .allowsHitTesting(false)
-            }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .onDrop(of: [.plainText],

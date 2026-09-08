@@ -46,6 +46,18 @@ enum Landing {
         return (x < width / 2) != rtl ? .leading : .trailing
     }
 
+    /// Which physical end of the row the lit half is drawn at — true for the left — once
+    /// SwiftUI has resolved the alignment the row draws it with. `.leading` is the window's
+    /// leading edge, not the screen's, so it is the *right* of the row in a right-to-left
+    /// window; `side` mirrors too, and the two mirrors cancel, which is the point: the half
+    /// that lights is always the half the pointer is in.
+    ///
+    /// Not called by the row — the row hands SwiftUI a `.leading`/`.trailing` alignment and
+    /// SwiftUI does this. It is here so the round trip from a pointer to a lit half can be
+    /// proved offline, and so a sign error in `side` cannot pass unnoticed in a layout
+    /// nobody on the team reads in.
+    nonisolated static func drawsLeft(_ side: Side, rtl: Bool) -> Bool { (side == .leading) != rtl }
+
     /// Where the dragged row ends up if the pointer is at `band` of the row at `row`, while
     /// the dragged row itself sits at `source` in the same section — or nil when nothing
     /// should move. Three things are not a move: the middle of a row (that is a split), the
@@ -146,6 +158,17 @@ extension Landing {
                 && side(x: 160, width: 200, rtl: true) == .leading),
             ("a row of no width is all leading, not a divide by zero",
              side(x: 0, width: 0) == .leading && side(x: 50, width: 0) == .leading),
+            ("the half that lights is the half the pointer is in, whichever way it reads",
+             [false, true].allSatisfy { rtl in
+                 [CGFloat(0), 40, 99, 100, 160, 200].allSatisfy { x in
+                     drawsLeft(side(x: x, width: 200, rtl: rtl), rtl: rtl) == (x < 100)
+                 }
+             }),
+            ("a left-to-right window draws the leading pane on the left, and the other on "
+             + "the right",
+             drawsLeft(.leading, rtl: false) && !drawsLeft(.trailing, rtl: false)),
+            ("a right-to-left window draws them the other way round",
+             !drawsLeft(.leading, rtl: true) && drawsLeft(.trailing, rtl: true)),
 
             // Moving. Five rows, the dragged one third (index 2).
             ("crossing into the row above moves up one", move(row: 1, band: .before, source: 2) == 1),

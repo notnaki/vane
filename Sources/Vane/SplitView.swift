@@ -755,6 +755,17 @@ extension Split {
             ("with no anchor at all, the half says which end of the split",
              two.adding(c, side: .leading).tabs == [c, a, b]
                 && two.adding(c, side: .trailing).tabs == [a, b, c]),
+            // A dropped run is several of these in a row, and only one order of placing
+            // them keeps the rows in the order they were drawn — see `TabDrop.performDrop`.
+            ("a run dropped on the left half keeps its order placed front to back",
+             two.adding(c, after: b, side: .leading).adding(d, after: b, side: .leading).tabs
+                == [a, c, d, b]),
+            ("a run dropped on the right half keeps its order placed back to front",
+             two.adding(d, after: a, side: .trailing).adding(c, after: a, side: .trailing).tabs
+                == [a, c, d, b]),
+            ("…which it would not, placed the other way round: that is the reversal",
+             two.adding(c, after: a, side: .trailing).adding(d, after: a, side: .trailing).tabs
+                == [a, d, c, b]),
         ]
         let four = three.adding(d, after: b)
         let five = four.adding(e)
