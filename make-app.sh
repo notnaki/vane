@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build Vane.app — a double-clickable bundle. The binary links only system frameworks
-# (AppKit + WebKit), so the bundle is just: executable + Info.plist.
+# (AppKit + WebKit), so the bundle is just: executable + Info.plist + the app icon.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -17,10 +17,33 @@ echo ">> building ($CONF)..."
 swift build -c "$CONF" >/dev/null
 [ -x "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
 
+echo ">> compiling app icon..."
+ICONOUT="$(mktemp -d)"
+# Prefer the PRE-RENDERED Icon Composer output committed at AppIcon-prebuilt/. actool only
+# renders a .icon on macOS 26 / Xcode 26; anywhere older it fails and the bundle would ship
+# no icon at all. Committing the rendered pair keeps every build machine identical.
+# To refresh after editing AppIcon.icon, run the command in AppIcon-prebuilt/README.md.
+if [ -f AppIcon-prebuilt/Assets.car ] && [ -f AppIcon-prebuilt/AppIcon.icns ]; then
+  cp AppIcon-prebuilt/AppIcon.icns AppIcon-prebuilt/Assets.car "$ICONOUT/"
+  echo ">> using pre-rendered Icon Composer assets (AppIcon-prebuilt/)"
+elif [ -d AppIcon.icon ] && xcrun actool AppIcon.icon --compile "$ICONOUT" --app-icon AppIcon \
+     --platform macosx --minimum-deployment-target 26.0 \
+     --output-partial-info-plist "$ICONOUT/icon.plist" >/dev/null 2>&1 \
+     && [ -f "$ICONOUT/AppIcon.icns" ]; then
+  echo ">> rendered AppIcon.icon (Icon Composer)"
+else
+  echo "  WARN: no icon assets; the bundle will use the generic app icon"
+fi
+
 echo ">> assembling ${APP}..."
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Vane"
+# The Icon Composer output. Assets.car carries the Tahoe icon the system shapes itself
+# (read via CFBundleIconName); the .icns is the compatibility plate. The .icns alone would
+# make Tahoe draw a second squircle under an already-rounded bitmap, so both ship.
+if [ -f "$ICONOUT/AppIcon.icns" ]; then cp "$ICONOUT/AppIcon.icns" "$APP/Contents/Resources/"; fi
+if [ -f "$ICONOUT/Assets.car" ];   then cp "$ICONOUT/Assets.car"   "$APP/Contents/Resources/"; fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -30,6 +53,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key>               <string>Vane</string>
   <key>CFBundleDisplayName</key>        <string>Vane</string>
   <key>CFBundleExecutable</key>         <string>Vane</string>
+  <key>CFBundleIconFile</key>           <string>AppIcon</string>
+  <key>CFBundleIconName</key>           <string>AppIcon</string>
   <key>CFBundleIdentifier</key>         <string>io.github.notnaki.vane</string>
   <key>CFBundlePackageType</key>        <string>APPL</string>
   <key>CFBundleShortVersionString</key> <string>$VERSION</string>
