@@ -33,6 +33,23 @@ import SwiftUI
         set { UserDefaults.vane.set(newValue, forKey: "stackSplits") }
     }
 
+    /// Settings › General: how long an ordinary toast stands before it goes on its own.
+    /// `Look.toastDuration` is the default and stays the number the look is drawn around;
+    /// this is only the clock. The hover hold and the × are unaffected — a toast the pointer
+    /// is on never ages out however short this is, and any toast can be closed outright.
+    static var toastSeconds: Double {
+        get { UserDefaults.vane.object(forKey: "toastSeconds") as? Double ?? Look.toastDuration }
+        set { UserDefaults.vane.set(newValue, forKey: "toastSeconds") }
+    }
+
+    /// What the setting offers. ponytail: a fixed list like `archiveChoices`, not a seconds
+    /// field — "4.5 s" is not a thing anyone wants from a toast, and a free field needs
+    /// parsing, clamping and a unit to say the same five things.
+    static let toastChoices: [(name: String, seconds: Double)] = [
+        ("2 seconds", 2), ("3 seconds", 3), ("5 seconds", 5),
+        ("8 seconds", 8), ("15 seconds", 15),
+    ]
+
     /// Settings › Links. Little Vane (Arc's Little Arc) is Arc's default and Vane's: a link
     /// is something you look at once, not a tab you meant to collect. Stored as a string
     /// rather than a Bool so the Picker in `LinksPane` has something to tag its rows with,
@@ -350,6 +367,7 @@ private struct GeneralPane: View {
     @AppStorage("checkForUpdates") private var autoUpdate = true
     @State private var restore = Prefs.restoreSession
     @State private var archiveAfter = Prefs.archiveAfter
+    @State private var toastSeconds = Prefs.toastSeconds
     @State private var stackSplits = Prefs.stackSplits
     @State private var isDefault = URLHandling.isDefaultBrowser
 
@@ -390,6 +408,19 @@ private struct GeneralPane: View {
                 Footnote("A tab under Today that nobody has looked at for this long leaves the "
                          + "sidebar for the Library, where it can be opened again. Favourites "
                          + "and pinned tabs are never archived.")
+                // Toasts read this key when the clock starts, so writing it here is the whole
+                // of the preference — the next toast up already stands for the new time.
+                SettingsRow("Undo toasts stay for") {
+                    Picker("", selection: $toastSeconds) {
+                        ForEach(Prefs.toastChoices, id: \.seconds) { choice in
+                            Text(choice.name).tag(choice.seconds)
+                        }
+                    }
+                    .labelsHidden().fixedSize()
+                    .onChange(of: toastSeconds) { Prefs.toastSeconds = toastSeconds }
+                }
+                Footnote("A toast stays put while the pointer is on it, and any toast can be "
+                         + "closed on the spot with its ×.")
             }
 
             SettingsCard {
