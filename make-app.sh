@@ -124,8 +124,14 @@ fi
 
 # Cheap proof the sandbox actually made it into the signature. codesign prints an
 # "Executable=..." banner before the plist, so this greps rather than parses.
-codesign -d --entitlements - --xml "$APP" 2>&1 | grep -q "com.apple.security.app-sandbox" \
+ENTS="$(codesign -d --entitlements - --xml "$APP" 2>&1)"
+echo "$ENTS" | grep -q "com.apple.security.app-sandbox" \
   || { echo "FAIL: com.apple.security.app-sandbox is not in the signature"; exit 1; }
+# ...and the one exception the self-updater is built on. Without it in the signature the app
+# still runs, still sandboxed, and silently cannot replace itself: every update would get as
+# far as "Installing…" and stop. Fail here instead of shipping that.
+echo "$ENTS" | grep -q "temporary-exception.files.absolute-path.read-write" \
+  || { echo "FAIL: the /Applications exception the updater needs is not in the signature"; exit 1; }
 
 # Deliberately no `lsregister -f`: it force-registers whatever bundle was just built under
 # the shared bundle id, so a build in a worktree would take over the user's http/https

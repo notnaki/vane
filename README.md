@@ -104,6 +104,28 @@ Apple-signed XPC services, so the app itself needs only `allow-jit`, `network.cl
 the camera and microphone device entitlements — a hardened-runtime app is denied capture
 by the OS before a site's own permission prompt is ever reached. The app is not sandboxed.
 
+### Releasing
+
+Merging to `main` does not ship anything. A release is something someone asks for, and
+there are two ways to ask:
+
+```
+gh workflow run release.yml                # next patch after the highest v* tag
+gh workflow run release.yml -f bump=minor  # or bump=major
+git tag v1.2.3 && git push origin v1.2.3   # exactly that version, no bump
+```
+
+The first form works out the next tag, pushes it and builds it in the same run; the second
+builds the tag you pushed. Either way `.github/workflows/release.yml` signs the app with
+Developer ID, notarizes and staples it, and attaches `Vane.dmg` and `Vane.zip` to a GitHub
+Release. A tag with a hyphen in it (`v1.2.3-rc1`) is published as a pre-release, which
+`releases/latest` skips — so the in-app updater never offers one.
+
+Signing and notarizing need five repository secrets: `DEVELOPER_ID_CERT_P12_BASE64`,
+`DEVELOPER_ID_CERT_PASSWORD`, `AC_API_KEY_ID`, `AC_API_ISSUER_ID` and
+`AC_API_KEY_P8_BASE64`. Without them the workflow says so in the log and publishes an
+ad-hoc build rather than failing.
+
 ### CLI
 
 The executable is `vane`, and everything below is what `Sources/Vane/main.swift` actually

@@ -509,6 +509,9 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     makeDefaultApp.isEnabled = !URLHandling.isDefaultBrowser
     root.addItem(menu("Vane", [
         NSMenuItem(title: "About Vane", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+        // The loud check: it answers even when there is nothing to say, and it runs however
+        // recently the background one did. See Updater.swift.
+        item("Check for Updates…", "") { Updater.shared.check(silent: false) },
         .separator(),
         item(.settings) { SettingsWindow.show() },
         .separator(),

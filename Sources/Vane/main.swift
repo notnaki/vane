@@ -39,6 +39,8 @@ NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotif
 Inspector.configure()
 Blocker.refresh()
 AppleAI.prewarm()      // first request otherwise pays model load on top of its own latency
+Updater.sweep()        // the version this one replaced, if there is one beside it
+Updater.shared.begin() // a first look five seconds in, then a conditional one on a tick
 URLHandling.registerAppleEventHandler()
 app.mainMenu = buildMenu()
 // Rebound keys are resolved here, before AppKit dispatches menu key equivalents. Commands
