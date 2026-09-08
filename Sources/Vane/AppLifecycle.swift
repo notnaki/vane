@@ -80,11 +80,14 @@ enum QuitAsk {
 @MainActor final class AppLifecycle: NSObject, NSApplicationDelegate {
     static let shared = AppLifecycle()
 
-    /// Clicking the Dock icon with no windows open. `flag` is false exactly when there is
-    /// nothing on screen, which is the case worth answering.
+    /// Clicking the Dock icon with no windows on screen. `flag` is false exactly when there
+    /// is nothing showing — no windows at all, or every one of them in the Dock — which is
+    /// the case worth answering. False back means "handled": AppKit's own reopen would
+    /// otherwise go looking for a window to raise as well.
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { AppLifecycle.reopen() }
-        return true
+        guard !flag else { return true }
+        AppLifecycle.reopen()
+        return false
     }
 
     /// The window the user last had, the session they last had, or a new one — in that order,
@@ -94,6 +97,9 @@ enum QuitAsk {
     /// unrestored for good.
     static func reopen() {
         if let last = Windows.main?.window {
+            // A window in the Dock has to be taken out of it: `makeKeyAndOrderFront` on a
+            // miniaturised window orders the Dock tile, not the window.
+            if last.isMiniaturized { last.deminiaturize(nil) }
             last.makeKeyAndOrderFront(nil)
             return
         }
