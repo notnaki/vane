@@ -699,12 +699,16 @@ private struct LibraryTile: View {
     var body: some View {
         VStack(spacing: Look.captionGap * 2) {
             Image(systemName: section.icon).font(Look.libraryTileIcon)
-            Text(section.title).font(Look.libraryTileLabel).lineLimit(1)
-                .minimumScaleFactor(0.8)
+            // Two lines rather than one squeezed: "Archived Tabs" at this size is wider than
+            // the tile with any air left around it, and shrinking it ran the "s" into the
+            // edge. A name that needs the second line takes it; the rest stay on one.
+            Text(section.title).font(Look.libraryTileLabel).lineLimit(2)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, Look.captionGap)
         }
         .foregroundStyle(selected ? Look.inkPrimary : Look.inkSecondary)
         .frame(maxWidth: .infinity)
-        .frame(height: Look.libraryTile)
+        .frame(minHeight: Look.libraryTile)
         .background(selected ? Look.selected : (hovering ? Look.hovered : .clear),
                     in: .rect(cornerRadius: Look.cardRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
