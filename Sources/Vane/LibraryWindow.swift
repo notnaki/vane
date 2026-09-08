@@ -664,7 +664,10 @@ private struct LibraryRail: View {
                 }
             }
             Spacer(minLength: 0)
-            // Arc's way back out is a plain arrow in the corner the Library button was in.
+            // Arc's way back out is a plain arrow in the corner the Library button was in —
+            // to the point: the sidebar's footer row pads itself by `Look.inset` inside the
+            // column's own inset, so this row does the same and the arrow lands on the
+            // pixel the Library glyph left.
             HStack(spacing: 0) {
                 Button { Library.close(store) } label: { Image(systemName: "arrow.left") }
                     .buttonStyle(.plain).font(Look.icon).foregroundStyle(Look.inkSecondary)
@@ -673,6 +676,7 @@ private struct LibraryRail: View {
                 Spacer(minLength: 0)
             }
             .frame(height: Look.footer)
+            .padding(.horizontal, Look.inset)
         }
         .padding(.horizontal, Look.inset)
         .padding(.top, Look.topInset)
