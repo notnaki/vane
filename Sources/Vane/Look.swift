@@ -158,6 +158,11 @@ enum Look {
     static let dot: CGFloat = 8
     /// The line a drop will land on: before or after a tile, above or below a row.
     static let dropLine: CGFloat = 2
+    /// The half of a row a dropped tab will take when the two go side by side. The same
+    /// accent as `paneFrame` and well down from it: this one is painted behind a row's title,
+    /// which still has to be readable through it, and the ring round the row is what says
+    /// "split" — this only says which half.
+    static let dropHalf = Color.accentColor.opacity(0.22)
     /// How far a folder's contents step in from the rows around them. Enough to read as
     /// nesting at a glance, and small enough that three levels still leave a title room in
     /// a 250pt sidebar — which is the same reason `Pins.maxDepth` stops where it does.

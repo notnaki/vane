@@ -1515,9 +1515,11 @@ extension View {
 }
 
 /// One drop target for a tile, a row and the empty grid. `target` nil is the placeholder,
-/// which simply pins. The side is the half of the target the pointer is in — left/right
-/// across `extent` for a tile, top/bottom of `Look.rowHeight` for a row — and is published
-/// through `side` so the target can draw its line before the button is released.
+/// which simply moves the tab into `into`. The side is the part of the target the pointer is
+/// in — left/right across `extent` for a tile, one of `Landing`'s three bands of
+/// `Look.rowHeight` for a row — and is published through `side` so the target can draw its
+/// line before the button is released. A row's middle band publishes `half` as well: which
+/// side of it the split will open on.
 private struct TabDrop: DropDelegate {
     let store: TabStore
     let target: Tab?
@@ -1525,6 +1527,9 @@ private struct TabDrop: DropDelegate {
     /// unused; with none it is the empty section's, and is what the drop moves the tab into.
     let into: TabKind
     let axis: Axis
+    /// How wide the target is across: a tile's width, and a row's — which is what says which
+    /// half of the row a split was dropped on. Zero for the placeholders, which have no
+    /// halves at all.
     let extent: CGFloat
     @Binding var side: Landing.Band?
     /// This row's place in its section, and how many rows the section draws — what turns the
@@ -1533,6 +1538,14 @@ private struct TabDrop: DropDelegate {
     /// than a row in one.
     var row: Int?
     var rows = 0
+    /// Which half of the row the pointer is in while it is offering a split, so the row can
+    /// show the side the dragged tab will take before the button comes up. A plain
+    /// `Binding` rather than a `@Binding` property: only a strip row has a half to draw, and
+    /// every other target of this delegate would have to pass `.constant(nil)` by hand.
+    var half: Binding<Landing.Side?> = .constant(nil)
+    /// Whether the window reads right to left, in which case the leading pane is drawn on
+    /// the right and the two halves of the row mean the opposite sides. See `Landing.side`.
+    var rtl = false
 
     func validateDrop(info: DropInfo) -> Bool {
         // A folder only ever lands among the pinned rows, so every other target refuses it
@@ -1549,12 +1562,14 @@ private struct TabDrop: DropDelegate {
         track(info)
         return DropProposal(operation: .move)
     }
-    func dropExited(info: DropInfo) { side = nil }
+    func dropExited(info: DropInfo) { side = nil; half.wrappedValue = nil }
 
     func performDrop(info: DropInfo) -> Bool {
-        let where_ = place(info)?.band
+        let offer = place(info)
+        let where_ = offer?.band
         let after = where_ == .after
         side = nil
+        half.wrappedValue = nil
         // Read once and cleared *before* anything can refuse the drop. A drag left set here
         // outlives the gesture, and `SidebarDrop` then stands aside from every url and file
         // dropped on the sidebar for the rest of the session.
@@ -1582,13 +1597,19 @@ private struct TabDrop: DropDelegate {
         // ⌃⇧= and a drop on the page card use, so the four-pane ceiling and the thing it
         // says when you reach it are written down once.
         if where_ == .onto, let target {
-            for id in dragged {
+            // Back to front on the trailing side: every tab of a run joins immediately after
+            // the anchor, so the first one placed ends up last. On the leading side each in
+            // turn joins in front of the anchor and so behind the one before it, which is
+            // already the order they were drawn in.
+            for id in offer?.half == .leading ? dragged : dragged.reversed() {
                 // A split draws one row, at its lead pane's place, so a pane from the other
                 // section would be a row in two lists. It joins the target's section first.
                 if store.tabs.first(where: { $0.id == id })?.kind != target.kind {
                     store.drop(id, onto: target.id, after: true)
                 }
-                store.addPane(id, beside: target.id)
+                // Which half of the row it was let go on says which side of the target the
+                // pane opens on.
+                store.addPane(id, beside: target.id, side: offer?.half ?? .trailing)
             }
             return true
         }
@@ -1610,7 +1631,12 @@ private struct TabDrop: DropDelegate {
     /// edges, the index the dragged row would end up at. Worked out once, because `track`
     /// moves the row there and `performDrop` reads the band, and the two must not be able to
     /// disagree about the same pointer.
-    private struct Offer { var band: Landing.Band; var to: Int? }
+    private struct Offer {
+        var band: Landing.Band
+        var to: Int?
+        /// Which side of the target a split would open on — only ever set for `.onto`.
+        var half: Landing.Side?
+    }
 
     /// What this row is offering the pointer, or nil for nothing at all. A tile in the
     /// favourites grid has two halves and no middle — a row of icons has nothing to split.
@@ -1620,10 +1646,23 @@ private struct TabDrop: DropDelegate {
         // tile it is what stops the grid drawing a drop line on the tile in your hand.
         if let id = Dragging.shared.tab, id == target?.id { return nil }
         guard axis == .vertical, let target else {
+            // A placeholder stands for a whole section rather than for a row in one, and
+            // `move(_:to:)` refuses a tab that is already in that section — so offering the
+            // drop would be a target that lights up and then does nothing. Nil is the same
+            // answer the dragged row's own slot gives: there is nothing to do, and the row
+            // in the air glides back into the slot the list is holding for it.
+            if target == nil, let id = Dragging.shared.tab,
+               store.tabs.first(where: { $0.id == id })?.kind == into { return nil }
             return Offer(band: info.location.x > extent / 2 ? .after : .before, to: nil)
         }
         let band = Landing.band(y: info.location.y, height: Look.rowHeight)
-        if band == .onto { return canSplit(with: target) ? Offer(band: .onto, to: nil) : nil }
+        if band == .onto {
+            // Arc opens the split on the side you dropped on: the left half of the row puts
+            // the dragged tab left (or on top, stacked), the right half puts it right.
+            guard canSplit(with: target) else { return nil }
+            return Offer(band: .onto, to: nil,
+                         half: Landing.side(x: info.location.x, width: extent, rtl: rtl))
+        }
         // The source is only a source in its own section: dragged into the other one it is a
         // new row, and every boundary there is a real move.
         let at = Dragging.shared.at
@@ -1658,6 +1697,7 @@ private struct TabDrop: DropDelegate {
     private func track(_ info: DropInfo) {
         let offer = place(info)
         side = offer?.band
+        half.wrappedValue = offer?.half
         lift(info)
         guard axis == .vertical, let offer, let to = offer.to, let target,
               let id = Dragging.shared.tab,
@@ -2050,8 +2090,11 @@ private struct PinnedSection: View {
             guard let split = store.split(containing: tab.id) else { return true }
             return store.leadPane(split) == tab.id
         }
-        // Empty is nothing, as in Arc: the divider follows the space’s name. The way in is
-        // a drop on the space row, ⌘D, a tab’s own Pin action, or New Folder.
+        // Empty is nothing, as in Arc: the divider follows the space’s name, and this
+        // section draws no row at all — not even an empty one while a drag is in flight,
+        // which would push the whole strip down a pitch under the pointer and take
+        // `Landing`'s arithmetic with it. The way in is the divider below, which is the end
+        // of this list and takes a drop as one; the space row above; ⌘⇧D; or New Folder.
         if !rows.isEmpty {
             VStack(spacing: Look.rowGap) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
@@ -2430,6 +2473,8 @@ extension View {
 /// A hairline, then the two housekeeping actions Arc puts here.
 private struct TidyRow: View {
     @EnvironmentObject var store: TabStore
+    /// Set while a tab that this would actually move is over the divider. See below.
+    @State private var lit: Landing.Band?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -2454,6 +2499,20 @@ private struct TidyRow: View {
         .frame(height: Look.tidyRow)
         .padding(.top, -Look.rowGap)
         .padding(.bottom, Look.sectionGap - Look.rowGap)
+        // The divider is the end of the Pinned list, so a tab let go on it pins, at the end
+        // — otherwise the band between the last pinned row and the New Tab row is a hole a
+        // drag can be released into and have nothing happen. It is also the whole of an
+        // empty Pinned section's drop target: the section itself draws nothing, and a well
+        // conjured into the stack mid-drag would shift every row below it by a pitch.
+        //
+        // The line goes at the top, where the last pinned row ends and the drop will land.
+        // Its own state, per row and per window: `Dragging` is process-wide, and a drag in
+        // one window must not light the divider in another.
+        .contentShape(.rect)
+        .overlay(alignment: .top) { DropLine(on: lit != nil, axis: .vertical) }
+        .onDrop(of: [.plainText],
+                delegate: TabDrop(store: store, target: nil, into: .pinned,
+                                  axis: .horizontal, extent: 0, side: $lit))
     }
 
     /// The menu item owns this too, so both routes archive rather than destroy.
@@ -2462,9 +2521,19 @@ private struct TidyRow: View {
 
 private struct NewTabRow: View {
     @EnvironmentObject var store: TabStore
+    /// Set while a pinned tab is over this row — the only drag it has anything to do with.
+    @State private var lit: Landing.Band?
 
     var body: some View {
         SidebarRow(icon: "plus", title: "New Tab", selected: false, dimmed: true) { store.newTab(nil) }
+            // The other side of the same hole: this row heads the Today list, and a pinned
+            // tab let go on it comes back down to the top of it — where `move(_:to:)` puts a
+            // tab it un-pins, which is directly under this row. So the line goes at the
+            // bottom, on the gap the tab will land in.
+            .overlay(alignment: .bottom) { DropLine(on: lit != nil, axis: .vertical) }
+            .onDrop(of: [.plainText],
+                    delegate: TabDrop(store: store, target: nil, into: .today,
+                                      axis: .horizontal, extent: 0, side: $lit))
             .help("New Tab (\(Keybindings.binding(for: .newTab).display))")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("New Tab")
@@ -2513,6 +2582,17 @@ private struct StripRow: View {
     var rows = 0
     private var spot: Landing.Spot? { index.map { Landing.Spot(kind: tab.kind, index: $0) } }
     @State private var side: Landing.Band?
+    /// Which half of the row a split would open on, while the pointer is over its middle.
+    @State private var half: Landing.Side?
+    /// The row's own width, so the drop can say which half of it the pointer is in. Measured
+    /// rather than worked out from `SidebarWidth`: a pinned row inside a folder is stepped
+    /// in, and its middle is not the sidebar's.
+    @State private var width = Look.sidebarWidth
+    /// Which way the window reads. A right-to-left one draws the leading pane on the right,
+    /// so the answer mirrors — `DropInfo.location` is in the row's own coordinate space,
+    /// which counts up to the right whichever way the window reads, while the alignment the
+    /// half is drawn with mirrors itself. See `Landing.drawsLeft`.
+    @Environment(\.layoutDirection) private var direction
 
     var body: some View {
         Group {
@@ -2538,16 +2618,34 @@ private struct StripRow: View {
         }
         // "Drop it on this one and the two go side by side." A ring rather than a fill: a
         // selected row is already filled, and a row that changed size under the pointer
-        // would move the thing being aimed at.
+        // would move the thing being aimed at. Inside the ring, the half the dragged tab
+        // will take is filled — the row is a small picture of the split it is offering, so
+        // which side it opens on is answered before the button comes up rather than after.
+        //
+        // Opacity, not an `if`: the ring fades in and out where it stands rather than being
+        // cut into and out of the tree, and the half under it slides across as the pointer
+        // crosses the middle instead of blinking. `.leading`/`.trailing` are the window's,
+        // not the screen's — SwiftUI mirrors them under a right-to-left layout, which is
+        // exactly the mirror `Landing.side` puts into the answer. See `Landing.drawsLeft`.
         .overlay {
-            RoundedRectangle(cornerRadius: Look.pillRadius)
-                .strokeBorder(.tint, lineWidth: Look.dropLine)
+            Color.clear
+                .overlay(alignment: half == .trailing ? .trailing : .leading) {
+                    Rectangle().fill(Look.dropHalf).frame(width: width / 2)
+                }
+                .clipShape(.rect(cornerRadius: Look.pillRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Look.pillRadius)
+                        .strokeBorder(.tint, lineWidth: Look.dropLine)
+                }
                 .opacity(side == .onto ? 1 : 0)
+                .allowsHitTesting(false)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: tab, into: tab.kind,
-                                  axis: .vertical, extent: Look.rowHeight, side: $side,
-                                  row: index, rows: rows))
+                                  axis: .vertical, extent: width, side: $side,
+                                  row: index, rows: rows, half: $half,
+                                  rtl: direction == .rightToLeft))
     }
 }
 
