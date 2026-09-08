@@ -10,6 +10,25 @@ struct Folder: Identifiable, Codable, Equatable, Sendable {
     /// a symbol name is always ASCII and an emoji never is.
     var icon = Folder.defaultIcon
     var collapsed = false
+    /// What fills the folder, when something other than the user does. Absent on every
+    /// ordinary folder and on every folder saved before Live Folders existed — which is why
+    /// it is an Optional with a default rather than a `kind` every folder has to answer.
+    /// See LiveFolders.swift.
+    var live: LiveSource? = nil
+    /// The rows the live source put here, by the url each stands for. Written down with the
+    /// folder, and the *only* thing that says which rows are the folder's own work: a page
+    /// you dragged into a live folder is not in here, so a refresh never closes it, never
+    /// reorders it, and never counts it as a pull request that has gone.
+    ///
+    /// It has to be on disk. Guessing it back after a relaunch — "a pull request page in a
+    /// live folder must be the folder's" — is wrong exactly once, on the pull request you
+    /// put there by hand, and being wrong there means closing a tab nobody asked to close.
+    /// Optional for the same reason `live` is, and it is not decoration: Swift's synthesized
+    /// decoder falls back to the property's default only for an Optional, so a non-optional
+    /// `[String] = []` here would make every folder saved before today fail to decode — the
+    /// whole Pinned section with it. nil and [] both mean "this folder has put nothing
+    /// anywhere"; `GitHub.mine` takes it as a list and never sees the difference.
+    var owned: [String]? = nil
 
     static let defaultIcon = "folder"
 
@@ -116,6 +135,13 @@ struct Pins: Codable, Equatable, Sendable {
         guard let to, let t = index(of: to) else { return true }
         return (entries[t].parent.flatMap { index(of: $0).map { depth(of: $0) + 1 } } ?? 0)
             <= Pins.maxDepth
+    }
+
+    /// The tabs sitting *directly* in a folder, in order — not the ones inside a folder
+    /// nested in it. What a live folder reconciles against: a sub-folder's rows belong to
+    /// the sub-folder, whoever filled it.
+    func children(of folder: UUID) -> [String] {
+        entries.filter { $0.parent == folder }.compactMap(\.tab)
     }
 
     /// The tabs inside a folder, however deeply. "Archive all tabs in folder" is this list.
@@ -581,6 +607,11 @@ extension TabStore {
     func toggleFolder(_ id: UUID) {
         Motion.list { pins.toggle(folder: id) }
         savePins()
+        // Unfolding a live folder refreshes it: what you are about to look at is the one
+        // thing worth being up to date. Folding it does not — nobody is looking.
+        if pins.folder(id)?.collapsed == false {
+            LiveFolders.shared(for: profileID).expanded(id)
+        }
     }
 
     /// Arc's "Delete Folder": the folder goes, the tabs stay where they were sitting and
@@ -589,11 +620,28 @@ extension TabStore {
     func deleteFolder(_ id: UUID) {
         let name = pins.folder(id)?.name ?? "folder"
         let kept = pins.tabs(in: id).count
+        let wasLive = pins.folder(id)?.live != nil
+        // In every window showing this Space, not just this one. Each holds its own copy of
+        // the shape and each writes it back, so a window left holding the folder would put
+        // it back on its next `savePins` — and a live folder that came back would start
+        // filling itself again.
+        for other in TabStore.all where other !== self && other.profileID == profileID
+            && !other.isPrivate && !other.isLittle && other.pins.folder(id) != nil {
+            Motion.list {
+                other.pins.remove(folder: id)
+                other.applyPinOrder()
+            }
+            other.savePins()
+        }
         Motion.list {
             pins.remove(folder: id)
             applyPinOrder()
         }
         savePins()
+        // The one event that means a live folder is not coming back. Its rows stay, as
+        // ordinary pinned tabs; what goes is the glyphs, so the map does not grow by one
+        // entry per live folder ever made.
+        if wasLive { LiveFolders.shared(for: profileID).forget(folder: id) }
         axAnnounce("Deleted \(name). \(kept) tab\(kept == 1 ? "" : "s") kept in Pinned.")
     }
 
@@ -601,6 +649,13 @@ extension TabStore {
     /// empty. They have to leave Pinned first — a pinned tab is never archived, which is
     /// the whole difference between the sections.
     func archiveFolder(_ id: UUID) {
+        // A live folder stops being one. Archiving its tabs empties it, and a folder that
+        // keeps itself filled would put every one of them straight back on the next refresh
+        // — which is not something "Archive All Tabs in Folder" can be made to mean. The
+        // folder stays, with its name and its place; it simply stops being told what to hold.
+        if pins.folder(id)?.live != nil {
+            LiveFolders.shared(for: profileID).stopKeepingFilled(id, saying: false)
+        }
         // Only what is still open: `pins` is synced on every change, but a tab named here
         // and gone by the time the menu item is clicked must not be counted or announced.
         let live = pins.tabs(in: id).compactMap(UUID.init(uuidString:))

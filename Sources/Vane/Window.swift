@@ -177,6 +177,9 @@ extension VaneWindow {
         let space = isPrivate ? nil : Spaces.resolve(space, for: profile)
         let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space,
                              parked: parked)
+        // Live folders keep themselves filled for as long as a window is open. A private
+        // window holds none — it has no Pinned section — so it does not start the clock.
+        if !isPrivate { LiveFolders.shared(for: profile.id).begin() }
         let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -279,6 +282,9 @@ extension VaneWindow {
                 store.tabs.forEach { $0.tearDown() }
                 TabStore.all.removeAll { $0 === store }
                 delegates.removeAll { $0 === self }
+                // After the removal, so it can see whether this was the profile's last
+                // window: the live folders' timer must not outlive the sidebar drawing them.
+                LiveFolders.forget(store.profileID)
             }
         }
     }
