@@ -647,6 +647,10 @@ enum Look {
     /// when they need to) and the icon in its corner.
     static let quitDialogWidth: CGFloat = 440
     static let quitDialogIcon: CGFloat = 56
+    /// The scrim under the card: how much it darkens the page, and how far it blurs it.
+    /// Arc's is a clear dim with only a hint of blur — the page should still be readable.
+    static let quitScrim: CGFloat = 0.35
+    static let quitBlur: CGFloat = 3
     /// How much of the space's colour washes over the pill's dark ground.
     static let toastTint: Double = 0.45
 
@@ -742,6 +746,8 @@ extension Look {
                         && rowTarget + rowSpacing * 2 + rowTrailingInset < sidebarWidth))
         out.append(("the quit card starts wider than its margins and shows a real icon",
                     quitDialogWidth > paneMargin * 4 && quitDialogIcon >= control * 2))
+        out.append(("the quit scrim dims without hiding and blurs only a little",
+                    quitScrim > 0.2 && quitScrim < 0.6 && quitBlur >= 1 && quitBlur <= 6))
         // Toasts say the whole thing or take another line and say the whole thing — never
         // "Archived hello world -…". One row when the sentence and its verb fit side by
         // side; otherwise the sentence gets the pill's full width to itself and the verb
