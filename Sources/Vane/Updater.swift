@@ -122,10 +122,25 @@ enum Release {
     /// ponytail: no folder picker, no bookmark, no helper. Two entitlements cover every
     /// place an app is actually kept, and there is nothing to ask.
     static func destination(forBundleAt path: String, home: String) -> (path: String, moved: Bool) {
-        let name = (path as NSString).lastPathComponent
-        let parent = (path as NSString).deletingLastPathComponent
-        if applicationsFolders(home: home).contains(parent) { return (path, false) }
-        return ("/Applications/" + name, true)
+        // Anywhere *under* an Applications folder counts as installed, not just directly in
+        // one: plenty of people keep `/Applications/Browsers/Vane.app`, and hoisting it to
+        // the top level would be Vane tidying up a filing system that was not its idea.
+        // A folder that merely ends in the word ("~/Old Applications") is not one of them,
+        // which is why this is a path prefix and not a `contains`.
+        for root in applicationsFolders(home: home) where path.hasPrefix(root + "/") {
+            return (path, false)
+        }
+        return ("/Applications/" + (path as NSString).lastPathComponent, true)
+    }
+
+    /// A bundle's `CFBundleShortVersionString`, read straight off disk. No launching, no
+    /// `Bundle(url:)` — this is asked about a copy of Vane that is not running and must not
+    /// be started just to be interrogated.
+    static func version(ofBundleAt url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url.appendingPathComponent("Contents/Info.plist")),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let dict = plist as? [String: Any] else { return nil }
+        return dict["CFBundleShortVersionString"] as? String
     }
 
     // MARK: - What a check is allowed to say
@@ -157,10 +172,22 @@ enum Release {
     /// where it was built — otherwise every `./make-app.sh` in a worktree would move itself
     /// on top of the installed app — and so does an instance running on its own data
     /// directory, which is by definition a test.
-    static func shouldRelocate(bundlePath: String, home: String,
-                               official: Bool, isolated: Bool) -> Bool {
+    /// `installedVersion` is what is already at the destination: `nil` when nothing is
+    /// there, and the empty string when something is there whose version cannot be read.
+    /// Both of those are answered deliberately — an empty destination is installed into, and
+    /// one that cannot be read is left alone, because the one thing this must never do is
+    /// overwrite a Vane it does not understand.
+    static func shouldRelocate(bundlePath: String, home: String, official: Bool, isolated: Bool,
+                               runningVersion: String, installedVersion: String?) -> Bool {
         guard official, !isolated else { return false }
-        return destination(forBundleAt: bundlePath, home: home).moved
+        guard destination(forBundleAt: bundlePath, home: home).moved else { return false }
+        // Nothing installed yet: this copy is the install.
+        guard let installedVersion else { return true }
+        // Something is. Only a *newer* copy may replace it — otherwise double-clicking an
+        // old release still sitting in ~/Downloads would quietly downgrade the installed
+        // Vane, move the good one aside as `.app.old`, and relaunch into the old one. The
+        // release left in Downloads is the one people forget about; it must not win.
+        return isNewer(runningVersion, than: installedVersion)
     }
 
     // MARK: - What a download has to prove
@@ -279,6 +306,9 @@ extension Release {
                     dest("/Volumes/Vane/Vane.app") == ("/Applications/Vane.app", true)))
         out.append(("a folder that merely ends in Applications is not one of them",
                     dest("/Users/ada/Old Applications/Vane.app").moved))
+        out.append(("an app filed in a folder inside Applications is already installed",
+                    dest("/Applications/Browsers/Vane.app")
+                        == ("/Applications/Browsers/Vane.app", false)))
 
         out.append(("an asset served from anywhere but GitHub is not an asset",
                     asset([("Vane.zip", "https://evil.example.com/Vane.zip")]) == nil))
@@ -304,24 +334,60 @@ extension Release {
         out.append(("pressing it when there IS one offers it, same as a launch",
                     answer(newer: "v2", manual: true, reachable: true) == .offer("v2")))
 
+        func relocate(_ path: String, official: Bool = true, isolated: Bool = false,
+                      running: String = "1.0.0", installed: String? = nil) -> Bool {
+            shouldRelocate(bundlePath: path, home: home, official: official, isolated: isolated,
+                           runningVersion: running, installedVersion: installed)
+        }
         out.append(("a release opened from its disk image installs itself",
-                    shouldRelocate(bundlePath: "/Volumes/Vane/Vane.app", home: home,
-                                   official: true, isolated: false)))
+                    relocate("/Volumes/Vane/Vane.app")))
         out.append(("...and one unzipped into Downloads does too",
-                    shouldRelocate(bundlePath: "/Users/ada/Downloads/Vane.app", home: home,
-                                   official: true, isolated: false)))
-        out.append(("one already in /Applications stays put",
-                    !shouldRelocate(bundlePath: "/Applications/Vane.app", home: home,
-                                    official: true, isolated: false)))
+                    relocate("/Users/ada/Downloads/Vane.app")))
+        out.append(("an absent destination is installed into, whatever version is running",
+                    relocate("/Users/ada/Downloads/Vane.app", running: "0.9.0", installed: nil)))
+        out.append(("a newer release opened from Downloads replaces the installed one",
+                    relocate("/Users/ada/Downloads/Vane.app", running: "2.0.0", installed: "1.0.0")))
+        out.append(("an older release opened from Downloads never replaces a newer installed Vane",
+                    !relocate("/Users/ada/Downloads/Vane.app", running: "1.0.0", installed: "2.0.0")))
+        out.append(("...nor does one that is exactly the version already installed",
+                    !relocate("/Users/ada/Downloads/Vane.app", running: "2.0.0", installed: "2.0.0")))
+        out.append(("a destination whose version cannot be read is left alone",
+                    !relocate("/Users/ada/Downloads/Vane.app", running: "2.0.0", installed: "")))
+        out.append(("one already in /Applications stays put", !relocate("/Applications/Vane.app")))
         out.append(("...as does one in the user's own Applications folder",
-                    !shouldRelocate(bundlePath: "/Users/ada/Applications/Vane.app", home: home,
-                                    official: true, isolated: false)))
+                    !relocate("/Users/ada/Applications/Vane.app")))
+        out.append(("...and one filed in a folder inside Applications",
+                    !relocate("/Applications/Browsers/Vane.app")))
         out.append(("a build that is not a signed release never moves itself",
-                    !shouldRelocate(bundlePath: "/Users/ada/Desktop/vane/Vane.app", home: home,
-                                    official: false, isolated: false)))
+                    !relocate("/Users/ada/Desktop/vane/Vane.app", official: false)))
         out.append(("...and neither does a test instance on its own data directory",
-                    !shouldRelocate(bundlePath: "/Users/ada/Desktop/vane/Vane.app", home: home,
-                                    official: true, isolated: true)))
+                    !relocate("/Users/ada/Desktop/vane/Vane.app", isolated: true)))
+
+        // The version read, against a real bundle on disk — the input `shouldRelocate`
+        // depends on, and the one part of it that is not arithmetic.
+        let fm = FileManager.default
+        let scratch = fm.temporaryDirectory.appendingPathComponent("vane-version-check-\(getpid())")
+        let bundle = scratch.appendingPathComponent("Vane.app")
+        try? fm.createDirectory(at: bundle.appendingPathComponent("Contents"),
+                                withIntermediateDirectories: true)
+        let plist: [String: Any] = ["CFBundleShortVersionString": "2.3.4", "CFBundleName": "Vane"]
+        if let data = try? PropertyListSerialization.data(fromPropertyList: plist,
+                                                          format: .xml, options: 0) {
+            try? data.write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+        }
+        out.append(("an installed bundle's version is read off disk, without launching it",
+                    version(ofBundleAt: bundle) == "2.3.4"))
+        out.append(("a bundle that is not there has no version",
+                    version(ofBundleAt: scratch.appendingPathComponent("Nope.app")) == nil))
+        // ...and a bundle whose plist is unreadable, which `relocateIfNeeded` turns into ""
+        // so that the destination is left alone rather than overwritten.
+        let broken = scratch.appendingPathComponent("Broken.app")
+        try? fm.createDirectory(at: broken.appendingPathComponent("Contents"),
+                                withIntermediateDirectories: true)
+        try? Data("not a plist".utf8).write(to: broken.appendingPathComponent("Contents/Info.plist"))
+        out.append(("a bundle with an unreadable Info.plist has no version either",
+                    version(ofBundleAt: broken) == nil))
+        try? fm.removeItem(at: scratch)
 
         out.append(("the requirement is pinned to one team, not to whoever is running",
                     pinnedRequirement == requirement(forTeam: teamID) && pinnedRequirement != nil))
@@ -845,14 +911,23 @@ extension Release {
     /// only outcome the user has to know about: a copy that cannot install itself will go on
     /// running from wherever it is, and it will never be able to update itself from there.
     private func relocateIfNeeded() -> Bool {
+        // Asked before anything is read off disk: a bare binary out of `.build` has no
+        // bundle to move and no destination worth stat-ing.
+        guard Self.isBundled else { return false }
         let source = Bundle.main.bundleURL
-        guard Self.isBundled,
-              Release.shouldRelocate(bundlePath: source.path, home: Self.realHome,
-                                     official: Self.isOfficialBuild,
-                                     isolated: Store.overrideDirectory != nil)
-        else { return false }
         let target = URL(fileURLWithPath:
             Release.destination(forBundleAt: source.path, home: Self.realHome).path)
+        // What is already installed, read off disk without launching it. `nil` means the
+        // destination is empty; `""` means something is there whose Info.plist could not be
+        // read, and `shouldRelocate` leaves that alone rather than guessing.
+        let installed = FileManager.default.fileExists(atPath: target.path)
+            ? (Release.version(ofBundleAt: target) ?? "") : nil
+        guard Release.shouldRelocate(bundlePath: source.path, home: Self.realHome,
+                                     official: Self.isOfficialBuild,
+                                     isolated: Store.overrideDirectory != nil,
+                                     runningVersion: Self.currentVersion,
+                                     installedVersion: installed)
+        else { return false }
         Task.detached(priority: .userInitiated) {
             let ok = Self.place(source, at: target)
             await MainActor.run {
@@ -871,6 +946,10 @@ extension Release {
 
     /// Copy a bundle to `target`, moving anything already there aside first and putting it
     /// back if the copy fails. The one move that must not lose the app that is there.
+    ///
+    /// Deliberately does *not* write `updateOldBundle`: the displaced copy is somebody's
+    /// installed Vane, not a version this updater downloaded, so `sweep` must never delete
+    /// it on the next launch. It stays as `Vane.app.old` until a person decides otherwise.
     nonisolated private static func place(_ source: URL, at target: URL) -> Bool {
         let fm = FileManager.default
         let old = URL(fileURLWithPath: target.path + ".old")
