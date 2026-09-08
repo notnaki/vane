@@ -3080,23 +3080,43 @@ struct SiteIcon: View {
 }
 
 /// The same, for a tab — separate only because it has to observe the tab to redraw when the
-/// favicon lands.
+/// favicon lands, and because what it draws while none has is the whole of the rule below.
+///
+/// **Never a spinner.** This slot used to spin while `tab.loading`, and a row that turns
+/// into a spinning wheel on every reload is a row you cannot point at: the mark you aim for
+/// is gone for exactly as long as the page takes. Arc keeps the icon the tab had until the
+/// next one has actually been decoded and then swaps it — which is free here, because
+/// `Favicons.load` only ever writes on `didFinish`, so a tab holds its old icon for the
+/// whole of a navigation. A tab that has never had one shows the site's letter instead.
+///
+/// Loading is still said, twice: the pill's 2pt progress line, and the row's accessibility
+/// value, which reads "loading" in words. In words and in a line, not in motion.
 private struct TabIcon: View {
     @ObservedObject var tab: Tab
     var size: CGFloat = 16
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // Arc spins the row's favicon slot while its page is loading. The card's own 2pt bar
-        // only says that *the tab you are looking at* is busy; a background tab had nothing.
-        if tab.loading {
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(size / 24)
-                .frame(width: size, height: size)
-                .accessibilityHidden(true)      // the row's value already says "loading"
-        } else {
-            SiteIcon(icon: tab.favicon, size: size)
+        Group {
+            if let icon = tab.favicon {
+                Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+            } else if let letter = Favicons.letter(for: tab.currentURL) {
+                // Flat, no box: a tile and a pane pill already have a fill under this, and a
+                // second one inside it would read as an icon with a badge.
+                Text(letter)
+                    .font(.system(size: size * Look.letterScale, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Look.inkSecondary)
+            } else {
+                // Nothing to take a letter from: a blank tab, or a file with no icon yet.
+                Image(systemName: "globe").resizable().aspectRatio(contentMode: .fit)
+                    .foregroundStyle(.tertiary)
+            }
         }
+        .frame(width: size, height: size)
+        // The swap, when it comes, is a fade rather than a cut — the same 0.15s the rest of
+        // the sidebar's hovers use.
+        .animation(reduceMotion ? nil : Look.quick, value: tab.favicon)
+        .accessibilityHidden(true)          // the row's own label and value say all of this
     }
 }
 

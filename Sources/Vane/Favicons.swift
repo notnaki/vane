@@ -148,6 +148,26 @@ import WebKit
         })
     }
 
+    /// The letter a site is known by, for the box a favicon has not filled yet — a brand-new
+    /// tab, a site that declares no icon, a page still being fetched from a host we have
+    /// never been to. Arc puts the site's initial there; it never puts a spinner there, which
+    /// is the whole point: a row is a place, and a place does not flicker while it loads.
+    ///
+    /// The name is the label before the public suffix, so `mail.google.com` is a G and not an
+    /// M — the letter has to be the one the *site* is known by, or two tabs on one site show
+    /// two different marks. `www.` and the mobile prefixes are not names either.
+    ///
+    /// An address literal has no name to take a letter from: every label is a number, and
+    /// "the second-to-last one" would make 127.0.0.1 a 0. Its first digit is at least stable.
+    nonisolated static func letter(for url: URL?) -> String? {
+        guard let host = url?.host()?.lowercased(), !host.isEmpty else { return nil }
+        let labels = host.split(separator: ".").filter { !["www", "m", "mobile"].contains($0) }
+        let numeric = labels.allSatisfy { $0.allSatisfy(\.isNumber) }
+        let name = numeric || labels.count < 3 ? labels.first : labels[labels.count - 2]
+        guard let c = name?.first(where: { $0.isLetter || $0.isNumber }) else { return nil }
+        return String(c).uppercased()
+    }
+
     // MARK: Disk
 
     /// ponytail: synchronous file IO on the main thread. These are sub-10KB reads on a
@@ -209,6 +229,26 @@ import WebKit
                 .first?.lastPathComponent == "apple-touch-icon.png"),
             ("declaration order is otherwise preserved",
              ordered([u("https://e.com/a.png"), u("https://e.com/b.png")]).last?.lastPathComponent == "b.png"),
+
+            // The stand-in a row shows while a tab has no favicon. There is no spinner to
+            // fall back to any more, so this is what a brand-new tab is recognised by.
+            ("a site with no icon yet is known by its initial",
+             letter(for: u("https://example.com/a")) == "E"),
+            ("…the site's own, not the subdomain's",
+             letter(for: u("https://mail.google.com/mail/u/0")) == "G"),
+            ("…and www is not a name", letter(for: u("https://www.example.com/")) == "E"),
+            ("…nor is a mobile prefix", letter(for: u("https://m.example.com/")) == "E"),
+            ("a bare host is its own name", letter(for: u("http://localhost:8000/")) == "L"),
+            ("an address literal is not a name with an initial in the middle of it",
+             letter(for: u("http://127.0.0.1:8000/")) == "1"),
+            ("a digit is a letter here, since a host may start with one",
+             letter(for: u("https://1password.com/")) == "1"),
+            ("the letter is upper case however the host was typed",
+             letter(for: u("https://EXAMPLE.com/")) == "E"),
+            ("a url with no host has no letter, and gets the globe",
+             letter(for: u("about:blank")) == nil && letter(for: nil) == nil),
+            ("neither does a local file — Finder's own icon stands in for those",
+             letter(for: u("file:///tmp/x.html")) == nil),
 
             // The one ordering invariant: the strip is sorted by section. `others` is the
             // strip with the moved tab already taken out. F = favourite, P = pinned,

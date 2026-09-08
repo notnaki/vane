@@ -78,6 +78,10 @@ enum Look {
     /// at 14 and the selected row's on a 24pt plate; 16 is the sidebar's, kept for one
     /// favicon cache.
     static let rowIcon: CGFloat = 16
+    /// The site's initial, standing in a favicon's box while a tab has none — a fraction of
+    /// the box rather than a point size, because that box is 16 in a row and 16 in a tile.
+    /// Short of the full box, so a letter and an icon read as one size.
+    static let letterScale: CGFloat = 0.72
     /// The "→" square on a row that has a trailing label: what Return will press.
     static let chip: CGFloat = 24
     static let chipRadius: CGFloat = 6
@@ -666,6 +670,8 @@ extension Look {
         out.append(("the footer glyphs sit 24pt above the window's bottom edge",
                     footer / 2 + footerInset == 24))
         out.append(("rows and the bar share one radius", pillRadius == barRadius))
+        out.append(("a stand-in letter fills a favicon's box without touching its edges",
+                    letterScale > 0.5 && letterScale < 1))
         // An extension action's badge, which is drawn over the 16pt icon it belongs to.
         out.append(("an action badge is shorter than the icon it sits on", badgeHeight < rowIcon))
         out.append(("…and a full one cannot reach the glyph beside it",
