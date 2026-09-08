@@ -2470,26 +2470,38 @@ extension View {
     }
 }
 
-/// A hairline, then the two housekeeping actions Arc puts here.
+/// A hairline, then the two housekeeping actions Arc puts here — once there is housekeeping
+/// to do. Under `Look.tidyThreshold` Today tabs the line is on its own: five tabs are not a
+/// pile, and two actions offering to sort them out are two things to read past on every new
+/// Space and in every new window.
+///
+/// The hairline stays either way. It is the end of the pinned section, not a decoration on
+/// the buttons, and the row keeps its height — so at the sixth tab the two actions fade in
+/// where they were always going to be, and nothing below them moves.
 private struct TidyRow: View {
     @EnvironmentObject var store: TabStore
     /// Set while a tab that this would actually move is over the divider. See below.
     @State private var lit: Landing.Band?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let offering = TidyTabs.offersHousekeeping(store)
         HStack(spacing: 8) {
             Hairline()
-            // The menu item owns the tidy's cancellation and its "undo" bookkeeping — this
-            // is the same closure, not a second copy of it.
-            Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
-                .disabled(!TidyTabs.shouldOffer(store))
-                .help("Rename and group tabs (\(Keybindings.binding(for: .tidyTabs).display))")
-                .accessibilityLabel("Tidy Tabs")
-            Text("|").foregroundStyle(Look.inkQuiet)
-            Button("Clear") { clear() }
-                .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
-                .accessibilityLabel("Clear Tabs")
+            if offering {
+                // The menu item owns the tidy's cancellation and its "undo" bookkeeping —
+                // this is the same closure, not a second copy of it.
+                Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
+                    .disabled(!TidyTabs.shouldOffer(store))
+                    .help("Rename and group tabs (\(Keybindings.binding(for: .tidyTabs).display))")
+                    .accessibilityLabel("Tidy Tabs")
+                Text("|").foregroundStyle(Look.inkQuiet)
+                Button("Clear") { clear() }
+                    .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
+                    .accessibilityLabel("Clear Tabs")
+            }
         }
+        .animation(reduceMotion ? nil : Look.list, value: offering)
         .buttonStyle(.plain)
         .font(Look.sectionCaption)
         .foregroundStyle(Look.inkTertiary)

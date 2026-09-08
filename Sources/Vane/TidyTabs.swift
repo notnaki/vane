@@ -117,6 +117,25 @@ import Foundation
         return shouldOffer(ordinary: ordinary, threshold: threshold, enabled: enabled)
     }
 
+    /// Whether the sidebar shows its housekeeping controls at all — Tidy and Clear, and the
+    /// palette's Tidy Tabs with them, so one rule decides what the window offers rather than
+    /// the row and the command bar each having an opinion.
+    ///
+    /// This is a plainer question than `shouldOffer`, and deliberately so. `shouldOffer` asks
+    /// whether tidying would *help* — it discounts the tab you are reading, and the user can
+    /// move its threshold. This asks whether the controls should be on screen, and the answer
+    /// is a count of what is in the section they belong to: fewer than `Look.tidyThreshold`
+    /// Today tabs is not a pile, and two actions offering to sort out five tabs are two
+    /// things to read past on every new Space. At six they arrive with the list's own
+    /// animation; the row itself — its hairline, its height — never moves, so nothing pops.
+    nonisolated static func offersHousekeeping(today: Int) -> Bool { today >= Look.tidyThreshold }
+
+    /// The same, asked of a window. Today tabs only: pins and favourites are not what the
+    /// two actions act on.
+    static func offersHousekeeping(_ store: TabStore) -> Bool {
+        offersHousekeeping(today: store.tabs.filter { $0.kind == .today }.count)
+    }
+
     // MARK: - Planning
 
     /// Ask the model, fall back to arithmetic. Returns nil only when there is genuinely
@@ -514,6 +533,21 @@ import Foundation
                ordinary == 6 && !shouldOffer(ordinary: ordinary, threshold: 6, enabled: true))
         assert("one more ordinary tab tips it over",
                shouldOffer(ordinary: ordinary + 1, threshold: 6, enabled: true))
+
+        // --- Whether the housekeeping controls are on screen at all ---
+        assert("an empty Space offers no housekeeping", !offersHousekeeping(today: 0))
+        assert("nor does one holding a handful of tabs you can already see",
+               (1..<Look.tidyThreshold).allSatisfy { !offersHousekeeping(today: $0) })
+        assert("the sixth Today tab is what brings Tidy and Clear out",
+               offersHousekeeping(today: Look.tidyThreshold))
+        assert("…and they stay out as the pile grows",
+               (Look.tidyThreshold...50).allSatisfy(offersHousekeeping(today:)))
+        assert("the row's rule counts tabs, and does not discount the one being read the "
+               + "way shouldOffer does",
+               offersHousekeeping(today: 6) && !shouldOffer(ordinary: 6, threshold: 6, enabled: true))
+        assert("a lowered tidy threshold cannot put Tidy in the command bar while the "
+               + "sidebar is not offering it",
+               shouldOffer(ordinary: 3, threshold: 2, enabled: true) && !offersHousekeeping(today: 4))
 
         // --- Ordering: pinned first, active preserved, contiguous groups ---
         let groups = [Group(name: "Work", tabIDs: [id(7), id(4)]),

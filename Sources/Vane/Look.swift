@@ -54,6 +54,15 @@ enum Look {
     /// `sectionGap` to the New Tab row below. Arc's label centre sits 6.5pt under the last
     /// pinned row and New Tab's top 22.5pt under that.
     static let tidyRow: CGFloat = 13
+    /// How many Today tabs a Space has to hold before Tidy and Clear are offered at all.
+    /// Below it there is no pile: five tabs fit in the strip and the one you want is the one
+    /// you can already see, so two housekeeping actions over them are noise on every new
+    /// Space, every window, every morning. Arc's number, and the same six `TidyTabs`
+    /// defaults its own threshold to.
+    ///
+    /// A count, not a size, but it lives here because it is a rule about what the sidebar
+    /// *shows* — the row's height above is meaningless without it.
+    static let tidyThreshold = 6
     static let sectionGap: CGFloat = 18
 
     // The command bar. The one surface allowed rows taller than `rowHeight`: it is a
@@ -672,6 +681,9 @@ extension Look {
         out.append(("rows and the bar share one radius", pillRadius == barRadius))
         out.append(("a stand-in letter fills a favicon's box without touching its edges",
                     letterScale > 0.5 && letterScale < 1))
+        out.append(("housekeeping waits for a pile: more tabs than fit in a glance, "
+                    + "fewer than a window nobody could work in",
+                    tidyThreshold >= 4 && tidyThreshold <= 12))
         // An extension action's badge, which is drawn over the 16pt icon it belongs to.
         out.append(("an action badge is shorter than the icon it sits on", badgeHeight < rowIcon))
         out.append(("…and a full one cannot reach the glyph beside it",

@@ -159,7 +159,14 @@ extension PaletteCommand {
                     PaletteCommand(.nextPane, icon: "arrow.left.arrow.right"),
                 ]
             }
-            if TidyTabs.shouldOffer(store) { out.append(PaletteCommand(.tidyTabs, icon: "wand.and.stars")) }
+            // Both halves of the question: whether tidying would help, and whether the window
+            // is offering housekeeping at all. The second is the sidebar's rule, and the bar
+            // follows it — a Tidy Tabs the sidebar is deliberately not showing has no business
+            // being the top hit in the command bar. The menu item stays either way: a menu is
+            // where you look something up, not something you read past.
+            if TidyTabs.shouldOffer(store), TidyTabs.offersHousekeeping(store) {
+                out.append(PaletteCommand(.tidyTabs, icon: "wand.and.stars"))
+            }
             if store.tabs.contains(where: { $0.kind == .today }) {
                 out.append(PaletteCommand(.clearTabs, icon: "xmark.bin"))
             }
