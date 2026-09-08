@@ -752,7 +752,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("passwords pane", PasswordsPane.check),
                                ("password chooser", PasswordChooser.check),
                                ("back/forward history menu", NavHistory.check),
-                               ("drag landing", Landing.check)] {
+                               ("drag landing", Landing.check),
+                               ("live folders", GitHub.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
         }

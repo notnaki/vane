@@ -242,6 +242,9 @@ enum Look {
     /// body ("Vesta macOS Terminal" is 288px wide at 2x — 14 regular to the pixel).
     static let rowTitle = Font.system(size: 14)
     static let caption = Font.system(size: 11)
+    /// A mark in the corner of another glyph — a live folder's source. Small enough that
+    /// the glyph it sits on still reads as itself.
+    static let badgeGlyph = Font.system(size: 9, weight: .semibold)
     /// Tidy | Clear: caption-sized but heavy, the way Arc sets them.
     static let sectionCaption = Font.system(size: 11, weight: .semibold)
     /// A settings footnote. Arc's are 12, a step under the rows they explain.

@@ -1043,6 +1043,12 @@ private struct FavoriteTile: View {
         // indent is not something VoiceOver can read out.
         if let folder = store.pins.folder(holding: tab.id.uuidString) {
             bits.append("in \(folder.name)")
+            // The state glyph is drawn but hidden from VoiceOver: a row reads as one
+            // element, so what it means belongs here rather than as a second thing to find.
+            if folder.live != nil, let url = store.rowURL(tab.id.uuidString),
+               let pr = LiveFolders.shared(for: store.profileID).state(of: url, in: folder) {
+                bits.append(pr.says.lowercased())
+            }
         }
     case .today:     break
     }
@@ -1716,15 +1722,21 @@ private struct SpaceRow: View {
     @EnvironmentObject var store: TabStore
     @State private var icons = false
     @State private var theme = false
+    @State private var live = false
 
     var body: some View {
         if let space = store.currentSpace {
             row(space.icon ?? "cloud", space, space.name)
             .onTapGesture(count: 2) { store.renamingSpace = space.id }
             .onTapGesture { showSpaceList(store) }
-            .contextMenu { SpaceMenu(store: store, space: space, icons: $icons, theme: $theme) }
+            .contextMenu {
+                SpaceMenu(store: store, space: space, icons: $icons, theme: $theme, live: $live)
+            }
             .popover(isPresented: $icons) { SpaceIcons(store: store, space: space) }
             .popover(isPresented: $theme) { ThemeEditor(store: store, space: space) }
+            .sheet(isPresented: $live) {
+                LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
+            }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Space")
             .accessibilityValue(space.name)
@@ -1770,9 +1782,9 @@ private struct SpaceRow: View {
 }
 
 /// Exactly the items Arc offers, minus the ones Vane has nothing behind.
-/// ponytail: no Live Folders, no Share Space and no Export — those are whole features, not
-/// menu items, and an entry that opens an apology is worse than no entry. They belong beside
-/// `New Folder` on the day they exist.
+/// ponytail: no Share Space and no Export — those are whole features, not menu items, and an
+/// entry that opens an apology is worse than no entry. They belong beside `New Folder` on the
+/// day they exist.
 /// ponytail: `store` is passed in rather than read from the environment. A context menu is
 /// hosted in its own window, and an `@EnvironmentObject` that fails to reach it is a crash,
 /// not a blank menu — not a risk worth taking for a shorter initialiser.
@@ -1781,6 +1793,9 @@ private struct SpaceMenu: View {
     let space: Space
     @Binding var icons: Bool
     @Binding var theme: Bool
+    /// The one way into a Live Folder when the Pinned section is empty: with no rows there
+    /// is no Pinned context menu to right-click.
+    @Binding var live: Bool
 
     var body: some View {
         Button("Change Space Icon…") { open($icons) }
@@ -1802,6 +1817,7 @@ private struct SpaceMenu: View {
         .disabled(store.spaces.count < 2)
         Divider()
         Button("New Folder") { store.newFolder() }
+        Button("New Live Folder…") { open($live) }
         Divider()
         // Arc's "Manage Spaces…" opens the Library's Spaces view — every Space's pages side
         // by side, draggable between columns — rather than a settings pane.
@@ -1919,6 +1935,7 @@ private struct SpaceDots: View {
     /// editor on the *last* Space's colours, hanging off the last Space's dot.
     @State private var icons: UUID?
     @State private var theme: UUID?
+    @State private var live: UUID?
     /// Which dot a drag is over, so only that one lights up.
     @State private var dropTarget: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1946,6 +1963,8 @@ private struct SpaceDots: View {
                                 set: { icons = $0 ? space.id : nil })
         let showTheme = Binding(get: { theme == space.id },
                                 set: { theme = $0 ? space.id : nil })
+        let showLive = Binding(get: { live == space.id },
+                               set: { live = $0 ? space.id : nil })
         ZStack {
             Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
                 .opacity(1 - lit)
@@ -1964,10 +1983,16 @@ private struct SpaceDots: View {
         .onDrop(of: [.plainText], delegate: SpaceDrop(store: store, space: space, over: over))
         .help(space.name)
         .contextMenu {
-            SpaceMenu(store: store, space: space, icons: showIcons, theme: showTheme)
+            SpaceMenu(store: store, space: space, icons: showIcons, theme: showTheme,
+                      live: showLive)
         }
         .popover(isPresented: showIcons) { SpaceIcons(store: store, space: space) }
         .popover(isPresented: showTheme) { ThemeEditor(store: store, space: space) }
+        // In the Space the window is showing, like "New Folder" beside it in the same menu:
+        // a folder belongs to a Pinned section, and this window draws exactly one.
+        .sheet(isPresented: showLive) {
+            LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
+        }
         .accessibilityLabel(space.name)
         .accessibilityAddTraits(here ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Switches to this space.")
@@ -1999,6 +2024,19 @@ private struct SpaceDots: View {
 private struct PinnedTabs: View {
     @EnvironmentObject var store: TabStore
 
+    /// One observer of `LiveFolders` for the whole section, rather than one per row: the
+    /// glyphs all come out of the same object, and a hundred pinned rows each watching it
+    /// is a hundred redraws for one refresh.
+    var body: some View {
+        PinnedSection(live: LiveFolders.shared(for: store.profileID))
+    }
+}
+
+private struct PinnedSection: View {
+    @EnvironmentObject var store: TabStore
+    @ObservedObject var live: LiveFolders
+    @State private var sheet = false
+
     var body: some View {
         // Drawn from `store.pins`, not from the strip: a folder is not a tab, and the order
         // the rows are in is the folders’, which is what `Pins` is for. Only the entries that
@@ -2017,16 +2055,31 @@ private struct PinnedTabs: View {
         if !rows.isEmpty {
             VStack(spacing: Look.rowGap) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    PinnedRow(row: row, index: index, rows: rows.count)
+                    PinnedRow(row: row, index: index, rows: rows.count, pr: state(of: row))
                         .transition(.rowCollapse)
                 }
             }
             .overlay(alignment: .topLeading) { HeldRow(kind: .pinned) }
-            .contextMenu { Button("New Folder") { store.newFolder() } }
+            .contextMenu {
+                Button("New Folder") { store.newFolder() }
+                Button("New Live Folder…") { open($sheet) }
+            }
+            .sheet(isPresented: $sheet) {
+                LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
+            }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Pinned Tabs")
             .accessibilityValue("\(store.pins.tabs.count) pinned")
         }
+    }
+
+    /// The pull request a row stands for — only for a row a live folder actually owns, so a
+    /// page dragged into one, and every row elsewhere in the sidebar that happens to be on
+    /// the same page, wears no mark.
+    private func state(of row: Pins.Visible) -> GitHub.State? {
+        guard let id = row.entry.tab, let folder = store.pins.folder(holding: id),
+              folder.live != nil, let url = store.rowURL(id) else { return nil }
+        return live.state(of: url, in: folder)
     }
 }
 
@@ -2039,6 +2092,11 @@ private struct PinnedRow: View {
     /// Its place among the pinned rows, and how many there are — see `TabDrop.row`.
     let index: Int
     let rows: Int
+    /// The pull request this row stands for, when a live folder owns it. Through the
+    /// environment rather than through `StripRow` and `TabRow`'s signatures: only the Pinned
+    /// section can know it, only the row's trailing edge draws it, and every other row in
+    /// the app — Today, a pane strip, the Library — correctly gets the default of nil.
+    var pr: GitHub.State?
 
     var body: some View {
         Group {
@@ -2051,6 +2109,7 @@ private struct PinnedRow: View {
             }
         }
         .padding(.leading, CGFloat(row.depth) * Look.folderIndent)
+        .environment(\.livePR, pr)
     }
 }
 
@@ -2066,11 +2125,12 @@ private struct FolderRow: View {
     let folder: Folder
     @State private var zone: FolderZone?
     @State private var icons = false
+    @State private var editing = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         SidebarRow(selected: false, action: { store.toggleFolder(folder.id) }) {
-            FolderGlyph(folder: folder)
+            FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID))
         } label: {
             if store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder)
@@ -2102,18 +2162,37 @@ private struct FolderRow: View {
         }
         .onDrop(of: [.plainText], delegate: FolderDrop(store: store, folder: folder, zone: $zone))
         .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingFolder = folder.id })
-        .contextMenu { FolderMenu(store: store, folder: folder, icons: $icons) }
+        .contextMenu {
+            FolderMenu(store: store, folder: folder, icons: $icons, editing: $editing)
+        }
         .popover(isPresented: $icons) { FolderIcons(store: store, folder: folder) }
+        .sheet(isPresented: $editing) {
+            LiveFolderSheet(store: store, editing: folder,
+                            live: LiveFolders.shared(for: store.profileID))
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(folder.name)
-        .accessibilityValue("Folder, \(store.pins.tabs(in: folder.id).count) tabs, "
-                            + (folder.collapsed ? "collapsed" : "expanded"))
+        .accessibilityValue(state)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Folds this folder open or shut.")
         .accessibilityAction(named: "Rename Folder") { store.renamingFolder = folder.id }
         .accessibilityAction(named: "Change Icon") { icons = true }
         .accessibilityAction(named: "Archive All Tabs in Folder") { store.archiveFolder(folder.id) }
         .accessibilityAction(named: "Delete Folder") { store.deleteFolder(folder.id) }
+        // The live commands reach the keyboard and VoiceOver the same way every other folder
+        // command does — and only on a live folder, as in the menu above.
+        .modifier(LiveFolderActions(store: store, folder: folder, editing: $editing))
+    }
+
+    /// Out of the chain because the chain is already at the type-checker's ceiling, and one
+    /// more concatenation in it stops the file compiling.
+    private var state: String {
+        let failed = folder.live != nil
+            && LiveFolders.shared(for: store.profileID).failing.contains(folder.id)
+        return (folder.live == nil ? "Folder, " : "Live folder, ")
+            + "\(store.pins.tabs(in: folder.id).count) tabs, "
+            + (folder.collapsed ? "collapsed" : "expanded")
+            + (failed ? ", last refresh failed" : "")
     }
 }
 
@@ -2122,6 +2201,8 @@ private struct FolderRow: View {
 /// apart, and it does so by looking at the string rather than by a second stored field.
 private struct FolderGlyph: View {
     let folder: Folder
+    /// nil where the badge would be noise rather than news — the drag preview.
+    var live: LiveFolders? = nil
     var body: some View {
         Group {
             if folder.iconIsEmoji {
@@ -2131,6 +2212,13 @@ private struct FolderGlyph: View {
             }
         }
         .frame(width: Look.tileIcon)
+        // A live folder wears its source in the corner of its own glyph, so a folded folder
+        // still says it fills itself.
+        .overlay(alignment: .bottomTrailing) {
+            if folder.live != nil, let live {
+                LiveBadge(live: live, folder: folder.id).offset(x: 4, y: 3)
+            }
+        }
     }
 }
 
@@ -2140,11 +2228,26 @@ private struct FolderMenu: View {
     let store: TabStore
     let folder: Folder
     @Binding var icons: Bool
+    @Binding var editing: Bool
 
     var body: some View {
         Button("Rename…") { store.renamingFolder = folder.id }
         Button("Change Icon…") { icons = true }
         Button(folder.collapsed ? "Unfold" : "Collapse") { store.toggleFolder(folder.id) }
+        // Only on a folder that has something to refresh: an ordinary folder is filled by
+        // hand and there is nothing for these to do.
+        if folder.live != nil {
+            Divider()
+            Button("Refresh Now") {
+                LiveFolders.shared(for: store.profileID).refreshNow(folder.id)
+            }
+            Button("Edit Live Folder…") { open($editing) }
+            // Nothing is closed: the folder keeps exactly the rows it has and simply stops
+            // being told what to hold.
+            Button("Stop Keeping Filled") {
+                LiveFolders.shared(for: store.profileID).stopKeepingFilled(folder.id)
+            }
+        }
         Divider()
         Button("New Folder") { store.newFolder(beside: folder.id) }
         Button("Archive All Tabs in Folder") { store.archiveFolder(folder.id) }
@@ -2296,6 +2399,9 @@ extension SidebarRow where Leading == GlyphBox, Label == Text, Trailing == Empty
 /// Whether the row a view sits in is hovered, so a close button can appear without every
 /// row needing its own hover plumbing.
 private struct RowHoveringKey: EnvironmentKey { static let defaultValue = false }
+/// The pull request a pinned row stands for, set by `PinnedRow` on the rows a live folder
+/// owns. nil everywhere else, which is every other row in the app.
+private struct LivePRKey: EnvironmentKey { static let defaultValue: GitHub.State? = nil }
 /// The sidebar's geometry group (see `Sidebar.strip`). nil outside the sidebar — the
 /// Library's rows are not in it.
 private struct StripKey: EnvironmentKey { static let defaultValue: Namespace.ID? = nil }
@@ -2303,6 +2409,10 @@ extension EnvironmentValues {
     fileprivate var rowHovering: Bool {
         get { self[RowHoveringKey.self] }
         set { self[RowHoveringKey.self] = newValue }
+    }
+    fileprivate var livePR: GitHub.State? {
+        get { self[LivePRKey.self] }
+        set { self[LivePRKey.self] = newValue }
     }
     fileprivate var strip: Namespace.ID? {
         get { self[StripKey.self] }
@@ -2801,6 +2911,7 @@ private struct TabRowTrailing: View {
     /// the row is showing, which may be a different one.
     var closes: Tab? = nil
     @Environment(\.rowHovering) private var hovering
+    @Environment(\.livePR) private var pr
 
     var body: some View {
         let closing = closes ?? tab
@@ -2809,6 +2920,21 @@ private struct TabRowTrailing: View {
         // A gap on top of that would be a strip of bare row between two buttons, which
         // belongs to the row's own tap and so *shows* the tab from between its two glyphs.
         HStack(spacing: 0) {
+            // A live folder's row says which pull request it is. Always drawn, not only
+            // under the pointer: it is state, not an action. Hidden from VoiceOver because
+            // the row's own value already says it — see `tabState`.
+            if let pr {
+                Image(systemName: pr.symbol)
+                    .font(Look.rowGlyph)
+                    .foregroundStyle(pr == .closed ? Look.inkTertiary : Look.inkSecondary)
+                    // A button's square of width, so it sits in line with the two beside it
+                    // — but not `rowTarget()`, which also lays down a hit shape. There is
+                    // nothing here to press: this is what the row *is*, not something to do
+                    // to it, and a target over it would only swallow part of the row's click.
+                    .frame(width: Look.rowTarget)
+                    .help(pr.says)
+                    .accessibilityHidden(true)
+            }
             if tab.audible || TabAudio.isMuted(tab) {
                 Button { TabAudio.toggleMute(tab) } label: {
                     Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")

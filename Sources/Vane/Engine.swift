@@ -1041,9 +1041,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// `parked` may carry the state each one was last on.
     @discardableResult
     func restore(_ urls: [URL], as kind: TabKind, parked: [String: Parked]) -> [Tab] {
+        // Unfocused, and into its own run of the strip: `newBlankTab` has both now, and a
+        // restore wants both. Every caller sets `current` itself, once, when the strip is
+        // built — being walked through thirty pages on the way there was only ever noise.
         urls.map { url in
-            let t = newBlankTab()
-            t.kind = kind
+            let t = newBlankTab(focus: false, as: kind)
             t.park(url: url, parked[url.absoluteString] ?? Parked())
             return t
         }
@@ -1088,8 +1090,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         }
     }
 
+    /// `focus` and `as` are for the one caller that is not the user: a live folder filling
+    /// itself. Every other caller takes the defaults and behaves exactly as before — a Today
+    /// tab at the end of the strip, shown.
+    ///
+    /// Focus is a parameter rather than something to undo afterwards because `current`'s
+    /// `didSet` is not a no-op: it dismisses the old tab's password chooser and pops a
+    /// playing video out of Picture in Picture. Setting it and setting it back still does
+    /// both, and a folder refreshing in the background must do neither.
     @discardableResult
-    func newBlankTab() -> Tab {
+    func newBlankTab(focus: Bool = true, as kind: TabKind = .today) -> Tab {
         let t = Tab(isPrivate: isPrivate, profileID: profileID)
         t.onNewTab = { [weak self] u in self?.newTab(u) }
         // A popup or a `target=_blank` link belongs next to the page that opened it, not at
@@ -1109,8 +1119,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
                 Peek.open(u, from: t, in: self)
             }
         }
-        Motion.list { tabs.append(t) }
-        current = t.id
+        t.kind = kind
+        // Into its own section, not onto the end of the strip: the sections are contiguous
+        // runs (see `clampedDestination`), and a pinned row appended past the Today tabs
+        // breaks ⌘1…9, ⌃⇥ and the next drag's clamp.
+        Motion.list {
+            tabs.insert(t, at: TabStore.clampedDestination(others: tabs.map(\.kind),
+                                                           moving: kind, to: tabs.count))
+        }
+        if focus { current = t.id }
         extensions.sync()
         return t
     }
@@ -1223,7 +1240,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// contiguous run. A drag that would break it is clamped to the nearest position that
     /// doesn't. `others` is the strip's kinds with the moved tab *already removed*, and the
     /// result is an index into `others` to insert at.
-    static func clampedDestination(others: [TabKind], moving: TabKind, to: Int) -> Int {
+    /// `nonisolated` for the same reason `pinOrder` is: it is index arithmetic over value
+    /// types, and a live folder's rows landing in the wrong section is worth proving offline.
+    nonisolated static func clampedDestination(others: [TabKind], moving: TabKind, to: Int) -> Int {
         let low = others.firstIndex { $0 >= moving } ?? others.count
         let high = others.lastIndex { $0 <= moving }.map { $0 + 1 } ?? 0
         return min(max(to, low), max(low, high))
