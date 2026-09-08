@@ -682,6 +682,22 @@ extension Look {
         out.append(("a long row title stops clear of the ×, not under it",
                     rowSpacing * 2 >= rowInset
                         && rowTarget + rowSpacing * 2 + rowTrailingInset < sidebarWidth))
+        // The sticky toast — the updater's — must never truncate: a cut version number is
+        // the one thing on that pill nobody can read around. So it takes the sidebar's whole
+        // content width and two lines, and this is the arithmetic that makes two enough. The
+        // longest sentence it can say is the widest tag anyone will tag, beside the "Update"
+        // capsule and the ×; what is left over is the text column, twice.
+        let face = NSFont.systemFont(ofSize: 13, weight: .medium)     // == `rowText`
+        func measure(_ s: String) -> CGFloat {
+            (s as NSString).size(withAttributes: [.font: face]).width
+        }
+        // Everything the pill spends on things that are not the sentence: the leading inset,
+        // two HStack gaps, the Update capsule (its label plus `inset` either side), the ×'s
+        // target, and the trailing half-inset.
+        let spent = pillInset + inset * 2 + (measure("Update") + inset * 2) + rowTarget + inset / 2
+        let column = sidebarWidth - inset * 2 - spent
+        out.append(("the update toast has room for a whole version number in two lines",
+                    column > 0 && column * 2 >= measure("Vane v10.10.100 is available")))
         out.append(("a held back button opens its history well after an ordinary click ends",
                     holdDelay > switcherDelay && holdDelay <= 0.5))
         out.append(("a dragged row settles in about the time the list takes to reshape",

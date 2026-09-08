@@ -1,0 +1,207 @@
+name: release
+
+# Cut a release: build Vane.app, sign it with Developer ID, notarize and staple it, and
+# attach Vane.dmg + Vane.zip to a GitHub Release. Updater.swift fetches exactly this: it
+# prefers the .dmg, falls back to the .zip, and refuses anything not signed by the same
+# Developer ID team as the copy that is running.
+#
+# Releasing is deliberate — merging to main does not ship anything. Two ways in:
+#
+#   gh workflow run release.yml              # next patch after the highest v* tag
+#   gh workflow run release.yml -f bump=minor
+#   git tag v1.2.3 && git push origin v1.2.3 # exactly that version, no bump
+#
+# The dispatch path computes the tag, pushes it, and builds it in the same run. Pushing it
+# with the automatic GITHUB_TOKEN does not start a second run — GitHub does not trigger
+# workflows from events its own token creates — so one invocation is one release.
+#
+# SECRETS (Settings ▸ Secrets and variables ▸ Actions). All five are optional: with none of
+# them the release is ad-hoc signed and unnotarized and everything still publishes, and the
+# automatic GITHUB_TOKEN is the only thing that path needs.
+#   DEVELOPER_ID_CERT_P12_BASE64   base64 of the "Developer ID Application" .p12
+#   DEVELOPER_ID_CERT_PASSWORD     the password the .p12 was exported with
+#   AC_API_KEY_ID                  App Store Connect API key id       (notarytool)
+#   AC_API_ISSUER_ID               App Store Connect issuer id        (notarytool)
+#   AC_API_KEY_P8_BASE64           base64 of the AuthKey_XXXX.p8      (notarytool)
+# Signing needs the first two; notarizing needs all five, since an unsigned app cannot be
+# notarized. The names match Vesta's, so the same material pastes into both repos.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: which part of the version to move
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # push the tag, create the release
+
+# Two releases cut in a row queue rather than race over the same tag sequence.
+concurrency: release
+
+jobs:
+  release:
+    # Same image as checks.yml: Package.swift targets macOS 26, and the WebKit APIs this
+    # browser is built on do not exist on older ones.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # every tag, and the commit count make-app.sh stamps as the build
+
+      - name: Pick the tag
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="$GITHUB_REF_NAME"
+            echo "building the tag that was pushed: $TAG"
+          else
+            # Release tags only. A pre-release (v0.0.1-rc1) is a real tag but not a place to
+            # count from — "0.0.1-rc1 + 1" is not a version.
+            LAST=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+            LAST=${LAST:-v0.0.0}
+            V=${LAST#v}; REST=${V#*.}
+            MAJOR=${V%%.*}; MINOR=${REST%%.*}; PATCH=${REST#*.}
+            case "${BUMP:-patch}" in
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              *)     PATCH=$((PATCH + 1)) ;;
+            esac
+            TAG="v$MAJOR.$MINOR.$PATCH"
+            echo "highest release tag: $LAST → ${BUMP:-patch} → $TAG"
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Import Developer ID certificate
+        env:
+          CERT_B64: ${{ secrets.DEVELOPER_ID_CERT_P12_BASE64 }}
+          CERT_PW:  ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          set +x                       # nothing here goes near the log
+          if [ -z "${CERT_B64:-}" ] || [ -z "${CERT_PW:-}" ]; then
+            echo "no DEVELOPER_ID_CERT_P12_BASE64 / DEVELOPER_ID_CERT_PASSWORD — ad-hoc signing"
+            exit 0
+          fi
+          KEYCHAIN=$RUNNER_TEMP/vane-signing.keychain-db
+          KCPW=$(openssl rand -hex 16)
+          security create-keychain -p "$KCPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KCPW" "$KEYCHAIN"
+          echo "$CERT_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          # Diagnostics only, and nothing here can print the secret: how many bytes came out
+          # of the decode, and whether openssl agrees the password opens it. "MAC verification
+          # failed" from `security import` is the same message for a bad password and for a
+          # truncated base64, and the two are fixed in different places.
+          echo "decoded .p12: $(wc -c < "$RUNNER_TEMP/cert.p12") bytes, $(file -b "$RUNNER_TEMP/cert.p12")"
+          if openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin env:CERT_PW -noout 2>/dev/null; then
+            echo "openssl: the password opens the .p12"
+          elif openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin pass: -noout 2>/dev/null; then
+            echo "openssl: the .p12 has an EMPTY password — set DEVELOPER_ID_CERT_PASSWORD to it"
+          else
+            echo "openssl: neither DEVELOPER_ID_CERT_PASSWORD nor an empty password opens it"
+            # Is the file intact, or is the base64 short? asn1parse reads the envelope and
+            # stops at the encrypted parts, so it proves the shape without revealing anything.
+            echo "--- DER structure (first lines) ---"
+            openssl asn1parse -inform DER -in "$RUNNER_TEMP/cert.p12" 2>&1 | head -4
+            # And the classic: a secret pasted with a newline on the end. Lengths, never values.
+            TRIMMED=$(printf '%s' "$CERT_PW" | tr -d '[:space:]')
+            echo "password: ${#CERT_PW} bytes, ${#TRIMMED} once whitespace is stripped"
+            if [ "${#CERT_PW}" -ne "${#TRIMMED}" ] \
+               && openssl pkcs12 -in "$RUNNER_TEMP/cert.p12" -passin "pass:$TRIMMED" -noout 2>/dev/null; then
+              echo "openssl: the TRIMMED password opens it — the secret has whitespace in it"
+            fi
+          fi
+          # Loud, never a shrug: the secrets are set, so the release the user asked for is a
+          # signed one. Falling back to ad-hoc here would publish a build the updater's own
+          # Team ID check then refuses — a release nobody can install from inside the app.
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PW" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Without this, codesign wants a UI prompt on a headless runner and hangs to timeout.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENT=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+                  | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)"/\1/')
+          [ -n "$IDENT" ] || { echo "the .p12 imported but holds no Developer ID Application identity"; exit 1; }
+          echo "SIGN_ID=$IDENT" >> "$GITHUB_ENV"
+          echo "signing identity: $IDENT"
+
+      - name: Build Vane.app
+        # make-app.sh signs with --options runtime --timestamp when SIGN_ID is set and ad-hoc
+        # when it is not; either way it fails if the sandbox is missing from the signature.
+        run: SIGN_ID="${SIGN_ID:-}" VANE_VERSION="${TAG#v}" ./make-app.sh release
+
+      - name: Smoke-test the release bundle
+        # The packaged binary's own checks, so a mispackaged bundle fails the release BEFORE
+        # it is notarized and published. --pure: a runner has no window server.
+        run: |
+          set -euo pipefail
+          ./Vane.app/Contents/MacOS/Vane selfcheck --pure
+          codesign -dvv Vane.app 2>&1 | grep -E "Authority|flags|Identifier" || true
+
+      - name: Notarize + staple the app
+        env:
+          KEY_ID:    ${{ secrets.AC_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          KEY_B64:   ${{ secrets.AC_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          set +x
+          if [ -z "${SIGN_ID:-}" ] || [ -z "${KEY_ID:-}" ] || [ -z "${ISSUER_ID:-}" ] || [ -z "${KEY_B64:-}" ]; then
+            echo "no Developer ID and/or no App Store Connect key — skipping notarization"
+            echo "  (an ad-hoc release still publishes; Gatekeeper will ask the user to allow it)"
+            exit 0
+          fi
+          echo "$KEY_B64" | base64 --decode > "$RUNNER_TEMP/ac_key.p8"
+          ditto -c -k --keepParent Vane.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/ac_key.p8" --key-id "$KEY_ID" --issuer "$ISSUER_ID" --wait
+          xcrun stapler staple Vane.app
+          xcrun stapler validate Vane.app
+
+      - name: Package
+        env:
+          KEY_ID:    ${{ secrets.AC_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          KEY_B64:   ${{ secrets.AC_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          set +x
+          # Both assets come from the STAPLED app, so a machine that is offline when it opens
+          # one still sees the notarization.
+          ditto -c -k --keepParent Vane.app Vane.zip
+          hdiutil create -volname Vane -srcfolder Vane.app -ov -format UDZO Vane.dmg
+          # The image gets a signature and a notarization of its own, because the updater
+          # checks the file it downloaded before handing it to Finder — and an unsigned dmg
+          # is a file it cannot check. Skipped, like everything else, without the secrets.
+          if [ -n "${SIGN_ID:-}" ]; then
+            codesign --force --timestamp --sign "$SIGN_ID" Vane.dmg
+            if [ -n "${KEY_ID:-}" ] && [ -n "${ISSUER_ID:-}" ] && [ -n "${KEY_B64:-}" ]; then
+              xcrun notarytool submit Vane.dmg \
+                --key "$RUNNER_TEMP/ac_key.p8" --key-id "$KEY_ID" --issuer "$ISSUER_ID" --wait
+              xcrun stapler staple Vane.dmg
+              xcrun stapler validate Vane.dmg
+            fi
+          fi
+          rm -f "$RUNNER_TEMP/ac_key.p8"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A tag with a hyphen in it is a pre-release, and GitHub's releases/latest — the
+          # one endpoint the in-app updater asks — skips those. So an rc can be published
+          # without offering itself to everyone running the last real version.
+          case "$TAG" in *-*) PRE=--prerelease ;; *) PRE= ;; esac
+          gh release create "$TAG" Vane.dmg Vane.zip --generate-notes $PRE

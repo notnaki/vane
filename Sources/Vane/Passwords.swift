@@ -742,6 +742,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("link gestures", TabActions.check),
                                ("recent tab switcher", TabSwitcher.check),
                                ("toasts", Toasts.check),
+                               ("self-update", Release.check),
                                ("pinned folders", Pins.check),
                                ("split view", Split.check),
                                ("mini audio player", MediaTray.check),
