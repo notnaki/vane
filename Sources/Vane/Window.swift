@@ -50,9 +50,16 @@ final class VaneWindow: NSWindow {
     /// by 8pt every time the peek opens.
     private var baseX: [NSWindow.ButtonType: CGFloat] = [:]
 
+    /// The lights' resting face, laid over AppKit's own three. See `TrafficLightRest`.
+    private var lightsAtRest: TrafficLightRest?
+
+    /// The three buttons, in AppKit's own left-to-right order — which is the order
+    /// `Look.lightColours` is written in.
+    static let lightKinds: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
+
     func centreTrafficLights() {
         let peeking = peekingSidebar
-        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+        for kind in Self.lightKinds {
             guard let button = standardWindowButton(kind), let host = button.superview else { continue }
             // The window's top edge in base coordinates is its own height; convert that into
             // whatever space the buttons are laid out in.
@@ -66,6 +73,22 @@ final class VaneWindow: NSWindow {
                     || abs(button.frame.origin.x - wantX) > 0.01 else { continue }
             button.setFrameOrigin(NSPoint(x: wantX, y: wantY))
         }
+        dressTrafficLights()
+    }
+
+    /// Keeps `TrafficLightRest` sitting exactly on the three buttons — which have just been
+    /// moved, and which AppKit moves back, hides and shows on its own. Called from the one
+    /// place that already runs after every one of those.
+    private func dressTrafficLights() {
+        let buttons = Self.lightKinds.compactMap { standardWindowButton($0) }
+        guard buttons.count == Self.lightKinds.count, let host = buttons[0].superview else { return }
+        let rest = lightsAtRest ?? TrafficLightRest()
+        lightsAtRest = rest
+        // Above everything the titlebar has, so the discs cover AppKit's own buttons rather
+        // than hiding behind them. Re-asserted rather than added once: AppKit adds and
+        // removes its own titlebar views, and an overlay underneath one of them is not one.
+        if host.subviews.last !== rest { host.addSubview(rest, positioned: .above, relativeTo: nil) }
+        rest.follow(buttons, key: isKeyWindow)
     }
 
     /// Every AppKit relayout ends here, which makes this the one hook that catches a resize,
@@ -137,7 +160,7 @@ final class VaneWindow: NSWindow {
     /// everywhere the lights are not. A hidden button (`showTrafficLights(false)`, a
     /// collapsed window) is not there to be clicked and does not stop a drag.
     @MainActor func onTrafficLight(_ point: NSPoint) -> Bool {
-        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+        for kind in Self.lightKinds {
             guard let button = standardWindowButton(kind), !button.isHidden,
                   let host = button.superview else { continue }
             // `hitTest` takes a point in the *superview's* space, and answers nil for a
@@ -151,6 +174,117 @@ final class VaneWindow: NSWindow {
     /// layout pass of the window's own.
     override func becomeKey() { super.becomeKey(); centreTrafficLights() }
     override func resignKey() { super.resignKey(); centreTrafficLights() }
+}
+
+/// The traffic lights, in the two faces Vane draws itself.
+///
+/// At rest in the key window they are three all-but-invisible discs — the chrome's own ink,
+/// a hair above the ground behind them — each ringed in its own colour just enough to tell ×
+/// from − from ⤢. The moment the pointer reaches any one of the three, all three come up in
+/// full red, yellow and green with their glyphs: together, not one at a time, because they
+/// are one group and lighting only the one under the pointer reads as a rollover on a button
+/// rather than as a window waking up. Leaving all three takes them back.
+///
+/// In a window that has not got the keyboard there is no third state to reach: plain grey
+/// discs, no colour, and a pointer passing over them changes nothing — the same as every
+/// other Mac window in the background, and for the same reason. They are not what you are
+/// aiming at; the window is.
+///
+/// ponytail: paint laid *over* AppKit's own buttons, which are faded out under it, rather
+/// than three buttons of our own. The full-colour face is then AppKit's — exactly the lights
+/// every other Mac app has, glyphs and key states and all — and there is nothing to wire up:
+/// `alphaValue` hides a button without taking it out of hit-testing, so every click, and
+/// AppKit's own hover, still land on the real buttons underneath. One overlay across all
+/// three rather than one each, so "any of them" is a single tracking area instead of three
+/// that have to agree with each other.
+final class TrafficLightRest: NSView {
+    /// Each light's disc, in this view's own coordinates, left to right.
+    private var discs: [CGRect] = []
+    /// AppKit's own three, underneath. Faded out except in the one state that is theirs.
+    private var lights: [NSButton] = []
+    private var hover: NSTrackingArea?
+    /// Whether the window this is in has the keyboard, and whether the pointer is away from
+    /// all three lights. Between them they pick the face.
+    private var key = true
+    private var resting = true
+
+    /// Paint, never a target: the buttons underneath are the things being clicked.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// True while AppKit's own buttons are the ones to show: the key window, pointer on the
+    /// group. A background window's lights stay ours however near the pointer gets.
+    private var lit: Bool { key && !resting }
+
+    /// Sits the overlay on `buttons` — which have just been moved onto the sidebar's row, and
+    /// which AppKit hides with the rest of the chrome. Hidden when they are: a window with no
+    /// sidebar has no lights, and three discs floating on a bare page is worse than none.
+    ///
+    /// Every line here writes only on a change. This runs inside the window's own display
+    /// pass — `centreTrafficLights` is called from `layoutIfNeeded` — and a view that asks
+    /// for another display every time it is displayed is an infinite one: AppKit throws
+    /// "more Display Window passes than there are views in the window" and the app dies.
+    func follow(_ buttons: [NSButton], key isKey: Bool) {
+        guard let first = buttons.first else { return }
+        let union = buttons.dropFirst().reduce(first.frame) { $0.union($1.frame) }
+        let wanted = buttons.map {
+            let box = $0.frame.offsetBy(dx: -union.origin.x, dy: -union.origin.y)
+            return CGRect(x: box.midX - Look.lightDisc / 2, y: box.midY - Look.lightDisc / 2,
+                          width: Look.lightDisc, height: Look.lightDisc)
+        }
+        if frame != union { frame = union }
+        if discs != wanted { discs = wanted; needsDisplay = true }
+        var moved = false
+        if lights != buttons { lights = buttons; moved = true }
+        if key != isKey { key = isKey; moved = true; needsDisplay = true }
+        if moved { show(animated: false) }
+        let gone = buttons.contains { $0.isHidden }
+        if isHidden != gone { isHidden = gone }
+        if hover?.rect != bounds {
+            if let old = hover { removeTrackingArea(old) }
+            // `.activeAlways`: the pointer reaching a background window's lights still has to
+            // be heard, or one that goes into the background under the pointer keeps whatever
+            // face it had when it lost the keyboard.
+            let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways],
+                                      owner: self)
+            addTrackingArea(area)
+            hover = area
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) { resting = false; show(animated: true) }
+    override func mouseExited(with event: NSEvent) { resting = true; show(animated: true) }
+
+    /// Crossfades this face against AppKit's own three underneath, which is the whole of the
+    /// hover. The list's own timing, so the chrome moves at one speed; Reduce Motion cuts.
+    private func show(animated: Bool) {
+        NSAnimationContext.runAnimationGroup {
+            $0.duration = animated && !Motion.reduced ? Look.listSeconds : 0
+            animator().alphaValue = lit ? 0 : Look.lightHoverAlpha
+            for light in lights { light.animator().alphaValue = lit ? Look.lightHoverAlpha : 0 }
+        }
+    }
+
+    /// The discs are ink over whatever the space is washed in, and ink is appearance-keyed.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let ringed = key ? Look.lightRingOpacity : Look.lightInactiveRingOpacity
+        for (i, disc) in discs.enumerated() where i < Look.lightColours.count {
+            (key ? Look.lightRest : Look.lightInactive).setFill()
+            NSBezierPath(ovalIn: disc).fill()
+            guard ringed > 0 else { continue }
+            // `strokeBorder`'s trick, by hand: half the line's width in, so the whole point
+            // lands inside the disc instead of blurring across its antialiased edge.
+            let ring = NSBezierPath(ovalIn: disc.insetBy(dx: Look.lightRing / 2,
+                                                         dy: Look.lightRing / 2))
+            ring.lineWidth = Look.lightRing
+            Look.lightColours[i].withAlphaComponent(ringed).setStroke()
+            ring.stroke()
+        }
+    }
 }
 
 extension VaneWindow {

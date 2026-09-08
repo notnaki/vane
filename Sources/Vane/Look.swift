@@ -7,9 +7,15 @@ import SwiftUI
 /// sizes were matched by rendering the same strings with SF and comparing widths.
 enum Look {
     static let sidebarWidth: CGFloat = 250
-    /// The web view card, settings cards. Arc's card corner is tight — 5–6pt fitted to the
-    /// 2x corner profile — while its rows are round; they are not one family.
+    /// Settings cards, the find bar, the peeked sidebar panel. Arc's card corner is tight —
+    /// 5–6pt fitted to the 2x corner profile — while its rows are round; they are not one
+    /// family.
     static let cardRadius: CGFloat = 6
+    /// The page card — the sheet a page is drawn on, and the outline standing where one will
+    /// go. Its own number, and a generous one: it is the only corner in the window that is
+    /// read *against* the window's own, which macOS 26 rounds hard, and a settings card's
+    /// 6pt inside that reads as a pinch rather than as a corner. Arc's is 8–10.
+    static let pageRadius: CGFloat = 10
     /// The address pill, favourites tiles, sidebar rows, buttons. Fitted at 12 (a 24px arc
     /// at 2x); 10 undershot every sample.
     static let pillRadius: CGFloat = 12
@@ -117,8 +123,8 @@ enum Look {
     // target between two web views is not a target.
     static let splitDivider: CGFloat = 1
     static let splitGap: CGFloat = 9
-    /// A pane's own corner: the card's, one step tighter, because it sits inside it.
-    static let paneRadius: CGFloat = cardRadius - 2
+    /// A pane's own corner: the page card's, one step tighter, because it sits inside it.
+    static let paneRadius: CGFloat = pageRadius - 2
     /// The frame round the pane the keyboard is in, and the band a drop will land in. The
     /// accent rather than `ink`: it is the one thing on the page that is the app talking.
     static let paneFrame = Color.accentColor.opacity(0.5)
@@ -158,6 +164,11 @@ enum Look {
     static let topInset: CGFloat = 9
     /// The traffic lights' centre line, and so the top row's.
     static let lightsCentre: CGFloat = 23
+    /// A light's disc: AppKit's own, which fills its 14pt button edge to edge. Ours is laid
+    /// exactly over it — a point smaller and the grey underneath shows as a halo.
+    static let lightDisc: CGFloat = 14
+    /// The ring around a resting light: the window's one-point line, in the light's colour.
+    static let lightRing: CGFloat = 1
     /// Little Arc: a small floating window with one page and one row of chrome. Arc's is
     /// roughly 1000×700 and it is a size, not a proportion — the point is that it is
     /// obviously not your browser window.
@@ -321,11 +332,15 @@ enum Look {
     /// rather than SwiftUI's colour scheme, so a space pinned to dark gets white ink even
     /// when the system is light. `Color.primary.opacity(x)` was not this: primary is itself
     /// 85 % white, so every fill came out 15 % weaker than its number said.
-    static func ink(_ alpha: Double) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
+    static func ink(_ alpha: Double) -> Color { Color(nsColor: nsInk(alpha)) }
+
+    /// The same ink as AppKit's own colour. The traffic lights are drawn with `NSBezierPath`
+    /// in a view of AppKit's titlebar, where there is no SwiftUI to hand a `Color` to.
+    static func nsInk(_ alpha: Double) -> NSColor {
+        NSColor(name: nil) { appearance in
             let dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             return NSColor(white: dark ? 1 : 0, alpha: alpha)
-        })
+        }
     }
 
     /// Arc's four strengths of type on the sidebar: a tab title (#D4D5D4 on its ground),
@@ -341,9 +356,11 @@ enum Look {
     /// read as the same material rather than four different greys. Arc: rest and hover are
     /// one step (84 on 66), the selection two (102 on 66), and a hovered pill or tile takes
     /// the selection's step because it is a button, not a row among rows.
-    static let hovered = ink(0.10)
+    static let hoveredAlpha = 0.10
+    static let hovered = ink(hoveredAlpha)
     static let pillFill = ink(0.10)
-    static let selected = ink(0.19)
+    static let selectedAlpha = 0.19
+    static let selected = ink(selectedAlpha)
     /// A selection that belongs to the user's accent rather than to the surface: the
     /// Profiles list, where the selected row is the one whose controls are shown. Arc's is
     /// a whisper of blue (29,34,46 on 27).
@@ -363,13 +380,48 @@ enum Look {
     static let hairline = ink(0.08)
     /// Settings cards: barely lifted from the window (30 on 27), with a stroke that does the
     /// separating (52 on 27).
-    static let cardFill = ink(0.015)
+    static let cardFillAlpha = 0.015
+    static let cardFill = ink(cardFillAlpha)
     static let cardStroke = ink(0.11)
+    /// The page area with no page in it. Arc still draws the sheet a page will land on —
+    /// the same corner and the same gap as a live card — so a window with nothing open
+    /// shows you where the next thing goes instead of a flat wall of sidebar colour. A tone
+    /// over the ground rather than a panel: lifted further than a settings card so it reads
+    /// on the space's own wash, quieter than a hovered row so it is never mistaken for one.
+    static let emptyPaneFillAlpha = 0.05
+    static let emptyPaneFill = ink(emptyPaneFillAlpha)
     /// A settings button or popup's fill (45 on 30), 24 tall.
     static let controlFill = ink(0.08)
     static let control: CGFloat = 24
     /// A footer dot for a space that is not the current one (101 on 66, 16px).
     static let dotFill = ink(0.20)
+
+    /// The traffic lights have three faces, and these are the two Vane draws itself.
+    ///
+    /// At rest in the key window: a disc barely lifted off the chrome behind it — a hair
+    /// above a settings card, under a hovered row — with a ring of its own colour at
+    /// `lightRingOpacity`, enough to tell × from − from ⤢ and no more. Ink, so the disc
+    /// takes the space's own wash the way every other surface in the window does.
+    static let lightRestAlpha = 0.09
+    static let lightRest = nsInk(lightRestAlpha)
+    static let lightRingOpacity = 0.25
+    /// In a window that has not got the keyboard: the system's own plain grey, and no
+    /// colour at all. A background window's lights are not a control you are aiming at, so
+    /// they neither wear their colours nor take one from a pointer passing over them.
+    static let lightInactiveAlpha = 0.16
+    static let lightInactive = nsInk(lightInactiveAlpha)
+    static let lightInactiveRingOpacity = 0.0
+    /// The third face is AppKit's own buttons at full strength — the red, yellow and green
+    /// with their glyphs, every other Mac app's — which the two above are faded out to
+    /// reveal the moment the pointer reaches any of the three.
+    static let lightHoverAlpha = 1.0
+    /// Close, minimise, zoom — in AppKit's own button order, so the ring on each disc is
+    /// the colour that light comes up in. macOS's own three.
+    static let lightColours = [
+        NSColor(srgbRed: 1.00, green: 0.37, blue: 0.34, alpha: 1),
+        NSColor(srgbRed: 1.00, green: 0.74, blue: 0.18, alpha: 1),
+        NSColor(srgbRed: 0.16, green: 0.78, blue: 0.25, alpha: 1),
+    ]
 
     /// The colours a space can be tinted with. The profile palette first, so a space and its
     /// profile can wear the same colour, then the spread Arc offers.
@@ -734,6 +786,37 @@ extension Look {
                     dimmed > 0 && dimmed < 1))
         out.append(("a pane's pill has room for a favicon and a corner of its own",
                     panePillRadius > 0 && rowHeight - paneInset * 2 > rowIcon))
+        // The empty page area. It is drawn *inside* the card, so it takes the card's corner
+        // and the card's gap for nothing — which is the point: the first page to arrive
+        // lands exactly where the outline stood, and a pane in a split still tucks inside.
+        out.append(("the empty page area takes the page card's own corner, and a split's panes "
+                    + "sit inside it",
+                    paneRadius < pageRadius && cardGap > inset))
+        out.append(("the page card's corner is the generous one, not a settings card's — it is "
+                    + "the only one read against the window's own",
+                    pageRadius > cardRadius && pageRadius >= cardGap))
+        out.append(("a pane inside a split takes a tighter corner, and it is still a round one",
+                    paneRadius < pageRadius && paneRadius > cardRadius))
+        out.append(("its fill is a tone on the ground, not a panel: above a settings card, "
+                    + "below a hovered row",
+                    emptyPaneFillAlpha > cardFillAlpha && emptyPaneFillAlpha < hoveredAlpha))
+        // The traffic lights at rest: three grey discs, each ringed in its own colour, with
+        // AppKit's full-colour buttons showing through the moment the pointer arrives.
+        out.append(("there is a rest colour for each of the three lights", lightColours.count == 3))
+        out.append(("a light's disc fits the top row it sits on",
+                    lightDisc > 0 && lightDisc < topRow))
+        out.append(("…and its ring is the window's one-point line, well inside that disc",
+                    lightRing == 1 && lightRing < lightDisc / 2))
+        out.append(("the lights at rest are dimmer than their hover fill",
+                    lightRestAlpha < lightHoverAlpha && lightRingOpacity < lightHoverAlpha))
+        out.append(("a resting disc is barely lifted off the chrome: over a card's fill, "
+                    + "under a hovered row",
+                    lightRestAlpha > cardFillAlpha && lightRestAlpha < hoveredAlpha))
+        out.append(("a background window's lights are the system's plain grey, and wear no "
+                    + "colour at all",
+                    lightInactiveRingOpacity == 0 && lightRingOpacity > lightInactiveRingOpacity
+                        && lightInactiveAlpha > lightRestAlpha
+                        && lightInactiveAlpha < selectedAlpha))
         // A row's × is a button sitting inside a bigger button: the row itself. Anything
         // smaller than a control is a glyph you have to aim at, and the row catches the miss
         // by *showing* the tab you were trying to close.
