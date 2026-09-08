@@ -1,0 +1,116 @@
+import SwiftUI
+
+/// Arc's "Quit Arc?": a card over the window with the app's icon, the question, and three
+/// answers — Quit (⏎), Cancel (⎋), and Quit without being asked again. It replaces the
+/// hold-⌘Q toast, which asked for a gesture nobody could see and quit on a clock nobody
+/// could trust; a question with a default button is answered by the same ⌘Q-then-⏎ people
+/// already do, and cannot be missed.
+///
+/// ponytail: one modal borderless window run with `runModal`, so the answer comes back as a
+/// value and `applicationShouldTerminate` stays a straight line. No sheet: a sheet hangs off
+/// a title bar and Vane's windows have none to hang it from.
+@MainActor enum QuitDialog {
+    enum Answer { case quit, quitForever, cancel }
+
+    static func ask(over host: NSWindow?) -> Answer {
+        var answer = Answer.cancel
+        let panel = Panel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.title = "Quit Vane?"            // what VoiceOver says when the card takes key
+        panel.answer = { answer = $0; NSApp.stopModal() }
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isReleasedWhenClosed = false
+        // Weak: the card lives inside the panel, so a strong capture here would be a cycle
+        // (panel → hosting view → card → closure → panel) and every Cancel would strand a
+        // window for the life of the process.
+        panel.contentView = NSHostingView(rootView: Card { [weak panel] in panel?.answer?($0) })
+        panel.setContentSize(panel.contentView!.fittingSize)
+        // Centred over the window that asked, or the screen when none did (the Dock's menu).
+        let anchor = host?.frame ?? NSScreen.main?.visibleFrame ?? .zero
+        panel.setFrameOrigin(NSPoint(x: anchor.midX - panel.frame.width / 2,
+                                     y: anchor.midY - panel.frame.height / 2))
+        NSApp.activate()
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.runModal(for: panel)
+        panel.orderOut(nil)
+        panel.answer = nil
+        return answer
+    }
+
+    /// Borderless windows refuse key status by default, and a dialog that cannot take ⏎
+    /// and ⎋ is a picture of a dialog. The two keys are answered here as well as by the
+    /// buttons' own shortcuts, so the card can always be left from the keyboard even if
+    /// SwiftUI's key-equivalent routing inside a modal borderless window ever does not fire.
+    private final class Panel: NSWindow {
+        var answer: ((Answer) -> Void)?
+        override var canBecomeKey: Bool { true }
+        override func cancelOperation(_ sender: Any?) { answer?(.cancel) }
+        override func keyDown(with event: NSEvent) {
+            switch event.keyCode {
+            case 36, 76: answer?(.quit)          // return, enter
+            case 53: answer?(.cancel)            // escape
+            default: super.keyDown(with: event)
+            }
+        }
+    }
+
+    private struct Card: View {
+        let answer: (Answer) -> Void
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: Look.inset * 2) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable().frame(width: Look.quitDialogIcon, height: Look.quitDialogIcon)
+                Text("Quit Vane?").font(Look.heading.weight(.bold)).foregroundStyle(Look.inkPrimary)
+                HStack(spacing: Look.inset) {
+                    Choice("Quit, and don’t ask again") { answer(.quitForever) }
+                    Spacer(minLength: Look.inset)
+                    Choice("Cancel", key: "ESC") { answer(.cancel) }
+                        .keyboardShortcut(.cancelAction)
+                    Choice("Quit", key: "⏎", primary: true) { answer(.quit) }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(Look.paneMargin)
+            .frame(minWidth: Look.quitDialogWidth)
+            .fixedSize()
+            .background(Look.panelFill, in: .rect(cornerRadius: Look.cardRadius * 2))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Quit Vane?")
+        }
+    }
+
+    /// A button in the card: its title and, where a key answers it, that key as a small
+    /// badge — the way Arc prints ESC and ⏎ on its own.
+    private struct Choice: View {
+        let title: String
+        var key: String? = nil
+        var primary = false
+        let action: () -> Void
+
+        init(_ title: String, key: String? = nil, primary: Bool = false, action: @escaping () -> Void) {
+            self.title = title; self.key = key; self.primary = primary; self.action = action
+        }
+
+        var body: some View {
+            Button(action: action) {
+                HStack(spacing: Look.inset) {
+                    Text(title).font(Look.text)
+                    if let key {
+                        Text(key).font(Look.footnote.weight(.semibold))
+                            .padding(.horizontal, Look.inset / 2).padding(.vertical, 1)
+                            .background(Look.ink(0.12), in: .rect(cornerRadius: Look.cardRadius - 2))
+                            .accessibilityHidden(true)   // the button's own shortcut says it
+                    }
+                }
+                .padding(.horizontal, Look.inset * 2).padding(.vertical, Look.inset)
+                .frame(minHeight: Look.control + Look.inset)
+                .background(primary ? Color.accentColor : Look.selected,
+                            in: .rect(cornerRadius: Look.cardRadius))
+                .foregroundStyle(primary ? Color.white : Look.inkPrimary)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
