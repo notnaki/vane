@@ -190,6 +190,31 @@ import SwiftUI
         return trimmed.isEmpty ? "Open in" : "Open in " + trimmed
     }
 
+    /// The whole label. A private Little Vane names the *window*, not a Space: Arc's
+    /// incognito has no Spaces, so there is nothing to choose between and nothing a Space's
+    /// name could honestly say. Naming one anyway was a lie the old button told — it read
+    /// "Open in Work" and the page then landed in a private window that has no Work.
+    /// Pure.
+    nonisolated static func openInTitle(space name: String?, isPrivate: Bool) -> String {
+        isPrivate ? "Open in Window" : openInTitle(space: name)
+    }
+
+    /// Whether a floating window's page may be handed to a given browser window. The two
+    /// kinds never mix: a page lifted out of a Private Window must not land somewhere that
+    /// writes it into history and keeps its cookies, and an ordinary page must not land in
+    /// a window that will throw it away when it closes. Pure.
+    nonisolated static func canHand(pageIsPrivate: Bool, windowIsPrivate: Bool) -> Bool {
+        pageIsPrivate == windowIsPrivate
+    }
+
+    /// What the hand-off announces. A private window has no Space to name and is not "the
+    /// browser window" either — it is the one window whose whole point is which window it
+    /// is. Pure.
+    nonisolated static func moved(to name: String?, isPrivate: Bool) -> String {
+        if isPrivate { return "Moved to the Private Window." }
+        return "Moved to " + (name ?? "the browser window") + "."
+    }
+
     /// Which Space the button names, the menu ticks and ⌘O opens into: the one the browser
     /// window is showing, else the one the profile was last left in, else its first — the
     /// ladder `Spaces.pick` walks for a window that is being opened, because that is what
@@ -206,16 +231,29 @@ import SwiftUI
         return ids.first
     }
 
-    /// `target`, against the profile's real Spaces.
+    /// The same, for a window that may be private. A private Little Vane has no Space to
+    /// land in whatever the profile holds — its target is a Private Window, and those are
+    /// spaceless — so the answer is nothing to name and nothing to choose. Pure.
+    nonisolated static func target(spaces ids: [UUID], showing: UUID?, last: UUID?,
+                                   isPrivate: Bool) -> UUID? {
+        isPrivate ? nil : target(spaces: ids, showing: showing, last: last)
+    }
+
+    /// `target`, against the profile's real Spaces — and against the right *kind* of
+    /// window: a private Little Vane is answered against the private windows, which have no
+    /// Spaces, so it comes back nil and never reads a Space list at all.
     static func targetSpace(for store: TabStore) -> Space? {
+        guard !store.isPrivate else { return nil }
         let spaces = ProfileManager.shared.ensureSpaces(for: store.profile)
         let id = target(spaces: spaces.map(\.id),
                         showing: Windows.current(in: store.profileID)?.currentSpaceID,
-                        last: TabStore.lastSpaceID(for: store.profileID))
+                        last: TabStore.lastSpaceID(for: store.profileID),
+                        isPrivate: store.isPrivate)
         return spaces.first { $0.id == id }
     }
 
-    /// ⌘O and a click on the button's label: the Space the button is naming.
+    /// ⌘O and a click on the button's label: the Space the button is naming, or — for a
+    /// private one — the Private Window it names instead.
     static func openInCurrentSpace(_ store: TabStore) {
         move(store, to: targetSpace(for: store))
     }
@@ -236,14 +274,23 @@ import SwiftUI
         guard let page = page(of: store) else { return }
         // With no browser window the url goes into the one being opened for it, so it comes
         // up on the page instead of behind the new-tab bar; an existing window gets a tab.
-        let existing = Windows.current(in: store.profileID)
-        let target = existing ?? Windows.open(urls: [page.url], profile: store.profile, space: space)
-        if let space, target.currentSpaceID != space.id { target.switchTo(space: space) }
+        //
+        // The window has to be the same kind as this one — see `canHand`. A private page
+        // goes to a Private Window of the same profile and, if none is up, to a fresh one;
+        // it never falls through to an ordinary window, which would write the page into
+        // history and keep its cookies.
+        let isPrivate = store.isPrivate
+        let existing = Windows.current(in: store.profileID, isPrivate: isPrivate)
+        let target = existing ?? Windows.open(isPrivate: isPrivate, urls: [page.url],
+                                              profile: store.profile, space: space)
+        // A Private Window holds no Space, and `switchTo` refuses on one — so it is not
+        // asked, rather than asked and quietly ignored.
+        if let space, !isPrivate, target.currentSpaceID != space.id { target.switchTo(space: space) }
         let moved = existing == nil
             ? (target.tabs.first { $0.currentURL == page.url } ?? target.newBlankTab())
             : target.newBlankTab()
         hand(page, into: moved, of: target, from: store,
-             saying: "Moved to \(space?.name ?? "the browser window").")
+             saying: LittleArc.moved(to: space?.name, isPrivate: isPrivate))
         store.window?.performClose(nil)
     }
 
@@ -271,6 +318,10 @@ import SwiftUI
     /// the shortcut open exactly the same list — SwiftUI has no way to open a `Menu` from a
     /// key press.
     static func pickSpace(_ store: TabStore) {
+        // A private Little Vane has no Spaces to pick between, and its button draws no
+        // chevron. ⌥⌘O still reaches here, and the one thing there is to do is the thing
+        // ⌘O does — better than a menu with nothing in it, or a key that does nothing.
+        guard !store.isPrivate else { return openInCurrentSpace(store) }
         guard let window = store.window else { return }
         // Under the bar's trailing end, which is where the button is. In screen coordinates
         // (`in: nil`) rather than the content view's: an NSHostingView is flipped and the
@@ -299,6 +350,8 @@ import SwiftUI
         let showing = target(spaces: spaces.map(\.id),
                              showing: Windows.current(in: store.profileID)?.currentSpaceID,
                              last: TabStore.lastSpaceID(for: store.profileID))
+        // Every row hands the page to an ordinary window, which is what this menu is for;
+        // a private store never gets here (`pickSpace` answers it before this is built).
         for space in spaces {
             let row = entry(space.name) { move(store, to: space) }
             // The Space's own glyph, as the sidebar and the Spaces menu draw it. The
@@ -430,6 +483,34 @@ import SwiftUI
             ("the menu keeps the profile's own order, whichever Space is current",
              target(spaces: both, showing: personal, last: nil) == personal
                 && both == [work, personal]),
+
+            // A private Little Vane. Arc's incognito holds no Space, so the whole of
+            // "which Space?" is the wrong question — and answering it anyway named one the
+            // page never reached.
+            ("a private Little Vane names no Space, whatever the profile holds",
+             target(spaces: both, showing: personal, last: work, isPrivate: true) == nil),
+            ("…and an ordinary one is unaffected by the same call",
+             target(spaces: both, showing: personal, last: work, isPrivate: false) == personal),
+            ("…so its button names the window instead",
+             openInTitle(space: nil, isPrivate: true) == "Open in Window"),
+            ("…and says so even if a Space name is handed to it anyway",
+             openInTitle(space: "Work", isPrivate: true) == "Open in Window"),
+            ("an ordinary one still names its Space",
+             openInTitle(space: "Work", isPrivate: false) == "Open in Work"),
+            ("a private page may be handed to a Private Window",
+             canHand(pageIsPrivate: true, windowIsPrivate: true)),
+            ("…and never to an ordinary one, which would write it into history",
+             !canHand(pageIsPrivate: true, windowIsPrivate: false)),
+            ("an ordinary page may be handed to an ordinary window",
+             canHand(pageIsPrivate: false, windowIsPrivate: false)),
+            ("…and never to a Private Window, which would throw it away",
+             !canHand(pageIsPrivate: false, windowIsPrivate: true)),
+            ("the hand-off names the Space it went to",
+             moved(to: "Work", isPrivate: false) == "Moved to Work."),
+            ("…the window when there is no Space to name",
+             moved(to: nil, isPrivate: false) == "Moved to the browser window."),
+            ("…and the Private Window by name, never a Space",
+             moved(to: "Work", isPrivate: true) == "Moved to the Private Window."),
         ]
     }
 }
@@ -541,41 +622,55 @@ private struct OpenInButton: View {
     @State private var watch: (any NSObjectProtocol)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var title: String { LittleArc.openInTitle(space: space) }
-    private var named: String { space ?? "a Space" }
+    private var title: String {
+        LittleArc.openInTitle(space: space, isPrivate: store.isPrivate)
+    }
+    private var named: String {
+        store.isPrivate ? "a Private Window" : (space ?? "a Space")
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             Button { LittleArc.openInCurrentSpace(store) } label: {
                 Text(title).font(Look.text).lineLimit(1)
                     .padding(.leading, Look.rowInset)
-                    .padding(.trailing, Look.captionGap)
+                    .padding(.trailing, store.isPrivate ? Look.rowInset : Look.captionGap)
                     .frame(height: Look.topRow)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(title)
-            .accessibilityHint("Moves this page into \(named) in the browser window.")
-            Button { LittleArc.pickSpace(store) } label: {
-                Image(systemName: "chevron.down").font(Look.caption)
-                    .padding(.leading, Look.captionGap)
-                    .padding(.trailing, Look.rowInset)
-                    .frame(height: Look.topRow)
-                    .contentShape(.rect)
+            .accessibilityHint("Moves this page into \(named).")
+            // No chevron on a private one: Arc's incognito has no Spaces, so there is
+            // nothing to choose and a menu with one row in it would be a lie about that.
+            if !store.isPrivate {
+                Button { LittleArc.pickSpace(store) } label: {
+                    Image(systemName: "chevron.down").font(Look.caption)
+                        .padding(.leading, Look.captionGap)
+                        .padding(.trailing, Look.rowInset)
+                        .frame(height: Look.topRow)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Choose a Space")
+                .accessibilityHint("Lists every Space this page can be opened in.")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Choose a Space")
-            .accessibilityHint("Lists every Space this page can be opened in.")
         }
         .foregroundStyle(Look.inkPrimary)
         .background(hovering ? Look.selected : Look.pillFill,
                     in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .onHover { hovering = $0 }
-        .help("\(title) (\u{2318}O), or pick another Space (\u{2325}\u{2318}O)")
+        .help(store.isPrivate
+              ? "\(title) (\u{2318}O)"
+              : "\(title) (\u{2318}O), or pick another Space (\u{2325}\u{2318}O)")
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
-        .accessibilityAction(named: "Choose a Space") { LittleArc.pickSpace(store) }
+        .accessibilityActions {
+            if !store.isPrivate {
+                Button("Choose a Space") { LittleArc.pickSpace(store) }
+            }
+        }
         .onAppear {
             refresh()
             // The Space the label names belongs to *another* window, which publishes
@@ -591,5 +686,6 @@ private struct OpenInButton: View {
         }
     }
 
+    /// Nil for a private window, which names no Space — and so never reads spaces.json.
     private func refresh() { space = LittleArc.targetSpace(for: store)?.name }
 }

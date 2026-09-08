@@ -122,9 +122,13 @@ final class VaneWindow: NSWindow {
     /// and the zoom button all did nothing, in every Vane window — most visibly in a Little
     /// Vane, where the lights are the only way to close, minimise or zoom it.
     ///
-    /// Pure, so the rule can be proved without a window server.
-    nonisolated static func picksUpWindow(overGround: Bool, onLight: Bool) -> Bool {
-        overGround && !onLight
+    /// Pure, so the rule can be proved without a window server. `onLight` is an autoclosure
+    /// because this runs on every left mouse-down in the app and the ground is the cheap
+    /// half — an integer read — while the light test is three `hitTest`s and two coordinate
+    /// conversions. Off the ground there is nothing to ask.
+    nonisolated static func picksUpWindow(overGround: Bool,
+                                          onLight: @autoclosure () -> Bool) -> Bool {
+        overGround && !onLight()
     }
 
     /// True while `point` — in the window's own coordinates — is on one of the traffic
@@ -208,9 +212,20 @@ extension VaneWindow {
         return ordinary.first { $0.window?.isKeyWindow == true } ?? ordinary.last
     }
 
-    /// The window the menus act on, restricted to one profile.
-    static func current(in profileID: UUID) -> TabStore? {
-        let mine = TabStore.all.filter { $0.profileID == profileID && !$0.isLittle }
+    /// The window the menus act on, restricted to one profile — and to one kind of window.
+    ///
+    /// `isPrivate` has to match, and defaults to the ordinary window every caller means. A
+    /// Private Window is not a window a page can be quietly handed to: it keeps no history,
+    /// holds no Space, and throws its cookies away when it closes. Without the test, a
+    /// private Little Vane whose own window was key fell through to `mine.last` and handed
+    /// its page — with its url, its title and its cookies — to an ordinary window, which is
+    /// the one thing a Private Window exists not to allow. It reads the other way too: a
+    /// page from an ordinary Little Vane must not land in an incognito window that will
+    /// throw it away.
+    static func current(in profileID: UUID, isPrivate: Bool = false) -> TabStore? {
+        let mine = TabStore.all.filter {
+            $0.profileID == profileID && !$0.isLittle && $0.isPrivate == isPrivate
+        }
         return mine.first { $0.window?.isKeyWindow == true } ?? mine.last
     }
 
