@@ -12,6 +12,12 @@ import SwiftUI
         return Search.url(for: stored) ?? Search.current.home ?? Search.defaultEngine.home!
     }
 
+    /// The background half of the updater. Off stops the polling; Vane ▸ Check for Updates…
+    /// still works, because asking on purpose is not the thing anyone turned off.
+    static var checkForUpdates: Bool {
+        UserDefaults.vane.object(forKey: "checkForUpdates") as? Bool ?? true
+    }
+
     /// Off is a real preference (a fresh window every launch), so it persists; on is the
     /// behaviour main.swift already had.
     static var restoreSession: Bool {
@@ -341,6 +347,7 @@ private struct GeneralPane: View {
     // toggle and the reader cannot end up on two different keys.
     @AppStorage(PictureInPicture.prefKey) private var autoPiP = true
     @AppStorage("warnBeforeQuit") private var warnQuit = true
+    @AppStorage("checkForUpdates") private var autoUpdate = true
     @State private var restore = Prefs.restoreSession
     @State private var archiveAfter = Prefs.archiveAfter
     @State private var stackSplits = Prefs.stackSplits
@@ -365,6 +372,11 @@ private struct GeneralPane: View {
                 // whole of the preference.
                 SettingsRow("Warn before quitting (\(Keybinding("q", .command).display))") {
                     Toggle("", isOn: $warnQuit).labelsHidden()
+                }
+                // Updater reads this key on every tick, so writing it here is the whole of
+                // the preference — the polling stops within the minute.
+                SettingsRow("Check for updates automatically") {
+                    Toggle("", isOn: $autoUpdate).labelsHidden()
                 }
                 SettingsRow("Auto-archive today's tabs") {
                     Picker("", selection: $archiveAfter) {

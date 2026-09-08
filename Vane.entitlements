@@ -26,9 +26,37 @@
        container. -->
   <key>com.apple.security.files.downloads.read-write</key><true/>
 
-  <!-- The three NSOpenPanel pickers: an unpacked extension folder, a filter list, and a
-       password CSV. All three only ever read, so read-only rather than read-write. -->
-  <key>com.apple.security.files.user-selected.read-only</key><true/>
+  <!-- The NSOpenPanel pickers: an unpacked extension folder, a filter list, a password CSV
+       — and the folder Vane lives in, when that is not /Applications. The first three only
+       read; the last is written to, because writing to it is how Vane replaces itself with
+       the release it just downloaded (see `Grant` in Updater.swift). read-write covers both.
+       ponytail: one entitlement rather than two, since read-write implies read-only. -->
+  <key>com.apple.security.files.user-selected.read-write</key><true/>
+
+  <!-- Self-update, for the copy that lives where copies live. A sandboxed app cannot write
+       beside its own bundle — measured, with a probe signed with these entitlements: the
+       parent directory is not writable anywhere, `hdiutil attach` is refused outright, and
+       the quarantine xattr on anything the app downloads cannot be removed. This is what
+       buys back the one directory that matters, and with it the whole feature: download the
+       release, check its Developer ID, and put it in place. Verified with the same probe —
+       create, rename and delete inside /Applications all succeed with this key and fail
+       without it.
+       Temporary-exception entitlements are for Developer ID distribution, which is what
+       Vane ships as; a Mac App Store build would need review justification instead.
+       ponytail: /Applications only. Anywhere else asks once, through the powerbox, and
+       remembers the answer as a bookmark — no second exception, no privileged helper. -->
+  <key>com.apple.security.temporary-exception.files.absolute-path.read-write</key>
+  <array>
+    <string>/Applications/</string>
+  </array>
+
+  <!-- ...and the per-user one beside it, for anyone who keeps their apps in ~/Applications.
+       A different key because the sandbox spells a home-relative path differently; the same
+       one directory's worth of access. -->
+  <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+  <array>
+    <string>/Applications/</string>
+  </array>
 
   <!-- ...and this is what makes those picks survive a relaunch. Without it a folder the
        user chose is readable for exactly one launch, and every extension silently fails to

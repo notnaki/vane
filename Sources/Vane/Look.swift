@@ -742,6 +742,30 @@ extension Look {
                         && rowTarget + rowSpacing * 2 + rowTrailingInset < sidebarWidth))
         out.append(("the quit card starts wider than its margins and shows a real icon",
                     quitDialogWidth > paneMargin * 4 && quitDialogIcon >= control * 2))
+        // Toasts say the whole thing or take another line and say the whole thing — never
+        // "Archived hello world -…". One row when the sentence and its verb fit side by
+        // side; otherwise the sentence gets the pill's full width to itself and the verb
+        // and × drop underneath. These are the two widths that has to be true at.
+        let face = NSFont.systemFont(ofSize: 13, weight: .medium)     // == `rowText`
+        func measure(_ s: String) -> CGFloat {
+            (s as NSString).size(withAttributes: [.font: face]).width
+        }
+        /// The sentence's own column once the pill has paid for its padding. In the stacked
+        /// form the verb and × are on the row below, so they cost the text nothing.
+        let column = sidebarWidth - inset * 2 - pillInset - inset / 2
+        out.append(("a stacked toast's text gets most of the sidebar's width",
+                    column > sidebarWidth * 0.8))
+        for sentence in ["Vane v10.10.100 is available", "Restart to update", "Update failed",
+                         "Couldn't move Vane to Applications",
+                         "This copy isn't signed for updates",
+                         "Archived hello world - a long page title"] {
+            out.append(("two lines is enough for “\(sentence)”", column * 2 >= measure(sentence)))
+        }
+        // ...and the one-row form still exists, for the short ones Arc actually shows.
+        let oneRow = pillInset + measure("Copied URL") + inset + measure("Undo") + inset * 2
+            + inset / 2
+        out.append(("a short toast and its verb still share one row",
+                    oneRow <= sidebarWidth - inset * 2))
         out.append(("a held back button opens its history well after an ordinary click ends",
                     holdDelay > switcherDelay && holdDelay <= 0.5))
         out.append(("a dragged row settles in about the time the list takes to reshape",
