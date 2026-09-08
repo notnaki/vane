@@ -148,6 +148,37 @@ import WebKit
         })
     }
 
+    /// The letter a site is known by, for the box a favicon has not filled yet — a brand-new
+    /// tab, a site that declares no icon, a page still being fetched from a host we have
+    /// never been to. Arc puts the site's initial there; it never puts a spinner there, which
+    /// is the whole point: a row is a place, and a place does not flicker while it loads.
+    ///
+    /// The name is the label under the public suffix, so `mail.google.com` is a G and not an
+    /// M, and `www.bbc.co.uk` is a B and not a C. That is `TidyTabs.registrableDomain`'s
+    /// question and it is asked there rather than answered twice: a tab with no icon and a
+    /// group of tabs with one then agree about what the site is called, and the handful of
+    /// two-part suffixes it knows (co.uk, com.au, co.jp …) is one list to fix, not two.
+    ///
+    /// Two hosts have no name to take a letter from:
+    ///
+    /// - An address literal. Every label is a number, and "the label under the suffix" would
+    ///   make `127.0.0.1` a 0; its first digit is at least stable.
+    /// - A punycode host. `xn--fiqs8s` is an encoding, not a word, and every one of them
+    ///   would be an X — the one letter that would be wrong for all of them at once. There
+    ///   is no public API to turn it back into the label a reader would recognise, so this
+    ///   gives up and the globe stands in. Upgrade path: an IDN decode, and the letter falls
+    ///   out of it.
+    nonisolated static func letter(for url: URL?) -> String? {
+        guard let host = url?.host()?.lowercased(), !host.isEmpty else { return nil }
+        let labels = host.split(separator: ".")
+        let name = labels.allSatisfy({ $0.allSatisfy(\.isNumber) })
+            ? labels.first.map(String.init)
+            : TidyTabs.registrableDomain(host).split(separator: ".").first.map(String.init)
+        guard let name, !name.hasPrefix("xn--"),
+              let c = name.first(where: { $0.isLetter || $0.isNumber }) else { return nil }
+        return String(c).uppercased()
+    }
+
     // MARK: Disk
 
     /// ponytail: synchronous file IO on the main thread. These are sub-10KB reads on a
@@ -209,6 +240,36 @@ import WebKit
                 .first?.lastPathComponent == "apple-touch-icon.png"),
             ("declaration order is otherwise preserved",
              ordered([u("https://e.com/a.png"), u("https://e.com/b.png")]).last?.lastPathComponent == "b.png"),
+
+            // The stand-in a row shows while a tab has no favicon. There is no spinner to
+            // fall back to any more, so this is what a brand-new tab is recognised by.
+            ("a site with no icon yet is known by its initial",
+             letter(for: u("https://example.com/a")) == "E"),
+            ("…the site's own, not the subdomain's",
+             letter(for: u("https://mail.google.com/mail/u/0")) == "G"),
+            ("…and www is not a name", letter(for: u("https://www.example.com/")) == "E"),
+            ("…nor is a mobile prefix", letter(for: u("https://m.example.com/")) == "E"),
+            ("a two-part suffix is a suffix: bbc.co.uk is a B, not a C",
+             letter(for: u("https://www.bbc.co.uk/news")) == "B"
+                && letter(for: u("https://news.bbc.co.uk/")) == "B"),
+            ("…the same list the tab grouping folds hosts with, so the two agree",
+             letter(for: u("https://example.com.au/")) == "E"
+                && letter(for: u("https://shop.example.co.jp/")) == "E"),
+            ("a punycode host is an encoding, not a word: every one of them would be an X",
+             letter(for: u("https://xn--fiqs8s.example/")) == nil),
+            ("…and it is the site's own label that has to be readable, not a subdomain's",
+             letter(for: u("https://www.xn--fiqs8s.com/")) == nil),
+            ("a bare host is its own name", letter(for: u("http://localhost:8000/")) == "L"),
+            ("an address literal is not a name with an initial in the middle of it",
+             letter(for: u("http://127.0.0.1:8000/")) == "1"),
+            ("a digit is a letter here, since a host may start with one",
+             letter(for: u("https://1password.com/")) == "1"),
+            ("the letter is upper case however the host was typed",
+             letter(for: u("https://EXAMPLE.com/")) == "E"),
+            ("a url with no host has no letter, and gets the globe",
+             letter(for: u("about:blank")) == nil && letter(for: nil) == nil),
+            ("neither does a local file — Finder's own icon stands in for those",
+             letter(for: u("file:///tmp/x.html")) == nil),
 
             // The one ordering invariant: the strip is sorted by section. `others` is the
             // strip with the moved tab already taken out. F = favourite, P = pinned,

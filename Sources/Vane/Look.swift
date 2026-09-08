@@ -54,6 +54,15 @@ enum Look {
     /// `sectionGap` to the New Tab row below. Arc's label centre sits 6.5pt under the last
     /// pinned row and New Tab's top 22.5pt under that.
     static let tidyRow: CGFloat = 13
+    /// How many Today tabs a Space has to hold before Tidy and Clear are offered at all.
+    /// Below it there is no pile: five tabs fit in the strip and the one you want is the one
+    /// you can already see, so two housekeeping actions over them are noise on every new
+    /// Space, every window, every morning. Arc's number, and the same six `TidyTabs`
+    /// defaults its own threshold to.
+    ///
+    /// A count, not a size, but it lives here because it is a rule about what the sidebar
+    /// *shows* — the row's height above is meaningless without it.
+    static let tidyThreshold = 6
     static let sectionGap: CGFloat = 18
 
     // The command bar. The one surface allowed rows taller than `rowHeight`: it is a
@@ -78,6 +87,15 @@ enum Look {
     /// at 14 and the selected row's on a 24pt plate; 16 is the sidebar's, kept for one
     /// favicon cache.
     static let rowIcon: CGFloat = 16
+    /// The site's initial, standing in a favicon's box while a tab has none — a fraction of
+    /// the box rather than a point size, because that box is 16 in a row and 16 in a tile.
+    /// Short of the full box, so a letter and an icon read as one size.
+    static let letterScale: CGFloat = 0.72
+    /// That letter's type, for a box of `box` points. Rounded and semibold: it is standing in
+    /// for an icon, so it has to read as a mark rather than as a word that got cut off.
+    static func letterFont(box: CGFloat) -> Font {
+        .system(size: box * letterScale, weight: .semibold, design: .rounded)
+    }
     /// The "→" square on a row that has a trailing label: what Return will press.
     static let chip: CGFloat = 24
     static let chipRadius: CGFloat = 6
@@ -666,6 +684,11 @@ extension Look {
         out.append(("the footer glyphs sit 24pt above the window's bottom edge",
                     footer / 2 + footerInset == 24))
         out.append(("rows and the bar share one radius", pillRadius == barRadius))
+        out.append(("a stand-in letter fills a favicon's box without touching its edges",
+                    letterScale > 0.5 && letterScale < 1))
+        out.append(("housekeeping waits for a pile: more tabs than fit in a glance, "
+                    + "fewer than a window nobody could work in",
+                    tidyThreshold >= 4 && tidyThreshold <= 12))
         // An extension action's badge, which is drawn over the 16pt icon it belongs to.
         out.append(("an action badge is shorter than the icon it sits on", badgeHeight < rowIcon))
         out.append(("…and a full one cannot reach the glyph beside it",

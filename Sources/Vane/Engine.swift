@@ -634,9 +634,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
                 return
             }
         }
-        // A link out of a favourite or a pinned tab that leads somewhere else, or any link
-        // ⇧-clicked: it opens over the window and this tab stays where it is. Also before
-        // HTTPS-only — the Peek's own page is vetted when it loads. See Peek.swift.
+        // Where a clicked link opens: over the window, in a tab of its own, or right here.
+        // A link out of a favourite or a pinned tab that leads somewhere else does not take
+        // that tab off the site it is kept on — ⇧ picks the other answer in either
+        // direction. Before HTTPS-only, which vets whichever page actually loads. The table
+        // and the reasoning are in Peek.swift.
         //
         // Only a navigation of the *main* frame. `targetFrame` is nil for `target=_blank`,
         // which WebKit is about to hand to `createWebViewWith` and `onOpenBeside` — Arc
@@ -648,17 +650,36 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // already in flight may have moved on; a subframe aiming at the top is judged
         // against the page it is replacing, since the tab's site is what "the place you
         // keep" means, not the embed's.
+        //
+        // `onPeek` is nil in a window with nowhere to float one — a Little Arc, a Peek — and
+        // gates the whole table, not just the peeking half: a floating one-page window has no
+        // sidebar for the other answer to put a tab in either, so its links keep navigating.
         if navigationAction.navigationType == .linkActivated,
            navigationAction.targetFrame?.isMainFrame == true,
            let url = navigationAction.request.url, let peek = onPeek {
             let source = navigationAction.sourceFrame
             let from = (source.isMainFrame ? source.request.url : nil) ?? w.url ?? url
-            if Peek.route(sourceKind: kind, from: from, to: url,
-                          modifiers: navigationAction.modifierFlags,
-                          enabled: Prefs.peekLinks) == .peek {
+            switch Peek.route(sourceKind: kind, from: from, to: url,
+                              modifiers: navigationAction.modifierFlags,
+                              enabled: Prefs.peekLinks) {
+            case .peek:
                 decisionHandler(.cancel)
                 peek(url)
                 return
+            // The link asked for a tab instead: ⇧-clicked out of a place you keep, or the
+            // preference is off and this tab is still not going to be taken off its site.
+            //
+            // Cancelled first and unconditionally. A window with a sidebar always has an
+            // `onOpenBeside` — `newBlankTab` sets one on every tab it makes — but "unless it
+            // doesn't, in which case navigate here" is exactly the fallback this whole change
+            // exists to remove: it would put the favourite on the page in the one case
+            // nobody tests.
+            case .newTab(let focus):
+                decisionHandler(.cancel)
+                onOpenBeside?(url, focus)
+                return
+            case .navigate:
+                break
             }
         }
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {

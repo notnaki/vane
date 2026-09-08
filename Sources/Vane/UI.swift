@@ -2470,26 +2470,48 @@ extension View {
     }
 }
 
-/// A hairline, then the two housekeeping actions Arc puts here.
+/// A hairline, then the two housekeeping actions Arc puts here — once there is housekeeping
+/// to do. Under `Look.tidyThreshold` Today tabs the line is on its own: five tabs are not a
+/// pile, and two actions offering to sort them out are two things to read past on every new
+/// Space and in every new window.
+///
+/// The hairline stays either way — it is the end of the pinned section, not a decoration on
+/// the buttons — and so does its *length*. The two actions keep their place in the layout
+/// and fade rather than being taken out of it: dropped from the stack, the hairline would
+/// stretch across the gap they left and the row would visibly re-draw itself at the sixth
+/// tab. Fading in place is the whole of "no pop": nothing moves, including the line.
+///
+/// Below the threshold they are hidden from the pointer and from VoiceOver alike, so the
+/// sidebar offers exactly what it shows. Neither action is *lost* there: Tidy Tabs and Clear
+/// Tabs keep their menu items and their shortcuts at any number of tabs, which is the route
+/// a keyboard or a screen reader would take to them anyway.
 private struct TidyRow: View {
     @EnvironmentObject var store: TabStore
     /// Set while a tab that this would actually move is over the divider. See below.
     @State private var lit: Landing.Band?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let offering = TidyTabs.offersHousekeeping(store)
         HStack(spacing: 8) {
             Hairline()
-            // The menu item owns the tidy's cancellation and its "undo" bookkeeping — this
-            // is the same closure, not a second copy of it.
-            Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
-                .disabled(!TidyTabs.shouldOffer(store))
-                .help("Rename and group tabs (\(Keybindings.binding(for: .tidyTabs).display))")
-                .accessibilityLabel("Tidy Tabs")
-            Text("|").foregroundStyle(Look.inkQuiet)
-            Button("Clear") { clear() }
-                .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
-                .accessibilityLabel("Clear Tabs")
+            Group {
+                // The menu item owns the tidy's cancellation and its "undo" bookkeeping —
+                // this is the same closure, not a second copy of it.
+                Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
+                    .disabled(!TidyTabs.shouldOffer(store))
+                    .help("Rename and group tabs (\(Keybindings.binding(for: .tidyTabs).display))")
+                    .accessibilityLabel("Tidy Tabs")
+                Text("|").foregroundStyle(Look.inkQuiet)
+                Button("Clear") { clear() }
+                    .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
+                    .accessibilityLabel("Clear Tabs")
+            }
+            .opacity(offering ? 1 : 0)
+            .allowsHitTesting(offering)
+            .accessibilityHidden(!offering)
         }
+        .animation(reduceMotion ? nil : Look.list, value: offering)
         .buttonStyle(.plain)
         .font(Look.sectionCaption)
         .foregroundStyle(Look.inkTertiary)
@@ -3080,23 +3102,43 @@ struct SiteIcon: View {
 }
 
 /// The same, for a tab — separate only because it has to observe the tab to redraw when the
-/// favicon lands.
+/// favicon lands, and because what it draws while none has is the whole of the rule below.
+///
+/// **Never a spinner.** This slot used to spin while `tab.loading`, and a row that turns
+/// into a spinning wheel on every reload is a row you cannot point at: the mark you aim for
+/// is gone for exactly as long as the page takes. Arc keeps the icon the tab had until the
+/// next one has actually been decoded and then swaps it — which is free here, because
+/// `Favicons.load` only ever writes on `didFinish`, so a tab holds its old icon for the
+/// whole of a navigation. A tab that has never had one shows the site's letter instead.
+///
+/// Loading is still said, twice: the pill's 2pt progress line, and the row's accessibility
+/// value, which reads "loading" in words. In words and in a line, not in motion.
 private struct TabIcon: View {
     @ObservedObject var tab: Tab
     var size: CGFloat = 16
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // Arc spins the row's favicon slot while its page is loading. The card's own 2pt bar
-        // only says that *the tab you are looking at* is busy; a background tab had nothing.
-        if tab.loading {
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(size / 24)
-                .frame(width: size, height: size)
-                .accessibilityHidden(true)      // the row's value already says "loading"
-        } else {
-            SiteIcon(icon: tab.favicon, size: size)
+        Group {
+            if let icon = tab.favicon {
+                Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+            } else if let letter = Favicons.letter(for: tab.currentURL) {
+                // Flat, no box: a tile and a pane pill already have a fill under this, and a
+                // second one inside it would read as an icon with a badge.
+                Text(letter)
+                    .font(Look.letterFont(box: size))
+                    .foregroundStyle(Look.inkSecondary)
+            } else {
+                // Nothing to take a letter from: a blank tab, or a file with no icon yet.
+                Image(systemName: "globe").resizable().aspectRatio(contentMode: .fit)
+                    .foregroundStyle(.tertiary)
+            }
         }
+        .frame(width: size, height: size)
+        // The swap, when it comes, is a fade rather than a cut — the same 0.15s the rest of
+        // the sidebar's hovers use.
+        .animation(reduceMotion ? nil : Look.quick, value: tab.favicon)
+        .accessibilityHidden(true)          // the row's own label and value say all of this
     }
 }
 
