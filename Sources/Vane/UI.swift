@@ -145,6 +145,8 @@ struct BrowserWindow: View {
         // safe area at the top. Without this the sidebar's first row sits *below* the
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
+        // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
+        .externalAppPrompt(store)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
         // The one place the Space list is counted: when it changes, and when the Library
         // opens onto it. `spaceRevision` is bumped by everything that adds or removes one.

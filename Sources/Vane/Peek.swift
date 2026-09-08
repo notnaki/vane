@@ -455,6 +455,8 @@ private struct PeekView: View {
             }
         }
         .ignoresSafeArea()
+        // …and so does one out of a Peek.
+        .externalAppPrompt(store)
         .onAppear { store.applySpaceAppearance() }
     }
 

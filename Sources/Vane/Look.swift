@@ -230,6 +230,13 @@ enum Look {
     /// appearance-following, which no `ink` alpha over nothing can be.
     static let panelFill = Color(nsColor: .windowBackgroundColor)
 
+    /// The card that asks whether a link may leave for another app: “Open “Zoom”?”.
+    /// Wide enough for Cancel, Always Allow and Allow on one line beside a `paneMargin`
+    /// on each side, which is what stops the three buttons stacking.
+    static let appPrompt: CGFloat = 400
+    /// The handler’s icon on it, at the size macOS draws an app icon in a dialog of its own.
+    static let appIcon: CGFloat = 48
+
     /// The Site Control Center popover. Wide enough for "Picture in Picture" and its switch
     /// on one line, and no wider — it hangs off the address pill, not off the window.
     static let siteWidth: CGFloat = 300
