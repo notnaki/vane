@@ -869,16 +869,18 @@ private struct LinksPane: View {
             SettingsSection("Air Traffic Control") { AirTrafficCard() }
 
             SettingsCard {
-                SettingsRow("Open links from Favourites and Pinned tabs in Peek") {
+                SettingsRow("Open a Peek window when clicking on links to other sites") {
                     Toggle("", isOn: $peekLinks).labelsHidden()
                 }
-                Footnote("A Peek is the page floating over your window: the tab you clicked "
-                         + "in stays on the site you keep it on. Links to the same site "
-                         + "still open in the tab. \u{21E7}-click peeks any link; \u{2318}O "
-                         + "keeps a Peek as a tab beside the one it came from, and Escape, "
-                         + "\u{2318}W or a click outside throws it away — Archive ▸ "
-                         + "Reopen Last Peek brings the last one back. Off keeps every link "
-                         + "in its tab, \u{21E7}-click included.")
+                Footnote("A Peek is the page floating over your window, opened by a link out "
+                         + "of a Favourite or a Pinned tab: the tab you clicked in stays on "
+                         + "the site you keep it on. Links to the same site still open in the "
+                         + "tab. \u{2318}O keeps a Peek as a tab beside the one it came from, "
+                         + "and Escape, \u{2318}W or a click outside throws it away — "
+                         + "Archive ▸ Reopen Last Peek brings the last one back. Off sends "
+                         + "those links to a new tab instead, which still leaves the Favourite "
+                         + "where it was. \u{21E7}-click overrides either way: an ordinary tab "
+                         + "from a Favourite or a Pinned tab, a Peek from a Today tab.")
             }
 
             SettingsCard {
