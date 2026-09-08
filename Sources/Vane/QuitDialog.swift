@@ -21,7 +21,10 @@ import SwiftUI
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
-        panel.contentView = NSHostingView(rootView: Card { panel.answer?($0) })
+        // Weak: the card lives inside the panel, so a strong capture here would be a cycle
+        // (panel → hosting view → card → closure → panel) and every Cancel would strand a
+        // window for the life of the process.
+        panel.contentView = NSHostingView(rootView: Card { [weak panel] in panel?.answer?($0) })
         panel.setContentSize(panel.contentView!.fittingSize)
         // Centred over the window that asked, or the screen when none did (the Dock's menu).
         let anchor = host?.frame ?? NSScreen.main?.visibleFrame ?? .zero
@@ -31,6 +34,7 @@ import SwiftUI
         panel.makeKeyAndOrderFront(nil)
         NSApp.runModal(for: panel)
         panel.orderOut(nil)
+        panel.answer = nil
         return answer
     }
 
