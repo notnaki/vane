@@ -6,13 +6,20 @@ import SwiftUI
 /// could trust; a question with a default button is answered by the same ⌘Q-then-⏎ people
 /// already do, and cannot be missed.
 ///
-/// ponytail: one modal borderless window run with `runModal`, so the answer comes back as a
-/// value and `applicationShouldTerminate` stays a straight line. No sheet: a sheet hangs off
-/// a title bar and Vane's windows have none to hang it from.
+/// The card sits *in* the window that asked, on a scrim that dims the page and blurs it a
+/// little — Arc's own treatment — so the question reads as part of the window rather than a
+/// second one floating over it. No sheet: a sheet hangs off a title bar and Vane's windows
+/// have none to hang it from. When no window is up (the Dock's menu with everything closed)
+/// a plain borderless panel stands in.
+///
+/// ponytail: `runModal(for:)` on the host window, so the answer comes back as a value and
+/// `applicationShouldTerminate` stays a straight line. The scrim swallows every click and
+/// key that is not one of the three answers.
 @MainActor enum QuitDialog {
     enum Answer { case quit, quitForever, cancel }
 
     static func ask(over host: NSWindow?) -> Answer {
+        if let host, let content = host.contentView { return ask(in: host, content: content) }
         var answer = Answer.cancel
         let panel = Panel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         panel.title = "Quit Vane?"            // what VoiceOver says when the card takes key
@@ -36,6 +43,62 @@ import SwiftUI
         panel.orderOut(nil)
         panel.answer = nil
         return answer
+    }
+
+    private static func ask(in host: NSWindow, content: NSView) -> Answer {
+        var answer = Answer.cancel
+        let scrim = Scrim(frame: content.bounds)
+        scrim.answer = { answer = $0; NSApp.stopModal() }
+        // Weak for the same reason as the panel's: scrim → hosting view → card → closure.
+        let card = NSHostingView(rootView: Card { [weak scrim] in scrim?.answer?($0) })
+        card.translatesAutoresizingMaskIntoConstraints = false
+        scrim.addSubview(card)
+        NSLayoutConstraint.activate([card.centerXAnchor.constraint(equalTo: scrim.centerXAnchor),
+                                     card.centerYAnchor.constraint(equalTo: scrim.centerYAnchor)])
+        let was = host.firstResponder
+        content.addSubview(scrim)
+        NSApp.activate()
+        host.makeKeyAndOrderFront(nil)
+        host.makeFirstResponder(scrim)
+        NSApp.runModal(for: host)
+        scrim.removeFromSuperview()
+        scrim.answer = nil
+        host.makeFirstResponder(was)
+        return answer
+    }
+
+    /// The dimmed, faintly blurred layer over the page. Layer-backed so it can carry a
+    /// Core Image background filter — the blur is of what the window draws under it, and
+    /// `Look.quitBlur` is its radius, which a material would not let us choose.
+    private final class Scrim: NSView {
+        var answer: ((Answer) -> Void)?
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            autoresizingMask = [.width, .height]
+            wantsLayer = true
+            layerUsesCoreImageFilters = true
+            layer?.backgroundColor = NSColor.black.withAlphaComponent(Look.quitScrim).cgColor
+            if let blur = CIFilter(name: "CIGaussianBlur") {
+                blur.setValue(Look.quitBlur, forKey: kCIInputRadiusKey)
+                layer?.backgroundFilters = [blur]
+            }
+            setAccessibilityElement(true)
+            setAccessibilityRole(.sheet)
+            setAccessibilityLabel("Quit Vane?")
+        }
+        required init?(coder: NSCoder) { fatalError() }
+
+        override var acceptsFirstResponder: Bool { true }
+        override func mouseDown(with event: NSEvent) {}      // the page under it is not there
+        override func cancelOperation(_ sender: Any?) { answer?(.cancel) }
+        override func keyDown(with event: NSEvent) {
+            switch event.keyCode {
+            case 36, 76: answer?(.quit)          // return, enter
+            case 53: answer?(.cancel)            // escape
+            default: break
+            }
+        }
     }
 
     /// Borderless windows refuse key status by default, and a dialog that cannot take ⏎
