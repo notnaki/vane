@@ -19,6 +19,14 @@ import SwiftUI
         set { UserDefaults.vane.set(newValue, forKey: "restoreSession") }
     }
 
+    /// Settings › General: which way a new split opens. Side by side is Arc's answer and the
+    /// default, so the key is only ever written by someone asking for stacked — and it is
+    /// stored as the Bool `Split.vertical` already asks, rather than a second spelling of it.
+    static var stackSplits: Bool {
+        get { UserDefaults.vane.bool(forKey: "stackSplits") }
+        set { UserDefaults.vane.set(newValue, forKey: "stackSplits") }
+    }
+
     /// Settings › Links. Little Vane (Arc's Little Arc) is Arc's default and Vane's: a link
     /// is something you look at once, not a tab you meant to collect. Stored as a string
     /// rather than a Bool so the Picker in `LinksPane` has something to tag its rows with,
@@ -335,6 +343,7 @@ private struct GeneralPane: View {
     @AppStorage("warnBeforeQuit") private var warnQuit = true
     @State private var restore = Prefs.restoreSession
     @State private var archiveAfter = Prefs.archiveAfter
+    @State private var stackSplits = Prefs.stackSplits
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
@@ -369,6 +378,21 @@ private struct GeneralPane: View {
                 Footnote("A tab under Today that nobody has looked at for this long leaves the "
                          + "sidebar for the Library, where it can be opened again. Favourites "
                          + "and pinned tabs are never archived.")
+            }
+
+            SettingsCard {
+                SettingsRow("New splits") {
+                    Picker("", selection: $stackSplits) {
+                        Text("Side by side").tag(false)
+                        Text("Stacked").tag(true)
+                    }
+                    .labelsHidden().fixedSize()
+                    .onChange(of: stackSplits) { Prefs.stackSplits = stackSplits }
+                }
+                Footnote("Which way a split view opens — dragging one tab onto another, or "
+                         + "\(Keybindings.binding(for: .addSplit).display). Splits already "
+                         + "open keep the shape they have, and dropping a tab on the top or "
+                         + "bottom edge of the page still stacks that one.")
             }
 
             SettingsCard {

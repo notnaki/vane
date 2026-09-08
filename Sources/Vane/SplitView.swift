@@ -73,12 +73,14 @@ struct Split: Equatable, Sendable {
     }
 
     /// A pane joins beside `anchor` — the pane the user asked from — and takes focus, the
-    /// way Arc slides the new page in next to the one it came from. A full split, or a tab
-    /// that is already a pane, changes nothing.
-    func adding(_ id: UUID, after anchor: UUID? = nil) -> Split {
+    /// way Arc slides the new page in next to the one it came from. `side` says which beside:
+    /// dropping a tab on the left half of a row puts it in front of the anchor, the right
+    /// half behind it. A full split, or a tab that is already a pane, changes nothing.
+    func adding(_ id: UUID, after anchor: UUID? = nil, side: Landing.Side = .trailing) -> Split {
         guard !isFull, !tabs.contains(id) else { return self }
         var out = self
-        let at = anchor.flatMap { tabs.firstIndex(of: $0) }.map { $0 + 1 } ?? tabs.count
+        let here = anchor.flatMap { tabs.firstIndex(of: $0) }
+        let at = side == .leading ? here ?? 0 : here.map { $0 + 1 } ?? tabs.count
         out.tabs.insert(id, at: at)
         out.active = at
         out.weights = Split.equal(out.tabs.count)
@@ -244,8 +246,11 @@ struct Split: Equatable, Sendable {
     }
 
     /// The context menu's "Add Split View" / "Add to Split", ⌥-click on a row, and a drop on
-    /// the page card: `id` becomes a pane beside the tab the user is looking at.
-    func addPane(_ id: Tab.ID, beside anchor: Tab.ID? = nil, at end: Split.Zone? = nil) {
+    /// the page card: `id` becomes a pane beside the tab the user is looking at. `side` is
+    /// which beside — the half of the row a drop landed on (see `Landing.side`); everything
+    /// that has no pointer behind it takes the default and joins after the anchor.
+    func addPane(_ id: Tab.ID, beside anchor: Tab.ID? = nil, at end: Split.Zone? = nil,
+                 side: Landing.Side = .trailing) {
         let anchor = anchor ?? current
         guard let anchor, anchor != id else { return }
         if let existing = split(containing: anchor) {
@@ -257,13 +262,17 @@ struct Split: Equatable, Sendable {
             }
             // A pane that is already in *another* split leaves that one first.
             if split(containing: id) != nil { dropPane(id) }
-            let grown = end.map { existing.adding(id, at: $0) } ?? existing.adding(id, after: anchor)
+            let grown = end.map { existing.adding(id, at: $0) }
+                ?? existing.adding(id, after: anchor, side: side)
             replace(grown, keyedOn: anchor)
             current = grown.activeTab
         } else {
             if split(containing: id) != nil { dropPane(id) }
-            guard var made = Split(tabs: end?.leads == true ? [id, anchor] : [anchor, id]) else { return }
-            made.vertical = end?.isVertical ?? false
+            let front = end?.leads ?? (side == .leading)
+            guard var made = Split(tabs: front ? [id, anchor] : [anchor, id]) else { return }
+            // A drop on an edge of the card asked for an orientation; everything else takes
+            // the one Settings ▸ General says new splits have.
+            made.vertical = end?.isVertical ?? Prefs.stackSplits
             made = made.focusing(id)
             splits.append(made)
             current = id
@@ -735,6 +744,17 @@ extension Split {
             ("…and the shares even out again", near(three.weights, Split.equal(3))),
             ("a pane with no anchor joins at the end", two.adding(c).tabs == [a, b, c]),
             ("a tab that is already a pane joins nothing", three.adding(a) == three),
+            ("dropped on the left half of a row, the pane joins in front of it",
+             two.adding(c, after: b, side: .leading).tabs == [a, c, b]),
+            ("…and on the right half, behind it",
+             two.adding(c, after: b, side: .trailing).tabs == [a, b, c]),
+            ("the left half of the first row is the front of the split",
+             two.adding(c, after: a, side: .leading).tabs == [c, a, b]),
+            ("whichever half it landed on, the new pane takes the focus",
+             two.adding(c, after: b, side: .leading).activeTab == c),
+            ("with no anchor at all, the half says which end of the split",
+             two.adding(c, side: .leading).tabs == [c, a, b]
+                && two.adding(c, side: .trailing).tabs == [a, b, c]),
         ]
         let four = three.adding(d, after: b)
         let five = four.adding(e)
