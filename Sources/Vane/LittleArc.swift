@@ -371,7 +371,10 @@ extension TabStore {
         // ⌘W with rows ticked archives all of them — the selection is what "the tab" means
         // while it stands. See Selection.swift.
         if !selection.isEmpty { archiveSelection(); return }
-        if isLittle { window?.performClose(nil) } else { archiveWithToast() }
+        // Nothing showing — every tab archived or closed — and ⌘W again: the window is the
+        // only thing left to close, so it closes, as Arc's does. A Little Vane closes on
+        // the first ⌘W because its one tab is the window.
+        if isLittle || active == nil { window?.performClose(nil) } else { archiveWithToast() }
     }
 }
 
