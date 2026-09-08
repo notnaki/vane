@@ -2478,15 +2478,14 @@ extension View {
 /// Space and in every new window.
 ///
 /// The hairline stays either way — it is the end of the pinned section, not a decoration on
-/// the buttons — and so does its *length*. The two actions keep their place in the layout
-/// and fade rather than being taken out of it: dropped from the stack, the hairline would
-/// stretch across the gap they left and the row would visibly re-draw itself at the sixth
-/// tab. Fading in place is the whole of "no pop": nothing moves, including the line.
+/// the buttons — and until the actions arrive it runs the full width, across the room they
+/// will take. Then it shortens to make way for them, with the one animation the list
+/// already uses, so the sixth tab reads as the words fading in over the end of the line.
 ///
-/// Below the threshold they are hidden from the pointer and from VoiceOver alike, so the
-/// sidebar offers exactly what it shows. Neither action is *lost* there: Tidy Tabs and Clear
-/// Tabs keep their menu items and their shortcuts at any number of tabs, which is the route
-/// a keyboard or a screen reader would take to them anyway.
+/// Below the threshold the actions are out of the layout altogether, so the sidebar offers
+/// exactly what it shows. Neither is *lost* there: Tidy Tabs and Clear Tabs keep their menu
+/// items and their shortcuts at any number of tabs, which is the route a keyboard or a
+/// screen reader would take to them anyway.
 private struct TidyRow: View {
     @EnvironmentObject var store: TabStore
     /// Set while a tab that this would actually move is over the divider. See below.
@@ -2497,7 +2496,7 @@ private struct TidyRow: View {
         let offering = TidyTabs.offersHousekeeping(store)
         HStack(spacing: 8) {
             Hairline()
-            Group {
+            if offering {
                 // The menu item owns the tidy's cancellation and its "undo" bookkeeping —
                 // this is the same closure, not a second copy of it.
                 Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
@@ -2509,9 +2508,6 @@ private struct TidyRow: View {
                     .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
                     .accessibilityLabel("Clear Tabs")
             }
-            .opacity(offering ? 1 : 0)
-            .allowsHitTesting(offering)
-            .accessibilityHidden(!offering)
         }
         .animation(reduceMotion ? nil : Look.list, value: offering)
         .buttonStyle(.plain)
