@@ -746,7 +746,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("split view", Split.check),
                                ("mini audio player", MediaTray.check),
                                ("multi-select", Selection.check),
-                               ("hold ⌘Q to quit", QuitHold.check),
+                               ("hold ⌘Q to quit", QuitAsk.check),
                                ("local files", Files.check),
                                ("saved passwords", Passwords.check),
                                ("passwords pane", PasswordsPane.check),

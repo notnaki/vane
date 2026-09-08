@@ -631,10 +631,9 @@ enum Look {
     // Toasts: a pill above the sidebar's footer, gone after `toastDuration` unless hovered.
     static let toastHeight: CGFloat = 32
     static let toastDuration: Double = 3
-    /// How long ⌘Q has to be held before the app quits. A second is long enough that the
-    /// ⌘Q meant for the tab beside ⌘W is only a toast, and short enough that holding it
-    /// deliberately never feels like waiting. See `QuitHold`.
-    static let quitHold: Double = 1
+    /// Arc's "Quit Vane?" card: its width and the icon in its corner.
+    static let quitDialogWidth: CGFloat = 440
+    static let quitDialogIcon: CGFloat = 56
     /// How much of the space's colour washes over the pill's dark ground.
     static let toastTint: Double = 0.45
 
@@ -713,6 +712,8 @@ extension Look {
         out.append(("a long row title stops clear of the ×, not under it",
                     rowSpacing * 2 >= rowInset
                         && rowTarget + rowSpacing * 2 + rowTrailingInset < sidebarWidth))
+        out.append(("the quit card is wider than its three buttons need and shows a real icon",
+                    quitDialogWidth > 3 * 120 + paneMargin * 2 && quitDialogIcon >= control * 2))
         out.append(("a held back button opens its history well after an ordinary click ends",
                     holdDelay > switcherDelay && holdDelay <= 0.5))
         out.append(("a dragged row settles in about the time the list takes to reshape",
