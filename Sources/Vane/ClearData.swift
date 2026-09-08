@@ -98,7 +98,8 @@ import WebKit
         let when = options.range == .everything
             ? "from the beginning of time"
             : "from the \(options.range.title.lowercased())"
-        return "Clears \(list) \(when). Bookmarks and saved passwords are not affected."
+        let apps = options.cookies ? " Apps you let sites open without asking are forgotten too." : ""
+        return "Clears \(list) \(when).\(apps) Bookmarks and saved passwords are not affected."
     }
 
     /// Do it. History is Vane's own database; cookies, storage and caches belong to the
@@ -108,6 +109,11 @@ import WebKit
         if options.history {
             Store.store(for: profileID).clearHistory(since: options.range == .everything ? nil : since)
         }
+        // Being allowed to open another app is site data too: the answer was given to a
+        // site, and a sweep that clears the site's cookies and leaves it standing has not
+        // cleared the site. No time range — the answers carry no date, and "cookies and
+        // site data" is what a user picks when they mean "forget this".
+        if options.cookies { ExternalApps.forgetAll() }
         let types = dataTypes(cookies: options.cookies, cache: options.cache)
         guard !types.isEmpty else { return }
         ProfileManager.dataStore(for: profileID)
@@ -174,6 +180,13 @@ import WebKit
             ("a time window is named in the sentence",
              { justCookies.range = .week
                return summary(justCookies).contains("from the last 7 days") }()),
+            // Being allowed to open another app is site data, and the sentence has to say
+            // so: it is the one thing cleared here that is not WebKit's to clear.
+            ("cookies and site data says the apps sites may open go too",
+             summary(Options(history: false, cookies: true, cache: false))
+                .contains("Apps you let sites open without asking are forgotten too.")),
+            ("…and history on its own does not claim to touch them",
+             !summary(Options()).contains("Apps you let sites open")),
         ]
     }
 }

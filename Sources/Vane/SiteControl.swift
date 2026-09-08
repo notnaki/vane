@@ -33,6 +33,15 @@ struct SiteControlModel: Equatable, Sendable {
         var pinned = false
     }
 
+    /// One app this site may open without being asked again — a remembered "Always Allow".
+    struct App: Equatable, Sendable {
+        /// The url scheme the answer was given for: "zoommtg", "msteams", "mailto".
+        let scheme: String
+        /// The handler's display name, or the scheme itself when nothing on this Mac claims
+        /// it any more — the answer is still standing and still has to be removable.
+        let name: String
+    }
+
     /// Empty for anything with no site to control: nothing loaded, a file, about:blank.
     var host = ""
     var scheme: String?
@@ -47,6 +56,8 @@ struct SiteControlModel: Equatable, Sendable {
     var reader = false
     var readerAvailable = false
     var extensions: [Ext] = []
+    /// The apps this site is allowed to open without asking. See ExternalApps.swift.
+    var apps: [App] = []
     var developer = false
 }
 
@@ -57,6 +68,8 @@ extension SiteControlModel {
         case camera, microphone, pictureInPicture, zoom, blocker, reader, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
+        /// The index into `apps`: one remembered "Always Allow" for another app.
+        case app(Int)
     }
 
     /// What sits at the trailing edge of a row.
@@ -181,6 +194,15 @@ extension SiteControlModel {
                            note: ext.enabled ? nil : "Not available on this page.",
                            badge: ext.badge, dim: !ext.enabled))
         }
+        // What this site may open outside the browser. Only ever the answers that exist: a
+        // site that has never been allowed an app has no row here, the same way a site with
+        // no extensions has none for those.
+        for (i, app) in apps.enumerated() {
+            out.append(Row(id: .app(i), title: "Open in " + app.name,
+                           glyph: "arrow.up.forward.app",
+                           control: .toggle(true),
+                           note: "Always opens " + app.scheme + ": links from this site."))
+        }
         out.append(Row(id: .clearData, title: "Clear Site Data…", glyph: "trash",
                        control: .action))
         out.append(Row(id: .developer, title: "Developer Mode", glyph: "hammer",
@@ -228,6 +250,12 @@ extension SiteControlModel {
                        badge: action.flatMap { ExtensionPins.badge($0.badgeText) },
                        enabled: action?.isEnabled ?? true,
                        pinned: host.isPinned(context))
+        }
+        // The name is looked up per scheme rather than stored: the answer is a (site,
+        // scheme) pair, and which app answers to a scheme is macOS's to change.
+        apps = ExternalApps.schemes(host: h).map { scheme in
+            let handler = URL(string: scheme + "://open").flatMap(ExternalApps.handler(for:))
+            return App(scheme: scheme, name: ExternalApps.name(of: handler) ?? scheme)
         }
         developer = tab.web.isInspectable
     }
@@ -277,6 +305,9 @@ extension SiteControlModel {
         case .blocker: Blocker.setEnabled(!Blocker.enabled(for: tab.profileID), for: tab.profileID)
         case .reader: Reader.toggle(tab)
         case .ext(let i): toggleExtension(i, on: tab)
+        // The switch is on because the answer exists; the only thing it can do is take it
+        // back, which puts the site back to being asked.
+        case .app(let i): forgetApp(i, host: host)
         case .clearData: clearSiteData(host: host, tab: tab)
         case .developer: setDeveloper(!tab.web.isInspectable, on: tab)
         }
@@ -312,6 +343,15 @@ extension SiteControlModel {
         guard let url = tab.currentURL else { return }
         let allowed = !context.hasAccess(to: url)
         context.setPermissionStatus(allowed ? .grantedExplicitly : .deniedExplicitly, for: url)
+    }
+
+    /// "Always Allow", taken back. Indexed the way the row was drawn — against the sorted
+    /// list `ExternalApps.schemes` returns — and re-read here rather than carried, so a row
+    /// whose answer has gone in the meantime removes nothing instead of its neighbour.
+    static func forgetApp(_ index: Int, host: String) {
+        let all = ExternalApps.schemes(host: host)
+        guard all.indices.contains(index) else { return }
+        ExternalApps.forget(host: host, scheme: all[index])
     }
 
     /// The index-keyed way in, for `act` — which is keyed on `RowID` and has nothing else to
@@ -351,9 +391,9 @@ extension SiteControlModel {
         alert.messageText = "Clear the data “\(host)” has stored?"
         alert.informativeText = "Cookies, local storage and cached files for this site and its "
             + "subdomains go, and you will be signed out of it. Vane also forgets the camera, "
-            + "microphone and zoom answers you gave this site, any certificate warning you "
-            + "clicked through for it, and its exemption from HTTPS-only mode. History and "
-            + "passwords are not touched."
+            + "microphone and zoom answers you gave this site, the apps you let it open, "
+            + "any certificate warning you clicked through for it, and its exemption from "
+            + "HTTPS-only mode. History and passwords are not touched."
         alert.addButton(withTitle: "Clear")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -365,6 +405,8 @@ extension SiteControlModel {
         // the two decisions that made it less safe than the others.
         CertificateTrust.forget(host: host)
         HTTPSOnly.forget(host: host, profileID: tab.profileID)
+        // "Always Allow" for another app is one more thing this site was allowed to do.
+        ExternalApps.reset(host: host)
         done(host)
 
         let store = tab.web.configuration.websiteDataStore
@@ -548,6 +590,29 @@ extension SiteControlModel {
         var dev = m
         dev.developer = true
         out.append(("…and reads as on when the tab is inspectable", control(dev, .developer) == .toggle(true)))
+
+        // Apps this site may open without asking. See ExternalApps.swift.
+        out.append(("a site that has never been allowed an app gets no row for one",
+                    !m.rows.contains { if case .app = $0.id { return true }; return false }))
+        var opens = m
+        opens.apps = [SiteControlModel.App(scheme: "zoommtg", name: "Zoom"),
+                      SiteControlModel.App(scheme: "msteams", name: "Microsoft Teams")]
+        let appRows: [SiteControlModel.Row] =
+            opens.rows.filter { if case .app = $0.id { return true }; return false }
+        out.append(("one row per remembered app", appRows.count == 2))
+        out.append(("…named after the app, not the scheme", appRows.first?.title == "Open in Zoom"))
+        out.append(("…and saying which links it takes",
+                    appRows.first?.note == "Always opens zoommtg: links from this site."))
+        out.append(("…as a switch that is on, because the only thing it can do is be taken back",
+                    appRows.allSatisfy { $0.control == .toggle(true) && !$0.inert }))
+        out.append(("…in the order the store hands them over, so the rows do not shuffle",
+                    appRows.map(\.title) == ["Open in Zoom", "Open in Microsoft Teams"]))
+        out.append(("…and they sit above Clear Site Data, which is still the last thing but one",
+                    opens.rows.dropLast().last?.id == .clearData))
+        out.append(("a scheme nothing claims any more is still listed, so it can be removed",
+                    { var orphan = opens
+                      orphan.apps = [SiteControlModel.App(scheme: "zoommtg", name: "zoommtg")]
+                      return orphan.rows.contains { $0.title == "Open in zoommtg" } }()))
 
         // Clearing site data, scoped.
         out.append(("a site's own record is cleared",

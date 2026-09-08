@@ -610,6 +610,24 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// scheme from here — WebKit does not let the delegate rewrite the request.
     func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        // A link to another app — zoommtg:, msteams:, mailto:, tel: — is not something
+        // WebKit has a loader for: allowing it failed the navigation with "unsupported URL"
+        // and the click looked like it did nothing at all. So it is cancelled and asked
+        // about instead. First, because the question is the same wherever the navigation
+        // came from and whatever else it also is: the main frame, an iframe, a `location =`
+        // redirect, a ⌘-click that would otherwise open a tab that cannot load, or a
+        // target=_blank on its way to `createWebViewWith`.
+        //
+        // `w.url` is the site the card names — the page the link is on. Deliberately not
+        // the link's own host: a `zoommtg:` url's host is part of the meeting address, not
+        // a site anything can be granted to. ponytail: a url typed straight into the
+        // address bar is credited to the page it is replacing, since the source frame is
+        // that page either way. Ceiling: the card names the site you were on.
+        if let url = navigationAction.request.url, ExternalApps.isExternal(url.scheme) {
+            decisionHandler(.cancel)
+            ExternalApps.offer(url, from: w.url ?? currentURL, tab: self)
+            return
+        }
         // ⌘-click, ⇧⌘-click and middle-click are a request for a tab, and ⌥⌘-click one for a
         // Little Arc — not for this page to go somewhere. Before HTTPS-only, because the new
         // tab or window does its own load and gets its own vetting.
@@ -851,6 +869,13 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     // target="_blank" and window.open — hand it to a real tab instead of a popup window.
     func webView(_ w: WKWebView, createWebViewWith cfg: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        // `window.open('zoommtg:…')`. Belt and braces around the same test in
+        // `decidePolicyFor` — a popup opened with no url and navigated afterwards arrives
+        // here first — and a new tab for a scheme no tab can load is worse than no tab.
+        if let url = action.request.url, ExternalApps.isExternal(url.scheme) {
+            ExternalApps.offer(url, from: w.url ?? currentURL, tab: self)
+            return nil
+        }
         if let url = action.request.url, let open = onOpenBeside {
             open(url, !action.modifierFlags.contains(.command))
         } else {
@@ -917,6 +942,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// each have their own open. `.address` is what ⌘L, ⌘T and clicking the address pill
     /// open — the place to type a url or a search.
     @Published var palette: PaletteMode?
+    /// “Open “Zoom”?” — a link in this window that leads out of the browser, waiting for
+    /// an answer. Per window, like the command bar: the card is anchored to the page that
+    /// asked, so a background window’s `zoommtg:` link cannot put a sheet over whatever is
+    /// being read in front. See ExternalApps.swift.
+    @Published var externalApp: ExternalApps.Prompt?
     @Published var findOpen = false
     @Published var suggestions: [Suggestion] = []
     /// -1 means "no suggestion highlighted" — Enter then uses what was typed.

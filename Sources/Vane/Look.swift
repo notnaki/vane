@@ -230,6 +230,18 @@ enum Look {
     /// appearance-following, which no `ink` alpha over nothing can be.
     static let panelFill = Color(nsColor: .windowBackgroundColor)
 
+    /// The card that asks whether a link may leave for another app: “Open “Zoom”?”.
+    /// Wide enough for Cancel, Always Allow and Allow on one line beside a `paneMargin`
+    /// on each side, which is what stops the three buttons stacking.
+    static let appPrompt: CGFloat = 400
+    /// The handler’s icon on it, at the size macOS draws an app icon in a dialog of its own.
+    static let appIcon: CGFloat = 48
+    /// What AppKit's bezel adds around a push button's title. Nothing is drawn with it —
+    /// the card's buttons are system buttons and AppKit sizes them — it is what `check`
+    /// needs in order to say whether a row of them fits `appPrompt` before anyone has to
+    /// look at a screenshot of them stacked into a column.
+    static let buttonPadding: CGFloat = 26
+
     /// The Site Control Center popover. Wide enough for "Picture in Picture" and its switch
     /// on one line, and no wider — it hangs off the address pill, not off the window.
     static let siteWidth: CGFloat = 300
@@ -663,6 +675,21 @@ extension Look {
         var out: [(String, Bool)] = []
         out.append(("the lights' centre line is the sidebar top row's centre line",
                     lightsCentre == topInset + topRow / 2))
+
+        // The external-app card's three buttons on one line. Measured rather than
+        // eyeballed: the strings are ours, the metrics are the system's, and a row that
+        // does not fit does not overflow — AppKit stacks it into a column and the card
+        // stops looking like a card. Text measurement needs fonts, not a window server, so
+        // it is fair game in the pure pass.
+        let titles = ["Cancel", "Always Allow", "Allow"]
+        let font = NSFont.systemFont(ofSize: 13)          // `Look.text`
+        let words = titles.reduce(0 as CGFloat) {
+            $0 + NSAttributedString(string: $1, attributes: [.font: font]).size().width
+        }
+        let row = words + CGFloat(titles.count) * buttonPadding
+            + CGFloat(titles.count - 1) * inset
+        out.append(("Cancel, Always Allow and Allow fit the app-prompt card on one line",
+                    row <= appPrompt - paneMargin * 2))
         // 800 stands for the window's top edge wherever AppKit parented the buttons; only
         // the offset from it matters, which is what makes the arithmetic testable at all.
         out.append(("a 14pt light's origin puts its centre on that line",

@@ -197,12 +197,11 @@ import UniformTypeIdentifiers
     }
 
     /// The window a rule may put a tab in: an ordinary one, never a Little Arc and never a
-    /// Private Window. `Windows.current(in:)` excludes only Little Arcs, and a private
-    /// window is spaceless by design — `switchTo` refuses on one, so a link routed there
-    /// would land in whatever that window was showing and the rule would look ignored.
+    /// Private Window — which is spaceless by design, so `switchTo` refuses on one and a
+    /// link routed there would land in whatever that window was showing with the rule
+    /// looking ignored. Exactly what `Windows.current(in:isPrivate:)` answers by default.
     private static func target(in profileID: UUID) -> TabStore? {
-        let mine = TabStore.all.filter { $0.profileID == profileID && !$0.isLittle && !$0.isPrivate }
-        return mine.first { $0.window?.isKeyWindow == true } ?? mine.last
+        Windows.current(in: profileID)
     }
 
     /// A link into a named Space: a Today tab in a window showing that Space, switching one

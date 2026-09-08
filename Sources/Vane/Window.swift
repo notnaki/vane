@@ -95,14 +95,56 @@ final class VaneWindow: NSWindow {
         if event.type == .keyDown, event.charactersIgnoringModifiers == "a",
            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
            MainActor.assumeIsolated({ Selection.selectAll(in: self) }) { return }
-        if event.type == .leftMouseDown,
-           MainActor.assumeIsolated({ WindowDragGround.shared.over }) {
-            // Runs its own event loop until the button comes up, and gives us AppKit's edge
-            // snapping and Spaces handling for nothing.
-            performDrag(with: event)
-            return
+        if event.type == .leftMouseDown {
+            let at = event.locationInWindow
+            if MainActor.assumeIsolated({
+                Self.picksUpWindow(overGround: WindowDragGround.shared.over,
+                                   onLight: onTrafficLight(at))
+            }) {
+                // Runs its own event loop until the button comes up, and gives us AppKit's
+                // edge snapping and Spaces handling for nothing.
+                performDrag(with: event)
+                return
+            }
         }
         super.sendEvent(event)
+    }
+
+    /// Whether a left mouse-down picks the window up, given what is under the pointer.
+    ///
+    /// The second half is the bug this exists for. The traffic lights are AppKit's own
+    /// buttons, in the titlebar view, *above* the content view — and the drag ground is a
+    /// SwiftUI view laid under the whole sidebar (under Little Vane's whole bar), which
+    /// knows nothing about a view hierarchy it is not in. SwiftUI reports that ground as
+    /// hovered while the pointer is on a light, so "over" alone said bare ground over the
+    /// close button: `sendEvent` turned the click into `performDrag`, which for a click
+    /// with no movement starts and ends a window move and never reaches the button. ×, −
+    /// and the zoom button all did nothing, in every Vane window — most visibly in a Little
+    /// Vane, where the lights are the only way to close, minimise or zoom it.
+    ///
+    /// Pure, so the rule can be proved without a window server. `onLight` is an autoclosure
+    /// because this runs on every left mouse-down in the app and the ground is the cheap
+    /// half — an integer read — while the light test is three `hitTest`s and two coordinate
+    /// conversions. Off the ground there is nothing to ask.
+    nonisolated static func picksUpWindow(overGround: Bool,
+                                          onLight: @autoclosure () -> Bool) -> Bool {
+        overGround && !onLight()
+    }
+
+    /// True while `point` — in the window's own coordinates — is on one of the traffic
+    /// lights. The three standard buttons and nothing else: the titlebar view spans the
+    /// window's whole width, and the bar drawn across it is meant to pick the window up
+    /// everywhere the lights are not. A hidden button (`showTrafficLights(false)`, a
+    /// collapsed window) is not there to be clicked and does not stop a drag.
+    @MainActor func onTrafficLight(_ point: NSPoint) -> Bool {
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            guard let button = standardWindowButton(kind), !button.isHidden,
+                  let host = button.superview else { continue }
+            // `hitTest` takes a point in the *superview's* space, and answers nil for a
+            // button that is hidden or disabled — which is the answer we want either way.
+            if button.hitTest(host.convert(point, from: nil)) != nil { return true }
+        }
+        return false
     }
 
     /// Becoming or resigning key swaps the buttons' images and can re-lay them without a
@@ -130,6 +172,19 @@ extension VaneWindow {
             ("peeking is the only thing that moves them",
              lightOriginY(windowTop: 800, buttonHeight: 14, peeking: false)
                 == lightOriginY(windowTop: 800, buttonHeight: 14)),
+
+            // The lights answer a click. The drag ground lies under them, and used to eat it.
+            ("bare ground picks the window up", picksUpWindow(overGround: true, onLight: false)),
+            ("a traffic light does not — the click is the button's",
+             !picksUpWindow(overGround: true, onLight: true)),
+            ("nothing at all under the pointer is not a drag either",
+             !picksUpWindow(overGround: false, onLight: false)),
+            ("a light with no ground behind it is still not a drag",
+             !picksUpWindow(overGround: false, onLight: true)),
+            ("Little Vane's bar really does reach over the lights, which is why the guard "
+             + "is needed", Look.littleTopInset + Look.pillHeight > Look.lightsCentre),
+            ("…and so does the sidebar's own top strip",
+             Look.topInset + Look.topRow > Look.lightsCentre),
         ]
     }
 }
@@ -157,9 +212,20 @@ extension VaneWindow {
         return ordinary.first { $0.window?.isKeyWindow == true } ?? ordinary.last
     }
 
-    /// The window the menus act on, restricted to one profile.
-    static func current(in profileID: UUID) -> TabStore? {
-        let mine = TabStore.all.filter { $0.profileID == profileID && !$0.isLittle }
+    /// The window the menus act on, restricted to one profile — and to one kind of window.
+    ///
+    /// `isPrivate` has to match, and defaults to the ordinary window every caller means. A
+    /// Private Window is not a window a page can be quietly handed to: it keeps no history,
+    /// holds no Space, and throws its cookies away when it closes. Without the test, a
+    /// private Little Vane whose own window was key fell through to `mine.last` and handed
+    /// its page — with its url, its title and its cookies — to an ordinary window, which is
+    /// the one thing a Private Window exists not to allow. It reads the other way too: a
+    /// page from an ordinary Little Vane must not land in an incognito window that will
+    /// throw it away.
+    static func current(in profileID: UUID, isPrivate: Bool = false) -> TabStore? {
+        let mine = TabStore.all.filter {
+            $0.profileID == profileID && !$0.isLittle && $0.isPrivate == isPrivate
+        }
         return mine.first { $0.window?.isKeyWindow == true } ?? mine.last
     }
 
