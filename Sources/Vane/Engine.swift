@@ -668,14 +668,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
                 return
             // The link asked for a tab instead: ⇧-clicked out of a place you keep, or the
             // preference is off and this tab is still not going to be taken off its site.
-            // Focused, unlike ⌘-click's — the click was not "and keep me here", it was the
-            // gesture that replaced a Peek, and a Peek shows you the page.
-            case .newTab:
-                if let open = onOpenBeside {
-                    decisionHandler(.cancel)
-                    open(url, true)
-                    return
-                }
+            //
+            // Cancelled first and unconditionally. A window with a sidebar always has an
+            // `onOpenBeside` — `newBlankTab` sets one on every tab it makes — but "unless it
+            // doesn't, in which case navigate here" is exactly the fallback this whole change
+            // exists to remove: it would put the favourite on the page in the one case
+            // nobody tests.
+            case .newTab(let focus):
+                decisionHandler(.cancel)
+                onOpenBeside?(url, focus)
+                return
             case .navigate:
                 break
             }

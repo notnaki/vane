@@ -248,7 +248,12 @@ import Foundation
     /// would be grouped together. The cost of that error is two tabs sitting next to each
     /// other in a group the user can ignore. The cost of shipping and updating a 10,000-line
     /// suffix list for tab grouping is not worth paying.
-    static func registrableDomain(_ host: String) -> String {
+    ///
+    /// `nonisolated` because it is arithmetic on a string and because the sidebar's favicon
+    /// slot asks it the same question: `Favicons.letter` takes a site's initial off the
+    /// label this returns, so a tab with no icon and a group of tabs with one agree about
+    /// what the site is called. One rule, one ceiling, one place to fix it.
+    nonisolated static func registrableDomain(_ host: String) -> String {
         var h = host.lowercased()
         if h.hasPrefix("www.") { h.removeFirst(4) }
         let parts = h.split(separator: ".").map(String.init)

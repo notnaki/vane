@@ -2475,9 +2475,16 @@ extension View {
 /// pile, and two actions offering to sort them out are two things to read past on every new
 /// Space and in every new window.
 ///
-/// The hairline stays either way. It is the end of the pinned section, not a decoration on
-/// the buttons, and the row keeps its height — so at the sixth tab the two actions fade in
-/// where they were always going to be, and nothing below them moves.
+/// The hairline stays either way — it is the end of the pinned section, not a decoration on
+/// the buttons — and so does its *length*. The two actions keep their place in the layout
+/// and fade rather than being taken out of it: dropped from the stack, the hairline would
+/// stretch across the gap they left and the row would visibly re-draw itself at the sixth
+/// tab. Fading in place is the whole of "no pop": nothing moves, including the line.
+///
+/// Below the threshold they are hidden from the pointer and from VoiceOver alike, so the
+/// sidebar offers exactly what it shows. Neither action is *lost* there: Tidy Tabs and Clear
+/// Tabs keep their menu items and their shortcuts at any number of tabs, which is the route
+/// a keyboard or a screen reader would take to them anyway.
 private struct TidyRow: View {
     @EnvironmentObject var store: TabStore
     /// Set while a tab that this would actually move is over the divider. See below.
@@ -2488,7 +2495,7 @@ private struct TidyRow: View {
         let offering = TidyTabs.offersHousekeeping(store)
         HStack(spacing: 8) {
             Hairline()
-            if offering {
+            Group {
                 // The menu item owns the tidy's cancellation and its "undo" bookkeeping —
                 // this is the same closure, not a second copy of it.
                 Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
@@ -2500,6 +2507,9 @@ private struct TidyRow: View {
                     .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
                     .accessibilityLabel("Clear Tabs")
             }
+            .opacity(offering ? 1 : 0)
+            .allowsHitTesting(offering)
+            .accessibilityHidden(!offering)
         }
         .animation(reduceMotion ? nil : Look.list, value: offering)
         .buttonStyle(.plain)
@@ -3116,7 +3126,7 @@ private struct TabIcon: View {
                 // Flat, no box: a tile and a pane pill already have a fill under this, and a
                 // second one inside it would read as an icon with a badge.
                 Text(letter)
-                    .font(.system(size: size * Look.letterScale, weight: .semibold, design: .rounded))
+                    .font(Look.letterFont(box: size))
                     .foregroundStyle(Look.inkSecondary)
             } else {
                 // Nothing to take a letter from: a blank tab, or a file with no icon yet.

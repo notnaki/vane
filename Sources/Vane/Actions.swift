@@ -159,15 +159,16 @@ extension PaletteCommand {
                     PaletteCommand(.nextPane, icon: "arrow.left.arrow.right"),
                 ]
             }
-            // Both halves of the question: whether tidying would help, and whether the window
-            // is offering housekeeping at all. The second is the sidebar's rule, and the bar
-            // follows it — a Tidy Tabs the sidebar is deliberately not showing has no business
-            // being the top hit in the command bar. The menu item stays either way: a menu is
-            // where you look something up, not something you read past.
-            if TidyTabs.shouldOffer(store), TidyTabs.offersHousekeeping(store) {
-                out.append(PaletteCommand(.tidyTabs, icon: "wand.and.stars"))
-            }
-            if store.tabs.contains(where: { $0.kind == .today }) {
+            // Housekeeping, on the sidebar's rule: both of these are the row's two buttons,
+            // and a command the sidebar is deliberately not showing has no business being
+            // the top hit in the command bar. Tidy asks the second question as well —
+            // whether tidying would actually help. The menu items stay either way: a menu is
+            // where you look something up, not something you read past, and Tidy Tabs and
+            // Clear Tabs keep their shortcuts below the threshold.
+            if TidyTabs.offersHousekeeping(store) {
+                if TidyTabs.shouldOffer(store) {
+                    out.append(PaletteCommand(.tidyTabs, icon: "wand.and.stars"))
+                }
                 out.append(PaletteCommand(.clearTabs, icon: "xmark.bin"))
             }
             out.append(PaletteCommand("New Folder", icon: "folder.badge.plus") {

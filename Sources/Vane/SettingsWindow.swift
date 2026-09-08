@@ -879,8 +879,10 @@ private struct LinksPane: View {
                          + "and Escape, \u{2318}W or a click outside throws it away — "
                          + "Archive ▸ Reopen Last Peek brings the last one back. Off sends "
                          + "those links to a new tab instead, which still leaves the Favourite "
-                         + "where it was. \u{21E7}-click overrides either way: an ordinary tab "
-                         + "from a Favourite or a Pinned tab, a Peek from a Today tab.")
+                         + "where it was. \u{21E7}-click overrides either way, off included: "
+                         + "an ordinary tab from a Favourite or a Pinned tab, a Peek from a "
+                         + "Today tab. A key you are holding down beats a switch you set once, "
+                         + "so \u{21E7}-click can still peek with this off.")
             }
 
             SettingsCard {

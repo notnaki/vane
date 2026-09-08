@@ -153,18 +153,29 @@ import WebKit
     /// never been to. Arc puts the site's initial there; it never puts a spinner there, which
     /// is the whole point: a row is a place, and a place does not flicker while it loads.
     ///
-    /// The name is the label before the public suffix, so `mail.google.com` is a G and not an
-    /// M — the letter has to be the one the *site* is known by, or two tabs on one site show
-    /// two different marks. `www.` and the mobile prefixes are not names either.
+    /// The name is the label under the public suffix, so `mail.google.com` is a G and not an
+    /// M, and `www.bbc.co.uk` is a B and not a C. That is `TidyTabs.registrableDomain`'s
+    /// question and it is asked there rather than answered twice: a tab with no icon and a
+    /// group of tabs with one then agree about what the site is called, and the handful of
+    /// two-part suffixes it knows (co.uk, com.au, co.jp …) is one list to fix, not two.
     ///
-    /// An address literal has no name to take a letter from: every label is a number, and
-    /// "the second-to-last one" would make 127.0.0.1 a 0. Its first digit is at least stable.
+    /// Two hosts have no name to take a letter from:
+    ///
+    /// - An address literal. Every label is a number, and "the label under the suffix" would
+    ///   make `127.0.0.1` a 0; its first digit is at least stable.
+    /// - A punycode host. `xn--fiqs8s` is an encoding, not a word, and every one of them
+    ///   would be an X — the one letter that would be wrong for all of them at once. There
+    ///   is no public API to turn it back into the label a reader would recognise, so this
+    ///   gives up and the globe stands in. Upgrade path: an IDN decode, and the letter falls
+    ///   out of it.
     nonisolated static func letter(for url: URL?) -> String? {
         guard let host = url?.host()?.lowercased(), !host.isEmpty else { return nil }
-        let labels = host.split(separator: ".").filter { !["www", "m", "mobile"].contains($0) }
-        let numeric = labels.allSatisfy { $0.allSatisfy(\.isNumber) }
-        let name = numeric || labels.count < 3 ? labels.first : labels[labels.count - 2]
-        guard let c = name?.first(where: { $0.isLetter || $0.isNumber }) else { return nil }
+        let labels = host.split(separator: ".")
+        let name = labels.allSatisfy({ $0.allSatisfy(\.isNumber) })
+            ? labels.first.map(String.init)
+            : TidyTabs.registrableDomain(host).split(separator: ".").first.map(String.init)
+        guard let name, !name.hasPrefix("xn--"),
+              let c = name.first(where: { $0.isLetter || $0.isNumber }) else { return nil }
         return String(c).uppercased()
     }
 
@@ -238,6 +249,16 @@ import WebKit
              letter(for: u("https://mail.google.com/mail/u/0")) == "G"),
             ("…and www is not a name", letter(for: u("https://www.example.com/")) == "E"),
             ("…nor is a mobile prefix", letter(for: u("https://m.example.com/")) == "E"),
+            ("a two-part suffix is a suffix: bbc.co.uk is a B, not a C",
+             letter(for: u("https://www.bbc.co.uk/news")) == "B"
+                && letter(for: u("https://news.bbc.co.uk/")) == "B"),
+            ("…the same list the tab grouping folds hosts with, so the two agree",
+             letter(for: u("https://example.com.au/")) == "E"
+                && letter(for: u("https://shop.example.co.jp/")) == "E"),
+            ("a punycode host is an encoding, not a word: every one of them would be an X",
+             letter(for: u("https://xn--fiqs8s.example/")) == nil),
+            ("…and it is the site's own label that has to be readable, not a subdomain's",
+             letter(for: u("https://www.xn--fiqs8s.com/")) == nil),
             ("a bare host is its own name", letter(for: u("http://localhost:8000/")) == "L"),
             ("an address literal is not a name with an initial in the middle of it",
              letter(for: u("http://127.0.0.1:8000/")) == "1"),

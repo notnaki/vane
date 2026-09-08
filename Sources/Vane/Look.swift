@@ -91,6 +91,11 @@ enum Look {
     /// the box rather than a point size, because that box is 16 in a row and 16 in a tile.
     /// Short of the full box, so a letter and an icon read as one size.
     static let letterScale: CGFloat = 0.72
+    /// That letter's type, for a box of `box` points. Rounded and semibold: it is standing in
+    /// for an icon, so it has to read as a mark rather than as a word that got cut off.
+    static func letterFont(box: CGFloat) -> Font {
+        .system(size: box * letterScale, weight: .semibold, design: .rounded)
+    }
     /// The "→" square on a row that has a trailing label: what Return will press.
     static let chip: CGFloat = 24
     static let chipRadius: CGFloat = 6

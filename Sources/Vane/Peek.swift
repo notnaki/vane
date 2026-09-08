@@ -42,7 +42,12 @@ import WebKit
         case peek
         /// It opens as an ordinary tab in the sidebar. From a favourite or a pinned tab that
         /// is a Today tab at the head of the section — see `insertionIndexBeside`.
-        case newTab
+        ///
+        /// `focus` is whether to go there, and it is the reason ⌘ is in this table rather
+        /// than merely absent from it: ⌘-click's tab is a background one and ⇧⌘'s is not,
+        /// which is `TabActions.intent`'s rule, and a `.newTab` that always focused would
+        /// have quietly changed it if this ever ran first.
+        case newTab(focus: Bool)
     }
 
     /// The whole rule, as a pure function of the click. `nonisolated` so `selfcheck --pure`
@@ -53,8 +58,10 @@ import WebKit
     ///
     /// - **⌘ beats everything.** ⌘-click has meant "a tab, in the background" in every
     ///   browser since tabs existed, and a feature five months old does not get to take it.
-    ///   `TabActions.intent` has already made that tab by the time this is asked in anger;
-    ///   the row is here so the table is complete and cannot silently change under it.
+    ///   `TabActions.intent` has already made that tab by the time this is asked in anger,
+    ///   so the row is unreachable in practice — it is here because a table with a hole in
+    ///   it is where the next change goes wrong, and because it has to carry ⌘'s *focus*
+    ///   rule (⌘ behind, ⇧⌘ in front) rather than inventing a third one.
     /// - **⇧ is the override, and it overrides in both directions.** From a place you keep,
     ///   ⇧-click is "no, I do want this as a tab" — so it is the one gesture that gets a
     ///   cross-site link out of a pinned tab without a Peek. From a Today tab, which never
@@ -70,11 +77,14 @@ import WebKit
     ///   navigate, cross-site or not.
     nonisolated static func decision(kind: TabKind, sameSite: Bool, shift: Bool,
                                      command: Bool, setting: Bool) -> Open {
-        if command { return .newTab }
+        if command { return .newTab(focus: shift) }
         let kept = kind != .today
-        if shift { return kept ? .newTab : .peek }
+        // The two tabs this feature makes are both ones the user just asked to see — ⇧ out
+        // of a place you keep, or the preference off — where ⌘'s is deliberately behind
+        // what you are reading. A Peek shows you the page; what replaces a Peek does too.
+        if shift { return kept ? .newTab(focus: true) : .peek }
         guard kept, !sameSite else { return .navigate }
-        return setting ? .peek : .newTab
+        return setting ? .peek : .newTab(focus: true)
     }
 
     /// The same question asked of a real click, which arrives as two urls and a modifier
@@ -562,20 +572,22 @@ extension Peek {
                 ("…and with the setting off it opens as a Today tab rather than taking "
                  + "\(name) off the site it is kept on",
                  decision(kind: kept, sameSite: false, shift: false, command: false,
-                          setting: false) == .newTab),
+                          setting: false) == .newTab(focus: true)),
                 ("\u{21E7}-click in \(name) forces an ordinary tab, never a Peek",
                  decision(kind: kept, sameSite: false, shift: true, command: false,
-                          setting: true) == .newTab
+                          setting: true) == .newTab(focus: true)
                     && decision(kind: kept, sameSite: true, shift: true, command: false,
-                                setting: true) == .newTab),
+                                setting: true) == .newTab(focus: true)),
                 ("…with the setting off too: a modifier held beats a preference set once",
                  decision(kind: kept, sameSite: false, shift: true, command: false,
-                          setting: false) == .newTab),
-                ("\u{2318}-click keeps its own meaning from \(name): a tab, not a Peek",
+                          setting: false) == .newTab(focus: true)),
+                ("\u{2318}-click keeps its own meaning from \(name): a background tab, "
+                 + "and \u{21E7}\u{2318} one you are taken to — TabActions.intent's rule, not "
+                 + "a second one",
                  decision(kind: kept, sameSite: false, shift: false, command: true,
-                          setting: true) == .newTab
+                          setting: true) == .newTab(focus: false)
                     && decision(kind: kept, sameSite: false, shift: true, command: true,
-                                setting: true) == .newTab),
+                                setting: true) == .newTab(focus: true)),
             ]
         }
         table += [
@@ -595,9 +607,9 @@ extension Peek {
             ("with the setting off a Today tab's links still simply navigate",
              decision(kind: .today, sameSite: false, shift: false, command: false,
                       setting: false) == .navigate),
-            ("\u{2318}-click in a Today tab is a tab here as well",
+            ("\u{2318}-click in a Today tab is a background tab here as well",
              decision(kind: .today, sameSite: false, shift: false, command: true,
-                      setting: true) == .newTab),
+                      setting: true) == .newTab(focus: false)),
         ]
 
         return table + [
@@ -612,11 +624,12 @@ extension Peek {
             ("a Today tab is a page you are reading: its links navigate, same site or not",
              go(.today, gmail, news) == .navigate && go(.today, gmail, inbox) == .navigate),
             ("\u{21E7}-click peeks a Today tab's link and makes a tab of a favourite's",
-             go(.today, gmail, news, shift) == .peek && go(.pinned, gmail, news, shift) == .newTab),
+             go(.today, gmail, news, shift) == .peek
+                && go(.pinned, gmail, news, shift) == .newTab(focus: true)),
             ("…including a link that would otherwise have navigated in place",
              go(.today, gmail, inbox, shift) == .peek),
             ("with the preference off nothing peeks by itself — the link becomes a tab",
-             go(.favourite, gmail, news, on: false) == .newTab
+             go(.favourite, gmail, news, on: false) == .newTab(focus: true)
                 && go(.favourite, gmail, inbox, on: false) == .navigate),
             ("a mailto: link is neither peeked nor made a tab — it is the system's to open",
              go(.pinned, gmail, mailto) == .navigate
@@ -627,7 +640,7 @@ extension Peek {
             ("http peeks as well as https — a link off a pinned tab is a link",
              go(.pinned, gmail, URL(string: "http://example.com/")!) == .peek),
             ("\u{2318}-click is read off the same modifiers as everything else",
-             go(.favourite, gmail, news, command) == .newTab),
+             go(.favourite, gmail, news, command) == .newTab(focus: false)),
             ("a port is not a site: two servers on one host stay in the tab",
              sameSite(URL(string: "http://127.0.0.1:8000/a")!,
                       URL(string: "http://127.0.0.1:8001/b")!)),
