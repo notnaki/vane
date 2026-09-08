@@ -631,7 +631,8 @@ enum Look {
     // Toasts: a pill above the sidebar's footer, gone after `toastDuration` unless hovered.
     static let toastHeight: CGFloat = 32
     static let toastDuration: Double = 3
-    /// Arc's "Quit Vane?" card: its width and the icon in its corner.
+    /// Arc's "Quit Vane?" card: the least it is wide (three buttons in a row make it wider
+    /// when they need to) and the icon in its corner.
     static let quitDialogWidth: CGFloat = 440
     static let quitDialogIcon: CGFloat = 56
     /// How much of the space's colour washes over the pill's dark ground.
@@ -712,8 +713,8 @@ extension Look {
         out.append(("a long row title stops clear of the ×, not under it",
                     rowSpacing * 2 >= rowInset
                         && rowTarget + rowSpacing * 2 + rowTrailingInset < sidebarWidth))
-        out.append(("the quit card is wider than its three buttons need and shows a real icon",
-                    quitDialogWidth > 3 * 120 + paneMargin * 2 && quitDialogIcon >= control * 2))
+        out.append(("the quit card starts wider than its margins and shows a real icon",
+                    quitDialogWidth > paneMargin * 4 && quitDialogIcon >= control * 2))
         out.append(("a held back button opens its history well after an ordinary click ends",
                     holdDelay > switcherDelay && holdDelay <= 0.5))
         out.append(("a dragged row settles in about the time the list takes to reshape",

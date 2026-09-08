@@ -118,6 +118,10 @@ enum QuitAsk {
 
     /// The dialog has been answered and we are the ones asking to terminate: do not ask again.
     private var confirmed = false
+    /// The dialog is up. AppKit still routes ⌘Q to `terminate:` during a modal session, and
+    /// a second one would nest a second modal loop inside the first; while asking, the
+    /// answer is "not yet".
+    private var asking = false
 
     /// ⌘Q with `Prefs.warnBeforeQuit` on puts up Arc's "Quit Vane?" and quits only on its
     /// answer. Only a real, fresh ⌘Q is asked about, and the chord is checked exactly:
@@ -135,6 +139,9 @@ enum QuitAsk {
                                   flags: event.modifierFlags),
               QuitAsk.isFresh(event.timestamp, now: ProcessInfo.processInfo.systemUptime)
         else { return .terminateNow }
+        if asking { return .terminateCancel }
+        asking = true
+        defer { asking = false }
         switch QuitDialog.ask(over: app.keyWindow) {
         case .cancel: return .terminateCancel
         case .quitForever: Prefs.warnBeforeQuit = false; fallthrough

@@ -6,7 +6,7 @@ import SwiftUI
 /// could trust; a question with a default button is answered by the same ⌘Q-then-⏎ people
 /// already do, and cannot be missed.
 ///
-/// ponytail: one modal borderless panel run with `runModal`, so the answer comes back as a
+/// ponytail: one modal borderless window run with `runModal`, so the answer comes back as a
 /// value and `applicationShouldTerminate` stays a straight line. No sheet: a sheet hangs off
 /// a title bar and Vane's windows have none to hang it from.
 @MainActor enum QuitDialog {
@@ -15,11 +15,13 @@ import SwiftUI
     static func ask(over host: NSWindow?) -> Answer {
         var answer = Answer.cancel
         let panel = Panel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.title = "Quit Vane?"            // what VoiceOver says when the card takes key
+        panel.answer = { answer = $0; NSApp.stopModal() }
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isReleasedWhenClosed = false
-        panel.contentView = NSHostingView(rootView: Card { answer = $0; NSApp.stopModal() })
+        panel.contentView = NSHostingView(rootView: Card { panel.answer?($0) })
         panel.setContentSize(panel.contentView!.fittingSize)
         // Centred over the window that asked, or the screen when none did (the Dock's menu).
         let anchor = host?.frame ?? NSScreen.main?.visibleFrame ?? .zero
@@ -33,9 +35,20 @@ import SwiftUI
     }
 
     /// Borderless windows refuse key status by default, and a dialog that cannot take ⏎
-    /// and ⎋ is a picture of a dialog.
+    /// and ⎋ is a picture of a dialog. The two keys are answered here as well as by the
+    /// buttons' own shortcuts, so the card can always be left from the keyboard even if
+    /// SwiftUI's key-equivalent routing inside a modal borderless window ever does not fire.
     private final class Panel: NSWindow {
+        var answer: ((Answer) -> Void)?
         override var canBecomeKey: Bool { true }
+        override func cancelOperation(_ sender: Any?) { answer?(.cancel) }
+        override func keyDown(with event: NSEvent) {
+            switch event.keyCode {
+            case 36, 76: answer?(.quit)          // return, enter
+            case 53: answer?(.cancel)            // escape
+            default: super.keyDown(with: event)
+            }
+        }
     }
 
     private struct Card: View {
@@ -56,7 +69,8 @@ import SwiftUI
                 }
             }
             .padding(Look.paneMargin)
-            .frame(width: Look.quitDialogWidth)
+            .frame(minWidth: Look.quitDialogWidth)
+            .fixedSize()
             .background(Look.panelFill, in: .rect(cornerRadius: Look.cardRadius * 2))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Quit Vane?")
@@ -83,6 +97,7 @@ import SwiftUI
                         Text(key).font(Look.footnote.weight(.semibold))
                             .padding(.horizontal, Look.inset / 2).padding(.vertical, 1)
                             .background(Look.ink(0.12), in: .rect(cornerRadius: Look.cardRadius - 2))
+                            .accessibilityHidden(true)   // the button's own shortcut says it
                     }
                 }
                 .padding(.horizontal, Look.inset * 2).padding(.vertical, Look.inset)
