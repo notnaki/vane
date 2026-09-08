@@ -180,9 +180,44 @@ import SwiftUI
 
     // MARK: - Open in ▸
 
-    /// ⌘O and the "Open in" button's default: the Space the browser window is showing.
+    /// The button's label, and the sentence VoiceOver reads off it: the Space this page
+    /// would land in, named. "Open in" bare is the answer for a profile with no Space to
+    /// name at all — `ensureSpaces` makes that unreachable in the app, and a button whose
+    /// label is a dangling "Open in " is not.
+    /// Pure, so the button, its ⌘O and the menu's tick cannot say different things.
+    nonisolated static func openInTitle(space name: String?) -> String {
+        let trimmed = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Open in" : "Open in " + trimmed
+    }
+
+    /// Which Space the button names, the menu ticks and ⌘O opens into: the one the browser
+    /// window is showing, else the one the profile was last left in, else its first — the
+    /// ladder `Spaces.pick` walks for a window that is being opened, because that is what
+    /// this page is about to become a tab in.
+    ///
+    /// `ids` is the profile's own order, which is the sidebar's, and this never re-orders
+    /// it: the menu reads like the Spaces menu rather than being shuffled around whichever
+    /// Space happens to be current. A Space that is no longer in the list — deleted while
+    /// the Little Arc stood open — is not an answer, so it falls through to one that is.
+    /// Pure.
+    nonisolated static func target(spaces ids: [UUID], showing: UUID?, last: UUID?) -> UUID? {
+        if let showing, ids.contains(showing) { return showing }
+        if let last, ids.contains(last) { return last }
+        return ids.first
+    }
+
+    /// `target`, against the profile's real Spaces.
+    static func targetSpace(for store: TabStore) -> Space? {
+        let spaces = ProfileManager.shared.ensureSpaces(for: store.profile)
+        let id = target(spaces: spaces.map(\.id),
+                        showing: Windows.current(in: store.profileID)?.currentSpaceID,
+                        last: TabStore.lastSpaceID(for: store.profileID))
+        return spaces.first { $0.id == id }
+    }
+
+    /// ⌘O and a click on the button's label: the Space the button is naming.
     static func openInCurrentSpace(_ store: TabStore) {
-        move(store, to: Windows.current(in: store.profileID)?.currentSpace)
+        move(store, to: targetSpace(for: store))
     }
 
     /// Hand the page over to an ordinary window and close the Little Arc. The tab arrives on
@@ -253,18 +288,23 @@ import SwiftUI
     private static let menuWidth: CGFloat = 180
 
     static func spaceMenu(_ store: TabStore) -> NSMenu {
-        let menu = NSMenu()
+        // Titled, because an untitled NSMenu is one VoiceOver announces as "menu": this is
+        // the same sentence the button carries.
+        let menu = NSMenu(title: "Open in")
         // Spaces only. There is no "Open in Window" row any more: a browser window is always
         // in a Space, so "put this in a window" and "put this in a Space" are the same
         // question, and the answer this window is offering is which Space. `ensureSpaces`
         // is what makes the list never empty.
         let spaces = ProfileManager.shared.ensureSpaces(for: store.profile)
-        // The main window's Space is the default, and with no window open the one the
-        // profile was last left in — which is where a browser window would come up anyway.
-        let showing = Windows.current(in: store.profileID)?.currentSpaceID
-            ?? TabStore.lastSpaceID(for: store.profileID) ?? spaces[0].id
+        let showing = target(spaces: spaces.map(\.id),
+                             showing: Windows.current(in: store.profileID)?.currentSpaceID,
+                             last: TabStore.lastSpaceID(for: store.profileID))
         for space in spaces {
             let row = entry(space.name) { move(store, to: space) }
+            // The Space's own glyph, as the sidebar and the Spaces menu draw it. The
+            // description is what a screen reader reads, so the row is not "image, Work".
+            row.image = NSImage(systemSymbolName: space.icon ?? "cloud",
+                                accessibilityDescription: space.name)
             row.state = space.id == showing ? .on : .off
             menu.addItem(row)
         }
@@ -359,6 +399,37 @@ import SwiftUI
              Look.littleTopInset + Look.pillHeight / 2 == Look.lightsCentre),
             ("the pill is the sidebar's pill, at the sidebar's height",
              Look.pillHeight == Look.rowHeight),
+        ] + openIn()
+    }
+
+    /// "Open in ⟨Space⟩": the label, and the rule that decides which Space it names.
+    nonisolated static func openIn() -> [(String, Bool)] {
+        let (work, personal, gone) = (UUID(), UUID(), UUID())
+        let both = [work, personal]
+        return [
+            ("the button names the Space the page would land in",
+             openInTitle(space: "Work") == "Open in Work"),
+            ("a Space named with spaces around it is still named cleanly",
+             openInTitle(space: "  Work  ") == "Open in Work"),
+            ("no Space to name leaves no dangling preposition",
+             openInTitle(space: nil) == "Open in"),
+            ("\u{2026}and neither does a Space whose name is blank",
+             openInTitle(space: "   ") == "Open in"),
+            ("the browser window's Space is the one offered",
+             target(spaces: both, showing: personal, last: work) == personal),
+            ("with no window open, the Space the profile was last left in",
+             target(spaces: both, showing: nil, last: personal) == personal),
+            ("with neither, the profile's first Space",
+             target(spaces: both, showing: nil, last: nil) == work),
+            ("a Space deleted while the Little Vane stood open is not offered",
+             target(spaces: both, showing: gone, last: personal) == personal),
+            ("\u{2026}and neither is a stale last-used one",
+             target(spaces: both, showing: nil, last: gone) == work),
+            ("a profile with no Spaces at all names none",
+             target(spaces: [], showing: work, last: personal) == nil),
+            ("the menu keeps the profile's own order, whichever Space is current",
+             target(spaces: both, showing: personal, last: nil) == personal
+                && both == [work, personal]),
         ]
     }
 }
@@ -452,32 +523,73 @@ struct LittleArcBar: View {
     }
 }
 
-/// "Open in ▸": the one way a Little Arc's page becomes a tab you keep. Clicking it offers
-/// the Spaces; ⌘O takes the one the browser window is already showing.
+/// "Open in ⟨Space⟩ ⌄": the one way a Little Arc's page becomes a tab you keep. The label
+/// names the Space the page would land in — the one the browser window is showing — and
+/// pressing it puts the tab there; the chevron opens the list of every Space of the profile,
+/// with that one ticked. ⌘O and ⌥⌘O are the same two things from the keyboard.
+///
+/// One pill with two halves rather than two buttons: it is one control, and the split is
+/// only about which of the two things a click means. Flat, in the sidebar's own pill.
 private struct OpenInButton: View {
     @EnvironmentObject var store: TabStore
     @State private var hovering = false
+    /// The Space's name, read when the window appears and again whenever a window takes the
+    /// focus — which is what happens between "switch the browser window to Work" and
+    /// "come back to the Little Vane". Not read in `body`: `store.spaces` decodes
+    /// spaces.json on every touch, and this label is drawn on every hover.
+    @State private var space: String?
+    @State private var watch: (any NSObjectProtocol)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var title: String { LittleArc.openInTitle(space: space) }
+    private var named: String { space ?? "a Space" }
+
     var body: some View {
-        Button { LittleArc.pickSpace(store) } label: {
-            HStack(spacing: 4) {
-                Text("Open in").font(Look.text)
-                Image(systemName: "chevron.right").font(Look.caption)
+        HStack(spacing: 0) {
+            Button { LittleArc.openInCurrentSpace(store) } label: {
+                Text(title).font(Look.text).lineLimit(1)
+                    .padding(.leading, Look.rowInset)
+                    .padding(.trailing, Look.captionGap)
+                    .frame(height: Look.topRow)
+                    .contentShape(.rect)
             }
-            .foregroundStyle(Look.inkPrimary)
-            .padding(.horizontal, Look.rowInset)
-            .frame(height: Look.topRow)
-            .background(hovering ? Look.selected : Look.pillFill,
-                        in: .rect(cornerRadius: Look.pillRadius))
-            .contentShape(.rect)
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityHint("Moves this page into \(named) in the browser window.")
+            Button { LittleArc.pickSpace(store) } label: {
+                Image(systemName: "chevron.down").font(Look.caption)
+                    .padding(.leading, Look.captionGap)
+                    .padding(.trailing, Look.rowInset)
+                    .frame(height: Look.topRow)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Choose a Space")
+            .accessibilityHint("Lists every Space this page can be opened in.")
         }
-        .buttonStyle(.plain)
+        .foregroundStyle(Look.inkPrimary)
+        .background(hovering ? Look.selected : Look.pillFill,
+                    in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .onHover { hovering = $0 }
-        .help("Open in a Space (\u{2318}O), or pick one (\u{2325}\u{2318}O)")
-        .accessibilityLabel("Open in")
-        .accessibilityHint("Moves this page into a Space of the browser window.")
-        .accessibilityAction(named: "Open in Current Space") { LittleArc.openInCurrentSpace(store) }
+        .help("\(title) (\u{2318}O), or pick another Space (\u{2325}\u{2318}O)")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+        .accessibilityAction(named: "Choose a Space") { LittleArc.pickSpace(store) }
+        .onAppear {
+            refresh()
+            // The Space the label names belongs to *another* window, which publishes
+            // nothing this view is watching. A focus change is the only moment between a
+            // Space switch over there and a click on this button over here.
+            watch = NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+            ) { _ in MainActor.assumeIsolated { refresh() } }
+        }
+        .onDisappear {
+            if let watch { NotificationCenter.default.removeObserver(watch) }
+            watch = nil
+        }
     }
+
+    private func refresh() { space = LittleArc.targetSpace(for: store)?.name }
 }
