@@ -488,6 +488,23 @@ extension Pins {
         assert("moves naming rows that are not there do nothing", junk == flat("a"))
         assert("an empty section has nothing to draw", Pins().visible.isEmpty)
 
+        // --- When a window with an empty section may clear the shape on disk ---
+        var emptied = Pins()
+        _ = emptied.newFolder(named: "Work")
+        var owned = flat("a", "b")
+        _ = owned.newFolder(named: "Work", next: "b")
+        assert("a fresh profile has no shape to clear, and clearing nothing is harmless",
+               TabStore.clearsShape(saved: nil))
+        assert("folders left behind with no tabs in them are cleared",
+               TabStore.clearsShape(saved: emptied))
+        assert("…which is the whole of what an undone tidy leaves on a window with no pins",
+               emptied.tabs.isEmpty && !emptied.entries.isEmpty)
+        assert("a shape another window's rows are still in is left alone",
+               !TabStore.clearsShape(saved: owned))
+        assert("even a shape of loose tabs with no folders at all",
+               !TabStore.clearsShape(saved: flat("a")))
+        assert("an empty shape is cleared rather than kept", TabStore.clearsShape(saved: Pins()))
+
         return out
     }
 }
@@ -697,6 +714,20 @@ extension TabStore {
         UserDefaults.vane.removeObject(forKey: shapeKey(space: space, profileID: profileID))
     }
 
+    /// Whether a window whose own Pinned section is empty is allowed to clear the saved
+    /// shape. The same ownership test `restorePins` makes, said from the writing end:
+    ///
+    /// - a saved shape that still names tabs belongs to a window that has them. This one was
+    ///   never handed the profile's rows — a second Space-less window — and clearing would
+    ///   take that window's folders with it.
+    /// - a saved shape naming no tabs is folders and nothing else. The last pinned tab has
+    ///   left the Space, and leaving the key behind would have `adoptPins` rebuild those
+    ///   folders, empty, at the next launch.
+    /// - no saved shape at all is a fresh profile, and clearing nothing is what it wants.
+    ///
+    /// Pure, so `selfcheck --pure` can drive it without a defaults suite.
+    nonisolated static func clearsShape(saved: Pins?) -> Bool { saved?.tabs.isEmpty ?? true }
+
     static func savedShape(space: UUID?, profileID: UUID) -> Pins? {
         guard let data = UserDefaults.vane.data(forKey: shapeKey(space: space, profileID: profileID))
         else { return nil }
@@ -707,13 +738,22 @@ extension TabStore {
     /// is on rather than by a `Tab.ID` that will not exist after a relaunch.
     func saveShape() {
         guard !isPrivate, !isLittle else { return }
-        // A window whose Pinned section is empty has nothing to say about the shape: it is
-        // either a fresh window or one that was never handed the profile's rows, and letting
-        // it clear the key would take another window's folders with it.
-        guard !pins.entries.isEmpty else { return }
+        let key = TabStore.shapeKey(space: currentSpaceID, profileID: profileID)
+        // A window whose Pinned section is empty may have nothing to say about the shape —
+        // it can be one that was never handed the profile's rows — so it is asked whether
+        // it is allowed to speak first. It used to be told to say nothing at all, and the
+        // cost of that was the last pinned tab leaving a Space with the folders it was in
+        // still written down: `adoptPins` rebuilt them, empty, at the next launch. Undoing a
+        // tidy on a window that had no pins to begin with hit it every time.
+        if pins.entries.isEmpty {
+            if TabStore.clearsShape(saved: TabStore.savedShape(space: currentSpaceID,
+                                                              profileID: profileID)) {
+                UserDefaults.vane.removeObject(forKey: key)
+            }
+            return
+        }
         let byID = Dictionary(tabs.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { a, _ in a })
         let shape = pins.mapped { byID[$0].flatMap { TabStore.pinURL($0.currentURL) } }
-        let key = TabStore.shapeKey(space: currentSpaceID, profileID: profileID)
         // Nothing but loose tabs is nothing worth writing: an empty shape is what a fresh
         // profile has, and leaving the key absent keeps `savedShape` honest about that.
         guard shape.entries.contains(where: { $0.folder != nil }) else {

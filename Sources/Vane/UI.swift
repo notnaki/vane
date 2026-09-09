@@ -2992,8 +2992,8 @@ private struct TabRow: View {
 
     /// What ⌘W will actually do to this row, in words. See `TabRowGlyph`.
     private var closeVerb: String {
-        TabRowGlyph.decide(kind: tab.kind,
-                           suspended: tab.suspended || tab.currentURL == nil).verb
+        TabRowGlyph.decide(kind: tab.kind, suspended: tab.suspended,
+                           pane: store.split(containing: tab.id) != nil).verb
     }
 
     /// What a click on a row means, by what is held down: ⌘ ticks it into the selection, ⇧
@@ -3101,8 +3101,8 @@ struct TabMenu: View {
         // pinned row that is Unload first, Unpin after. See `TabRowGlyph`.
         Button(tab.kind == .today
                ? "Archive Tab"
-               : TabRowGlyph.decide(kind: tab.kind,
-                                    suspended: tab.suspended || tab.currentURL == nil).verb) {
+               : TabRowGlyph.decide(kind: tab.kind, suspended: tab.suspended,
+                                    pane: store.split(containing: tab.id) != nil).verb) {
             store.archive(tab.id)
         }
         if tab.kind == .today {
@@ -3199,13 +3199,28 @@ private struct ShimmerTitle: View {
     @State private var leaving: String?
     @State private var leavingOpacity: Double = 0
     @State private var sparking = false
+    /// Whether a wipe is actually in flight. The three layers below exist for a fifth of a
+    /// second, a handful of times ever; without this flag every title in the sidebar is
+    /// drawn through a gradient mask, with a ghost behind it and a `GeometryReader` over it,
+    /// for the life of the window. A row at rest is a plain `Text` with nothing done to it.
+    ///
+    /// Its own flag rather than a test on `wipe`: `withAnimation` sets the state to its
+    /// final value at once and animates the *rendering*, so `wipe` is already at rest while
+    /// the sweep is still on screen. The animation's completion handler is what knows.
+    @State private var wiping = false
 
     var body: some View {
-        Text(title)
-            .mask { wipeMask }
-            .background(alignment: .leading) { ghost }
-            .overlay { spark }
-            .onChange(of: reveal) { _, new in start(new) }
+        Group {
+            if wiping || leaving != nil {
+                Text(title)
+                    .mask { wipeMask }
+                    .background(alignment: .leading) { ghost }
+                    .overlay { spark }
+            } else {
+                Text(title)
+            }
+        }
+        .onChange(of: reveal) { _, new in start(new) }
     }
 
     /// Opaque up to the wipe's edge, clear past it, with `shimmerEdge` of gradient between
@@ -3254,43 +3269,66 @@ private struct ShimmerTitle: View {
         guard reveal.count > 0 else { return }
         leaving = reveal.from.isEmpty ? nil : reveal.from
         leavingOpacity = 1
+        wiping = true
         // Reduced motion still gets the *event* — a name that changed by itself has to be
         // visible — it simply gets it as a crossfade with no travel and no spark.
         guard !reduceMotion else {
             wipe = ShimmerTitle.full
             sparking = false
-            withAnimation(Look.quick) { leavingOpacity = 0 } completion: { leaving = nil }
+            withAnimation(Look.quick) { leavingOpacity = 0 } completion: {
+                leaving = nil
+                wiping = false
+            }
             return
         }
         wipe = 0
         sparking = true
         withAnimation(Look.shimmerFade) { leavingOpacity = 0 } completion: { leaving = nil }
-        withAnimation(Look.shimmerSweep) { wipe = ShimmerTitle.full } completion: { sparking = false }
+        // The sweep is the longer of the two, so its completion is where the row goes back
+        // to being a plain label.
+        withAnimation(Look.shimmerSweep) { wipe = ShimmerTitle.full } completion: {
+            sparking = false
+            wiping = false
+        }
     }
 }
 
-/// What a row's trailing glyph does, decided by which section the tab is in and whether it
-/// still holds a page. Arc's rule, and the reason a pinned tab cannot be lost to a stray
-/// click: the × on a pinned row unloads the *page* first, and only a second press — on a row
-/// that now has nothing to unload — takes the pin off and drops the tab into Today. Nothing
-/// here ever deletes a pinned tab; `TabStore.close` reads the same table, so ⌘W agrees with
-/// the glyph the row is showing.
+/// What a row's trailing glyph does, decided by which section the tab is in, whether it is a
+/// pane of the split on screen, and whether it still holds a page. Arc's rule: the × on a
+/// pinned row unloads the *page* first, and only a second press — on a row that now has
+/// nothing to unload — takes the pin off and drops the tab into Today. Nothing here ever
+/// deletes a pinned tab, and the press that takes the pin off says so with an Undo (see
+/// `TabStore.unpin`), because a pinned tab comes up from disk parked and so meets that press
+/// in its commonest state, on a glyph that looks like every other × in the app.
+/// `TabStore.close` reads the same table, so ⌘W agrees with the glyph the row is showing.
 ///
-/// Pure, and deliberately: it is a three-by-three table, it is what the tooltip, the symbol,
-/// the VoiceOver label and `close` all read, and one of those drifting is exactly the bug
-/// this replaces. `selfcheck --pure` drives every row of it with no window and no tab.
+/// A pane is asked about first, and a pane is never a two-step: a pinned tab shown as a pane
+/// closes as a *pane*, because a pane is not a pin. Without that the split row's ×, its
+/// "Close Pane" action, ⌃⇧− and Remove Split all unloaded or unpinned the pane and left it
+/// on screen — a split there was no way out of.
+///
+/// Pure, and deliberately: it is a small table, it is what the tooltip, the symbol, the
+/// VoiceOver label and `close` all read, and one of those drifting is exactly the bug this
+/// replaces. `selfcheck --pure` drives every row of it with no window and no tab.
 enum TabRowGlyph: Equatable, Sendable, CaseIterable {
-    /// The tab goes: Today's ×, and a favourite's, which parks the tile in place.
+    /// The tab goes: Today's ×, a favourite's — which parks the tile in place — and any
+    /// pane's, which takes the pane out of the split.
     case close
     /// The page goes, the row stays exactly where it is. A loaded pinned tab.
     case unload
     /// The pin goes and the tab drops into Today. A pinned tab with no page left to unload.
     case unpin
 
-    /// `suspended` means "has no live page" — a suspended tab, and also a pinned row that
-    /// has never loaded one, which has nothing to unload either.
-    static func decide(kind: TabKind, suspended: Bool) -> TabRowGlyph {
-        guard kind == .pinned else { return .close }
+    /// `suspended` means "has no live page". Read straight off `Tab.suspended` and nothing
+    /// else: "or it has no url" looks like the same question and is not, because `resume`
+    /// hands the web view a load and clears `parkedURL` before `WKWebView.url` has caught up
+    /// with it — so a × pressed right after clicking a parked pinned row met a tab that was
+    /// very much alive with no url to show, and unpinned it in one click.
+    ///
+    /// `pane` is "this row is one pane of the split on screen", which wins over everything:
+    /// what a pane's × closes is the pane.
+    static func decide(kind: TabKind, suspended: Bool, pane: Bool) -> TabRowGlyph {
+        guard !pane, kind == .pinned else { return .close }
         return suspended ? .unpin : .unload
     }
 
@@ -3326,24 +3364,44 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
         func assert(_ name: String, _ ok: Bool) { out.append((name, ok)) }
 
         assert("a Today tab's × closes it, loaded or not",
-               decide(kind: .today, suspended: false) == .close
-                   && decide(kind: .today, suspended: true) == .close)
+               decide(kind: .today, suspended: false, pane: false) == .close
+                   && decide(kind: .today, suspended: true, pane: false) == .close)
         assert("a favourite keeps the tile behaviour it had",
-               decide(kind: .favourite, suspended: false) == .close
-                   && decide(kind: .favourite, suspended: true) == .close)
+               decide(kind: .favourite, suspended: false, pane: false) == .close
+                   && decide(kind: .favourite, suspended: true, pane: false) == .close)
         assert("a loaded pinned tab unloads rather than closing",
-               decide(kind: .pinned, suspended: false) == .unload)
+               decide(kind: .pinned, suspended: false, pane: false) == .unload)
         assert("a pinned tab with nothing loaded unpins",
-               decide(kind: .pinned, suspended: true) == .unpin)
-        assert("no state of a pinned tab closes it",
-               ![true, false].map { decide(kind: .pinned, suspended: $0) }.contains(.close))
+               decide(kind: .pinned, suspended: true, pane: false) == .unpin)
+        assert("no state of a pinned row closes it",
+               ![true, false].map { decide(kind: .pinned, suspended: $0, pane: false) }
+                   .contains(.close))
         assert("only a pinned tab is ever unloaded or unpinned",
                TabKind.allCases.filter { $0 != .pinned }.allSatisfy { k in
-                   [true, false].allSatisfy { decide(kind: k, suspended: $0) == .close }
+                   [true, false].allSatisfy { decide(kind: k, suspended: $0, pane: false) == .close }
                })
         assert("unloading is offered exactly once, and only while there is a page",
-               decide(kind: .pinned, suspended: false) == .unload
-                   && decide(kind: .pinned, suspended: true) != .unload)
+               decide(kind: .pinned, suspended: false, pane: false) == .unload
+                   && decide(kind: .pinned, suspended: true, pane: false) != .unload)
+
+        // --- A pane closes as a pane, whatever it is a pane of ---
+        assert("a pinned tab used as a pane closes, rather than unloading",
+               decide(kind: .pinned, suspended: false, pane: true) == .close)
+        assert("…and a parked one closes rather than unpinning",
+               decide(kind: .pinned, suspended: true, pane: true) == .close)
+        assert("no pane of any kind, in any state, is a two-step",
+               TabKind.allCases.allSatisfy { k in
+                   [true, false].allSatisfy { decide(kind: k, suspended: $0, pane: true) == .close }
+               })
+
+        // --- The state a × meets right after a parked pinned row is clicked ---
+        // `resume` clears `parkedURL` before `WKWebView.url` has caught up with the load it
+        // was just handed, so for the width of that gap the tab has no url at all. It is not
+        // suspended, so it is a page being loaded and the press unloads it — the old input,
+        // "suspended *or* it has no url", read the same instant as "nothing left to unload"
+        // and took the pin off in one click.
+        assert("a pinned tab that has just resumed and has no url yet still unloads",
+               decide(kind: .pinned, suspended: false, pane: false) == .unload)
         assert("the minus is only ever the unload glyph",
                TabRowGlyph.allCases.filter { $0.symbol == "minus" } == [.unload])
         assert("every state says out loud what it will do",
@@ -3408,11 +3466,11 @@ private struct TabRowTrailing: View {
             }
             if hovering || selected {
                 // On a split's row the glyph is about the *pane*, which is closed whatever
-                // section its tab is in — a pane is not a pin. Everywhere else the row's
-                // trailing glyph is the table above.
-                let glyph = pane ? TabRowGlyph.close
-                    : TabRowGlyph.decide(kind: closing.kind,
-                                         suspended: closing.suspended || closing.currentURL == nil)
+                // section its tab is in — a pane is not a pin. The table knows that; it is
+                // an input to it rather than a special case around it, so `TabStore.close`
+                // reaches the same answer for the same row.
+                let glyph = TabRowGlyph.decide(kind: closing.kind, suspended: closing.suspended,
+                                               pane: pane)
                 Button { store.close(closing.id) } label: {
                     Image(systemName: glyph.symbol).font(Look.rowGlyph).rowTarget()
                 }

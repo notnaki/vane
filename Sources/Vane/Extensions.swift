@@ -1000,6 +1000,16 @@ extension View {
         if selected { try await activate(for: context) }
     }
 
+    /// `chrome.tabs.remove`. It is `TabStore.close`, so an extension gets exactly what the
+    /// row's × and ⌘W get and no more: a Today tab goes, a favourite is parked in place, and
+    /// a pinned tab takes the first of `TabRowGlyph`'s two steps — its page is unloaded, and
+    /// only a call against a pinned tab with nothing left to unload takes the pin off. An
+    /// extension cannot delete a pinned tab, any more than the user can by accident.
+    ///
+    /// Ceiling, stated plainly: an extension calling `remove` twice therefore unpins rather
+    /// than closing, and gets no error saying so. That is the price of the two-step being one
+    /// rule for every route, and it is the right side of the trade — the alternative is an
+    /// extension being the one thing in the browser that can drop a row the user arranged.
     func close(for context: WKWebExtensionContext) async throws {
         guard let tab, let store else { return }
         store.close(tab.id)

@@ -290,10 +290,18 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
 /// moved, and cancelled — and "I pressed Tidy, waited thirty seconds and nothing happened"
 /// is what they add up to. Now the only quiet exit is a cancel, which the user asked for.
 @MainActor func startTidy() {
-    // Already running: this press is the cancel. `TidyProgress` is left to the finishing
-    // task, which clears it on the way out.
+    // Already running: this press is the cancel, and it is answered here rather than left to
+    // the task on its way out. `AppleAI.group` is not cancellation aware — `cancel()` only
+    // sets a flag the run reads once its await finally returns — so waiting for that task's
+    // own `ended` kept the spinner up for the rest of a twelve-second model call, and every
+    // press in the meantime landed back in this branch and was swallowed. `TidyProgress`
+    // bumps its stamp, so the cancelled run's late `ended` cannot put away the spinner of
+    // whatever is started next.
     if let s = Windows.main, TidyProgress.shared.isRunning(s) {
         tidyTask?.cancel()
+        tidyTask = nil                       // the next press starts a run, not another cancel
+        TidyProgress.shared.cancelled()
+        rebuild()                            // and Tidy is pressable again this instant
         return
     }
     tidyTask?.cancel()
