@@ -95,14 +95,21 @@ import Foundation
 
     // MARK: - Offering
 
-    /// The tabs this feature is allowed to touch: Today, and only Today.
+    /// The tabs this feature is allowed to touch: the loose ones in Today.
     ///
     /// Pinned tabs are excluded because a pinned tab is one the user has already put away by
     /// hand, in whatever folder they chose; regrouping it would take a row out of that
     /// folder. Favourites are out for the same reason and one more: a favourite is a tile in
     /// a grid, not a row in a list, and there is nowhere in a grid for a folder to go.
+    ///
+    /// A tab already inside a *Today* folder is out for that first reason exactly: it is
+    /// filed, so it is already tidy. That is also what keeps a folder the user made by hand
+    /// out of a tidy's way — no group names the tabs in it, so `Pins.relay` never empties it,
+    /// and the undo, which takes back only `Done.folders`, has nothing of the user's to
+    /// restore.
     static func candidates(in store: TabStore) -> [Candidate] {
-        store.tabs.filter { $0.kind == .today }.map {
+        let filed = store.todayShape.filed
+        return store.tabs.filter { $0.kind == .today && !filed.contains($0.id.uuidString) }.map {
             Candidate(id: $0.id, title: $0.title, host: $0.currentURL?.host ?? "")
         }
     }
@@ -899,6 +906,30 @@ import Foundation
                  folderIDs.forEach { s.remove(folder: $0) }
                  return s.tabs.count == made.flatMap(\.tabIDs).count
                      && s.entries.compactMap(\.folder).isEmpty }())
+
+        // --- A folder the user made by hand ---
+        //
+        // Its tabs are filed, so `candidates` never offers them; no group names them; so the
+        // relay keeps the folder they are in, and the undo — which takes back only the
+        // folders the tidy made — leaves it exactly as it was.
+        var mine = Pins(entries: (1...4).map { Pins.Entry(row: .tab(id($0).uuidString),
+                                                          parent: nil) })
+        let hand = mine.newFolder(named: "Mine")!
+        mine.move(id(1).uuidString, into: hand.id)
+        assert("a tab the user filed in a Today folder is not a tidy candidate",
+               mine.filed == [id(1).uuidString])
+        let untouched = order([id(1), id(2), id(3), id(4)], pinned: [],
+                              groups: [Group(name: "Work", tabIDs: [id(2), id(3)])])
+        let fromTidy = mine.newFolder(named: "Work")!
+        for tab in [id(2), id(3)] { mine.move(tab.uuidString, into: fromTidy.id) }
+        mine.relay(untouched.map(\.uuidString))
+        assert("a tidy leaves the folder the user made standing",
+               mine.folder(fromTidy.id) != nil && mine.children(of: hand.id) == [id(1).uuidString])
+        mine.remove(folder: fromTidy.id)
+        mine.relay([id(1), id(2), id(3), id(4)].map(\.uuidString))
+        assert("…and so does its undo, which has only its own folders to take back",
+               mine.children(of: hand.id) == [id(1).uuidString]
+                   && mine.tabs == [id(1), id(2), id(3), id(4)].map(\.uuidString))
 
         // --- Undo ---
         assert("undo restores the exact original order",

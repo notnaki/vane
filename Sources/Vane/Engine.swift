@@ -1192,7 +1192,9 @@ struct TitleReveal: Equatable, Sendable {
         adoptTodayShape(tabs: rest.map { url in
             let t = newBlankTab()
             t.open(url, parked: parked[url.absoluteString])
-            return t
+            // Named by the url it was opened with, not the one it has: with suspension off
+            // `open` hands it straight to `go` and there is no `currentURL` yet.
+            return (url: url, tab: t)
         })
         // Favourites and pinned rows come back parked and stay parked: focus lands on the
         // first Today tab, and with none the column is bare and the search bar is up — the
@@ -1950,7 +1952,9 @@ struct TitleReveal: Equatable, Sendable {
         adoptTodayShape(tabs: space.tabURLs.map { url in
             let t = newBlankTab()
             t.open(url, parked: parked[url.absoluteString])
-            return t
+            // Named by the url it was opened with, not the one it has: with suspension off
+            // `open` hands it straight to `go` and there is no `currentURL` yet.
+            return (url: url, tab: t)
         })
         // Arc lands on the tab this Space was left on; `Spaces.landing` is the ladder down to
         // the first Today tab, the first pinned row, and finally an empty pill.

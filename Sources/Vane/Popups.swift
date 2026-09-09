@@ -219,6 +219,9 @@ extension TabStore {
             let dest = TabStore.insertionIndexBeside(
                 current: tabs.firstIndex { $0.id == opener }, kinds: tabs.map(\.kind))
             tabs.insert(tab, at: min(dest, tabs.count))
+            // Today is drawn from its shape, so a row the shape has never heard of is a tab
+            // the sidebar does not draw at all. `placeBeside` takes it in, beside its opener.
+            placeBeside(tab.id, opener: opener)
         }
         if focus {
             current = tab.id

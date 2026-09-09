@@ -153,6 +153,12 @@ struct Pins: Codable, Equatable, Sendable {
         return entries[subtree(at: i)].compactMap(\.tab)
     }
 
+    /// The tabs that are in some folder, however deeply — as opposed to loose at the top of
+    /// the section. What "already tidy" means to `TidyTabs.candidates`, which is the one
+    /// caller: a tab the shape has never heard of is not in a folder either, so the question
+    /// is asked this way round rather than as "which rows are loose".
+    var filed: Set<String> { Set(entries.filter { $0.parent != nil }.compactMap(\.tab)) }
+
     /// One drawable row: the entry and how far to indent it.
     struct Visible: Identifiable {
         let entry: Entry
@@ -210,6 +216,18 @@ struct Pins: Codable, Equatable, Sendable {
               !subtree(at: s).contains(t) else { return }
         let target = subtree(at: t)
         relocate(id, to: after ? target.upperBound : target.lowerBound, parent: entries[t].parent)
+    }
+
+    /// A row that has just joined the section beside another — a ⌘-click, a popup, Peek's
+    /// ⌘O. It lands after `next` and in whatever folder `next` is in, and with nothing to be
+    /// beside it goes to the very head of the section, outside every folder, which is where
+    /// the strip puts a tab opened from a pinned row or a favourite. See `TabStore
+    /// .placeBeside`.
+    mutating func insert(_ id: String, after next: String?) {
+        // The first row is always at the top level — a parent is always written down before
+        // the rows in it — so landing in front of it is landing in no folder.
+        guard let to = next ?? entries.first?.id, to != id else { return }
+        move(id, next: to, after: next != nil)
     }
 
     /// A drop on the middle of a folder row: in it, at the end, which is where Arc puts one.
@@ -326,12 +344,15 @@ struct Pins: Codable, Equatable, Sendable {
         var out: [Entry] = []
         var placed = Set<String>()
         for id in order {
-            guard let i = index(of: id), entries[i].tab != nil else { continue }
+            // `placed` is the guard, not a note: an order that names the same tab twice —
+            // which `TidyTabs.order` cannot make but a caller handing over two runs can —
+            // would otherwise write the row down twice and draw the tab twice.
+            guard let i = index(of: id), entries[i].tab != nil,
+                  placed.insert(id).inserted else { continue }
             // Outermost first, so a nested folder is written down inside the one it is in.
             for f in ancestors(of: i).reversed() where placed.insert(f.uuidString).inserted {
                 if let j = index(of: f) { out.append(entries[j]) }
             }
-            placed.insert(id)
             out.append(entries[i])
         }
         entries = out
@@ -620,6 +641,67 @@ extension Pins {
         (day, reading) = today()
         day.relay(["c", "b", "a", "unheard-of"])
         assert("a row the shape has never heard of is not invented", day.tabs.count == 3)
+        (day, reading) = today()
+        day.relay(["c", "c", "a", "b"])
+        assert("an order naming the same tab twice draws it once",
+               day.tabs == ["c", "a", "b"] && day.entries.count == 4)
+
+        // "Archive All Tabs in Folder" un-pins its rows to the *head* of the Today strip,
+        // while `sync` takes a row it has not seen at the end of the shape. The relay is what
+        // puts the section back in the order the strip has it.
+        (day, reading) = today()
+        day.sync(tabs: ["a", "b", "c", "unpinned"])
+        day.relay(["unpinned", "a", "b", "c"])
+        assert("a row un-pinned to the head of Today is drawn at the head",
+               shown(day) == ["unpinned", reading.uuidString, "a", "b", "c"])
+
+        // Beside the opener: what a ⌘-click, an adopted popup and Peek's ⌘O ask of the shape
+        // once the strip has already put the tab there. See `TabStore.placeBeside`.
+        (day, reading) = today()
+        day.sync(tabs: ["a", "b", "c", "new"])
+        day.insert("new", after: "a")
+        assert("a tab opened beside one in a folder joins that folder",
+               day.folder(holding: "new")?.id == reading && day.tabs(in: reading) == ["a", "new", "b"])
+        (day, reading) = today()
+        day.sync(tabs: ["a", "b", "c", "new"])
+        day.insert("new", after: "c")
+        assert("…and beside a loose one it stays loose",
+               day.folder(holding: "new") == nil && day.tabs == ["a", "b", "c", "new"])
+        (day, reading) = today()
+        day.sync(tabs: ["a", "b", "c", "new"])
+        day.insert("new", after: nil)
+        assert("a tab opened from a pinned row lands at the head, outside every folder",
+               shown(day) == ["new", reading.uuidString, "a", "b", "c"])
+        var first = Pins()
+        first.sync(tabs: ["only"])
+        first.insert("only", after: nil)
+        assert("the first tab of an empty section has nothing to be beside",
+               first.tabs == ["only"])
+
+        // What a tidy may touch. A tab the user filed by hand is already tidy.
+        (day, reading) = today()
+        assert("the tabs in a Today folder are filed, and the loose ones are not",
+               day.filed == ["a", "b"])
+
+        // --- The Today shape coming back off disk ---
+        // Named by the url each tab was *opened with*: a restored tab is normally parked and
+        // answers `currentURL` at once, but with suspension off it is still loading when this
+        // runs, and keying on `currentURL` there dropped every folder on every launch.
+        var onDisk = Pins(entries: ["https://e.example/a", "https://e.example/b"]
+                              .map { Entry(row: .tab($0), parent: nil) })
+        let read = onDisk.newFolder(named: "Reading", next: "https://e.example/a")!
+        onDisk.move("https://e.example/a", into: read.id)
+        let live = TabStore.adopted(onDisk, opened: [("https://e.example/a", "id-a"),
+                                                     ("https://e.example/c", "id-c")])
+        assert("a Today folder comes back around the tab restored for its url",
+               live.tabs(in: read.id) == ["id-a"])
+        assert("…a url the Space no longer has is dropped rather than invented",
+               live.tabs == ["id-a", "id-c"])
+        assert("…and a tab the shape never named is taken in, loose",
+               live.folder(holding: "id-c") == nil)
+        assert("a Space that has never had Today folders comes back as loose tabs",
+               TabStore.adopted(nil, opened: [("https://e.example/a", "id-a")])
+                   == Pins(entries: [Entry(row: .tab("id-a"), parent: nil)]))
 
         // An undone tidy: the folders it made go, every tab stays, and the order comes back.
         var undone = Pins(entries: ["a", "b", "c", "d"].map { Entry(row: .tab($0), parent: nil) })
@@ -797,6 +879,19 @@ extension TabStore {
         applyOrder(kind)
     }
 
+    /// The shape's half of "beside the opener". The strip move is `insertionIndexBeside`;
+    /// this is the same move told to the section that is drawn from its shape, so the row
+    /// lands after the opener and in whatever folder the opener sits in — and at the head of
+    /// Today when the opener is a pinned row, a favourite or nothing at all, which is where
+    /// the strip puts it. Without this the new tab draws at the bottom of the sidebar while
+    /// ⌘1…9 has it beside its opener, and the next `applyOrder(.today)` drags the tab down
+    /// to the bottom for real.
+    func placeBeside(_ id: Tab.ID, opener: Tab.ID?) {
+        syncShapes()        // the tab may be brand new to the shape; the opener never is
+        let beside = tabs.first { $0.id == opener }?.kind == .today ? opener?.uuidString : nil
+        todayShape.insert(id.uuidString, after: beside)
+    }
+
     /// The section a shape stands for — what a tab dropped into one of its folders becomes.
     private func kind(of shape: ReferenceWritableKeyPath<TabStore, Pins>) -> TabKind {
         shape == \TabStore.todayShape ? .today : .pinned
@@ -955,6 +1050,11 @@ extension TabStore {
                     others: tabs.map(\.kind), moving: .today, to: 0))
             }
             syncShapes()
+            // The rows that just left Pinned went to the *head* of the Today strip, and
+            // `sync` takes a row it has not seen at the end of the section. Today is drawn
+            // from its shape, so the shape follows the strip here — otherwise the next line
+            // reads the shape back and drags them to the bottom.
+            todayShape.relay(tabs.filter { $0.kind == .today }.map(\.id.uuidString))
             applyOrder(.pinned)
             applyOrder(.today)
         }
@@ -1068,19 +1168,36 @@ nonisolated static func pinOrder(shape: Pins?, urls: [URL]) -> [URL] {
         return ordered + tail
     }
 
-    /// Rebuild the live shape once the tabs exist. The saved one names its tabs by url; this
-    /// is where those names become the ids of the tabs just made for them, in order, so two
-    /// pinned tabs on the same page still land in the folders they were each in.
-    func adopt(_ shape: ReferenceWritableKeyPath<TabStore, Pins>, saved: Pins?, tabs made: [Tab]) {
-        var byURL: [String: [Tab.ID]] = [:]
-        for t in made { byURL[t.currentURL?.absoluteString ?? "", default: []].append(t.id) }
-        self[keyPath: shape] = (saved ?? Pins()).mapped { url in
+    /// The saved shape with every url replaced by the tab restored for it, in order, and any
+    /// tab the shape has never heard of taken in at the end.
+    ///
+    /// The name is the url the tab was **opened with**, not the one it has now. A restored
+    /// tab is normally parked, and a parked tab answers `currentURL` before it has loaded
+    /// anything — but with `Prefs.suspendTabs` off it is handed straight to `go(url)`, and
+    /// `WKWebView.url` is still nil when this runs. Keying on `currentURL` there matched
+    /// nothing and dropped every folder in the section, on every launch.
+    ///
+    /// Pure, over strings, so `selfcheck --pure` can prove that without a window or a `Tab`.
+    nonisolated static func adopted(_ saved: Pins?, opened: [(url: String, id: String)]) -> Pins {
+        var byURL: [String: [String]] = [:]
+        for o in opened { byURL[o.url, default: []].append(o.id) }
+        // Counted off one at a time, so two tabs on the same page land in the folders they
+        // were each in rather than both in the first one's.
+        var out = (saved ?? Pins()).mapped { url in
             guard var waiting = byURL[url], !waiting.isEmpty else { return nil }
             let id = waiting.removeFirst()
             byURL[url] = waiting
-            return id.uuidString
+            return id
         }
-        self[keyPath: shape].sync(tabs: made.map(\.id.uuidString))
+        out.sync(tabs: opened.map(\.id))
+        return out
+    }
+
+    /// Rebuild the live shape once the tabs exist, each named by the url it was opened with.
+    func adopt(_ shape: ReferenceWritableKeyPath<TabStore, Pins>, saved: Pins?,
+               tabs made: [(url: URL, tab: Tab)]) {
+        self[keyPath: shape] = TabStore.adopted(
+            saved, opened: made.map { ($0.url.absoluteString, $0.tab.id.uuidString) })
     }
 
     /// The Today section's folders, once its tabs exist. The urls came back in the order the
@@ -1089,7 +1206,7 @@ nonisolated static func pinOrder(shape: Pins?, urls: [URL]) -> [URL] {
     ///
     /// A Space with nothing under the Today key loads as loose tabs and no folders, and so
     /// does one whose key holds junk: `savedShape` hands back nil for both.
-    func adoptTodayShape(tabs made: [Tab]) {
+    func adoptTodayShape(tabs made: [(url: URL, tab: Tab)]) {
         let saved = isPrivate || isLittle ? nil
             : TabStore.savedShape(.today, space: currentSpaceID, profileID: profileID)
         adopt(\.todayShape, saved: saved, tabs: made)
@@ -1110,8 +1227,9 @@ nonisolated static func pinOrder(shape: Pins?, urls: [URL]) -> [URL] {
         let saved = isPrivate || isLittle ? nil
             : TabStore.savedShape(space: currentSpaceID, profileID: profileID)
         let shape = urls.isEmpty && saved?.tabs.isEmpty == false ? nil : saved
-        let made = restore(TabStore.pinOrder(shape: shape, urls: urls), as: .pinned, parked: parked)
-        adopt(\.pins, saved: shape, tabs: made)
+        let order = TabStore.pinOrder(shape: shape, urls: urls)
+        let made = restore(order, as: .pinned, parked: parked)
+        adopt(\.pins, saved: shape, tabs: zip(order, made).map { (url: $0, tab: $1) })
         return made
     }
 }
