@@ -47,7 +47,13 @@ import SwiftUI
 
     private static func ask(in host: NSWindow, content: NSView) -> Answer {
         var answer = Answer.cancel
-        let scrim = Scrim(frame: content.bounds)
+        // On the view *around* the content view, not inside it. The content view is a
+        // SwiftUI hosting view, and SwiftUI keeps its own drawing above any AppKit subview
+        // added to it, so a scrim parented there sits behind the page it is meant to cover
+        // and nothing of the question is ever seen. The traffic-light overlay hangs off an
+        // AppKit superview for the same reason; see `VaneWindow.dressTrafficLights`.
+        let over = content.superview ?? content
+        let scrim = Scrim(frame: over.bounds, showing: blurred(over))
         scrim.answer = { answer = $0; NSApp.stopModal() }
         // Weak for the same reason as the panel's: scrim → hosting view → card → closure.
         let card = NSHostingView(rootView: Card { [weak scrim] in scrim?.answer?($0) })
@@ -56,7 +62,7 @@ import SwiftUI
         NSLayoutConstraint.activate([card.centerXAnchor.constraint(equalTo: scrim.centerXAnchor),
                                      card.centerYAnchor.constraint(equalTo: scrim.centerYAnchor)])
         let was = host.firstResponder
-        content.addSubview(scrim)
+        over.addSubview(scrim, positioned: .above, relativeTo: nil)
         NSApp.activate()
         host.makeKeyAndOrderFront(nil)
         host.makeFirstResponder(scrim)
@@ -67,22 +73,52 @@ import SwiftUI
         return answer
     }
 
-    /// The dimmed, faintly blurred layer over the page. Layer-backed so it can carry a
-    /// Core Image background filter — the blur is of what the window draws under it, and
-    /// `Look.quitBlur` is its radius, which a material would not let us choose.
+    /// A picture of the window, blurred and dimmed, taken the moment the question is asked.
+    ///
+    /// This used to be a `CIGaussianBlur` in the layer's `backgroundFilters`, which dimmed
+    /// the page but never blurred it: a background filter samples the layers this process
+    /// composites, and a page is drawn by WebKit's own, out of process. A bitmap of the
+    /// content view does include the page, so the blur is of a still rather than of a live
+    /// layer — which is all a modal needs, since nothing under it can move.
+    ///
+    /// Taken once, at `Look.quitBlurScale` smaller than the window, because the blur hides
+    /// everything that shrinking loses. `Look.quitBlur` is the radius, in points, which a
+    /// material would not let us choose. Nothing to photograph (an off-screen window, a
+    /// window the backing store cannot give up) leaves it dimmed but sharp, as it was.
+    private static func blurred(_ content: NSView) -> CGImage? {
+        guard content.bounds.width > 0, content.bounds.height > 0,
+              let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds)
+        else { return nil }
+        content.cacheDisplay(in: content.bounds, to: rep)
+        guard let shot = rep.cgImage else { return nil }
+        // One unit of the shrunken picture is `Look.quitBlurScale` points of the window,
+        // whatever the screen's backing scale, so the radius below stays in points.
+        let shrink = content.bounds.width / CGFloat(shot.width) / Look.quitBlurScale
+        let small = CIImage(cgImage: shot).transformed(by: .init(scaleX: shrink, y: shrink))
+        // Clamped first, or the blur drags transparency in from past the edges and the
+        // scrim fades out at its border; cropped after, because a clamped image is endless.
+        let blur = small.clampedToExtent()
+            .applyingGaussianBlur(sigma: Look.quitBlur / Look.quitBlurScale)
+            .cropped(to: small.extent)
+        // The dim is painted into the picture, which leaves the scrim's own background
+        // colour standing as exactly the old, dim-only scrim for when there is no picture.
+        let dimmed = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: Look.quitScrim))
+            .cropped(to: blur.extent).composited(over: blur)
+        return CIContext().createCGImage(dimmed, from: dimmed.extent)
+    }
+
+    /// The layer over the page: the blurred picture where there is one, and the dim alone
+    /// where there is not.
     private final class Scrim: NSView {
         var answer: ((Answer) -> Void)?
 
-        override init(frame: NSRect) {
+        init(frame: NSRect, showing picture: CGImage?) {
             super.init(frame: frame)
             autoresizingMask = [.width, .height]
             wantsLayer = true
-            layerUsesCoreImageFilters = true
             layer?.backgroundColor = NSColor.black.withAlphaComponent(Look.quitScrim).cgColor
-            if let blur = CIFilter(name: "CIGaussianBlur") {
-                blur.setValue(Look.quitBlur, forKey: kCIInputRadiusKey)
-                layer?.backgroundFilters = [blur]
-            }
+            layer?.contents = picture           // nil leaves the dim alone, as it was
+            layer?.contentsGravity = .resize
             setAccessibilityElement(true)
             setAccessibilityRole(.sheet)
             setAccessibilityLabel("Quit Vane?")

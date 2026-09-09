@@ -770,6 +770,10 @@ enum Look {
     /// Arc's is a clear dim with only a hint of blur — the page should still be readable.
     static let quitScrim: CGFloat = 0.35
     static let quitBlur: CGFloat = 3
+    /// The scrim blurs a picture of the window rather than the window itself, and takes it
+    /// this much smaller than the window is: a quarter of the pixels is a quarter of the
+    /// work, and the blur drawn back over them hides every one that shrinking lost.
+    static let quitBlurScale: CGFloat = 2
     /// How much of the space's colour washes over the pill's dark ground.
     static let toastTint: Double = 0.45
 
@@ -931,6 +935,8 @@ extension Look {
                     quitDialogWidth > paneMargin * 4 && quitDialogIcon >= control * 2))
         out.append(("the quit scrim dims without hiding and blurs only a little",
                     quitScrim > 0.2 && quitScrim < 0.6 && quitBlur >= 1 && quitBlur <= 6))
+        out.append(("…on a picture small enough to be cheap, big enough to still blur",
+                    quitBlurScale >= 2 && quitBlurScale <= 4 && quitBlur >= quitBlurScale))
         // A toast is one row, always: the sentence on the left, the verb and the × on the
         // right of it. The sentence takes what they leave and wraps into two lines of it —
         // never a paragraph with a button parked underneath. So the width that has to be
