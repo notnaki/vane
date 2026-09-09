@@ -1648,12 +1648,13 @@ private struct TabDrop: DropDelegate {
     var rtl = false
 
     func validateDrop(info: DropInfo) -> Bool {
-        // A folder only ever lands among the rows of the section it lives in, so every
-        // other target refuses it rather than quietly dropping it somewhere it cannot be
-        // drawn. Dragging a folder from Pinned into Today is not a move this offers.
+        // A folder lands among the rows of either section that has folders — its own, which
+        // is a reorder, or the other one, which pins it or un-pins it whole. The favourites
+        // grid has nowhere to draw a folder row, and refuses rather than dropping one where
+        // it cannot be seen.
         if let dragged = Dragging.shared.folder {
-            guard let kind = target?.kind, let shape = TabStore.shape(of: kind) else { return false }
-            return store[keyPath: shape].folder(dragged) != nil
+            guard let shape = TabStore.shape(of: target?.kind ?? into) else { return false }
+            return store.canDrag(folder: dragged, into: shape)
         }
         // The dragged row's own slot takes the drop too, and answers "nothing to do".
         // Refusing it would hand the pointer to whatever is under the list the moment the
@@ -1691,9 +1692,16 @@ private struct TabDrop: DropDelegate {
         // the row in the air can glide into it. Anything else moves it again.
         let (dragged, folder) = Dragging.shared.takeAll(landed: where_ == nil)
         if let folder {
-            guard let target, let shape = TabStore.shape(of: target.kind),
-                  store[keyPath: shape].folder(folder) != nil else { return false }
-            store.move(folder: folder, next: target.id.uuidString, after: after, in: shape)
+            guard let shape = TabStore.shape(of: target?.kind ?? into),
+                  store.canDrag(folder: folder, into: shape) else { return false }
+            // A row to be beside, or — on the space's name, the divider and the New Tab row —
+            // the section itself, which takes the folder at the end of Pinned or the head of
+            // Today, where a tab crossing the same divider lands.
+            if let target {
+                store.move(folder: folder, next: target.id.uuidString, after: after, in: shape)
+            } else {
+                store.move(folder: folder, to: shape)
+            }
             return true
         }
         guard !dragged.isEmpty else { return false }
@@ -2469,10 +2477,10 @@ private struct FolderDrop: DropDelegate {
     @Binding var zone: FolderZone?
 
     func validateDrop(info: DropInfo) -> Bool {
-        // A folder only ever lands in the section it already lives in: dragging one from
-        // Pinned into Today (or back) is refused rather than half-done. See `TabDrop`.
+        // A folder from either section, in or beside this one — except a live folder from
+        // the other, which stays where its source can keep filling it. See `TabStore.canDrag`.
         if let dragged = Dragging.shared.folder {
-            return dragged != folder.id && store[keyPath: shape].folder(dragged) != nil
+            return dragged != folder.id && store.canDrag(folder: dragged, into: shape)
         }
         return Dragging.shared.tab != nil
     }
@@ -2489,7 +2497,7 @@ private struct FolderDrop: DropDelegate {
         zone = nil
         let (tabs, dragged) = Dragging.shared.takeAll()      // see `TabDrop.performDrop`
         if let dragged {
-            guard dragged != folder.id, store[keyPath: shape].folder(dragged) != nil
+            guard dragged != folder.id, store.canDrag(folder: dragged, into: shape)
             else { return false }
             switch where_ {
             case .inside: store.move(folder: dragged, into: folder.id, in: shape)

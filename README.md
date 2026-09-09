@@ -188,11 +188,14 @@ Everything here is implemented and reachable from the UI.
 - Tabs with favicons, drag-to-reorder, and pinning. Pinned tabs sit ahead of the rest,
   survive a relaunch, and are stored per profile.
 - Folders in the sidebar, in Pinned and in Today: nest them, fold them, rename them, and
-  drag rows in and out. Tidy Tabs (the on-device model, with a deterministic
-  domain-and-title fallback when Apple Intelligence is off or unavailable) groups Today's
-  pile into named folders in one press, and one Undo takes the whole thing back. The
-  folders it makes are Today's, so the tabs in them keep auto-archiving on the usual clock
-  and Clear still clears them; a Today folder disappears when the last tab leaves it.
+  drag rows in and out. A whole folder crosses the divider too: dragged up into Pinned it
+  takes its tabs with it and they stop auto-archiving, dragged down into Today they start
+  again, and the toast's Undo puts the lot back. Tidy Tabs (the on-device model, with a
+  deterministic domain-and-title fallback when Apple Intelligence is off or unavailable)
+  groups Today's pile into named folders in one press, and one Undo takes the whole thing
+  back. The folders it makes are Today's, so the tabs in them keep auto-archiving on the
+  usual clock and Clear still clears them; a Today folder disappears when the last tab
+  leaves it.
 - Multiple windows; private windows, which get a non-persistent website data store and are
   never written to disk.
 - Address bar that decides between navigation and search: bare hosts, `localhost:3000`,
@@ -293,9 +296,10 @@ Sources/` is the full ledger.
   and password management hands you off to Keychain Access.
 - Several prompts are app-modal `NSAlert`s rather than sheets: certificate errors, HTTP
   auth, camera/microphone. A background tab hitting a bad certificate steals focus.
-- A folder can be dragged around inside its own section but not between Pinned and Today.
-  A Today folder also cannot be empty — one made with nothing in it is removed at once —
-  so there is no "make a folder now and fill it later" in Today.
+- A live folder stays in Pinned: dragging one down into Today is refused, because its source
+  would keep refilling rows that Today keeps archiving. A Today folder also cannot be empty —
+  one made with nothing in it is removed at once, and an empty folder dragged down from
+  Pinned goes the same way — so there is no "make a folder now and fill it later" in Today.
 
 **Content blocking**
 

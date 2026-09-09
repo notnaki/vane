@@ -153,6 +153,14 @@ struct Pins: Codable, Equatable, Sendable {
         return entries[subtree(at: i)].compactMap(\.tab)
     }
 
+    /// Whether a folder is live or is carrying a live folder somewhere under it. Asked of the
+    /// whole subtree because a drag takes the whole subtree: a live folder that crossed the
+    /// divider inside a plain one would stop being refilled and be swept up when its rows go.
+    func holdsLive(_ folder: UUID) -> Bool {
+        guard let i = index(of: folder) else { return false }
+        return entries[subtree(at: i)].contains { $0.folder?.live != nil }
+    }
+
     /// The tabs that are in some folder, however deeply — as opposed to loose at the top of
     /// the section. What "already tidy" means to `TidyTabs.candidates`, which is the one
     /// caller: a tab the shape has never heard of is not in a folder either, so the question
@@ -266,6 +274,20 @@ struct Pins: Codable, Equatable, Sendable {
     /// A tab that stopped being pinned. Tabs have nothing under them, so this is one line.
     mutating func remove(tab id: String) { entries.removeAll { $0.id == id } }
 
+    /// A folder and everything under it, taken out of the section — half of dragging one
+    /// across the divider. The rows keep their order and their nesting, and the folder itself
+    /// comes out parentless, because whatever it was sitting in is not going with it. The
+    /// other half is `entries += rows` and then a `put`, which is `relocate` doing the
+    /// depth check it always does. See `TabStore.moved`.
+    mutating func lift(folder id: UUID) -> [Entry] {
+        guard let i = index(of: id) else { return [] }
+        let range = subtree(at: i)
+        var rows = Array(entries[range])
+        rows[0].parent = nil
+        entries.removeSubrange(range)
+        return rows
+    }
+
     /// Where one row sits, and nothing else: the folder it is in — nil at the top of the
     /// section — and how many of that folder's own rows come before it. Enough to put the
     /// row back, and, unlike a copy of the whole section, it says nothing at all about any
@@ -282,6 +304,23 @@ struct Pins: Codable, Equatable, Sendable {
         let parent = entries[i].parent
         let siblings = entries.indices.filter { entries[$0].parent == parent }
         return Spot(parent: parent, index: siblings.firstIndex(of: i) ?? 0)
+    }
+
+    /// Where a row let go beside `to` would sit: in whatever folder `to` is in, in front of
+    /// it or behind it. A drop on a row's top or bottom edge, said as a `Spot` — which is
+    /// what a row arriving from the *other* section is placed by, having no place here yet
+    /// for `move(_:next:after:)` to move it from.
+    func spot(next to: String, after: Bool) -> Spot? {
+        spot(of: to).map { Spot(parent: $0.parent, index: $0.index + (after ? 1 : 0)) }
+    }
+
+    /// The same spot, unless the folder it names has gone since it was taken — then the end
+    /// of the section, which is where `put` lands a row whose folder is missing. The toast's
+    /// Undo asks: the drag can leave the folder it emptied to be swept up while the toast is
+    /// still on screen, and "back where it was" then means back in the section.
+    func landing(for spot: Spot) -> Spot {
+        guard let p = spot.parent, index(of: p) == nil else { return spot }
+        return Spot(parent: nil, index: .max)
     }
 
     /// Put one row back where a `Spot` says it was, and leave every other row exactly as it
@@ -727,6 +766,107 @@ extension Pins {
         assert("…and junk where a shape should be decodes to nothing rather than throwing",
                (try? JSONDecoder().decode(Pins.self, from: Data("{".utf8))) == nil)
 
+        // --- A whole folder dragged across the divider ---
+        // Everything `TabStore.move(folder:from:to:at:)` does before it re-kinds the tabs and
+        // saves: two sections, one folder taken out of one and put into the other.
+        func sections() -> (from: Pins, to: Pins, folder: UUID) {
+            var from = Pins(entries: ["a", "b", "c"].map { Entry(row: .tab($0), parent: nil) })
+            let box = from.newFolder(named: "Reading", next: "a")!
+            from.move("a", into: box.id)
+            from.move("b", into: box.id)
+            return (from, flat("p"), box.id)
+        }
+        let (dayside, pinside, boxed) = sections()
+        let sectionEnd = Pins.Spot(parent: nil, index: .max)
+        guard let up = TabStore.moved(folder: boxed, from: dayside, to: pinside, at: sectionEnd)
+        else { return out + [("a folder crosses the divider", false)] }
+        assert("a folder dragged up to Pinned arrives with its rows",
+               up.to.tabs(in: boxed) == ["a", "b"] && up.to.tabs == ["p", "a", "b"])
+        assert("…at the end of the section, where a pinned tab lands",
+               shown(up.to) == ["p", boxed.uuidString, "a", "b"])
+        assert("…and Today keeps only what was not in it",
+               up.from.folder(boxed) == nil && up.from.tabs == ["c"])
+        // Which tabs change kind, said by the only thing that knows which they are: the store
+        // re-kinds what the folder was holding, and nothing else in either section.
+        assert("…so the tabs that change section are the ones the folder held",
+               Set(dayside.tabs(in: boxed)) == Set(up.to.tabs).subtracting(pinside.tabs))
+        var folded = dayside
+        folded.edit(folder: boxed) { $0.collapsed = true; $0.icon = "🎧" }
+        assert("…and the record arrives with its name, its glyph and its fold",
+               TabStore.moved(folder: boxed, from: folded, to: pinside, at: sectionEnd)?
+                   .to.folder(boxed) == folded.folder(boxed))
+        // The other direction, which is also what the toast's Undo runs.
+        assert("dragging it back down puts both sections back exactly",
+               TabStore.moved(folder: boxed, from: up.to, to: up.from,
+                              at: Pins.Spot(parent: nil, index: 0)).map {
+                   $0.from == pinside && $0.to == dayside
+               } == true)
+
+        // Into a pinned folder rather than beside its rows, and the cap counted over the
+        // whole subtree — a folder two levels tall needs two levels of room.
+        var (tall, receiving, outermost) = sections()
+        let within = tall.newFolder(named: "Inner")!
+        tall.move(within.id.uuidString, into: outermost)
+        var top = receiving.newFolder(named: "Top")!
+        receiving.edit(folder: top.id) { $0.collapsed = true }
+        assert("a folder two levels tall fits inside a top-level pinned folder",
+               TabStore.moved(folder: outermost, from: tall, to: receiving,
+                              at: Pins.Spot(parent: top.id, index: .max))
+                   .map { $0.to.depth(of: $0.to.index(of: within.id)!) } == 2)
+        // Unfolding a folded folder to show what arrived is the store's to do, and it waits
+        // on this answer — rows in it, or nothing at all. See `TabStore.move(folder:into:)`.
+        assert("…and the rows land inside it, folded though it is",
+               TabStore.moved(folder: outermost, from: tall, to: receiving,
+                              at: Pins.Spot(parent: top.id, index: .max))?
+                   .to.tabs(in: top.id) == ["a", "b"])
+        for _ in 1...Pins.maxDepth {
+            let next = receiving.newFolder(named: "Down")!
+            receiving.move(next.id.uuidString, into: top.id)
+            top = next
+        }
+        assert("…but not inside one already at the cap, and then neither section moves",
+               TabStore.moved(folder: outermost, from: tall, to: receiving,
+                              at: Pins.Spot(parent: top.id, index: .max)) == nil)
+        assert("…nor into a folder that has gone since the drag began",
+               TabStore.moved(folder: outermost, from: tall, to: receiving,
+                              at: Pins.Spot(parent: UUID(), index: 0)) == nil)
+
+        // An Undo taken after the folder the drag emptied has been swept up: the row comes
+        // back to the section rather than to a folder that is not there any more.
+        let orphaned = Pins.Spot(parent: UUID(), index: 0)
+        assert("an Undo whose old folder has gone lands at the end of the section",
+               dayside.landing(for: orphaned) == sectionEnd)
+        assert("…so the folder does come back, rather than the Undo quietly doing nothing",
+               TabStore.moved(folder: boxed, from: up.to, to: up.from,
+                              at: up.from.landing(for: orphaned))?.to.tabs == ["c", "a", "b"])
+        assert("…while a spot whose folder is still there is the spot it was",
+               dayside.landing(for: Pins.Spot(parent: boxed, index: 1))
+                   == Pins.Spot(parent: boxed, index: 1))
+
+        // A live folder stays pinned: its source keeps filling it, and Today would archive
+        // the rows out from under the refresh that put them there.
+        var filled = pinside
+        let keptFull = filled.newFolder(named: "Review Requested")!
+        filled.edit(folder: keptFull.id) { $0.live = .github(GitHubQuery(filter: .mentioned)) }
+        assert("a live folder does not cross the divider",
+               TabStore.moved(folder: keptFull.id, from: filled, to: dayside,
+                              at: sectionEnd) == nil)
+        // Asked of the whole subtree: what is dragged is the folder *and* everything under it.
+        var carrying = pinside
+        let plain = carrying.newFolder(named: "Work")!
+        let mentions = carrying.newFolder(named: "Mentions")!
+        carrying.move(mentions.id.uuidString, into: plain.id)
+        carrying.edit(folder: mentions.id) { $0.live = .github(GitHubQuery(filter: .mentioned)) }
+        assert("a plain folder carrying a live one does not cross either",
+               TabStore.moved(folder: plain.id, from: carrying, to: dayside,
+                              at: sectionEnd) == nil)
+        carrying.edit(folder: mentions.id) { $0.live = nil }
+        assert("…and the same two folders cross once nothing under them is live",
+               TabStore.moved(folder: plain.id, from: carrying, to: dayside,
+                              at: sectionEnd)?.to.folder(mentions.id) != nil)
+        assert("a folder neither section has heard of crosses nothing",
+               TabStore.moved(folder: UUID(), from: dayside, to: pinside, at: sectionEnd) == nil)
+
         // Codable, which is how the section survives a relaunch.
         if let data = try? JSONEncoder().encode(p),
            let back = try? JSONDecoder().decode(Pins.self, from: data) {
@@ -904,6 +1044,101 @@ extension TabStore {
         shape == \TabStore.todayShape ? .today : .pinned
     }
 
+    /// Which section a folder is in — where a drag of it started. Nil for an id neither
+    /// section knows, which is every folder of every other window. The `TabKind` version of
+    /// the same question is `TabStore.shape(of:)`.
+    func holder(of folder: UUID) -> ReferenceWritableKeyPath<TabStore, Pins>? {
+        [\TabStore.pins, \TabStore.todayShape].first { self[keyPath: $0].folder(folder) != nil }
+    }
+
+    /// Whether a dragged folder may land in a section at all: its own always, the other one
+    /// only when nothing else is filling it, or filling anything nested in it. Asked by the
+    /// drop targets before they light up, so a live folder offers no target rather than
+    /// landing and then explaining itself.
+    func canDrag(folder id: UUID, into shape: ReferenceWritableKeyPath<TabStore, Pins>) -> Bool {
+        guard let from = holder(of: id) else { return false }
+        return from == shape || !self[keyPath: from].holdsLive(id)
+    }
+
+    /// A folder taken out of one section and put into the other: the folder, the tabs in it
+    /// and the folders nested in it, in the order they were in. Nil when the drop cannot mean
+    /// what it looks like — and then neither section is touched.
+    ///
+    /// ponytail: a live folder does not cross, and says nothing about it — nor does a plain
+    /// folder carrying one. Its source is what fills it, and a copy of it in Today would be
+    /// swept into the Library under the refresh that keeps putting the rows back.
+    ///
+    /// Pure, over the two values, so `selfcheck --pure` proves the whole move without a
+    /// window: `move(folder:from:to:at:)` is this plus the tabs' kinds, the strip and the
+    /// two saves.
+    nonisolated static func moved(folder id: UUID, from source: Pins, to dest: Pins,
+                                  at spot: Pins.Spot) -> (from: Pins, to: Pins)? {
+        guard !source.holdsLive(id) else { return nil }
+        var from = source, to = dest
+        let rows = from.lift(folder: id)
+        guard !rows.isEmpty else { return nil }
+        to.entries += rows              // at the end, at the top level; the `put` places it
+        to.put(id.uuidString, at: spot)
+        // `Pins` refuses a spot too deep for what the folder is carrying rather than clamping
+        // it, and the refused row is left where it was grafted. Asked after the fact, because
+        // refusing is what the value already knows how to do — and a folder that did not land
+        // where it was let go is a drop that did not happen.
+        guard let i = to.index(of: id), to.entries[i].parent == spot.parent else { return nil }
+        return (from, to)
+    }
+
+    /// A whole folder dragged across the divider: from Today up into Pinned, or from Pinned
+    /// back down into Today. The record and its rows change section together, and every tab in
+    /// it takes the new kind — pinned it stops auto-archiving, un-pinned it starts again. The
+    /// folder keeps its name, its glyph and whether it is folded.
+    ///
+    /// The toast's Undo is this same move, back to the spot the folder came out of: one folder
+    /// undone rather than a snapshot of two whole sections written back over everything the
+    /// user has done since. `TabStore.unpin` puts one row back the same way.
+    @discardableResult
+    func move(folder id: UUID, from source: ReferenceWritableKeyPath<TabStore, Pins>,
+              to dest: ReferenceWritableKeyPath<TabStore, Pins>, at spot: Pins.Spot,
+              saying: Bool = true) -> Bool {
+        let back = self[keyPath: source].spot(of: id.uuidString)
+        let name = self[keyPath: source].folder(id)?.name ?? "folder"
+        let moving = Set(self[keyPath: source].tabs(in: id))
+        guard let shapes = TabStore.moved(folder: id, from: self[keyPath: source],
+                                          to: self[keyPath: dest], at: spot) else { return false }
+        let want = kind(of: dest)
+        Motion.list {
+            for tab in tabs where moving.contains(tab.id.uuidString) {
+                tab.kind = want
+                TidyTitles.refresh(tab)
+            }
+            // The rows have changed section, so the strip is grouped by section again before
+            // either order is read off the shapes.
+            normaliseSections()
+            self[keyPath: source] = shapes.from
+            self[keyPath: dest] = shapes.to
+            applyOrder(kind(of: source))
+            applyOrder(want)
+        }
+        savePins()
+        guard saying else { return true }
+        Toasts.show((want == .pinned ? "Pinned " : "Unpinned ") + name,
+                    action: ("Undo", { [weak self] in
+                        guard let self, let back else { return }
+                        self.move(folder: id, from: dest, to: source,
+                                  at: self[keyPath: source].landing(for: back), saying: false)
+                    }), in: self)
+        return true
+    }
+
+    /// A folder let go on a *section* rather than on a row of one: the space's name, the
+    /// divider under Pinned, the New Tab row. It lands where a tab crossing the same divider
+    /// lands — the end of Pinned, the head of Today. A folder let go on its own section has
+    /// nowhere new to be and stays put.
+    func move(folder id: UUID, to shape: ReferenceWritableKeyPath<TabStore, Pins>) {
+        guard let from = holder(of: id), from != shape else { return }
+        move(folder: id, from: from, to: shape,
+             at: Pins.Spot(parent: nil, index: kind(of: shape) == .today ? 0 : .max))
+    }
+
     /// A tab dragged onto a folder row — or sent there by "Move to Folder", which is the
     /// same move without a drag.
     func move(_ id: Tab.ID, into folder: UUID,
@@ -934,9 +1169,17 @@ extension TabStore {
         savePins()
     }
 
-    /// A folder row dragged among its section's rows.
+    /// A folder row dragged among a section's rows — its own, or the other one, which is the
+    /// move that crosses the divider.
     func move(folder id: UUID, next to: String, after: Bool,
               in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        // Dragged in from the other section: this shape has never heard of the folder, so
+        // there is no row here to move and it is placed by where the drop was instead.
+        if let from = holder(of: id), from != shape,
+           let spot = self[keyPath: shape].spot(next: to, after: after) {
+            move(folder: id, from: from, to: shape, at: spot)
+            return
+        }
         Motion.list {
             self[keyPath: shape].move(id.uuidString, next: to, after: after)
             applyOrder(kind(of: shape))
@@ -946,6 +1189,17 @@ extension TabStore {
 
     func move(folder id: UUID, into parent: UUID,
               in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        // From the other section: in at the end, which is where a drop on a folder's middle
+        // lands anything. See `move(folder:next:after:in:)`. Opened only once something has
+        // arrived — a drop the depth cap refuses leaves the folder as the drag found it.
+        if let from = holder(of: id), from != shape {
+            if move(folder: id, from: from, to: shape,
+                    at: Pins.Spot(parent: parent, index: .max)) {
+                Motion.list { self[keyPath: shape].edit(folder: parent) { $0.collapsed = false } }
+                savePins()   // the fold is written down too
+            }
+            return
+        }
         Motion.list {
             self[keyPath: shape].edit(folder: parent) { $0.collapsed = false }   // see above
             self[keyPath: shape].move(id.uuidString, into: parent)
