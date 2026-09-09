@@ -354,6 +354,8 @@ extension VaneWindow {
         case tab
         /// The key window itself, because it holds no tabs to close.
         case window
+        /// The Library, because it is standing in front of the tabs.
+        case library
     }
 
     /// Vane has windows of its own that hold no tabs at all — Settings, History, Extensions —
@@ -368,10 +370,38 @@ extension VaneWindow {
     /// `current` already looks. So is no key window at all, which is what `current`'s fallback
     /// was written for.
     ///
+    /// The Library is a panel *in* the window, not a window of its own, so the key window
+    /// holds tabs while it is up and ⌘W archived a tab behind it — a tab the user could not
+    /// even see go. Arc's ⌘W there shuts the Library, which is the thing in front.
+    ///
     /// Pure, so `selfcheck --pure` proves the ladder without a window server.
     nonisolated static func closeTarget(hasKey: Bool, keyHoldsTabs: Bool,
-                                        keyIsAttached: Bool) -> CloseTarget {
-        !hasKey || keyHoldsTabs || keyIsAttached ? .tab : .window
+                                        keyIsAttached: Bool,
+                                        libraryOpen: Bool) -> CloseTarget {
+        guard !hasKey || keyHoldsTabs || keyIsAttached else { return .window }
+        return libraryOpen ? .library : .tab
+    }
+
+    // MARK: Bringing the window forward
+
+    /// Whether the window a command is about to make or show a tab in has to be raised first.
+    ///
+    /// `current` and `main` both fall back to the frontmost browser window when the key
+    /// window is one of Vane's own tabless ones — Settings, History, Extensions. Acting on
+    /// that window is right; leaving it behind the one in front is not, because the new tab,
+    /// the address bar it opens with and the Space just switched to are all out of sight. Arc
+    /// and Safari both act *and* bring the window forward.
+    ///
+    /// Not for a window that is already key — raising it would be a no-op with a flicker —
+    /// and not for a Peek, a popover, a panel or a sheet hanging off a window: the
+    /// child is already over the window it belongs to, and taking key away from it is how a
+    /// popover dismisses itself. With no key window at all Vane is not the app in front, and
+    /// pulling a window over whatever is is not ours to do.
+    ///
+    /// Pure, so `selfcheck --pure` proves it with no window server.
+    nonisolated static func raises(hasKey: Bool, targetIsKey: Bool,
+                                   keyIsAttached: Bool) -> Bool {
+        hasKey && !targetIsKey && !keyIsAttached
     }
 
     // MARK: The keyboard
@@ -551,18 +581,41 @@ extension VaneWindow {
 
     // MARK: - check
 
-    /// The two ladders above, proved offline.
+    /// The ladders above, proved offline.
     nonisolated static func check() -> [(String, Bool)] {
         [
             ("⌘W over a browser window closes a tab",
-             closeTarget(hasKey: true, keyHoldsTabs: true, keyIsAttached: false) == .tab),
+             closeTarget(hasKey: true, keyHoldsTabs: true, keyIsAttached: false,
+                         libraryOpen: false) == .tab),
             ("⌘W over a window of ours that holds no tabs — Settings, History, Extensions — "
              + "closes that window, rather than archiving a tab in a browser window behind it",
-             closeTarget(hasKey: true, keyHoldsTabs: false, keyIsAttached: false) == .window),
+             closeTarget(hasKey: true, keyHoldsTabs: false, keyIsAttached: false,
+                         libraryOpen: false) == .window),
             ("…and over a Peek, a popover or a sheet hanging off the browser it is still the tab",
-             closeTarget(hasKey: true, keyHoldsTabs: false, keyIsAttached: true) == .tab),
+             closeTarget(hasKey: true, keyHoldsTabs: false, keyIsAttached: true,
+                         libraryOpen: false) == .tab),
             ("with no key window at all it is the tab, which is what `current`'s fallback is for",
-             closeTarget(hasKey: false, keyHoldsTabs: false, keyIsAttached: false) == .tab),
+             closeTarget(hasKey: false, keyHoldsTabs: false, keyIsAttached: false,
+                         libraryOpen: false) == .tab),
+            ("with the Library up it shuts the Library, the way Arc's ⌘W does, rather than "
+             + "archiving a tab behind the panel where nobody can see it go",
+             closeTarget(hasKey: true, keyHoldsTabs: true, keyIsAttached: false,
+                         libraryOpen: true) == .library),
+            ("a tabless window in front still closes itself, whatever the window behind it "
+             + "is showing",
+             closeTarget(hasKey: true, keyHoldsTabs: false, keyIsAttached: false,
+                         libraryOpen: true) == .window),
+
+            ("⌘T over Settings, History or Extensions brings the window the tab lands in "
+             + "forward, rather than opening it out of sight behind them",
+             raises(hasKey: true, targetIsKey: false, keyIsAttached: false)),
+            ("the window already in front is not raised over itself",
+             !raises(hasKey: true, targetIsKey: true, keyIsAttached: false)),
+            ("nor is one a Peek, a popover or a sheet hangs off — taking key from the child "
+             + "is how it dismisses itself",
+             !raises(hasKey: true, targetIsKey: false, keyIsAttached: true)),
+            ("with no key window Vane is not the app in front, and pulls nothing over it",
+             !raises(hasKey: false, targetIsKey: false, keyIsAttached: false)),
 
             ("a window nobody holds the keyboard in hands it back to the page, so ⌘V, ⌘C and "
              + "⌘A still reach it after the command bar or the find bar goes",
@@ -579,6 +632,23 @@ extension VaneWindow {
 }
 
 extension TabStore {
+    /// This window, brought to the front on the way past.
+    ///
+    /// What every command that *makes or shows a tab* acts through — New Tab, ⌘L, Reopen
+    /// Closed Tab, switching Space — so the tab it opens is one the user can see and type
+    /// into rather than one hidden behind Settings. A passive query (which page is playing,
+    /// what the zoom is) still reads `Windows.current` and moves nothing. The rule is
+    /// `Windows.raises`, proved offline.
+    var shown: TabStore {
+        let key = NSApp.keyWindow
+        guard let window,
+              Windows.raises(hasKey: key != nil, targetIsKey: window.isKeyWindow,
+                             keyIsAttached: key?.parent != nil || key?.sheetParent != nil)
+        else { return self }
+        window.makeKeyAndOrderFront(nil)
+        return self
+    }
+
     /// Hand the keyboard back to the page once a bar over it has gone — see
     /// `Windows.handsKeyboardBack` for what goes wrong without it.
     ///
