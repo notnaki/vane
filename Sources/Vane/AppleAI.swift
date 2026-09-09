@@ -584,17 +584,24 @@ import FoundationModels
     /// What the answer actually needs: a handful of group names plus one small number a tab,
     /// with a floor so a four-tab tidy is not cut off mid-name. The old flat 400 was sized
     /// for uuids and let a runaway answer run for seconds before the timeout noticed.
-    static func groupingTokens(_ count: Int) -> Int { max(128, 96 + 3 * count) }
+    ///
+    /// Measured, not estimated: a well-formed answer for thirty tabs costs ~4–4.5 tokens a
+    /// tab once the guided-generation wrapper and up to `maxGroups` names are counted, so
+    /// the slope is 5 and the floor 160. A slope of 3 cut a 60-tab answer off mid-list.
+    static func groupingTokens(_ count: Int) -> Int { max(160, 128 + 5 * count) }
+
+    /// How many tabs the model is shown. ponytail: past about thirty-five the 3B model
+    /// degenerates — every number in every group — and no token budget rescues it, so the
+    /// tail is dropped rather than batched. Batching would need cross-batch group merging,
+    /// which is a feature, not a safeguard.
+    static let listedTabLimit = 30
 
     /// Cluster open tabs into named groups. The listing is numbered and the numbers are
     /// validated on the way back, so a hallucinated one can never name a tab the caller does
     /// not have.
     static func group(_ tabs: [(id: String, title: String, host: String)]) async -> [(name: String, ids: [String])]? {
         guard ready, worthGrouping(tabs.count) else { return nil }
-        // ponytail: 60 tabs is where the listing starts eating the context window. Past that
-        // the tail is dropped rather than batched — batching would need cross-batch group
-        // merging, which is a feature, not a safeguard.
-        let shown = Array(tabs.prefix(60))
+        let shown = Array(tabs.prefix(listedTabLimit))
         let p = prompt(listing(shown), ask: "Group the tabs listed above by topic, naming each tab by its number.")
         guard let out = await run(.grouping, p, as: TabGroups.self,
                                   tokens: groupingTokens(shown.count), timeout: .seconds(30)) else { return nil }
@@ -802,9 +809,13 @@ import FoundationModels
                long.count <= listedTitleLimit + "1 |  | example.com".count)
         assert("the token budget grows with the number of tabs",
                groupingTokens(60) > groupingTokens(20))
+        assert("…by at least the measured cost of a tab in the answer",
+               groupingTokens(listedTabLimit) - groupingTokens(10) >= 4 * (listedTabLimit - 10))
         assert("and has a floor, so a small tidy is not cut off mid-name",
                groupingTokens(minimumTabsToGroup) == groupingTokens(0)
-               && groupingTokens(0) >= 128)
+               && groupingTokens(0) >= 160)
+        assert("the model is shown no more tabs than it can group without degenerating",
+               listedTabLimit <= 35 && listedTabLimit >= 20)
 
         return out
     }
