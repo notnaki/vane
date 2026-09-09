@@ -274,12 +274,12 @@ import Foundation
         // --- Pass 3: the leftovers. ---
         // A group of one is not a group, so singletons go into "Other" — but only if there
         // are at least two of them, because an "Other" holding one tab is a label on a tab.
-        // A single leftover stays ungrouped and `order(_:pinned:groups:)` parks it at the
-        // tail, which is the honest place for "this one belongs with nothing".
+        // A single leftover stays ungrouped and `order(_:pinned:groups:)` leaves it exactly
+        // where it was, which is the honest place for "this one belongs with nothing".
         //
         // ponytail: Other only gets made if there is room under the cap. Ceiling: a window
         // of forty tabs on nineteen different domains fills the eight groups and leaves the
-        // rest loose at the tail. That is a worse tidy than a real clustering pass would
+        // rest loose where they were. That is a worse tidy than a real clustering pass would
         // give, and it is still better than the pile it started as.
         if pool.count >= 2, groups.count < maxGroups {
             groups.append(Group(name: "Other", tabIDs: pool.map(\.id)))
@@ -396,26 +396,35 @@ import Foundation
     /// Pure, and the reason every ordering assertion in `check()` needs no `Tab`:
     /// - pinned tabs come first, in exactly the order they were already in (the `TabStore`
     ///   invariant, which this must not be the thing that breaks)
-    /// - then each group as one contiguous run, in group order
+    /// - **anything no group claimed stays where it was**, in its own relative order, ahead
+    ///   of everything the tidy made
+    /// - then each group as one contiguous run, in group order, after all of that
     /// - **within** a group, tabs keep their current relative order, not the order the model
     ///   listed them in. That is what makes this idempotent: re-running on an already-tidy
     ///   strip reproduces it exactly.
-    /// - anything no group claimed keeps its relative order and settles at the tail
+    ///
+    /// **The new folders go at the end of Today, and the untouched rows keep their places.**
+    /// It used to be the other way round — the groups at the head, everything else swept to
+    /// the tail — and the tail is where a folder the *user* made ended up on every single
+    /// tidy, because the tabs in it are filed and so no group ever claims them (see
+    /// `candidates`). A "Research" folder sinking to the bottom of the sidebar each time you
+    /// press Tidy is the feature moving something the user arranged by hand, which is the
+    /// one thing it promised not to do. The end is also where `Pins.newFolder` puts a folder
+    /// with nothing to be beside, so `apply` builds the shape in the order it lays it out.
     ///
     /// Total in both directions: ids the groups invented are ignored, tabs the groups forgot
     /// are kept. The output is always a permutation of the input.
     static func order(_ ids: [Tab.ID], pinned: Set<Tab.ID>, groups: [Group]) -> [Tab.ID] {
         let rest = ids.filter { !pinned.contains($0) }
         var placed = Set<Tab.ID>()
-        var out = ids.filter { pinned.contains($0) }
+        var runs: [Tab.ID] = []
         for g in groups {
             let members = Set(g.tabIDs)
             for id in rest where members.contains(id) && placed.insert(id).inserted {
-                out.append(id)
+                runs.append(id)
             }
         }
-        out.append(contentsOf: rest.filter { !placed.contains($0) })
-        return out
+        return ids.filter { pinned.contains($0) } + rest.filter { !placed.contains($0) } + runs
     }
 
     /// Which groups become a folder, and in what order their tabs go into it.
@@ -512,9 +521,10 @@ import Foundation
             for id in group.tabIDs { store.todayShape.move(id.uuidString, into: folder.id) }
         }
         Motion.list {
-            // The order `order(_:pinned:groups:)` decided, said to the shape: each group as
-            // one run, in group order, and whatever no group claimed at the tail. Then the
-            // strip is put in the order the sidebar now draws.
+            // The order `order(_:pinned:groups:)` decided, said to the shape: whatever no
+            // group claimed left where it already was — a folder the user made by hand
+            // included — and then each new group as one run, in group order, after it. Then
+            // the strip is put in the order the sidebar now draws.
             store.todayShape.relay(placement.map(\.uuidString))
             store.applyOrder(.today)
         }
@@ -828,8 +838,10 @@ import Foundation
                tidied.firstIndex(of: id(4))! < tidied.firstIndex(of: id(3))!)
         assert("within a group tabs keep their current relative order",
                tidied.firstIndex(of: id(4))! < tidied.firstIndex(of: id(7))!)
-        assert("ungrouped tabs settle at the tail, in their original order",
-               Array(tidied.suffix(2)) == [id(6), id(8)])
+        assert("tabs no group claimed stay where they were, in their original order",
+               Array(tidied.dropFirst(2).prefix(2)) == [id(6), id(8)])
+        assert("…and the tidy's own groups go after every one of them",
+               tidied.firstIndex(of: id(8))! < tidied.firstIndex(of: id(4))!)
         assert("applying the same plan twice changes nothing",
                order(tidied, pinned: pinnedIDs, groups: groups) == tidied)
         assert("a plan naming tabs that are gone still orders the rest",
@@ -915,6 +927,10 @@ import Foundation
         // Its tabs are filed, so `candidates` never offers them; no group names them; so the
         // relay keeps the folder they are in, and the undo — which takes back only the
         // folders the tidy made — leaves it exactly as it was.
+        //
+        // And *where* it is matters as much as that it survives: unclaimed rows keep their
+        // places, so "Mine" is still the first thing in Today afterwards. It used to be
+        // swept to the bottom on every tidy, since a filed tab is unclaimed by definition.
         var mine = Pins(entries: (1...4).map { Pins.Entry(row: .tab(id($0).uuidString),
                                                           parent: nil) })
         let hand = mine.newFolder(named: "Mine")!
@@ -928,6 +944,10 @@ import Foundation
         mine.relay(untouched.map(\.uuidString))
         assert("a tidy leaves the folder the user made standing",
                mine.folder(fromTidy.id) != nil && mine.children(of: hand.id) == [id(1).uuidString])
+        assert("…and standing where it was, rather than sinking under the tidy's own folder",
+               mine.index(of: hand.id)! < mine.index(of: fromTidy.id)!)
+        assert("…with the rows of Today in the order the tidy laid them out",
+               mine.tabs == [id(1), id(4), id(2), id(3)].map(\.uuidString))
         mine.remove(folder: fromTidy.id)
         mine.relay([id(1), id(2), id(3), id(4)].map(\.uuidString))
         assert("…and so does its undo, which has only its own folders to take back",

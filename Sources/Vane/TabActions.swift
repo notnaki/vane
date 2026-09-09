@@ -241,6 +241,26 @@ extension TabActions {
                  return i >= 0 && i <= strip.count
              }),
         ]
+
+        // The shape's half of the same move. Today is drawn from `todayShape`, so a new row
+        // has to land where the arithmetic above puts the strip tab — and the case that used
+        // to disagree is the opener that has gone: Peek's ⌘O once its source is closed. The
+        // strip sends that tab to the end of Today; `syncShapes` has already written its row
+        // down there, so `TabStore.placeBeside` leaves it alone. `Pins.insert(after: nil)`
+        // would send it to the head instead, and the sidebar and ⌘1…9 would read different
+        // orders until the next `applyOrder(.today)`.
+        var today = Pins(entries: ["a", "b"].map { Pins.Entry(row: .tab($0), parent: nil) })
+        today.sync(tabs: ["a", "b", "new"])          // what `syncShapes` does with a new tab
+        var head = today
+        head.insert("new", after: nil)
+        out += [
+            ("with its opener gone a new tab goes to the end of Today",
+             TabStore.insertionIndexBeside(current: nil, kinds: [.today, .today]) == 2),
+            ("…and its row is already at that same end, so the shape is left alone",
+             today.tabs == ["a", "b", "new"]),
+            ("…rather than sent to the head, which is where the two used to disagree",
+             head.tabs == ["new", "a", "b"]),
+        ]
         return out
     }
 }

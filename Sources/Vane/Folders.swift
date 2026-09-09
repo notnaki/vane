@@ -882,14 +882,20 @@ extension TabStore {
     /// The shape's half of "beside the opener". The strip move is `insertionIndexBeside`;
     /// this is the same move told to the section that is drawn from its shape, so the row
     /// lands after the opener and in whatever folder the opener sits in — and at the head of
-    /// Today when the opener is a pinned row, a favourite or nothing at all, which is where
-    /// the strip puts it. Without this the new tab draws at the bottom of the sidebar while
-    /// ⌘1…9 has it beside its opener, and the next `applyOrder(.today)` drags the tab down
-    /// to the bottom for real.
+    /// Today when the opener is a pinned row or a favourite, which is where the strip puts
+    /// it. Without this the new tab draws at the bottom of the sidebar while ⌘1…9 has it
+    /// beside its opener, and the next `applyOrder(.today)` drags the tab down to the bottom
+    /// for real.
+    ///
+    /// An opener that is nil, or a tab no longer in this window — Peek's ⌘O once its source
+    /// has closed — is `insertionIndexBeside`'s `kinds.count`: the *end* of Today, not the
+    /// head. That is exactly where `syncShapes` has just written the new row down, so the
+    /// two already agree and the right move is no move at all. Sending it to the head was
+    /// the same disagreement this function exists to fix, the other way up.
     func placeBeside(_ id: Tab.ID, opener: Tab.ID?) {
         syncShapes()        // the tab may be brand new to the shape; the opener never is
-        let beside = tabs.first { $0.id == opener }?.kind == .today ? opener?.uuidString : nil
-        todayShape.insert(id.uuidString, after: beside)
+        guard let kind = tabs.first(where: { $0.id == opener })?.kind else { return }
+        todayShape.insert(id.uuidString, after: kind == .today ? opener?.uuidString : nil)
     }
 
     /// The section a shape stands for — what a tab dropped into one of its folders becomes.
