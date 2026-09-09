@@ -95,6 +95,13 @@ struct TitleReveal: Equatable, Sendable {
     /// True while this tab has no live page — see `suspend()`. Published so anything that
     /// wants to badge the strip can, but nothing does: suspension is meant to be invisible.
     @Published private(set) var suspended = false
+    /// Whether this tab has ever been given a page — one it loaded, or one it came up from
+    /// disk parked on. Deliberately *not* `web.url != nil`, which those two states share
+    /// with a third: the gap between `resume` handing the view a load and `WKWebView.url`
+    /// catching up with it. A pinned row's × read that gap as "nothing left to unload" and
+    /// took the pin off in one press. Once true it stays true — a tab that has held a page
+    /// is never again a tab that never held one. See `TabRowGlyph.unpinsWithNothingParked`.
+    var hasEverLoaded = false
     /// Last time the user was looking at this tab. The MRU order behind ⌃⇥ and the media
     /// tray's tie-break as well as an input to the idle clock, which is why nothing but a
     /// real visit ever writes it.
@@ -444,6 +451,10 @@ struct TitleReveal: Equatable, Sendable {
         parkedURL = url
         parkedState = p.state
         suspended = true
+        // A tab that comes up from disk parked has a page — that is what parked means — and
+        // it has one before it has ever run a navigation. Without this the very first × on a
+        // restored pinned row, pressed in the gap after it was clicked awake, unpinned it.
+        hasEverLoaded = true
         if !p.title.isEmpty { title = p.title }
         address = url.absoluteString
         favicon = favicons.icon(for: url)      // from the cache, no page needed
@@ -632,6 +643,7 @@ struct TitleReveal: Equatable, Sendable {
         editableFrames = []
         closeChooser(.navigate)       // …and so is the form the account list was anchored to
         loading = true
+        hasEverLoaded = true          // whatever it turns out to be, this tab has a page now
         progress = 0.08        // a sliver immediately, so the bar never appears to stall at 0
     }
 
@@ -1365,19 +1377,23 @@ struct TitleReveal: Equatable, Sendable {
     /// back from the Library, then close it. A favourite or a pinned tab is written down
     /// already and stays exactly where it is — `close` parks it — so nothing is archived
     /// for it either; that is the whole difference between the sections.
-    func archive(_ id: Tab.ID) {
+    ///
+    /// `asPane` is a caller that knows this tab is a pane even when `splits` no longer says
+    /// so — see `closeSplit`, which takes a whole split down one tab at a time and so asks
+    /// for the last one after the split has already collapsed under it.
+    func archive(_ id: Tab.ID, asPane: Bool = false) {
         // Several archives in one synchronous burst — Clear, Archive Tabs Below, the
         // auto-archive sweep — leave one after another, the way Arc sweeps Today away,
         // rather than all in the same frame. A lone ⌘W is a burst of one and goes at once.
         let delay = Motion.sweepDelay(bursts.next(), reduced: Motion.reduced)
-        guard delay > 0 else { archiveNow(id); return }
+        guard delay > 0 else { archiveNow(id, asPane: asPane); return }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            self?.archiveNow(id)      // a no-op if the tab has gone in the meantime
+            self?.archiveNow(id, asPane: asPane)   // a no-op if the tab has gone meanwhile
         }
     }
 
-    private func archiveNow(_ id: Tab.ID) {
+    private func archiveNow(_ id: Tab.ID, asPane: Bool = false) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
         if tab.kind == .today, !isPrivate, let u = tab.currentURL,
            u.scheme?.hasPrefix("http") == true {
@@ -1386,7 +1402,7 @@ struct TitleReveal: Equatable, Sendable {
             Archive.shared(for: profileID).add(url: u, title: TidyTitles.title(for: tab),
                                                space: currentSpaceID, littleArc: isLittle)
         }
-        close(id)
+        close(id, asPane: asPane)
     }
 
     /// A row in the Library's Archived Tabs list, clicked: open it again and take it out of
@@ -1420,7 +1436,10 @@ struct TitleReveal: Equatable, Sendable {
 
     /// `byScript` is a popup dismissing itself — see `closedByScript`. Everything else about
     /// the close is the same; only the trace it leaves differs.
-    func close(_ id: Tab.ID, byScript: Bool = false) {
+    ///
+    /// `asPane` is the caller insisting this is a pane close whatever `splits` currently says
+    /// — see `closeSplit` and `TabRowGlyph.isPane`.
+    func close(_ id: Tab.ID, byScript: Bool = false, asPane: Bool = false) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[i]
         // A pinned row's × — and ⌘W on it — is a two-step, and this is the one place that
@@ -1446,16 +1465,23 @@ struct TitleReveal: Equatable, Sendable {
         // the width of that gap a tab that is very much alive has no url to show — and a ×
         // pressed right after clicking a parked pinned row read that as "nothing left to
         // unload" and took the pin off in one click.
-        switch TabRowGlyph.decide(kind: tab.kind, suspended: tab.suspended,
-                                  pane: split(containing: id) != nil) {
+        switch TabRowGlyph.decide(
+            kind: tab.kind, suspended: tab.suspended,
+            pane: TabRowGlyph.isPane(inSplit: split(containing: id) != nil, forced: asPane)) {
         case .close:
             break
         case .unload:
             tab.suspend()
-            // `suspend` parks a *page*, and a pinned row that has never loaded one has none
-            // to park — a press that did nothing at all would be worse than the second step
-            // arriving early, so it takes the pin off instead.
-            if !tab.suspended { unpin(id) }
+            // `suspend` parks a *page*, and a pinned row that has never been given one has
+            // none to park — a press that did nothing at all would be worse than the second
+            // step arriving early, so it takes the pin off instead. But "no page to park" is
+            // also true for the width of the resume gap, where the tab has a page on its way
+            // in, and unpinning *that* loses the row to a press that asked to unload. See
+            // `Tab.hasEverLoaded`.
+            if !tab.suspended,
+               TabRowGlyph.unpinsWithNothingParked(hasEverLoaded: tab.hasEverLoaded) {
+                unpin(id)
+            }
             return
         case .unpin:
             unpin(id)
@@ -1596,27 +1622,40 @@ struct TitleReveal: Equatable, Sendable {
     /// every other × in the app is not something to find out about afterwards.
     func unpin(_ id: Tab.ID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
-        // Both halves of "where it was": the section's own shape — which folder it sat in
-        // and among which siblings — and the strip's order, because different parts of the
-        // sidebar read each.
-        let shape = pins, order = tabs.map(\.id)
+        // Both halves of "where it was": this row's own place in the section — which folder
+        // it sat in and how far down it — and the strip's order, because different parts of
+        // the sidebar read each.
+        //
+        // One row's place, not a copy of the whole section: a snapshot of `pins` put back
+        // wholesale would also take back the folder the user made, the row they dragged and
+        // the folder they renamed while the toast was still up — and then write all of it to
+        // disk. An undo undoes the thing it is offered for and nothing else.
+        let spot = pins.spot(of: id.uuidString), order = tabs.map(\.id)
         togglePinned(id)
         Toasts.show("Unpinned", action: ("Undo", { [weak self] in
-            self?.repin(id, shape: shape, order: order)
+            self?.repin(id, spot: spot, order: order)
         }), in: self)
     }
 
     /// Undo, for the toast `unpin` puts up. A no-op if the tab has gone in the meantime, and
     /// tabs opened since keep their places — `TidyTabs.restore` is the same "put back exactly
     /// what is still here" the tidy's undo uses.
-    private func repin(_ id: Tab.ID, shape: Pins, order: [Tab.ID]) {
+    private func repin(_ id: Tab.ID, spot: Pins.Spot?, order: [Tab.ID]) {
         guard tabs.contains(where: { $0.id == id }) else { return }
-        move(id, to: .pinned)
-        pins = shape
-        syncPins()
+        move(id, to: .pinned)          // which also `syncPins`, so the row exists to place
+        // Back in its folder at the index it had, and nothing else in the section touched.
+        // A folder that has gone in the meantime takes the row to the end of the section
+        // rather than dragging a deleted folder back with it — see `Pins.put`.
+        if let spot { pins.put(id.uuidString, at: spot) }
         let byID = Dictionary(tabs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         Motion.list {
             tabs = TidyTabs.restore(saved: order, current: tabs.map(\.id)).compactMap { byID[$0] }
+            // The saved order names every tab that was on the strip when the pin came off,
+            // in the sections they had then — so a tab the user pinned *while the toast was
+            // up* goes back among the Today tabs it was sitting in, below every pinned row.
+            // That breaks the one strip invariant, so the sections are settled again before
+            // anything reads the strip. `TidyTabs.undo` does the same, for the same reason.
+            normaliseSections()
             applyPinOrder()
         }
         savePins()

@@ -245,6 +245,52 @@ struct Pins: Codable, Equatable, Sendable {
     /// A tab that stopped being pinned. Tabs have nothing under them, so this is one line.
     mutating func remove(tab id: String) { entries.removeAll { $0.id == id } }
 
+    /// Where one row sits, and nothing else: the folder it is in — nil at the top of the
+    /// section — and how many of that folder's own rows come before it. Enough to put the
+    /// row back, and, unlike a copy of the whole section, it says nothing at all about any
+    /// other row. `TabStore.unpin`'s Undo carries one of these: a snapshot of `pins` would
+    /// take back the folder the user made and the row they dragged while the toast was up,
+    /// and write that over the file too.
+    struct Spot: Equatable, Sendable {
+        var parent: UUID?
+        var index: Int
+    }
+
+    func spot(of id: String) -> Spot? {
+        guard let i = index(of: id) else { return nil }
+        let parent = entries[i].parent
+        let siblings = entries.indices.filter { entries[$0].parent == parent }
+        return Spot(parent: parent, index: siblings.firstIndex(of: i) ?? 0)
+    }
+
+    /// Put one row back where a `Spot` says it was, and leave every other row exactly as it
+    /// is. A folder that has gone in the meantime is not brought back with it: the row lands
+    /// at the end of the section, which is where a freshly pinned tab lands anyway.
+    mutating func put(_ id: String, at spot: Spot) {
+        guard let i = index(of: id) else { return }
+        // An index inside a folder means nothing outside it, so a folder that has gone since
+        // sends the row to the end of the top level rather than to that many rows down it.
+        let parent = spot.parent
+        if let p = parent, index(of: p) == nil {
+            relocate(id, to: entries.count, parent: nil)
+            return
+        }
+        // The row's own place among them is the one being decided, so it is not a sibling
+        // of itself — at the top level it is very much in this list already.
+        let siblings = entries.indices.filter { $0 != i && entries[$0].parent == parent }
+        let raw: Int
+        if spot.index < siblings.count {
+            raw = siblings[spot.index]                       // in front of the one it preceded
+        } else if let last = siblings.last {
+            raw = subtree(at: last).upperBound               // behind the last of them
+        } else if let p = parent, let pi = index(of: p) {
+            raw = subtree(at: pi).upperBound                 // an emptied folder: first row in
+        } else {
+            raw = entries.count
+        }
+        relocate(id, to: raw, parent: parent)
+    }
+
     mutating func edit(folder id: UUID, _ change: (inout Folder) -> Void) {
         guard let i = index(of: id), var f = entries[i].folder else { return }
         change(&f)
@@ -504,6 +550,58 @@ extension Pins {
         assert("even a shape of loose tabs with no folders at all",
                !TabStore.clearsShape(saved: flat("a")))
         assert("an empty shape is cleared rather than kept", TabStore.clearsShape(saved: Pins()))
+
+        // --- One row put back where it was, and nothing else touched ---
+        // What the "Unpinned" toast's Undo does. The old undo put a snapshot of the whole
+        // section back, so a folder made — or a row dragged — while the toast was up was
+        // quietly reverted and written to disk with it.
+        var sec = flat("a", "b", "c")
+        let nest = sec.newFolder(named: "Nest", next: "b")!
+        sec.move("b", into: nest.id)
+        sec.move("c", into: nest.id)
+        let bSpot = sec.spot(of: "b")!
+        assert("a row's place is its folder and how far down it",
+               bSpot == Pins.Spot(parent: nest.id, index: 0))
+
+        // (1) The folder is still there: back into it, at the index it had.
+        var back1 = sec
+        back1.remove(tab: "b")
+        back1.entries.append(Entry(row: .tab("b"), parent: nil))   // what `sync` does
+        assert("…and it goes back into that folder, in front of the row it preceded",
+               { var c = back1; c.put("b", at: bSpot)
+                 return c.children(of: nest.id) == ["b", "c"] && c == sec }())
+
+        // (2) The folder has gone: the end of the section, not a folder resurrected.
+        var back2 = back1
+        back2.remove(folder: nest.id)
+        back2.put("b", at: bSpot)
+        assert("a row whose folder has gone lands at the end of the section",
+               back2.tabs == ["a", "c", "b"] && back2.folder(nest.id) == nil
+                   && back2.folder(holding: "b") == nil)
+
+        // (3) Everything the user did while the toast was up survives the undo.
+        var back3 = back1
+        let made = back3.newFolder(named: "Made")!
+        back3.move("a", into: made.id)
+        back3.put("b", at: bSpot)
+        assert("a folder made while the toast was up survives the undo",
+               back3.folder(made.id)?.name == "Made" && back3.children(of: made.id) == ["a"]
+                   && back3.children(of: nest.id) == ["b", "c"])
+
+        // The tail of a folder, and a folder emptied while the toast was up.
+        let cSpot = sec.spot(of: "c")!
+        var tail = sec
+        tail.remove(tab: "c")
+        tail.entries.append(Entry(row: .tab("c"), parent: nil))
+        tail.put("c", at: cSpot)
+        assert("a row that was last in its folder goes back last", tail == sec)
+        var lone = flat("a")
+        let empty = lone.newFolder(named: "Empty")!
+        lone.entries.append(Entry(row: .tab("b"), parent: nil))
+        lone.put("b", at: Pins.Spot(parent: empty.id, index: 0))
+        assert("a row going back into a folder that is now empty is its only child",
+               lone.children(of: empty.id) == ["b"])
+        assert("a place is only ever asked for a row that is there", sec.spot(of: "nope") == nil)
 
         return out
     }

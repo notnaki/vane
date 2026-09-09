@@ -297,6 +297,19 @@ struct Split: Equatable, Sendable {
         return survivor
     }
 
+    /// "Close Split View": the split goes, and every tab in it goes as a *pane* — a Today
+    /// pane closes, a pinned pane leaves the split and stays a pinned row, exactly as the
+    /// split row's × already does for a pane that is not the last one.
+    ///
+    /// The ids are snapshotted and each close is told it is a pane, because the split does
+    /// not survive its own dissolution: `dropPane` folds a split back into a plain tab at
+    /// two panes, so by the time the last id came round `split(containing:)` said no, and a
+    /// pinned last pane unloaded — or, parked, unpinned itself with an Undo toast — and sat
+    /// there in a split that was still on screen. Three panes had the same last step.
+    func closeSplit(_ split: Split) {
+        for id in split.tabs { archive(id, asPane: true) }
+    }
+
     /// ⌃⇧− "Remove Split": the pane you are in closes, exactly as ⌘W would close it.
     func removeSplitPane() {
         guard !isLittle, let split = activeSplit, let id = current,

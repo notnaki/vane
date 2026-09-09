@@ -315,6 +315,13 @@ import WebKit
              TabStore.sectionOrder([.today, .pinned, .favourite, .today, .pinned]).sorted()
                 == [0, 1, 2, 3, 4]),
             ("an empty strip sorts to nothing", TabStore.sectionOrder([]).isEmpty),
+            // The "Unpinned" toast's Undo is the other caller, and its saved order is older
+            // than the tidy's: it was taken one press ago, so a tab the user pinned *while
+            // the toast was up* is in it sitting among Today tabs. Put back unsettled, the
+            // repinned row P1 leads and the newly pinned T2 sits below a Today tab — the
+            // strip invariant broken by an undo. Settled, T2 joins the Pinned run.
+            ("a tab pinned while the Unpinned toast was up joins the Pinned run",
+             TabStore.sectionOrder([.pinned, .today, .pinned]) == [0, 2, 1]),
 
             // The favourites grid: columns from the count, Arc's way.
             ("no favourites is one placeholder column", TabStore.favouriteColumns(0) == 1),

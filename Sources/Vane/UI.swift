@@ -2901,7 +2901,7 @@ private struct SplitMenu: View {
         Button("Swap") { store.swapPanes(split) }
         Button("Separate All Tabs") { store.separateSplit(split) }
         Divider()
-        Button("Close Split View") { split.tabs.forEach { store.archive($0) } }
+        Button("Close Split View") { store.closeSplit(split) }
     }
 }
 
@@ -3332,6 +3332,24 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
         return suspended ? .unpin : .unload
     }
 
+    /// Whether this close is a pane close. `inSplit` is what `splits` says right now;
+    /// `forced` is a caller that knows better, and there is one — "Close Split View" takes a
+    /// split down one tab at a time, and a split shrinks back to a plain tab at two panes, so
+    /// by the time the last id is asked for, `splits` has already forgotten it was ever a
+    /// pane. A pinned last pane read that as an ordinary pinned row and unloaded — or, if it
+    /// was parked, unpinned itself with a toast — instead of leaving the split the way the
+    /// two before it did. See `TabStore.closeSplit`.
+    static func isPane(inSplit: Bool, forced: Bool) -> Bool { inSplit || forced }
+
+    /// The second half of the unload step. `suspend` parks a *page*, so it declines a tab
+    /// whose web view has no url — and that is two different tabs wearing one face. A pinned
+    /// row that has never been given a page has nothing to unload, and the press may as well
+    /// be the step that takes the pin off; a row whose page is on its way in — the gap
+    /// between `resume` handing the view a load and `WKWebView.url` catching up with it — has
+    /// very much got one, and unpinning *that* loses a row the user had only just clicked
+    /// awake to a press that asked to unload. `Tab.hasEverLoaded` tells the two apart.
+    static func unpinsWithNothingParked(hasEverLoaded: Bool) -> Bool { !hasEverLoaded }
+
     var symbol: String {
         switch self {
         case .close, .unpin: "xmark"
@@ -3402,6 +3420,30 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
         // and took the pin off in one click.
         assert("a pinned tab that has just resumed and has no url yet still unloads",
                decide(kind: .pinned, suspended: false, pane: false) == .unload)
+        // …and the unload it asked for finds nothing to park, because `WKWebView.url` has
+        // not caught up. That must not fall through to taking the pin off.
+        assert("an unload with a page on its way in does not go on to unpin",
+               !unpinsWithNothingParked(hasEverLoaded: true))
+        assert("an unload on a pinned row that never held a page takes the pin off instead",
+               unpinsWithNothingParked(hasEverLoaded: false))
+
+        // --- The last pane of a split being dissolved is still a pane ---
+        // "Close Split View" archives the split's tabs one at a time, and `dropPane` folds a
+        // split back into a plain tab at two panes — so `splits` says the last id is no pane
+        // at all by the time it is closed. Both halves have to read as a pane, or that last
+        // one unloads, or unpins itself, instead of leaving the split.
+        assert("a pane the splits still know about is a pane", isPane(inSplit: true, forced: false))
+        assert("…and so is one a dissolving split has already let go of",
+               isPane(inSplit: false, forced: true))
+        assert("an ordinary close is no pane close", !isPane(inSplit: false, forced: false))
+        assert("the last pane of a dissolving split closes, parked or not",
+               [true, false].allSatisfy { parked in
+                   decide(kind: .pinned, suspended: parked,
+                          pane: isPane(inSplit: false, forced: true)) == .close
+               })
+        assert("…while the same pinned row closed on its own is still the two-step",
+               decide(kind: .pinned, suspended: true,
+                      pane: isPane(inSplit: false, forced: false)) == .unpin)
         assert("the minus is only ever the unload glyph",
                TabRowGlyph.allCases.filter { $0.symbol == "minus" } == [.unload])
         assert("every state says out loud what it will do",
