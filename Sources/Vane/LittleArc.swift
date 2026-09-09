@@ -67,8 +67,30 @@ import SwiftUI
     @discardableResult
     static func open(_ url: URL?, isPrivate: Bool = false) -> TabStore {
         let profile = ProfileManager.shared.active
-        let store = floatingStore(url, profileID: profile.id, isPrivate: isPrivate)
+        return present(floatingStore(url, profileID: profile.id, isPrivate: isPrivate))
+    }
 
+    /// A Little Vane around a page WebKit has already made: a sign-in popup, a share sheet,
+    /// a payment frame — `window.open` at the size of a dialog rather than of a page. See
+    /// Popups.swift for which popups land here and why, and `Tab.init(popup:)` for why the
+    /// tab has to be the one WebKit handed over rather than a fresh one on the same url.
+    ///
+    /// The profile is the *opener's*, passed rather than read off the active one: a popup
+    /// out of a background window belongs to that window's profile, and a private opener's
+    /// popup has to stay private — it is already sharing the opener's data store, and a
+    /// window around it that thought otherwise would be the only part of the pair writing
+    /// history.
+    @discardableResult
+    static func open(popup tab: Tab, isPrivate: Bool, profileID: UUID) -> TabStore {
+        let store = floatingStore(nil, profileID: profileID, isPrivate: isPrivate)
+        store.adopt(popup: tab)
+        return present(store)
+    }
+
+    /// The window itself. One definition for both, so a Little Vane holding a popup is the
+    /// same window in every respect but what is in it.
+    @discardableResult
+    private static func present(_ store: TabStore) -> TabStore {
         let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],

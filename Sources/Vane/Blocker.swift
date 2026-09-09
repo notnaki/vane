@@ -76,8 +76,16 @@ private struct BlockRule: Encodable, Equatable {
     /// picks the tab up when it lands.
     static func apply(to configuration: WKWebViewConfiguration,
                       profileID: UUID = ProfileManager.shared.active.id) {
+        apply(to: configuration.userContentController, profileID: profileID)
+    }
+
+    /// The same, for a caller that is building the controller rather than the configuration
+    /// around it — a popup's, which arrives sharing the opener's and is given one of its own.
+    /// See `Tab.contentController`.
+    static func apply(to controller: WKUserContentController,
+                      profileID: UUID = ProfileManager.shared.active.id) {
         guard enabled(for: profileID), let compiled else { return }
-        configuration.userContentController.add(compiled)
+        controller.add(compiled)
     }
 
     /// Recompile from the current sources and reattach to every live web view. Cheap after

@@ -853,6 +853,12 @@ import WebKit
             return disposition.hasPrefix("attachment") || !response.canShowMIMEType ? .cancel : .allow
         }
 
+        /// The one place in Vane that still refuses a popup outright, and deliberately: this
+        /// web view is off-screen and exists to read a page's `<head>`, so there is no window
+        /// for a popup to belong to and nobody clicked anything to ask for one. Engine.swift
+        /// hands back a real one instead — see Popups.swift — because a *tab* has a window.
+        /// A Little Vane and a Peek are ordinary `Tab`s in a floating `TabStore`, so they are
+        /// already on that path and their popups float as Little Vanes of their own.
         func webView(_ w: WKWebView, createWebViewWith cfg: WKWebViewConfiguration,
                      for action: WKNavigationAction,
                      windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
