@@ -172,7 +172,7 @@ import WebKit
         defaults = scratch
         defer {
             defaults = real
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
 
         var results: [(String, Bool)] = []

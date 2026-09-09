@@ -149,7 +149,7 @@ import WebKit
         guard let defaults = UserDefaults(suiteName: suite) else {
             return [("scratch defaults suite is available", false)]
         }
-        defer { UserDefaults.vane.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.dropScratchSuite(suite) }
         let key = "folders"
 
         assert("a user-picked folder can be bookmarked", add(folder, to: key, in: defaults))
@@ -784,7 +784,7 @@ struct Space: Identifiable, Codable, Equatable {
         // A throwaway suite, so the real preferences are never read or written here.
         let suite = "vane.check.\(UUID().uuidString)"
         if let defaults = UserDefaults(suiteName: suite) {
-            defer { UserDefaults.vane.removePersistentDomain(forName: suite) }
+            defer { UserDefaults.dropScratchSuite(suite) }
             let rowsKey = TabStore.defaultsKey(.pinned, work.id)
             defaults.set(["https://pinned.example/one"], forKey: rowsKey)
             let made = pm.ensureSpaces(for: pm.profiles.first { $0.id == work.id }!,

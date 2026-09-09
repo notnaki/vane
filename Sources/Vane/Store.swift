@@ -320,4 +320,69 @@ extension UserDefaults {
         for byte in dir.utf8 { h = h &* 33 &+ UInt64(byte) }
         return "vane.datadir." + String(h, radix: 36)
     }
+
+    /// The file `UserDefaults` keeps a suite in. Pure, so `selfcheck --pure` can prove the
+    /// arithmetic without deleting anything.
+    nonisolated static func suitePlist(_ suite: String, home: String) -> String {
+        home + "/Library/Preferences/" + suite + ".plist"
+    }
+
+    /// Empty a suite this process made for itself, and note it down for the sweep.
+    ///
+    /// `removePersistentDomain` empties the suite but leaves the plist behind, so every
+    /// `check()` that wanted a defaults suite of its own was leaving one file per run in
+    /// `~/Library/Preferences` — twelve thousand of them on the machine that noticed.
+    /// Unlinking it here is worth the one line, but it is not the end of the story: see
+    /// `sweepScratchSuites`. Only ever call this on a scratch suite — a suite somebody's real
+    /// preferences are in is not this function's business.
+    nonisolated static func dropScratchSuite(_ suite: String) {
+        UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        droppedSuites.append(suite)
+        unlinkSuitePlist(suite)
+    }
+
+    // Every suite `dropScratchSuite` has emptied. `nonisolated(unsafe)` for the same reason
+    // the defaults above are: this is only ever touched by `check()` bodies, which the
+    // selfcheck runs one after another on one thread.
+    nonisolated(unsafe) private static var droppedSuites: [String] = []
+
+    /// Delete every dropped suite's plist for good, once this process is gone.
+    ///
+    /// Unlinking the file while the process is alive does not keep it gone: cfprefsd holds the
+    /// domain in memory and writes an empty 42-byte plist back over the missing path whenever
+    /// it next gets round to it — including once more when the process it belonged to dies.
+    /// Whoever deletes it last wins, and that cannot be us.
+    ///
+    /// So the last word goes to somebody who outlives us: the same detached `/bin/sh` that
+    /// waits on this pid in `Updater.restart`, sleeping past cfprefsd's parting write and
+    /// then removing the files. Called at the end of a check run and nowhere else.
+    ///
+    /// ponytail: a shell that deletes for half a minute, rather than anything that tries to
+    /// make cfprefsd forget a domain. These files are a check's litter; nobody reads them.
+    nonisolated static func sweepScratchSuites() {
+        let homes = Set([NSHomeDirectory(), Updater.realHome])
+        let paths = droppedSuites.flatMap { s in homes.map { suitePlist(s, home: $0) } }
+        guard !paths.isEmpty else { return }
+        let quoted = paths.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let reaper = Process()
+        reaper.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // Waits this process out, then keeps deleting for half a minute: cfprefsd settles the
+        // domain a few seconds *after* its client is gone, and that write is the one that put
+        // the file back. Measured — the plists reappeared between two and ten seconds later.
+        reaper.arguments = ["-c", "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.2; done; "
+            + "for i in 1 2 3 4 5 6 7 8 9 10; do sleep 3; rm -f "
+            + quoted.joined(separator: " ") + "; done"]
+        // Detached from our pipes too: a shell holding stdout open keeps `selfcheck | tail`
+        // waiting the whole half minute for it.
+        reaper.standardInput = FileHandle.nullDevice
+        reaper.standardOutput = FileHandle.nullDevice
+        reaper.standardError = FileHandle.nullDevice
+        try? reaper.run()
+    }
+
+    nonisolated private static func unlinkSuitePlist(_ suite: String) {
+        for home in Set([NSHomeDirectory(), Updater.realHome]) {
+            try? FileManager.default.removeItem(atPath: suitePlist(suite, home: home))
+        }
+    }
 }

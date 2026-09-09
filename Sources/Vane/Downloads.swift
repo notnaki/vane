@@ -854,7 +854,7 @@ import WebKit
         // --- Where downloads go (a scratch defaults suite; never the user's own) ---
         let suite = "vane.check.downloads.\(ProcessInfo.processInfo.processIdentifier)"
         if let scratch = UserDefaults(suiteName: suite) {
-            defer { scratch.removePersistentDomain(forName: suite) }
+            defer { UserDefaults.dropScratchSuite(suite) }
             let id = ProfileManager.defaultID
             let other = UUID()
             assert("with nothing set, downloads go to the system folder",

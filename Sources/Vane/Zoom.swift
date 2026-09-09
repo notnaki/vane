@@ -186,7 +186,7 @@ import WebKit
         defaults = scratch
         defer {
             defaults = real
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
 
         let p1 = UUID(), p2 = UUID()

@@ -534,7 +534,7 @@ enum Spaces {
         // The row itself, against a throwaway suite: the user's own defaults are never read.
         let suite = "vane.check.spaces.\(ProcessInfo.processInfo.processIdentifier)"
         if let scratch = UserDefaults(suiteName: suite) {
-            defer { scratch.removePersistentDomain(forName: suite) }
+            defer { UserDefaults.dropScratchSuite(suite) }
             assert("a space nobody has left yet remembers nothing",
                    lastTab(in: a.id, defaults: scratch) == nil)
             rememberTab("https://t2.example", in: a.id, defaults: scratch)

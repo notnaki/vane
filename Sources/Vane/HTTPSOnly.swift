@@ -449,7 +449,7 @@ import WebKit
         defer {
             defaults = real
             attempts = realAttempts
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
 
         let p = ProfileManager.defaultID

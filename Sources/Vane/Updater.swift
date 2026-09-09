@@ -157,6 +157,15 @@ enum Release {
         case nothing
     }
 
+    /// Whether "nothing to offer" means this copy is *behind* rather than current. `offerable`
+    /// also refuses a tag that is genuinely newer than the running copy, when the bundle it
+    /// would be written over is not one this copy may overwrite — so somebody running 1.0.0
+    /// with 2.0.0 in /Applications was being told 1.0.0 was up to date, with 2.0.0 on the
+    /// releases page. Same inputs the offer was measured with, asked the other way round.
+    static func behind(tag: String?, running: String) -> Bool {
+        tag.map { isNewer($0, than: running) } ?? false
+    }
+
     static func answer(newer: String?, manual: Bool, reachable: Bool) -> Answer {
         guard reachable else { return manual ? .unreachable : .nothing }
         if let newer { return .offer(newer) }
@@ -381,6 +390,12 @@ extension Release {
         out.append(("an old copy is not offered a release the installed Vane already has",
                     says("v2.0.0", running: "1.0.0", atDestination: "2.0.0", manual: true)
                         == .upToDate))
+        out.append(("...and is told it is behind rather than up to date, which would be a lie",
+                    behind(tag: "v2.0.0", running: "1.0.0")))
+        out.append(("a copy running the newest release really is up to date",
+                    !behind(tag: "v2.0.0", running: "2.0.0")))
+        out.append(("...as is one that was told about no tag at all",
+                    !behind(tag: nil, running: "1.0.0")))
         out.append(("...and a background check does not even mention it",
                     says("v2.0.0", running: "1.0.0", atDestination: "2.0.0", manual: false)
                         == .nothing))
@@ -725,7 +740,14 @@ extension Release {
         }
         switch Release.answer(newer: newer, manual: !silent, reachable: true) {
         case .upToDate:
-            Toasts.show("Vane \(Self.currentVersion) is up to date")
+            // "Nothing to offer" is not always "you are current": see `Release.behind`.
+            if let tag, Release.behind(tag: tag, running: Self.currentVersion) {
+                Toasts.show("Vane \(tag) is out, but this copy can't install it",
+                            action: ("Open Releases",
+                                     { NSWorkspace.shared.open(Self.releasesPage) }))
+            } else {
+                Toasts.show("Vane \(Self.currentVersion) is up to date")
+            }
             return
         case .nothing:
             return
@@ -832,10 +854,13 @@ extension Release {
         progress = nil
         set(.installing)
         Task.detached(priority: .userInitiated) {
-            let ok = Self.unpackAndSwap(zip: zip, target: target)
+            let (ok, permanent) = Self.unpackAndSwap(zip: zip, target: target)
             await MainActor.run {
                 Updater.shared.working = false
-                guard ok else { return Updater.shared.fail() }
+                // The tag goes with the failure only when the release itself is the problem.
+                // A dropped ditto or a failed rename is bad luck the next check may retry;
+                // a zip with no Vane in it, or one signed by somebody else, never gets better.
+                guard ok else { return Updater.shared.fail(permanent ? tag : nil) }
                 Updater.shared.pending = nil
                 Updater.shared.installed = target
                 Updater.shared.set(.ready)
@@ -849,10 +874,10 @@ extension Release {
         getpwuid(getuid()).map { String(cString: $0.pointee.pw_dir) } ?? NSHomeDirectory()
     }
 
-    /// The bundle an update would be written over, and the version already there — read the
-    /// way `relocateIfNeeded` reads it: `nil` for an empty destination, `""` for one whose
+    /// The bundle an update would be written over, and the version already there, in
+    /// `shouldInstall`'s convention: `nil` for an empty destination, `""` for one whose
     /// Info.plist could not be read. Not always the bundle this process runs out of, which is
-    /// the whole reason both the offer and the install ask.
+    /// the whole reason the offer, the install and `relocateIfNeeded` all ask.
     nonisolated private static var destinationBundle: (url: URL, version: String?) {
         let path = Release.destination(forBundleAt: Bundle.main.bundleURL.path,
                                        home: realHome).path
@@ -870,19 +895,27 @@ extension Release {
     /// the old one aside, move the new one in, and put the old one back if any step fails.
     /// macOS lets a running bundle be renamed, so the app can do this to itself while it is
     /// running — which is the whole reason an update needs no installer.
-    nonisolated private static func unpackAndSwap(zip: URL, target: URL) -> Bool {
+    ///
+    /// `permanent` says which kind of failure it was: true when this *release* is the problem
+    /// — no Vane.app in the zip, or one signed by somebody who is not us — so the caller can
+    /// refuse the tag for good. Every other way out is a transient one (a dropped `ditto`, a
+    /// rename the disk would not do), and the next check is welcome to try the same tag again.
+    nonisolated private static func unpackAndSwap(zip: URL, target: URL)
+        -> (ok: Bool, permanent: Bool) {
         let fm = FileManager.default
         let staged = fm.temporaryDirectory.appendingPathComponent("Vane-new-\(UUID().uuidString)")
         defer { try? fm.removeItem(at: staged); try? fm.removeItem(at: zip) }
-        guard run("/usr/bin/ditto", ["-x", "-k", zip.path, staged.path]) else { return false }
+        guard run("/usr/bin/ditto", ["-x", "-k", zip.path, staged.path]) else {
+            return (false, false)
+        }
         let incoming = staged.appendingPathComponent(target.lastPathComponent)
         guard fm.fileExists(atPath: incoming.path) else {
             NSLog("[vane] update: the release has no %@ in it", target.lastPathComponent)
-            return false
+            return (false, true)
         }
         guard verified(incoming) else {
             NSLog("[vane] update: the download is not signed by %@ — refusing it", Release.teamID)
-            return false
+            return (false, true)
         }
 
         let parent = target.deletingLastPathComponent()
@@ -891,18 +924,18 @@ extension Release {
         let old = parent.appendingPathComponent(target.lastPathComponent + ".old")
         try? fm.removeItem(at: new)
         try? fm.removeItem(at: old)
-        guard (try? fm.copyItem(at: incoming, to: new)) != nil else { return false }
+        guard (try? fm.copyItem(at: incoming, to: new)) != nil else { return (false, false) }
         let replacing = fm.fileExists(atPath: target.path)
         if replacing, (try? fm.moveItem(at: target, to: old)) == nil {
             try? fm.removeItem(at: new)
-            return false
+            return (false, false)
         }
         guard (try? fm.moveItem(at: new, to: target)) != nil else {
             // Nothing is at the real path and the old copy is at `.old`: put it back, or the
             // next launch has no app to launch.
             if replacing { try? fm.moveItem(at: old, to: target) }
             try? fm.removeItem(at: new)
-            return false
+            return (false, false)
         }
         // `.old` is left for the new copy to sweep on its next launch — deleting it here
         // would unlink the bundle this very process is running out of — and the path is
@@ -915,7 +948,7 @@ extension Release {
         // same window Vesta and every in-place updater has. Making it atomic needs
         // `renameatx_np(RENAME_SWAP)`, which needs both paths to already exist — they do not.
         UserDefaults.vane.set(old.path, forKey: "updateOldBundle")
-        return true
+        return (true, false)
     }
 
     /// Run a tool and say what it said. A bare `Bool` here meant a failed unpack was
@@ -1048,13 +1081,11 @@ extension Release {
         // bundle to move and no destination worth stat-ing.
         guard Self.isBundled else { return false }
         let source = Bundle.main.bundleURL
-        let target = URL(fileURLWithPath:
-            Release.destination(forBundleAt: source.path, home: Self.realHome).path)
-        // What is already installed, read off disk without launching it. `nil` means the
-        // destination is empty; `""` means something is there whose Info.plist could not be
-        // read, and `shouldRelocate` leaves that alone rather than guessing.
-        let installed = FileManager.default.fileExists(atPath: target.path)
-            ? (Release.version(ofBundleAt: target) ?? "") : nil
+        // The same destination the offer and the install measure themselves against, read the
+        // same way: `nil` means nothing is there; `""` means something is there whose
+        // Info.plist could not be read, and `shouldRelocate` leaves it alone rather than
+        // guessing.
+        let (target, installed) = Self.destinationBundle
         guard Release.shouldRelocate(bundlePath: source.path, home: Self.realHome,
                                      official: Self.isOfficialBuild,
                                      isolated: Store.overrideDirectory != nil,
