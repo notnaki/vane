@@ -37,6 +37,16 @@ enum QuitAsk {
         now - eventTime < 1
     }
 
+    /// Whether a terminate request has to be refused before it is examined at all.
+    ///
+    /// The card is answered by `runModal`, so a second request arrives *inside* the first:
+    /// AppKit still routes ⌘Q to `terminate:` during a modal session, and so do the Dock's
+    /// Quit and a script. Every other way out of `applicationShouldTerminate` ends in
+    /// `.terminateNow` — the Apple Event one quits behind the card, and a ⌘Q AppKit no
+    /// longer calls fresh does too — and asking again nests a second modal loop on the very
+    /// window the first one owns. While the question is up the only answer is the user's.
+    nonisolated static func refuses(whileAsking: Bool) -> Bool { whileAsking }
+
     static func check() -> [(String, Bool)] {
         [
             ("⌘Q is the chord that asks",
@@ -63,6 +73,10 @@ enum QuitAsk {
              !isQuitAppleEvent(class: 0x6165_7674, id: 0x6F64_6F63)),
             ("a keystroke from this moment is fresh", isFresh(10.0, now: 10.2)),
             ("a ⌘Q AppKit still calls current a minute later is not", !isFresh(10, now: 70)),
+            ("a second ⌘Q — or the Dock's Quit — while the card is up is cancelled before "
+             + "anything else is asked, rather than quitting behind it or nesting a second "
+             + "card inside the first", refuses(whileAsking: true)),
+            ("with no card up a terminate is examined as usual", !refuses(whileAsking: false)),
         ]
     }
 }
@@ -124,10 +138,6 @@ enum QuitAsk {
 
     /// The dialog has been answered and we are the ones asking to terminate: do not ask again.
     private var confirmed = false
-    /// The dialog is up. AppKit still routes ⌘Q to `terminate:` during a modal session, and
-    /// a second one would nest a second modal loop inside the first; while asking, the
-    /// answer is "not yet".
-    private var asking = false
 
     /// ⌘Q with `Prefs.warnBeforeQuit` on puts up Arc's "Quit Vane?" and quits only on its
     /// answer. Only a real, fresh ⌘Q is asked about, and the chord is checked exactly:
@@ -138,6 +148,8 @@ enum QuitAsk {
     /// somebody's logout, or the Dock's Quit that "does nothing". File ▸ Quit Vane with the
     /// pointer is deliberate too, and quits at once.
     func applicationShouldTerminate(_ app: NSApplication) -> NSApplication.TerminateReply {
+        // Before every other route out of here, all of which end in a terminate.
+        if QuitAsk.refuses(whileAsking: QuitDialog.isUp) { return .terminateCancel }
         if let ae = NSAppleEventManager.shared().currentAppleEvent,
            QuitAsk.isQuitAppleEvent(class: ae.eventClass, id: ae.eventID) { return .terminateNow }
         guard !confirmed, Prefs.warnBeforeQuit, let event = app.currentEvent,
@@ -145,9 +157,6 @@ enum QuitAsk {
                                   flags: event.modifierFlags),
               QuitAsk.isFresh(event.timestamp, now: ProcessInfo.processInfo.systemUptime)
         else { return .terminateNow }
-        if asking { return .terminateCancel }
-        asking = true
-        defer { asking = false }
         switch QuitDialog.ask(over: app.keyWindow) {
         case .cancel: return .terminateCancel
         case .quitForever: Prefs.warnBeforeQuit = false; fallthrough

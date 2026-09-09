@@ -142,6 +142,17 @@ enum LinkTarget {
         guard let candidate, let window else { return false }
         return candidate === window && window.isVisible
     }
+
+    /// Told when this window closes; the token unregisters it again. The one caller is
+    /// `ShortcutsPane`'s recorder, which has to let go of the keyboard the moment Settings
+    /// does — the pane's own `.onDisappear` never fires, because the instance and its
+    /// hosting view are kept here for the next time Settings is opened.
+    static func onClose(_ then: @escaping @MainActor () -> Void) -> Any? {
+        guard let window else { return nil }
+        return NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { _ in MainActor.assumeIsolated(then) }
+    }
 }
 
 // MARK: - Tabs

@@ -66,18 +66,6 @@ import AppKit
     op.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
 }
 
-/// Items that must stay first-responder dispatched, so they grey out correctly, but whose
-/// key still comes from the registry — with an equivalent action for the monitor.
-@MainActor private func responderItem(_ command: Command, _ action: Selector,
-                                      _ run: @escaping @MainActor () -> Void) -> NSMenuItem {
-    Keybindings.actions[command] = run
-    let binding = Keybindings.binding(for: command)
-    let entry = NSMenuItem(title: command.title, action: action,
-                           keyEquivalent: binding.menuKeyEquivalent)
-    entry.keyEquivalentModifierMask = binding.menuModifierMask
-    return entry
-}
-
 private extension NSMenuItem {
     /// `performTextFinderAction:` asks the sender which action it is, and the answer is the
     /// tag — so a standard find item needs one set inline.
@@ -144,18 +132,21 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 @MainActor private func minimizeWindow() { minimizeVictim()?.performMiniaturize(nil) }
 
 /// ⌘W. Arc's rule inside a browser window — a Today tab is archived rather than destroyed,
-/// and a favourite or a pinned tab just loses its page — and every Mac app's rule outside
-/// one: a window that holds no tabs closes. The ladder is `Windows.closeTarget`, proved
-/// offline.
+/// and a favourite or a pinned tab just loses its page — every Mac app's rule outside one: a
+/// window that holds no tabs closes — and Arc's rule with the Library up: it shuts the panel
+/// in front rather than a tab behind it. The ladder is `Windows.closeTarget`, proved offline.
 @MainActor private func closeTab() {
     let key = NSApp.keyWindow
+    let store = Windows.current
     switch Windows.closeTarget(hasKey: key != nil,
                                keyHoldsTabs: key.map { k in
                                    TabStore.all.contains { $0.window === k }
                                } ?? false,
-                               keyIsAttached: key?.parent != nil || key?.sheetParent != nil) {
-    case .tab:    Windows.current?.closeOrArchive()
-    case .window: key?.performClose(nil)
+                               keyIsAttached: key?.parent != nil || key?.sheetParent != nil,
+                               libraryOpen: store?.libraryOpen == true) {
+    case .tab:     store?.closeOrArchive()
+    case .window:  key?.performClose(nil)
+    case .library: store.map(Library.close)
     }
 }
 
@@ -552,19 +543,19 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     // Arc's order: New Space, Manage Spaces…, the two arrows, then the Spaces themselves
     // wearing ⌃1…⌃9 — the shortcut sits on the row it switches to, not on a hidden twin.
     let switchers = spaces.enumerated().map { n, space in
-        let entry = item(space.name, "") { spaceStore()?.switchTo(space: space); rebuild() }
+        let entry = item(space.name, "") { spaceStore()?.shown.switchTo(space: space); rebuild() }
         entry.state = store?.currentSpaceID == space.id ? .on : .off
         if let command = Command(rawValue: "goToSpace\(n + 1)") {
             let binding = Keybindings.binding(for: command)
             entry.keyEquivalent = binding.menuKeyEquivalent
             entry.keyEquivalentModifierMask = binding.menuModifierMask
-            Keybindings.actions[command] = { spaceStore()?.switchTo(spaceNumber: n + 1); rebuild() }
+            Keybindings.actions[command] = { spaceStore()?.shown.switchTo(spaceNumber: n + 1); rebuild() }
         }
         return entry
     }
     let nav = [
-        item(.previousSpace) { spaceStore()?.cycleSpace(-1); rebuild() },
-        item(.nextSpace) { spaceStore()?.cycleSpace(1); rebuild() },
+        item(.previousSpace) { spaceStore()?.shown.cycleSpace(-1); rebuild() },
+        item(.nextSpace) { spaceStore()?.shown.cycleSpace(1); rebuild() },
     ]
     for entry in nav { entry.isEnabled = spaces.count > 1 }
     let new = item(.newSpace) {
@@ -641,22 +632,31 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     ]))
     NSApp.servicesMenu = services
     root.addItem(menu("File", [
-        item(.newTab) { Windows.current?.newTab(nil) },
+        // `.shown` throughout this menu: a command that makes or shows a tab brings the
+        // window it lands in forward, so the tab is not opened behind Settings. See
+        // `TabStore.shown`.
+        item(.newTab) { Windows.current?.shown.newTab(nil) },
         item(.newWindow) { Windows.open() },
         item(.newPrivateWindow) { Windows.open(isPrivate: true) },
         // Arc's ⌥⌘N: a search that is not in any window yet. `open(nil)` is the whole of it
         // — a Little Arc with no url comes up with its command bar over an empty page.
         item(.newLittleArc) { LittleArc.open(nil) },
         .separator(),
-        item(.openLocation) { Windows.current?.openPalette(.address) },
+        item(.openLocation) { Windows.current?.shown.openPalette(.address) },
         item(.openFile) { openFile() },
         .separator(),
         // Arc's ⌘W: a Today tab is archived rather than destroyed, and a favourite or a
         // pinned tab just loses its page and stays in the sidebar. Over Settings, History or
-        // Extensions it closes that window instead — see `closeTab`.
+        // Extensions it closes that window instead, and with the Library up it shuts the
+        // Library — see `closeTab`.
         item(.closeTab) { closeTab() },
-        responderItem(.closeWindow, #selector(NSWindow.performClose(_:))) {
-            NSApp.keyWindow?.performClose(nil)
+        // ⇧⌘W used to be a targetless `performClose:`, dispatched down the responder chain
+        // — which a modal session does not stop, so it closed the window under the "Quit
+        // Vane?" card's scrim while the question was still standing on it. A closure-backed
+        // item is refused while a session is up (`Act.validateMenuItem`), and says here what
+        // the responder chain used to say for it: nothing to close, nothing to enable.
+        validated(item(.closeWindow) { NSApp.keyWindow?.performClose(nil) }) {
+            NSApp.keyWindow?.styleMask.contains(.closable) ?? false
         },
         .separator(),
         item(.savePageAs) { savePageAs() },
@@ -761,7 +761,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.showDownloads) { showLibrary(.downloads) },
         .separator(),
         item(.reopenClosedTab) {
-            if let u = ClosedTabs.pop() { (Windows.main ?? Windows.open()).newTab(u) }
+            if let u = ClosedTabs.pop() { (Windows.main?.shown ?? Windows.open()).newTab(u) }
         },
         // Deliberately without a key equivalent: the shortcuts that would fit — ⌘Z, ⇧⌘T —
         // already mean something the user would rather keep, and a page's own undo is not

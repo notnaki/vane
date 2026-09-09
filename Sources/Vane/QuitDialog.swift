@@ -18,7 +18,14 @@ import SwiftUI
 @MainActor enum QuitDialog {
     enum Answer { case quit, quitForever, cancel }
 
+    /// Whether the question is on screen right now. `applicationShouldTerminate` asks this
+    /// before anything else, because every other way out of it ends in a terminate — see
+    /// `QuitAsk.refuses`.
+    private(set) static var isUp = false
+
     static func ask(over host: NSWindow?) -> Answer {
+        isUp = true
+        defer { isUp = false }
         if let host, let content = host.contentView { return ask(in: host, content: content) }
         var answer = Answer.cancel
         let panel = Panel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)

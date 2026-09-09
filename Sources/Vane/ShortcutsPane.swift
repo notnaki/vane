@@ -13,6 +13,8 @@ import SwiftUI
     /// The row currently listening for a keystroke, if any.
     @State private var recording: Command?
     @State private var monitor: Any?
+    /// Held only while recording: the window closing is the other way out — see `startRecording`.
+    @State private var closing: Any?
     @State private var hovered: Command?
     /// One line of feedback under a row: a refusal (red) or a conflict warning (amber).
     @State private var notes: [Command: Note] = [:]
@@ -224,11 +226,23 @@ import SwiftUI
             }
             return passOn ? event : nil
         }
+        // The other way out: Settings closing under a row that is still listening. Without
+        // it the recorder stood down only on the *next* keystroke (see `reach`), and until
+        // one arrived `Keybindings.actions` was empty — so every route into a command that
+        // is not a key quietly did nothing: a palette row, the sidebar's Tidy, Clear, the
+        // History menu. The pane's own `.onDisappear` cannot say it, because `SettingsWindow`
+        // keeps the pane and its hosting view for the next time Settings is opened.
+        //
+        // No pure row of its own: the answer is still `reach(inSettingsWindow: false)` — a
+        // closed window holds no keystroke — and this only asks it sooner.
+        closing = SettingsWindow.onClose { stopRecording() }
     }
 
     private func stopRecording() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
+        if let closing { NotificationCenter.default.removeObserver(closing) }
+        closing = nil
         if recording != nil {
             Keybindings.actions = parked
             parked = [:]
