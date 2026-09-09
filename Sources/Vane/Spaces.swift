@@ -807,6 +807,15 @@ enum Spaces {
         assert("a Space deleted from under the stash fingerprints as an empty one",
                asLeft != mark([], [], [nil, nil]))
 
+        // And where Reveal lands once that switch has happened. A stash that failed its
+        // fingerprint was rebuilt from disk, so the tab the media tray named is gone.
+        assert("revealing a page a Space was keeping alive lands on that page",
+               TabStore.revealed("t1", strip: ["fav", "t1", "t2"], landing: "fav") == "t1")
+        assert("one torn down by a rebuild lands on the Space's landing row instead",
+               TabStore.revealed("t1", strip: ["fav", "t3"], landing: "t3") == "t3")
+        assert("and on nothing at all when the Space came back empty",
+               TabStore.revealed("t1", strip: [], landing: String?.none) == nil)
+
         return out
     }
 }

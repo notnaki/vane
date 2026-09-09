@@ -1028,6 +1028,13 @@ struct TitleReveal: Equatable, Sendable {
 /// every Space a window has visited holds its pages until the window closes, which is the
 /// point — the ordinary idle sweep is what stops that being a memory hole, because
 /// `Suspension` and `Archive` are handed `everyTab` rather than `tabs`.
+///
+/// Every tab in here is suspendable, pinned rows included: the pin exemption in
+/// `Suspension.shouldSuspend` is about the row you can click, and a stash has no rows. So a
+/// kept-alive Space unloads on the ordinary idle clock and gives everything back under
+/// memory pressure, and what it holds meanwhile is the pages, not the processes. Only
+/// auto-archive keeps its distance — Today tabs go past their day in here as they do
+/// anywhere, pinned rows never do.
 struct Stash {
     /// The non-favourite tabs, in strip order: the Pinned rows, then Today's.
     var tabs: [Tab]
@@ -1816,6 +1823,13 @@ struct Stash {
 
     /// A favourite or a pinned tab that navigated is still itself, now pointing where it
     /// went.
+    ///
+    /// ponytail: `tabs`, not `everyTab`, and finding nothing is the right answer. `savePins`
+    /// writes the Pinned rows of the Space the window is *showing*; a pinned page navigating
+    /// inside a Space kept alive behind it would have its new url written into the wrong
+    /// Space's list. Its rows were written on the way out and the live tab comes back on the
+    /// page it actually reached, so the only cost is a stale url on disk until that Space is
+    /// on screen again.
     static func savePins(owning tab: Tab) {
         all.first { $0.tabs.contains { $0 === tab } }?.savePins()
     }
@@ -2007,7 +2021,18 @@ struct Stash {
         if let held = space(stashing: id), let space = spaces.first(where: { $0.id == held }) {
             switchTo(space: space)
         }
-        current = id
+        // The stash does not always survive the switch: a Space something else edited while
+        // it was away is rebuilt from disk and this tab was torn down on the way. Naming a
+        // tab the strip does not have leaves a window drawing nothing, so it lands where the
+        // switch itself would have.
+        current = TabStore.revealed(id, strip: tabs.map(\.id),
+                                    landing: currentSpaceID.flatMap(landing(in:)))
+    }
+
+    /// Which row `reveal` ends on. Pure, so `selfcheck --pure` can prove the fallback without
+    /// a Space to edit out from under a stash.
+    nonisolated static func revealed<T: Equatable>(_ id: T, strip: [T], landing: T?) -> T? {
+        strip.contains(id) ? id : landing
     }
 
     /// Let a Space's kept-alive tabs go: the pages down, the stash gone. Never touches the
@@ -2086,6 +2111,12 @@ struct Stash {
         // Favourites are the profile's, not the Space's, so their tabs stay exactly as they
         // are — Arc's grid does not so much as blink when you swipe between Spaces.
         let leaving = Stash.leaving(tabs.map { (id: $0, kind: $0.kind) })
+        // The `current` didSet stamps the tab you leave behind *within* a Space; leaving the
+        // Space itself goes around it. Without this the page you were reading, and every pane
+        // beside it, would be stashed carrying an idle clock that started when it was first
+        // selected, and the next sweep could unload it minutes after you swiped away.
+        let onScreen = Set([current].compactMap { $0 } + (activeSplit?.tabs ?? []))
+        for tab in leaving where onScreen.contains(tab.id) { tab.lastActive = .now }
         if let id = currentSpaceID, spaces.contains(where: { $0.id == id }) {
             // A split of the Space's own tabs travels whole — nothing is leaving it, the
             // whole thing is being put away. One with a favourite in it is not the Space's

@@ -852,7 +852,18 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             let were = store.tabs.map(ObjectIdentifier.init)
             let pages = store.tabs.map { ObjectIdentifier($0.web) }
             check("a Space opens with its own tabs", were.count == 2)
+            // Wound back so the stamping is the only thing that can move them: the tab being
+            // read is stamped as the Space is put away, so its idle clock starts at the swipe
+            // rather than at whenever it was selected.
+            let opened = Date(timeIntervalSince1970: 1_000_000)
+            let read = store.current
+            store.tabs.forEach { $0.lastActive = opened }
             store.switchTo(space: there)
+            check("the page you were reading starts its idle clock as the Space is put away",
+                  store.everyTab.first { $0.id == read }.map { $0.lastActive > opened } == true)
+            check("…and the pages behind it keep the clock they already had",
+                  store.everyTab.filter { $0.id != read && were.contains(ObjectIdentifier($0)) }
+                      .allSatisfy { $0.lastActive == opened })
             check("switching shows the Space being entered", store.tabs.count == 1)
             check("…and keeps the one being left alive behind it", store.everyTab.count == 3)
             check("the idle sweep still counts the tabs a window is holding for a Space",

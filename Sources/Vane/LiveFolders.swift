@@ -808,9 +808,9 @@ enum GitHubOAuth {
 
     /// A folder has been deleted, or has stopped being live. Its glyphs go with it — this is
     /// the *only* thing that drops them, because it is the only event that means the folder
-    /// is not coming back. `live()` sees one Space per window, so a folder that is merely on
-    /// a Space nobody is looking at is missing from it, and pruning against that used to
-    /// throw away a goodbye every time the user walked out of a Space and back.
+    /// is not coming back. `live()` sees only the Spaces the open windows are holding, so a
+    /// folder in a Space no window has been in is missing from it, and pruning against that
+    /// used to throw away a goodbye every time the user walked out of a Space and back.
     /// Called from `deleteFolder`.
     func forget(folder: UUID) {
         states[folder] = nil
@@ -820,6 +820,14 @@ enum GitHubOAuth {
 
     /// Every live folder this profile's windows are showing, deduplicated: two windows on
     /// the same Space draw the same folder, and it is refreshed once for both.
+    ///
+    /// ponytail: `pins`, not `everyPins` — a live folder in a Space the window is keeping
+    /// alive behind this one stops refreshing until it is swiped back to, and then refreshes
+    /// at once because its clock is five minutes stale. Widening this alone would only burn
+    /// the rate limit: `apply` adds and removes real rows through `applyLive`, which is the
+    /// strip and `savePins`, so the answer for a stashed folder would be fetched and thrown
+    /// away. Doing it properly means teaching the apply to edit a `Stash`, which is a good
+    /// deal more than a wider query.
     private func live() -> [UUID: GitHubQuery] {
         var out: [UUID: GitHubQuery] = [:]
         for store in stores() {
