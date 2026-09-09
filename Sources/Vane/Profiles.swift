@@ -834,8 +834,11 @@ struct Space: Identifiable, Codable, Equatable {
                && !fm.fileExists(atPath: spacesURL(for: work.id, in: root).path))
         assert("the surviving profile's spaces are untouched",
                pm.spaces(for: defaultID).map(\.name) == ["Inbox"])
+        // Bytes, not just existence: `vane.db` is a prefix of every other profile's
+        // `vane-<uuid>.db`, so the default profile's history is what a sweep that matched
+        // on names rather than paths would truncate or rewrite in place.
         assert("deleting a profile leaves the other profile's data alone",
-               fm.fileExists(atPath: legacyDB.path))
+               (try? Data(contentsOf: legacyDB)) == Data("legacy".utf8))
 
         assert("the last remaining profile cannot be deleted", pm.delete(defaultID) == false)
         assert("...and is still there", pm.profiles.count == 1)
@@ -889,13 +892,33 @@ struct Space: Identifiable, Codable, Equatable {
         try? fm.createDirectory(at: keepDir, withIntermediateDirectories: true)
         let keepIcon = keepDir.appendingPathComponent("vane-delete-check.invalid")
         try? Data("keep".utf8).write(to: keepIcon)
-        // The real database is only ever measured, never written: a byte count that does
-        // not move is proof enough that the sweep did not reach into it.
+        // The real user's database is the one file in reach that is never opened and never
+        // written — only measured. So all it can be asked is that its size did not move,
+        // and, on a data directory that has no `vane.db` in it yet, that nothing conjured
+        // one: absent before and absent after says the same thing as identical before and
+        // after. That is not proof on its own, which is what the neighbour below is for.
         let keepDB = dbURL(for: defaultID, in: dir)
-        let keepDBSize = (try? fm.attributesOfItem(atPath: keepDB.path)[.size] as? Int) ?? nil
+        func dbSize(_ url: URL) -> Int? { (try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil }
+        let keepDBSize = dbSize(keepDB)
         // Read-only: the real user's pinned tabs, never written by this check.
         let keepPins = UserDefaults.vane.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]
         let survivors = pm.profiles.map(\.id)
+
+        // The byte-for-byte half of the property needs a database this check owns and may
+        // fill, because the only other profile a fresh install has is the default one and
+        // that file is off limits. So: a neighbouring profile, with a real visit recorded
+        // in it through the real `Store`, taken away again once it has served its purpose.
+        // `-wal` is read alongside the database because in WAL mode that is where the row
+        // just recorded is still sitting; between the two, every byte of the neighbour's
+        // history is covered.
+        func dbBytes(_ url: URL) -> [Data?] {
+            [url.path, url.path + "-wal"].map { fm.contents(atPath: $0) }
+        }
+        let neighbour = pm.create(name: "Deletion Check Neighbour").id
+        let neighbourDB = dbURL(for: neighbour, in: dir)
+        Store.store(for: neighbour).record(URL(string: "https://vane-delete-check.invalid/keep")!,
+                                           title: "neighbour")
+        let neighbourBytes = dbBytes(neighbourDB)
 
         // MARK: the throwaway, populated the way a used profile is
         let victim = pm.create(name: "Deletion Check").id
@@ -975,13 +998,18 @@ struct Space: Identifiable, Codable, Equatable {
         assert("another profile's keychain items survive the sweep",
                Passwords.lookup(host: keepHost, profileID: defaultID)?.password == "keep")
         assert("another profile's database survives untouched, to the byte",
-               fm.fileExists(atPath: keepDB.path)
-               && ((try? fm.attributesOfItem(atPath: keepDB.path)[.size] as? Int) ?? nil) == keepDBSize)
+               fm.fileExists(atPath: neighbourDB.path)
+               && dbBytes(neighbourDB) == neighbourBytes
+               && dbSize(keepDB) == keepDBSize)
         assert("another profile's favicon cache survives", fm.fileExists(atPath: keepIcon.path))
         assert("another profile's UserDefaults keys survive",
                (UserDefaults.vane.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]) == keepPins)
         assert("another profile's website data store survives",
                WKWebsiteDataStore.default().isPersistent)
+
+        // The neighbour has said what it had to say; the list below is the one thing it
+        // would otherwise change.
+        pm.delete(neighbour)
         assert("the profile list is back to exactly the profiles that were there before",
                ProfileManager(directory: dir).profiles.map(\.id) == survivors)
 
