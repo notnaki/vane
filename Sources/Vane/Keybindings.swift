@@ -410,6 +410,10 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .viewHistory:      Keybinding("y", .command)
         case .showDownloads:    Keybinding("j", [.command, .shift])
         case .minimizeWindow:   Keybinding("m", .command)
+        // ⌘? is where macOS puts an app's Help, and it is the last standard chord Vane was
+        // missing. The glyph already carries its own shift — ⇧⌘/ arrives as "?" — which is
+        // the fold `Keybinding.init` does for every shifted punctuation key.
+        case .vaneHelp:         Keybinding("?", .command)
         // Everything else ships unbound — it is a menu item with no key equivalent today.
         default: .unassigned
         }
@@ -548,8 +552,17 @@ enum Command: String, CaseIterable, Codable, Sendable {
             return "macOS keeps this for screenshots."
         case ("h", [.command]):                  return "⌘H hides Vane."
         case ("m", [.command]):                  return "⌘M minimises the window."
-        default:                                 return nil
+        default:                                 break
         }
+        // The chords AppKit answers for itself — Copy, Paste, Undo, Select All. Vane's key
+        // monitor runs *ahead* of the menu, so a command bound onto one of these would not
+        // merely shadow a menu item: it would take ⌘C away from every text field in the app
+        // and from every page. See Standard.swift for the table.
+        if let row = Standard.rows.first(where: { $0.key == binding }), row.selectorName != nil {
+            return "\(binding.display) is macOS's \u{201C}\(row.title)\u{201D}, "
+                + "and belongs to whatever you are typing in."
+        }
+        return nil
     }
 
     // MARK: Search
@@ -642,31 +655,53 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// rebinds. Arc binds Back and Forward to both ⌘[ / ⌘] and ⌘← / ⌘→, and the arrows are
     /// the pair most people reach for.
     ///
-    /// ponytail: a two-row table read only by `handle`, rather than a second binding per
+    /// It is also how Vane honours the standard chords Arc spends elsewhere: ⇧⌘[ and ⇧⌘]
+    /// walk the tabs in every other Mac browser, and ⌘= zooms in on a keyboard where ⌘+
+    /// needs a shift — none of which Arc's own ⌥⌘↑/↓ and ⌘+ can give up.
+    ///
+    /// ponytail: a small table read only by `handle`, rather than a second binding per
     /// command everywhere. `binding(for:)` still answers with the one chord a menu item can
     /// display, `conflicts` still compares the one the user can change, and rebinding Back
     /// leaves the arrows where Arc has them. Ceiling: the alias is not rebindable and not
     /// listed in the Shortcuts pane.
     ///
-    /// Anything added here inherits the two guards in `alias(_:fieldEditor:pageEditable:)`,
-    /// which is the point of the table: a chord a text field could want must not be claimed
-    /// by the browser while one is being typed into.
+    /// A chord a text field could want must not be claimed by the browser while one is being
+    /// typed into — that is `caretAliases` below, and the guard in
+    /// `alias(_:fieldEditor:pageEditable:)`.
     nonisolated static let aliases: [Command: Keybinding] = [
         .back: Keybinding("\u{F702}", .command),
         .forward: Keybinding("\u{F703}", .command),
+        // The three every other Mac browser answers to, on top of Arc's own. ⇧⌘[ and ⇧⌘]
+        // arrive as ⌘{ and ⌘} and ⌘= is the unshifted twin of ⌘+ — all three are the shifted
+        // glyph the keyboard actually sends, folded by `Keybinding.init` the way ⌘+ has
+        // always been. Arc's ⌥⌘↑/↓ and ⌘+ are untouched and still what the menu shows.
+        .previousTab: Keybinding("{", .command),
+        .nextTab: Keybinding("}", .command),
+        .zoomIn: Keybinding("=", .command),
+    ]
+
+    /// The alias chords a caret could want for itself. ⌘← and ⌘→ move the insertion point in
+    /// every text field on macOS, so they are the browser's only while nothing is being typed
+    /// into; ⌘{, ⌘} and ⌘= are nobody's editing keys, and holding them back while a comment
+    /// box has the focus would only mean a tab you cannot switch away from.
+    nonisolated static let caretAliases: Set<Keybinding> = [
+        Keybinding("\u{F702}", .command),
+        Keybinding("\u{F703}", .command),
     ]
 
     /// Which command an alias chord fires, or nil when something that types should keep the
     /// keystroke: a field editor in the chrome (the url bar, a rename field, the find bar), or
     /// an input, textarea or contenteditable on the page. One rule said about the two places
     /// a caret can be — ⌘← belongs to the caret wherever there is one, and navigating away
-    /// from a half-filled form is the one outcome nobody means.
+    /// from a half-filled form is the one outcome nobody means. Only the chords in
+    /// `caretAliases` are held back that way; ⌘{, ⌘} and ⌘= are nobody's editing keys.
     ///
     /// Pure, so `selfcheck --pure` can prove the guards with no page and no first responder.
     nonisolated static func alias(_ b: Keybinding, fieldEditor: Bool,
                                   pageEditable: Bool) -> Command? {
-        guard !fieldEditor, !pageEditable else { return nil }
-        return aliases.first { $0.value == b }?.key
+        guard let hit = aliases.first(where: { $0.value == b })?.key else { return nil }
+        guard !caretAliases.contains(b) || (!fieldEditor && !pageEditable) else { return nil }
+        return hit
     }
 
     /// Install with:
@@ -903,6 +938,8 @@ extension Keybindings {
             ("View History defaults to ⌘Y", binding(for: .viewHistory).display == "⌘Y"),
             ("Downloads defaults to ⇧⌘J", binding(for: .showDownloads).display == "⇧⌘J"),
             ("Minimize defaults to ⌘M", binding(for: .minimizeWindow).display == "⌘M"),
+            ("Vane Help defaults to ⌘?, where macOS keeps an app's help",
+             binding(for: .vaneHelp).display == "⌘?"),
             ("Open File defaults to ⌘O", binding(for: .openFile).display == "⌘O"),
             ("Save Page As defaults to ⇧⌘S, leaving ⌘S the sidebar's",
              binding(for: .savePageAs).display == "⇧⌘S"
@@ -1019,6 +1056,15 @@ extension Keybindings {
             ("a bare function key is allowed", reserved(Keybinding("\u{F704}")) == nil),
             ("an ordinary binding is allowed", reserved(Keybinding("t", .command)) == nil),
             ("unassigned is not reserved", reserved(.unassigned) == nil),
+            // Rebinding one of these would take the keystroke off every text field and every
+            // page in the app, because the monitor runs ahead of the menu.
+            ("⌘C, ⌘V, ⌘X, ⌘Z and ⌘A are refused: they are the page's and the field's",
+             ["c", "v", "x", "z", "a"].allSatisfy { reserved(Keybinding($0, .command)) != nil }),
+            ("…and so is ⌥⇧⌘V",
+             reserved(Keybinding("v", [.command, .option, .shift])) != nil),
+            ("a chord Vane itself ships on is not reserved — that is a conflict to warn about, not a refusal",
+             reserved(Keybinding("t", .command)) == nil
+                && reserved(Keybinding("l", .command)) == nil),
         ]
 
         // Priority.
@@ -1055,6 +1101,22 @@ extension Keybindings {
              alias(left, fieldEditor: true, pageEditable: true) == nil),
             ("a chord that is not an alias is not one however the guards stand",
              alias(Keybinding("t", .command), fieldEditor: false, pageEditable: false) == nil),
+            // The standard chords Arc's own keys had spent elsewhere, answered as second
+            // chords. ⇧⌘[ sends "{", ⇧⌘] sends "}" and ⌘= is ⌘+ without the shift.
+            ("⇧⌘[ and ⇧⌘] walk the tabs, the way every other Mac browser does",
+             alias(Keybinding("{", .command), fieldEditor: false, pageEditable: false) == .previousTab
+                && alias(Keybinding("}", .command), fieldEditor: false,
+                         pageEditable: false) == .nextTab),
+            ("…and keep working while a page's text box has the caret: they are not editing keys",
+             alias(Keybinding("}", .command), fieldEditor: true, pageEditable: true) == .nextTab),
+            ("⌘= zooms in as well as ⌘+",
+             alias(Keybinding("=", .command), fieldEditor: false, pageEditable: false) == .zoomIn),
+            ("the arrows are still the only chords a caret takes back",
+             caretAliases == [Keybinding("\u{F702}", .command), Keybinding("\u{F703}", .command)]),
+            ("no alias chord is one a command already ships on",
+             aliases.values.allSatisfy { command(for: $0) == nil }),
+            ("no two commands share an alias chord",
+             Set(aliases.values).count == aliases.count),
         ]
 
         // The page's half of the guard, as it arrives over the message handler. Per frame,

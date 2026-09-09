@@ -213,6 +213,12 @@ Everything here is implemented and reachable from the UI.
 - Command palette (`⌘⇧P`) over tabs, history, bookmarks and commands, and the same overlay
   restricted to open tabs (`⌘⇧A`), with a subsequence matcher scored for prefix, word-start
   and contiguity.
+- Every shortcut a Mac app is expected to honour, in one table (`Standard.swift`) that the
+  menu bar is built from and asserted against: ⌘M, ⌘H, ⌥⌘H, Show All, ⌘Q, ⌘`, a Services
+  submenu, ⌘? on Help, and the editing chords — ⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V, ⌥⇧⌘V, ⌘A — on the
+  standard selectors with no target, so they go down the responder chain into the address
+  bar, a rename field and the page alike. Rebinding one of AppKit's own chords is refused
+  rather than allowed to take ⌘C off every text field in the app.
 - Explicit VoiceOver work throughout the chrome: labels, values, custom actions, sort
   priorities, spoken announcements for things that only change colour, and Reduce Motion
   handling on the loading bar.

@@ -720,6 +720,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("clear browsing data", BrowsingData.check),
                                ("tab suspension", Suspension.check),
                                ("keybindings", Keybindings.check),
+                               ("standard mac shortcuts", Standard.check),
                                ("shortcuts pane", ShortcutsPane.check),
                                ("history window", HistoryWindow.check),
                                ("library", Library.check),
@@ -796,6 +797,14 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             print(failures == 0 ? "\nPASS (pure)" : "\n\(failures) FAILED")
             exit(failures == 0 ? 0 : 1)
         }
+
+        // Not pure: `buildMenu` is the app's own menu bar, and building it needs `NSApp`.
+        // No window is opened — the whole point is to read the bar the user gets and prove
+        // every standard chord is on it exactly once, with the selector the table names.
+        print("the menu bar that ships")
+        let bar = buildMenu()
+        for (name, ok) in Standard.installed(bar, windows: NSApp.windowsMenu, help: NSApp.helpMenu,
+                                             services: NSApp.servicesMenu) { check(name, ok) }
 
         // Not pure: it reads the running bundle's Info.plist, and the bare binary out of
         // .build has none. Two lists of the same UTIs — make-app.sh's CFBundleDocumentTypes

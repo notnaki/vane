@@ -88,11 +88,30 @@ private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
 /// greys out on its own and works in a web view, a text field and the address bar alike.
 /// Deliberately outside the registry — nobody rebinds Copy, and forty spelling toggles in
 /// the Shortcuts pane would bury the shortcuts anybody actually looks for.
-private func standard(_ title: String, _ action: Selector, _ key: String = "",
-                      _ mods: NSEvent.ModifierFlags = .command) -> NSMenuItem {
-    let entry = NSMenuItem(title: title, action: action, keyEquivalent: key)
-    entry.keyEquivalentModifierMask = mods
-    return entry
+///
+/// Keyless by construction. Everything with a chord goes through `Standard.item`, so the
+/// shortcuts a Mac app must honour are written down in exactly one place — see Standard.swift.
+private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
+    NSMenuItem(title: title, action: action, keyEquivalent: "")
+}
+
+/// ⌘M, from wherever it was pressed. The key window when it can go in the Dock, the window
+/// behind it when a Peek or the quit card — borderless, key, and a child of that window —
+/// is in front, and the frontmost browser window when there is no key window at all.
+/// `performMiniaturize:` on a borderless window does nothing, which is what ⌘M did while a
+/// Peek was up. The rule itself is `Standard.minimizeTarget`, proved offline.
+@MainActor private func minimizeWindow() {
+    let key = NSApp.keyWindow
+    let browser = Windows.main?.window
+    switch Standard.minimizeTarget(hasKey: key != nil,
+                                   keyMiniaturizable: key?.styleMask.contains(.miniaturizable) ?? false,
+                                   keyHasParent: key?.parent != nil,
+                                   hasBrowser: browser != nil) {
+    case .key:     key?.performMiniaturize(nil)
+    case .parent:  key?.parent?.performMiniaturize(nil)
+    case .browser: browser?.performMiniaturize(nil)
+    case .none:    break
+    }
 }
 
 /// The Find submenu's next/previous. AppKit dispatches `performTextFinderAction:` and asks
@@ -545,8 +564,14 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     let root = NSMenu()
     let makeDefaultApp = item(.makeDefaultBrowser) { URLHandling.makeDefaultBrowser() }
     makeDefaultApp.isEnabled = !URLHandling.isDefaultBrowser
+    // macOS fills this in itself once it is `NSApp.servicesMenu`: what the Services submenu
+    // offers depends on what is selected and on what the user has enabled in Settings, and
+    // an app that never sets it is the one with a Services menu that is always empty.
+    let services = NSMenu(title: "Services")
+    let servicesHolder = NSMenuItem(title: "Services", action: nil, keyEquivalent: "")
+    servicesHolder.submenu = services
     root.addItem(menu("Vane", [
-        NSMenuItem(title: "About Vane", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+        Standard.item("About Vane"),
         // The loud check: it answers even when there is nothing to say, and it runs however
         // recently the background one did. See Updater.swift.
         item("Check for Updates…", "") { Updater.shared.check(silent: false) },
@@ -561,13 +586,15 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         menu("Passwords", passwordItems()),
         menu("Sites", siteItems()),
         .separator(),
-        NSMenuItem(title: "Hide Vane", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
-        standard("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h",
-                 [.command, .option]),
-        standard("Show All", #selector(NSApplication.unhideAllApplications(_:))),
+        servicesHolder,
         .separator(),
-        NSMenuItem(title: "Quit Vane", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
+        Standard.item("Hide Vane"),
+        Standard.item("Hide Others"),
+        Standard.item("Show All"),
+        .separator(),
+        Standard.item("Quit Vane"),
     ]))
+    NSApp.servicesMenu = services
     root.addItem(menu("File", [
         item(.newTab) { Windows.current?.newTab(nil) },
         item(.newWindow) { Windows.open() },
@@ -590,17 +617,20 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
         item(.printPage) { printPage() },
         item(.sharePage) { sharePage() },
     ]))
+    // Every one of these is a standard selector with no target, which is what carries ⌘Z,
+    // ⌘X, ⌘C, ⌘V and ⌘A down the responder chain into the address bar, a rename field and
+    // the page's own editing — WebKit implements them all, and only ever sees them because
+    // nothing here claims them first.
     root.addItem(menu("Edit", [
-        NSMenuItem(title: "Undo", action: NSSelectorFromString("undo:"), keyEquivalent: "z"),
-        NSMenuItem(title: "Redo", action: NSSelectorFromString("redo:"), keyEquivalent: "Z"),
+        Standard.item("Undo"),
+        Standard.item("Redo"),
         .separator(),
-        NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"),
-        NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"),
-        NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"),
-        standard("Paste and Match Style", NSSelectorFromString("pasteAsPlainText:"), "v",
-                 [.command, .option, .shift]),
-        standard("Delete", #selector(NSText.delete(_:)), "", []),
-        NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"),
+        Standard.item("Cut"),
+        Standard.item("Copy"),
+        Standard.item("Paste"),
+        Standard.item("Paste and Match Style"),
+        standard("Delete", #selector(NSText.delete(_:))),
+        Standard.item("Select All"),
         .separator(),
         menu("Find", [
             item(.find) { Windows.current?.openFind() },
@@ -609,12 +639,12 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
             // event monitor sees runs. See Find.advance.
             item(.findNext) { Find.advance(forward: true) },
             item(.findPrevious) { Find.advance(forward: false) },
-            standard("Use Selection for Find", #selector(NSResponder.performTextFinderAction(_:)), "e")
+            Standard.item("Use Selection for Find")
                 .tagged(NSTextFinder.Action.setSearchString.rawValue),
         ]),
         menu("Spelling and Grammar", [
-            standard("Show Spelling and Grammar", NSSelectorFromString("showGuessPanel:"), ":"),
-            standard("Check Document Now", NSSelectorFromString("checkSpelling:"), ";"),
+            Standard.item("Show Spelling and Grammar"),
+            Standard.item("Check Document Now"),
             .separator(),
             standard("Check Spelling While Typing", NSSelectorFromString("toggleContinuousSpellChecking:")),
             standard("Check Grammar With Spelling", NSSelectorFromString("toggleGrammarChecking:")),
@@ -640,8 +670,7 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
             standard("Stop Speaking", NSSelectorFromString("stopSpeaking:")),
         ]),
         .separator(),
-        standard("Emoji & Symbols", #selector(NSApplication.orderFrontCharacterPalette(_:)),
-                 " ", [.command, .control]),
+        Standard.item("Emoji & Symbols"),
         standard("Start Dictation…", NSSelectorFromString("startDictation:")),
     ]))
     root.addItem(menu("View", [
@@ -740,14 +769,14 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
     // window list is AppKit's to fill in once it knows which menu is the Window menu.
     let window = menu("Window", [
         responderItem(.minimizeWindow, #selector(NSWindow.performMiniaturize(_:))) {
-            NSApp.keyWindow?.performMiniaturize(nil)
+            minimizeWindow()
         },
-        standard("Zoom", #selector(NSWindow.performZoom(_:))),
+        Standard.item("Zoom"),
         .separator(),
         item(.showLibrary) { toggleLibrary() },
         .separator(),
         littleArcWindows(),
-        standard("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))),
+        Standard.item("Bring All to Front"),
     ])
     root.addItem(window)
     NSApp.windowsMenu = window.submenu
