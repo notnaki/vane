@@ -136,22 +136,6 @@ struct TitleReveal: Equatable, Sendable {
     let isPrivate: Bool
     /// Which profile's data this tab reads and writes. Never changes for the life of the tab.
     let profileID: UUID
-    /// A page WebKit made for `window.open` — see `init(popup:isPrivate:profileID:)` — which
-    /// is still inside the flow its opener started and has not been browsed away from.
-    ///
-    /// It buys no exemption from the suspension sweep, and must not. *Every*
-    /// `createWebViewWith` comes through the popup path, so a plain left-click on a
-    /// `target="_blank"` link makes a tab with this flag set, and a flag that kept those
-    /// resident would be a browser where the commonest link on the web opens a tab that can
-    /// never be reclaimed — not on the idle sweep and not under critical memory pressure.
-    /// What keeps a sign-in popup alive while it is being used is the thing that keeps any
-    /// page the user can see alive: it is the current tab of its window, which the one page
-    /// of a Little Vane always is. See `Suspension.shouldSuspend`.
-    ///
-    /// It is not for life. A popup the user has started browsing in — a link clicked, a form
-    /// submitted, a Back — has left whatever flow opened it. Cleared in `decidePolicyFor`;
-    /// the rule is `Popup.staysPopup`.
-    private(set) var isPopup: Bool
 
     /// The profile-scoped singletons this tab must use. `Store.shared` and friends resolve to
     /// the *active* profile, which is the wrong one for a background window.
@@ -163,7 +147,6 @@ struct TitleReveal: Equatable, Sendable {
          profileID: UUID = ProfileManager.shared.active.id) {
         self.isPrivate = isPrivate
         self.profileID = profileID
-        self.isPopup = false
         web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
         super.init()
         attach()
@@ -186,7 +169,6 @@ struct TitleReveal: Equatable, Sendable {
     init(popup cfg: WKWebViewConfiguration, isPrivate: Bool, profileID: UUID) {
         self.isPrivate = isPrivate
         self.profileID = profileID
-        self.isPopup = true
         // The one thing that must *not* be shared. WebKit copies the configuration but not
         // its content controller — the popup arrives holding the opener's own object — and
         // two tabs on one controller is two bugs: `attach()` would throw on script message
@@ -841,14 +823,6 @@ struct TitleReveal: Equatable, Sendable {
                 break
             }
         }
-        // A popup the user has started browsing in stops being one, so the suspension sweep
-        // can have it back. Last, because everything above this cancels and hands the
-        // navigation to some other window; from here down it happens in this tab, whichever
-        // way HTTPS-only answers.
-        if isPopup, !Popup.staysPopup(navigation: navigationAction.navigationType,
-                                      mainFrame: navigationAction.targetFrame?.isMainFrame == true) {
-            isPopup = false
-        }
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             decisionHandler(.allow)
@@ -1500,8 +1474,10 @@ struct TitleReveal: Equatable, Sendable {
             MediaState.shared.forget(id)
             // Closing GitHub's consent page by hand is abandoning the sign-in: the next
             // "New Live Folder…" starts a fresh one rather than pointing at a tab that has
-            // gone. A no-op for every other tab, which is nearly all of them.
-            LiveFolders.shared(for: profileID).forget(authTab: id)
+            // gone. A no-op for every other tab, which is nearly all of them — and
+            // `existing`, not `shared`: a closing tab is no reason to make a live folders
+            // instance for a profile that never signed in.
+            LiveFolders.existing(for: profileID)?.forget(authTab: id)
         }
         if renamingTab == id { renamingTab = nil }
         // A selection may only ever name tabs that exist: one closed under it — by ⌘W, by a

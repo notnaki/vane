@@ -490,6 +490,11 @@ enum GitHubOAuth {
         return made
     }
 
+    /// The profile's instance if it has one, and nothing if it has not. For the paths that
+    /// only ever tell an existing flow something — closing a tab, say — where `shared` would
+    /// make a live folders instance, timer and all, for every profile that never asked.
+    static func existing(for profileID: UUID) -> LiveFolders? { byProfile[profileID] }
+
     /// The profile's last window has gone: the timer and the activation observer go with it,
     /// or they outlive every window and keep asking GitHub about folders nobody can see.
     /// Called from `windowWillClose`.
@@ -645,7 +650,12 @@ enum GitHubOAuth {
     func connect(in store: TabStore, thenCreate: Bool) {
         if case .show(let id) = LiveFolders.consent(pending: authTab,
                                                     open: TabStore.all.flatMap { $0.tabs.map(\.id) }) {
-            TabStore.all.first { $0.tabs.contains { $0.id == id } }?.current = id
+            if let owner = TabStore.all.first(where: { $0.tabs.contains { $0.id == id } }) {
+                owner.current = id
+                // Selecting it is not enough when the consent page is up in another window:
+                // raise that window too, or the user is told nothing happened.
+                owner.window?.makeKeyAndOrderFront(nil)
+            }
             return
         }
         let state = GitHubOAuth.newState()
@@ -1333,15 +1343,12 @@ extension GitHub {
                LiveFolders.route(signedIn: false, hasSecret: true) == .connect)
         assert("…and one without it falls back to the sheet",
                LiveFolders.route(signedIn: false, hasSecret: false) == .sheet)
-        // The property that has to hold for *both* builds, asserted without asking which one
-        // this is. Deliberately not compared against `OAuthSecret.github`: these same checks
-        // run against the packaged app in the release workflow, after the client secret has
-        // been substituted in, so anything that restates the build's own answer back to it
-        // proves nothing in either build.
-        assert("no build sends anyone to a consent page it could not finish",
-               LiveFolders.route(signedIn: false, hasSecret: false) != .connect)
-        assert("…and no build asks a signed-in user for a token it already has",
-               LiveFolders.route(signedIn: true, hasSecret: false) != .sheet)
+        // The four rows above are the whole table, so they already say what has to hold for
+        // *both* builds: no build sends anyone to a consent page it could not finish, and
+        // none asks a signed-in user for a token it already has. Deliberately not compared
+        // against `OAuthSecret.github`: these same checks run against the packaged app in
+        // the release workflow, after the client secret has been substituted in, so
+        // anything that restates the build's own answer back to it proves nothing.
 
         // The folder that click makes.
         assert("Arc's one live folder is called Pull Requests",

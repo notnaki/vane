@@ -300,17 +300,12 @@ extension Prefs {
         assert("a tab with nothing loaded has nothing to reclaim", !shouldSuspend(blank, after: 0))
         assert("a zero interval suspends every eligible tab immediately",
                shouldSuspend(Facts(idle: 0), after: 0))
-        // A page another page opened. Every `target="_blank"` and every `window.open` comes
-        // through WebKit's popup path, so the commonest link on the web makes a tab with
-        // `Tab.isPopup` set — and there is deliberately no fact here for that flag. A popup
-        // is an ordinary tab to this table, and `Tab.suspend` does not ask about it either.
-        // What keeps a sign-in popup resident while it is being used is the second row: the
-        // one page of a Little Vane is that window's current tab.
-        let blankTab = idle                                     // a _blank tab beside its opener
-        var floatingPopup = idle; floatingPopup.active = true    // the one page of a Little Vane
-        assert("a _blank tab suspends like any other", shouldSuspend(blankTab, after: 30 * 60))
-        assert("…while a popup floating as a Little Vane is that window's current tab, so it stays",
-               !shouldSuspend(floatingPopup, after: 0))
+        // A page another page opened is not asked about anywhere in this table, and that is
+        // the point: every `target="_blank"` and every `window.open` comes through WebKit's
+        // popup path, so the commonest link on the web would otherwise make a tab that could
+        // never be reclaimed. A `_blank` tab is the first row, and a popup floating as a
+        // Little Vane is the "active tab of a window" row — the one page of a Little Vane is
+        // always that window's current tab. `Tab.suspend` asks nothing extra either.
         // Every "never" reason beats the timer, even at an hour idle.
         assert("no single exclusion is overridden by a long idle time",
                [active, pinned, priv, playing, typing, loading, already, blank]

@@ -392,7 +392,7 @@ enum Look {
     /// the selection's step because it is a button, not a row among rows.
     static let hoveredAlpha = 0.10
     static let hovered = ink(hoveredAlpha)
-    static let pillFill = ink(0.10)
+    static let pillFill = ink(hoveredAlpha)
     static let selectedAlpha = 0.19
     static let selected = ink(selectedAlpha)
     /// A selection that belongs to the user's accent rather than to the surface: the

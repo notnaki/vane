@@ -248,6 +248,14 @@ final class TrafficLightRest: NSView {
                                       owner: self)
             addTrackingArea(area)
             hover = area
+            // A tracking area only ever reports crossings after it exists. The pointer can
+            // already be parked on the lights when the window is first laid out — moving no
+            // further, so no `mouseEntered` is ever coming — and they would sit dim under it
+            // until it left and came back. Read where it actually is instead.
+            let inside = window.map {
+                bounds.contains(convert($0.mouseLocationOutsideOfEventStream, from: nil))
+            } ?? false
+            if resting == inside { resting = !inside; show(animated: false) }
         }
     }
 
