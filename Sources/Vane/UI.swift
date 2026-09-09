@@ -1145,6 +1145,9 @@ private struct FavoriteTile: View {
     /// over the moment the button comes up shows it twice — once scaled, once not — across
     /// whatever gap is left.
     func end(landed: Bool = false) {
+        // Back to full before anything else: a row that glides into its slot at half size
+        // and then grows once it has arrived reads as two endings rather than one.
+        Held.shared.rest()
         let glide = Landing.settles(live: live, landed: landed,
                                     air: Held.shared.air?.kind, at: at?.kind)
         // Where it glides to, or nil for "it lands": nothing waiting, the drop moved it
@@ -1230,6 +1233,57 @@ private struct FavoriteTile: View {
     func show(_ next: Air?) {
         guard next != air else { return }
         air = next
+    }
+
+    /// Whether the row in the air is out of its own way — `Look.heldCompact` of itself, so
+    /// the row it is resting on can be seen along with the half of it that will take the
+    /// dragged pane. `HeldRow` reads it; nothing else needs to know a drag has paused.
+    @Published private(set) var compact = false
+    /// Which row the pointer is resting over and since when. `Landing` decides what that
+    /// means; this only remembers it.
+    private var dwell: Landing.Dwell?
+
+    /// The pointer is over `spot`, a row offering a split — or over nothing worth seeing
+    /// through, which puts the row back to full at once.
+    ///
+    /// ponytail: a `Task.sleep` per rest rather than a timer or a periodic drag update.
+    /// SwiftUI does not promise a `dropUpdated` for a pointer that has *stopped*, which is
+    /// the only case this is about, so the wait has to be ours; the reading afterwards still
+    /// goes through `Landing.compact`, so the rule stays provable offline.
+    func resting(over spot: Landing.Spot?) {
+        let next = Landing.dwell(dwell, over: spot, now: ProcessInfo.processInfo.systemUptime)
+        // The same row still under the pointer: the clock it started is already running, and
+        // re-arming it on every reported move would mean it never came due.
+        guard next != dwell else { return }
+        dwell = next
+        set(compact: false)
+        guard let next else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Look.heldDwell))
+            guard let self, dwell == next,
+                  Landing.compact(next, now: ProcessInfo.processInfo.systemUptime,
+                                  after: Look.heldDwell) else { return }
+            set(compact: true)
+        }
+    }
+
+    /// The pointer has left `spot`. Only the row the clock is running on can stop it:
+    /// SwiftUI does not promise that the `dropExited` of the row you left arrives before the
+    /// `dropEntered` of the one you reached, and the wrong order would cancel the rest you
+    /// have only just begun.
+    func left(_ spot: Landing.Spot) {
+        guard dwell?.over == spot else { return }
+        resting(over: nil)
+    }
+
+    /// Back to full, whatever the pointer was doing — the drag is over.
+    func rest() { resting(over: nil) }
+
+    /// Reduce Motion still shrinks the row: what it is for is seeing what is underneath, and
+    /// that is not decoration. Only the growing and shrinking of it goes.
+    private func set(compact next: Bool) {
+        guard next != compact else { return }
+        if Motion.reduced { compact = next } else { withAnimation(Look.quick) { compact = next } }
     }
 }
 
@@ -1372,6 +1426,18 @@ private struct HeldRow: View {
                 .background(Look.barMaterial, in: .rect(cornerRadius: Look.pillRadius))
                 .padding(.leading, indent(air.tab))
                 .liftedPreview()
+                // Rest it over a row and it gets out of its own way, so the ring and the lit
+                // half underneath — which is the whole answer to "which side does the split
+                // open on?" — are not hidden by the thing asking the question. Scale, not a
+                // smaller row: the row keeps its layout, so nothing reflows on the way down
+                // and nothing has to be built twice.
+                //
+                // ponytail: about the row's own centre rather than the pointer's exact place
+                // in it. The pointer is holding the row somewhere along 36pt and the centre
+                // is 18 of them, so the two are under a finger's width apart — and anchoring
+                // on the grab point would mean publishing it on every reported move, which
+                // is the one thing `Held` exists to avoid.
+                .scaleEffect(held.compact ? Look.heldCompact : 1)
                 // Nothing in the air is a target. The slot it left is one, and the live
                 // reorder keeps that slot under the pointer wherever the row has got to.
                 .allowsHitTesting(false)
@@ -1564,7 +1630,15 @@ private struct TabDrop: DropDelegate {
         track(info)
         return DropProposal(operation: .move)
     }
-    func dropExited(info: DropInfo) { side = nil; half.wrappedValue = nil }
+    func dropExited(info: DropInfo) {
+        side = nil
+        half.wrappedValue = nil
+        if let spot { Held.shared.left(spot) }
+    }
+
+    /// This target as a place in a list — what the rest the pointer may be taking is *on*.
+    /// Nil for everything that is not a row: a favourite's tile and the two placeholders.
+    private var spot: Landing.Spot? { row.map { Landing.Spot(kind: into, index: $0) } }
 
     func performDrop(info: DropInfo) -> Bool {
         let offer = place(info)
@@ -1700,6 +1774,12 @@ private struct TabDrop: DropDelegate {
         let offer = place(info)
         side = offer?.band
         half.wrappedValue = offer?.half
+        // Rest over the middle of a row and the row in your hand shrinks out of the way: the
+        // middle is where the split is offered, and the ring and the lit half that say so are
+        // exactly what the held row is covering. Every other place the pointer can be — an
+        // edge band, the dragged row's own slot, a tile, a placeholder — has nothing behind
+        // the row worth uncovering, and hands back nil, which puts it straight back to full.
+        Held.shared.resting(over: offer?.band == .onto ? spot : nil)
         lift(info)
         guard axis == .vertical, let offer, let to = offer.to, let target,
               let id = Dragging.shared.tab,

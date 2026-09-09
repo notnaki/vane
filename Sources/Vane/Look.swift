@@ -579,6 +579,16 @@ enum Look {
     /// How far down the slot a lifted row leaves goes: still a row, plainly not the one in
     /// your hand.
     static let lifted: Double = 0.3
+    /// Rest the row in your hand over another row and, after this long, it gets out of its
+    /// own way. The row underneath is offering a split, and the half of it that lights says
+    /// which side the pane will open on — neither of which you can see through the row that
+    /// is covering them. Long enough that dragging *past* a row never shrinks anything,
+    /// short enough that stopping to look does not feel like waiting.
+    static let heldDwell: Double = 0.4
+    /// How small it gets: half a row. Still plainly the row you are holding — its favicon
+    /// and the start of its title — with the ring and both halves of the row underneath
+    /// showing all the way round it.
+    static let heldCompact: CGFloat = 0.5
 
     // Motion. Short and easing out: a fill should arrive under the pointer, never chase it.
     /// Hover and selection fills.
@@ -786,6 +796,12 @@ extension Look {
                     liftShadowRadius < floatShadowRadius && liftShadowY < floatShadowY))
         out.append(("the slot it left is dimmed, not emptied — the list keeps its shape",
                     lifted > 0 && lifted < 0.5))
+        out.append(("a rest over a row is longer than a hover and no longer than a held button",
+                    heldDwell >= switcherDelay && heldDwell <= holdDelay))
+        out.append(("the row that gets out of the way is smaller by half, not gone",
+                    heldCompact > 0.25 && heldCompact < 1))
+        out.append(("shrunk, it is narrower than the row it is standing on, ring and all",
+                    heldCompact * liftScale * sidebarWidth < sidebarWidth - dropLine * 2))
         out.append(("the command bar's rows keep Arc's 50pt pitch", barRowHeight + barRowGap == 50))
         // The mini audio player. It sits above the footer inside the sidebar's own padding,
         // so its height is what decides whether the list is ever covered by it.

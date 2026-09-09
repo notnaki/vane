@@ -128,6 +128,39 @@ enum Landing {
     /// How many more tabs a split of `panes` will take. One is a plain tab, which becomes a
     /// split of two; `Split.maxPanes` is the ceiling, and a full one is not an offer at all.
     nonisolated static func roomToSplit(panes: Int) -> Int { max(0, Split.maxPanes - panes) }
+
+    // MARK: Resting over a row
+
+    /// A pointer that has stopped somewhere: which row it is resting over, and when it got
+    /// there. The row in your hand covers the row it is over — ring, lit half and all, which
+    /// are exactly what say a split is on offer and which side it will open on — so once the
+    /// pointer has plainly stopped, the held row shrinks and lets them through.
+    struct Dwell: Equatable, Sendable {
+        var over: Spot
+        /// A monotonic clock's seconds. Never a wall date: a clock adjustment mid-drag must
+        /// not be able to decide the pointer arrived in the future and never rests.
+        var since: Double
+    }
+
+    /// The clock a resting pointer keeps, one pointer move at a time. `over` is the row the
+    /// pointer is being offered a split by, or nil for anything that is not a row worth
+    /// looking through to — a favourite's tile, a Space's dot, the page card, a row's edge
+    /// band, the dragged row's own slot. Staying on one row keeps the clock it already
+    /// started; moving to another starts a new one, so dragging along a list never adds up
+    /// to a rest that was never taken.
+    nonisolated static func dwell(_ was: Dwell?, over: Spot?, now: Double) -> Dwell? {
+        guard let over else { return nil }
+        guard let was, was.over == over else { return Dwell(over: over, since: now) }
+        return was
+    }
+
+    /// Whether the row in your hand should be out of the way: the pointer has been resting
+    /// over the same row for `after` seconds. Nothing to rest on is never out of the way,
+    /// which is also what puts the row back to full the moment the pointer leaves.
+    nonisolated static func compact(_ dwell: Dwell?, now: Double, after: Double) -> Bool {
+        guard let dwell else { return false }
+        return now - dwell.since >= after
+    }
 }
 
 // MARK: - check
@@ -247,6 +280,45 @@ extension Landing {
             ("a full split refuses", roomToSplit(panes: Split.maxPanes) == 0),
             ("…and so does one that is somehow over full, rather than owing panes",
              roomToSplit(panes: Split.maxPanes + 3) == 0),
+        ] + dwellCheck()
+    }
+
+    /// Resting the row in your hand over another row. A 0.4s dwell on a clock reading 10,
+    /// two rows in Today and the same index over in Pinned.
+    /// ponytail: its own function. The list above is already long enough that the type
+    /// checker charges for another dozen entries in it.
+    private nonisolated static func dwellCheck() -> [(String, Bool)] {
+        let after = 0.4
+        let here = Spot(kind: .today, index: 3)
+        let next = Spot(kind: .today, index: 4)
+        let arrived = dwell(nil, over: here, now: 10)
+        let stayed = dwell(arrived, over: here, now: 10.3)
+        let moved = dwell(arrived, over: next, now: 10.3)
+        return [
+            ("resting over a row starts a clock on it",
+             arrived == Dwell(over: here, since: 10)),
+            ("the row in your hand does not shrink the moment it arrives",
+             !compact(arrived, now: 10, after: after)),
+            ("nor while it is still on its way past",
+             !compact(arrived, now: 10.39, after: after)),
+            ("a pointer that has plainly stopped shrinks it",
+             compact(arrived, now: 10.4, after: after)
+                && compact(arrived, now: 12, after: after)),
+            ("staying on the same row keeps the clock running rather than restarting it",
+             stayed == arrived && compact(stayed, now: 10.4, after: after)),
+            ("moving to a different row starts the clock again",
+             moved == Dwell(over: next, since: 10.3)
+                && !compact(moved, now: 10.4, after: after)),
+            ("…and the same index in the other section is a different row",
+             dwell(arrived, over: Spot(kind: .pinned, index: 3), now: 10.3)
+                == Dwell(over: Spot(kind: .pinned, index: 3), since: 10.3)),
+            ("leaving the row puts it back to full at once",
+             dwell(arrived, over: nil, now: 10.3) == nil
+                && !compact(dwell(arrived, over: nil, now: 10.3), now: 99, after: after)),
+            ("a target that is not a row — a Space's dot, the page card — never starts one",
+             dwell(nil, over: nil, now: 10) == nil && !compact(nil, now: 99, after: after)),
+            ("a dwell of no length is not a shrink that never happens",
+             compact(arrived, now: 10, after: 0)),
         ]
     }
 }
