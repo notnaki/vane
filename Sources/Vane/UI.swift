@@ -394,12 +394,12 @@ struct WebCard: View {
                 WebView(web: tab.web).id(tab.id)
                     .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
             } else {
-                // No tabs: nothing to draw. The glass ground shows through, like the sidebar.
-                // With nothing mounted there is also no WKWebView to argue with over a
-                // dropped file, so the bare card is the one part of the page area that can
-                // take one: dropping a PDF on a window showing nothing is not ambiguous.
-                // Everywhere else files go to the sidebar — see `SidebarDrop`.
-                Color.clear
+                // No tabs: the sheet a page will land on, and nothing in it. With nothing
+                // mounted there is also no WKWebView to argue with over a dropped file, so
+                // the bare card is the one part of the page area that can take one: dropping
+                // a PDF on a window showing nothing is not ambiguous. Everywhere else files
+                // go to the sidebar — see `SidebarDrop`.
+                EmptyPane()
                     .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                         Files.openDropped(providers, in: store)
                         return true
@@ -436,12 +436,35 @@ struct WebCard: View {
         }
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
-        .clipShape(.rect(cornerRadius: Look.cardRadius))
+        .clipShape(.rect(cornerRadius: Look.pageRadius))
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
         .padding(.leading, store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap)
         .padding([.top, .trailing, .bottom], Look.cardGap)
+    }
+}
+
+/// The page area with no page in it: Arc draws the sheet the page will land on rather than
+/// running the sidebar's colour across the whole window, so a browser with nothing open
+/// still shows you where the next thing goes.
+///
+/// It is drawn *inside* `WebCard`'s own clip and padding, so it inherits the live card's
+/// corner (`Look.pageRadius`) and gap exactly — nothing on screen moves when the first tab arrives, the outline
+/// just fills with a page. One of these and never two: a window with no tab has no split to
+/// divide, and the branch that draws it is the one where there is no tab at all. Little Vane
+/// gets it too — ⌥⌘N opens one empty, and its card is this same `WebCard`.
+///
+/// ponytail: a shape, not a `Color` with a `.background` and a `.hairline` — a fill and a
+/// stroke on one rounded rectangle is the whole of it.
+struct EmptyPane: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: Look.pageRadius)
+            .fill(Look.emptyPaneFill)
+            .hairline(radius: Look.pageRadius)
+            // Decoration. The window already says it has no tabs — the sidebar's empty list
+            // and the command bar over it — and a second element saying so is noise.
+            .accessibilityHidden(true)
     }
 }
 
