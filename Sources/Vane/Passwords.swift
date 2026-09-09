@@ -924,6 +924,13 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                         ("a page's window.open reaches createWebViewWith", probe.asked),
                         ("Popup.userInitiated survives a real WKNavigationAction, and said \(said)",
                          probe.gesture != nil),
+                        // The row above is green on the no-SPI fallback too — `userInitiated`
+                        // answers "yes" and returns a non-nil Bool when the accessor is not
+                        // there at all. This is the row that goes red the day WebKit renames
+                        // it, which is the day Vane silently stops reading the gesture and
+                        // starts taking every popup at its word.
+                        ("WKNavigationAction still declares the gesture accessor it reads",
+                         WKNavigationAction.instancesRespond(to: NSSelectorFromString("_isUserInitiated"))),
                         ("the size the page asked for arrives in WKWindowFeatures",
                          probe.width == 451 && probe.height == 600),
                         ("…and the placement is the one the pure table gives for that row",

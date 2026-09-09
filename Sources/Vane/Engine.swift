@@ -112,15 +112,21 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     let isPrivate: Bool
     /// Which profile's data this tab reads and writes. Never changes for the life of the tab.
     let profileID: UUID
-    /// A page WebKit made for `window.open` — see `init(popup:isPrivate:profileID:)`. The
-    /// one thing it changes is that this tab is never suspended: the tie to its opener lives
-    /// in this particular web view, and `resume()` builds a new one, so a popup that was
-    /// suspended would come back with `window.opener` null and nothing to hand its result to.
+    /// A page WebKit made for `window.open` — see `init(popup:isPrivate:profileID:)` — which
+    /// is still inside the flow its opener started and has not been browsed away from.
+    ///
+    /// It buys no exemption from the suspension sweep, and must not. *Every*
+    /// `createWebViewWith` comes through the popup path, so a plain left-click on a
+    /// `target="_blank"` link makes a tab with this flag set, and a flag that kept those
+    /// resident would be a browser where the commonest link on the web opens a tab that can
+    /// never be reclaimed — not on the idle sweep and not under critical memory pressure.
+    /// What keeps a sign-in popup alive while it is being used is the thing that keeps any
+    /// page the user can see alive: it is the current tab of its window, which the one page
+    /// of a Little Vane always is. See `Suspension.shouldSuspend`.
     ///
     /// It is not for life. A popup the user has started browsing in — a link clicked, a form
-    /// submitted, a Back — has left whatever flow opened it, and a tab that can never be
-    /// reclaimed is too high a price for an opener nobody is going to postMessage to any
-    /// more. Cleared in `decidePolicyFor`; the rule is `Popup.staysPopup`.
+    /// submitted, a Back — has left whatever flow opened it. Cleared in `decidePolicyFor`;
+    /// the rule is `Popup.staysPopup`.
     private(set) var isPopup: Bool
 
     /// The profile-scoped singletons this tab must use. `Store.shared` and friends resolve to
@@ -309,13 +315,22 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// interactionState. The failure mode is one-directional: a state that does not come
     /// back just means the tab reloads from its url.
     func suspend() {
-        // A popup is never parked: waking it would build a fresh web view and drop the tie
-        // to its opener, which is the only reason it exists. See `isPopup`.
-        guard !suspended, !isPopup, let url = web.url else { return }
+        guard !suspended, let url = web.url else { return }
         parkedState = web.interactionState as? Data
         parkedURL = url
         suspended = true
+        release()
+    }
 
+    /// The half of suspension that lets go: the observers, the script message handlers, the
+    /// view, and the WebContent process behind it — with a fresh unloaded view put in its
+    /// place, so every `tab.web.…` call site elsewhere still has a real object to talk to
+    /// and none of them costs a process.
+    ///
+    /// Split out of `suspend()` for `tearDown()`, which has to let go whatever the state of
+    /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
+    /// "nothing was parked" must never mean "nothing was released".
+    private func release() {
         let old = web
         TabAudio.unwatch(self)         // KVO on a dead observee is a crash, not a leak
         obs = []                       // KVO on a view that is about to die
@@ -343,8 +358,6 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // NSViewRepresentable is the next place to look. The leak is an empty view with no
         // page and no process, bounded per suspend, so it is a wart, not a regression.
         Tab.close(old)
-        // The replacement is unloaded, so every `tab.web.…` call site elsewhere still has a
-        // real object to talk to and none of them costs a process.
         web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
         attach()
     }
@@ -381,13 +394,20 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         Zoom.apply(to: self)
     }
 
-    /// The window holding this tab is closing. `suspend` is what drops the KVO observers,
+    /// The window holding this tab is closing. `release` is what drops the KVO observers,
     /// the script message handlers and the WebContent process; without it `TabAudio`'s
     /// observer outlives the web view it was watching — a crash, not a leak — the process
     /// is never given back, and a page handed to another window carries on playing sound
     /// from a window nobody can see any more.
+    ///
+    /// `release` and not `suspend`: suspension is about *parking* a page, so it declines a
+    /// tab with nothing to park — one already suspended, one that never loaded — and a
+    /// closing window has to be let go either way. This is the path a Little Vane takes when
+    /// its popup calls `window.close()`: `closedByScript` → `performClose` →
+    /// `windowWillClose` → here, and a `suspend()` that decided there was nothing to do left
+    /// that popup's WebContent process running for the life of the app.
     func tearDown() {
-        suspend()
+        release()
         TabAudio.forget(id)
         MediaState.shared.forget(id)
     }

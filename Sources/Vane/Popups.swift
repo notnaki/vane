@@ -106,17 +106,15 @@ enum Popup {
 
     /// Whether a tab WebKit made for `window.open` is still a popup after this navigation.
     ///
-    /// `Tab.isPopup` exists to keep the tab off the suspension sweep: the tie to
-    /// `window.opener` lives in this particular web view, and waking a parked tab builds a
-    /// new one. That is worth a page that can never be reclaimed for as long as the flow is
-    /// running — and not a moment longer. A main-frame navigation the user drove is the tell
-    /// that the flow is over and the popup is a tab someone is browsing in, so it goes back
-    /// on the sweep like every other tab.
+    /// `Tab.isPopup` records that the tab is still inside the flow its opener started — the
+    /// tie to `window.opener` lives in this particular web view, and it is only worth
+    /// anything for as long as somebody is going to postMessage over it. A main-frame
+    /// navigation the user drove is the tell that the flow is over and the popup is now a
+    /// tab someone is browsing in.
     ///
     /// `.other` is deliberately not in the list: it is both the popup's own first load and
     /// every `location =` hop an OAuth flow makes on its way to the redirect that
-    /// postMessages the credential home. Suspending in the middle of that is the exact bug
-    /// this flag exists to prevent.
+    /// postMessages the credential home — the middle of the flow, not the end of it.
     nonisolated static func staysPopup(navigation: WKNavigationType, mainFrame: Bool) -> Bool {
         guard mainFrame else { return true }
         switch navigation {
@@ -179,7 +177,7 @@ enum Popup {
             ("…and one that asked to stay behind stays behind, floating or not",
              takesFocus(.tab(focus: false)) == false),
 
-            // When a popup stops being one. See `Tab.isPopup` and the suspension sweep.
+            // When a popup stops being one. See `Tab.isPopup`.
             ("a popup being navigated by its own flow is still a popup",
              staysPopup(navigation: .other, mainFrame: true)),
             ("…and a link the user clicked inside it makes it an ordinary tab",
