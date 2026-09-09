@@ -95,16 +95,21 @@ import Foundation
 
     // MARK: - Offering
 
-    /// The tabs this feature is allowed to touch: Today, and only Today.
+    /// The tabs this feature is allowed to touch: the loose ones in Today.
     ///
-    /// Pinned tabs are excluded because Pinned is where a tidy *puts* things — a group the
-    /// user named and put away is a pinned folder (see `apply`) — so a pinned tab is a tab
-    /// that has already been tidied, by hand or by an earlier run. Regrouping it would mean
-    /// taking a row the user arranged out of the folder they put it in. Favourites are out
-    /// for the same reason and one more: a favourite is a tile in a grid, not a row in a
-    /// list, and there is nowhere in the grid for a folder to go.
+    /// Pinned tabs are excluded because a pinned tab is one the user has already put away by
+    /// hand, in whatever folder they chose; regrouping it would take a row out of that
+    /// folder. Favourites are out for the same reason and one more: a favourite is a tile in
+    /// a grid, not a row in a list, and there is nowhere in a grid for a folder to go.
+    ///
+    /// A tab already inside a *Today* folder is out for that first reason exactly: it is
+    /// filed, so it is already tidy. That is also what keeps a folder the user made by hand
+    /// out of a tidy's way — no group names the tabs in it, so `Pins.relay` never empties it,
+    /// and the undo, which takes back only `Done.folders`, has nothing of the user's to
+    /// restore.
     static func candidates(in store: TabStore) -> [Candidate] {
-        store.tabs.filter { $0.kind == .today }.map {
+        let filed = store.todayShape.filed
+        return store.tabs.filter { $0.kind == .today && !filed.contains($0.id.uuidString) }.map {
             Candidate(id: $0.id, title: $0.title, host: $0.currentURL?.host ?? "")
         }
     }
@@ -144,7 +149,10 @@ import Foundation
     }
 
     static func shouldOffer(_ store: TabStore) -> Bool {
-        shouldOffer(today: todayCount(store), threshold: threshold, enabled: enabled)
+        // The same windows `apply` refuses: a private window writes nothing down, so a
+        // folder made in one would be a control that only ever says "Nothing to tidy".
+        !store.isPrivate && !store.isLittle
+            && shouldOffer(today: todayCount(store), threshold: threshold, enabled: enabled)
     }
 
     static func todayCount(_ store: TabStore) -> Int {
@@ -444,11 +452,11 @@ import Foundation
     private struct Done {
         /// The whole strip's order before the tidy.
         var order: [Tab.ID]
-        /// The section each moved tab was in before it went into a folder.
-        var kinds: [Tab.ID: TabKind]
         /// The folders this tidy made, in the order it made them.
         var folders: [UUID]
     }
+    // ponytail: no `kinds` any more. A tidy moves nothing between sections, so there is no
+    // section to put back — the whole of what it did is the folders and the order.
 
     /// A stack per window, undone last-in-first-out. It used to be one record, and a second
     /// tidy silently wrote over it — so the first one's folders and moves became permanent
@@ -466,57 +474,56 @@ import Foundation
     /// name, no folder and no toast to say so. Arc's Tidy Tabs makes folders, and a folder
     /// is the only outcome a user can actually see: it has the group's *name* on it.
     ///
-    /// Vane's folders live in the Pinned section — see `Pins`, which is the whole of the
-    /// model and has no notion of a folder in Today — so a tidied group is a pinned folder.
-    /// That is the shape this codebase has, and it is the right one for what tidying means:
-    /// a group you named and put away is a group you have stopped auto-archiving.
+    /// **The folders go in Today, where the tabs already are.** They used to go in Pinned,
+    /// which meant a tidy quietly stopped every tab it touched from auto-archiving and made
+    /// Clear skip them — a housekeeping feature whose side effect was to cancel the other
+    /// housekeeping. Nothing here changes a tab's section any more: a tidied tab is an
+    /// ordinary Today tab that happens to sit under a named row, so the sweep still takes it
+    /// at twelve hours, ⌘W still archives it, and Clear still clears it. See
+    /// `TabStore.todayShape`, which is the same `Pins` value the Pinned section uses.
     ///
     /// Returns how many folders it made. Zero means nothing happened and the caller should
     /// say so out loud rather than leaving the click in silence.
     @discardableResult
     static func apply(_ groups: [Group], to store: TabStore) -> Int {
+        // A private window and a Little Vane have no Today shape written down and no tidy
+        // offered; neither may be given folders that would vanish on the next relaunch.
+        guard !store.isPrivate, !store.isLittle else { return 0 }
         let before = store.tabs.map(\.id)
         let placement = order(before, pinned: Set(store.tabs.filter(\.stays).map(\.id)),
                               groups: groups)
         // Only Today tabs are tidyable, and only ones that are still open.
         let live = Set(store.tabs.filter { $0.kind == .today }.map(\.id))
-        let named = deduped(groups, existing: store.pins.entries.compactMap(\.folder).map(\.name))
+        let named = deduped(groups,
+                            existing: store.todayShape.entries.compactMap(\.folder).map(\.name))
         let plan = folders(for: named, placement: placement, live: live)
         guard !plan.isEmpty else { return 0 }
 
-        var done = Done(order: before, kinds: [:], folders: [])
-        let was = Dictionary(uniqueKeysWithValues: store.tabs.map { ($0.id, $0.kind) })
+        var done = Done(order: before, folders: [])
+        store.syncShapes()      // every Today tab has a row before anything is put in a folder
 
         // `Pins.newFolder` rather than `TabStore.newFolder`: the store's one is ⌘⇧N — it
         // opens the name field on the folder it just made and announces it — which is right
         // for one folder the user asked for and wrong for eight arriving at once, already
         // named by the plan.
         for group in plan {
-            guard let folder = store.pins.newFolder(named: group.name) else { continue }
+            guard let folder = store.todayShape.newFolder(named: group.name) else { continue }
             done.folders.append(folder.id)
-            for id in group.tabIDs {
-                // Only the tabs this actually moves are written down, so undo puts back what
-                // the tidy did and leaves alone anything the user did while it was thinking.
-                done.kinds[id] = was[id]
-                // The section change first — a folder holds pinned rows, and `move` syncs the
-                // section for us — then the row is put inside the folder. `TabStore.move(_:
-                // into:)` is the same two steps plus an announcement, which for a whole tidy
-                // would be one per tab.
-                //
-                // `batched`: the section's shape goes to disk once, below, rather than once
-                // per tab. Each `move` used to be a synchronous `UserDefaults` write plus a
-                // JSON encode of the whole Pinned section, on the main actor, times every
-                // tab the tidy touched.
-                store.move(id, to: .pinned, batched: true)
-                store.pins.move(id.uuidString, into: folder.id)
-            }
+            for id in group.tabIDs { store.todayShape.move(id.uuidString, into: folder.id) }
         }
-        Motion.list { store.applyPinOrder() }
+        Motion.list {
+            // The order `order(_:pinned:groups:)` decided, said to the shape: each group as
+            // one run, in group order, and whatever no group claimed at the tail. Then the
+            // strip is put in the order the sidebar now draws.
+            store.todayShape.relay(placement.map(\.uuidString))
+            store.applyOrder(.today)
+        }
         store.savePins()
-        // And the pinned chips' names, once each and only for the tabs that have not got one
-        // — a section change is not a navigation, so a tab that already has a tidy title for
+        // And the rows' names, once each and only for the tabs that have not got one — being
+        // filed in a folder is not a navigation, so a tab that already has a tidy title for
         // the page it is on needs nothing asked about it. See `TidyTitles.refresh`.
-        for tab in store.tabs where done.kinds[tab.id] != nil { TidyTitles.refresh(tab) }
+        let tidied = Set(plan.flatMap(\.tabIDs))
+        for tab in store.tabs where tidied.contains(tab.id) { TidyTitles.refresh(tab) }
         // `store.current` is untouched on purpose: it is an id, so the active tab is still
         // the active tab even if it has just moved into a folder, and assigning it would
         // re-fire the didSet that resumes tabs.
@@ -528,7 +535,7 @@ import Foundation
         return done.folders.count
     }
 
-    /// Group names, made unique against the folders the Space already has — and against each
+    /// Group names, made unique against the folders Today already has — and against each
     /// other. "GitHub" beside an existing "GitHub" becomes "GitHub 2", then "GitHub 3": two
     /// folders with the same name on the same list are two folders you cannot tell apart,
     /// and the second tidy of a morning hits it every time.
@@ -573,10 +580,10 @@ import Foundation
     /// The last tidy, taken back — and pressed again, the one before it. Silently does
     /// nothing when there is nothing left to undo.
     ///
-    /// Exactly reversed, in the reverse order: the folders this tidy made are dissolved,
-    /// every tab it moved goes back to the section it was in, and then the strip is put back
-    /// in the order it had. Only the folders *this tidy* made — a folder the user made
-    /// during the tidy, or before it, is not the tidy's to delete.
+    /// Exactly reversed: the folders this tidy made are dissolved — their tabs stay exactly
+    /// where they are, because nothing ever left Today — and then the strip is put back in
+    /// the order it had. Only the folders *this tidy* made: a folder the user made during
+    /// the tidy, or before it, is not the tidy's to delete.
     static func undo(_ store: TabStore) {
         let key = ObjectIdentifier(store)
         guard let done = saved[key]?.popLast() else { return }
@@ -585,24 +592,22 @@ import Foundation
             // Not `TabStore.deleteFolder`: that announces a deletion and mirrors it into
             // every other window showing this Space. These folders were made in this window
             // and have never been anywhere else.
-            store.pins.remove(folder: folder)
-        }
-        for tab in store.tabs {
-            guard let before = done.kinds[tab.id], before != tab.kind else { continue }
-            store.move(tab.id, to: before, batched: true)     // one write, at the end
+            store.todayShape.remove(folder: folder)
         }
         let next = restore(saved: done.order, current: store.tabs.map(\.id))
         let byID = Dictionary(uniqueKeysWithValues: store.tabs.map { ($0.id, $0) })
         Motion.list {
             store.tabs = next.compactMap { byID[$0] }
-            // The saved order names every tab that was there, but only the tabs *this tidy
-            // moved* have a section restored — a tab the user pinned by hand while the model
-            // was thinking keeps the section it now has, and the saved order puts it back
-            // among the Today tabs it was sitting in. That breaks the one strip invariant, so
-            // the sections are settled again before anything reads the strip.
+            // A tab the user pinned by hand while the model was thinking keeps the section it
+            // now has, and the saved order puts it back among the Today tabs it was sitting
+            // in. That breaks the one strip invariant, so the sections are settled again
+            // before anything reads the strip.
             store.normaliseSections()
-            store.syncPins()
-            store.applyPinOrder()
+            store.syncShapes()
+            store.applyOrder(.pinned)
+            // The strip has just been handed a whole order at once, so here Today's shape
+            // follows it rather than the other way round. See `Pins.relay`.
+            store.todayShape.relay(store.tabs.map(\.id.uuidString))
         }
         store.savePins()
         axAnnounce("Undid the tidy.")
@@ -867,6 +872,20 @@ import Foundation
         assert("all singletons means no folders at all — nothing to tidy",
                folders(for: [Group(name: "A", tabIDs: [id(4)]), Group(name: "B", tabIDs: [id(5)])],
                        placement: tidied, live: todayIDs).isEmpty)
+        // --- Which section a folder can live in ---
+        //
+        // Two shapes, one value: the folder row, its menu and its drop target are written
+        // once and told which of the two they are on. A tidy's folders are Today's, which is
+        // the whole of this change — the tabs in them go on auto-archiving.
+        assert("Today has a shape of its own for a tidy to put its folders in",
+               TabStore.shape(of: .today) == \TabStore.todayShape)
+        assert("Pinned's is the one it always had",
+               TabStore.shape(of: .pinned) == \TabStore.pins)
+        assert("a favourite is a tile in a grid, with nowhere for a folder row to go",
+               TabStore.shape(of: .favourite) == nil)
+        assert("the two are different instances, so neither tidy touches the other",
+               TabStore.shape(of: .today) != TabStore.shape(of: .pinned))
+
         // The same plan, laid into the real Pins model.
         var section = Pins()
         var folderIDs: [UUID] = []
@@ -890,6 +909,30 @@ import Foundation
                  folderIDs.forEach { s.remove(folder: $0) }
                  return s.tabs.count == made.flatMap(\.tabIDs).count
                      && s.entries.compactMap(\.folder).isEmpty }())
+
+        // --- A folder the user made by hand ---
+        //
+        // Its tabs are filed, so `candidates` never offers them; no group names them; so the
+        // relay keeps the folder they are in, and the undo — which takes back only the
+        // folders the tidy made — leaves it exactly as it was.
+        var mine = Pins(entries: (1...4).map { Pins.Entry(row: .tab(id($0).uuidString),
+                                                          parent: nil) })
+        let hand = mine.newFolder(named: "Mine")!
+        mine.move(id(1).uuidString, into: hand.id)
+        assert("a tab the user filed in a Today folder is not a tidy candidate",
+               mine.filed == [id(1).uuidString])
+        let untouched = order([id(1), id(2), id(3), id(4)], pinned: [],
+                              groups: [Group(name: "Work", tabIDs: [id(2), id(3)])])
+        let fromTidy = mine.newFolder(named: "Work")!
+        for tab in [id(2), id(3)] { mine.move(tab.uuidString, into: fromTidy.id) }
+        mine.relay(untouched.map(\.uuidString))
+        assert("a tidy leaves the folder the user made standing",
+               mine.folder(fromTidy.id) != nil && mine.children(of: hand.id) == [id(1).uuidString])
+        mine.remove(folder: fromTidy.id)
+        mine.relay([id(1), id(2), id(3), id(4)].map(\.uuidString))
+        assert("…and so does its undo, which has only its own folders to take back",
+               mine.children(of: hand.id) == [id(1).uuidString]
+                   && mine.tabs == [id(1), id(2), id(3), id(4)].map(\.uuidString))
 
         // --- Undo ---
         assert("undo restores the exact original order",

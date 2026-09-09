@@ -1075,7 +1075,11 @@ private struct FavoriteTile: View {
                 bits.append(pr.says.lowercased())
             }
         }
-    case .today:     break
+    case .today:
+        // The same indent, saying the same thing, in the section a tidy's folders live in.
+        if let folder = store.todayShape.folder(holding: tab.id.uuidString) {
+            bits.append("in \(folder.name)")
+        }
     }
     if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
     bits.append(tab.loading ? "loading" : "loaded")
@@ -1491,11 +1495,11 @@ private struct HeldRow: View {
         }
     }
 
-    /// How far in a pinned row sits, so a tab held out of a folder keeps the indent its slot
-    /// has. Today's rows are never stepped in.
+    /// How far in a row sits, so a tab held out of a folder keeps the indent its slot has.
+    /// Both sections that have folders; a favourite's tile has none.
     private func indent(_ id: Tab.ID) -> CGFloat {
-        guard kind == .pinned else { return 0 }
-        let depth = store.pins.visible.first { $0.entry.tab == id.uuidString }?.depth ?? 0
+        guard let shape = TabStore.shape(of: kind) else { return 0 }
+        let depth = store[keyPath: shape].visible.first { $0.entry.tab == id.uuidString }?.depth ?? 0
         return CGFloat(depth) * Look.folderIndent
     }
 }
@@ -1644,9 +1648,13 @@ private struct TabDrop: DropDelegate {
     var rtl = false
 
     func validateDrop(info: DropInfo) -> Bool {
-        // A folder only ever lands among the pinned rows, so every other target refuses it
-        // rather than quietly dropping it somewhere it cannot be drawn.
-        if Dragging.shared.folder != nil { return target?.kind == .pinned }
+        // A folder only ever lands among the rows of the section it lives in, so every
+        // other target refuses it rather than quietly dropping it somewhere it cannot be
+        // drawn. Dragging a folder from Pinned into Today is not a move this offers.
+        if let dragged = Dragging.shared.folder {
+            guard let kind = target?.kind, let shape = TabStore.shape(of: kind) else { return false }
+            return store[keyPath: shape].folder(dragged) != nil
+        }
         // The dragged row's own slot takes the drop too, and answers "nothing to do".
         // Refusing it would hand the pointer to whatever is under the list the moment the
         // live reorder brings the row back beneath it.
@@ -1683,8 +1691,9 @@ private struct TabDrop: DropDelegate {
         // the row in the air can glide into it. Anything else moves it again.
         let (dragged, folder) = Dragging.shared.takeAll(landed: where_ == nil)
         if let folder {
-            guard let target, target.kind == .pinned else { return false }
-            store.move(folder: folder, next: target.id.uuidString, after: after)
+            guard let target, let shape = TabStore.shape(of: target.kind),
+                  store[keyPath: shape].folder(folder) != nil else { return false }
+            store.move(folder: folder, next: target.id.uuidString, after: after, in: shape)
             return true
         }
         guard !dragged.isEmpty else { return false }
@@ -2211,7 +2220,8 @@ private struct PinnedSection: View {
         if !rows.isEmpty {
             VStack(spacing: Look.rowGap) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    PinnedRow(row: row, index: index, rows: rows.count, pr: state(of: row))
+                    ShapeRow(row: row, index: index, rows: rows.count,
+                             shape: \.pins, pr: state(of: row))
                         .transition(.rowCollapse)
                 }
             }
@@ -2239,15 +2249,17 @@ private struct PinnedSection: View {
     }
 }
 
-/// One line of the Pinned section — a folder or one of the tabs in it — stepped in by how
-/// deep it sits. The indent is the only thing that says a tab is inside a folder, which is
-/// exactly how Arc says it.
-private struct PinnedRow: View {
+/// One line of a section that has folders — a folder or one of the tabs in it — stepped in
+/// by how deep it sits. The indent is the only thing that says a tab is inside a folder,
+/// which is exactly how Arc says it. Pinned draws these and so does Today; `shape` is which
+/// of the two, and the only thing that differs between them.
+private struct ShapeRow: View {
     @EnvironmentObject var store: TabStore
     let row: Pins.Visible
-    /// Its place among the pinned rows, and how many there are — see `TabDrop.row`.
+    /// Its place among the section's rows, and how many there are — see `TabDrop.row`.
     let index: Int
     let rows: Int
+    let shape: ReferenceWritableKeyPath<TabStore, Pins>
     /// The pull request this row stands for, when a live folder owns it. Through the
     /// environment rather than through `StripRow` and `TabRow`'s signatures: only the Pinned
     /// section can know it, only the row's trailing edge draws it, and every other row in
@@ -2257,10 +2269,10 @@ private struct PinnedRow: View {
     var body: some View {
         Group {
             if let folder = row.entry.folder {
-                FolderRow(folder: folder)
+                FolderRow(folder: folder, shape: shape)
             } else if let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab }) {
-                // StripRow, not TabRow: a pinned tab that is a pane of a split is drawn as
-                // the split's one row, at its lead pane's place.
+                // StripRow, not TabRow: a tab that is a pane of a split is drawn as the
+                // split's one row, at its lead pane's place.
                 StripRow(tab: tab, index: index, rows: rows)
             }
         }
@@ -2279,17 +2291,19 @@ private enum FolderZone { case before, inside, after }
 private struct FolderRow: View {
     @EnvironmentObject var store: TabStore
     let folder: Folder
+    /// Which section's shape this folder is in — `\.pins` or `\.todayShape`.
+    let shape: ReferenceWritableKeyPath<TabStore, Pins>
     @State private var zone: FolderZone?
     @State private var icons = false
     @State private var editing = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        SidebarRow(selected: false, action: { store.toggleFolder(folder.id) }) {
+        SidebarRow(selected: false, action: { store.toggleFolder(folder.id, in: shape) }) {
             FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID))
         } label: {
             if store.renamingFolder == folder.id {
-                FolderNameField(store: store, folder: folder)
+                FolderNameField(store: store, folder: folder, shape: shape)
             } else {
                 Text(folder.name)
             }
@@ -2316,12 +2330,14 @@ private struct FolderRow: View {
             }
             .padding(.horizontal, Look.rowInset).padding(.vertical, 4)
         }
-        .onDrop(of: [.plainText], delegate: FolderDrop(store: store, folder: folder, zone: $zone))
+        .onDrop(of: [.plainText],
+                delegate: FolderDrop(store: store, folder: folder, shape: shape, zone: $zone))
         .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingFolder = folder.id })
         .contextMenu {
-            FolderMenu(store: store, folder: folder, icons: $icons, editing: $editing)
+            FolderMenu(store: store, folder: folder, shape: shape,
+                       icons: $icons, editing: $editing)
         }
-        .popover(isPresented: $icons) { FolderIcons(store: store, folder: folder) }
+        .popover(isPresented: $icons) { FolderIcons(store: store, folder: folder, shape: shape) }
         .sheet(isPresented: $editing) {
             LiveFolderSheet(store: store, editing: folder,
                             live: LiveFolders.shared(for: store.profileID))
@@ -2333,8 +2349,10 @@ private struct FolderRow: View {
         .accessibilityHint("Folds this folder open or shut.")
         .accessibilityAction(named: "Rename Folder") { store.renamingFolder = folder.id }
         .accessibilityAction(named: "Change Icon") { icons = true }
-        .accessibilityAction(named: "Archive All Tabs in Folder") { store.archiveFolder(folder.id) }
-        .accessibilityAction(named: "Delete Folder") { store.deleteFolder(folder.id) }
+        .accessibilityAction(named: "Archive All Tabs in Folder") {
+            store.archiveFolder(folder.id, in: shape)
+        }
+        .accessibilityAction(named: "Delete Folder") { store.deleteFolder(folder.id, in: shape) }
         // The live commands reach the keyboard and VoiceOver the same way every other folder
         // command does — and only on a live folder, as in the menu above.
         .modifier(LiveFolderActions(store: store, folder: folder, editing: $editing))
@@ -2349,7 +2367,7 @@ private struct FolderRow: View {
         let failed = folder.live != nil
             && LiveFolders.shared(for: store.profileID).failing.contains(folder.id)
         return (folder.live == nil ? "Folder, " : "Live folder, ")
-            + "\(store.pins.tabs(in: folder.id).count) tabs, "
+            + "\(store[keyPath: shape].tabs(in: folder.id).count) tabs, "
             + (folder.collapsed ? "collapsed" : "expanded")
             + (failed ? ", last refresh failed" : "")
     }
@@ -2387,13 +2405,14 @@ private struct FolderGlyph: View {
 private struct FolderMenu: View {
     let store: TabStore
     let folder: Folder
+    let shape: ReferenceWritableKeyPath<TabStore, Pins>
     @Binding var icons: Bool
     @Binding var editing: Bool
 
     var body: some View {
         Button("Rename…") { store.renamingFolder = folder.id }
         Button("Change Icon…") { icons = true }
-        Button(folder.collapsed ? "Unfold" : "Collapse") { store.toggleFolder(folder.id) }
+        Button(folder.collapsed ? "Unfold" : "Collapse") { store.toggleFolder(folder.id, in: shape) }
         // Only on a folder that has something to refresh: an ordinary folder is filled by
         // hand and there is nothing for these to do.
         if folder.live != nil {
@@ -2409,11 +2428,16 @@ private struct FolderMenu: View {
             }
         }
         Divider()
-        Button("New Folder") { store.newFolder(beside: folder.id) }
-        Button("Archive All Tabs in Folder") { store.archiveFolder(folder.id) }
-            .disabled(store.pins.tabs(in: folder.id).isEmpty)
+        // ponytail: not in Today, where a folder with nothing in it is removed the moment it
+        // is made — see `Pins.removeEmptyFolders`. A menu item that leaves nothing behind is
+        // worse than one that is not there.
+        if shape == \TabStore.pins {
+            Button("New Folder") { store.newFolder(beside: folder.id, in: shape) }
+        }
+        Button("Archive All Tabs in Folder") { store.archiveFolder(folder.id, in: shape) }
+            .disabled(store[keyPath: shape].tabs(in: folder.id).isEmpty)
         Divider()
-        Button("Delete Folder") { store.deleteFolder(folder.id) }
+        Button("Delete Folder") { store.deleteFolder(folder.id, in: shape) }
     }
 }
 
@@ -2441,10 +2465,15 @@ private struct FolderMenu: View {
 private struct FolderDrop: DropDelegate {
     let store: TabStore
     let folder: Folder
+    let shape: ReferenceWritableKeyPath<TabStore, Pins>
     @Binding var zone: FolderZone?
 
     func validateDrop(info: DropInfo) -> Bool {
-        if let dragged = Dragging.shared.folder { return dragged != folder.id }
+        // A folder only ever lands in the section it already lives in: dragging one from
+        // Pinned into Today (or back) is refused rather than half-done. See `TabDrop`.
+        if let dragged = Dragging.shared.folder {
+            return dragged != folder.id && store[keyPath: shape].folder(dragged) != nil
+        }
         return Dragging.shared.tab != nil
     }
     func dropEntered(info: DropInfo) { zone = which(info) }
@@ -2460,11 +2489,12 @@ private struct FolderDrop: DropDelegate {
         zone = nil
         let (tabs, dragged) = Dragging.shared.takeAll()      // see `TabDrop.performDrop`
         if let dragged {
-            guard dragged != folder.id else { return false }
+            guard dragged != folder.id, store[keyPath: shape].folder(dragged) != nil
+            else { return false }
             switch where_ {
-            case .inside: store.move(folder: dragged, into: folder.id)
+            case .inside: store.move(folder: dragged, into: folder.id, in: shape)
             default: store.move(folder: dragged, next: folder.id.uuidString,
-                                after: where_ == .after)
+                                after: where_ == .after, in: shape)
             }
             return true
         }
@@ -2473,13 +2503,14 @@ private struct FolderDrop: DropDelegate {
         // dropped below one has to be laid down bottom-first to come out in the order it
         // was drawn. Into the folder, and above it, in-order is already right.
         switch where_ {
-        case .inside: tabs.forEach { store.move($0, into: folder.id) }
-        case .before: tabs.forEach { store.drop($0, beside: folder.id, after: false) }
-        case .after:  tabs.reversed().forEach { store.drop($0, beside: folder.id, after: true) }
+        case .inside: tabs.forEach { store.move($0, into: folder.id, in: shape) }
+        case .before: tabs.forEach { store.drop($0, beside: folder.id, after: false, in: shape) }
+        case .after:  tabs.reversed().forEach {
+            store.drop($0, beside: folder.id, after: true, in: shape)
         }
-        // A folder is a Pinned row wherever it is dropped, in it or beside it. See
-        // `TabDrop.performDrop`.
-        store.selectionLanded(tabs, in: .pinned)
+        }
+        // A tab takes the folder's own section, in it or beside it. See `TabDrop.performDrop`.
+        store.selectionLanded(tabs, in: shape == \TabStore.todayShape ? .today : .pinned)
         return true
     }
 
@@ -2712,15 +2743,21 @@ private struct OpenTabs: View {
 
     var body: some View {
         let open = store.tabs.filter { $0.kind == .today }
-        // The tabs that actually draw a row: a split is one row between all of its panes, and
-        // a place in the list has to be counted in rows or it lands beside the wrong one.
-        let rows = open.filter { tab in
+        // Drawn from `store.todayShape`, exactly as Pinned is drawn from `store.pins`: a
+        // tidy's folders live here now, and a folder is not a tab. Only the entries that
+        // actually draw a row are counted — a pane that is not its split's lead, and an
+        // entry whose tab has gone, draw nothing. See `PinnedSection`.
+        let rows = store.todayShape.visible.filter { row in
+            if row.entry.folder != nil { return true }
+            guard let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab })
+            else { return false }
             guard let split = store.split(containing: tab.id) else { return true }
             return store.leadPane(split) == tab.id
         }
         VStack(spacing: Look.rowGap) {
-            ForEach(Array(rows.enumerated()), id: \.element.id) { index, tab in
-                StripRow(tab: tab, index: index, rows: rows.count)
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                ShapeRow(row: row, index: index, rows: rows.count, shape: \.todayShape)
+                    .transition(.rowCollapse)
             }
         }
         // The row being dragged, over the list rather than in it — see `HeldRow`.
@@ -3087,15 +3124,19 @@ struct TabMenu: View {
                 Button(TabMenu.name(kind)) { store.move(tab.id, to: kind) }
             }
         }
-        // Arc’s "New Folder" on a tab makes the folder *around* that tab, so the tab is
-        // pinned on the way in. "Move to Folder" is the same move without a drag, which is
-        // the only route the keyboard and VoiceOver have.
-        Button("New Folder") { store.newFolder(from: tab.id) }
-        let folders = store.pins.entries.compactMap(\.folder)
+        // Arc’s "New Folder" on a tab makes the folder *around* that tab. "Move to Folder"
+        // is the same move without a drag, which is the only route the keyboard and
+        // VoiceOver have. Both are about the tab's *own* section: a Today tab gets a Today
+        // folder round it and stays in Today, a pinned one a pinned folder. A favourite has
+        // no shape of its own — there is nowhere in a grid for a folder row — so it is
+        // pinned on the way in, exactly as it always was.
+        let shape = TabStore.shape(of: tab.kind) ?? \.pins
+        Button("New Folder") { store.newFolder(from: tab.id, in: shape) }
+        let folders = store[keyPath: shape].entries.compactMap(\.folder)
         if !folders.isEmpty {
             Menu("Move to Folder") {
                 ForEach(folders) { folder in
-                    Button(folder.name) { store.move(tab.id, into: folder.id) }
+                    Button(folder.name) { store.move(tab.id, into: folder.id, in: shape) }
                 }
             }
         }

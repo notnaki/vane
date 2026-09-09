@@ -36,8 +36,11 @@ struct Folder: Identifiable, Codable, Equatable, Sendable {
     var iconIsEmoji: Bool { !icon.allSatisfy(\.isASCII) }
 }
 
-/// The whole shape of Arc's Pinned section: folders, the tabs in them, and the order they
-/// are drawn in.
+/// The whole shape of a sidebar section: folders, the tabs in them, and the order they are
+/// drawn in. Pinned has one and Today has one (`TabStore.pins` and `TabStore.todayShape`) —
+/// two instances of the same value, deliberately, rather than one array with a section field
+/// on every row: nothing here has ever had to know which section it is, so every drag, drop
+/// and reorder already works in both.
 ///
 /// ponytail: **one flat array with parent pointers**, not a tree of `children`. The sidebar
 /// draws a flat list and `TabStore.tabs` is already a flat strip, so a tree would mean two
@@ -150,6 +153,12 @@ struct Pins: Codable, Equatable, Sendable {
         return entries[subtree(at: i)].compactMap(\.tab)
     }
 
+    /// The tabs that are in some folder, however deeply — as opposed to loose at the top of
+    /// the section. What "already tidy" means to `TidyTabs.candidates`, which is the one
+    /// caller: a tab the shape has never heard of is not in a folder either, so the question
+    /// is asked this way round rather than as "which rows are loose".
+    var filed: Set<String> { Set(entries.filter { $0.parent != nil }.compactMap(\.tab)) }
+
     /// One drawable row: the entry and how far to indent it.
     struct Visible: Identifiable {
         let entry: Entry
@@ -207,6 +216,18 @@ struct Pins: Codable, Equatable, Sendable {
               !subtree(at: s).contains(t) else { return }
         let target = subtree(at: t)
         relocate(id, to: after ? target.upperBound : target.lowerBound, parent: entries[t].parent)
+    }
+
+    /// A row that has just joined the section beside another — a ⌘-click, a popup, Peek's
+    /// ⌘O. It lands after `next` and in whatever folder `next` is in, and with nothing to be
+    /// beside it goes to the very head of the section, outside every folder, which is where
+    /// the strip puts a tab opened from a pinned row or a favourite. See `TabStore
+    /// .placeBeside`.
+    mutating func insert(_ id: String, after next: String?) {
+        // The first row is always at the top level — a parent is always written down before
+        // the rows in it — so landing in front of it is landing in no folder.
+        guard let to = next ?? entries.first?.id, to != id else { return }
+        move(id, next: to, after: next != nil)
     }
 
     /// A drop on the middle of a folder row: in it, at the end, which is where Arc puts one.
@@ -309,6 +330,43 @@ struct Pins: Codable, Equatable, Sendable {
         for id in live where !have.contains(id) {
             entries.append(Entry(row: .tab(id), parent: nil))
         }
+    }
+
+    /// The rows re-laid in `order`, each staying in the folder it is in and each folder
+    /// arriving with the first of its tabs. The other direction from `TabStore.applyOrder`:
+    /// there the strip is put in the shape's order, here the shape is put in the strip's.
+    /// Today needs both — a tidy lays the folders out and the strip follows, while a tidy's
+    /// undo hands the strip a whole order back at once and the shape follows that.
+    ///
+    /// A folder `order` names no tab for is dropped, which is `removeEmptyFolders` said as a
+    /// side effect rather than as a second pass.
+    mutating func relay(_ order: [String]) {
+        var out: [Entry] = []
+        var placed = Set<String>()
+        for id in order {
+            // `placed` is the guard, not a note: an order that names the same tab twice —
+            // which `TidyTabs.order` cannot make but a caller handing over two runs can —
+            // would otherwise write the row down twice and draw the tab twice.
+            guard let i = index(of: id), entries[i].tab != nil,
+                  placed.insert(id).inserted else { continue }
+            // Outermost first, so a nested folder is written down inside the one it is in.
+            for f in ancestors(of: i).reversed() where placed.insert(f.uuidString).inserted {
+                if let j = index(of: f) { out.append(entries[j]) }
+            }
+            out.append(entries[i])
+        }
+        entries = out
+    }
+
+    /// Today's rule, which Pinned's is not: a folder with nothing left in it goes.
+    ///
+    /// ponytail: no empty-folder state in Today. A Today folder is a grouping of tabs that
+    /// are still auto-archiving, so the last one leaving — swept, closed, cleared — is the
+    /// end of the group, and there is nothing left for the row to be about. Pinned keeps its
+    /// empty folders, because an empty folder there is a thing the user made on purpose.
+    /// Ceiling: you cannot make an empty folder in Today and fill it later.
+    mutating func removeEmptyFolders() {
+        for f in entries.compactMap(\.folder) where tabs(in: f.id).isEmpty { remove(folder: f.id) }
     }
 
     /// The same shape with every tab renamed — ids to urls on the way to disk, urls to ids
@@ -513,6 +571,162 @@ extension Pins {
                    == [url("a"), url("b"), url("a"), url("a")])
         assert("an empty window restores nothing", TabStore.pinOrder(shape: dup, urls: []).isEmpty)
 
+        // --- Today's folders: the same shape, in the section that auto-archives ---
+        //
+        // Every rule Today has that Pinned does not, driven through the same value the
+        // sidebar draws — no window, no `Tab`, no defaults suite.
+        func today() -> (Pins, UUID) {
+            var t = Pins(entries: ["a", "b", "c"].map { Entry(row: .tab($0), parent: nil) })
+            let box = t.newFolder(named: "Reading", next: "a")!
+            t.move("a", into: box.id)
+            t.move("b", into: box.id)
+            return (t, box.id)
+        }
+        var (day, reading) = today()
+        assert("a Today folder holds its tabs like any other",
+               day.tabs(in: reading) == ["a", "b"] && day.tabs == ["a", "b", "c"])
+
+        // A tab archived by any path — the sweep, ⌘W, ×, Archive Tab — just leaves its row.
+        day.sync(tabs: ["a", "c"])
+        day.removeEmptyFolders()
+        assert("a tab archived out of a Today folder simply leaves it",
+               day.tabs(in: reading) == ["a"] && day.folder(reading) != nil)
+        day.sync(tabs: ["c"])
+        day.removeEmptyFolders()
+        assert("…and the last one out takes the folder with it",
+               day.folder(reading) == nil && day.tabs == ["c"] && day.entries.count == 1)
+
+        // Clear: every Today tab archived in one burst, folders and all.
+        (day, reading) = today()
+        day.sync(tabs: [])
+        day.removeEmptyFolders()
+        assert("Clear leaves no tabs and no folders behind in Today", day.entries.isEmpty)
+        (day, reading) = today()
+        var nested = day
+        let deeper = nested.newFolder(named: "Inner")!
+        nested.move(deeper.id.uuidString, into: reading)
+        nested.sync(tabs: [])
+        nested.removeEmptyFolders()
+        assert("…however deep the folders went", nested.entries.isEmpty)
+
+        // A new tab, an un-pinned one and one moved in from another Space: all outside every
+        // folder. `sync` takes a row it has not seen at the top level; `put` is what
+        // `TabStore.move(_:to:)` uses to land one at the head of the section instead.
+        day.sync(tabs: ["a", "b", "c", "new"])
+        assert("a new Today tab lands outside every folder, at the end of the section",
+               day.folder(holding: "new") == nil && day.tabs.last == "new")
+        day.sync(tabs: ["a", "b", "c", "new", "back"])
+        day.put("back", at: Spot(parent: nil, index: 0))
+        assert("an un-pinned tab lands at the top of Today, in no folder",
+               day.tabs.first == "back" && day.folder(holding: "back") == nil)
+
+        // Re-laying: the strip's order, said to the shape. Both directions are needed —
+        // a tidy lays the folders out and the strip follows, its undo hands a whole order
+        // back and the shape follows that.
+        (day, reading) = today()
+        day.relay(["c", "b", "a"])
+        assert("re-laying puts the rows in the order it was given",
+               day.tabs == ["c", "b", "a"])
+        assert("…each still in the folder it was in", day.tabs(in: reading) == ["b", "a"])
+        assert("…and the folder arrives with the first of its tabs",
+               shown(day) == ["c", reading.uuidString, "b", "a"])
+        (day, reading) = today()
+        let laid = day
+        day.relay(["a", "b", "c"])
+        assert("re-laying an already-laid section changes nothing", day == laid)
+        (day, reading) = today()
+        day.relay(["c"])
+        assert("a folder the new order names nothing for is dropped",
+               day.folder(reading) == nil && day.tabs == ["c"])
+        (day, reading) = today()
+        day.relay(["c", "b", "a", "unheard-of"])
+        assert("a row the shape has never heard of is not invented", day.tabs.count == 3)
+        (day, reading) = today()
+        day.relay(["c", "c", "a", "b"])
+        assert("an order naming the same tab twice draws it once",
+               day.tabs == ["c", "a", "b"] && day.entries.count == 4)
+
+        // "Archive All Tabs in Folder" un-pins its rows to the *head* of the Today strip,
+        // while `sync` takes a row it has not seen at the end of the shape. The relay is what
+        // puts the section back in the order the strip has it.
+        (day, reading) = today()
+        day.sync(tabs: ["a", "b", "c", "unpinned"])
+        day.relay(["unpinned", "a", "b", "c"])
+        assert("a row un-pinned to the head of Today is drawn at the head",
+               shown(day) == ["unpinned", reading.uuidString, "a", "b", "c"])
+
+        // Beside the opener: what a ⌘-click, an adopted popup and Peek's ⌘O ask of the shape
+        // once the strip has already put the tab there. See `TabStore.placeBeside`.
+        (day, reading) = today()
+        day.sync(tabs: ["a", "b", "c", "new"])
+        day.insert("new", after: "a")
+        assert("a tab opened beside one in a folder joins that folder",
+               day.folder(holding: "new")?.id == reading && day.tabs(in: reading) == ["a", "new", "b"])
+        (day, reading) = today()
+        day.sync(tabs: ["a", "b", "c", "new"])
+        day.insert("new", after: "c")
+        assert("…and beside a loose one it stays loose",
+               day.folder(holding: "new") == nil && day.tabs == ["a", "b", "c", "new"])
+        (day, reading) = today()
+        day.sync(tabs: ["a", "b", "c", "new"])
+        day.insert("new", after: nil)
+        assert("a tab opened from a pinned row lands at the head, outside every folder",
+               shown(day) == ["new", reading.uuidString, "a", "b", "c"])
+        var first = Pins()
+        first.sync(tabs: ["only"])
+        first.insert("only", after: nil)
+        assert("the first tab of an empty section has nothing to be beside",
+               first.tabs == ["only"])
+
+        // What a tidy may touch. A tab the user filed by hand is already tidy.
+        (day, reading) = today()
+        assert("the tabs in a Today folder are filed, and the loose ones are not",
+               day.filed == ["a", "b"])
+
+        // --- The Today shape coming back off disk ---
+        // Named by the url each tab was *opened with*: a restored tab is normally parked and
+        // answers `currentURL` at once, but with suspension off it is still loading when this
+        // runs, and keying on `currentURL` there dropped every folder on every launch.
+        var onDisk = Pins(entries: ["https://e.example/a", "https://e.example/b"]
+                              .map { Entry(row: .tab($0), parent: nil) })
+        let read = onDisk.newFolder(named: "Reading", next: "https://e.example/a")!
+        onDisk.move("https://e.example/a", into: read.id)
+        let live = TabStore.adopted(onDisk, opened: [("https://e.example/a", "id-a"),
+                                                     ("https://e.example/c", "id-c")])
+        assert("a Today folder comes back around the tab restored for its url",
+               live.tabs(in: read.id) == ["id-a"])
+        assert("…a url the Space no longer has is dropped rather than invented",
+               live.tabs == ["id-a", "id-c"])
+        assert("…and a tab the shape never named is taken in, loose",
+               live.folder(holding: "id-c") == nil)
+        assert("a Space that has never had Today folders comes back as loose tabs",
+               TabStore.adopted(nil, opened: [("https://e.example/a", "id-a")])
+                   == Pins(entries: [Entry(row: .tab("id-a"), parent: nil)]))
+
+        // An undone tidy: the folders it made go, every tab stays, and the order comes back.
+        var undone = Pins(entries: ["a", "b", "c", "d"].map { Entry(row: .tab($0), parent: nil) })
+        let g1 = undone.newFolder(named: "Work")!, g2 = undone.newFolder(named: "Rest")!
+        undone.move("a", into: g1.id)
+        undone.move("c", into: g1.id)
+        undone.move("b", into: g2.id)
+        undone.move("d", into: g2.id)
+        undone.relay(["a", "c", "b", "d"])
+        assert("a tidy lays its groups out as runs, in group order",
+               shown(undone) == [g1.id.uuidString, "a", "c", g2.id.uuidString, "b", "d"])
+        for made in [g1.id, g2.id] { undone.remove(folder: made) }
+        undone.relay(["a", "b", "c", "d"])
+        assert("undoing it puts the order back exactly", undone.tabs == ["a", "b", "c", "d"])
+        assert("…and leaves no folder behind", undone.entries.allSatisfy { $0.folder == nil })
+
+        // A Space with nothing under the Today key, and a Space with junk under it: both are
+        // "no folders", and neither is allowed to be a failure to bring the Space up.
+        var none = Pins?.none ?? Pins()
+        none.sync(tabs: ["a", "b"])
+        assert("a Space saved before Today had folders loads as loose tabs",
+               none.tabs == ["a", "b"] && none.entries.allSatisfy { $0.folder == nil })
+        assert("…and junk where a shape should be decodes to nothing rather than throwing",
+               (try? JSONDecoder().decode(Pins.self, from: Data("{".utf8))) == nil)
+
         // Codable, which is how the section survives a relaunch.
         if let data = try? JSONEncoder().encode(p),
            let back = try? JSONDecoder().decode(Pins.self, from: data) {
@@ -610,105 +824,151 @@ extension Pins {
 // MARK: - The store's side
 
 extension TabStore {
-    /// Take in any tab that has just become pinned, and forget any that has stopped being
-    /// one. Called after every move, drop and close, so `pins` never names a tab that is not
-    /// in the Pinned section any more.
-    func syncPins() {
-        pins.sync(tabs: tabs.filter { $0.kind == .pinned }.map(\.id.uuidString))
+    /// Which shape a section's rows are arranged by. Two sections have one; Favourites is a
+    /// grid of tiles, and there is nowhere in a grid for a folder row to go.
+    ///
+    /// A key path rather than a `switch` at every call site: the folder row, its menu, its
+    /// drop target and every store action below are written once and told which instance to
+    /// read and write.
+    static func shape(of kind: TabKind) -> ReferenceWritableKeyPath<TabStore, Pins>? {
+        switch kind {
+        case .pinned:    \.pins
+        case .today:     \.todayShape
+        case .favourite: nil
+        }
     }
 
-    /// Put the strip's pinned run in the order the sidebar draws it. The Pinned section is
-    /// drawn from `pins`, but ⌃⇥, ⌘1…9 and "tab 3 of 9" all read `tabs`, and a list that
+    /// Take in any tab that has just joined a section with a shape, and forget any that has
+    /// left one. Called after every move, drop and close, so neither shape ever names a tab
+    /// that is not in its section any more.
+    func syncShapes() {
+        pins.sync(tabs: tabs.filter { $0.kind == .pinned }.map(\.id.uuidString))
+        todayShape.sync(tabs: tabs.filter { $0.kind == .today }.map(\.id.uuidString))
+        // Today only. See `Pins.removeEmptyFolders`.
+        todayShape.removeEmptyFolders()
+    }
+
+    /// Put a section's run of the strip in the order the sidebar draws it. The section is
+    /// drawn from its shape, but ⌃⇥, ⌘1…9 and "tab 3 of 9" all read `tabs`, and a list that
     /// tabs through in a different order from the one on screen is a bug you cannot see.
-    func applyPinOrder() {
+    func applyOrder(_ kind: TabKind) {
+        guard let shape = TabStore.shape(of: kind) else { return }
+        // Every Today mutation ends here — a drop, a drag out of a folder, a tidy — so this
+        // is where Today's own rule is settled: a folder with nothing left in it goes.
+        // `syncShapes` says the same thing for the moves that do not come through here.
+        if kind == .today { todayShape.removeEmptyFolders() }
         // `uniquingKeysWith`, not `uniqueKeysWithValues`: an id the section somehow names
         // twice is a bug to survive, not one to trap the whole app on.
-        let order = Dictionary(pins.tabs.enumerated().map { ($0.element, $0.offset) },
+        let order = Dictionary(self[keyPath: shape].tabs.enumerated().map { ($0.element, $0.offset) },
                                uniquingKeysWith: { a, _ in a })
-        let pinned = tabs.enumerated().filter { $0.element.kind == .pinned }
-        let sorted = pinned.sorted {
+        let section = tabs.enumerated().filter { $0.element.kind == kind }
+        let sorted = section.sorted {
             let a = order[$0.element.id.uuidString] ?? Int.max, b = order[$1.element.id.uuidString] ?? Int.max
             return a == b ? $0.offset < $1.offset : a < b          // sort() is not stable
         }
-        for (slot, tab) in zip(pinned.map(\.offset), sorted.map(\.element)) { tabs[slot] = tab }
+        for (slot, tab) in zip(section.map(\.offset), sorted.map(\.element)) { tabs[slot] = tab }
     }
 
-    /// A drop on the strip, told to the Pinned section: a tab dropped on a pinned row joins
-    /// whatever folder that row is in, and one dragged out of Pinned leaves its folder.
-    func placeInPins(_ id: Tab.ID, onto target: Tab.ID, after: Bool) {
-        syncPins()
-        guard tabs.first(where: { $0.id == id })?.kind == .pinned else { return }
-        pins.move(id.uuidString, next: target.uuidString, after: after)
-        applyPinOrder()
+    /// A drop on the strip, told to the section it landed in: a tab dropped on a row joins
+    /// whatever folder that row is in, and one dragged out of a folder leaves it.
+    func placeInShape(_ id: Tab.ID, onto target: Tab.ID, after: Bool) {
+        syncShapes()
+        guard let kind = tabs.first(where: { $0.id == id })?.kind,
+              let shape = TabStore.shape(of: kind) else { return }
+        self[keyPath: shape].move(id.uuidString, next: target.uuidString, after: after)
+        applyOrder(kind)
+    }
+
+    /// The shape's half of "beside the opener". The strip move is `insertionIndexBeside`;
+    /// this is the same move told to the section that is drawn from its shape, so the row
+    /// lands after the opener and in whatever folder the opener sits in — and at the head of
+    /// Today when the opener is a pinned row, a favourite or nothing at all, which is where
+    /// the strip puts it. Without this the new tab draws at the bottom of the sidebar while
+    /// ⌘1…9 has it beside its opener, and the next `applyOrder(.today)` drags the tab down
+    /// to the bottom for real.
+    func placeBeside(_ id: Tab.ID, opener: Tab.ID?) {
+        syncShapes()        // the tab may be brand new to the shape; the opener never is
+        let beside = tabs.first { $0.id == opener }?.kind == .today ? opener?.uuidString : nil
+        todayShape.insert(id.uuidString, after: beside)
+    }
+
+    /// The section a shape stands for — what a tab dropped into one of its folders becomes.
+    private func kind(of shape: ReferenceWritableKeyPath<TabStore, Pins>) -> TabKind {
+        shape == \TabStore.todayShape ? .today : .pinned
     }
 
     /// A tab dragged onto a folder row — or sent there by "Move to Folder", which is the
     /// same move without a drag.
-    func move(_ id: Tab.ID, into folder: UUID) {
-        move(id, to: .pinned)          // a Today tab pins itself on the way in
-        syncPins()
+    func move(_ id: Tab.ID, into folder: UUID,
+              in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        move(id, to: kind(of: shape))   // a Today tab pins itself into a pinned folder
+        syncShapes()
         Motion.list {
             // Dropped into a folded folder the tab would simply vanish. Arc opens the
             // folder instead, so you can see where the thing you just moved went.
-            pins.edit(folder: folder) { $0.collapsed = false }
-            pins.move(id.uuidString, into: folder)
-            applyPinOrder()
+            self[keyPath: shape].edit(folder: folder) { $0.collapsed = false }
+            self[keyPath: shape].move(id.uuidString, into: folder)
+            applyOrder(kind(of: shape))
         }
         savePins()
-        axAnnounce("Moved to \(pins.folder(folder)?.name ?? "folder").")
+        axAnnounce("Moved to \(self[keyPath: shape].folder(folder)?.name ?? "folder").")
     }
 
     /// A tab dropped on the top or bottom edge of a folder row: beside the folder, not in
     /// it — and after it means after everything the folder holds.
-    func drop(_ id: Tab.ID, beside folder: UUID, after: Bool) {
-        move(id, to: .pinned)
-        syncPins()
+    func drop(_ id: Tab.ID, beside folder: UUID, after: Bool,
+              in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        move(id, to: kind(of: shape))
+        syncShapes()
         Motion.list {
-            pins.move(id.uuidString, next: folder.uuidString, after: after)
-            applyPinOrder()
+            self[keyPath: shape].move(id.uuidString, next: folder.uuidString, after: after)
+            applyOrder(kind(of: shape))
         }
         savePins()
     }
 
-    /// A folder row dragged among the pinned rows.
-    func move(folder id: UUID, next to: String, after: Bool) {
+    /// A folder row dragged among its section's rows.
+    func move(folder id: UUID, next to: String, after: Bool,
+              in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
         Motion.list {
-            pins.move(id.uuidString, next: to, after: after)
-            applyPinOrder()
+            self[keyPath: shape].move(id.uuidString, next: to, after: after)
+            applyOrder(kind(of: shape))
         }
         savePins()
     }
 
-    func move(folder id: UUID, into parent: UUID) {
+    func move(folder id: UUID, into parent: UUID,
+              in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
         Motion.list {
-            pins.edit(folder: parent) { $0.collapsed = false }      // see `move(_:into:)`
-            pins.move(id.uuidString, into: parent)
-            applyPinOrder()
+            self[keyPath: shape].edit(folder: parent) { $0.collapsed = false }   // see above
+            self[keyPath: shape].move(id.uuidString, into: parent)
+            applyOrder(kind(of: shape))
         }
         savePins()
-        axAnnounce("Moved to \(pins.folder(parent)?.name ?? "folder").")
+        axAnnounce("Moved to \(self[keyPath: shape].folder(parent)?.name ?? "folder").")
     }
 
     /// Arc's "New Folder": made where the click was, named in place. With a tab, that tab
     /// moves into it — right-clicking a pinned tab and asking for a folder means "put this
     /// in one", not "make an empty one somewhere".
     @discardableResult
-    func newFolder(from tab: Tab.ID? = nil, beside folder: UUID? = nil) -> Folder? {
+    func newFolder(from tab: Tab.ID? = nil, beside folder: UUID? = nil,
+                   in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) -> Folder? {
         // Where the new folder goes: beside the row that was right-clicked, at that row's
         // own level, or at the end of the section when nothing was.
         let next = tab?.uuidString ?? folder?.uuidString
         // Asked before anything moves: pinning the tab and *then* finding there is no room
         // for a folder around it would leave the tab moved with nothing to show for it.
-        guard pins.canNestFolder(next: next) else {
+        guard self[keyPath: shape].canNestFolder(next: next) else {
             axAnnounce("Folders nest \(Pins.maxDepth + 1) deep at most.")
             return nil
         }
-        if let tab { move(tab, to: .pinned) }
-        syncPins()
+        if let tab { move(tab, to: kind(of: shape)) }
+        syncShapes()
         let folder = Motion.list { () -> Folder? in
-            let made = pins.newFolder(next: next)
-            if let made, let tab { pins.move(tab.uuidString, into: made.id) }
-            applyPinOrder()
+            let made = self[keyPath: shape].newFolder(next: next)
+            if let made, let tab { self[keyPath: shape].move(tab.uuidString, into: made.id) }
+            applyOrder(kind(of: shape))
             return made
         }
         savePins()
@@ -719,12 +979,12 @@ extension TabStore {
 
     /// Folding is a list change like any other, so the rows under it collapse and the ones
     /// below slide up rather than blinking out.
-    func toggleFolder(_ id: UUID) {
-        Motion.list { pins.toggle(folder: id) }
+    func toggleFolder(_ id: UUID, in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        Motion.list { self[keyPath: shape].toggle(folder: id) }
         savePins()
         // Unfolding a live folder refreshes it: what you are about to look at is the one
         // thing worth being up to date. Folding it does not — nobody is looking.
-        if pins.folder(id)?.collapsed == false {
+        if self[keyPath: shape].folder(id)?.collapsed == false {
             LiveFolders.shared(for: profileID).expanded(id)
         }
     }
@@ -732,53 +992,56 @@ extension TabStore {
     /// Arc's "Delete Folder": the folder goes, the tabs stay where they were sitting and
     /// simply become ordinary pinned rows. Nothing is closed — deleting a folder full of
     /// pages the user pinned on purpose is not something a menu item gets to do silently.
-    func deleteFolder(_ id: UUID) {
-        let name = pins.folder(id)?.name ?? "folder"
-        let kept = pins.tabs(in: id).count
-        let wasLive = pins.folder(id)?.live != nil
+    func deleteFolder(_ id: UUID, in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        let name = self[keyPath: shape].folder(id)?.name ?? "folder"
+        let kept = self[keyPath: shape].tabs(in: id).count
+        let wasLive = self[keyPath: shape].folder(id)?.live != nil
         // In every window showing this Space, not just this one. Each holds its own copy of
         // the shape and each writes it back, so a window left holding the folder would put
         // it back on its next `savePins` — and a live folder that came back would start
         // filling itself again.
         for other in TabStore.all where other !== self && other.profileID == profileID
-            && !other.isPrivate && !other.isLittle && other.pins.folder(id) != nil {
+            && !other.isPrivate && !other.isLittle && other[keyPath: shape].folder(id) != nil {
             Motion.list {
-                other.pins.remove(folder: id)
-                other.applyPinOrder()
+                other[keyPath: shape].remove(folder: id)
+                other.applyOrder(kind(of: shape))
             }
             other.savePins()
         }
         Motion.list {
-            pins.remove(folder: id)
-            applyPinOrder()
+            self[keyPath: shape].remove(folder: id)
+            applyOrder(kind(of: shape))
         }
         savePins()
         // The one event that means a live folder is not coming back. Its rows stay, as
         // ordinary pinned tabs; what goes is the glyphs, so the map does not grow by one
         // entry per live folder ever made.
         if wasLive { LiveFolders.shared(for: profileID).forget(folder: id) }
-        axAnnounce("Deleted \(name). \(kept) tab\(kept == 1 ? "" : "s") kept in Pinned.")
+        axAnnounce("Deleted \(name). \(kept) tab\(kept == 1 ? "" : "s") kept in "
+                   + TabMenu.name(kind(of: shape)) + ".")
     }
 
     /// "Archive all tabs in folder": the pages go to the Library and the folder is left
     /// empty. They have to leave Pinned first — a pinned tab is never archived, which is
     /// the whole difference between the sections.
-    func archiveFolder(_ id: UUID) {
+    func archiveFolder(_ id: UUID, in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
         // A live folder stops being one. Archiving its tabs empties it, and a folder that
         // keeps itself filled would put every one of them straight back on the next refresh
         // — which is not something "Archive All Tabs in Folder" can be made to mean. The
         // folder stays, with its name and its place; it simply stops being told what to hold.
-        if pins.folder(id)?.live != nil {
+        if self[keyPath: shape].folder(id)?.live != nil {
             LiveFolders.shared(for: profileID).stopKeepingFilled(id, saying: false)
         }
-        // Only what is still open: `pins` is synced on every change, but a tab named here
+        // Only what is still open: the shape is synced on every change, but a tab named here
         // and gone by the time the menu item is clicked must not be counted or announced.
-        let live = pins.tabs(in: id).compactMap(UUID.init(uuidString:))
+        let live = self[keyPath: shape].tabs(in: id).compactMap(UUID.init(uuidString:))
             .filter { want in tabs.contains { $0.id == want } }
         // One animation and one write for the lot. `move(_:to:)` per tab would be one of
-        // each per tab, and the rows would leave Pinned in separate frames.
+        // each per tab, and the rows would leave Pinned in separate frames. A Today folder's
+        // rows are already in Today and simply stay where they are — what archives them is
+        // the sweep below, exactly as for any other Today tab.
         Motion.list {
-            for want in live {
+            for want in live where kind(of: shape) == .pinned {
                 guard let i = tabs.firstIndex(where: { $0.id == want }) else { continue }
                 let tab = tabs.remove(at: i)
                 tab.kind = .today
@@ -786,8 +1049,14 @@ extension TabStore {
                 tabs.insert(tab, at: TabStore.clampedDestination(
                     others: tabs.map(\.kind), moving: .today, to: 0))
             }
-            syncPins()
-            applyPinOrder()
+            syncShapes()
+            // The rows that just left Pinned went to the *head* of the Today strip, and
+            // `sync` takes a row it has not seen at the end of the section. Today is drawn
+            // from its shape, so the shape follows the strip here — otherwise the next line
+            // reads the shape back and drags them to the bottom.
+            todayShape.relay(tabs.filter { $0.kind == .today }.map(\.id.uuidString))
+            applyOrder(.pinned)
+            applyOrder(.today)
         }
         savePins()
         // `archive` counts its own burst, so the rows sweep out one after another.
@@ -801,15 +1070,19 @@ extension TabStore {
     /// Space. A sidecar file (the way `Suspension.SpaceState` does it) would be the tidier
     /// home, but this is one `Data` of a few hundred bytes and the flat url list it belongs
     /// to already lives here. `forgetShape` is what takes a deleted Space's key with it.
-    static func shapeKey(space: UUID?, profileID: UUID) -> String {
-        ProfileManager.defaultsKey(space.map { "pinShape.\($0.uuidString)" } ?? "pinShape",
-                                   profileID)
+    static func shapeKey(_ kind: TabKind = .pinned, space: UUID?, profileID: UUID) -> String {
+        let name = kind == .today ? "todayShape" : "pinShape"
+        return ProfileManager.defaultsKey(space.map { "\(name).\($0.uuidString)" } ?? name,
+                                          profileID)
     }
 
     /// A Space being deleted takes its folders with it; the key would otherwise sit in the
     /// defaults for the life of the profile, waiting for a Space id that will never come back.
     static func forgetShape(space: UUID, profileID: UUID) {
-        UserDefaults.vane.removeObject(forKey: shapeKey(space: space, profileID: profileID))
+        for kind in [TabKind.pinned, .today] {
+            UserDefaults.vane.removeObject(forKey: shapeKey(kind, space: space,
+                                                            profileID: profileID))
+        }
     }
 
     /// Whether a window whose own Pinned section is empty is allowed to clear the saved
@@ -826,39 +1099,50 @@ extension TabStore {
     /// Pure, so `selfcheck --pure` can drive it without a defaults suite.
     nonisolated static func clearsShape(saved: Pins?) -> Bool { saved?.tabs.isEmpty ?? true }
 
-    static func savedShape(space: UUID?, profileID: UUID) -> Pins? {
-        guard let data = UserDefaults.vane.data(forKey: shapeKey(space: space, profileID: profileID))
+    /// nil for a Space that has never had folders in that section — and for junk in the key,
+    /// which loads as "no folders" rather than as a failure to bring the Space up at all.
+    static func savedShape(_ kind: TabKind = .pinned, space: UUID?, profileID: UUID) -> Pins? {
+        guard let data = UserDefaults.vane.data(forKey: shapeKey(kind, space: space,
+                                                                 profileID: profileID))
         else { return nil }
         return try? JSONDecoder().decode(Pins.self, from: data)
     }
 
-    /// The shape as it goes to disk: the same folders, with every tab named by the page it
-    /// is on rather than by a `Tab.ID` that will not exist after a relaunch.
+    /// Both sections' folders, written down beside the urls they arrange. Today's key is a
+    /// second one of exactly the same shape, so a Space saved before Today had folders comes
+    /// back with none — see `savedShape`.
     func saveShape() {
         guard !isPrivate, !isLittle else { return }
-        let key = TabStore.shapeKey(space: currentSpaceID, profileID: profileID)
+        saveShape(.pinned, \.pins)
+        saveShape(.today, \.todayShape)
+    }
+
+    /// The shape as it goes to disk: the same folders, with every tab named by the page it
+    /// is on rather than by a `Tab.ID` that will not exist after a relaunch.
+    private func saveShape(_ kind: TabKind, _ shape: ReferenceWritableKeyPath<TabStore, Pins>) {
+        let key = TabStore.shapeKey(kind, space: currentSpaceID, profileID: profileID)
         // A window whose Pinned section is empty may have nothing to say about the shape —
         // it can be one that was never handed the profile's rows — so it is asked whether
         // it is allowed to speak first. It used to be told to say nothing at all, and the
         // cost of that was the last pinned tab leaving a Space with the folders it was in
         // still written down: `adoptPins` rebuilt them, empty, at the next launch. Undoing a
         // tidy on a window that had no pins to begin with hit it every time.
-        if pins.entries.isEmpty {
-            if TabStore.clearsShape(saved: TabStore.savedShape(space: currentSpaceID,
+        if self[keyPath: shape].entries.isEmpty {
+            if TabStore.clearsShape(saved: TabStore.savedShape(kind, space: currentSpaceID,
                                                               profileID: profileID)) {
                 UserDefaults.vane.removeObject(forKey: key)
             }
             return
         }
         let byID = Dictionary(tabs.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { a, _ in a })
-        let shape = pins.mapped { byID[$0].flatMap { TabStore.pinURL($0.currentURL) } }
+        let named = self[keyPath: shape].mapped { byID[$0].flatMap { TabStore.pinURL($0.currentURL) } }
         // Nothing but loose tabs is nothing worth writing: an empty shape is what a fresh
         // profile has, and leaving the key absent keeps `savedShape` honest about that.
-        guard shape.entries.contains(where: { $0.folder != nil }) else {
+        guard named.entries.contains(where: { $0.folder != nil }) else {
             UserDefaults.vane.removeObject(forKey: key)
             return
         }
-        UserDefaults.vane.set(try? JSONEncoder().encode(shape), forKey: key)
+        UserDefaults.vane.set(try? JSONEncoder().encode(named), forKey: key)
     }
 
     /// The pinned urls in the order the saved shape draws them, with anything the shape has
@@ -884,19 +1168,51 @@ nonisolated static func pinOrder(shape: Pins?, urls: [URL]) -> [URL] {
         return ordered + tail
     }
 
-    /// Rebuild the live shape once the tabs exist. The saved one names its tabs by url; this
-    /// is where those names become the ids of the tabs just made for them, in order, so two
-    /// pinned tabs on the same page still land in the folders they were each in.
-    func adoptPins(shape: Pins?, tabs made: [Tab]) {
-        var byURL: [String: [Tab.ID]] = [:]
-        for t in made { byURL[t.currentURL?.absoluteString ?? "", default: []].append(t.id) }
-        pins = (shape ?? Pins()).mapped { url in
+    /// The saved shape with every url replaced by the tab restored for it, in order, and any
+    /// tab the shape has never heard of taken in at the end.
+    ///
+    /// The name is the url the tab was **opened with**, not the one it has now. A restored
+    /// tab is normally parked, and a parked tab answers `currentURL` before it has loaded
+    /// anything — but with `Prefs.suspendTabs` off it is handed straight to `go(url)`, and
+    /// `WKWebView.url` is still nil when this runs. Keying on `currentURL` there matched
+    /// nothing and dropped every folder in the section, on every launch.
+    ///
+    /// Pure, over strings, so `selfcheck --pure` can prove that without a window or a `Tab`.
+    nonisolated static func adopted(_ saved: Pins?, opened: [(url: String, id: String)]) -> Pins {
+        var byURL: [String: [String]] = [:]
+        for o in opened { byURL[o.url, default: []].append(o.id) }
+        // Counted off one at a time, so two tabs on the same page land in the folders they
+        // were each in rather than both in the first one's.
+        var out = (saved ?? Pins()).mapped { url in
             guard var waiting = byURL[url], !waiting.isEmpty else { return nil }
             let id = waiting.removeFirst()
             byURL[url] = waiting
-            return id.uuidString
+            return id
         }
-        pins.sync(tabs: made.map(\.id.uuidString))
+        out.sync(tabs: opened.map(\.id))
+        return out
+    }
+
+    /// Rebuild the live shape once the tabs exist, each named by the url it was opened with.
+    func adopt(_ shape: ReferenceWritableKeyPath<TabStore, Pins>, saved: Pins?,
+               tabs made: [(url: URL, tab: Tab)]) {
+        self[keyPath: shape] = TabStore.adopted(
+            saved, opened: made.map { ($0.url.absoluteString, $0.tab.id.uuidString) })
+    }
+
+    /// The Today section's folders, once its tabs exist. The urls came back in the order the
+    /// Space wrote them — which is the order the shape drew them — so there is no `pinOrder`
+    /// to do here, only the names to translate and the rows to take in.
+    ///
+    /// A Space with nothing under the Today key loads as loose tabs and no folders, and so
+    /// does one whose key holds junk: `savedShape` hands back nil for both.
+    func adoptTodayShape(tabs made: [(url: URL, tab: Tab)]) {
+        let saved = isPrivate || isLittle ? nil
+            : TabStore.savedShape(.today, space: currentSpaceID, profileID: profileID)
+        adopt(\.todayShape, saved: saved, tabs: made)
+        // A folder whose every tab has gone from the Space since it was written down.
+        todayShape.removeEmptyFolders()
+        applyOrder(.today)
     }
 
     /// Everything a window has to do to bring the Pinned section up: the tabs, in the saved
@@ -911,8 +1227,9 @@ nonisolated static func pinOrder(shape: Pins?, urls: [URL]) -> [URL] {
         let saved = isPrivate || isLittle ? nil
             : TabStore.savedShape(space: currentSpaceID, profileID: profileID)
         let shape = urls.isEmpty && saved?.tabs.isEmpty == false ? nil : saved
-        let made = restore(TabStore.pinOrder(shape: shape, urls: urls), as: .pinned, parked: parked)
-        adoptPins(shape: shape, tabs: made)
+        let order = TabStore.pinOrder(shape: shape, urls: urls)
+        let made = restore(order, as: .pinned, parked: parked)
+        adopt(\.pins, saved: shape, tabs: zip(order, made).map { (url: $0, tab: $1) })
         return made
     }
 }
@@ -925,6 +1242,8 @@ nonisolated static func pinOrder(shape: Pins?, urls: [URL]) -> [URL] {
 struct FolderNameField: View {
     @ObservedObject var store: TabStore
     let folder: Folder
+    /// Which section's shape the name is written into — Pinned's or Today's.
+    var shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins
     @State private var draft = ""
     @State private var done = false
     /// Whether this field ever held the caret. A field that never did holds the name the
@@ -962,7 +1281,7 @@ struct FolderNameField: View {
         done = true
         defer { if store.renamingFolder == folder.id { store.renamingFolder = nil } }
         guard let name = TabActions.cleanName(draft), name != folder.name else { return }
-        store.pins.edit(folder: folder.id) { $0.name = name }
+        store[keyPath: shape].edit(folder: folder.id) { $0.name = name }
         store.savePins()
         axAnnounce("Renamed to \(name).")
     }
@@ -981,6 +1300,8 @@ struct FolderNameField: View {
 struct FolderIcons: View {
     @ObservedObject var store: TabStore
     let folder: Folder
+    /// See `FolderNameField.shape`.
+    var shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins
     @State private var emoji = ""
     @Environment(\.dismiss) private var dismiss
 
@@ -1031,7 +1352,7 @@ struct FolderIcons: View {
     }
 
     private func pick(_ icon: String) {
-        store.pins.edit(folder: folder.id) { $0.icon = icon }
+        store[keyPath: shape].edit(folder: folder.id) { $0.icon = icon }
         store.savePins()
         dismiss()
     }

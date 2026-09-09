@@ -121,6 +121,9 @@ extension TabStore {
                     current: tabs.firstIndex { $0.id == opener }, kinds: tabs.map(\.kind))
                 tabs.insert(moved, at: min(dest, tabs.count))
             }
+            // `newBlankTab` took the row into Today's shape at the end of the section, which
+            // is where the strip had it a line ago and not where it is now.
+            placeBeside(tab.id, opener: opener)
             return tab
         }
     }

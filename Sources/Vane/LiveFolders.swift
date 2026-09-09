@@ -1008,11 +1008,11 @@ extension TabStore {
     /// before it is made, either by Arc's one kind or by the sheet.
     @discardableResult
     func newLiveFolder(named name: String, source: LiveSource) -> Folder? {
-        syncPins()
+        syncShapes()
         let made = Motion.list { () -> Folder? in
             guard let f = pins.newFolder(named: name) else { return nil }
             pins.edit(folder: f.id) { $0.live = source }
-            applyPinOrder()
+            applyOrder(.pinned)
             return pins.folder(f.id)
         }
         savePins()
@@ -1076,7 +1076,7 @@ extension TabStore {
             tab.park(url: url, Parked())
             byURL[url.absoluteString] = tab.id
         }
-        syncPins()
+        syncShapes()
         Motion.list {
             var previous: String?
             for url in plan.order {
@@ -1091,7 +1091,7 @@ extension TabStore {
                 }
                 previous = id
             }
-            applyPinOrder()
+            applyOrder(.pinned)
         }
         savePins()
         return held
