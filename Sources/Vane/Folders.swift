@@ -882,14 +882,21 @@ extension TabStore {
     /// The shape's half of "beside the opener". The strip move is `insertionIndexBeside`;
     /// this is the same move told to the section that is drawn from its shape, so the row
     /// lands after the opener and in whatever folder the opener sits in — and at the head of
-    /// Today when the opener is a pinned row, a favourite or nothing at all, which is where
-    /// the strip puts it. Without this the new tab draws at the bottom of the sidebar while
-    /// ⌘1…9 has it beside its opener, and the next `applyOrder(.today)` drags the tab down
-    /// to the bottom for real.
+    /// Today when the opener is a pinned row or a favourite, which is where the strip puts
+    /// it. Without this the new tab draws at the bottom of the sidebar while ⌘1…9 has it
+    /// beside its opener, and the next `applyOrder(.today)` drags the tab down to the bottom
+    /// for real.
+    ///
+    /// Which of the three it is — including "leave it where `syncShapes` put it" for an
+    /// opener that is nil or gone from this window — is `TabStore.rowBeside`, so the rule
+    /// is proved beside `insertionIndexBeside` rather than trusted to a live window.
     func placeBeside(_ id: Tab.ID, opener: Tab.ID?) {
         syncShapes()        // the tab may be brand new to the shape; the opener never is
-        let beside = tabs.first { $0.id == opener }?.kind == .today ? opener?.uuidString : nil
-        todayShape.insert(id.uuidString, after: beside)
+        switch TabStore.rowBeside(openerKind: tabs.first { $0.id == opener }?.kind) {
+        case .leaveIt: break
+        case .headOfToday: todayShape.insert(id.uuidString, after: nil)
+        case .afterOpener: todayShape.insert(id.uuidString, after: opener?.uuidString)
+        }
     }
 
     /// The section a shape stands for — what a tab dropped into one of its folders becomes.
