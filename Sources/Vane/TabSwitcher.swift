@@ -118,8 +118,11 @@ struct TabSwitcher: Equatable {
     func cancel() { end() }
 
     /// ⌃W with the row up: Arc's way of clearing out the tabs you were just in without
-    /// leaving the switcher. Same rule as ⌘W — a Today tab is archived and its card goes; a
-    /// favourite or a pinned tab is only parked, and is still a tab to switch to.
+    /// leaving the switcher. Same rule as ⌘W, because it is the same call — a Today tab is
+    /// archived and its card goes; a favourite keeps its tile; and a pinned tab takes the
+    /// first of `TabRowGlyph`'s two steps, so ⌃W unloads its page and a second ⌃W on the same
+    /// card takes the pin off, with an Undo. Either way the card stays where it is: the tab
+    /// is still there to switch to.
     func closeHighlighted() {
         guard let id = state?.highlighted, let store,
               let tab = store.tabs.first(where: { $0.id == id }) else { return }

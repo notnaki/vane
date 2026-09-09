@@ -280,17 +280,29 @@ import Foundation
         return a
     }
 
+    /// What `tidy` came back with, and which half of it answered. `fromModel` is the whole
+    /// reason the pair exists: the row shimmers for a name the model wrote and for nothing
+    /// else, and "the model was asked" is not the same question as "the model answered" —
+    /// an unavailable, refused or timed-out ask falls back to the cheap name, which arrives
+    /// silently the way every other title does.
+    struct Tidied: Equatable, Sendable {
+        var text: String
+        var fromModel: Bool
+    }
+
     /// The public entry point. Cheap path first, always; the model only when the cheap path
     /// came back too long or saying nothing.
-    static func tidy(title: String, url: URL) async -> String? {
+    static func tidy(title: String, url: URL) async -> Tidied? {
         let host = url.host()
         let cleaned = clean(title, host: host)
-        if let c = cleaned, !uninformative(c, host: host) { return c }
+        if let c = cleaned, !uninformative(c, host: host) { return Tidied(text: c, fromModel: false) }
         // AppleAI returns nil for every kind of "no answer" — unavailable, off, refused,
         // timed out — and every one of them means the same thing here: keep the cheap one.
         guard let raw = await AppleAI.shortTitle(for: title, url: url),
-              let checked = validate(raw, original: title) else { return cleaned }
-        return checked
+              let checked = validate(raw, original: title) else {
+            return cleaned.map { Tidied(text: $0, fromModel: false) }
+        }
+        return Tidied(text: checked, fromModel: true)
     }
 
     // MARK: - Storage
@@ -371,6 +383,10 @@ import Foundation
         let profileID = tab.profileID
         Task { @MainActor [weak tab] in
             guard let out = await tidy(title: raw, url: url) else { return }
+            // Read *before* the cache is written, because `title(for:)` reads the cache: this
+            // is the name the row is showing at this instant, and it is what the shimmer
+            // fades out from under the new one.
+            let was = tab.map(title(for:)) ?? ""
             var cache = dict(cacheKey, profileID)
             // ponytail: no LRU. A pinned strip is a handful of urls; if it ever gets absurd,
             // throwing the whole cache away costs one re-run per pin and zero code.
@@ -378,8 +394,11 @@ import Foundation
                 UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(cacheKey, profileID))
                 cache = [:]
             }
-            put(cacheKey, profileID, key, out)
-            tab?.objectWillChange.send()
+            put(cacheKey, profileID, key, out.text)
+            // A name the model wrote is an event about the row and is announced as one; the
+            // cheap answer is just a title and arrives the way titles always have.
+            if out.fromModel, let tab { tab.noteAITitle(replacing: was) }
+            else { tab?.objectWillChange.send() }
         }
     }
 

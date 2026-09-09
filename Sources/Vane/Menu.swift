@@ -282,30 +282,68 @@ private func standard(_ title: String, _ action: Selector, _ key: String = "",
 /// runs ~12s, and a second one would only contend for the single session.
 @MainActor private var tidyTask: Task<Void, Never>?
 
+/// Tidy Tabs, from wherever it was asked for: the menu item, its shortcut, the sidebar's
+/// Tidy row and the command bar all land here, so all four cancel the same run and share one
+/// spinner.
+///
+/// Every exit says something. The old version had three silent ones — no plan, nothing
+/// moved, and cancelled — and "I pressed Tidy, waited thirty seconds and nothing happened"
+/// is what they add up to. Now the only quiet exit is a cancel, which the user asked for.
+@MainActor func startTidy() {
+    // Already running: this press is the cancel, and it is answered here rather than left to
+    // the task on its way out. `AppleAI.group` is not cancellation aware — `cancel()` only
+    // sets a flag the run reads once its await finally returns — so waiting for that task's
+    // own `ended` kept the spinner up for the rest of a twelve-second model call, and every
+    // press in the meantime landed back in this branch and was swallowed. `TidyProgress`
+    // bumps its stamp, so the cancelled run's late `ended` cannot put away the spinner of
+    // whatever is started next.
+    if let s = Windows.main, TidyProgress.shared.isRunning(s) {
+        tidyTask?.cancel()
+        tidyTask = nil                       // the next press starts a run, not another cancel
+        TidyProgress.shared.cancelled()
+        rebuild()                            // and Tidy is pressable again this instant
+        return
+    }
+    tidyTask?.cancel()
+    guard let s = Windows.main else { return }
+    // The deadline hand-back cancels the task as well as clearing the spinner: a model
+    // session that never returns must not leave the sidebar's Tidy disabled for the life of
+    // the window. `AppleAI` races its own 30s sleep inside every call, so this only ever
+    // fires for an await that has stopped answering altogether.
+    let stamp = TidyProgress.shared.began(s) { tidyTask?.cancel() }
+    tidyTask = Task { @MainActor in
+        defer {
+            TidyProgress.shared.ended(stamp)
+            rebuild()                     // so Undo Tidy Tabs enables, and Tidy re-enables
+        }
+        let groups = await TidyTabs.plan(for: s)
+        // Cancelled is the one silent exit: the user asked for it, and the spinner going
+        // away is the answer.
+        guard !Task.isCancelled else { return }
+        guard let groups, TidyTabs.apply(groups, to: s) > 0 else {
+            // Nothing to say and nothing moved. Say *that*, rather than leaving the click
+            // looking like a control that does not work.
+            Toasts.show("Nothing to tidy", in: s)
+            return
+        }
+        Toasts.show("Tidied tabs", action: ("Undo", { [weak s] in
+            guard let s else { return }
+            TidyTabs.undo(s)
+            rebuild()
+        }), in: s)
+    }
+}
+
 @MainActor private func tidyItems() -> [NSMenuItem] {
     // `Windows.main`, not `current`: every item here moves rows around a sidebar, and a
     // Little Arc in front of the browser window has none. See LittleArc.swift.
     let store = Windows.main
-    let tidy = item(.tidyTabs) {
-        tidyTask?.cancel()
-        guard let s = Windows.main else { return }
-        tidyTask = Task { @MainActor in
-            guard let groups = await TidyTabs.plan(for: s) else { return }
-            let before = s.tabs.map(\.id)
-            TidyTabs.apply(groups, to: s)
-            rebuild()                     // so Undo Tidy Tabs enables
-            // Only if anything moved: a tidy that changed nothing has nothing to undo, and
-            // `canUndo` would still say yes for an earlier tidy nobody undid.
-            if s.tabs.map(\.id) != before {
-                Toasts.show("Tidied tabs", action: ("Undo", { [weak s] in
-                    guard let s else { return }
-                    TidyTabs.undo(s)
-                    rebuild()
-                }), in: s)
-            }
-        }
-    }
-    tidy.isEnabled = store.map(TidyTabs.shouldOffer) ?? false
+    let tidy = item(.tidyTabs) { startTidy() }
+    // A second invocation while one is running cancels it — the sidebar's row says so by
+    // being a spinner — so the item stays live for as long as there is something to cancel.
+    tidy.isEnabled = store.map {
+        TidyTabs.shouldOffer($0) || TidyProgress.shared.isRunning($0)
+    } ?? false
     let undo = item(.undoTidyTabs) {
         guard let s = Windows.main else { return }
         TidyTabs.undo(s)

@@ -245,6 +245,52 @@ struct Pins: Codable, Equatable, Sendable {
     /// A tab that stopped being pinned. Tabs have nothing under them, so this is one line.
     mutating func remove(tab id: String) { entries.removeAll { $0.id == id } }
 
+    /// Where one row sits, and nothing else: the folder it is in — nil at the top of the
+    /// section — and how many of that folder's own rows come before it. Enough to put the
+    /// row back, and, unlike a copy of the whole section, it says nothing at all about any
+    /// other row. `TabStore.unpin`'s Undo carries one of these: a snapshot of `pins` would
+    /// take back the folder the user made and the row they dragged while the toast was up,
+    /// and write that over the file too.
+    struct Spot: Equatable, Sendable {
+        var parent: UUID?
+        var index: Int
+    }
+
+    func spot(of id: String) -> Spot? {
+        guard let i = index(of: id) else { return nil }
+        let parent = entries[i].parent
+        let siblings = entries.indices.filter { entries[$0].parent == parent }
+        return Spot(parent: parent, index: siblings.firstIndex(of: i) ?? 0)
+    }
+
+    /// Put one row back where a `Spot` says it was, and leave every other row exactly as it
+    /// is. A folder that has gone in the meantime is not brought back with it: the row lands
+    /// at the end of the section, which is where a freshly pinned tab lands anyway.
+    mutating func put(_ id: String, at spot: Spot) {
+        guard let i = index(of: id) else { return }
+        // An index inside a folder means nothing outside it, so a folder that has gone since
+        // sends the row to the end of the top level rather than to that many rows down it.
+        let parent = spot.parent
+        if let p = parent, index(of: p) == nil {
+            relocate(id, to: entries.count, parent: nil)
+            return
+        }
+        // The row's own place among them is the one being decided, so it is not a sibling
+        // of itself — at the top level it is very much in this list already.
+        let siblings = entries.indices.filter { $0 != i && entries[$0].parent == parent }
+        let raw: Int
+        if spot.index < siblings.count {
+            raw = siblings[spot.index]                       // in front of the one it preceded
+        } else if let last = siblings.last {
+            raw = subtree(at: last).upperBound               // behind the last of them
+        } else if let p = parent, let pi = index(of: p) {
+            raw = subtree(at: pi).upperBound                 // an emptied folder: first row in
+        } else {
+            raw = entries.count
+        }
+        relocate(id, to: raw, parent: parent)
+    }
+
     mutating func edit(folder id: UUID, _ change: (inout Folder) -> Void) {
         guard let i = index(of: id), var f = entries[i].folder else { return }
         change(&f)
@@ -488,6 +534,75 @@ extension Pins {
         assert("moves naming rows that are not there do nothing", junk == flat("a"))
         assert("an empty section has nothing to draw", Pins().visible.isEmpty)
 
+        // --- When a window with an empty section may clear the shape on disk ---
+        var emptied = Pins()
+        _ = emptied.newFolder(named: "Work")
+        var owned = flat("a", "b")
+        _ = owned.newFolder(named: "Work", next: "b")
+        assert("a fresh profile has no shape to clear, and clearing nothing is harmless",
+               TabStore.clearsShape(saved: nil))
+        assert("folders left behind with no tabs in them are cleared",
+               TabStore.clearsShape(saved: emptied))
+        assert("…which is the whole of what an undone tidy leaves on a window with no pins",
+               emptied.tabs.isEmpty && !emptied.entries.isEmpty)
+        assert("a shape another window's rows are still in is left alone",
+               !TabStore.clearsShape(saved: owned))
+        assert("even a shape of loose tabs with no folders at all",
+               !TabStore.clearsShape(saved: flat("a")))
+        assert("an empty shape is cleared rather than kept", TabStore.clearsShape(saved: Pins()))
+
+        // --- One row put back where it was, and nothing else touched ---
+        // What the "Unpinned" toast's Undo does. The old undo put a snapshot of the whole
+        // section back, so a folder made — or a row dragged — while the toast was up was
+        // quietly reverted and written to disk with it.
+        var sec = flat("a", "b", "c")
+        let nest = sec.newFolder(named: "Nest", next: "b")!
+        sec.move("b", into: nest.id)
+        sec.move("c", into: nest.id)
+        let bSpot = sec.spot(of: "b")!
+        assert("a row's place is its folder and how far down it",
+               bSpot == Pins.Spot(parent: nest.id, index: 0))
+
+        // (1) The folder is still there: back into it, at the index it had.
+        var back1 = sec
+        back1.remove(tab: "b")
+        back1.entries.append(Entry(row: .tab("b"), parent: nil))   // what `sync` does
+        assert("…and it goes back into that folder, in front of the row it preceded",
+               { var c = back1; c.put("b", at: bSpot)
+                 return c.children(of: nest.id) == ["b", "c"] && c == sec }())
+
+        // (2) The folder has gone: the end of the section, not a folder resurrected.
+        var back2 = back1
+        back2.remove(folder: nest.id)
+        back2.put("b", at: bSpot)
+        assert("a row whose folder has gone lands at the end of the section",
+               back2.tabs == ["a", "c", "b"] && back2.folder(nest.id) == nil
+                   && back2.folder(holding: "b") == nil)
+
+        // (3) Everything the user did while the toast was up survives the undo.
+        var back3 = back1
+        let made = back3.newFolder(named: "Made")!
+        back3.move("a", into: made.id)
+        back3.put("b", at: bSpot)
+        assert("a folder made while the toast was up survives the undo",
+               back3.folder(made.id)?.name == "Made" && back3.children(of: made.id) == ["a"]
+                   && back3.children(of: nest.id) == ["b", "c"])
+
+        // The tail of a folder, and a folder emptied while the toast was up.
+        let cSpot = sec.spot(of: "c")!
+        var tail = sec
+        tail.remove(tab: "c")
+        tail.entries.append(Entry(row: .tab("c"), parent: nil))
+        tail.put("c", at: cSpot)
+        assert("a row that was last in its folder goes back last", tail == sec)
+        var lone = flat("a")
+        let empty = lone.newFolder(named: "Empty")!
+        lone.entries.append(Entry(row: .tab("b"), parent: nil))
+        lone.put("b", at: Pins.Spot(parent: empty.id, index: 0))
+        assert("a row going back into a folder that is now empty is its only child",
+               lone.children(of: empty.id) == ["b"])
+        assert("a place is only ever asked for a row that is there", sec.spot(of: "nope") == nil)
+
         return out
     }
 }
@@ -697,6 +812,20 @@ extension TabStore {
         UserDefaults.vane.removeObject(forKey: shapeKey(space: space, profileID: profileID))
     }
 
+    /// Whether a window whose own Pinned section is empty is allowed to clear the saved
+    /// shape. The same ownership test `restorePins` makes, said from the writing end:
+    ///
+    /// - a saved shape that still names tabs belongs to a window that has them. This one was
+    ///   never handed the profile's rows — a second Space-less window — and clearing would
+    ///   take that window's folders with it.
+    /// - a saved shape naming no tabs is folders and nothing else. The last pinned tab has
+    ///   left the Space, and leaving the key behind would have `adoptPins` rebuild those
+    ///   folders, empty, at the next launch.
+    /// - no saved shape at all is a fresh profile, and clearing nothing is what it wants.
+    ///
+    /// Pure, so `selfcheck --pure` can drive it without a defaults suite.
+    nonisolated static func clearsShape(saved: Pins?) -> Bool { saved?.tabs.isEmpty ?? true }
+
     static func savedShape(space: UUID?, profileID: UUID) -> Pins? {
         guard let data = UserDefaults.vane.data(forKey: shapeKey(space: space, profileID: profileID))
         else { return nil }
@@ -707,13 +836,22 @@ extension TabStore {
     /// is on rather than by a `Tab.ID` that will not exist after a relaunch.
     func saveShape() {
         guard !isPrivate, !isLittle else { return }
-        // A window whose Pinned section is empty has nothing to say about the shape: it is
-        // either a fresh window or one that was never handed the profile's rows, and letting
-        // it clear the key would take another window's folders with it.
-        guard !pins.entries.isEmpty else { return }
+        let key = TabStore.shapeKey(space: currentSpaceID, profileID: profileID)
+        // A window whose Pinned section is empty may have nothing to say about the shape —
+        // it can be one that was never handed the profile's rows — so it is asked whether
+        // it is allowed to speak first. It used to be told to say nothing at all, and the
+        // cost of that was the last pinned tab leaving a Space with the folders it was in
+        // still written down: `adoptPins` rebuilt them, empty, at the next launch. Undoing a
+        // tidy on a window that had no pins to begin with hit it every time.
+        if pins.entries.isEmpty {
+            if TabStore.clearsShape(saved: TabStore.savedShape(space: currentSpaceID,
+                                                              profileID: profileID)) {
+                UserDefaults.vane.removeObject(forKey: key)
+            }
+            return
+        }
         let byID = Dictionary(tabs.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { a, _ in a })
         let shape = pins.mapped { byID[$0].flatMap { TabStore.pinURL($0.currentURL) } }
-        let key = TabStore.shapeKey(space: currentSpaceID, profileID: profileID)
         // Nothing but loose tabs is nothing worth writing: an empty shape is what a fresh
         // profile has, and leaving the key absent keeps `savedShape` honest about that.
         guard shape.entries.contains(where: { $0.folder != nil }) else {

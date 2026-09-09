@@ -299,6 +299,30 @@ import WebKit
             ("an empty strip takes anything at 0",
              TabStore.clampedDestination(others: [], moving: .pinned, to: 5) == 0),
 
+            // The same invariant, restored after a batch rather than kept one move at a
+            // time. Tidy's undo is the caller: it puts a whole strip's saved order back, and
+            // a tab the user pinned by hand while the tidy was thinking is in that order
+            // carrying a section the saved order never knew about.
+            ("a strip already in section order is left exactly as it is",
+             TabStore.sectionOrder([.favourite, .pinned, .pinned, .today]) == [0, 1, 2, 3]),
+            ("a pinned tab stranded below Today is lifted above it",
+             TabStore.sectionOrder([.today, .pinned, .today]) == [1, 0, 2]),
+            ("every favourite ends up ahead of every pinned tab, and those ahead of Today",
+             TabStore.sectionOrder([.today, .pinned, .favourite]) == [2, 1, 0]),
+            ("nothing moves within a section",
+             TabStore.sectionOrder([.today, .today, .pinned, .today]) == [2, 0, 1, 3]),
+            ("the result is always a permutation, losing and inventing nothing",
+             TabStore.sectionOrder([.today, .pinned, .favourite, .today, .pinned]).sorted()
+                == [0, 1, 2, 3, 4]),
+            ("an empty strip sorts to nothing", TabStore.sectionOrder([]).isEmpty),
+            // The "Unpinned" toast's Undo is the other caller, and its saved order is older
+            // than the tidy's: it was taken one press ago, so a tab the user pinned *while
+            // the toast was up* is in it sitting among Today tabs. Put back unsettled, the
+            // repinned row P1 leads and the newly pinned T2 sits below a Today tab — the
+            // strip invariant broken by an undo. Settled, T2 joins the Pinned run.
+            ("a tab pinned while the Unpinned toast was up joins the Pinned run",
+             TabStore.sectionOrder([.pinned, .today, .pinned]) == [0, 2, 1]),
+
             // The favourites grid: columns from the count, Arc's way.
             ("no favourites is one placeholder column", TabStore.favouriteColumns(0) == 1),
             ("one favourite is one full-width tile", TabStore.favouriteColumns(1) == 1),

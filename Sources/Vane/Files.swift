@@ -171,6 +171,10 @@ extension Tab {
     /// that root and do not load. Upgrade path is `NSOpenPanel` on the folder, which is the
     /// only way the sandbox hands one over.
     func go(_ url: URL) {
+        // Before the load, not after it: `didStartProvisionalNavigation` is a runloop turn
+        // away and `WKWebView.url` is further still, and the width of that gap is the whole
+        // point of the flag. See `Tab.hasEverLoaded`.
+        hasEverLoaded = true
         guard url.isFileURL else { web.load(URLRequest(url: url)); return }
         // Set before the load, not on didFinish: a PDF never reports a title, and the row
         // must not sit there as "New Tab" for as long as the file takes to render.
