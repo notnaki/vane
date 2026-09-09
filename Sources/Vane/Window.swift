@@ -568,8 +568,10 @@ extension VaneWindow {
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
                 Session.save()
-                // Then take the pages down with the window: see `Tab.tearDown`.
+                // Then take the pages down with the window: see `Tab.tearDown`. Every Space
+                // the window was keeping alive behind this one goes too — see `Stash`.
                 store.tabs.forEach { $0.tearDown() }
+                store.dropStashes()
                 TabStore.all.removeAll { $0 === store }
                 delegates.removeAll { $0 === self }
                 // After the removal, so it can see whether this was the profile's last

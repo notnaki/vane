@@ -99,7 +99,9 @@ private struct BlockRule: Encodable, Equatable {
             compiled = wanted ? await build() : nil
             for store in TabStore.all {
                 let on = enabled(for: store.profileID)
-                for tab in store.tabs {
+                // `everyTab`: a Space kept alive behind the one on screen holds real web views,
+                // and one that missed a rule-list change would keep the old rules.
+                for tab in store.everyTab {
                     let controller = tab.web.configuration.userContentController
                     // Vane is the only thing adding rule lists, so a blunt reset is fine.
                     controller.removeAllContentRuleLists()

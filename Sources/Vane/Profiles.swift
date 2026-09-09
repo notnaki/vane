@@ -669,8 +669,12 @@ struct Space: Identifiable, Codable, Equatable {
         saveSpaces(all, for: space.profileID)
     }
 
+    /// Deleted, or moved to another profile — either way it is off this profile's list, so no
+    /// window here may go on keeping its pages alive behind the Space it is showing: there is
+    /// no strip left that could ever draw them again. See `Stash`.
     func deleteSpace(_ id: UUID, in profileID: UUID) {
         saveSpaces(spaces(for: profileID).filter { $0.id != id }, for: profileID)
+        TabStore.forgetStashes(space: id, profileID: profileID)
     }
 
     // MARK: Offline check

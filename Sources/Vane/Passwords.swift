@@ -835,6 +835,46 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             print("  --    no bundle (running the bare binary), nothing to compare")
         }
 
+        // Not pure: the whole claim is about `Tab` objects surviving a switch, and a pure row
+        // over ids cannot tell a tab that was kept from one that was opened again for the
+        // same url. Only on a private `VANE_DATA_DIR` — this makes Spaces and pages, and a
+        // check run has no business writing either into somebody's real profile.
+        print("a Space kept alive across a switch")
+        if Store.overrideDirectory != nil {
+            let profileID = ProfileManager.shared.active.id
+            var here = ProfileManager.shared.createSpace(name: "Keepalive A", in: profileID)
+            var there = ProfileManager.shared.createSpace(name: "Keepalive B", in: profileID)
+            here.tabURLs = [URL(string: "https://a1.example/")!, URL(string: "https://a2.example/")!]
+            there.tabURLs = [URL(string: "https://b1.example/")!]
+            ProfileManager.shared.updateSpace(here)
+            ProfileManager.shared.updateSpace(there)
+            let store = TabStore(profileID: profileID, space: here)
+            let were = store.tabs.map(ObjectIdentifier.init)
+            let pages = store.tabs.map { ObjectIdentifier($0.web) }
+            check("a Space opens with its own tabs", were.count == 2)
+            store.switchTo(space: there)
+            check("switching shows the Space being entered", store.tabs.count == 1)
+            check("…and keeps the one being left alive behind it", store.everyTab.count == 3)
+            check("the idle sweep still counts the tabs a window is holding for a Space",
+                  Suspension.allTabs.filter { were.contains(ObjectIdentifier($0)) }.count == 2)
+            store.switchTo(space: here)
+            check("switching back brings the very same tabs, in the same order",
+                  store.tabs.map(ObjectIdentifier.init) == were)
+            check("…on the very same pages, so not one of them reloaded",
+                  store.tabs.map { ObjectIdentifier($0.web) } == pages)
+            store.switchTo(space: there)
+            let held = store.everyTab.count
+            Spaces.delete(here.id, in: profileID)
+            check("deleting a Space lets go of the tabs a window was keeping alive for it",
+                  held == 3 && store.everyTab.count == 1)
+            store.tabs.forEach { $0.tearDown() }
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+            ProfileManager.shared.deleteSpace(there.id, in: profileID)
+        } else {
+            print("  --    no private VANE_DATA_DIR, nothing to switch")
+        }
+
         print("keychain round-trip")
         Passwords.delete(host: host, account: user)
         Passwords.save(host: host, account: user, password: pass)

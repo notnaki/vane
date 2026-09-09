@@ -1019,6 +1019,64 @@ struct TitleReveal: Equatable, Sendable {
     func webViewDidClose(_ w: WKWebView) { onClose?() }
 }
 
+/// One Space's tabs, kept alive while the window is showing a different one. Arc does not
+/// offload a Space when you swipe off it — the pages stay loaded and swiping back shows them
+/// exactly as they were — so leaving a Space moves its strip in here instead of tearing it
+/// down and opening every url again on the way back. See `TabStore.switchTo(space:)`.
+///
+/// ponytail: one dictionary of these per window, not a second `TabStore` per Space. Ceiling:
+/// every Space a window has visited holds its pages until the window closes, which is the
+/// point — the ordinary idle sweep is what stops that being a memory hole, because
+/// `Suspension` and `Archive` are handed `everyTab` rather than `tabs`.
+struct Stash {
+    /// The non-favourite tabs, in strip order: the Pinned rows, then Today's.
+    var tabs: [Tab]
+    /// The two sections' folders, the splits, and the tab the Space was left on — everything
+    /// `switchTo` would otherwise have to rebuild from disk.
+    var pins: Pins
+    var todayShape: Pins
+    var splits: [Split]
+    var current: Tab.ID?
+    /// What `saveCurrentSpace` had just written for this Space, read back off the disk. It is
+    /// checked again on the way in: anything that edited the Space from somewhere else — Move
+    /// to Space, a Library edit, another window saving it — moves this on, and a stash that no
+    /// longer describes what is on disk is thrown away rather than drawn over the top of it.
+    var fingerprint: String
+
+    /// Which tabs leave the strip when a window leaves a Space: everything that is not a
+    /// favourite, in the order they were drawn. The grid is the profile's and is in every
+    /// Space, so it does not so much as blink on a switch.
+    ///
+    /// Pure, over kinds, so `selfcheck --pure` can prove that without a `Tab`.
+    nonisolated static func leaving<T>(_ strip: [(id: T, kind: TabKind)]) -> [T] {
+        strip.filter { $0.kind != .favourite }.map(\.id)
+    }
+
+    /// And the strip a Space comes back as: the favourites that never left, then the tabs
+    /// that did. The sections are contiguous runs in favourite–pinned–Today order (see
+    /// `clampedDestination`), so putting the stash back on the end is all it takes.
+    nonisolated static func entering<T>(_ strip: [(id: T, kind: TabKind)], stashed: [T]) -> [T] {
+        strip.filter { $0.kind == .favourite }.map(\.id) + stashed
+    }
+
+    /// One tab leaves while its Space is put away — the auto-archive sweep is the only thing
+    /// that reaches in here. It goes out of the order, out of both folder shapes, and out of
+    /// whatever split it was a pane of; a split down to one pane stops being a split, exactly
+    /// as `dropPane` decides it on screen.
+    @MainActor mutating func remove(_ id: Tab.ID) -> Tab? {
+        guard let i = tabs.firstIndex(where: { $0.id == id }) else { return nil }
+        let tab = tabs.remove(at: i)
+        pins.remove(tab: id.uuidString)
+        todayShape.remove(tab: id.uuidString)
+        todayShape.removeEmptyFolders()
+        if let j = splits.firstIndex(where: { $0.contains(id) }) {
+            if let shrunk = splits[j].removing(id) { splits[j] = shrunk } else { splits.remove(at: j) }
+        }
+        if current == id { current = nil }
+        return tab
+    }
+}
+
 @MainActor final class TabStore: ObservableObject {
     @Published var tabs: [Tab] = []
     /// The tab whose row is a name field right now. One at a time, per window — and one
@@ -1389,15 +1447,24 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     private func archiveNow(_ id: Tab.ID, asPane: Bool = false) {
-        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        // Not only the strip: the auto-archive sweep reaches a Space this window is keeping
+        // alive behind the one it is showing, and a day-old tab in one is a day old.
+        let stashed = space(stashing: id)
+        guard let tab = everyTab.first(where: { $0.id == id }) else { return }
         if tab.kind == .today, !isPrivate, let u = tab.currentURL,
            u.scheme?.hasPrefix("http") == true {
             // The Space it was in and whether it was a Little Arc go down with it, so the
             // Library can put it back where it came from and filter on where it came from.
             Archive.shared(for: profileID).add(url: u, title: TidyTitles.title(for: tab),
-                                               space: currentSpaceID, littleArc: isLittle)
+                                               space: stashed ?? currentSpaceID, littleArc: isLittle)
         }
-        close(id, asPane: asPane)
+        // `close` works on the strip, and a stashed tab is not on it.
+        //
+        // ponytail: the Space's own url list on disk keeps the archived page until the next
+        // `saveCurrentSpace`, which is also what the stash is checked against, so the two
+        // stay in step. Ceiling: quitting in between brings the page back at the next launch.
+        if let stashed { stashes[stashed]?.remove(id)?.tearDown() }
+        else { close(id, asPane: asPane) }
     }
 
     /// A row in the Library's Archived Tabs list, clicked: open it again and take it out of
@@ -1912,14 +1979,93 @@ struct TitleReveal: Equatable, Sendable {
         }, in: id)
     }
 
-    /// Save the outgoing space, then rebuild the strip from the incoming one. A window shows
-    /// one space at a time.
+    /// The Spaces this window has been in and is keeping alive behind the one it is showing,
+    /// by Space id. See `Stash`.
+    private var stashes: [UUID: Stash] = [:]
+
+    /// Every tab this window is holding: the strip, plus the Spaces kept alive behind it.
     ///
-    /// The tabs are still torn down rather than parked alive, but each one's
-    /// interactionState goes into the sidecar on the way out and comes back on the way in,
-    /// so switching back lands on the same page, the same scroll offset and the same
-    /// back/forward list. Ceiling: only the tab that becomes current actually loads — the
-    /// rest come up suspended, which is the point.
+    /// The idle-suspension and auto-archive sweeps run over this rather than over `tabs` — a
+    /// stashed page is still one of the user's pages, and a stash no sweep could see would be
+    /// the one place in the app where a tab is never unloaded and never archived. The media
+    /// tray reads it too, because a page you swiped away from carries on playing.
+    ///
+    /// Everything else stays on `tabs` and is meant to: the tab switcher, ⌘1–9, the command
+    /// bar, the extension host and `saveCurrentSpace` are all about the strip in front of the
+    /// user, and a Space that is not being shown has no rows in it.
+    var everyTab: [Tab] { tabs + stashes.values.flatMap(\.tabs) }
+
+    /// Which Space this window is keeping `id` alive for, if it is not on the strip.
+    func space(stashing id: Tab.ID) -> UUID? {
+        stashes.first { $0.value.tabs.contains { $0.id == id } }?.key
+    }
+
+    /// Show a tab: select it, and go to its Space first if it is one this window is keeping
+    /// alive behind the one on screen. The media tray is the only thing that can name a tab
+    /// the window is not showing — the page still playing in the Space you swiped off.
+    func reveal(_ id: Tab.ID) {
+        if let held = space(stashing: id), let space = spaces.first(where: { $0.id == held }) {
+            switchTo(space: space)
+        }
+        current = id
+    }
+
+    /// Let a Space's kept-alive tabs go: the pages down, the stash gone. Never touches the
+    /// strip — this is only ever about a Space the window is not showing.
+    func drop(stash id: UUID) {
+        stashes.removeValue(forKey: id)?.tabs.forEach { $0.tearDown() }
+    }
+
+    /// Every one of them, because the window itself is going. See `windowWillClose`.
+    func dropStashes() {
+        stashes.values.flatMap(\.tabs).forEach { $0.tearDown() }
+        stashes.removeAll()
+    }
+
+    /// A Space has been deleted, so no window may keep its pages alive behind a strip that
+    /// can never show them again. See `Spaces.delete`, the one place a Space goes.
+    static func forgetStashes(space: UUID, profileID: UUID) {
+        for store in TabStore.all where store.profileID == profileID { store.drop(stash: space) }
+    }
+
+    /// What is on disk for `space` this moment, as one string: both url lists and both folder
+    /// shapes, bytes and all. Any edit at all moves it on, which is exactly the question a
+    /// stash has to answer on the way back in.
+    ///
+    /// Pure, so `selfcheck --pure` can prove the rule with no Space to write.
+    nonisolated static func fingerprint(tabURLs: [URL], pinnedTabURLs: [URL],
+                                        shapes: [Data?]) -> String {
+        (tabURLs.map(\.absoluteString) + ["\u{1}"] + pinnedTabURLs.map(\.absoluteString)
+            + ["\u{1}"] + shapes.map { $0?.base64EncodedString() ?? "" }).joined(separator: "\n")
+    }
+
+    /// The same, read off this profile's disk. A Space that is not there at all — deleted, or
+    /// another profile's — fingerprints as an empty one, which no stash with anything in it
+    /// can match.
+    private func fingerprint(of id: UUID) -> String {
+        let space = spaces.first { $0.id == id }
+        return TabStore.fingerprint(tabURLs: space?.tabURLs ?? [],
+                                    pinnedTabURLs: space?.pinnedTabURLs ?? [],
+                                    shapes: TabStore.shapeData(space: id, profileID: profileID))
+    }
+
+    /// The tab showing a Space lands on: the one it was left on, else the ladder down through
+    /// the first Today tab and the first pinned row in `Spaces.landing`.
+    private func landing(in space: UUID) -> Tab.ID? {
+        Spaces.landing(on: tabs.map { ($0.currentURL?.absoluteString, $0.kind) },
+                       last: Spaces.lastTab(in: space)).map { tabs[$0].id }
+    }
+
+    /// Save the outgoing space, then show the incoming one. A window shows one space at a
+    /// time, and keeps the ones behind it alive: leaving parks the strip in a `Stash` and
+    /// coming back puts the same loaded tabs straight back, so a Space no longer reloads
+    /// every page the first time you click one.
+    ///
+    /// The rebuild from disk is still here and is what runs whenever the stash cannot be
+    /// trusted — nothing kept for this Space, or something edited the Space from elsewhere
+    /// while it was away. Then each tab's interactionState comes back out of the sidecar, so
+    /// even a rebuild lands on the same page, scroll offset and back/forward list, and only
+    /// the tab that becomes current actually loads.
     func switchTo(space: Space) {
         // A space's profileID is the only link to its profile, so refusing here is what keeps
         // a window from ever showing another profile's tabs. A Little Arc is in no Space and
@@ -1939,10 +2085,34 @@ struct TitleReveal: Equatable, Sendable {
         // Not close(): that pushes onto the reopen stack and closes the window on the last tab.
         // Favourites are the profile's, not the Space's, so their tabs stay exactly as they
         // are — Arc's grid does not so much as blink when you swipe between Spaces.
-        // Every pane whose tab is about to go leaves its split first; otherwise `splits`
-        // keeps ids of tabs that no longer exist, and a split holding a favourite would draw
-        // one pane and a divider into nothing.
-        for tab in tabs where tab.kind != .favourite { dropPane(tab.id) }
+        let leaving = Stash.leaving(tabs.map { (id: $0, kind: $0.kind) })
+        if let id = currentSpaceID, spaces.contains(where: { $0.id == id }) {
+            // A split of the Space's own tabs travels whole — nothing is leaving it, the
+            // whole thing is being put away. One with a favourite in it is not the Space's
+            // to keep: the tile stays behind in the grid, so that pane leaves its split the
+            // way a closing tab does. Otherwise `splits` would keep ids of tabs the strip no
+            // longer has, and a split holding a favourite would draw one pane and a divider
+            // into nothing.
+            let mine = Set(leaving.map(\.id))
+            let travelling = splits.filter { $0.tabs.allSatisfy(mine.contains) }
+            for tab in leaving where !travelling.contains(where: { $0.contains(tab.id) }) {
+                dropPane(tab.id)
+            }
+            splits.removeAll { travelling.contains($0) }
+            drop(stash: id)             // an older stash for the same Space, superseded
+            stashes[id] = Stash(tabs: leaving, pins: pins, todayShape: todayShape,
+                                splits: travelling,
+                                // Never a favourite: the grid is the profile's, so every
+                                // Space would come back on the same tile. See `landing`.
+                                current: tabs.first { $0.id == current && $0.kind != .favourite }?.id,
+                                fingerprint: fingerprint(of: id))
+        } else {
+            // A Space that is not on disk any more — deleted from another window, or the
+            // stale one `resolveStaleSpace` is walking out of — has nothing to come back
+            // from and nothing to check a stash against, so its pages simply go.
+            for tab in leaving { dropPane(tab.id) }
+            leaving.forEach { $0.tearDown() }
+        }
         tabs.removeAll { $0.kind != .favourite }
         // The one place tabs leave the strip without `close` — and so without
         // `selection.keep`. A selection left pointing at the Space we just walked out of
@@ -1951,19 +2121,31 @@ struct TitleReveal: Equatable, Sendable {
         selection.clear()
         currentSpaceID = space.id
         applySpaceAppearance()          // the new space may be pinned to light or dark
-        let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
-        restorePins(urls: space.pinnedTabURLs ?? [], parked: parked)
-        adoptTodayShape(tabs: space.tabURLs.map { url in
-            let t = newBlankTab()
-            t.open(url, parked: parked[url.absoluteString])
-            // Named by the url it was opened with, not the one it has: with suspension off
-            // `open` hands it straight to `go` and there is no `currentURL` yet.
-            return (url: url, tab: t)
-        })
-        // Arc lands on the tab this Space was left on; `Spaces.landing` is the ladder down to
-        // the first Today tab, the first pinned row, and finally an empty pill.
-        current = Spaces.landing(on: tabs.map { ($0.currentURL?.absoluteString, $0.kind) },
-                                 last: Spaces.lastTab(in: space.id)).map { tabs[$0].id }
+        if let kept = stashes[space.id], kept.fingerprint == fingerprint(of: space.id) {
+            // Nothing has edited this Space since we walked out of it, so the tabs we walked
+            // out with are still what it is: the same objects, still loaded, in the same
+            // order, with their folders, their splits and the row they were left on.
+            stashes.removeValue(forKey: space.id)
+            tabs = Stash.entering(tabs.map { (id: $0, kind: $0.kind) }, stashed: kept.tabs)
+            pins = kept.pins
+            todayShape = kept.todayShape
+            splits += kept.splits
+            current = kept.current ?? landing(in: space.id)
+        } else {
+            drop(stash: space.id)       // somebody else edited the Space; start again from disk
+            let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
+            restorePins(urls: space.pinnedTabURLs ?? [], parked: parked)
+            adoptTodayShape(tabs: space.tabURLs.map { url in
+                let t = newBlankTab()
+                t.open(url, parked: parked[url.absoluteString])
+                // Named by the url it was opened with, not the one it has: with suspension off
+                // `open` hands it straight to `go` and there is no `currentURL` yet.
+                return (url: url, tab: t)
+            })
+            // Arc lands on the tab this Space was left on; `Spaces.landing` is the ladder down
+            // to the first Today tab, the first pinned row, and finally an empty pill.
+            current = landing(in: space.id)
+        }
         // Only when the landing found nothing at all. A Space of pinned rows and no Today
         // tabs lands on a row, and the command bar over the page it just opened would be a
         // bar nobody asked for.

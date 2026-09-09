@@ -772,6 +772,41 @@ enum Spaces {
                swipe([(0, .began), (-2, .changed), (-2, .changed), (0, .ended)],
                      dt: 1.0 / 120).commits.isEmpty)
 
+        // A Space's tabs, kept alive behind the one being shown. See `Stash`.
+        func shown(_ rows: (String, TabKind)...) -> [(id: String, kind: TabKind)] {
+            rows.map { (id: $0.0, kind: $0.1) }
+        }
+        let open = shown(("fav", .favourite), ("pin", .pinned), ("t1", .today), ("t2", .today))
+        assert("leaving a Space puts its own tabs in the stash, in strip order",
+               Stash.leaving(open) == ["pin", "t1", "t2"])
+        assert("a favourite never enters a stash — the grid is the profile's, not the Space's",
+               !Stash.leaving(open).contains("fav"))
+        assert("coming back puts the same tabs back in the same order, behind the grid",
+               Stash.entering(shown(("fav", .favourite)), stashed: Stash.leaving(open))
+                   == open.map(\.id))
+        assert("a Space of nothing but favourites stashes nothing and comes back as itself",
+               Stash.leaving(shown(("fav", .favourite))).isEmpty
+                   && Stash.entering(shown(("fav", .favourite)), stashed: []) == ["fav"])
+
+        // The fingerprint: what says whether the stash still describes the Space on disk.
+        let folders = Data(#"{"entries":[]}"#.utf8)
+        func mark(_ today: [URL], _ pinned: [URL], _ shapes: [Data?] = [folders, nil]) -> String {
+            TabStore.fingerprint(tabURLs: today, pinnedTabURLs: pinned, shapes: shapes)
+        }
+        let asLeft = mark([u("t1"), u("t2")], [u("p1")])
+        assert("a Space nothing has touched fingerprints the same, so its stash comes back",
+               asLeft == mark([u("t1"), u("t2")], [u("p1")]))
+        assert("a page moved into the Space from another window drops the stash",
+               asLeft != mark([u("t1"), u("t2"), u("t3")], [u("p1")]))
+        assert("so does the same pages left in a different order",
+               asLeft != mark([u("t2"), u("t1")], [u("p1")]))
+        assert("a folder edited in the Library drops it too, with every url unchanged",
+               asLeft != mark([u("t1"), u("t2")], [u("p1")], [Data(#"{"e":1}"#.utf8), nil]))
+        assert("the two sections are not run together: pinning a tab is an edit",
+               mark([u("a")], []) != mark([], [u("a")]))
+        assert("a Space deleted from under the stash fingerprints as an empty one",
+               asLeft != mark([], [], [nil, nil]))
+
         return out
     }
 }
