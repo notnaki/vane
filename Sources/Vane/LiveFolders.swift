@@ -1053,8 +1053,17 @@ extension TabStore {
     /// go on owning them and go on drawing their goodbye until it can take them.
     @discardableResult
     func applyLive(_ plan: GitHub.Plan, to folder: UUID) -> [String] {
-        guard pins.folder(folder) != nil,
-              plan.changesRows || liveRows(in: folder, owning: plan) != plan.order else { return [] }
+        guard pins.folder(folder) != nil else { return [] }
+        // A pull request renamed on GitHub renames its row, as Arc does — but only a parked
+        // one: a loaded page has a title of its own, and the next refresh of that page is
+        // GitHub's to retitle. Before the guard below, because a rename changes no rows.
+        for id in pins.children(of: folder) {
+            guard let url = rowURL(id), let title = plan.titles[url],
+                  let tab = tabs.first(where: { $0.id.uuidString == id }),
+                  tab.suspended, tab.title != title else { continue }
+            tab.title = title
+        }
+        guard plan.changesRows || liveRows(in: folder, owning: plan) != plan.order else { return [] }
         var byURL: [String: Tab.ID] = [:]
         for id in pins.children(of: folder) {
             guard let url = rowURL(id), byURL[url] == nil,
