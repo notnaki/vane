@@ -410,6 +410,10 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .viewHistory:      Keybinding("y", .command)
         case .showDownloads:    Keybinding("j", [.command, .shift])
         case .minimizeWindow:   Keybinding("m", .command)
+        // Vane Help ships unbound, exactly as Safari's does. ⇧⌘/ — which arrives as ⌘? —
+        // is macOS's own "Show Help menu": it opens this menu and puts the caret in its
+        // search field from anywhere in the app, and no Apple app spends it on its own help
+        // item. `reserved` refuses it so nobody can bind it either.
         // Everything else ships unbound — it is a menu item with no key equivalent today.
         default: .unassigned
         }
@@ -450,15 +454,32 @@ enum Command: String, CaseIterable, Codable, Sendable {
         .pinTab: Keybinding("d", [.command, .shift]),
     ]
 
-    /// Bumped when `movedDefaults` grows, so each migration runs once per user.
-    nonisolated static let migration = 1
+    /// Bumped when `movedDefaults` grows or the rule below changes, so each migration runs
+    /// once per user.
+    nonisolated static let migration = 2
 
-    /// Pure, so `selfcheck --pure` can prove the rule without a defaults suite.
+    /// Pure, so `selfcheck --pure` can prove the rule without a defaults suite. `from` is the
+    /// version the table was saved at: each step runs only for a table old enough to need it,
+    /// so a table already at 2 comes back untouched.
     nonisolated static func migrate(_ bindings: [String: Keybinding],
-                                    moved: [Command: Keybinding]) -> [String: Keybinding] {
+                                    moved: [Command: Keybinding],
+                                    from: Int) -> [String: Keybinding] {
         var out = bindings
-        for (command, old) in moved where out[command.rawValue] == old {
-            out[command.rawValue] = nil
+        if from < 1 {
+            for (command, old) in moved where out[command.rawValue] == old {
+                out[command.rawValue] = nil
+            }
+        }
+        // Anything `reserved` refuses today. ⌘C and its neighbours were bindable before the
+        // table in Standard.swift existed, and a saved one still wins: the key monitor runs
+        // ahead of AppKit, so that binding takes Copy away from every text field in the app
+        // and from every page. Dropping it puts the command back on its shipped default, and
+        // the pane will not let it be chosen again. A deliberate *unbinding* is not reserved,
+        // so it survives.
+        if from < 2 {
+            for (id, binding) in out where reserved(binding) != nil {
+                out[id] = nil
+            }
         }
         return out
     }
@@ -470,7 +491,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
             var s = defaults.data(forKey: storeKey)
                 .flatMap { try? JSONDecoder().decode(Saved.self, from: $0) } ?? Saved()
             if (s.migrated ?? 0) < migration {
-                s.bindings = migrate(s.bindings, moved: movedDefaults)
+                s.bindings = migrate(s.bindings, moved: movedDefaults, from: s.migrated ?? 0)
                 s.migrated = migration
                 // Not `state = s`: this is the getter, and the setter would re-enter it.
                 if let d = try? JSONEncoder().encode(s) { defaults.set(d, forKey: storeKey) }
@@ -525,7 +546,10 @@ enum Command: String, CaseIterable, Codable, Sendable {
 
     /// A reason the system (or Vane's own app menu) will take this combination first, or
     /// nil if it is free. Returning the reason lets the UI warn instead of just refusing.
-    static func reserved(_ binding: Keybinding) -> String? {
+    ///
+    /// Pure and `nonisolated`: `migrate` is the other caller, and it runs wherever the store
+    /// is first read.
+    nonisolated static func reserved(_ binding: Keybinding) -> String? {
         guard binding.isAssigned else { return nil }
         let m = binding.mods
         let isFunctionKey = binding.key.unicodeScalars.first.map {
@@ -548,8 +572,22 @@ enum Command: String, CaseIterable, Codable, Sendable {
             return "macOS keeps this for screenshots."
         case ("h", [.command]):                  return "⌘H hides Vane."
         case ("m", [.command]):                  return "⌘M minimises the window."
-        default:                                 return nil
+        // ⇧⌘/ arrives as "?" — the shifted glyph carries its own shift. macOS keeps it for
+        // "Show Help menu", which opens the Help menu and puts the caret in its search field
+        // from anywhere in any app; no Mac app binds its own help item to it.
+        case ("?", [.command]):
+            return "macOS keeps ⇧⌘/ for the Help menu's search."
+        default:                                 break
         }
+        // The chords AppKit answers for itself — Copy, Paste, Undo, Select All. Vane's key
+        // monitor runs *ahead* of the menu, so a command bound onto one of these would not
+        // merely shadow a menu item: it would take ⌘C away from every text field in the app
+        // and from every page. See Standard.swift for the table.
+        if let row = Standard.rows.first(where: { $0.key == binding }), row.selectorName != nil {
+            return "\(binding.display) is macOS's \u{201C}\(row.title)\u{201D}, "
+                + "and belongs to whatever you are typing in."
+        }
+        return nil
     }
 
     // MARK: Search
@@ -642,31 +680,61 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// rebinds. Arc binds Back and Forward to both ⌘[ / ⌘] and ⌘← / ⌘→, and the arrows are
     /// the pair most people reach for.
     ///
-    /// ponytail: a two-row table read only by `handle`, rather than a second binding per
+    /// It is also how Vane honours the standard chords Arc spends elsewhere: ⇧⌘[ and ⇧⌘]
+    /// walk the tabs in every other Mac browser, and ⌘= zooms in on a keyboard where ⌘+
+    /// needs a shift — none of which Arc's own ⌥⌘↑/↓ and ⌘+ can give up.
+    ///
+    /// ponytail: a small table read only by `handle`, rather than a second binding per
     /// command everywhere. `binding(for:)` still answers with the one chord a menu item can
     /// display, `conflicts` still compares the one the user can change, and rebinding Back
     /// leaves the arrows where Arc has them. Ceiling: the alias is not rebindable and not
     /// listed in the Shortcuts pane.
     ///
-    /// Anything added here inherits the two guards in `alias(_:fieldEditor:pageEditable:)`,
-    /// which is the point of the table: a chord a text field could want must not be claimed
-    /// by the browser while one is being typed into.
+    /// A chord a text field could want must not be claimed by the browser while one is being
+    /// typed into — that is `caretAliases` below, and the guard in
+    /// `alias(_:fieldEditor:pageEditable:)`.
+    ///
+    /// ponytail: ⇧⌘[ and ⇧⌘] are matched as the glyphs a US-ish layout sends — `{` and `}`
+    /// out of `charactersIgnoringModifiers` — so on a German or French layout, where those
+    /// keys send something else entirely, the two aliases simply never fire. Nothing else
+    /// breaks: Arc's own ⌥⌘↑/↓ still walk the tabs there, and they are what the menu shows.
+    /// The upgrade path is to match the physical key instead — `event.keyCode` 33 and 30 are
+    /// `[` and `]` on every layout — which means a second kind of binding, and a keyCode
+    /// table beside the character one, for two chords nobody has yet reported missing.
     nonisolated static let aliases: [Command: Keybinding] = [
         .back: Keybinding("\u{F702}", .command),
         .forward: Keybinding("\u{F703}", .command),
+        // The three every other Mac browser answers to, on top of Arc's own. ⇧⌘[ and ⇧⌘]
+        // arrive as ⌘{ and ⌘} and ⌘= is the unshifted twin of ⌘+ — all three are the shifted
+        // glyph the keyboard actually sends, folded by `Keybinding.init` the way ⌘+ has
+        // always been. Arc's ⌥⌘↑/↓ and ⌘+ are untouched and still what the menu shows.
+        .previousTab: Keybinding("{", .command),
+        .nextTab: Keybinding("}", .command),
+        .zoomIn: Keybinding("=", .command),
+    ]
+
+    /// The alias chords a caret could want for itself. ⌘← and ⌘→ move the insertion point in
+    /// every text field on macOS, so they are the browser's only while nothing is being typed
+    /// into; ⌘{, ⌘} and ⌘= are nobody's editing keys, and holding them back while a comment
+    /// box has the focus would only mean a tab you cannot switch away from.
+    nonisolated static let caretAliases: Set<Keybinding> = [
+        Keybinding("\u{F702}", .command),
+        Keybinding("\u{F703}", .command),
     ]
 
     /// Which command an alias chord fires, or nil when something that types should keep the
     /// keystroke: a field editor in the chrome (the url bar, a rename field, the find bar), or
     /// an input, textarea or contenteditable on the page. One rule said about the two places
     /// a caret can be — ⌘← belongs to the caret wherever there is one, and navigating away
-    /// from a half-filled form is the one outcome nobody means.
+    /// from a half-filled form is the one outcome nobody means. Only the chords in
+    /// `caretAliases` are held back that way; ⌘{, ⌘} and ⌘= are nobody's editing keys.
     ///
     /// Pure, so `selfcheck --pure` can prove the guards with no page and no first responder.
     nonisolated static func alias(_ b: Keybinding, fieldEditor: Bool,
                                   pageEditable: Bool) -> Command? {
-        guard !fieldEditor, !pageEditable else { return nil }
-        return aliases.first { $0.value == b }?.key
+        guard let hit = aliases.first(where: { $0.value == b })?.key else { return nil }
+        guard !caretAliases.contains(b) || (!fieldEditor && !pageEditable) else { return nil }
+        return hit
     }
 
     /// Install with:
@@ -815,13 +883,16 @@ enum Command: String, CaseIterable, Codable, Sendable {
 // MARK: - check
 
 extension Keybindings {
-    /// Runs against a throwaway defaults suite that is deleted afterwards; the user's real
-    /// preferences are never read or written. Everything asserted here is offline.
-    static func check() -> [(String, Bool)] {
-        let suite = "vane.check.keys.\(ProcessInfo.processInfo.processIdentifier)"
-        guard let scratch = UserDefaults(suiteName: suite) else {
-            return [("scratch defaults suite is available", false)]
-        }
+    /// Runs `body` against a throwaway defaults suite that is deleted afterwards, with the
+    /// cache dropped on the way in and put back on the way out: nothing inside can read — or
+    /// write — the user's real preferences. Nil only when the suite cannot be made at all,
+    /// which is the one failure a caller has to report rather than swallow.
+    ///
+    /// Not private: `Standard.check` plants a customised binding through it, which is the
+    /// only honest way to assert that a customised install still passes.
+    static func withScratchDefaults<T>(_ name: String, _ body: () -> T) -> T? {
+        let suite = "vane.check.\(name).\(ProcessInfo.processInfo.processIdentifier)"
+        guard let scratch = UserDefaults(suiteName: suite) else { return nil }
         let real = defaults
         let realCache = cached
         defaults = scratch
@@ -831,7 +902,15 @@ extension Keybindings {
             cached = realCache
             scratch.removePersistentDomain(forName: suite)
         }
+        return body()
+    }
 
+    /// Everything asserted here is offline, and none of it touches the user's preferences.
+    static func check() -> [(String, Bool)] {
+        withScratchDefaults("keys", checks) ?? [("scratch defaults suite is available", false)]
+    }
+
+    private static func checks() -> [(String, Bool)] {
         let t = Keybinding("t", [.command, .shift])
         let all = Keybinding("x", [.control, .option, .shift, .command])
         var out: [(String, Bool)] = [
@@ -903,6 +982,8 @@ extension Keybindings {
             ("View History defaults to ⌘Y", binding(for: .viewHistory).display == "⌘Y"),
             ("Downloads defaults to ⇧⌘J", binding(for: .showDownloads).display == "⇧⌘J"),
             ("Minimize defaults to ⌘M", binding(for: .minimizeWindow).display == "⌘M"),
+            ("Vane Help ships unbound, the way Safari's Help item does — ⇧⌘/ is macOS's own",
+             binding(for: .vaneHelp).display == "---"),
             ("Open File defaults to ⌘O", binding(for: .openFile).display == "⌘O"),
             ("Save Page As defaults to ⇧⌘S, leaving ⌘S the sidebar's",
              binding(for: .savePageAs).display == "⇧⌘S"
@@ -956,8 +1037,23 @@ extension Keybindings {
             Command.pinTab.rawValue: Keybinding("f", [.command, .control, .option]),
             Command.newTab.rawValue: Keybinding("t", .command),
         ]
-        let migrated = migrate(stale, moved: movedDefaults)
+        let migrated = migrate(stale, moved: movedDefaults, from: 0)
+        // The other half of the migration: a binding saved before `reserved` refused it.
+        // Somebody who put Search Tabs on ⌘C back then still has it, and it still wins over
+        // Copy in every text field — the monitor runs ahead of AppKit.
+        let hijacked: [String: Keybinding] = [
+            Command.searchTabs.rawValue: Keybinding("c", .command),
+            Command.commandPalette.rawValue: .unassigned,
+            Command.newWindow.rawValue: Keybinding("n", [.command, .option, .shift]),
+        ]
+        let unhijacked = migrate(hijacked, moved: movedDefaults, from: 0)
         out += [
+            ("a binding saved onto ⌘C is dropped, so Copy is the field's again",
+             unhijacked[Command.searchTabs.rawValue] == nil),
+            ("a deliberate unbinding is not a reserved chord, so it survives",
+             unhijacked[Command.commandPalette.rawValue] == .unassigned),
+            ("a chord nobody reserves is left alone",
+             unhijacked[Command.newWindow.rawValue] == Keybinding("n", [.command, .option, .shift])),
             ("a saved binding that was only the old default is dropped",
              migrated[Command.previousTab.rawValue] == nil
                 && migrated[Command.favouriteTab.rawValue] == nil),
@@ -966,10 +1062,40 @@ extension Keybindings {
             ("a command whose default never moved is not touched",
              migrated[Command.newTab.rawValue] == Keybinding("t", .command)),
             ("migrating twice changes nothing more",
-             migrate(migrated, moved: movedDefaults) == migrated),
+             migrate(migrated, moved: movedDefaults, from: 0) == migrated),
             ("every moved default is a binding the app no longer ships",
              movedDefaults.allSatisfy { $0.key.defaultBinding != $0.value }),
         ]
+        // …and each step runs only for a table old enough to need it, rather than every step
+        // every time: somebody already at 2 gets their table back exactly as they saved it.
+        let both = stale.merging(hijacked) { a, _ in a }
+        let from0 = migrate(both, moved: movedDefaults, from: 0)
+        let from1 = migrate(both, moved: movedDefaults, from: 1)
+        out += [
+            ("a table saved before any migration goes through both steps",
+             from0[Command.favouriteTab.rawValue] == nil
+                && from0[Command.searchTabs.rawValue] == nil),
+            ("a table already past the moved defaults keeps them, and only loses ⌘C",
+             from1[Command.favouriteTab.rawValue] == Keybinding("d", .command)
+                && from1[Command.searchTabs.rawValue] == nil),
+            ("a table at the current version is handed back untouched",
+             migrate(both, moved: movedDefaults, from: 2) == both),
+            ("whatever ran, the table is stamped at 2 and has nothing left to run",
+             migration == 2 && migrate(both, moved: movedDefaults, from: migration) == both),
+        ]
+        // And the same thing through the store, which is where it bites: a table written
+        // before this migration existed, read back once.
+        let old = Saved(bindings: [Command.searchTabs.rawValue: Keybinding("c", .command)],
+                        priorities: [:], migrated: migration - 1)
+        if let blob = try? JSONEncoder().encode(old) {
+            defaults.set(blob, forKey: storeKey)
+            cached = nil
+            out.append(("a table saved before the migration comes back with ⌘C gone",
+                        binding(for: .searchTabs) == Command.searchTabs.defaultBinding
+                            && command(for: Keybinding("c", .command)) == nil))
+        } else {
+            out.append(("a table saved before the migration comes back with ⌘C gone", false))
+        }
 
         // Reset.
         reset(.newWindow)
@@ -1019,6 +1145,19 @@ extension Keybindings {
             ("a bare function key is allowed", reserved(Keybinding("\u{F704}")) == nil),
             ("an ordinary binding is allowed", reserved(Keybinding("t", .command)) == nil),
             ("unassigned is not reserved", reserved(.unassigned) == nil),
+            // Rebinding one of these would take the keystroke off every text field and every
+            // page in the app, because the monitor runs ahead of the menu.
+            ("⌘C, ⌘V, ⌘X, ⌘Z and ⌘A are refused: they are the page's and the field's",
+             ["c", "v", "x", "z", "a"].allSatisfy { reserved(Keybinding($0, .command)) != nil }),
+            ("…and so is ⌥⇧⌘V",
+             reserved(Keybinding("v", [.command, .option, .shift])) != nil),
+            // ⇧⌘/ reaches the app as ⌘?, the shifted glyph carrying its own shift.
+            ("⌘? is refused: ⇧⌘/ opens the Help menu's search in every Mac app",
+             reserved(Keybinding("?", [.command, .shift])) != nil
+                && reserved(Keybinding("?", .command)) != nil),
+            ("a chord Vane itself ships on is not reserved — that is a conflict to warn about, not a refusal",
+             reserved(Keybinding("t", .command)) == nil
+                && reserved(Keybinding("l", .command)) == nil),
         ]
 
         // Priority.
@@ -1055,6 +1194,23 @@ extension Keybindings {
              alias(left, fieldEditor: true, pageEditable: true) == nil),
             ("a chord that is not an alias is not one however the guards stand",
              alias(Keybinding("t", .command), fieldEditor: false, pageEditable: false) == nil),
+            // The standard chords Arc's own keys had spent elsewhere, answered as second
+            // chords. ⇧⌘[ sends "{", ⇧⌘] sends "}" and ⌘= is ⌘+ without the shift — on a
+            // layout that sends those glyphs, which is the ceiling noted on `aliases`.
+            ("⇧⌘[ and ⇧⌘] walk the tabs on a layout that sends { and }",
+             alias(Keybinding("{", .command), fieldEditor: false, pageEditable: false) == .previousTab
+                && alias(Keybinding("}", .command), fieldEditor: false,
+                         pageEditable: false) == .nextTab),
+            ("…and keep working while a page's text box has the caret: they are not editing keys",
+             alias(Keybinding("}", .command), fieldEditor: true, pageEditable: true) == .nextTab),
+            ("⌘= zooms in as well as ⌘+",
+             alias(Keybinding("=", .command), fieldEditor: false, pageEditable: false) == .zoomIn),
+            ("the arrows are still the only chords a caret takes back",
+             caretAliases == [Keybinding("\u{F702}", .command), Keybinding("\u{F703}", .command)]),
+            ("no alias chord is one a command already ships on",
+             aliases.values.allSatisfy { command(for: $0) == nil }),
+            ("no two commands share an alias chord",
+             Set(aliases.values).count == aliases.count),
         ]
 
         // The page's half of the guard, as it arrives over the message handler. Per frame,
