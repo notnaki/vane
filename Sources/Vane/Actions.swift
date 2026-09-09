@@ -70,8 +70,8 @@ extension PaletteCommand {
     /// has no sidebar, no Space and no strip to split — so each group below is gated on the
     /// one fact that makes it real, and the rest of the list closes up over it.
     ///
-    /// The order is the order the bar shows them with nothing typed (see `topActions`), and
-    /// then it is only a tie-break: `Palette.rank` decides everything once a letter is typed.
+    /// The order here is only a tie-break: `Palette.rank` decides everything, and nothing is
+    /// listed at all until a letter is typed.
     @MainActor static func all(for store: TabStore) -> [PaletteCommand] {
         var out: [PaletteCommand] = [
             PaletteCommand(.newTab, icon: "plus"),
@@ -212,17 +212,6 @@ extension PaletteCommand {
             // No Quit row. Arc's palette has none, and for the reason you would guess: it
             // would sit one Return away from every half-finished download in the window.
         ]
-    }
-
-    /// How many actions Arc's bar shows before a single character is typed. Enough to say
-    /// "there are verbs in here too", not so many that ⌘⇧P opens on a wall of them.
-    static let topCount = 5
-
-    /// Arc's bar at rest lists a few suggested actions under the open tabs. The head of the
-    /// catalogue is that list — the five rows above are the ones that need nothing to be
-    /// true, so the suggested set never changes shape as tabs come and go.
-    @MainActor static func topActions(for store: TabStore) -> [PaletteCommand] {
-        Array(all(for: store).prefix(topCount))
     }
 
     /// A menu item whose row has to know something the menu item cannot: which window the
