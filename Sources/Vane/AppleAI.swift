@@ -585,16 +585,17 @@ import FoundationModels
     /// with a floor so a four-tab tidy is not cut off mid-name. The old flat 400 was sized
     /// for uuids and let a runaway answer run for seconds before the timeout noticed.
     ///
-    /// Measured, not estimated: a well-formed answer for thirty tabs costs ~4–4.5 tokens a
-    /// tab once the guided-generation wrapper and up to `maxGroups` names are counted, so
-    /// the slope is 5 and the floor 160. A slope of 3 cut a 60-tab answer off mid-list.
+    /// Measured, not estimated: a well-formed answer costs ~4–4.5 tokens a tab once the
+    /// guided-generation wrapper and the group names are counted, so the slope is 5 and the
+    /// floor 160. A slope of 3 cut a 60-tab answer off mid-list.
     static func groupingTokens(_ count: Int) -> Int { max(160, 128 + 5 * count) }
 
-    /// How many tabs the model is shown. ponytail: past about thirty-five the 3B model
-    /// degenerates — every number in every group — and no token budget rescues it, so the
-    /// tail is dropped rather than batched. Batching would need cross-batch group merging,
-    /// which is a feature, not a safeguard.
-    static let listedTabLimit = 30
+    /// How many tabs the model is shown. ponytail: somewhere past twenty the 3B model
+    /// degenerates — one group swallows most of the list and numbers repeat across groups —
+    /// and no token budget rescues that; thirty failed on a live run, twenty decoded every
+    /// time. So the tail is dropped rather than batched: batching would need cross-batch
+    /// group merging, which is a feature, not a safeguard.
+    static let listedTabLimit = 20
 
     /// Cluster open tabs into named groups. The listing is numbered and the numbers are
     /// validated on the way back, so a hallucinated one can never name a tab the caller does
@@ -815,7 +816,7 @@ import FoundationModels
                groupingTokens(minimumTabsToGroup) == groupingTokens(0)
                && groupingTokens(0) >= 160)
         assert("the model is shown no more tabs than it can group without degenerating",
-               listedTabLimit <= 35 && listedTabLimit >= 20)
+               listedTabLimit <= 20 && listedTabLimit >= minimumTabsToGroup)
 
         return out
     }
