@@ -357,10 +357,12 @@ private struct FindBarBody: View {
         }
     }
 
-    /// Esc, and the × button: the bar goes, and so does the highlight it left on the page.
+    /// Esc, and the × button: the bar goes, and so does the highlight it left on the page —
+    /// and the keyboard goes back to the page the bar was searching. See `TabStore.focusPage`.
     private func close() {
         session.clearHighlight(in: tab)
         store.findOpen = false
+        store.focusPage()
     }
 }
 

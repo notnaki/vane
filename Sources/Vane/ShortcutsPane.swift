@@ -211,9 +211,18 @@ import SwiftUI
         Keybindings.actions = [:]
         axAnnounce("Recording a shortcut for \(command.title). Press the keys, or Escape to cancel.")
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard let pressed = Keybinding(event: event) else { return nil }
-            MainActor.assumeIsolated { apply(Self.capture(pressed), to: command) }
-            return nil          // swallowed: nothing else should act on the keys being typed
+            // A Bool out of the isolated block, not the event: NSEvent is not Sendable.
+            let passOn = MainActor.assumeIsolated { () -> Bool in
+                // The monitor is app-wide; the recorder is not. See `reach`.
+                guard Self.reach(inSettingsWindow: SettingsWindow.holds(event.window)) == .record
+                else {
+                    stopRecording()
+                    return true
+                }
+                if let pressed = Keybinding(event: event) { apply(Self.capture(pressed), to: command) }
+                return false    // swallowed: nothing else should act on the keys being typed
+            }
+            return passOn ? event : nil
         }
     }
 
@@ -289,6 +298,25 @@ extension ShortcutsPane {
         case bind(Keybinding)
     }
 
+    /// What the recorder does with a keystroke that reaches its monitor.
+    enum Reach: Equatable {
+        /// It is the shortcut being typed.
+        case record
+        /// It landed somewhere else entirely: stop listening and leave the key alone.
+        case release
+    }
+
+    /// Only the Settings window's own keystrokes are the shortcut being recorded.
+    ///
+    /// `startRecording`'s monitor is app-wide and swallows *every* key, and the pane lives in
+    /// a window that is only ordered out when it closes — `SettingsWindow` keeps the instance
+    /// and its hosting view, so `.onDisappear` never fires. A row left listening (click a key
+    /// cap, then close Settings with the red button) therefore kept a monitor on the whole app:
+    /// the next keystroke anywhere was swallowed, and if it was bindable it was *saved* as that
+    /// command's new shortcut. That is how ⌘W and ⌘T stopped working and stayed that way, and
+    /// how ⌘V was eaten once on its way to being refused as a reserved chord.
+    static func reach(inSettingsWindow: Bool) -> Reach { inSettingsWindow ? .record : .release }
+
     /// Escape backs out, a bare Delete unbinds, everything else is the new shortcut. Both
     /// escapes require no modifiers, so ⌘⌫ is still recordable as a shortcut.
     static func capture(_ pressed: Keybinding) -> Capture {
@@ -333,6 +361,13 @@ extension ShortcutsPane {
         let grouped = groups("", all)
         let ranked = groups("new tab", [.newTab, .newWindow])
         return [
+            ("a keystroke in the Settings window is the shortcut being recorded",
+             reach(inSettingsWindow: true) == .record),
+            ("one anywhere else releases the recorder and is left alone — a row left "
+             + "listening behind a closed Settings window used to eat the next key in the "
+             + "browser and save it as that command's shortcut",
+             reach(inSettingsWindow: false) == .release),
+
             ("Escape cancels recording", capture(escape) == .cancel),
             ("a bare Delete unbinds", capture(delete) == .clear),
             ("Backspace unbinds too", capture(Keybinding("\u{8}")) == .clear),

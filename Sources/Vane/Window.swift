@@ -346,6 +346,58 @@ extension VaneWindow {
         TabStore.all.first { $0.window?.isKeyWindow == true } ?? main
     }
 
+    // MARK: ⌘W
+
+    /// What ⌘W closes.
+    enum CloseTarget: Equatable, Sendable {
+        /// A tab in the window the keystroke was aimed at — `current`.
+        case tab
+        /// The key window itself, because it holds no tabs to close.
+        case window
+    }
+
+    /// Vane has windows of its own that hold no tabs at all — Settings, History, Extensions —
+    /// and `current` deliberately falls back to the frontmost browser window when the key
+    /// window is not one of its stores. Together those meant ⌘W over Settings left Settings
+    /// open and quietly archived a tab in a browser window *behind* it, which is both a key
+    /// that does nothing and a tab the user did not close. In every Mac app, ⌘W over a window
+    /// with nothing to close inside it closes the window.
+    ///
+    /// A window attached to another — a Peek's child window, a popover, a panel or a sheet
+    /// hanging off the browser — is still aimed at the window behind it, which is where
+    /// `current` already looks. So is no key window at all, which is what `current`'s fallback
+    /// was written for.
+    ///
+    /// Pure, so `selfcheck --pure` proves the ladder without a window server.
+    nonisolated static func closeTarget(hasKey: Bool, keyHoldsTabs: Bool,
+                                        keyIsAttached: Bool) -> CloseTarget {
+        !hasKey || keyHoldsTabs || keyIsAttached ? .tab : .window
+    }
+
+    // MARK: The keyboard
+
+    /// Whether the page has to be handed the keyboard back.
+    ///
+    /// AppKit leaves a window's first responder as *the window itself* the moment the view
+    /// holding the keyboard is taken out of the hierarchy — which is exactly what closing the
+    /// command bar or the find bar does to its field. A window in that state answers nothing
+    /// down the responder chain, so ⌘V, ⌘C, ⌘X, ⌘Z and ⌘A quietly die (they are targetless
+    /// standard menu items — see Standard.swift) and the page can be neither typed into nor
+    /// scrolled until it is clicked. `Library.close` already hands it back on the way out of
+    /// the panel; the bars that float over the page need it for the same reason.
+    ///
+    /// Only when nobody holds it: never taken off a field that has it, and never invented for
+    /// a window with no page in it. Never while the Library is up either — the rail takes no
+    /// first responder of its own, so a window showing it looks exactly like one nobody holds
+    /// the keyboard in, and handing the page the keyboard there would send ⌘F to the page
+    /// instead of to the panel the user is looking at (`TabStore.keyboardOnPage`).
+    ///
+    /// Pure, so `selfcheck --pure` proves it with no window.
+    nonisolated static func handsKeyboardBack(nobodyHasIt: Bool, hasPage: Bool,
+                                              libraryOpen: Bool) -> Bool {
+        nobodyHasIt && hasPage && !libraryOpen
+    }
+
     /// The frontmost ordinary browser window, never a Little Arc. What a link from another
     /// app opens a tab in, what a Little Arc hands its page over to, and what every menu
     /// item that needs a sidebar acts on. See LittleArc.swift.
@@ -494,6 +546,58 @@ extension VaneWindow {
                 // window: the live folders' timer must not outlive the sidebar drawing them.
                 LiveFolders.forget(store.profileID)
             }
+        }
+    }
+
+    // MARK: - check
+
+    /// The two ladders above, proved offline.
+    nonisolated static func check() -> [(String, Bool)] {
+        [
+            ("⌘W over a browser window closes a tab",
+             closeTarget(hasKey: true, keyHoldsTabs: true, keyIsAttached: false) == .tab),
+            ("⌘W over a window of ours that holds no tabs — Settings, History, Extensions — "
+             + "closes that window, rather than archiving a tab in a browser window behind it",
+             closeTarget(hasKey: true, keyHoldsTabs: false, keyIsAttached: false) == .window),
+            ("…and over a Peek, a popover or a sheet hanging off the browser it is still the tab",
+             closeTarget(hasKey: true, keyHoldsTabs: false, keyIsAttached: true) == .tab),
+            ("with no key window at all it is the tab, which is what `current`'s fallback is for",
+             closeTarget(hasKey: false, keyHoldsTabs: false, keyIsAttached: false) == .tab),
+
+            ("a window nobody holds the keyboard in hands it back to the page, so ⌘V, ⌘C and "
+             + "⌘A still reach it after the command bar or the find bar goes",
+             handsKeyboardBack(nobodyHasIt: true, hasPage: true, libraryOpen: false)),
+            ("it is never taken off whatever does hold it",
+             !handsKeyboardBack(nobodyHasIt: false, hasPage: true, libraryOpen: false)),
+            ("and never invented for a window with no page in it",
+             !handsKeyboardBack(nobodyHasIt: true, hasPage: false, libraryOpen: false)),
+            ("nor handed to a page the Library is standing in front of — ⌘F there is the "
+             + "panel's search, not find-in-page",
+             !handsKeyboardBack(nobodyHasIt: true, hasPage: true, libraryOpen: true)),
+        ]
+    }
+}
+
+extension TabStore {
+    /// Hand the keyboard back to the page once a bar over it has gone — see
+    /// `Windows.handsKeyboardBack` for what goes wrong without it.
+    ///
+    /// A turn later: SwiftUI takes the bar's field out of the view hierarchy on its next pass,
+    /// and AppKit only drops the first responder then. The same turn `PaletteView.activate`
+    /// already waits for, and for the same reason.
+    ///
+    /// "Nobody has it" is either of AppKit's two spellings — the window is its own first
+    /// responder, or the first responder is a view that has already left the window — so the
+    /// answer does not depend on which of the two happens first.
+    func focusPage() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window else { return }
+            let holder = window.firstResponder
+            let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
+            let page = active?.web
+            guard Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
+                                            libraryOpen: libraryOpen), let page else { return }
+            window.makeFirstResponder(page)
         }
     }
 }

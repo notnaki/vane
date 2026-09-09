@@ -1276,7 +1276,11 @@ struct TitleReveal: Equatable, Sendable {
 
     /// ⌘T, ⌘L and the pill: opening the bar over a bar that is already up closes it instead
     /// (Arc v0.107). `Palette.toggled` is where that decision is written down.
-    func openPalette(_ mode: PaletteMode) { palette = Palette.toggled(current: palette, pressed: mode) }
+    func openPalette(_ mode: PaletteMode) {
+        palette = Palette.toggled(current: palette, pressed: mode)
+        // ⌘L over an open bar closes it, and the page has to get the keyboard back with it.
+        if palette == nil { focusPage() }
+    }
 
     /// Shift-Return in the address bar: skip the results page. The first target replaces
     /// the current tab and the rest open beside it, with focus staying where the user was.

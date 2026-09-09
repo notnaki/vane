@@ -235,8 +235,12 @@ struct BrowserWindow: View {
         window?.centreTrafficLights()
     }
 
-    /// Nothing to undo on dismiss: ⌘T makes no tab until the bar is submitted.
-    private func dismissPalette() { store.palette = nil }
+    /// Nothing to undo on dismiss: ⌘T makes no tab until the bar is submitted. The page takes
+    /// the keyboard back as the bar's field goes — see `TabStore.focusPage`.
+    private func dismissPalette() {
+        store.palette = nil
+        store.focusPage()
+    }
 }
 
 /// The window's ground: the space's colour, derived the way Arc derives a theme

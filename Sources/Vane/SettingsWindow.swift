@@ -133,6 +133,15 @@ enum LinkTarget {
     /// The title bar names the pane you are looking at, the way Arc's and System Settings'
     /// do — the tab bar is icons, so the title is where the full word lives.
     static func retitle(_ title: String) { window?.title = title }
+
+    /// Whether a key event landed in this window. `ShortcutsPane`'s recorder asks: its event
+    /// monitor is app-wide, so a keystroke anywhere else is not the shortcut being typed —
+    /// see `ShortcutsPane.reach`. False once the window is closed, which is the case that
+    /// left the recorder eating every key in the browser.
+    static func holds(_ candidate: NSWindow?) -> Bool {
+        guard let candidate, let window else { return false }
+        return candidate === window && window.isVisible
+    }
 }
 
 // MARK: - Tabs
