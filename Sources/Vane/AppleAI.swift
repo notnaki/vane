@@ -26,8 +26,8 @@ import FoundationModels
 @Generable private struct TabGroup {
     @Guide(description: "A name for the group: one to three words, title case.")
     var name: String
-    @Guide(description: "The id of every tab in this group, copied exactly from the list.")
-    var ids: [String]
+    @Guide(description: "The number at the start of every line that belongs in this group.")
+    var tabs: [Int]
 }
 
 @Generable private struct TabGroups {
@@ -404,17 +404,19 @@ import FoundationModels
         return e.isEmpty ? s : s + "." + e
     }
 
-    /// The model is asked to copy tab ids back verbatim. Sometimes it invents one, repeats
-    /// one, or returns an empty group. Ids that were not in the input are dropped, each tab
-    /// lands in the first group that claims it, and an answer with nothing left is nil.
-    static func tidyGroups(_ raw: [(name: String, ids: [String])],
-                           known: Set<String>) -> [(name: String, ids: [String])]? {
-        var seen = Set<String>()
+    /// The model answers with the line numbers from the listing, and it still miscounts:
+    /// it invents a number, repeats one, or returns an empty group. Numbers outside the
+    /// listing are dropped, each tab lands in the first group that claims it, and an answer
+    /// with nothing left is nil. `ids` is the caller's own list, in listing order, so a
+    /// number the model made up can never name a tab the caller does not have.
+    static func tidyGroups(_ raw: [(name: String, tabs: [Int])],
+                           ids: [String]) -> [(name: String, ids: [String])]? {
+        var seen = Set<Int>()
         var out: [(name: String, ids: [String])] = []
         for g in raw {
-            let ids = g.ids.filter { known.contains($0) && seen.insert($0).inserted }
-            guard !ids.isEmpty, let name = tidyTitle(g.name) else { continue }
-            out.append((name: name, ids: ids))
+            let picked = g.tabs.filter { ids.indices.contains($0 - 1) && seen.insert($0).inserted }
+            guard !picked.isEmpty, let name = tidyTitle(g.name) else { continue }
+            out.append((name: name, ids: picked.map { ids[$0 - 1] }))
         }
         return out.isEmpty ? nil : out
     }
@@ -556,21 +558,57 @@ import FoundationModels
         return safeFilename(out.stem, extension: ext)
     }
 
-    /// Cluster open tabs into named groups. Ids are opaque to the model and validated on the
-    /// way back, so a hallucinated id can never name a tab the caller does not have.
+    /// A tab title is a headline, not a page: sixty characters is plenty to tell Swift docs
+    /// from a flight search, and the tail is where the site name lives.
+    static let listedTitleLimit = 60
+
+    /// One line per tab, numbered from 1. The model answers with those numbers.
+    ///
+    /// ponytail: numbers, not ids. Listing the full `Tab.ID.uuidString` and asking the model
+    /// to copy each one back was most of what a tidy spent its time on — 36 characters of
+    /// hex per tab, generated one token at a time, and a single typo silently dropped that
+    /// tab. Small integers are a few tokens each and are checked on the way back all the
+    /// same. Ten realistic tabs, measured on a quiet Mac: 11.3s before, 2.2s after.
+    ///
+    /// Worse than slow, it usually did not work: ten uuids do not fit in 400 response
+    /// tokens, so the answer was cut off mid-hex and the framework threw `decodingFailure`
+    /// — 16 of 20 runs here. Every one of those tidies paid 11–30s and then fell back to
+    /// the arithmetic grouping anyway, which is the "tidy is slow *and* dull" the user saw.
+    static func listing(_ tabs: [(id: String, title: String, host: String)]) -> String {
+        tabs.enumerated().map { i, t in
+            let host = t.host.hasPrefix("www.") ? String(t.host.dropFirst(4)) : t.host
+            return "\(i + 1) | \(truncate(t.title, limit: listedTitleLimit)) | \(host)"
+        }.joined(separator: "\n")
+    }
+
+    /// What the answer actually needs: a handful of group names plus one small number a tab,
+    /// with a floor so a four-tab tidy is not cut off mid-name. The old flat 400 was sized
+    /// for uuids and let a runaway answer run for seconds before the timeout noticed.
+    ///
+    /// Measured, not estimated: a well-formed answer costs ~4–4.5 tokens a tab once the
+    /// guided-generation wrapper and the group names are counted, so the slope is 5 and the
+    /// floor 160. A slope of 3 cut a 60-tab answer off mid-list.
+    static func groupingTokens(_ count: Int) -> Int { max(160, 128 + 5 * count) }
+
+    /// How many tabs the model is shown. ponytail: past fifteen the 3B model degenerates —
+    /// one group swallows most of the list and numbers repeat across groups — and no token
+    /// budget rescues that. Measured on live runs with a fresh session each: thirty failed,
+    /// twenty failed or degenerated on two of four realistic sets, fifteen decoded cleanly
+    /// three of three. So the tail is dropped rather than batched; batching would need
+    /// cross-batch group merging, which is a feature, not a safeguard. Everything past the
+    /// cap still gets the arithmetic grouping in `TidyTabs.plan`.
+    static let listedTabLimit = 15
+
+    /// Cluster open tabs into named groups. The listing is numbered and the numbers are
+    /// validated on the way back, so a hallucinated one can never name a tab the caller does
+    /// not have.
     static func group(_ tabs: [(id: String, title: String, host: String)]) async -> [(name: String, ids: [String])]? {
         guard ready, worthGrouping(tabs.count) else { return nil }
-        // ponytail: 60 tabs is where the listing starts eating the context window. Past that
-        // the tail is dropped rather than batched — batching would need cross-batch group
-        // merging, which is a feature, not a safeguard.
-        let listing = tabs.prefix(60)
-            .map { "\($0.id) | \($0.title) | \($0.host)" }
-            .joined(separator: "\n")
-        let p = prompt(listing, ask: "Group the tabs listed above by topic, copying each id exactly.")
+        let shown = Array(tabs.prefix(listedTabLimit))
+        let p = prompt(listing(shown), ask: "Group the tabs listed above by topic, naming each tab by its number.")
         guard let out = await run(.grouping, p, as: TabGroups.self,
-                                  tokens: 400, timeout: .seconds(30)) else { return nil }
-        return tidyGroups(out.groups.map { (name: $0.name, ids: $0.ids) },
-                          known: Set(tabs.map(\.id)))
+                                  tokens: groupingTokens(shown.count), timeout: .seconds(30)) else { return nil }
+        return tidyGroups(out.groups.map { (name: $0.name, tabs: $0.tabs) }, ids: shown.map(\.id))
     }
 
     // MARK: - check
@@ -742,21 +780,45 @@ import FoundationModels
                tidyTitle("") == nil && tidyTitle("  \"\"  ") == nil)
 
         // --- Groups ---
-        let known: Set<String> = ["a", "b", "c"]
-        let messy = tidyGroups([(name: "Docs", ids: ["a", "zzz", "b"]),
-                                (name: "More Docs", ids: ["b", "c"]),
-                                (name: "Empty", ids: []),
-                                (name: "", ids: ["a"])], known: known)
+        let ids = ["a", "b", "c"]
+        let messy = tidyGroups([(name: "Docs", tabs: [1, 9, 2]),
+                                (name: "More Docs", tabs: [2, 3]),
+                                (name: "Empty", tabs: []),
+                                (name: "", tabs: [1])], ids: ids)
 
-        assert("ids the model invented are dropped",
+        assert("a number past the end of the listing is dropped",
                messy?.first?.ids == ["a", "b"])
         assert("a tab lands in exactly one group",
                messy?.dropFirst().first?.ids == ["c"])
         assert("an empty group and an unnamed group are dropped",
                messy?.count == 2)
+        assert("the numbering the model answers with is 1-based",
+               tidyGroups([(name: "Docs", tabs: [0, 3])], ids: ids)?.first?.ids == ["c"])
         assert("an answer with nothing usable in it is nil, not an empty grouping",
-               tidyGroups([(name: "Ghosts", ids: ["nope"])], known: known) == nil
-               && tidyGroups([], known: known) == nil)
+               tidyGroups([(name: "Ghosts", tabs: [99])], ids: ids) == nil
+               && tidyGroups([], ids: ids) == nil)
+
+        let listed = listing([(id: "a", title: "Swift Concurrency", host: "www.swift.org"),
+                              (id: "b", title: "Show HN", host: "news.ycombinator.com"),
+                              (id: "c", title: "Flights to Lisbon", host: "google.com")])
+        let long = listing([(id: "a", title: String(repeating: "long ", count: 40), host: "example.com")])
+        assert("the listing is numbered from one, drops www., and never shows an id",
+               listed == """
+               1 | Swift Concurrency | swift.org
+               2 | Show HN | news.ycombinator.com
+               3 | Flights to Lisbon | google.com
+               """)
+        assert("a title longer than the cap is truncated in the listing",
+               long.count <= listedTitleLimit + "1 |  | example.com".count)
+        assert("the token budget grows with the number of tabs",
+               groupingTokens(60) > groupingTokens(20))
+        assert("…by at least the measured cost of a tab in the answer",
+               groupingTokens(listedTabLimit) - groupingTokens(10) >= 4 * (listedTabLimit - 10))
+        assert("and has a floor, so a small tidy is not cut off mid-name",
+               groupingTokens(minimumTabsToGroup) == groupingTokens(0)
+               && groupingTokens(0) >= 160)
+        assert("the model is shown no more tabs than it can group without degenerating",
+               listedTabLimit <= 15 && listedTabLimit >= minimumTabsToGroup)
 
         return out
     }

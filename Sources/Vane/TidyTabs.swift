@@ -189,10 +189,11 @@ import Foundation
     /// Ask the model, fall back to arithmetic. Returns nil only when there is genuinely
     /// nothing to say — fewer than two tabs, or the caller cancelled.
     ///
-    /// **Latency: measured at 11.7–11.8s** for ten tabs on an M-series Mac, three runs, cold
-    /// each time (`AppleAI.prewarm` had not run). That is slower than the 3–10s this was
-    /// budgeted for and it is under `AppleAI.group`'s own 30s timeout, so it completes — but
-    /// whatever calls this needs a spinner and a Cancel, not an hourglass cursor. It is
+    /// **Latency: measured at 2.2s** for ten tabs on an M-series Mac, cold each time
+    /// (`AppleAI.prewarm` had not run), down from 11.7s when the model was asked to copy
+    /// each tab's uuid back — see `AppleAI.listing`. That is inside the 3–10s this was
+    /// budgeted for, but a busy Mac still stretches it past ten, so whatever calls this
+    /// needs a spinner and a Cancel, not an hourglass cursor. It is
     /// acceptable because this only ever runs from an explicit "Tidy Tabs" click, but the
     /// caller owns the `Task` and must be able to cancel it — hence the cancellation check
     /// before the fallback, so a cancelled tidy does not quietly deliver a different answer
