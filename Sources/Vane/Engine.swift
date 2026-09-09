@@ -1034,6 +1034,11 @@ struct TitleReveal: Equatable, Sendable {
     /// the order the rows are drawn in. `tabs` still holds the tabs themselves; this only
     /// says how they are arranged. See `Pins` in Folders.swift.
     @Published var pins = Pins()
+    /// The same, for Today — which is where a tidy's folders go. A second instance of the
+    /// same value rather than a section field on every row, so a tab in a folder here stays
+    /// an ordinary Today tab: it keeps auto-archiving, ⌘W archives it, and Clear takes it.
+    /// See `TabStore.shape(of:)`, which is what tells the shared rows which one they are on.
+    @Published var todayShape = Pins()
     /// The folder whose row is a name field right now, the way `renamingTab` is for a tab.
     @Published var renamingFolder: UUID? {
         didSet { if renamingFolder != nil { renamingTab = nil } }
@@ -1182,7 +1187,13 @@ struct TitleReveal: Equatable, Sendable {
         restorePins(urls: pinned, parked: parked)
         let kept = Set(favourites + pinned)
         let rest = urls.filter { !kept.contains($0) }
-        rest.forEach { newBlankTab().open($0, parked: parked[$0.absoluteString]) }
+        // Today is a shape too — its folders are where a tidy puts its groups — so the tabs
+        // are collected on the way past and handed the shape the Space was left in.
+        adoptTodayShape(tabs: rest.map { url in
+            let t = newBlankTab()
+            t.open(url, parked: parked[url.absoluteString])
+            return t
+        })
         // Favourites and pinned rows come back parked and stay parked: focus lands on the
         // first Today tab, and with none the column is bare and the search bar is up — the
         // same thing an empty window does, because as far as pages go it is one.
@@ -1298,6 +1309,10 @@ struct TitleReveal: Equatable, Sendable {
         Motion.list {
             tabs.insert(t, at: TabStore.clampedDestination(others: tabs.map(\.kind),
                                                            moving: kind, to: tabs.count))
+            // Today is drawn from its shape, so a tab the shape has never heard of would be
+            // a row nothing draws. `sync` takes it in at the end of the section — which is
+            // where the strip has just put it, and outside every folder.
+            syncShapes()
         }
         if focus { current = t.id }
         extensions.sync()
@@ -1471,6 +1486,10 @@ struct TitleReveal: Equatable, Sendable {
             Motion.list { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
+            // A Today folder does not: it is a grouping of tabs that are still archiving
+            // themselves, so the last one leaving — swept, closed or cleared — ends it.
+            todayShape.remove(tab: id.uuidString)
+            todayShape.removeEmptyFolders()
             MediaState.shared.forget(id)
             // Closing GitHub's consent page by hand is abandoning the sign-in: the next
             // "New Live Folder…" starts a fresh one rather than pointing at a tab that has
@@ -1559,22 +1578,25 @@ struct TitleReveal: Equatable, Sendable {
     /// drops one — and at the head of Today, so an unpinned tab appears right under the
     /// New Tab row rather than at the bottom of a long list.
     ///
-    /// `batched` is for a caller moving a run of tabs in one go: the in-memory `syncPins`
-    /// still runs — the Pinned section has to know about a tab before anything can put it in
-    /// a folder — but the write to disk and the pinned chip's title are left to the caller to
-    /// do once at the end. A whole tidy used to be one synchronous `UserDefaults` write and
-    /// one JSON encode of the section's shape *per tab moved*, on the main actor.
-    func move(_ id: Tab.ID, to kind: TabKind, batched: Bool = false) {
+    /// It used to take a `batched` flag, for a caller moving a run of tabs at once and doing
+    /// the write and the retitling itself at the end. The one caller was Tidy, which does not
+    /// move tabs between sections any more — its folders are Today's — so the flag went with
+    /// it rather than sitting here explaining a run that no longer happens.
+    func move(_ id: Tab.ID, to kind: TabKind) {
         guard let i = tabs.firstIndex(where: { $0.id == id }), tabs[i].kind != kind else { return }
         Motion.list {
             let tab = tabs.remove(at: i)
-            setKind(tab, kind, titling: !batched)
+            setKind(tab, kind)
             let dest = TabStore.clampedDestination(others: tabs.map(\.kind), moving: kind,
                                                    to: kind == .today ? 0 : tabs.count)
             tabs.insert(tab, at: dest)
         }
-        syncPins()          // a tab leaving Pinned leaves its folder with it
-        if !batched { savePins() }
+        syncShapes()          // a tab leaving a section leaves its folder with it
+        // The strip put it at the head of Today; `sync` takes a row it has not seen at the
+        // *end*, so the shape is told the same thing — at the top, and in no folder, which
+        // is where an un-pinned tab and one moved in from another Space both belong.
+        if kind == .today { todayShape.put(id.uuidString, at: Pins.Spot(parent: nil, index: 0)) }
+        savePins()
     }
 
     /// ⌘D / the Favourite Tab menu item: into the grid, or back down to Today.
@@ -1618,7 +1640,7 @@ struct TitleReveal: Equatable, Sendable {
     /// what is still here" the tidy's undo uses.
     private func repin(_ id: Tab.ID, spot: Pins.Spot?, order: [Tab.ID]) {
         guard tabs.contains(where: { $0.id == id }) else { return }
-        move(id, to: .pinned)          // which also `syncPins`, so the row exists to place
+        move(id, to: .pinned)          // which also `syncShapes`, so the row exists to place
         // Back in its folder at the index it had, and nothing else in the section touched.
         // A folder that has gone in the meantime takes the row to the end of the section
         // rather than dragging a deleted folder back with it — see `Pins.put`.
@@ -1632,20 +1654,21 @@ struct TitleReveal: Equatable, Sendable {
             // That breaks the one strip invariant, so the sections are settled again before
             // anything reads the strip. `TidyTabs.undo` does the same, for the same reason.
             normaliseSections()
-            applyPinOrder()
+            applyOrder(.pinned)
+            // Today has just been handed a whole order at once, so there the shape follows
+            // the strip rather than the strip following the shape. See `Pins.relay`.
+            todayShape.relay(tabs.map(\.id.uuidString))
         }
         savePins()
         axAnnounce("Pinned again.")
     }
 
-    /// A tab has changed section. `titling` false leaves the pinned chip's name to the
-    /// caller: a section change is not a navigation, so the page is the same page and the
-    /// only tab that needs a name is one that has not got one — a question worth asking once,
-    /// after a batch of moves has settled, rather than once per move. See `TidyTabs.apply`.
-    private func setKind(_ tab: Tab, _ kind: TabKind, titling: Bool = true) {
+    /// A tab has changed section, and the row it draws is asked for a name again — a page
+    /// with no title of its own reads differently as a chip than as a full row.
+    private func setKind(_ tab: Tab, _ kind: TabKind) {
         guard tab.kind != kind else { return }
         tab.kind = kind
-        if titling { TidyTitles.refresh(tab) }
+        TidyTitles.refresh(tab)
     }
 
     /// One drop for the whole sidebar: `id` lands before or after `target` and takes on the
@@ -1657,18 +1680,19 @@ struct TitleReveal: Equatable, Sendable {
               let from = tabs.firstIndex(where: { $0.id == id }),
               let to = tabs.firstIndex(where: { $0.id == target }) else { return }
         let want = tabs[to].kind
-        let touchesSections = Motion.list {
+        Motion.list {
             let tab = tabs.remove(at: from)
-            let touches = tab.stays || want != .today
             setKind(tab, want)
             let dest = TabStore.clampedDestination(
                 others: tabs.map(\.kind), moving: want,
                 to: TabStore.insertionIndex(from: from, target: to, after: after))
             tabs.insert(tab, at: min(dest, tabs.count))
-            return touches
         }
-        placeInPins(id, onto: target, after: after)
-        if touchesSections { savePins() }
+        placeInShape(id, onto: target, after: after)
+        // Always. This used to skip the write for a drop that stayed inside Today, on the
+        // grounds that nothing written down had changed; Today's order and its folders are
+        // in the shape now, so a reorder there is exactly what has to be saved.
+        savePins()
     }
 
     /// Where a tab dragged from `from` goes to sit before (or after) `target`, once its own
@@ -1923,7 +1947,11 @@ struct TitleReveal: Equatable, Sendable {
         applySpaceAppearance()          // the new space may be pinned to light or dark
         let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
         restorePins(urls: space.pinnedTabURLs ?? [], parked: parked)
-        for url in space.tabURLs { newBlankTab().open(url, parked: parked[url.absoluteString]) }
+        adoptTodayShape(tabs: space.tabURLs.map { url in
+            let t = newBlankTab()
+            t.open(url, parked: parked[url.absoluteString])
+            return t
+        })
         // Arc lands on the tab this Space was left on; `Spaces.landing` is the ladder down to
         // the first Today tab, the first pinned row, and finally an empty pill.
         current = Spaces.landing(on: tabs.map { ($0.currentURL?.absoluteString, $0.kind) },
