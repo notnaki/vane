@@ -16,8 +16,13 @@ import AppKit
 /// there is to say what the shipped default has to be, so a rearrangement of Vane's own
 /// shortcuts cannot quietly take ⌘M away.
 ///
-/// Everything here is a pure value — no window server, no defaults — so `selfcheck --pure`
-/// proves the whole table, and `Standard.installed` proves the menu that was built from it.
+/// Everything here is a pure value — no window server — so `selfcheck --pure` proves the
+/// whole table, and `Standard.installed` proves the menu that was built from it. The rows
+/// about Vane's own commands are asserted against `Command.defaultBinding`, the chord the
+/// app *ships*, never against the live registry: the selfcheck is the release gate, and a
+/// user who has moved New Tab in Settings ▸ Shortcuts has customised their copy, not broken
+/// the standard set. The one row that reads a defaults suite plants a binding in a throwaway
+/// one to prove exactly that.
 enum Standard {
 
     /// What answers the chord.
@@ -124,7 +129,9 @@ enum Standard {
         app("Bring All to Front", "arrangeInFront:"),
 
         // MARK: Help
-        vane(.vaneHelp, "?", .command),
+        // No row: Vane Help carries no chord, exactly as Safari's does. ⇧⌘/ — which reaches
+        // the app as ⌘? — is macOS's own "Show Help menu", and no Apple app spends it on its
+        // help item. `Keybindings.reserved` refuses it so nobody can bind it either.
     ]
 
     /// The rows the window answers rather than the menu bar. ⌘1–⌘8 and ⌘9 are hidden
@@ -162,33 +169,74 @@ enum Standard {
     /// Which window ⌘M puts in the Dock.
     ///
     /// `performMiniaturize:` on a window that cannot be miniaturised does nothing at all, and
-    /// Vane has two borderless windows that take the keyboard while sitting over a browser
-    /// window: a Peek (a link opened over the page — see Peek.swift) and the "Quit Vane?"
-    /// card. With one of those key, ⌘M reached a window with no minimise button and the
-    /// keystroke died there — the menu item greyed out for the same reason. A child window
-    /// minimises with its parent anyway, so the parent is the honest answer.
+    /// a Peek — a link opened over the page, borderless, key, and a child of the window it
+    /// covers (see Peek.swift) — is exactly that. With one up, ⌘M reached a window with no
+    /// minimise button and the keystroke died there; the menu item greyed out for the same
+    /// reason. A child window minimises with its parent anyway, so the parent is the honest
+    /// answer.
     enum MinimizeTarget: Equatable, Sendable {
         /// The key window itself.
         case key
-        /// The window the key one is a child of — a Peek, the quit card.
+        /// The window the key one is a child of — a Peek.
         case parent
-        /// No key window worth minimising: the frontmost browser window instead.
+        /// There is no key window at all: the frontmost browser window instead.
         case browser
-        /// Nothing on screen to minimise.
+        /// Nothing to minimise, and doing nothing is the answer.
         case none
     }
 
     /// Pure, so `selfcheck --pure` proves the ladder without a window server.
     nonisolated static func minimizeTarget(hasKey: Bool, keyMiniaturizable: Bool,
-                                           keyHasParent: Bool, hasBrowser: Bool) -> MinimizeTarget {
+                                           keyHasParent: Bool, hasBrowser: Bool,
+                                           modal: Bool) -> MinimizeTarget {
+        // A modal session owns the app. The "Quit Vane?" card runs `NSApp.runModal(for:)` on
+        // the very window it dims (its scrim is a view inside it — see QuitDialog.swift), so
+        // minimising anything here puts a window in the Dock that still holds the modal loop:
+        // the only thing that can answer the question is no longer on screen.
+        if modal { return .none }
         if hasKey {
             if keyMiniaturizable { return .key }
-            if keyHasParent { return .parent }
+            // A key window that cannot be miniaturised and hangs off nothing is its own
+            // answer: the Extensions window is `[.titled, .closable, .resizable]`, and ⌘M
+            // over it used to minimise the browser window *behind* it, which is not the
+            // window the user was looking at.
+            return keyHasParent ? .parent : .none
         }
         return hasBrowser ? .browser : .none
     }
 
     // MARK: - check
+
+    /// The table checked against the registry beside it: a standard chord is either one of
+    /// Vane's own commands — in which case this is the chord that command has to *ship* on —
+    /// or it is nobody's, so the keystroke reaches AppKit.
+    ///
+    /// `Command.defaultBinding` throughout, never `Keybindings.binding(for:)`. What a user
+    /// has since chosen in Settings ▸ Shortcuts is their business; what the app hands them on
+    /// day one is this file's.
+    nonisolated static func shipped() -> [(String, Bool)] {
+        var out: [(String, Bool)] = []
+        for row in rows where row.key.isAssigned {
+            switch row.answer {
+            case .command(let command):
+                out.append(("\(row.title) ships on \(row.key.display)",
+                            command.defaultBinding == row.key))
+            case .selector:
+                out.append(("\(row.key.display) is left to AppKit — no Vane command ships on it",
+                            !Command.allCases.contains { $0.defaultBinding == row.key }))
+            }
+        }
+        // Said once more from the registry's end, so a command shipping on a standard chord
+        // cannot hide behind a row that does not mention it.
+        out.append(("no Vane command ships on a standard chord that is not its own",
+                    Command.allCases.allSatisfy { command in
+                        let binding = command.defaultBinding
+                        guard binding.isAssigned,
+                              let row = rows.first(where: { $0.key == binding }) else { return true }
+                        return row.answer == .command(command)
+                    }))
+        return out
+    }
 
     /// Everything the table can say about itself, and about the registry beside it.
     @MainActor static func check() -> [(String, Bool)] {
@@ -202,7 +250,7 @@ enum Standard {
         let wanted = ["⌘H", "⌥⌘H", "⌘Q", "⌘,", "⌘N", "⌘T", "⇧⌘T", "⌘L", "⌘O", "⌘W", "⇧⌘W",
                       "⌘P", "⌘Z", "⇧⌘Z", "⌘X", "⌘C", "⌘V", "⌥⇧⌘V", "⌘A", "⌘F", "⌘G", "⇧⌘G",
                       "⌘R", "⇧⌘R", "⌘0", "⌘+", "⌘-", "⌃⌘F", "⌥⌘I", "⌘[", "⌘]", "⌘1", "⌘9",
-                      "⌘D", "⌘M", "⌘?"]
+                      "⌘D", "⌘M"]
         let have = Set(chords.map(\.display))
         for chord in wanted {
             out.append(("\(chord) is in the standard set", have.contains(chord)))
@@ -246,29 +294,18 @@ enum Standard {
              item("Nothing Like This").action == nil),
         ]
 
-        // The registry beside the table. A standard chord is either one of Vane's commands —
-        // in which case that is the command's shipped default — or it is nobody's, so the
-        // keystroke reaches AppKit.
-        for row in rows where row.key.isAssigned {
-            switch row.answer {
-            case .command(let command):
-                out.append(("\(row.title) ships on \(row.key.display)",
-                            Keybindings.binding(for: command) == row.key))
-            case .selector:
-                out.append(("\(row.key.display) is left to AppKit — no Vane command holds it",
-                            Keybindings.conflicts(row.key).isEmpty))
-            }
-        }
-        // Said once more from the registry's end, so a command bound onto a standard chord
-        // cannot hide behind a row that does not mention it.
-        out.append(("no Vane command sits on a standard chord that is not its own", {
-            Command.allCases.allSatisfy { command in
-                let binding = Keybindings.binding(for: command)
-                guard binding.isAssigned,
-                      let row = rows.first(where: { $0.key == binding }) else { return true }
-                return row.answer == .command(command)
-            }
-        }()))
+        out += shipped()
+        // The proof that the section above is about the table this app ships and not about
+        // the person running it: plant a customised binding in a throwaway defaults suite —
+        // the very blob Settings ▸ Shortcuts writes when somebody moves New Tab to ⌥⌘T — and
+        // every one of those rows still passes. It read the live registry once, and the
+        // release gate then failed for anybody who had ever changed a shortcut.
+        out.append(("a user who has rebound a shortcut still passes this check",
+                    Keybindings.withScratchDefaults("standard") {
+                        Keybindings.set(Keybinding("t", [.command, .option]), for: .newTab)
+                        return shipped().allSatisfy(\.1)
+                            && Keybindings.binding(for: .newTab) == Keybinding("t", [.command, .option])
+                    } ?? false))
 
         out += [
             ("⌘1–⌘9 are the window's rows, and only those",
@@ -281,22 +318,33 @@ enum Standard {
              }),
         ]
 
-        // ⌘M, and the two borderless windows that used to eat it.
+        // ⌘M, and the borderless window that used to eat it.
         out += [
-            ("⌘M minimises the key window", minimizeTarget(hasKey: true, keyMiniaturizable: true,
-                                                           keyHasParent: false, hasBrowser: true) == .key),
+            ("⌘M minimises the key window",
+             minimizeTarget(hasKey: true, keyMiniaturizable: true, keyHasParent: false,
+                            hasBrowser: true, modal: false) == .key),
             ("over a Peek — borderless, key, and a child of the window behind it — ⌘M minimises that window",
              minimizeTarget(hasKey: true, keyMiniaturizable: false, keyHasParent: true,
-                            hasBrowser: true) == .parent),
-            ("a key window that can neither be minimised nor has a parent hands over to the browser window",
+                            hasBrowser: true, modal: false) == .parent),
+            ("a key window that can neither be minimised nor has a parent is left alone — the browser window behind it is not what ⌘M was aimed at",
              minimizeTarget(hasKey: true, keyMiniaturizable: false, keyHasParent: false,
-                            hasBrowser: true) == .browser),
+                            hasBrowser: true, modal: false) == .none),
             ("with no key window at all, ⌘M still minimises the browser window",
              minimizeTarget(hasKey: false, keyMiniaturizable: false, keyHasParent: false,
-                            hasBrowser: true) == .browser),
+                            hasBrowser: true, modal: false) == .browser),
             ("and with nothing on screen it does nothing",
              minimizeTarget(hasKey: false, keyMiniaturizable: false, keyHasParent: false,
-                            hasBrowser: false) == .none),
+                            hasBrowser: false, modal: false) == .none),
+            ("while the quit card has a modal session up, ⌘M does nothing at all — minimising its host would carry the modal into the Dock",
+             minimizeTarget(hasKey: true, keyMiniaturizable: true, keyHasParent: false,
+                            hasBrowser: true, modal: true) == .none),
+            ("…however the rest of the ladder stands",
+             [true, false].allSatisfy { key in
+                 [true, false].allSatisfy { parent in
+                     minimizeTarget(hasKey: key, keyMiniaturizable: key, keyHasParent: parent,
+                                    hasBrowser: true, modal: true) == .none
+                 }
+             }),
         ]
         return out
     }
@@ -373,11 +421,23 @@ enum Standard {
             ("NSApp.helpMenu is the Help menu", help != nil && help?.title == "Help"),
             ("NSApp.servicesMenu is set, so the app menu has a live Services submenu",
              services != nil),
-            ("the Window menu carries Minimize on ⌘M",
+            // Vane's own action, not `performMiniaturize:`. A targetless standard item is
+            // dispatched down the responder chain, so with a Peek up — borderless and
+            // unminiaturisable — AppKit found nobody to answer and greyed the item out,
+            // while ⌘M itself went through the monitor and worked. The item runs the same
+            // ladder the keystroke does, and greys out only when that ladder says there is
+            // nothing to minimise.
+            ("the Window menu carries Minimize on ⌘M, running Vane's ladder rather than performMiniaturize:",
              windows?.items.contains {
-                 $0.keyEquivalent == "m" && $0.keyEquivalentModifierMask == .command
-                     && $0.action == #selector(NSWindow.performMiniaturize(_:))
+                 $0.title == Command.minimizeWindow.title
+                     && $0.keyEquivalent == "m" && $0.keyEquivalentModifierMask == .command
+                     && $0.action != #selector(NSWindow.performMiniaturize(_:))
+                     && $0.target != nil
              } == true),
+            ("…and it validates itself, so it is live exactly when there is a window to minimise",
+             windows?.items.first { $0.title == Command.minimizeWindow.title }
+                 .flatMap { $0.target as? NSMenuItemValidation }
+                 .map { $0.validateMenuItem(NSMenuItem()) == (minimizeVictim() != nil) } == true),
         ]
         return out
     }
