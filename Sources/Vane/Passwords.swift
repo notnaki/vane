@@ -727,6 +727,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("on-device ai", AppleAI.check),
                                ("picture in picture", PictureInPicture.check),
                                ("tidy downloads", TidyDownloads.check),
+                               ("tab row glyph", TabRowGlyph.check),
                                ("tidy tabs", TidyTabs.check),
                                ("tidy titles", TidyTitles.check),
                                ("link previews", Previews.check),

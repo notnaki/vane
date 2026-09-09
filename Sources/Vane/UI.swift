@@ -1526,8 +1526,8 @@ private struct PaneStrip: View {
             // A split's row is still a row: the pane making the noise says so and can be
             // muted from here, and the × closes the pane the row is showing.
             if live, let voice {
-                TabRowTrailing(tab: voice, selected: selected, pane: true,
-                               closes: panes.first { $0.id == split.activeTab })
+                TabRowTrailing(store: store, tab: voice, selected: selected,
+                               pane: true, closes: panes.first { $0.id == split.activeTab })
             }
         }
         .padding(Look.paneInset)
@@ -2596,30 +2596,60 @@ extension View {
 /// exactly what it shows. Neither is *lost* there: Tidy Tabs and Clear Tabs keep their menu
 /// items and their shortcuts at any number of tabs, which is the route a keyboard or a
 /// screen reader would take to them anyway.
+///
+/// **Nothing here is ever drawn and disabled.** Tidy used to be: it appeared at six Today
+/// tabs and only started working at nine, because two different counts answered "show it"
+/// and "let them press it". One count answers both now (`TidyTabs.control`), and a Tidy that
+/// has been switched off in preferences is not drawn at all rather than greyed out. The one
+/// state where the row does not answer a click is while a tidy is actually running, and it
+/// says so with a spinner in the label's own place.
 private struct TidyRow: View {
     @EnvironmentObject var store: TabStore
+    /// The one thing that says a tidy is in flight, for this window. See `TidyProgress`.
+    @ObservedObject private var progress = TidyProgress.shared
     /// Set while a tab that this would actually move is over the divider. See below.
     @State private var lit: Landing.Band?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let offering = TidyTabs.offersHousekeeping(store)
+        let tidy = TidyTabs.control(store)
         HStack(spacing: 8) {
             Hairline()
-            if offering {
+            // Two questions, one count: Clear is offered as soon as the section is a pile,
+            // Tidy the same — unless it has been switched off, in which case it is not drawn
+            // at all rather than drawn and refusing to work. See `TidyTabs.control`.
+            switch tidy {
+            case .hidden:
+                EmptyView()
+            case .tidy:
                 // The menu item owns the tidy's cancellation and its "undo" bookkeeping —
                 // this is the same closure, not a second copy of it.
                 Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
-                    .disabled(!TidyTabs.shouldOffer(store))
-                    .help("Rename and group tabs (\(Keybindings.binding(for: .tidyTabs).display))")
+                    .help("Group tabs into folders (\(Keybindings.binding(for: .tidyTabs).display))")
                     .accessibilityLabel("Tidy Tabs")
-                Text("|").foregroundStyle(Look.inkQuiet)
+            case .tidying:
+                // The word "Tidy", replaced in place by a spinner — the row keeps its height
+                // and the hairline beside it simply grows back into the room the word gave
+                // up, with the list's own animation. It does not take a press: a second Tidy
+                // cancels, and the routes to that are the menu item, its shortcut and the
+                // command bar, which is where the run lives.
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(Look.tidySpinnerScale)
+                    .frame(height: Look.tidyRow)
+                    .help("Tidying tabs…")
+                    .accessibilityLabel("Tidying tabs")
+            }
+            if offering {
+                if tidy != .hidden { Text("|").foregroundStyle(Look.inkQuiet) }
                 Button("Clear") { clear() }
                     .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
                     .accessibilityLabel("Clear Tabs")
             }
         }
         .animation(reduceMotion ? nil : Look.list, value: offering)
+        .animation(reduceMotion ? nil : Look.list, value: tidy)
         .buttonStyle(.plain)
         .font(Look.sectionCaption)
         .foregroundStyle(Look.inkTertiary)
@@ -2892,10 +2922,10 @@ private struct TabRow: View {
             if store.renamingTab == tab.id {
                 RenameField(store: store, tab: tab)
             } else {
-                Text(TidyTitles.title(for: tab))
+                ShimmerTitle(title: TidyTitles.title(for: tab), reveal: tab.titleReveal)
             }
         } trailing: {
-            TabRowTrailing(tab: tab, selected: selected)
+            TabRowTrailing(store: store, tab: tab, selected: selected)
         }
         .inStrip(tab.id, strip)
         .help(tab.title)
@@ -2943,7 +2973,9 @@ private struct TabRow: View {
                             + selectionSuffix(ticked, store.selection.count))
         .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Shows this tab.")
-        .accessibilityAction(named: tab.kind == .today ? "Archive Tab" : "Close Tab") {
+        // The same words the row's own glyph is showing — a pinned row's ⌘W unloads before
+        // it unpins, and an action named "Close Tab" that does neither is a lie.
+        .accessibilityAction(named: tab.kind == .today ? "Archive Tab" : closeVerb) {
             store.archive(tab.id)
         }
         .accessibilityAction(named: tab.kind == .pinned ? "Unpin Tab" : "Pin Tab") {
@@ -2956,6 +2988,12 @@ private struct TabRow: View {
         .accessibilityAction(named: TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab") {
             TabAudio.toggleMute(tab)
         }
+    }
+
+    /// What ⌘W will actually do to this row, in words. See `TabRowGlyph`.
+    private var closeVerb: String {
+        TabRowGlyph.decide(kind: tab.kind,
+                           suspended: tab.suspended || tab.currentURL == nil).verb
     }
 
     /// What a click on a row means, by what is held down: ⌘ ticks it into the selection, ⇧
@@ -3059,8 +3097,14 @@ struct TabMenu: View {
         MoveToSpaceMenu(store: store, tab: tab)
         Divider()
         // A favourite or a pinned tab has no "archive": closing it parks it in place, which
-        // is what the section means, so the item says what will actually happen.
-        Button(tab.kind == .today ? "Archive Tab" : "Close Tab") { store.archive(tab.id) }
+        // is what the section means, so the item says what will actually happen — and on a
+        // pinned row that is Unload first, Unpin after. See `TabRowGlyph`.
+        Button(tab.kind == .today
+               ? "Archive Tab"
+               : TabRowGlyph.decide(kind: tab.kind,
+                                    suspended: tab.suspended || tab.currentURL == nil).verb) {
+            store.archive(tab.id)
+        }
         if tab.kind == .today {
             Button("Archive Tabs Below") { archiveBelow() }
         }
@@ -3125,10 +3169,200 @@ extension View {
     }
 }
 
+/// A tab title that says so when the on-device model has just renamed the row: the old name
+/// fades out from underneath while the new one is wiped in from the left with a spark riding
+/// the edge. Arc's shimmer.
+///
+/// Only ever for a *model* answer — `Tab.titleReveal` is bumped by nothing else — because
+/// the point is to explain a name that changed while nobody touched the tab. A page
+/// navigating retitles the row silently, exactly as it always has.
+///
+/// The old name is drawn *behind* the new one rather than over it, so what shows through the
+/// part the wipe has not reached yet is the name the row had a moment ago. That is the whole
+/// trick, and it is why this is a mask rather than two crossfading labels.
+///
+/// ponytail: three bits of `@State` and no timer. `withAnimation`'s completion handler is
+/// what puts the spark away and drops the old name, so nothing here has to be cancelled when
+/// the row goes — and a row that has never been renamed runs no animation at all, because
+/// `onChange` never fires.
+private struct ShimmerTitle: View {
+    let title: String
+    let reveal: TitleReveal
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// How far the wipe has got, in fractions of the title's width. It rests one soft edge
+    /// *past* the end so the mask is solid black at rest — the resting state of this view is
+    /// a plain `Text` with nothing done to it.
+    private static let full: CGFloat = 1 + Look.shimmerEdge
+    @State private var wipe: CGFloat = ShimmerTitle.full
+    /// The name being replaced, while it is still on its way out.
+    @State private var leaving: String?
+    @State private var leavingOpacity: Double = 0
+    @State private var sparking = false
+
+    var body: some View {
+        Text(title)
+            .mask { wipeMask }
+            .background(alignment: .leading) { ghost }
+            .overlay { spark }
+            .onChange(of: reveal) { _, new in start(new) }
+    }
+
+    /// Opaque up to the wipe's edge, clear past it, with `shimmerEdge` of gradient between
+    /// the two so the edge reads as light moving across the words rather than as a crop.
+    private var wipeMask: some View {
+        let lit = min(max(wipe - Look.shimmerEdge, 0), 1)
+        let edge = min(max(wipe, 0), 1)
+        return LinearGradient(stops: [.init(color: .black, location: 0),
+                                      .init(color: .black, location: lit),
+                                      .init(color: .clear, location: edge),
+                                      .init(color: .clear, location: 1)],
+                              startPoint: .leading, endPoint: .trailing)
+    }
+
+    /// The old name, showing through whatever the wipe has not covered yet. Bounded by the
+    /// new title's width on purpose: a longer old name is truncated rather than allowed to
+    /// draw out over the row's trailing glyphs for the fifth of a second it is alive.
+    @ViewBuilder private var ghost: some View {
+        if let leaving {
+            Text(leaving)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .opacity(leavingOpacity)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// One glyph riding the wipe's edge. Drawn in a `GeometryReader` so it can be placed by
+    /// the title's own width, which is the only measurement this view needs and the only
+    /// place it can be taken.
+    private var spark: some View {
+        GeometryReader { geometry in
+            Image(systemName: Look.shimmerSparkle)
+                .font(Look.rowGlyph)
+                .foregroundStyle(Color.accentColor)
+                .opacity(sparking ? Look.shimmerSparkleOpacity : 0)
+                .animation(reduceMotion ? nil : Look.shimmerFade, value: sparking)
+                .position(x: min(wipe, 1) * geometry.size.width, y: geometry.size.height / 2)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func start(_ reveal: TitleReveal) {
+        guard reveal.count > 0 else { return }
+        leaving = reveal.from.isEmpty ? nil : reveal.from
+        leavingOpacity = 1
+        // Reduced motion still gets the *event* — a name that changed by itself has to be
+        // visible — it simply gets it as a crossfade with no travel and no spark.
+        guard !reduceMotion else {
+            wipe = ShimmerTitle.full
+            sparking = false
+            withAnimation(Look.quick) { leavingOpacity = 0 } completion: { leaving = nil }
+            return
+        }
+        wipe = 0
+        sparking = true
+        withAnimation(Look.shimmerFade) { leavingOpacity = 0 } completion: { leaving = nil }
+        withAnimation(Look.shimmerSweep) { wipe = ShimmerTitle.full } completion: { sparking = false }
+    }
+}
+
+/// What a row's trailing glyph does, decided by which section the tab is in and whether it
+/// still holds a page. Arc's rule, and the reason a pinned tab cannot be lost to a stray
+/// click: the × on a pinned row unloads the *page* first, and only a second press — on a row
+/// that now has nothing to unload — takes the pin off and drops the tab into Today. Nothing
+/// here ever deletes a pinned tab; `TabStore.close` reads the same table, so ⌘W agrees with
+/// the glyph the row is showing.
+///
+/// Pure, and deliberately: it is a three-by-three table, it is what the tooltip, the symbol,
+/// the VoiceOver label and `close` all read, and one of those drifting is exactly the bug
+/// this replaces. `selfcheck --pure` drives every row of it with no window and no tab.
+enum TabRowGlyph: Equatable, Sendable, CaseIterable {
+    /// The tab goes: Today's ×, and a favourite's, which parks the tile in place.
+    case close
+    /// The page goes, the row stays exactly where it is. A loaded pinned tab.
+    case unload
+    /// The pin goes and the tab drops into Today. A pinned tab with no page left to unload.
+    case unpin
+
+    /// `suspended` means "has no live page" — a suspended tab, and also a pinned row that
+    /// has never loaded one, which has nothing to unload either.
+    static func decide(kind: TabKind, suspended: Bool) -> TabRowGlyph {
+        guard kind == .pinned else { return .close }
+        return suspended ? .unpin : .unload
+    }
+
+    var symbol: String {
+        switch self {
+        case .close, .unpin: "xmark"
+        // Not "xmark": the × on a pinned row would be promising to close something, and a
+        // minus is what every unload control in this app draws.
+        case .unload: "minus"
+        }
+    }
+
+    /// The tooltip and the menu wording, in Arc's words.
+    var verb: String {
+        switch self {
+        case .close:  "Close Tab"
+        case .unload: "Unload Tab"
+        case .unpin:  "Unpin Tab"
+        }
+    }
+
+    /// What VoiceOver says, in front of the tab's name.
+    var spoken: String {
+        switch self {
+        case .close:  "Close "
+        case .unload: "Unload "
+        case .unpin:  "Unpin "
+        }
+    }
+
+    static func check() -> [(String, Bool)] {
+        var out: [(String, Bool)] = []
+        func assert(_ name: String, _ ok: Bool) { out.append((name, ok)) }
+
+        assert("a Today tab's × closes it, loaded or not",
+               decide(kind: .today, suspended: false) == .close
+                   && decide(kind: .today, suspended: true) == .close)
+        assert("a favourite keeps the tile behaviour it had",
+               decide(kind: .favourite, suspended: false) == .close
+                   && decide(kind: .favourite, suspended: true) == .close)
+        assert("a loaded pinned tab unloads rather than closing",
+               decide(kind: .pinned, suspended: false) == .unload)
+        assert("a pinned tab with nothing loaded unpins",
+               decide(kind: .pinned, suspended: true) == .unpin)
+        assert("no state of a pinned tab closes it",
+               ![true, false].map { decide(kind: .pinned, suspended: $0) }.contains(.close))
+        assert("only a pinned tab is ever unloaded or unpinned",
+               TabKind.allCases.filter { $0 != .pinned }.allSatisfy { k in
+                   [true, false].allSatisfy { decide(kind: k, suspended: $0) == .close }
+               })
+        assert("unloading is offered exactly once, and only while there is a page",
+               decide(kind: .pinned, suspended: false) == .unload
+                   && decide(kind: .pinned, suspended: true) != .unload)
+        assert("the minus is only ever the unload glyph",
+               TabRowGlyph.allCases.filter { $0.symbol == "minus" } == [.unload])
+        assert("every state says out loud what it will do",
+               TabRowGlyph.allCases.allSatisfy {
+                   !$0.verb.isEmpty && !$0.spoken.isEmpty && $0.verb.hasSuffix("Tab")
+               })
+        return out
+    }
+}
+
 /// The speaker and the close button. Split out only because one expression with both of
 /// them plus the row's own modifiers stopped type-checking in reasonable time.
+///
+/// ponytail: `store` is handed in rather than read from the environment. It used to be an
+/// `@EnvironmentObject`, which made every trailing view in the sidebar a dependent of every
+/// `@Published` on the store — so one `current` write invalidated two views per row instead
+/// of one. Nothing here reads the store except the click.
 private struct TabRowTrailing: View {
-    @EnvironmentObject var store: TabStore
+    let store: TabStore
     @ObservedObject var tab: Tab
     let selected: Bool
     /// On a split's row the × closes the pane the row is showing, not a whole tab's worth of
@@ -3173,12 +3407,22 @@ private struct TabRowTrailing: View {
                 .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
             if hovering || selected {
+                // On a split's row the glyph is about the *pane*, which is closed whatever
+                // section its tab is in — a pane is not a pin. Everywhere else the row's
+                // trailing glyph is the table above.
+                let glyph = pane ? TabRowGlyph.close
+                    : TabRowGlyph.decide(kind: closing.kind,
+                                         suspended: closing.suspended || closing.currentURL == nil)
                 Button { store.close(closing.id) } label: {
-                    Image(systemName: "xmark").font(Look.rowGlyph).rowTarget()
+                    Image(systemName: glyph.symbol).font(Look.rowGlyph).rowTarget()
                 }
-                .help(pane ? "Close Pane (⌘W)" : "Close Tab (⌘W)")
-                .accessibilityLabel((pane ? "Close pane " : "Close ")
+                .help((pane ? "Close Pane" : glyph.verb) + " (⌘W)")
+                .accessibilityLabel((pane ? "Close pane " : glyph.spoken)
                                     + TidyTitles.title(for: closing))
+                // A pinned row's glyph changes under the pointer the moment its page is
+                // unloaded, so the swap is the same fade the rest of the row uses rather
+                // than a cut from − to ×.
+                .contentTransition(.symbolEffect(.replace))
                 // Grows in under the pointer rather than popping: the row's own hover
                 // animation carries it.
                 .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))

@@ -69,6 +69,10 @@ enum Look {
     /// A count, not a size, but it lives here because it is a rule about what the sidebar
     /// *shows* — the row's height above is meaningless without it.
     static let tidyThreshold = 6
+    /// The spinner that stands in for the word "Tidy" while the model is grouping. AppKit's
+    /// smallest indeterminate spinner is 16pt across and this row is 13pt tall, so it is
+    /// scaled to sit inside the line rather than pushing the list down by three points.
+    static let tidySpinnerScale: CGFloat = 0.7
     static let sectionGap: CGFloat = 18
 
     // The command bar. The one surface allowed rows taller than `rowHeight`: it is a
@@ -705,6 +709,28 @@ enum Look {
     /// A favourite tile appearing or leaving the grid grows in place rather than sliding.
     static let tileAppearScale: CGFloat = 0.6
 
+    // The AI rename shimmer: a pinned row's long page title being replaced by the short name
+    // the on-device model came back with. Arc marks this the same way — the old name goes,
+    // the new one is wiped in from the left with a spark riding the edge — because a row
+    // that renames itself silently, seconds after the page loaded, reads as the wrong tab.
+    //
+    // Only ever for a *model* answer. An ordinary title change — a page navigating, a
+    // single-page app swapping its `<title>` — is not an event about the row and gets none
+    // of this. See `Tab.noteAITitle`.
+    /// How long the new name takes to be wiped in, left to right.
+    static let shimmerDuration: Double = 0.5
+    static let shimmerSweep = Animation.easeOut(duration: shimmerDuration)
+    /// How soft the wiping edge is, as a fraction of the title's own width: a hard edge
+    /// reads as clipping, a wide one as a fade with no direction in it.
+    static let shimmerEdge: CGFloat = 0.16
+    /// The old name leaving. Shorter than the wipe, so the two overlap rather than queue.
+    static let shimmerFadeDuration: Double = 0.18
+    static let shimmerFade = Animation.easeOut(duration: shimmerFadeDuration)
+    /// The spark that rides the wiping edge, and how solid it is allowed to get. One glyph,
+    /// no particles: this is a row 36pt tall in a list of them.
+    static let shimmerSparkle = "sparkle"
+    static let shimmerSparkleOpacity: Double = 0.9
+
     // The recent tab switcher (⌃⇥): up to five cards in a row over the page, a favicon
     // over two lines of title each.
     static let switcherCard: CGFloat = 120
@@ -824,6 +850,18 @@ extension Look {
         out.append(("housekeeping waits for a pile: more tabs than fit in a glance, "
                     + "fewer than a window nobody could work in",
                     tidyThreshold >= 4 && tidyThreshold <= 12))
+        out.append(("the tidy spinner fits inside the line it stands in, and is still visible",
+                    tidySpinnerScale > 0.4 && tidySpinnerScale * 16 <= tidyRow))
+        // The AI rename shimmer. Long enough to be seen on a row you are not looking
+        // straight at, short enough that it is over before you have read the new name.
+        out.append(("a renamed row's shimmer is a beat, not an animation to sit through",
+                    shimmerDuration > 0.2 && shimmerDuration < 1))
+        out.append(("the old name is gone before the new one is fully in",
+                    shimmerFadeDuration > 0 && shimmerFadeDuration < shimmerDuration))
+        out.append(("the wiping edge is soft, and still an edge",
+                    shimmerEdge > 0 && shimmerEdge < 0.5))
+        out.append(("the spark never draws over the title at full strength",
+                    shimmerSparkleOpacity > 0 && shimmerSparkleOpacity <= 1))
         // An extension action's badge, which is drawn over the 16pt icon it belongs to.
         out.append(("an action badge is shorter than the icon it sits on", badgeHeight < rowIcon))
         out.append(("…and a full one cannot reach the glyph beside it",

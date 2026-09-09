@@ -19,6 +19,18 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
 }
 
+/// One AI rename, as the row needs to draw it: how many have landed on this tab (so a
+/// second one still animates) and the name the row was showing before this one arrived.
+///
+/// A value rather than two properties because the row animates on the pair changing
+/// together, and two `@Published`s would publish twice and start the wipe against the new
+/// name's own leftovers.
+struct TitleReveal: Equatable, Sendable {
+    var count = 0
+    /// The name being replaced. Empty on a tab nothing has ever renamed.
+    var from = ""
+}
+
 /// ponytail: KVO straight to @Published instead of a navigation-delegate state machine —
 /// WebKit already tracks all of this.
 @MainActor final class Tab: NSObject, ObservableObject, Identifiable, WKUIDelegate,
@@ -30,6 +42,11 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// WKWebView, which costs no process.
     private(set) var web: WKWebView
     @Published var title = "New Tab"
+    /// The last time the on-device model renamed this tab, and what the row said before it
+    /// did. Bumped by `noteAITitle` and by nothing else: a page navigating or swapping its
+    /// own `<title>` is not a rename, and the row must not shimmer for it. See
+    /// `ShimmerTitle` in UI.swift.
+    @Published private(set) var titleReveal = TitleReveal()
     @Published var address = ""          // what the URL field shows
     @Published var progress = 0.0
     @Published var loading = false
@@ -297,6 +314,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // attach() re-runs on resume, so this covers a waking tab too.
         TabAudio.watch(self) { [weak self] in self?.audible = $0 }
         TabAudio.reapply(self)
+    }
+
+    /// The on-device model has just handed back a shorter name for this page and it is now
+    /// what the row will draw. `was` is what the row said a moment ago, so it can be faded
+    /// out from under the new one. A no-op when the name did not actually change — the model
+    /// agreeing with the cheap answer is not an event.
+    func noteAITitle(replacing was: String) {
+        guard was != TidyTitles.title(for: self) else { return }
+        titleReveal = TitleReveal(count: titleReveal.count + 1, from: was)
     }
 
     // MARK: Suspension
@@ -1397,6 +1423,27 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func close(_ id: Tab.ID, byScript: Bool = false) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[i]
+        // A pinned row's × — and ⌘W on it — is a two-step, and this is the one place that
+        // decides which step it is: the page goes first, the pin only after that. See
+        // `TabRowGlyph`, which draws exactly this decision.
+        //
+        // It returns here rather than falling through on purpose, and that is also the fix
+        // for the × that felt slow on a pinned tab: the old path kept the tab and then
+        // reassigned `current` to the most recently used Today tab, and `current`'s didSet
+        // *resumes* whatever it lands on — so one click on a pinned row's × swapped the
+        // window's web view, woke a suspended tab and reloaded its page, all on the main
+        // actor before the click returned. Unloading in place moves nothing and wakes
+        // nothing.
+        switch TabRowGlyph.decide(kind: tab.kind, suspended: tab.suspended || tab.currentURL == nil) {
+        case .close:
+            break
+        case .unload:
+            tab.suspend()
+            return
+        case .unpin:
+            togglePinned(id)
+            return
+        }
         let outcome = TabStore.closing(i, kinds: tabs.map(\.kind), lastActive: tabs.map(\.lastActive))
         // A favourite or a pinned tab is the same tab, only moved into its section: closing
         // it leaves it exactly as it is, and only Unfavourite/Unpin ever takes it out.

@@ -1,12 +1,15 @@
 import Foundation
 
 /// Arc's "Tidy Tabs": once a window has more open tabs than anyone is actually reading,
-/// offer to shuffle them into named, contiguous runs.
+/// offer to sort them into named folders.
 ///
-/// The whole action is a **reorder**. Nothing is closed, nothing is moved to a space,
-/// nothing is renamed. That is deliberate: a reorder is the only tab operation that is
-/// cheap to undo exactly, and a feature whose first move is "let me reorganise your
-/// windows" has to be trivially reversible or nobody dares press it twice.
+/// **Nothing is closed and nothing is renamed**, and every move is undone exactly by one
+/// press of Undo — a feature whose first move is "let me reorganise your windows" has to be
+/// trivially reversible or nobody dares press it twice. What it does do is make a folder per
+/// group and put the group's tabs in it. It used to only *reorder*, and that was the bug:
+/// on a window whose tabs already sat beside their siblings the reorder was a no-op, so the
+/// user pressed Tidy, waited out a twelve-second model call and saw nothing at all. A folder
+/// carries the group's name, which is the only part of a grouping worth showing.
 ///
 /// Two ways to get a grouping, in this order:
 ///
@@ -58,9 +61,15 @@ import Foundation
     /// Six is Arc's number and it is a good one: five tabs fit in a strip and you can still
     /// point at the one you want; past six you start hunting. Clamped, because a junk value
     /// in defaults should not be able to offer at every second tab or never offer at all.
+    ///
+    /// One number, for one question. It used to be two: this decided whether Tidy was
+    /// *enabled* and `Look.tidyThreshold` decided whether it was *drawn*, with different
+    /// counts behind each — so the sidebar showed a greyed-out Tidy from the sixth tab to
+    /// the ninth and the user could see the feature and not use it. Now both read this, and
+    /// it defaults to `Look.tidyThreshold`.
     static var threshold: Int {
         get {
-            let v = UserDefaults.vane.object(forKey: "tidyTabsThreshold") as? Int ?? 6
+            let v = UserDefaults.vane.object(forKey: "tidyTabsThreshold") as? Int ?? Look.tidyThreshold
             return min(max(v, 2), 50)
         }
         set { UserDefaults.vane.set(min(max(newValue, 2), 50), forKey: "tidyTabsThreshold") }
@@ -91,49 +100,64 @@ import Foundation
         }
     }
 
-    /// Pure half of `shouldOffer`, so the threshold rule is provable offline.
-    static func shouldOffer(ordinary: Int, threshold: Int, enabled: Bool) -> Bool {
-        enabled && ordinary > threshold
+    /// **The one rule.** Whether this window's Today section is a pile: enough tabs in it
+    /// that two housekeeping actions over them are worth the room they take.
+    ///
+    /// It counts the Today section and nothing else, because that is the section the actions
+    /// act on. Pinned tabs and favourites are not counted — they are not tidyable at all
+    /// (see `candidates`), and a window whose only mess is a row of pins the user arranged
+    /// on purpose is not messy. Nor is the tab being read discounted: it used to be, and the
+    /// result was a sidebar that showed Tidy from the sixth Today tab and only let you press
+    /// it at the ninth. A control that is on screen and refuses to work reads as broken,
+    /// and there is no reading of "tidy my tabs" under which the one on screen is exempt.
+    /// It is grouped like any other — grouping cannot dethrone it, because `TabStore.current`
+    /// is an id and reordering an array does not change which id is in it.
+    nonisolated static func offersHousekeeping(today: Int, threshold: Int) -> Bool {
+        today >= threshold
     }
 
-    /// Does this window have enough of a pile to be worth offering?
-    ///
-    /// Two exclusions, for two different reasons:
-    ///
-    /// - **Pinned tabs** do not count because they are not tidyable at all (see
-    ///   `candidates`). Counting tabs the feature cannot move would mean offering to tidy
-    ///   a window whose only mess is a row of pins the user arranged on purpose.
-    /// - **The active tab** does not count because it is the one tab that is never lost.
-    ///   The problem Tidy Tabs solves is "I cannot find anything *behind* what I am looking
-    ///   at", so the pile is what is behind it. This is off-by-one against Arc and that is
-    ///   the point: a window of exactly seven where one is the tab you are reading is six
-    ///   tabs of mess, not seven, and does not get nagged.
-    ///
-    /// Note that the active tab is still a *candidate* — it gets grouped, it just does not
-    /// count. Grouping cannot dethrone it: `TabStore.current` is an id, and reordering an
-    /// array does not change which id is in it.
-    static func shouldOffer(_ store: TabStore) -> Bool {
-        let ordinary = store.tabs.filter { $0.kind == .today && $0.id != store.current }.count
-        return shouldOffer(ordinary: ordinary, threshold: threshold, enabled: enabled)
-    }
-
-    /// Whether the sidebar shows its housekeeping controls at all — Tidy and Clear, and the
-    /// palette's Tidy Tabs with them, so one rule decides what the window offers rather than
-    /// the row and the command bar each having an opinion.
-    ///
-    /// This is a plainer question than `shouldOffer`, and deliberately so. `shouldOffer` asks
-    /// whether tidying would *help* — it discounts the tab you are reading, and the user can
-    /// move its threshold. This asks whether the controls should be on screen, and the answer
-    /// is a count of what is in the section they belong to: fewer than `Look.tidyThreshold`
-    /// Today tabs is not a pile, and two actions offering to sort out five tabs are two
-    /// things to read past on every new Space. At six they arrive with the list's own
-    /// animation; the row itself — its hairline, its height — never moves, so nothing pops.
-    nonisolated static func offersHousekeeping(today: Int) -> Bool { today >= Look.tidyThreshold }
-
-    /// The same, asked of a window. Today tabs only: pins and favourites are not what the
-    /// two actions act on.
+    /// The same, asked of a window.
     static func offersHousekeeping(_ store: TabStore) -> Bool {
-        offersHousekeeping(today: store.tabs.filter { $0.kind == .today }.count)
+        offersHousekeeping(today: todayCount(store), threshold: threshold)
+    }
+
+    /// Tidy specifically: the pile, plus the preference being on. Clear does not ask the
+    /// second question — it is not an AI feature and has nothing to switch off.
+    nonisolated static func shouldOffer(today: Int, threshold: Int, enabled: Bool) -> Bool {
+        enabled && offersHousekeeping(today: today, threshold: threshold)
+    }
+
+    static func shouldOffer(_ store: TabStore) -> Bool {
+        shouldOffer(today: todayCount(store), threshold: threshold, enabled: enabled)
+    }
+
+    static func todayCount(_ store: TabStore) -> Int {
+        store.tabs.filter { $0.kind == .today }.count
+    }
+
+    /// What the sidebar's Tidy control is, at this moment. Pure, so the row, the command bar
+    /// and `check()` cannot disagree about when a spinner is showing.
+    enum Control: Equatable, Sendable {
+        /// Not drawn at all: no pile, or the preference is off.
+        case hidden
+        /// Drawn, pressable.
+        case tidy
+        /// Drawn as a spinner and not pressable: a tidy is in flight for this window.
+        case tidying
+    }
+
+    nonisolated static func control(today: Int, threshold: Int, enabled: Bool,
+                                    running: Bool) -> Control {
+        // A tidy that is already running keeps its spinner even as its own work empties the
+        // Today section past the threshold — otherwise the control vanishes mid-run and the
+        // click looks like it did nothing, which is the whole complaint this is fixing.
+        if running { return .tidying }
+        return shouldOffer(today: today, threshold: threshold, enabled: enabled) ? .tidy : .hidden
+    }
+
+    static func control(_ store: TabStore) -> Control {
+        control(today: todayCount(store), threshold: threshold, enabled: enabled,
+                running: TidyProgress.shared.isRunning(store))
     }
 
     // MARK: - Planning
@@ -370,27 +394,108 @@ import Foundation
         return out
     }
 
-    /// One saved order per window. ponytail: a dictionary keyed on object identity rather
-    /// than a property on `TabStore` — I do not own that file, and a single-entry undo is
-    /// not worth a stack. Stale entries for closed windows are pruned on the next apply.
-    private static var saved: [ObjectIdentifier: [Tab.ID]] = [:]
-
-    /// Reorder the strip. Records the previous order first, so `undo` is exact.
+    /// Which groups become a folder, and in what order their tabs go into it.
     ///
-    /// A no-op when the strip is already in that order — including the undo record, so
-    /// pressing Tidy twice still undoes back to the original mess rather than to the tidy
-    /// version of it.
-    static func apply(_ groups: [Group], to store: TabStore) {
+    /// A group of one is not a folder, it is a label on a tab: singletons stay loose. Within
+    /// a folder the tabs are laid down in `placement` order — the order `order(_:pinned:
+    /// groups:)` decided — rather than the order the model listed them in, which is what
+    /// makes tidying an already-tidy window reproduce exactly what is there.
+    ///
+    /// Pure, over ids, so `check()` can prove the whole shape of a tidy without a window,
+    /// a folder or a `Tab`.
+    static func folders(for groups: [Group], placement: [Tab.ID],
+                        live: Set<Tab.ID>) -> [(name: String, tabIDs: [Tab.ID])] {
+        let rank = Dictionary(placement.enumerated().map { ($0.element, $0.offset) },
+                              uniquingKeysWith: { a, _ in a })
+        var claimed = Set<Tab.ID>()
+        var out: [(name: String, tabIDs: [Tab.ID])] = []
+        for g in groups {
+            let members = g.tabIDs
+                .filter { live.contains($0) && claimed.insert($0).inserted }
+                .sorted { rank[$0, default: .max] < rank[$1, default: .max] }
+            guard members.count >= 2 else {
+                claimed.subtract(members)          // a singleton stays loose and unclaimed
+                continue
+            }
+            out.append((name: g.name, tabIDs: members))
+        }
+        return out
+    }
+
+    /// What one tidy did, so undo can take all of it back. ponytail: a dictionary keyed on
+    /// object identity rather than a property on `TabStore` — a single-entry undo is not
+    /// worth a stack, and stale entries for closed windows are pruned on the next apply.
+    private struct Done {
+        /// The whole strip's order before the tidy.
+        var order: [Tab.ID]
+        /// The section each moved tab was in before it went into a folder.
+        var kinds: [Tab.ID: TabKind]
+        /// The folders this tidy made, in the order it made them.
+        var folders: [UUID]
+    }
+
+    private static var saved: [ObjectIdentifier: Done] = [:]
+
+    /// Do it: each group of two or more becomes a named folder holding its tabs, and
+    /// anything no group claimed is left exactly where it is.
+    ///
+    /// **This used to be a reorder and nothing else**, which is why "Tidy does nothing" was
+    /// the honest report: on a window whose tabs already sat beside their siblings — which
+    /// is most windows, most of the time, because tabs are opened from the page next to
+    /// them — the new order equalled the old one and the whole thing was a no-op with no
+    /// name, no folder and no toast to say so. Arc's Tidy Tabs makes folders, and a folder
+    /// is the only outcome a user can actually see: it has the group's *name* on it.
+    ///
+    /// Vane's folders live in the Pinned section — see `Pins`, which is the whole of the
+    /// model and has no notion of a folder in Today — so a tidied group is a pinned folder.
+    /// That is the shape this codebase has, and it is the right one for what tidying means:
+    /// a group you named and put away is a group you have stopped auto-archiving.
+    ///
+    /// Returns how many folders it made. Zero means nothing happened and the caller should
+    /// say so out loud rather than leaving the click in silence.
+    @discardableResult
+    static func apply(_ groups: [Group], to store: TabStore) -> Int {
         let before = store.tabs.map(\.id)
-        let next = order(before, pinned: Set(store.tabs.filter(\.stays).map(\.id)), groups: groups)
-        guard next != before else { return }
-        let live = Set(TabStore.all.map(ObjectIdentifier.init))
-        saved = saved.filter { live.contains($0.key) }
-        saved[ObjectIdentifier(store)] = before
-        let byID = Dictionary(uniqueKeysWithValues: store.tabs.map { ($0.id, $0) })
-        Motion.list { store.tabs = next.compactMap { byID[$0] } }
+        let placement = order(before, pinned: Set(store.tabs.filter(\.stays).map(\.id)),
+                              groups: groups)
+        // Only Today tabs are tidyable, and only ones that are still open.
+        let live = Set(store.tabs.filter { $0.kind == .today }.map(\.id))
+        let plan = folders(for: groups, placement: placement, live: live)
+        guard !plan.isEmpty else { return 0 }
+
+        var done = Done(order: before, kinds: [:], folders: [])
+        let was = Dictionary(uniqueKeysWithValues: store.tabs.map { ($0.id, $0.kind) })
+
+        // `Pins.newFolder` rather than `TabStore.newFolder`: the store's one is ⌘⇧N — it
+        // opens the name field on the folder it just made and announces it — which is right
+        // for one folder the user asked for and wrong for eight arriving at once, already
+        // named by the plan.
+        for group in plan {
+            guard let folder = store.pins.newFolder(named: group.name) else { continue }
+            done.folders.append(folder.id)
+            for id in group.tabIDs {
+                // Only the tabs this actually moves are written down, so undo puts back what
+                // the tidy did and leaves alone anything the user did while it was thinking.
+                done.kinds[id] = was[id]
+                // The section change first — a folder holds pinned rows, and `move` syncs the
+                // section for us — then the row is put inside the folder. `TabStore.move(_:
+                // into:)` is the same two steps plus an announcement, which for a whole tidy
+                // would be one per tab.
+                store.move(id, to: .pinned)
+                store.pins.move(id.uuidString, into: folder.id)
+            }
+        }
+        Motion.list { store.applyPinOrder() }
+        store.savePins()
         // `store.current` is untouched on purpose: it is an id, so the active tab is still
-        // the active tab, and assigning it would re-fire the didSet that resumes tabs.
+        // the active tab even if it has just moved into a folder, and assigning it would
+        // re-fire the didSet that resumes tabs.
+        let liveWindows = Set(TabStore.all.map(ObjectIdentifier.init))
+        saved = saved.filter { liveWindows.contains($0.key) }
+        saved[ObjectIdentifier(store)] = done
+        axAnnounce("Tidied into \(done.folders.count) folder"
+                   + (done.folders.count == 1 ? "" : "s") + ".")
+        return done.folders.count
     }
 
     static func canUndo(_ store: TabStore) -> Bool { saved[ObjectIdentifier(store)] != nil }
@@ -406,12 +511,32 @@ import Foundation
 
     /// One level, and it is consumed: undo is for "that was not what I wanted", not a
     /// history. Silently does nothing when there is nothing to undo.
+    ///
+    /// Exactly reversed, in the reverse order: the folders this tidy made are dissolved,
+    /// every tab it moved goes back to the section it was in, and then the strip is put back
+    /// in the order it had. Only the folders *this tidy* made — a folder the user made
+    /// during the tidy, or before it, is not the tidy's to delete.
     static func undo(_ store: TabStore) {
-        guard let before = saved.removeValue(forKey: ObjectIdentifier(store)) else { return }
-        let next = restore(saved: before, current: store.tabs.map(\.id))
-        guard next != store.tabs.map(\.id) else { return }
+        guard let done = saved.removeValue(forKey: ObjectIdentifier(store)) else { return }
+        for folder in done.folders {
+            // Not `TabStore.deleteFolder`: that announces a deletion and mirrors it into
+            // every other window showing this Space. These folders were made in this window
+            // and have never been anywhere else.
+            store.pins.remove(folder: folder)
+        }
+        for tab in store.tabs {
+            guard let before = done.kinds[tab.id], before != tab.kind else { continue }
+            store.move(tab.id, to: before)
+        }
+        let next = restore(saved: done.order, current: store.tabs.map(\.id))
         let byID = Dictionary(uniqueKeysWithValues: store.tabs.map { ($0.id, $0) })
-        Motion.list { store.tabs = next.compactMap { byID[$0] } }
+        Motion.list {
+            store.tabs = next.compactMap { byID[$0] }
+            store.syncPins()
+            store.applyPinOrder()
+        }
+        store.savePins()
+        axAnnounce("Undid the tidy.")
     }
 
     // MARK: - check
@@ -498,7 +623,7 @@ import Foundation
                plan(candidates: tokenish) == tg)
         assert("an empty window plans nothing", plan(candidates: []).isEmpty)
 
-        // --- Threshold, including the exclusions ---
+        // --- The one rule: what the sidebar shows, and what it lets you press ---
         let stored = (UserDefaults.vane.object(forKey: "tidyTabs"),
                       UserDefaults.vane.object(forKey: "tidyTabsThreshold"))
         defer {
@@ -507,7 +632,8 @@ import Foundation
         }
         UserDefaults.vane.removeObject(forKey: "tidyTabs")
         UserDefaults.vane.removeObject(forKey: "tidyTabsThreshold")
-        assert("the threshold defaults to six", threshold == 6)
+        assert("the threshold defaults to the number the sidebar draws on",
+               threshold == Look.tidyThreshold && threshold == 6)
         assert("tidying is on by default", enabled)
         threshold = 9
         let roundTrip = threshold
@@ -517,42 +643,53 @@ import Foundation
         let clampedHigh = threshold
         enabled = false
         let offRoundTrip = enabled
-        let offeredWhenOff = shouldOffer(ordinary: 50, threshold: 6, enabled: enabled)
+        let offeredWhenOff = shouldOffer(today: 50, threshold: 6, enabled: enabled)
         enabled = true
         assert("the threshold round-trips through UserDefaults", roundTrip == 9)
         assert("a junk threshold is clamped, not honoured",
                clampedLow == 2 && clampedHigh == 50)
         assert("the switch round-trips and off means never offer",
                offRoundTrip == false && offeredWhenOff == false)
-        assert("exactly the threshold is not enough to offer",
-               !shouldOffer(ordinary: 6, threshold: 6, enabled: true))
-        assert("one past the threshold offers",
-               shouldOffer(ordinary: 7, threshold: 6, enabled: true))
-        // The exclusions, expressed the way shouldOffer(_:) computes them: 9 tabs, 2 pinned
-        // and 1 active leaves 6 ordinary — a window that is exactly not messy enough.
+        assert("an empty Space offers no housekeeping",
+               !offersHousekeeping(today: 0, threshold: 6))
+        assert("nor does one holding a handful of tabs you can already see",
+               (1..<6).allSatisfy { !offersHousekeeping(today: $0, threshold: 6) })
+        assert("the sixth Today tab is what brings Tidy and Clear out",
+               offersHousekeeping(today: 6, threshold: 6))
+        assert("…and they stay out as the pile grows",
+               (6...50).allSatisfy { offersHousekeeping(today: $0, threshold: 6) })
+        // The bug this replaces: Tidy used to be *drawn* at six and only *enabled* past
+        // eight, so three counts of Today tabs showed a control that refused to work.
+        assert("Tidy is shown and pressable on the same count, at every count",
+               (0...50).allSatisfy {
+                   shouldOffer(today: $0, threshold: 6, enabled: true)
+                       == offersHousekeeping(today: $0, threshold: 6)
+               })
+        assert("switching tidying off takes Tidy away rather than greying it out",
+               (0...50).allSatisfy { !shouldOffer(today: $0, threshold: 6, enabled: false) })
+        assert("Clear does not care whether tidying is switched on",
+               offersHousekeeping(today: 6, threshold: 6))
+        assert("nothing is discounted: six Today tabs is six, whichever one is on screen",
+               shouldOffer(today: 6, threshold: 6, enabled: true))
+        assert("a lowered threshold moves both halves together",
+               shouldOffer(today: 3, threshold: 2, enabled: true)
+                   && offersHousekeeping(today: 3, threshold: 2))
+
+        // --- What the Tidy control is, at a given moment ---
+        assert("under the threshold there is no Tidy to press",
+               control(today: 5, threshold: 6, enabled: true, running: false) == .hidden)
+        assert("at the threshold it is there and pressable",
+               control(today: 6, threshold: 6, enabled: true, running: false) == .tidy)
+        assert("with tidying switched off it is not drawn at all",
+               control(today: 20, threshold: 6, enabled: false, running: false) == .hidden)
+        assert("while a tidy runs the control is a spinner",
+               control(today: 20, threshold: 6, enabled: true, running: true) == .tidying)
+        assert("and it stays a spinner even as the tidy empties the section under it",
+               control(today: 0, threshold: 6, enabled: true, running: true) == .tidying)
+
         let strip = (1...9).map(id)
         let pinnedIDs: Set<Tab.ID> = [id(1), id(2)]
         let active = id(3)
-        let ordinary = strip.filter { !pinnedIDs.contains($0) && $0 != active }.count
-        assert("pinned tabs and the active tab do not count toward the threshold",
-               ordinary == 6 && !shouldOffer(ordinary: ordinary, threshold: 6, enabled: true))
-        assert("one more ordinary tab tips it over",
-               shouldOffer(ordinary: ordinary + 1, threshold: 6, enabled: true))
-
-        // --- Whether the housekeeping controls are on screen at all ---
-        assert("an empty Space offers no housekeeping", !offersHousekeeping(today: 0))
-        assert("nor does one holding a handful of tabs you can already see",
-               (1..<Look.tidyThreshold).allSatisfy { !offersHousekeeping(today: $0) })
-        assert("the sixth Today tab is what brings Tidy and Clear out",
-               offersHousekeeping(today: Look.tidyThreshold))
-        assert("…and they stay out as the pile grows",
-               (Look.tidyThreshold...50).allSatisfy(offersHousekeeping(today:)))
-        assert("the row's rule counts tabs, and does not discount the one being read the "
-               + "way shouldOffer does",
-               offersHousekeeping(today: 6) && !shouldOffer(ordinary: 6, threshold: 6, enabled: true))
-        assert("a lowered tidy threshold cannot put Tidy in the command bar while the "
-               + "sidebar is not offering it",
-               shouldOffer(ordinary: 3, threshold: 2, enabled: true) && !offersHousekeeping(today: 4))
 
         // --- Ordering: pinned first, active preserved, contiguous groups ---
         let groups = [Group(name: "Work", tabIDs: [id(7), id(4)]),
@@ -588,6 +725,60 @@ import Foundation
                    == Set(strip))
         assert("with no groups at all the strip is untouched",
                order(strip, pinned: pinnedIDs, groups: []) == strip)
+
+        // --- Folders: which groups get one, what goes in it, and in what order ---
+        //
+        // Driven through `Pins` itself, which is a plain Codable value — so this is the real
+        // folder model, laid out the way `apply` lays it out, with no window and no `Tab`.
+        let todayIDs = Set(strip.filter { !pinnedIDs.contains($0) })
+        let made = folders(for: groups, placement: tidied, live: todayIDs)
+        assert("every group of two or more becomes a folder", made.count == groups.count)
+        assert("a folder is named after its group",
+               made.map(\.name) == ["Work", "Reading"])
+        assert("a group's tabs go in in the order the tidy laid them out, not the order "
+               + "the model listed them",
+               made.first?.tabIDs == [id(4), id(7)])
+        assert("no tab is put in two folders",
+               Set(made.flatMap(\.tabIDs)).count == made.flatMap(\.tabIDs).count)
+        assert("a pinned tab is never swept into a folder",
+               made.flatMap(\.tabIDs).allSatisfy { !pinnedIDs.contains($0) })
+        assert("a group of one is a label on a tab, not a folder",
+               folders(for: [Group(name: "Lonely", tabIDs: [id(4)])],
+                       placement: tidied, live: todayIDs).isEmpty)
+        assert("…and its tab is left loose for a later group to claim",
+               folders(for: [Group(name: "Lonely", tabIDs: [id(4)]),
+                             Group(name: "Real", tabIDs: [id(4), id(5)])],
+                       placement: tidied, live: todayIDs)
+                   .first?.tabIDs == [id(4), id(5)])
+        assert("a plan naming a tab that has been closed makes no folder for it alone",
+               folders(for: [Group(name: "Ghosts", tabIDs: [id(98), id(99)])],
+                       placement: tidied, live: todayIDs).isEmpty)
+        assert("all singletons means no folders at all — nothing to tidy",
+               folders(for: [Group(name: "A", tabIDs: [id(4)]), Group(name: "B", tabIDs: [id(5)])],
+                       placement: tidied, live: todayIDs).isEmpty)
+        // The same plan, laid into the real Pins model.
+        var section = Pins()
+        var folderIDs: [UUID] = []
+        for group in made {
+            guard let folder = section.newFolder(named: group.name) else { continue }
+            folderIDs.append(folder.id)
+            for tab in group.tabIDs {
+                section.entries.append(Pins.Entry(row: .tab(tab.uuidString), parent: nil))
+                section.move(tab.uuidString, into: folder.id)
+            }
+        }
+        assert("the section holds one folder per group",
+               section.entries.compactMap(\.folder).map(\.name) == ["Work", "Reading"])
+        assert("each folder holds exactly its own group's tabs, in order",
+               folderIDs.map { section.children(of: $0) }
+                   == made.map { $0.tabIDs.map(\.uuidString) })
+        assert("nothing is left loose at the top of the section",
+               section.entries.filter { $0.tab != nil && $0.parent == nil }.isEmpty)
+        assert("dissolving the tidy's folders leaves every tab behind",
+               { var s = section
+                 folderIDs.forEach { s.remove(folder: $0) }
+                 return s.tabs.count == made.flatMap(\.tabIDs).count
+                     && s.entries.compactMap(\.folder).isEmpty }())
 
         // --- Undo ---
         assert("undo restores the exact original order",
@@ -636,4 +827,60 @@ import Foundation
 
         return out
     }
+}
+
+/// Whether a tidy is in flight, and for which window. The sidebar's Tidy row and the command
+/// bar both observe it: the label becomes a spinner, the row stops answering clicks, and the
+/// command bar's row reads "Tidying…".
+///
+/// It exists because the work takes twelve seconds. `TidyTabs.plan` calls the on-device model
+/// and that call is measured at 11.7–11.8s for ten tabs; a control that looks idle for twelve
+/// seconds after being pressed has told the user it did nothing, which is exactly what was
+/// reported. One tidy at a time, app-wide, because `AppleAI` admits one grouping request at a
+/// time anyway.
+///
+/// ponytail: a stamp rather than a token type. Every start bumps it, and a finish that names
+/// an older stamp is a run that was cancelled and replaced — it does not get to put the
+/// spinner away for the run that is still going.
+@MainActor final class TidyProgress: ObservableObject {
+    static let shared = TidyProgress()
+
+    /// The window whose tidy is running, or nil.
+    @Published private(set) var running: ObjectIdentifier?
+    private var stamp = 0
+    private var watchdog: Task<Void, Never>?
+
+    /// The longest the spinner may stay up, whatever happens behind it. `AppleAI.group`
+    /// already races its own 30s sleep and loses gracefully, so this only catches an await
+    /// that never returns at all — and its job is not to be right, it is to make sure a
+    /// hung model session can never leave a control disabled for the life of the window.
+    static let deadline: Duration = .seconds(35)
+
+    /// Say a tidy has started, and get the stamp to hand back to `ended`. `onDeadline` is
+    /// called if the run outlives `deadline`, so the caller can cancel its own task.
+    @discardableResult
+    func began(_ store: TabStore, onDeadline: @escaping @MainActor () -> Void) -> Int {
+        stamp += 1
+        let mine = stamp
+        running = ObjectIdentifier(store)
+        watchdog?.cancel()
+        watchdog = Task { [weak self] in
+            try? await Task.sleep(for: Self.deadline)
+            guard !Task.isCancelled else { return }
+            onDeadline()
+            self?.ended(mine)
+        }
+        return mine
+    }
+
+    /// A run finished, was cancelled, or timed out. Ignored when a newer run has started
+    /// since — see the note on the type.
+    func ended(_ mine: Int) {
+        guard mine == stamp else { return }
+        watchdog?.cancel()
+        watchdog = nil
+        running = nil
+    }
+
+    func isRunning(_ store: TabStore) -> Bool { running == ObjectIdentifier(store) }
 }
