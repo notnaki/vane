@@ -1859,7 +1859,10 @@ private struct SpaceMenu: View {
         .disabled(store.spaces.count < 2)
         Divider()
         Button("New Folder") { store.newFolder() }
-        Button("New Live Folder…") { open($live) }
+        // Arc asks nothing: signed in, the folder is there on the click. Signed out, the
+        // click is the sign-in, and the folder follows it. The sheet is the fallback for a
+        // build that cannot do the web flow — see `TabStore.askForLiveFolder`.
+        Button("New Live Folder…") { store.askForLiveFolder { open($live) } }
         Divider()
         // Arc's "Manage Spaces…" opens the Library's Spaces view — every Space's pages side
         // by side, draggable between columns — rather than a settings pane.
@@ -2107,7 +2110,7 @@ private struct PinnedSection: View {
             .overlay(alignment: .topLeading) { HeldRow(kind: .pinned) }
             .contextMenu {
                 Button("New Folder") { store.newFolder() }
-                Button("New Live Folder…") { open($sheet) }
+                Button("New Live Folder…") { store.askForLiveFolder { open($sheet) } }
             }
             .sheet(isPresented: $sheet) {
                 LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
@@ -2227,6 +2230,9 @@ private struct FolderRow: View {
         // The live commands reach the keyboard and VoiceOver the same way every other folder
         // command does — and only on a live folder, as in the menu above.
         .modifier(LiveFolderActions(store: store, folder: folder, editing: $editing))
+        // "Live Folder Created", hanging off the folder the click just made. Also out of the
+        // chain above, and for the same reason.
+        .modifier(LiveFolderCallout(store: store, folder: folder))
     }
 
     /// Out of the chain because the chain is already at the type-checker's ceiling, and one
@@ -2261,7 +2267,8 @@ private struct FolderGlyph: View {
         // still says it fills itself.
         .overlay(alignment: .bottomTrailing) {
             if folder.live != nil, let live {
-                LiveBadge(live: live, folder: folder.id).offset(x: 4, y: 3)
+                LiveBadge(live: live, folder: folder.id)
+                    .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
             }
         }
     }
@@ -3115,11 +3122,20 @@ private struct TabIcon: View {
     @ObservedObject var tab: Tab
     var size: CGFloat = 16
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Set only on the rows a live folder owns — see `PinnedRow`. Every other row in the app
+    /// gets nil, which is the branch below doing nothing.
+    @Environment(\.livePR) private var pr
 
     var body: some View {
         Group {
             if let icon = tab.favicon {
                 Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+            } else if pr != nil {
+                // A live folder's rows are parked until they are clicked, so github.com's
+                // own icon has not been fetched for most of them and a bare "G" is what the
+                // folder would otherwise be full of. The mark is what Arc draws there, and
+                // here it is only ever drawn on a row a GitHub folder owns.
+                GitHubMark().fill(Look.inkSecondary)
             } else if let letter = Favicons.letter(for: tab.currentURL) {
                 // Flat, no box: a tile and a pane pill already have a fill under this, and a
                 // second one inside it would read as an icon with a badge.

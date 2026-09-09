@@ -257,6 +257,16 @@ enum Look {
     static let badgeInset: CGFloat = 3
     static let badgeWidth: CGFloat = 20
     static let badgeShrink: Double = 0.6
+    /// A live folder's source mark, in the corner of the folder's own glyph: the GitHub mark
+    /// on a folder, so a folded folder still says where its contents come from. Smaller than
+    /// the glyph it sits on, and pushed out by less than its own width, so it reads as a
+    /// badge *on* the folder rather than as a second glyph beside it.
+    static let sourceBadge: CGFloat = 9
+    static let sourceBadgeOffset: CGFloat = 3
+    /// Arc's "Live Folder Created" card, hanging off the folder that was just made: wide
+    /// enough for its two lines of explanation, and gone again after this long.
+    static let calloutWidth: CGFloat = 250
+    static let calloutDuration: Double = 6
     /// What a button that is drawn but cannot be pressed fades to: an extension action its
     /// own extension has disabled for this page, or a pinned glyph on a pill with no tab.
     static let dimmed: Double = 0.4
@@ -730,6 +740,16 @@ extension Look {
                     badgeWidth > badgeHeight && badgeInset * 2 < badgeHeight))
         out.append(("badge type is the smallest in the app, and shrinks rather than clipping",
                     badgeShrink > 0 && badgeShrink < 1))
+        // A live folder's source mark, which is drawn in the corner of the folder's glyph.
+        out.append(("a live folder's mark leaves the folder under it readable as a folder",
+                    sourceBadge < tileIcon))
+        out.append(("…and is a mark rather than the permission dot on the lock",
+                    sourceBadge > badge))
+        out.append(("…and hangs off the glyph's corner rather than floating clear of it",
+                    sourceBadgeOffset > 0 && sourceBadgeOffset < sourceBadge))
+        out.append(("the live folder callout is narrower than the Site Control Center and "
+                    + "stays up longer than a toast",
+                    calloutWidth < siteWidth && calloutDuration > toastDuration))
         out.append(("a button that cannot be pressed fades without disappearing",
                     dimmed > 0 && dimmed < 1))
         out.append(("a pane's pill has room for a favicon and a corner of its own",

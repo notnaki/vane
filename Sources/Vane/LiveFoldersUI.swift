@@ -1,8 +1,12 @@
 import SwiftUI
 
-/// "New Live Folder…" and "Edit Live Folder…": sign in once, say what the folder tracks,
-/// name it. The same sheet does both — editing a live folder is choosing the same three
-/// things again.
+/// "Edit Live Folder…": sign in, say what the folder tracks, name it.
+///
+/// It is no longer what "New Live Folder…" opens. Arc asks nothing to make one — the folder
+/// is simply there, holding the pull requests you and your team have between you — and this
+/// is where any of that is changed afterwards. The one build it still opens for a *new*
+/// folder is one with no client secret compiled in, which has no consent page to send anyone
+/// to and so still takes a personal access token; see `OAuthSecret` and `LiveFolders.route`.
 ///
 /// ponytail: one sheet, no wizard. Arc walks you through picking a service, signing in and
 /// choosing a filter on three screens; there is one service, and three screens for three
@@ -59,6 +63,18 @@ struct LiveFolderSheet: View {
 
     private var signIn: some View {
         SettingsCard {
+            // Only where there is a consent page to send anyone to. In a source checkout
+            // `OAuthSecret.github` is nil, the button would open a page GitHub answers with
+            // "The redirect_uri is not associated with this application", and the token
+            // field below it is the way in — see `LiveFolders.route`.
+            if OAuthSecret.github != nil {
+                SettingsRow("GitHub") {
+                    Button("Connect…") {
+                        live.connect(in: store, thenCreate: false)
+                        dismiss()
+                    }
+                }
+            }
             SettingsRow("Personal access token") {
                 // Secure, and never held anywhere but this field and the keychain: the
                 // token is a password with a repository behind it.
@@ -79,10 +95,18 @@ struct LiveFolderSheet: View {
                 Button(checking ? "Checking…" : "Sign In") { check() }
                     .disabled(checking || TabActions.cleanName(token) == nil)
             }
-            Footnote(problem ?? "A classic token with the “repo” scope, or a fine-grained "
-                     + "token that can read pull requests. It is stored in your keychain, "
-                     + "for this profile only, and shows up in Settings ▸ Passwords.")
+            Footnote(problem ?? tokenFootnote)
         }
+    }
+
+    /// What the token field says for itself. The last sentence is only there in a build that
+    /// cannot do the web flow, because that is the build where a user would otherwise think
+    /// pasting a token is what Vane asks of everybody.
+    private var tokenFootnote: String {
+        "A classic token with the “repo” scope, or a fine-grained token that can read pull "
+            + "requests. It is stored in your keychain, for this profile only, and shows up "
+            + "in Settings ▸ Passwords."
+            + (OAuthSecret.github == nil ? " Signed releases connect with one click." : "")
     }
 
     // MARK: What it tracks
@@ -168,22 +192,128 @@ struct LiveFolderSheet: View {
     }
 }
 
+/// GitHub's mark, as a shape. It goes on the folder's glyph, on the rows inside it and in
+/// the callout, which is where Arc puts it too — the folder is a GitHub folder, and a branch
+/// glyph only ever said "a git host somewhere".
+///
+/// ponytail: a `Shape`, not a bundled asset. Octicons' own `mark-github-24` path (MIT,
+/// github/octicons), converted once into absolute curves in the unit square, is one file
+/// with no resource bundle, no `Package.swift` `resources:` entry, no @2x and no image to
+/// decode — and it takes the foreground colour, which is the whole reason the same mark can
+/// be an orange badge on a failing folder and ink everywhere else.
+///
+/// Drawn into the largest square the rect holds, centred, so a caller only says how big.
+struct GitHubMark: Shape {
+    nonisolated func path(in rect: CGRect) -> Path {
+        let side = min(rect.width, rect.height)
+        let ox = rect.minX + (rect.width - side) / 2
+        let oy = rect.minY + (rect.height - side) / 2
+        func at(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: ox + x * side, y: oy + y * side)
+        }
+        var p = Path()
+        p.move(to: at(0.5, 0.0123))
+        p.addCurve(to: at(0, 0.5123),
+                   control1: at(0.2237, 0.0123), control2: at(0, 0.2361))
+        p.addCurve(to: at(0.3419, 0.9867),
+                   control1: at(0, 0.7336), control2: at(0.1431, 0.9205))
+        p.addCurve(to: at(0.3762, 0.9629),
+                   control1: at(0.3669, 0.9911), control2: at(0.3762, 0.9761))
+        p.addCurve(to: at(0.3756, 0.8698),
+                   control1: at(0.3762, 0.9511), control2: at(0.3756, 0.9117))
+        p.addCurve(to: at(0.2075, 0.8111),
+                   control1: at(0.25, 0.8929), control2: at(0.2175, 0.8392))
+        p.addCurve(to: at(0.1562, 0.7405),
+                   control1: at(0.2019, 0.7967), control2: at(0.1775, 0.7523))
+        p.addCurve(to: at(0.1556, 0.7073),
+                   control1: at(0.1387, 0.7311), control2: at(0.1137, 0.7079))
+        p.addCurve(to: at(0.2325, 0.7586),
+                   control1: at(0.195, 0.7067), control2: at(0.2231, 0.7436))
+        p.addCurve(to: at(0.3781, 0.7998),
+                   control1: at(0.2775, 0.8342), control2: at(0.3494, 0.8129))
+        p.addCurve(to: at(0.41, 0.7329),
+                   control1: at(0.3825, 0.7673), control2: at(0.3956, 0.7455))
+        p.addCurve(to: at(0.1825, 0.4861),
+                   control1: at(0.2987, 0.7205), control2: at(0.1825, 0.6773))
+        p.addCurve(to: at(0.2337, 0.343),
+                   control1: at(0.1825, 0.4317), control2: at(0.2019, 0.3867))
+        p.addCurve(to: at(0.2387, 0.2105),
+                   control1: at(0.2287, 0.3305), control2: at(0.2113, 0.2792))
+        p.addCurve(to: at(0.3763, 0.2618),
+                   control1: at(0.2387, 0.2105), control2: at(0.2806, 0.1974))
+        p.addCurve(to: at(0.5013, 0.2449),
+                   control1: at(0.4163, 0.2505), control2: at(0.4587, 0.2449))
+        p.addCurve(to: at(0.6263, 0.2618),
+                   control1: at(0.5437, 0.2449), control2: at(0.5863, 0.2505))
+        p.addCurve(to: at(0.7637, 0.2105),
+                   control1: at(0.7219, 0.1968), control2: at(0.7637, 0.2105))
+        p.addCurve(to: at(0.7687, 0.343),
+                   control1: at(0.7913, 0.2792), control2: at(0.7737, 0.3305))
+        p.addCurve(to: at(0.82, 0.4861),
+                   control1: at(0.8006, 0.3867), control2: at(0.82, 0.4311))
+        p.addCurve(to: at(0.5919, 0.7329),
+                   control1: at(0.82, 0.6779), control2: at(0.7031, 0.7204))
+        p.addCurve(to: at(0.6256, 0.8255),
+                   control1: at(0.61, 0.7486), control2: at(0.6256, 0.7786))
+        p.addCurve(to: at(0.625, 0.9629),
+                   control1: at(0.6256, 0.8923), control2: at(0.625, 0.9461))
+        p.addCurve(to: at(0.6593, 0.9867),
+                   control1: at(0.625, 0.9761), control2: at(0.6344, 0.9917))
+        p.addCurve(to: at(1, 0.5123),
+                   control1: at(0.8569, 0.9205), control2: at(1, 0.7329))
+        p.addCurve(to: at(0.5, 0.0123),
+                   control1: at(1, 0.2361), control2: at(0.7763, 0.0123))
+        p.closeSubpath()
+        return p
+    }
+}
+
 /// The mark on a live folder's own glyph, so the row says where its contents come from
 /// without being unfolded. Orange when the last refresh failed — the folder is showing what
 /// it had, not what there is.
-///
-/// ponytail: an SF Symbol, not GitHub's octocat. Shipping the logo means bundling an image
-/// and reading its licence; a branch glyph says "filled from a git host" well enough, and
-/// the rows inside wear github.com's real favicon anyway.
 struct LiveBadge: View {
     @ObservedObject var live: LiveFolders
     let folder: UUID
 
     var body: some View {
-        Image(systemName: "arrow.triangle.branch")
-            .font(Look.badgeGlyph)
-            .foregroundStyle(live.failing.contains(folder) ? Look.warning : Look.inkSecondary)
+        GitHubMark()
+            .fill(live.failing.contains(folder) ? Look.warning : Look.inkSecondary)
+            .frame(width: Look.sourceBadge, height: Look.sourceBadge)
             .accessibilityHidden(true)       // the folder's value already says it is live
+    }
+}
+
+/// Arc's "Live Folder Created": a card hanging off the folder the click just made, saying
+/// what is about to fill it. There is no sheet any more — the folder is simply there — so
+/// this is the only thing that explains it, once, on the one occasion it is news.
+///
+/// A `ViewModifier` rather than another link in `FolderRow`'s chain, for the reason
+/// `LiveFolderActions` is one: that chain is already at the type-checker's ceiling.
+///
+/// It goes on a click anywhere else — the popover's own dismissal — or after
+/// `Look.calloutDuration`, whichever comes first. See `TabStore.announce(folder:)`.
+struct LiveFolderCallout: ViewModifier {
+    @ObservedObject var store: TabStore
+    let folder: Folder
+
+    func body(content: Content) -> some View {
+        content.popover(isPresented: Binding(get: { store.announcing == folder.id },
+                                             set: { if !$0 { store.announcing = nil } }),
+                        arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: Look.captionGap) {
+                HStack(spacing: Look.rowSpacing) {
+                    GitHubMark().fill(Look.inkPrimary)
+                        .frame(width: Look.tileIcon, height: Look.tileIcon)
+                    Text("Live Folder Created").font(Look.heading)
+                }
+                Text("Pull requests from you and your team will show up here automatically")
+                    .font(Look.footnote).foregroundStyle(Look.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(Look.paneMargin)
+            .frame(width: Look.calloutWidth, alignment: .leading)
+            .accessibilityElement(children: .combine)
+        }
     }
 }
 

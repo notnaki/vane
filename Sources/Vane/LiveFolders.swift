@@ -321,16 +321,140 @@ enum GitHub {
     }
 }
 
+// MARK: - Signing in with GitHub
+
+/// GitHub's OAuth web flow, which is how Vane gets a token without the user ever seeing one.
+/// Arc does not ask for a personal access token and neither does this: "New Live Folder…"
+/// opens github.com's own consent page in a tab, and the answer comes back to a `vane:` url
+/// that never leaves the page.
+///
+/// ponytail: the web flow rather than the device flow. Vane *is* the browser — it can open
+/// the consent page in a tab and read the redirect out of its own navigation delegate, which
+/// is one cancelled navigation and no polling loop. The device flow exists for televisions.
+///
+/// Everything here is a pure value — a url in, a url or a request out — so `selfcheck --pure`
+/// proves the whole handshake with no network and no consent page.
+enum GitHubOAuth {
+    /// Public by design: a client id identifies the app to GitHub and is in the redirect url
+    /// anyway. The secret is `OAuthSecret.github`, and is not in the repository.
+    nonisolated static let clientID = "Ov23liQ1Plm1UJ9nIlWd"
+    /// Registered on the OAuth app. Deliberately a scheme macOS knows nothing about: it is
+    /// *not* declared in the bundle's Info.plist, so it is not a system-wide handler another
+    /// app can aim a url at. The only thing that ever sees one is `decidePolicyFor` in this
+    /// process, which cancels it — see `ExternalApps.ownScheme`.
+    nonisolated static let redirect = "vane://oauth/github"
+    nonisolated static let redirectHost = "oauth"
+    nonisolated static let redirectPath = "/github"
+    /// `repo`, because a pull request in a private repository is still a pull request the
+    /// folder is meant to hold, and GitHub has no narrower scope that can search for one.
+    nonisolated static let scope = "repo"
+
+    nonisolated static let authorizeURL = "https://github.com/login/oauth/authorize"
+    nonisolated static let tokenURL = "https://github.com/login/oauth/access_token"
+
+    /// The page the user is sent to. `state` is the one-shot value the reply must carry
+    /// back; anything else arriving at the redirect is not this sign-in.
+    nonisolated static func authorize(state: String) -> URL? {
+        var c = URLComponents(string: authorizeURL)
+        c?.queryItems = [URLQueryItem(name: "client_id", value: clientID),
+                         URLQueryItem(name: "redirect_uri", value: redirect),
+                         URLQueryItem(name: "scope", value: scope),
+                         URLQueryItem(name: "state", value: state)]
+        return c?.url
+    }
+
+    /// ponytail: a UUID. It has to be unguessable and used once, which is the whole of what
+    /// `state` is for, and `SecRandomCopyBytes` for 122 bits Foundation already generates
+    /// from the same place is ceremony.
+    nonisolated static func newState() -> String { UUID().uuidString }
+
+    /// What came back at the redirect.
+    enum Redirect: Equatable, Sendable {
+        /// The code to trade for a token, with the state that proves it is ours.
+        case code(String)
+        /// The user said no on GitHub's page, or GitHub refused for its own reason.
+        case denied
+        /// Our redirect, with the wrong `state` or none at all: a page trying to hand this
+        /// browser somebody else's sign-in. Nothing is traded and nothing is stored.
+        case mismatched
+        /// Not this handshake at all — another `vane:` url, or another scheme entirely.
+        case notOurs
+    }
+
+    /// Whether a url is the one this flow answers to. Host and path both, so `vane://other`
+    /// is somebody else's business.
+    nonisolated static func isRedirect(_ url: URL) -> Bool {
+        url.scheme?.lowercased() == ExternalApps.ownScheme
+            && url.host?.lowercased() == redirectHost
+            && url.path == redirectPath
+    }
+
+    /// The redirect, read. `expecting` is the state the sign-in now in flight went out with,
+    /// or nil when there is no sign-in in flight — in which case a redirect turning up is
+    /// exactly the thing `state` exists to refuse.
+    nonisolated static func read(_ url: URL, expecting: String?) -> Redirect {
+        guard isRedirect(url) else { return .notOurs }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ name: String) -> String? {
+            items.first { $0.name == name }?.value.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        // The refusal is read before the state: a denial is the user's answer whether or not
+        // the round trip survived, and "you said no" is a better thing to say than "that did
+        // not come back the way it left".
+        if value("error") != nil { return .denied }
+        guard let expecting, value("state") == expecting else { return .mismatched }
+        guard let code = value("code") else { return .mismatched }
+        return .code(code)
+    }
+
+    /// The exchange: code in, token out. A form post, because that is what GitHub's endpoint
+    /// takes; `Accept: application/json` is what stops it answering in form encoding.
+    nonisolated static func body(code: String, secret: String) -> String {
+        var c = URLComponents()
+        c.queryItems = [URLQueryItem(name: "client_id", value: clientID),
+                        URLQueryItem(name: "client_secret", value: secret),
+                        URLQueryItem(name: "code", value: code),
+                        URLQueryItem(name: "redirect_uri", value: redirect)]
+        return c.percentEncodedQuery ?? ""
+    }
+
+    nonisolated static func exchange(code: String, secret: String) -> URLRequest? {
+        guard let url = URL(string: tokenURL) else { return nil }
+        var r = URLRequest(url: url)
+        r.httpMethod = "POST"
+        r.setValue("application/json", forHTTPHeaderField: "Accept")
+        r.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        r.setValue("Vane", forHTTPHeaderField: "User-Agent")
+        r.httpBody = Data(body(code: code, secret: secret).utf8)
+        r.timeoutInterval = 15
+        return r
+    }
+
+    private struct Grant: Decodable { let accessToken: String? }
+
+    /// nil for GitHub's `{"error": "bad_verification_code"}`, which comes back 200.
+    nonisolated static func token(_ data: Data) -> String? {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return (try? d.decode(Grant.self, from: data))?.accessToken.flatMap {
+            $0.isEmpty ? nil : $0
+        }
+    }
+}
+
 // MARK: - The live part
 
 /// One per profile: the token, the clock, and what each live folder last came back with.
 ///
-/// ponytail: a Personal Access Token pasted into the sheet, not OAuth. The device flow needs
-/// a `client_id` registered to a GitHub App that Vane does not have and cannot have from a
-/// source checkout — the token is one field, is revocable from the same page it is made on,
-/// and lives in the keychain like every other credential here. Ceiling: GitHub's OAuth
-/// device flow (POST /login/device/code, poll /login/oauth/access_token), which is worth
-/// doing the day Vane ships under a real client_id.
+/// Signing in is GitHub's OAuth web flow — Arc asks for no token and neither does this. See
+/// `GitHubOAuth` for the handshake and `OAuthSecret` for the one piece of it that only a
+/// release build carries. A build without that secret keeps the old path, a personal access
+/// token pasted into the sheet, because a source checkout has to be able to sign in too;
+/// `route` is the whole of that decision.
+///
+/// Either way the token ends up in the same place — an Internet password for api.github.com,
+/// through `Passwords` — so it is revocable from Settings ▸ Passwords whichever way it
+/// arrived, and nothing below this line knows which way that was.
 @MainActor final class LiveFolders: ObservableObject {
     /// The keychain "site" the token is filed under.
     ///
@@ -346,6 +470,14 @@ enum GitHub {
     /// is nowhere near it, and a minute's floor keeps a bad afternoon from getting there.
     nonisolated static let interval: TimeInterval = 300
     nonisolated static let minimum: TimeInterval = 60
+
+    /// Arc's live folder, which is the only one there is: what it is called and what it
+    /// holds. `reviewRequested` is the closest of the four filters to the sentence the
+    /// callout says — "pull requests from you and your team" is your team asking you to
+    /// look at theirs — and every repository, because narrowing to one is a thing you
+    /// discover you want later, in "Edit Live Folder…", not a question to be asked first.
+    nonisolated static let pullRequests = "Pull Requests"
+    nonisolated static let defaultQuery = GitHubQuery(filter: .reviewRequested, repo: nil)
 
     private static var byProfile: [UUID: LiveFolders] = [:]
 
@@ -452,6 +584,95 @@ enum GitHub {
         guard let url = URL(string: GitHub.api + "/user") else { return .failure(.offline) }
         let answer = await ask(url, token: token) { GitHub.login($0).map { [$0] } }
         return answer.flatMap { $0.first.map { .success($0) } ?? .failure(.unauthorised) }
+    }
+
+    // MARK: The web flow
+
+    /// What "New Live Folder…" does, given what this build and this profile have. Pure, so
+    /// the one branch that decides whether the user is ever shown a token field at all can
+    /// be proved without a keychain and without a client secret.
+    enum Route: Equatable, Sendable {
+        /// Signed in already: Arc makes the folder there and then, no sheet.
+        case create
+        /// A release build with the secret compiled in: send them to GitHub in a tab.
+        case connect
+        /// A source checkout: the sheet, and the personal access token it has always taken.
+        case sheet
+    }
+
+    nonisolated static func route(signedIn: Bool, hasSecret: Bool) -> Route {
+        if signedIn { return .create }
+        return hasSecret ? .connect : .sheet
+    }
+
+    /// The sign-in now in flight: the `state` it went out with, and whether the folder is to
+    /// be made when it comes back. One at a time — a second "New Live Folder…" while the
+    /// consent page is still up replaces it, and the first one's redirect is then refused by
+    /// its own state, which is exactly right: only the sign-in the user is looking at counts.
+    private var pending: (state: String, thenCreate: Bool)?
+
+    /// Open GitHub's consent page in a tab of this window. Nothing is stored yet; the tab is
+    /// closed and the token saved when `finish` reads the redirect out of it.
+    func connect(in store: TabStore, thenCreate: Bool) {
+        let state = GitHubOAuth.newState()
+        guard let url = GitHubOAuth.authorize(state: state) else { return }
+        pending = (state: state, thenCreate: thenCreate)
+        store.newTab(url)
+    }
+
+    /// The redirect, caught in `decidePolicyFor` before WebKit or macOS could see it. `tab`
+    /// is the tab it arrived in — the one the consent page is on, which goes as soon as the
+    /// answer is read, so the sign-in leaves nothing behind either way.
+    ///
+    /// Called for *every* `vane:` navigation, not only ours: a page that redirects to one is
+    /// answered with nothing at all rather than with a hint about what would have worked.
+    func finish(redirect url: URL, in tab: Tab) {
+        let answer = GitHubOAuth.read(url, expecting: pending?.state)
+        guard answer != .notOurs else { return }
+        let store = TabStore.all.first { $0.tabs.contains { $0 === tab } }
+        let thenCreate = pending?.thenCreate ?? false
+        pending = nil
+        store?.close(tab.id)
+        switch answer {
+        case .code(let code):
+            Task { await exchange(code, in: store, thenCreate: thenCreate) }
+        case .denied:
+            say("Vane was not allowed to connect to GitHub.")
+        // One toast, and deliberately the same shape as the denial: from here a state that
+        // does not match and a sign-in nobody started are the same event.
+        case .mismatched:
+            say("That GitHub sign-in did not come back the way it left. Nothing was connected.")
+        case .notOurs:
+            break
+        }
+    }
+
+    /// Code → token → login → keychain, and then the folder the click asked for.
+    private func exchange(_ code: String, in store: TabStore?, thenCreate: Bool) async {
+        guard let secret = OAuthSecret.github,
+              let request = GitHubOAuth.exchange(code: code, secret: secret) else { return }
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        // GitHub answers 200 with `{"error": …}` for a code that has been used or has
+        // expired, so the body is what says whether this worked, not the status.
+        guard let data = try? await session.data(for: request).0,
+              let token = GitHubOAuth.token(data) else {
+            say("GitHub would not finish the sign-in. Try New Live Folder again.")
+            return
+        }
+        guard case .success(let who) = await LiveFolders.identify(token: token) else {
+            say("GitHub signed Vane in, but would not say who to. Nothing was stored.")
+            return
+        }
+        guard save(login: who, token: token) else {
+            say("The keychain would not store the GitHub token.")
+            return
+        }
+        if thenCreate, let store {
+            store.newPullRequestsFolder()
+        } else {
+            say("Connected to GitHub as \(who).")
+        }
     }
 
     // MARK: Fetching
@@ -680,9 +901,55 @@ extension TabStore {
         tabs.first { $0.id.uuidString == id }?.currentURL?.absoluteString
     }
 
+    /// "New Live Folder…", the whole of it. Arc has one kind of live folder and asks nothing
+    /// about it: signed in, the folder is there on the click, holding the pull requests you
+    /// and your team have between you. Signed out, the click is a sign-in — the consent page
+    /// in a tab of this window — and the folder is made when that comes back.
+    ///
+    /// `sheet` is the way in for a build with no client secret compiled in: there is no
+    /// consent page to send anyone to, so the old sheet asks for a personal access token
+    /// instead. See `OAuthSecret` and `LiveFolders.route`.
+    func askForLiveFolder(orShow sheet: () -> Void) {
+        let live = LiveFolders.shared(for: profileID)
+        switch LiveFolders.route(signedIn: live.signIn != nil, hasSecret: OAuthSecret.github != nil) {
+        case .create:  newPullRequestsFolder()
+        case .connect: live.connect(in: self, thenCreate: true)
+        case .sheet:   sheet()
+        }
+    }
+
+    /// The one live folder there is, made: Arc's name, Arc's contents, every repository the
+    /// account can see. "Edit Live Folder…" is where any of that is changed afterwards —
+    /// which is the point of not asking first.
+    @discardableResult
+    func newPullRequestsFolder() -> Folder? {
+        let made = newLiveFolder(named: LiveFolders.pullRequests,
+                                 source: .github(LiveFolders.defaultQuery))
+        // The callout is Arc's: a card hanging off the folder that was just made, saying
+        // what it is going to do, gone on the next click or after `Look.calloutDuration`.
+        // Per window, because the folder was made in this one.
+        if let made { announce(folder: made.id) }
+        return made
+    }
+
+    /// Puts the callout up, and takes it down again on its own. A click anywhere else takes
+    /// it too — that is the popover's own behaviour, through the binding in
+    /// `LiveFolderCallout` — and this is only the clock under it.
+    ///
+    /// The folder id is checked again on the way out so a second folder made inside the same
+    /// six seconds keeps its own callout rather than losing it to the first one's timer.
+    func announce(folder: UUID) {
+        announcing = folder
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Look.calloutDuration))
+            guard let self, announcing == folder else { return }
+            announcing = nil
+        }
+    }
+
     /// "New Live Folder…": a folder at the end of the Pinned section with a source attached.
-    /// It is not opened for renaming the way `newFolder` is — the sheet already asked what
-    /// it is called.
+    /// It is not opened for renaming the way `newFolder` is — the folder's name is decided
+    /// before it is made, either by Arc's one kind or by the sheet.
     @discardableResult
     func newLiveFolder(named name: String, source: LiveSource) -> Folder? {
         syncPins()
@@ -1007,6 +1274,120 @@ extension GitHub {
 
         assert("a live folder is named after what it tracks",
                LiveSource.github(GitHubQuery(filter: .mentioned)).title == "Mentioning Me")
+
+        // MARK: Signing in
+
+        // What the click does. The one branch that decides whether a user is ever shown a
+        // token field at all, and the reason a release build never is.
+        assert("signed in, New Live Folder makes the folder and asks nothing",
+               LiveFolders.route(signedIn: true, hasSecret: true) == .create)
+        assert("…however the token got there",
+               LiveFolders.route(signedIn: true, hasSecret: false) == .create)
+        assert("signed out, a build with the secret sends you to GitHub",
+               LiveFolders.route(signedIn: false, hasSecret: true) == .connect)
+        assert("…and one without it falls back to the sheet",
+               LiveFolders.route(signedIn: false, hasSecret: false) == .sheet)
+        // What this particular build does, whichever build it is. Deliberately *not*
+        // `OAuthSecret.github == nil`: these same checks run against the packaged app in the
+        // release workflow, after the client secret has been substituted in, so an assertion
+        // that a checkout has no secret is one that fails every signed release.
+        assert("a build takes the path its own client secret says it can",
+               LiveFolders.route(signedIn: false, hasSecret: OAuthSecret.github != nil)
+                   == (OAuthSecret.github == nil ? .sheet : .connect))
+
+        // The folder that click makes.
+        assert("Arc's one live folder is called Pull Requests",
+               LiveFolders.pullRequests == "Pull Requests")
+        assert("…and holds the pull requests your team is asking you to look at, everywhere",
+               LiveFolders.defaultQuery.filter == .reviewRequested
+                   && LiveFolders.defaultQuery.repo == nil)
+        assert("…which is one search, no repository qualifier",
+               terms(LiveFolders.defaultQuery) == "is:pr is:open review-requested:@me")
+
+        // The consent page.
+        let state = GitHubOAuth.newState()
+        let authorize = GitHubOAuth.authorize(state: state)
+        let sentItems = URLComponents(url: authorize ?? URL(fileURLWithPath: "/"),
+                                      resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func asked(_ name: String) -> String? { sentItems.first { $0.name == name }?.value }
+        assert("the sign-in goes to GitHub's authorize page",
+               authorize?.absoluteString.hasPrefix("https://github.com/login/oauth/authorize?")
+                   == true)
+        assert("…as this app", asked("client_id") == "Ov23liQ1Plm1UJ9nIlWd")
+        assert("…asking for the scope a private pull request needs", asked("scope") == "repo")
+        assert("…carrying the state the reply has to come back with", asked("state") == state)
+        assert("…and the redirect only this browser can answer",
+               asked("redirect_uri") == "vane://oauth/github")
+        assert("the state is unguessable and used once",
+               GitHubOAuth.newState() != GitHubOAuth.newState() && state.count > 16)
+
+        // The reply, which arrives as a navigation and is read before anything else can see
+        // it. Every one of these is a url a page could put in front of the browser.
+        func reply(_ raw: String) -> GitHubOAuth.Redirect {
+            GitHubOAuth.read(URL(string: raw)!, expecting: state)
+        }
+        assert("a code with the right state is the sign-in",
+               reply("vane://oauth/github?code=abc123&state=\(state)") == .code("abc123"))
+        assert("…whichever order the parameters arrive in",
+               reply("vane://oauth/github?state=\(state)&code=abc123") == .code("abc123"))
+        assert("a code with somebody else's state is refused",
+               reply("vane://oauth/github?code=abc123&state=nope") == .mismatched)
+        assert("…and so is one with no state at all",
+               reply("vane://oauth/github?code=abc123") == .mismatched)
+        assert("…and a state with no code is nothing to trade",
+               reply("vane://oauth/github?state=\(state)") == .mismatched)
+        assert("a redirect arriving with no sign-in in flight is refused",
+               GitHubOAuth.read(URL(string: "vane://oauth/github?code=a&state=b")!,
+                                expecting: nil) == .mismatched)
+        assert("saying no on GitHub's page is a denial, not a failure",
+               reply("vane://oauth/github?error=access_denied&state=\(state)") == .denied)
+        assert("…even without the state, since the answer is the same either way",
+               reply("vane://oauth/github?error=access_denied") == .denied)
+        assert("another vane: url is not this handshake",
+               reply("vane://something/else?code=abc123&state=\(state)") == .notOurs)
+        assert("…nor is one on the right host but the wrong path",
+               reply("vane://oauth/gitlab?code=abc123&state=\(state)") == .notOurs)
+        assert("…nor is a page pretending to be the redirect over https",
+               reply("https://oauth/github?code=abc123&state=\(state)") == .notOurs)
+        assert("the redirect is recognised by host and path together",
+               GitHubOAuth.isRedirect(URL(string: "vane://oauth/github")!)
+                   && !GitHubOAuth.isRedirect(URL(string: "vane://oauth")!))
+
+        // The exchange. A fake secret: the real one is never in this repository and is not
+        // in this process either, on any build a developer runs.
+        let post = GitHubOAuth.exchange(code: "abc123", secret: "s3cr3t")
+        let sent = post.flatMap { $0.httpBody }.flatMap { String(data: $0, encoding: .utf8) }
+        assert("the code is traded at GitHub's token endpoint",
+               post?.url?.absoluteString == "https://github.com/login/oauth/access_token")
+        assert("…with a POST", post?.httpMethod == "POST")
+        assert("…asking for json rather than form encoding",
+               post?.value(forHTTPHeaderField: "Accept") == "application/json")
+        assert("…as a form body, which is what that endpoint takes",
+               post?.value(forHTTPHeaderField: "Content-Type")
+                   == "application/x-www-form-urlencoded")
+        assert("…carrying the four things GitHub asks for, in order",
+               sent == "client_id=Ov23liQ1Plm1UJ9nIlWd&client_secret=s3cr3t&code=abc123"
+                   + "&redirect_uri=vane://oauth/github")
+        assert("a token comes back out of the answer",
+               GitHubOAuth.token(Data(#"{"access_token": "gho_x", "scope": "repo"}"#.utf8))
+                   == "gho_x")
+        // GitHub answers 200 for a code that has already been used, so the body is the only
+        // thing that says whether this worked.
+        assert("…and a refusal is not a token, however healthy the status code",
+               GitHubOAuth.token(Data(#"{"error": "bad_verification_code"}"#.utf8)) == nil)
+        assert("…nor is an empty one",
+               GitHubOAuth.token(Data(#"{"access_token": ""}"#.utf8)) == nil)
+
+        // The scheme itself. It must reach neither WebKit nor macOS: `decidePolicyFor`
+        // cancels every `vane:` navigation, nothing is ever handed to LaunchServices for
+        // one, and a `vane:` url arriving from another app through GetURL is refused.
+        assert("vane: is Vane's own, not another app's",
+               !ExternalApps.isExternal("vane") && ExternalApps.isOwn("VANE"))
+        assert("…so nothing offers to open it in an app",
+               ExternalApps.decision(remembered: false, host: "evil.example", scheme: "vane")
+                   == .refuse)
+        assert("…and it is not a scheme WebKit is asked to load either",
+               !ExternalApps.webSchemes.contains(ExternalApps.ownScheme))
 
         return out
     }

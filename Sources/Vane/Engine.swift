@@ -610,10 +610,22 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// scheme from here — WebKit does not let the delegate rewrite the request.
     func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        // Vane's own scheme, before anything else: `vane://oauth/github` is where GitHub
+        // sends the answer to a live folder's sign-in, and this is the only place in the
+        // system that ever reads one. Cancelled unconditionally, whatever the rest of the
+        // url says — WebKit has no loader for it, macOS has no handler for it because the
+        // bundle deliberately declares none, and a page that redirects to `vane://anything`
+        // gets nothing back at all. `finish` ignores every url that is not the redirect it
+        // is waiting for, so a page cannot learn from this what would have worked.
+        if let url = navigationAction.request.url, ExternalApps.isOwn(url.scheme) {
+            decisionHandler(.cancel)
+            LiveFolders.shared(for: profileID).finish(redirect: url, in: self)
+            return
+        }
         // A link to another app — zoommtg:, msteams:, mailto:, tel: — is not something
         // WebKit has a loader for: allowing it failed the navigation with "unsupported URL"
         // and the click looked like it did nothing at all. So it is cancelled and asked
-        // about instead. First, because the question is the same wherever the navigation
+        // about instead. Early, because the question is the same wherever the navigation
         // came from and whatever else it also is: the main frame, an iframe, a `location =`
         // redirect, a ⌘-click that would otherwise open a tab that cannot load, or a
         // target=_blank on its way to `createWebViewWith`.
@@ -904,6 +916,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @Published var renamingFolder: UUID? {
         didSet { if renamingFolder != nil { renamingTab = nil } }
     }
+    /// The live folder whose "Live Folder Created" callout is up. Per window, like the
+    /// command bar: the folder was made by a click in this one, and a second window showing
+    /// the same Space is not where anybody is looking. See `LiveFolderCallout`.
+    @Published var announcing: UUID?
     /// The window's split views: 2–4 of the tabs above shown side by side in one page card
     /// and as one sidebar row. Ids, not tabs, so a split survives its panes moving section,
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.
