@@ -26,12 +26,17 @@ struct GitHubQuery: Codable, Equatable, Sendable {
     /// Arc's four. Each is one GitHub search qualifier and nothing else, which is why
     /// there is no free-text query box: a folder is a saved *view*, not a search bar.
     enum Filter: String, Codable, CaseIterable, Sendable, Identifiable {
-        case reviewRequested, assigned, created, mentioned
+        /// GitHub's `involves:` — authored, assigned, mentioned or asked to review, in one
+        /// search. What Arc's "pull requests from you and your team" actually means: a
+        /// folder that only held review requests sat empty for anyone whose own pull
+        /// requests were the ones open.
+        case involved, reviewRequested, assigned, created, mentioned
 
         var id: String { rawValue }
 
         var title: String {
             switch self {
+            case .involved: "Involving Me"
             case .reviewRequested: "Review Requested"
             case .assigned: "Assigned to Me"
             case .created: "Created by Me"
@@ -43,6 +48,7 @@ struct GitHubQuery: Codable, Equatable, Sendable {
         /// folder keeps working after the token is swapped for another account's.
         var qualifier: String {
             switch self {
+            case .involved: "involves:@me"
             case .reviewRequested: "review-requested:@me"
             case .assigned: "assignee:@me"
             case .created: "author:@me"
@@ -51,7 +57,7 @@ struct GitHubQuery: Codable, Equatable, Sendable {
         }
     }
 
-    var filter: Filter = .reviewRequested
+    var filter: Filter = .involved
     /// "owner/name", or nil for every repository the token can see.
     var repo: String?
 }
@@ -274,6 +280,9 @@ enum GitHub {
         var closing: [String] = []
         /// Every row that should remain, in the order to draw it.
         var order: [String] = []
+        /// What each arriving row is called, by url, so it has a name before it has ever
+        /// loaded. A row parked with no title read "New Tab" until somebody clicked it.
+        var titles: [String: String] = [:]
 
         var changesRows: Bool { !add.isEmpty || !remove.isEmpty || !closing.isEmpty }
     }
@@ -474,12 +483,12 @@ enum GitHubOAuth {
     nonisolated static let minimum: TimeInterval = 60
 
     /// Arc's live folder, which is the only one there is: what it is called and what it
-    /// holds. `reviewRequested` is the closest of the four filters to the sentence the
-    /// callout says — "pull requests from you and your team" is your team asking you to
-    /// look at theirs — and every repository, because narrowing to one is a thing you
-    /// discover you want later, in "Edit Live Folder…", not a question to be asked first.
+    /// holds. `involved` is the sentence the callout says — "pull requests from you and
+    /// your team" is yours and the ones they want you on — and every repository, because
+    /// narrowing to one is a thing you discover you want later, in "Edit Live Folder…",
+    /// not a question to be asked first.
     nonisolated static let pullRequests = "Pull Requests"
-    nonisolated static let defaultQuery = GitHubQuery(filter: .reviewRequested, repo: nil)
+    nonisolated static let defaultQuery = GitHubQuery(filter: .involved, repo: nil)
 
     private static var byProfile: [UUID: LiveFolders] = [:]
 
@@ -881,7 +890,8 @@ enum GitHubOAuth {
             let have = GitHub.mine(store.pins.children(of: folder).compactMap(store.rowURL),
                                    owned: owned)
             let closing = Set((states[folder] ?? [:]).filter { $0.value == .closed }.keys)
-            let plan = GitHub.plan(have: have, want: want, closing: closing)
+            var plan = GitHub.plan(have: have, want: want, closing: closing)
+            plan.titles = Dictionary(prs.map { ($0.url, $0.title) }, uniquingKeysWith: { a, _ in a })
             // A row still on its way out keeps its own url as its identity for one more
             // refresh, so the folder still owns it and still draws its goodbye. So does one
             // the apply held back because the user was looking at it — otherwise the folder
@@ -1043,8 +1053,17 @@ extension TabStore {
     /// go on owning them and go on drawing their goodbye until it can take them.
     @discardableResult
     func applyLive(_ plan: GitHub.Plan, to folder: UUID) -> [String] {
-        guard pins.folder(folder) != nil,
-              plan.changesRows || liveRows(in: folder, owning: plan) != plan.order else { return [] }
+        guard pins.folder(folder) != nil else { return [] }
+        // A pull request renamed on GitHub renames its row, as Arc does — but only a parked
+        // one: a loaded page has a title of its own, and the next refresh of that page is
+        // GitHub's to retitle. Before the guard below, because a rename changes no rows.
+        for id in pins.children(of: folder) {
+            guard let url = rowURL(id), let title = plan.titles[url],
+                  let tab = tabs.first(where: { $0.id.uuidString == id }),
+                  tab.suspended, tab.title != title else { continue }
+            tab.title = title
+        }
+        guard plan.changesRows || liveRows(in: folder, owning: plan) != plan.order else { return [] }
         var byURL: [String: Tab.ID] = [:]
         for id in pins.children(of: folder) {
             guard let url = rowURL(id), byURL[url] == nil,
@@ -1073,7 +1092,7 @@ extension TabStore {
         // Parked, and unfocused, and inside the Pinned run: see `newBlankTab(focus:as:)`.
         for url in plan.add.compactMap(URL.init(string:)) {
             let tab = newBlankTab(focus: false, as: .pinned)
-            tab.park(url: url, Parked())
+            tab.park(url: url, Parked(title: plan.titles[url.absoluteString] ?? ""))
             byURL[url.absoluteString] = tab.id
         }
         syncShapes()
@@ -1115,16 +1134,16 @@ extension GitHub {
         func assert(_ name: String, _ ok: Bool) { out.append((name, ok)) }
 
         // The query.
-        assert("the default folder asks for open pull requests wanting your review",
-               terms(GitHubQuery()) == "is:pr is:open review-requested:@me")
+        assert("the default folder asks for every open pull request you are part of",
+               terms(GitHubQuery()) == "is:pr is:open involves:@me")
         assert("each filter is one qualifier",
                GitHubQuery.Filter.allCases.map { terms(GitHubQuery(filter: $0)).split(separator: " ").last! }
-                   == ["review-requested:@me", "assignee:@me", "author:@me", "mentions:@me"])
+                   == ["involves:@me", "review-requested:@me", "assignee:@me", "author:@me", "mentions:@me"])
         assert("a repository narrows it",
-               terms(GitHubQuery(repo: "apple/swift")) == "is:pr is:open review-requested:@me repo:apple/swift")
+               terms(GitHubQuery(repo: "apple/swift")) == "is:pr is:open involves:@me repo:apple/swift")
         assert("the search url escapes the spaces rather than sending them",
                search(GitHubQuery())?.absoluteString
-                   == "https://api.github.com/search/issues?q=is:pr%20is:open%20review-requested:@me&per_page=50")
+                   == "https://api.github.com/search/issues?q=is:pr%20is:open%20involves:@me&per_page=50")
         assert("…and per_page is the cap, not a guess",
                search(GitHubQuery())?.absoluteString.hasSuffix("per_page=\(perPage)") == true)
 
@@ -1140,7 +1159,13 @@ extension GitHub {
                repository("apple/swift is:merged") == nil)
         assert("…and so is one hidden behind a space", repository("a b/c") == nil)
         assert("a folder with a bad repo asks for every repository instead",
-               terms(GitHubQuery(repo: "not a repo")) == "is:pr is:open review-requested:@me")
+               terms(GitHubQuery(repo: "not a repo")) == "is:pr is:open involves:@me")
+
+        // The rows arrive already named.
+        var named = GitHub.plan(have: [], want: ["https://github.com/a/b/pull/1"], closing: [])
+        named.titles = ["https://github.com/a/b/pull/1": "Fix the thing"]
+        assert("a row arrives wearing its pull request's title, not New Tab",
+               named.titles[named.add[0]] == "Fix the thing")
 
         // The reply.
         let body = Data("""
@@ -1353,11 +1378,14 @@ extension GitHub {
         // The folder that click makes.
         assert("Arc's one live folder is called Pull Requests",
                LiveFolders.pullRequests == "Pull Requests")
-        assert("…and holds the pull requests your team is asking you to look at, everywhere",
-               LiveFolders.defaultQuery.filter == .reviewRequested
+        assert("…and holds every pull request you are part of, everywhere",
+               LiveFolders.defaultQuery.filter == .involved
                    && LiveFolders.defaultQuery.repo == nil)
         assert("…which is one search, no repository qualifier",
-               terms(LiveFolders.defaultQuery) == "is:pr is:open review-requested:@me")
+               terms(LiveFolders.defaultQuery) == "is:pr is:open involves:@me")
+        assert("…and your own pull requests are in it, which review requests alone never were",
+               GitHubQuery.Filter.involved.qualifier == "involves:@me"
+                   && GitHubQuery.Filter.reviewRequested.qualifier == "review-requested:@me")
 
         // The consent page.
         let state = GitHubOAuth.newState()
