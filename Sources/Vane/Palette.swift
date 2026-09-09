@@ -154,7 +154,7 @@ enum Palette {
         let named = ["one", "two", "three", "four", "five", "six"]
         let clocks = [5.0, 9, 1, 7, 3, 8]
         let stamped = zip(ids, clocks).map { ($0, Date(timeIntervalSince1970: $1)) }
-        let recent = TabSwitcher.recent(stamped, current: ids[2], limit: Look.barEmptyTabs)
+        let recent = TabSwitcher.recent(stamped, current: ids[2], limit: .max)
             .compactMap { id in ids.firstIndex(of: id) }.map { named[$0] }
         let atRest = empty(tabs: recent, report: "report")
         return [
@@ -1021,8 +1021,10 @@ struct CommandField: NSViewRepresentable {
     /// year. No "Window n" subtitle here — every row is this window's.
     private func recentTabRows() -> [PaletteRow] {
         let byID = Dictionary(store.tabs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        // No cap asked for here: `Palette.empty` is the one place the bar's cap lives, and
+        // two of them are two numbers that have to keep agreeing.
         let order = TabSwitcher.recent(store.tabs.map { ($0.id, $0.lastActive) },
-                                       current: store.current, limit: Look.barEmptyTabs)
+                                       current: store.current, limit: .max)
         return order.compactMap { byID[$0] }.map { tabRow($0, in: store, place: "") }
     }
 
@@ -1034,7 +1036,10 @@ struct CommandField: NSViewRepresentable {
         return PaletteRow(id: "report", icon: "bubble.left", title: "Report a Problem",
                           detail: issues, chip: true, kind: "Feedback") { _ in
             guard let url = URL(string: issues) else { return }
-            (Windows.current ?? Windows.open()).newTab(url)
+            // This bar's own window, not whichever one is key: the palette can be up in a
+            // window that is not `Windows.current`, and the issue belongs beside the tabs
+            // the user was looking at when they pressed it.
+            store.newTab(url)
         }
     }
 

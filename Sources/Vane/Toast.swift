@@ -85,13 +85,6 @@ import SwiftUI
         shared.put(Toast(text: text, action: action, owner: store.map(ObjectIdentifier.init)))
     }
 
-    /// `show`, for the one toast that cannot wait. The ⌘Q warning is the only caller — and
-    /// since nothing queues any more, "now" is what every toast gets; this stays for the
-    /// name at the call site.
-    static func showNow(_ text: String, in store: TabStore?) {
-        shared.put(Toast(text: text, action: nil, owner: store.map(ObjectIdentifier.init)))
-    }
-
     /// Up it goes, and whatever was showing goes with it — clock, hover and all. Dropping
     /// the old one's timer here is the point: left running, it would wake up on the pill
     /// that replaced it and take *that* one away early.

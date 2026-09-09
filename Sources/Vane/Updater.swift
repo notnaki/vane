@@ -190,6 +190,22 @@ enum Release {
         return isNewer(runningVersion, than: installedVersion)
     }
 
+    /// Whether a downloaded release may be written over whatever is at the destination — the
+    /// same rule `shouldRelocate` applies to a copy already on disk, asked of one that has
+    /// just come off the network. Both decide what may overwrite the installed Vane, so both
+    /// decide it the same way.
+    ///
+    /// It matters because the destination is not always the bundle this process runs out of:
+    /// an old copy in ~/Downloads checks for updates, is offered the tag *it* is behind, and
+    /// installs it over `/Applications/Vane.app` — which may already be newer than the tag
+    /// being fetched. `installedVersion` keeps `shouldRelocate`'s convention: `nil` when
+    /// nothing is there, `""` when something is there whose version cannot be read. An equal
+    /// version, an older one and an unreadable one are all left alone.
+    static func shouldInstall(tag: String, installedVersion: String?) -> Bool {
+        guard let installedVersion else { return true }
+        return isNewer(tag, than: installedVersion)
+    }
+
     // MARK: - What a download has to prove
 
     /// The Developer ID team every Vane release is signed by. Pinned: this constant, and
@@ -353,6 +369,18 @@ extension Release {
                     !relocate("/Users/ada/Downloads/Vane.app", running: "2.0.0", installed: "2.0.0")))
         out.append(("a destination whose version cannot be read is left alone",
                     !relocate("/Users/ada/Downloads/Vane.app", running: "2.0.0", installed: "")))
+        // The same rule, asked of a download rather than of a copy on disk: the offer was
+        // measured against the running version, which is not always the installed one.
+        out.append(("a download installs into an empty destination",
+                    shouldInstall(tag: "v1.0.0", installedVersion: nil)))
+        out.append(("...and over an older installed Vane",
+                    shouldInstall(tag: "v2.0.0", installedVersion: "1.0.0")))
+        out.append(("a download never downgrades the installed Vane",
+                    !shouldInstall(tag: "v1.0.0", installedVersion: "2.0.0")))
+        out.append(("...nor reinstalls the version already there",
+                    !shouldInstall(tag: "v2.0.0", installedVersion: "2.0.0")))
+        out.append(("...nor overwrites a destination whose version cannot be read",
+                    !shouldInstall(tag: "v2.0.0", installedVersion: "")))
         out.append(("one already in /Applications stays put", !relocate("/Applications/Vane.app")))
         out.append(("...as does one in the user's own Applications folder",
                     !relocate("/Users/ada/Applications/Vane.app")))
@@ -706,14 +734,27 @@ extension Release {
     // MARK: - Install
 
     private func install(_ zip: URL, tag: String) {
+        let bundle = Bundle.main.bundleURL
+        let path = Release.destination(forBundleAt: bundle.path, home: Self.realHome).path
+        let target = URL(fileURLWithPath: path)
+        // What is at the destination, read the way `relocateIfNeeded` reads it: `nil` for an
+        // empty destination, `""` for one whose Info.plist could not be read. The offer was
+        // measured against the version *running*, which is not always the version installed
+        // — so the copy about to be overwritten gets its own say before anything is unpacked.
+        let installed = FileManager.default.fileExists(atPath: target.path)
+            ? (Release.version(ofBundleAt: target) ?? "") : nil
+        guard Release.shouldInstall(tag: tag, installedVersion: installed) else {
+            NSLog("[vane] update: %@ is not newer than what is at %@ — refusing to install it",
+                  tag, target.path)
+            try? FileManager.default.removeItem(at: zip)
+            pending = nil
+            return fail()
+        }
         // `working` deliberately stays true across the swap — it is the flag every other
         // entry point checks. Only the detached task below clears it, and only after
         // `unpackAndSwap` has returned one way or the other.
         progress = nil
         set(.installing)
-        let bundle = Bundle.main.bundleURL
-        let path = Release.destination(forBundleAt: bundle.path, home: Self.realHome).path
-        let target = URL(fileURLWithPath: path)
         Task.detached(priority: .userInitiated) {
             let ok = Self.unpackAndSwap(zip: zip, target: target)
             await MainActor.run {

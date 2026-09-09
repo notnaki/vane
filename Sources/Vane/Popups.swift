@@ -104,25 +104,6 @@ enum Popup {
         }
     }
 
-    /// Whether a tab WebKit made for `window.open` is still a popup after this navigation.
-    ///
-    /// `Tab.isPopup` records that the tab is still inside the flow its opener started — the
-    /// tie to `window.opener` lives in this particular web view, and it is only worth
-    /// anything for as long as somebody is going to postMessage over it. A main-frame
-    /// navigation the user drove is the tell that the flow is over and the popup is now a
-    /// tab someone is browsing in.
-    ///
-    /// `.other` is deliberately not in the list: it is both the popup's own first load and
-    /// every `location =` hop an OAuth flow makes on its way to the redirect that
-    /// postMessages the credential home — the middle of the flow, not the end of it.
-    nonisolated static func staysPopup(navigation: WKNavigationType, mainFrame: Bool) -> Bool {
-        guard mainFrame else { return true }
-        switch navigation {
-        case .linkActivated, .formSubmitted, .backForward, .reload, .formResubmitted: return false
-        default: return true
-        }
-    }
-
     // MARK: - Checks
 
     nonisolated static func check() -> [(String, Bool)] {
@@ -176,17 +157,6 @@ enum Popup {
              takesFocus(.tab(focus: true))),
             ("…and one that asked to stay behind stays behind, floating or not",
              takesFocus(.tab(focus: false)) == false),
-
-            // When a popup stops being one. See `Tab.isPopup`.
-            ("a popup being navigated by its own flow is still a popup",
-             staysPopup(navigation: .other, mainFrame: true)),
-            ("…and a link the user clicked inside it makes it an ordinary tab",
-             staysPopup(navigation: .linkActivated, mainFrame: true) == false),
-            ("…as does submitting a form, or going Back",
-             staysPopup(navigation: .formSubmitted, mainFrame: true) == false
-                && staysPopup(navigation: .backForward, mainFrame: true) == false),
-            ("a subframe navigating is not the popup leaving its flow",
-             staysPopup(navigation: .linkActivated, mainFrame: false)),
 
             // ⇧⌘T. A sign-in window nobody chose to open is not a page anyone wants back.
             ("an ordinary tab closed with ⌘W is remembered for Reopen Closed Tab",

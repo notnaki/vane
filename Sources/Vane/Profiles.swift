@@ -479,7 +479,28 @@ struct Space: Identifiable, Codable, Equatable {
     /// WebKit's network process still has the store open. Nothing in-process makes it let
     /// go, so `sweepOrphanedDataStores` finishes the job at the next launch, when nobody
     /// has opened it yet.
+    ///
+    /// A profile that never opened a page is skipped entirely, because `dataStore(for:)`
+    /// *makes* the store it is asked for: erasing one that has nothing on disk would
+    /// register an empty store on the way to emptying it, and that store is then an orphan
+    /// for the next launch to sweep. Nothing registered is nothing to erase; the cached
+    /// instance, if there is one, is dropped either way.
     private static func eraseWebsiteData(for id: UUID) {
+        // The default profile's is `.default()` — always there, no identifier to ask about.
+        guard id != defaultID else { return erase(for: id) }
+        WKWebsiteDataStore.fetchAllDataStoreIdentifiers { registered in
+            Task { @MainActor in
+                guard registered.contains(id) else {
+                    dataStores[id] = nil
+                    return
+                }
+                erase(for: id)
+            }
+        }
+    }
+
+    /// The erase itself, once the profile is known to have a store worth emptying.
+    private static func erase(for id: UUID) {
         let store = dataStore(for: id)
         store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
                          modifiedSince: .distantPast) {
@@ -909,10 +930,12 @@ struct Space: Identifiable, Codable, Equatable {
         // that file is off limits. So: a neighbouring profile, with a real visit recorded
         // in it through the real `Store`, taken away again once it has served its purpose.
         // `-wal` is read alongside the database because in WAL mode that is where the row
-        // just recorded is still sitting; between the two, every byte of the neighbour's
-        // history is covered.
+        // just recorded is still sitting, and `-shm` with it because that is the third file
+        // `delete` removes — between the three, every byte of the neighbour's history is
+        // covered, and a deletion that reached across to the wrong profile's files would
+        // have nowhere to hide.
         func dbBytes(_ url: URL) -> [Data?] {
-            [url.path, url.path + "-wal"].map { fm.contents(atPath: $0) }
+            [url.path, url.path + "-wal", url.path + "-shm"].map { fm.contents(atPath: $0) }
         }
         let neighbour = pm.create(name: "Deletion Check Neighbour").id
         let neighbourDB = dbURL(for: neighbour, in: dir)

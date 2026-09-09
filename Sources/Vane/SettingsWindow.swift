@@ -410,7 +410,7 @@ private struct GeneralPane: View {
                          + "and pinned tabs are never archived.")
                 // Toasts read this key when the clock starts, so writing it here is the whole
                 // of the preference — the next toast up already stands for the new time.
-                SettingsRow("Undo toasts stay for") {
+                SettingsRow("Toasts stay for") {
                     Picker("", selection: $toastSeconds) {
                         ForEach(Prefs.toastChoices, id: \.seconds) { choice in
                             Text(choice.name).tag(choice.seconds)

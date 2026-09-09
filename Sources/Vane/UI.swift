@@ -1299,8 +1299,13 @@ private struct FavoriteTile: View {
         resting(over: nil)
     }
 
-    /// Back to full, whatever the pointer was doing — the drag is over.
-    func rest() { resting(over: nil) }
+    /// Back to full, whatever the pointer was doing — the drag is over. Not `resting(over:)`,
+    /// which returns early when there is no clock running: a row left compact with the dwell
+    /// already cleared would stay shrunk after the drag it belonged to had gone.
+    func rest() {
+        dwell = nil
+        set(compact: false)
+    }
 
     /// Reduce Motion still shrinks the row: what it is for is seeing what is underneath, and
     /// that is not decoration. Only the growing and shrinking of it goes.
