@@ -106,6 +106,22 @@ extension TabStore {
         return kinds[i] == .today ? i + 1 : firstToday
     }
 
+    /// Where the new tab's *row* goes — the same move told to the shape Today is drawn from.
+    /// `placeBeside` is this decision and the one line that carries it out.
+    ///
+    /// A `nil` kind is an opener that has gone: Peek's ⌘O once its source is closed, or a
+    /// tab from another window. The strip sends that tab to `kinds.count`, the end of Today,
+    /// which is exactly where `syncShapes` has already written the row down — so the honest
+    /// move is no move at all. Sending it to the head instead is the disagreement between
+    /// the sidebar and ⌘1…9 that this pair of functions exists to close, which is why
+    /// `.leaveIt` is a case here rather than an early return nothing can prove.
+    enum RowBeside: Equatable { case afterOpener, headOfToday, leaveIt }
+
+    static func rowBeside(openerKind: TabKind?) -> RowBeside {
+        guard let kind = openerKind else { return .leaveIt }
+        return kind == .today ? .afterOpener : .headOfToday
+    }
+
     /// An empty tab, placed beside `opener`. ⌘-click loads a url into it; Peek's ⌘O parks
     /// its page into it instead — which is the only reason the placement is separable from
     /// `openBeside` at all.
@@ -242,24 +258,36 @@ extension TabActions {
              }),
         ]
 
-        // The shape's half of the same move. Today is drawn from `todayShape`, so a new row
-        // has to land where the arithmetic above puts the strip tab — and the case that used
-        // to disagree is the opener that has gone: Peek's ⌘O once its source is closed. The
-        // strip sends that tab to the end of Today; `syncShapes` has already written its row
-        // down there, so `TabStore.placeBeside` leaves it alone. `Pins.insert(after: nil)`
-        // would send it to the head instead, and the sidebar and ⌘1…9 would read different
-        // orders until the next `applyOrder(.today)`.
+        // The shape's half of the same move: `rowBeside` is the whole of `placeBeside`'s
+        // decision, so the two halves are checked against each other here. Today is drawn
+        // from `todayShape`, so a new row has to land where the arithmetic above puts the
+        // strip tab — and the case that used to disagree is the opener that has gone: Peek's
+        // ⌘O once its source is closed, and a tab from another window, both of which the
+        // store has no kind for. The strip sends that tab to the end of Today; `syncShapes`
+        // has already written its row down there, so the row is left alone. Inserting after
+        // nil would send it to the head instead, and the sidebar and ⌘1…9 would read
+        // different orders until the next `applyOrder(.today)`.
         var today = Pins(entries: ["a", "b"].map { Pins.Entry(row: .tab($0), parent: nil) })
         today.sync(tabs: ["a", "b", "new"])          // what `syncShapes` does with a new tab
         var head = today
         head.insert("new", after: nil)
         out += [
-            ("with its opener gone a new tab goes to the end of Today",
-             TabStore.insertionIndexBeside(current: nil, kinds: [.today, .today]) == 2),
-            ("…and its row is already at that same end, so the shape is left alone",
-             today.tabs == ["a", "b", "new"]),
-            ("…rather than sent to the head, which is where the two used to disagree",
+            ("with its opener gone — closed, or in another window — the row is left alone",
+             TabStore.rowBeside(openerKind: nil) == .leaveIt),
+            ("…which is the end of Today, where the strip sends the tab and `syncShapes` "
+             + "has already written the row",
+             TabStore.insertionIndexBeside(current: nil, kinds: [.today, .today]) == 2
+                 && today.tabs == ["a", "b", "new"]),
+            ("…rather than the head, which is where the two used to disagree",
              head.tabs == ["new", "a", "b"]),
+            ("a Today opener takes the row right after it, as it takes the strip tab",
+             TabStore.rowBeside(openerKind: .today) == .afterOpener
+                 && TabStore.insertionIndexBeside(current: 3, kinds: strip) == 4),
+            ("a favourite or a pinned opener sends the row to the head of Today, as it "
+             + "sends the strip tab",
+             TabStore.rowBeside(openerKind: .favourite) == .headOfToday
+                 && TabStore.rowBeside(openerKind: .pinned) == .headOfToday
+                 && TabStore.insertionIndexBeside(current: 0, kinds: strip) == 2),
         ]
         return out
     }

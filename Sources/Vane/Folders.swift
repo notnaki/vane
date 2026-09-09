@@ -887,15 +887,16 @@ extension TabStore {
     /// beside its opener, and the next `applyOrder(.today)` drags the tab down to the bottom
     /// for real.
     ///
-    /// An opener that is nil, or a tab no longer in this window — Peek's ⌘O once its source
-    /// has closed — is `insertionIndexBeside`'s `kinds.count`: the *end* of Today, not the
-    /// head. That is exactly where `syncShapes` has just written the new row down, so the
-    /// two already agree and the right move is no move at all. Sending it to the head was
-    /// the same disagreement this function exists to fix, the other way up.
+    /// Which of the three it is — including "leave it where `syncShapes` put it" for an
+    /// opener that is nil or gone from this window — is `TabStore.rowBeside`, so the rule
+    /// is proved beside `insertionIndexBeside` rather than trusted to a live window.
     func placeBeside(_ id: Tab.ID, opener: Tab.ID?) {
         syncShapes()        // the tab may be brand new to the shape; the opener never is
-        guard let kind = tabs.first(where: { $0.id == opener })?.kind else { return }
-        todayShape.insert(id.uuidString, after: kind == .today ? opener?.uuidString : nil)
+        switch TabStore.rowBeside(openerKind: tabs.first { $0.id == opener }?.kind) {
+        case .leaveIt: break
+        case .headOfToday: todayShape.insert(id.uuidString, after: nil)
+        case .afterOpener: todayShape.insert(id.uuidString, after: opener?.uuidString)
+        }
     }
 
     /// The section a shape stands for — what a tab dropped into one of its folders becomes.
