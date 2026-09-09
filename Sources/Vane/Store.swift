@@ -372,6 +372,11 @@ extension UserDefaults {
         reaper.arguments = ["-c", "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.2; done; "
             + "for i in 1 2 3 4 5 6 7 8 9 10; do sleep 3; rm -f "
             + quoted.joined(separator: " ") + "; done"]
+        // Detached from our pipes too: a shell holding stdout open keeps `selfcheck | tail`
+        // waiting the whole half minute for it.
+        reaper.standardInput = FileHandle.nullDevice
+        reaper.standardOutput = FileHandle.nullDevice
+        reaper.standardError = FileHandle.nullDevice
         try? reaper.run()
     }
 
