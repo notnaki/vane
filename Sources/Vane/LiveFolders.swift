@@ -398,11 +398,13 @@ enum GitHubOAuth {
         func value(_ name: String) -> String? {
             items.first { $0.name == name }?.value.flatMap { $0.isEmpty ? nil : $0 }
         }
-        // The refusal is read before the state: a denial is the user's answer whether or not
-        // the round trip survived, and "you said no" is a better thing to say than "that did
-        // not come back the way it left".
-        if value("error") != nil { return .denied }
+        // The state first, refusal and all. `?error=` needs no code and no secret to write,
+        // so honouring one before the state is checked would let any page put "Vane was not
+        // allowed to connect to GitHub." in front of the user — and, worse, spend the
+        // sign-in the user is in the middle of. A denial is only the user's answer when it
+        // comes back carrying the state the sign-in went out with.
         guard let expecting, value("state") == expecting else { return .mismatched }
+        if value("error") != nil { return .denied }
         guard let code = value("code") else { return .mismatched }
         return .code(code)
     }
@@ -605,28 +607,72 @@ enum GitHubOAuth {
         return hasSecret ? .connect : .sheet
     }
 
-    /// The sign-in now in flight: the `state` it went out with, and whether the folder is to
-    /// be made when it comes back. One at a time — a second "New Live Folder…" while the
-    /// consent page is still up replaces it, and the first one's redirect is then refused by
-    /// its own state, which is exactly right: only the sign-in the user is looking at counts.
-    private var pending: (state: String, thenCreate: Bool)?
+    /// The sign-in now in flight: the `state` it went out with, whether the folder is to be
+    /// made when it comes back, and the tab GitHub's consent page was opened in. One at a
+    /// time — a second "New Live Folder…" while the consent page is still up shows the user
+    /// that page again rather than starting another sign-in behind it.
+    private var pending: (state: String, thenCreate: Bool, tab: Tab.ID)?
+
+    /// The tab the consent page is on.
+    private var authTab: Tab.ID? { pending?.tab }
+
+    /// Whether a `vane:` navigation is the one this flow is waiting for. The redirect is
+    /// only ever the main frame of the tab the consent page was opened in: an iframe on any
+    /// page in the world can set `location = "vane://oauth/github?error=x"`, and one that
+    /// did would otherwise cancel a sign-in the user is in the middle of somewhere else.
+    /// Everything else is cancelled and dropped — no toast, no closed tab, no `pending`
+    /// cleared, and so nothing a page can learn from.
+    nonisolated static func accepts(tabID: Tab.ID, pending: Tab.ID?, isMainFrame: Bool) -> Bool {
+        isMainFrame && pending != nil && tabID == pending
+    }
+
+    /// What "New Live Folder…" does about a sign-in that is already in flight.
+    enum Consent: Equatable, Sendable {
+        /// Nothing in flight: open GitHub's consent page in a new tab.
+        case open
+        /// One is up already: show the user the tab it is on, rather than a second consent
+        /// page and a second `state` that quietly voids the first.
+        case show(Tab.ID)
+    }
+
+    nonisolated static func consent(pending: Tab.ID?, open tabs: [Tab.ID]) -> Consent {
+        if let pending, tabs.contains(pending) { return .show(pending) }
+        return .open
+    }
 
     /// Open GitHub's consent page in a tab of this window. Nothing is stored yet; the tab is
     /// closed and the token saved when `finish` reads the redirect out of it.
     func connect(in store: TabStore, thenCreate: Bool) {
+        if case .show(let id) = LiveFolders.consent(pending: authTab,
+                                                    open: TabStore.all.flatMap { $0.tabs.map(\.id) }) {
+            TabStore.all.first { $0.tabs.contains { $0.id == id } }?.current = id
+            return
+        }
         let state = GitHubOAuth.newState()
         guard let url = GitHubOAuth.authorize(state: state) else { return }
-        pending = (state: state, thenCreate: thenCreate)
-        store.newTab(url)
+        // `newBlankTab` rather than `newTab`, for the tab itself: the redirect is only
+        // honoured when it arrives in this one, so the flow has to know which it is.
+        let tab = store.newBlankTab()
+        tab.go(url)
+        pending = (state: state, thenCreate: thenCreate, tab: tab.id)
+    }
+
+    /// The consent tab, closed by hand: there is no sign-in in flight any more, so the next
+    /// "New Live Folder…" starts a fresh one instead of pointing at a tab that has gone.
+    func forget(authTab id: Tab.ID) {
+        if pending?.tab == id { pending = nil }
     }
 
     /// The redirect, caught in `decidePolicyFor` before WebKit or macOS could see it. `tab`
     /// is the tab it arrived in — the one the consent page is on, which goes as soon as the
     /// answer is read, so the sign-in leaves nothing behind either way.
     ///
-    /// Called for *every* `vane:` navigation, not only ours: a page that redirects to one is
-    /// answered with nothing at all rather than with a hint about what would have worked.
-    func finish(redirect url: URL, in tab: Tab) {
+    /// Called for every `vane:` navigation in every tab, and answers only the one it is
+    /// waiting for: the main frame of the tab `connect` opened. See `accepts` — an ad frame
+    /// three tabs away redirecting to `vane://oauth/github?error=x` does nothing at all.
+    func finish(redirect url: URL, in tab: Tab, isMainFrame: Bool) {
+        guard LiveFolders.accepts(tabID: tab.id, pending: authTab,
+                                  isMainFrame: isMainFrame) else { return }
         let answer = GitHubOAuth.read(url, expecting: pending?.state)
         guard answer != .notOurs else { return }
         let store = TabStore.all.first { $0.tabs.contains { $0 === tab } }
@@ -1287,13 +1333,15 @@ extension GitHub {
                LiveFolders.route(signedIn: false, hasSecret: true) == .connect)
         assert("…and one without it falls back to the sheet",
                LiveFolders.route(signedIn: false, hasSecret: false) == .sheet)
-        // What this particular build does, whichever build it is. Deliberately *not*
-        // `OAuthSecret.github == nil`: these same checks run against the packaged app in the
-        // release workflow, after the client secret has been substituted in, so an assertion
-        // that a checkout has no secret is one that fails every signed release.
-        assert("a build takes the path its own client secret says it can",
-               LiveFolders.route(signedIn: false, hasSecret: OAuthSecret.github != nil)
-                   == (OAuthSecret.github == nil ? .sheet : .connect))
+        // The property that has to hold for *both* builds, asserted without asking which one
+        // this is. Deliberately not compared against `OAuthSecret.github`: these same checks
+        // run against the packaged app in the release workflow, after the client secret has
+        // been substituted in, so anything that restates the build's own answer back to it
+        // proves nothing in either build.
+        assert("no build sends anyone to a consent page it could not finish",
+               LiveFolders.route(signedIn: false, hasSecret: false) != .connect)
+        assert("…and no build asks a signed-in user for a token it already has",
+               LiveFolders.route(signedIn: true, hasSecret: false) != .sheet)
 
         // The folder that click makes.
         assert("Arc's one live folder is called Pull Requests",
@@ -1341,8 +1389,13 @@ extension GitHub {
                                 expecting: nil) == .mismatched)
         assert("saying no on GitHub's page is a denial, not a failure",
                reply("vane://oauth/github?error=access_denied&state=\(state)") == .denied)
-        assert("…even without the state, since the answer is the same either way",
-               reply("vane://oauth/github?error=access_denied") == .denied)
+        // `?error=` takes no code and no client secret to write, so it is the cheapest thing
+        // for a page to aim at this redirect. Read after the state, or a page could spend a
+        // sign-in the user is in the middle of and put GitHub's name on the toast.
+        assert("…but a refusal is only the user's answer when it carries the state",
+               reply("vane://oauth/github?error=access_denied") == .mismatched)
+        assert("…and one with somebody else's state is refused like any other",
+               reply("vane://oauth/github?error=access_denied&state=nope") == .mismatched)
         assert("another vane: url is not this handshake",
                reply("vane://something/else?code=abc123&state=\(state)") == .notOurs)
         assert("…nor is one on the right host but the wrong path",
@@ -1352,6 +1405,30 @@ extension GitHub {
         assert("the redirect is recognised by host and path together",
                GitHubOAuth.isRedirect(URL(string: "vane://oauth/github")!)
                    && !GitHubOAuth.isRedirect(URL(string: "vane://oauth")!))
+
+        // Where the reply is allowed to arrive. `decidePolicyFor` sees every `vane:`
+        // navigation in every tab and every frame of every page the user has open; only one
+        // of them is this sign-in coming back, and the rest are answered with nothing — no
+        // toast, no closed tab, no sign-in cancelled.
+        let consentTab = UUID(), otherTab = UUID()
+        assert("the redirect counts in the consent page's own tab",
+               LiveFolders.accepts(tabID: consentTab, pending: consentTab, isMainFrame: true))
+        assert("…and nowhere else: an unrelated tab redirecting to vane: is ignored",
+               !LiveFolders.accepts(tabID: otherTab, pending: consentTab, isMainFrame: true))
+        assert("…nor may an iframe on the consent page speak for it",
+               !LiveFolders.accepts(tabID: consentTab, pending: consentTab, isMainFrame: false))
+        assert("…and with no sign-in in flight nothing is the redirect",
+               !LiveFolders.accepts(tabID: consentTab, pending: nil, isMainFrame: true))
+
+        // A second "New Live Folder…" while the consent page is still up. Another tab would
+        // mean another `state`, which voids the page the user is already looking at.
+        assert("with nothing in flight, the click opens the consent page",
+               LiveFolders.consent(pending: nil, open: [otherTab]) == .open)
+        assert("…with one up, it shows the tab that is already there",
+               LiveFolders.consent(pending: consentTab, open: [otherTab, consentTab])
+                   == .show(consentTab))
+        assert("…and once that tab has been closed, it starts a fresh sign-in",
+               LiveFolders.consent(pending: consentTab, open: [otherTab]) == .open)
 
         // The exchange. A fake secret: the real one is never in this repository and is not
         // in this process either, on any build a developer runs.

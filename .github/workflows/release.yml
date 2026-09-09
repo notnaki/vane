@@ -162,12 +162,27 @@ jobs:
             echo "  $ANCHOR"
             exit 1
           fi
-          # A GitHub client secret is hex, so there is nothing in it for sed to read as a
-          # delimiter or a backreference. It is masked in the log, and nothing here prints
-          # it, its length, or the size of the file it goes into.
-          sed -i '' "s|$ANCHOR|    static let github: String? = \"$GH_OAUTH_CLIENT_SECRET\"|" "$FILE"
+          # awk rather than sed, and the value read out of the environment rather than put on
+          # a replacement side: `&`, `\` and the delimiter all mean something other than
+          # themselves to sed, and a client secret is the last string that should find that
+          # out. Here it is data — never a pattern, never a replacement — so it goes in
+          # exactly as it is. ENVIRON rather than `-v`, which would read `\n` in it as an
+          # escape. It is masked in the log, and nothing here prints it, its length, or the
+          # size of the file it goes into.
+          awk -v anchor="$ANCHOR" '
+            $0 == anchor { print "    static let github: String? = \"" ENVIRON["GH_OAUTH_CLIENT_SECRET"] "\""; next }
+            { print }
+          ' "$FILE" > "$FILE.filled"
+          mv "$FILE.filled" "$FILE"
           if grep -qxF "$ANCHOR" "$FILE"; then
             echo "the substitution did not take"
+            exit 1
+          fi
+          # …and took as a string literal, not as some other shape of line. A value needing
+          # escapes to sit inside Swift quotes fails the compile that follows, loudly; what
+          # must never happen is a signed release that quietly went out without one.
+          if ! grep -qF '    static let github: String? = "' "$FILE"; then
+            echo "$FILE no longer holds a string literal on the client secret's line"
             exit 1
           fi
           echo "client secret compiled in: this release signs in to GitHub in one click"

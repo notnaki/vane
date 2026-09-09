@@ -615,11 +615,19 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // system that ever reads one. Cancelled unconditionally, whatever the rest of the
         // url says — WebKit has no loader for it, macOS has no handler for it because the
         // bundle deliberately declares none, and a page that redirects to `vane://anything`
-        // gets nothing back at all. `finish` ignores every url that is not the redirect it
-        // is waiting for, so a page cannot learn from this what would have worked.
+        // gets nothing back at all.
+        //
+        // Cancelled here, answered only there: `finish` acts on the main frame of the one
+        // tab the consent page was opened in and drops every other `vane:` navigation
+        // without a trace — see `LiveFolders.accepts`. An iframe on an unrelated page
+        // setting `location = "vane://oauth/github?error=x"` must not be able to cancel a
+        // sign-in the user is in the middle of in another tab, or to learn from a toast or
+        // a closing tab that there was one.
         if let url = navigationAction.request.url, ExternalApps.isOwn(url.scheme) {
             decisionHandler(.cancel)
-            LiveFolders.shared(for: profileID).finish(redirect: url, in: self)
+            LiveFolders.shared(for: profileID)
+                .finish(redirect: url, in: self,
+                        isMainFrame: navigationAction.targetFrame?.isMainFrame == true)
             return
         }
         // A link to another app — zoommtg:, msteams:, mailto:, tel: — is not something
@@ -1261,6 +1269,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
             MediaState.shared.forget(id)
+            // Closing GitHub's consent page by hand is abandoning the sign-in: the next
+            // "New Live Folder…" starts a fresh one rather than pointing at a tab that has
+            // gone. A no-op for every other tab, which is nearly all of them.
+            LiveFolders.shared(for: profileID).forget(authTab: id)
         }
         if renamingTab == id { renamingTab = nil }
         // A selection may only ever name tabs that exist: one closed under it — by ⌘W, by a

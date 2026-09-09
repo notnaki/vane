@@ -10,7 +10,7 @@
 /// ponytail: one checked-in file with one substituted line, rather than a generated file, a
 /// build plugin or an `.xcconfig`. SwiftPM cannot hand the compiler an environment variable
 /// portably, and a generated-and-gitignored file is a file that is missing exactly once — on
-/// the first clean checkout, in CI, with a compile error nobody can read. A `sed` over a line
+/// the first clean checkout, in CI, with a compile error nobody can read. Rewriting one line
 /// that is already valid Swift cannot produce a source tree that does not build.
 ///
 /// The client *id* is public and lives in the code (`GitHubOAuth.clientID`); GitHub's web
