@@ -215,7 +215,7 @@ Everything here is implemented and reachable from the UI.
   and contiguity.
 - Every shortcut a Mac app is expected to honour, in one table (`Standard.swift`) that the
   menu bar is built from and asserted against: ⌘M, ⌘H, ⌥⌘H, Show All, ⌘Q, ⌘`, a Services
-  submenu, ⌘? on Help, and the editing chords — ⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V, ⌥⇧⌘V, ⌘A — on the
+  submenu, and the editing chords — ⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V, ⌥⇧⌘V, ⌘A — on the
   standard selectors with no target, so they go down the responder chain into the address
   bar, a rename field and the page alike. Rebinding one of AppKit's own chords is refused
   rather than allowed to take ⌘C off every text field in the app.

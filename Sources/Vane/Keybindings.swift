@@ -458,12 +458,17 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// once per user.
     nonisolated static let migration = 2
 
-    /// Pure, so `selfcheck --pure` can prove the rule without a defaults suite.
+    /// Pure, so `selfcheck --pure` can prove the rule without a defaults suite. `from` is the
+    /// version the table was saved at: each step runs only for a table old enough to need it,
+    /// so a table already at 2 comes back untouched.
     nonisolated static func migrate(_ bindings: [String: Keybinding],
-                                    moved: [Command: Keybinding]) -> [String: Keybinding] {
+                                    moved: [Command: Keybinding],
+                                    from: Int) -> [String: Keybinding] {
         var out = bindings
-        for (command, old) in moved where out[command.rawValue] == old {
-            out[command.rawValue] = nil
+        if from < 1 {
+            for (command, old) in moved where out[command.rawValue] == old {
+                out[command.rawValue] = nil
+            }
         }
         // Anything `reserved` refuses today. ⌘C and its neighbours were bindable before the
         // table in Standard.swift existed, and a saved one still wins: the key monitor runs
@@ -471,8 +476,10 @@ enum Command: String, CaseIterable, Codable, Sendable {
         // and from every page. Dropping it puts the command back on its shipped default, and
         // the pane will not let it be chosen again. A deliberate *unbinding* is not reserved,
         // so it survives.
-        for (id, binding) in out where reserved(binding) != nil {
-            out[id] = nil
+        if from < 2 {
+            for (id, binding) in out where reserved(binding) != nil {
+                out[id] = nil
+            }
         }
         return out
     }
@@ -484,7 +491,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
             var s = defaults.data(forKey: storeKey)
                 .flatMap { try? JSONDecoder().decode(Saved.self, from: $0) } ?? Saved()
             if (s.migrated ?? 0) < migration {
-                s.bindings = migrate(s.bindings, moved: movedDefaults)
+                s.bindings = migrate(s.bindings, moved: movedDefaults, from: s.migrated ?? 0)
                 s.migrated = migration
                 // Not `state = s`: this is the getter, and the setter would re-enter it.
                 if let d = try? JSONEncoder().encode(s) { defaults.set(d, forKey: storeKey) }
@@ -1030,7 +1037,7 @@ extension Keybindings {
             Command.pinTab.rawValue: Keybinding("f", [.command, .control, .option]),
             Command.newTab.rawValue: Keybinding("t", .command),
         ]
-        let migrated = migrate(stale, moved: movedDefaults)
+        let migrated = migrate(stale, moved: movedDefaults, from: 0)
         // The other half of the migration: a binding saved before `reserved` refused it.
         // Somebody who put Search Tabs on ⌘C back then still has it, and it still wins over
         // Copy in every text field — the monitor runs ahead of AppKit.
@@ -1039,7 +1046,7 @@ extension Keybindings {
             Command.commandPalette.rawValue: .unassigned,
             Command.newWindow.rawValue: Keybinding("n", [.command, .option, .shift]),
         ]
-        let unhijacked = migrate(hijacked, moved: movedDefaults)
+        let unhijacked = migrate(hijacked, moved: movedDefaults, from: 0)
         out += [
             ("a binding saved onto ⌘C is dropped, so Copy is the field's again",
              unhijacked[Command.searchTabs.rawValue] == nil),
@@ -1055,9 +1062,26 @@ extension Keybindings {
             ("a command whose default never moved is not touched",
              migrated[Command.newTab.rawValue] == Keybinding("t", .command)),
             ("migrating twice changes nothing more",
-             migrate(migrated, moved: movedDefaults) == migrated),
+             migrate(migrated, moved: movedDefaults, from: 0) == migrated),
             ("every moved default is a binding the app no longer ships",
              movedDefaults.allSatisfy { $0.key.defaultBinding != $0.value }),
+        ]
+        // …and each step runs only for a table old enough to need it, rather than every step
+        // every time: somebody already at 2 gets their table back exactly as they saved it.
+        let both = stale.merging(hijacked) { a, _ in a }
+        let from0 = migrate(both, moved: movedDefaults, from: 0)
+        let from1 = migrate(both, moved: movedDefaults, from: 1)
+        out += [
+            ("a table saved before any migration goes through both steps",
+             from0[Command.favouriteTab.rawValue] == nil
+                && from0[Command.searchTabs.rawValue] == nil),
+            ("a table already past the moved defaults keeps them, and only loses ⌘C",
+             from1[Command.favouriteTab.rawValue] == Keybinding("d", .command)
+                && from1[Command.searchTabs.rawValue] == nil),
+            ("a table at the current version is handed back untouched",
+             migrate(both, moved: movedDefaults, from: 2) == both),
+            ("whatever ran, the table is stamped at 2 and has nothing left to run",
+             migration == 2 && migrate(both, moved: movedDefaults, from: migration) == both),
         ]
         // And the same thing through the store, which is where it bites: a table written
         // before this migration existed, read back once.
