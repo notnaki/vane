@@ -42,11 +42,29 @@ import SwiftUI
         "webkit-extension", "safari-web-extension",
     ]
 
+    /// Vane's own. A `vane:` url is never another app's and never WebKit's: the only one
+    /// that exists is the GitHub sign-in's redirect, which `decidePolicyFor` cancels and
+    /// hands to `LiveFolders` before either of them is asked — see `GitHubOAuth.redirect`.
+    ///
+    /// Deliberately *not* in `webSchemes`, which is the list of schemes WebKit has a loader
+    /// for: allowing one would fail the navigation with "unsupported URL" and render
+    /// nothing. And deliberately not declared in the bundle's Info.plist either, so it stays
+    /// a url this browser recognises inside its own page rather than a system-wide handler
+    /// any process could aim a url at. `URLHandling.normalize` refuses it for that reason.
+    nonisolated static let ownScheme = "vane"
+
+    /// Whether a url is one Vane answers itself. `decidePolicyFor` cancels every one of
+    /// these, ours or not: a page that redirects to `vane://anything` gets nothing at all.
+    nonisolated static func isOwn(_ scheme: String?) -> Bool {
+        scheme?.lowercased() == ownScheme
+    }
+
     /// Whether a url is one for another app. A url with no scheme is not: WebKit resolves
-    /// it against the page and it never reaches here as a bare string anyway.
+    /// it against the page and it never reaches here as a bare string anyway. Neither is one
+    /// of ours — nothing is handed to macOS for a scheme this app answers itself.
     nonisolated static func isExternal(_ scheme: String?) -> Bool {
         guard let scheme = scheme?.lowercased(), !scheme.isEmpty else { return false }
-        return !webSchemes.contains(scheme)
+        return !isOwn(scheme) && !webSchemes.contains(scheme)
     }
 
     /// What to do about one. Pure, so the table is proved without a window server, a

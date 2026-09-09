@@ -15,16 +15,20 @@ name: release
 # with the automatic GITHUB_TOKEN does not start a second run — GitHub does not trigger
 # workflows from events its own token creates — so one invocation is one release.
 #
-# SECRETS (Settings ▸ Secrets and variables ▸ Actions). All five are optional: with none of
-# them the release is ad-hoc signed and unnotarized and everything still publishes, and the
-# automatic GITHUB_TOKEN is the only thing that path needs.
+# SECRETS (Settings ▸ Secrets and variables ▸ Actions). All six are optional: with none of
+# them the release is ad-hoc signed, unnotarized and signs in to GitHub with a pasted token,
+# and everything still publishes — the automatic GITHUB_TOKEN is the only thing that path
+# needs.
 #   DEVELOPER_ID_CERT_P12_BASE64   base64 of the "Developer ID Application" .p12
 #   DEVELOPER_ID_CERT_PASSWORD     the password the .p12 was exported with
 #   AC_API_KEY_ID                  App Store Connect API key id       (notarytool)
 #   AC_API_ISSUER_ID               App Store Connect issuer id        (notarytool)
 #   AC_API_KEY_P8_BASE64           base64 of the AuthKey_XXXX.p8      (notarytool)
-# Signing needs the first two; notarizing needs all five, since an unsigned app cannot be
-# notarized. The names match Vesta's, so the same material pastes into both repos.
+#   GH_OAUTH_CLIENT_SECRET         the GitHub OAuth app's client secret (live folders)
+# Signing needs the first two; notarizing needs those five, since an unsigned app cannot be
+# notarized. The names match Vesta's, so the same material pastes into both repos. The sixth
+# stands alone: it is compiled into Sources/Vane/OAuthSecret.swift below and is what lets
+# "New Live Folder…" sign in to GitHub in one click instead of asking for a token.
 
 on:
   workflow_dispatch:
@@ -132,6 +136,56 @@ jobs:
           [ -n "$IDENT" ] || { echo "the .p12 imported but holds no Developer ID Application identity"; exit 1; }
           echo "SIGN_ID=$IDENT" >> "$GITHUB_ENV"
           echo "signing identity: $IDENT"
+
+      - name: Compile in the GitHub client secret
+        # The one secret that goes into the source tree, and only ever into a release build's
+        # copy of it. Sources/Vane/OAuthSecret.swift is checked in holding nil; this puts the
+        # real value on that one line so a live folder's "Connect" can trade GitHub's
+        # authorization code for a token. Without the secret set the line stays nil and the
+        # app falls back to a pasted personal access token, which is exactly what a developer
+        # building from a checkout gets — see OAuthSecret and LiveFolders.route.
+        env:
+          GH_OAUTH_CLIENT_SECRET: ${{ secrets.GH_OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          FILE=Sources/Vane/OAuthSecret.swift
+          ANCHOR='    static let github: String? = nil'
+          if [ -z "${GH_OAUTH_CLIENT_SECRET:-}" ]; then
+            echo "no GH_OAUTH_CLIENT_SECRET — this release signs in with a pasted token"
+            exit 0
+          fi
+          # Loud rather than quiet. If that line is ever reworded, a substitution that missed
+          # would publish a signed release which has silently lost the one-click sign-in, and
+          # nothing downstream could tell: the fallback build compiles and runs perfectly.
+          if ! grep -qxF "$ANCHOR" "$FILE"; then
+            echo "$FILE no longer holds the line the client secret is substituted into:"
+            echo "  $ANCHOR"
+            exit 1
+          fi
+          # awk rather than sed, and the value read out of the environment rather than put on
+          # a replacement side: `&`, `\` and the delimiter all mean something other than
+          # themselves to sed, and a client secret is the last string that should find that
+          # out. Here it is data — never a pattern, never a replacement — so it goes in
+          # exactly as it is. ENVIRON rather than `-v`, which would read `\n` in it as an
+          # escape. It is masked in the log, and nothing here prints it, its length, or the
+          # size of the file it goes into.
+          awk -v anchor="$ANCHOR" '
+            $0 == anchor { print "    static let github: String? = \"" ENVIRON["GH_OAUTH_CLIENT_SECRET"] "\""; next }
+            { print }
+          ' "$FILE" > "$FILE.filled"
+          mv "$FILE.filled" "$FILE"
+          if grep -qxF "$ANCHOR" "$FILE"; then
+            echo "the substitution did not take"
+            exit 1
+          fi
+          # …and took as a string literal, not as some other shape of line. A value needing
+          # escapes to sit inside Swift quotes fails the compile that follows, loudly; what
+          # must never happen is a signed release that quietly went out without one.
+          if ! grep -qF '    static let github: String? = "' "$FILE"; then
+            echo "$FILE no longer holds a string literal on the client secret's line"
+            exit 1
+          fi
+          echo "client secret compiled in: this release signs in to GitHub in one click"
 
       - name: Build Vane.app
         # make-app.sh signs with --options runtime --timestamp when SIGN_ID is set and ad-hoc

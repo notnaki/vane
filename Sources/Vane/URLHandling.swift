@@ -168,6 +168,12 @@ import AppKit
             ("a bare hostname is refused (GetURL always carries a scheme)",
              normalize("example.com") == nil),
             ("empty input is refused", normalize("") == nil),
+            // Vane's own scheme is read inside a page, in `decidePolicyFor`, and nowhere
+            // else. A GetURL event is attacker-reachable, and the bundle deliberately
+            // declares no `vane:` handler, precisely so this can never be how a live
+            // folder's sign-in "comes back" — see `ExternalApps.ownScheme`.
+            ("vane: from another app is refused, sign-in redirect and all",
+             normalize("vane://oauth/github?code=abc&state=xyz") == nil),
             ("percent-escapes survive normalization",
              normalize("https://example.com/a%20b")?.absoluteString == "https://example.com/a%20b"),
         ]

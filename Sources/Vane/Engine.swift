@@ -610,10 +610,30 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// scheme from here — WebKit does not let the delegate rewrite the request.
     func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        // Vane's own scheme, before anything else: `vane://oauth/github` is where GitHub
+        // sends the answer to a live folder's sign-in, and this is the only place in the
+        // system that ever reads one. Cancelled unconditionally, whatever the rest of the
+        // url says — WebKit has no loader for it, macOS has no handler for it because the
+        // bundle deliberately declares none, and a page that redirects to `vane://anything`
+        // gets nothing back at all.
+        //
+        // Cancelled here, answered only there: `finish` acts on the main frame of the one
+        // tab the consent page was opened in and drops every other `vane:` navigation
+        // without a trace — see `LiveFolders.accepts`. An iframe on an unrelated page
+        // setting `location = "vane://oauth/github?error=x"` must not be able to cancel a
+        // sign-in the user is in the middle of in another tab, or to learn from a toast or
+        // a closing tab that there was one.
+        if let url = navigationAction.request.url, ExternalApps.isOwn(url.scheme) {
+            decisionHandler(.cancel)
+            LiveFolders.shared(for: profileID)
+                .finish(redirect: url, in: self,
+                        isMainFrame: navigationAction.targetFrame?.isMainFrame == true)
+            return
+        }
         // A link to another app — zoommtg:, msteams:, mailto:, tel: — is not something
         // WebKit has a loader for: allowing it failed the navigation with "unsupported URL"
         // and the click looked like it did nothing at all. So it is cancelled and asked
-        // about instead. First, because the question is the same wherever the navigation
+        // about instead. Early, because the question is the same wherever the navigation
         // came from and whatever else it also is: the main frame, an iframe, a `location =`
         // redirect, a ⌘-click that would otherwise open a tab that cannot load, or a
         // target=_blank on its way to `createWebViewWith`.
@@ -904,6 +924,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @Published var renamingFolder: UUID? {
         didSet { if renamingFolder != nil { renamingTab = nil } }
     }
+    /// The live folder whose "Live Folder Created" callout is up. Per window, like the
+    /// command bar: the folder was made by a click in this one, and a second window showing
+    /// the same Space is not where anybody is looking. See `LiveFolderCallout`.
+    @Published var announcing: UUID?
     /// The window's split views: 2–4 of the tabs above shown side by side in one page card
     /// and as one sidebar row. Ids, not tabs, so a split survives its panes moving section,
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.
@@ -1245,6 +1269,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
             MediaState.shared.forget(id)
+            // Closing GitHub's consent page by hand is abandoning the sign-in: the next
+            // "New Live Folder…" starts a fresh one rather than pointing at a tab that has
+            // gone. A no-op for every other tab, which is nearly all of them.
+            LiveFolders.shared(for: profileID).forget(authTab: id)
         }
         if renamingTab == id { renamingTab = nil }
         // A selection may only ever name tabs that exist: one closed under it — by ⌘W, by a
