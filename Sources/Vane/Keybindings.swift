@@ -739,11 +739,27 @@ enum Command: String, CaseIterable, Codable, Sendable {
         return hit
     }
 
+    /// Whether one of Vane's own commands may run at all right now.
+    ///
+    /// A modal session owns the app — the "Quit Vane?" card, an alert, a print or save panel
+    /// — and nothing of Vane's may run behind one. Both routes into a command have to ask.
+    /// The key monitor still sees every keystroke a modal session gets, so ⌘W archived a tab
+    /// under the quit card's scrim and ⌘T opened one behind it; and AppKit still offers key
+    /// equivalents to the main menu while a session is up, where a closure-backed item answers
+    /// its own action — so the menu has to refuse them too (`Act.validateMenuItem`).
+    ///
+    /// Refusing rather than swallowing: the dialog in front is what the keystroke is for. The
+    /// same question `Standard.minimizeTarget` already asks for ⌘M.
+    ///
+    /// Pure, so `selfcheck --pure` proves it with no dialog on screen.
+    nonisolated static func runs(modal: Bool) -> Bool { !modal }
+
     /// Install with:
     ///   NSEvent.addLocalMonitorForEvents(matching: .keyDown) { Keybindings.handle($0) ? nil : $0 }
     /// True means "consumed" — the caller must swallow the event.
     static func handle(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown, let b = Keybinding(event: event) else { return false }
+        guard runs(modal: NSApp.modalWindow != nil) else { return false }
         guard let cmd = command(for: b), let action = actions[cmd] else { return alias(b) }
         // ponytail: WKWebView gives no synchronous "did the page take it?", so `.page`
         // means "hands off whenever web content has focus" and Vane's action is simply
@@ -1168,6 +1184,14 @@ extension Keybindings {
             ("a chord Vane itself ships on is not reserved — that is a conflict to warn about, not a refusal",
              reserved(Keybinding("t", .command)) == nil
                 && reserved(Keybinding("l", .command)) == nil),
+        ]
+
+        // A modal session owns the app: neither route into a command may fire behind one.
+        out += [
+            ("nothing of Vane's own runs while a modal session is up — the quit card, an "
+             + "alert, a save panel — so ⌘W cannot archive a tab under the scrim",
+             !runs(modal: true)),
+            ("with no session up, commands run as usual", runs(modal: false)),
         ]
 
         // Priority.

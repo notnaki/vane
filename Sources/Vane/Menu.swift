@@ -10,7 +10,14 @@ import AppKit
     var enabled: (() -> Bool)?
     init(_ run: @escaping () -> Void) { self.run = run }
     @objc func fire() { run() }
-    func validateMenuItem(_ item: NSMenuItem) -> Bool { enabled?() ?? true }
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        // AppKit still offers key equivalents to the main menu while a modal session is up,
+        // and a closure-backed item answers its own action — so without this, ⌘W and ⌘T still
+        // fired behind the "Quit Vane?" card after the key monitor had stood down. See
+        // `Keybindings.runs`.
+        guard Keybindings.runs(modal: NSApp.modalWindow != nil) else { return false }
+        return enabled?() ?? true
+    }
 }
 @MainActor private var keepAlive: [Act] = []
 
@@ -135,6 +142,22 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 /// menu's own item, which runs this rather than `performMiniaturize:` so the two can never
 /// disagree about which window is meant.
 @MainActor private func minimizeWindow() { minimizeVictim()?.performMiniaturize(nil) }
+
+/// ⌘W. Arc's rule inside a browser window — a Today tab is archived rather than destroyed,
+/// and a favourite or a pinned tab just loses its page — and every Mac app's rule outside
+/// one: a window that holds no tabs closes. The ladder is `Windows.closeTarget`, proved
+/// offline.
+@MainActor private func closeTab() {
+    let key = NSApp.keyWindow
+    switch Windows.closeTarget(hasKey: key != nil,
+                               keyHoldsTabs: key.map { k in
+                                   TabStore.all.contains { $0.window === k }
+                               } ?? false,
+                               keyIsAttached: key?.parent != nil || key?.sheetParent != nil) {
+    case .tab:    Windows.current?.closeOrArchive()
+    case .window: key?.performClose(nil)
+    }
+}
 
 /// The Find submenu's next/previous. AppKit dispatches `performTextFinderAction:` and asks
 /// the *sender* which action it is, so the tag is the whole difference between them. The
@@ -629,8 +652,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.openFile) { openFile() },
         .separator(),
         // Arc's ⌘W: a Today tab is archived rather than destroyed, and a favourite or a
-        // pinned tab just loses its page and stays in the sidebar.
-        item(.closeTab) { Windows.current?.closeOrArchive() },
+        // pinned tab just loses its page and stays in the sidebar. Over Settings, History or
+        // Extensions it closes that window instead — see `closeTab`.
+        item(.closeTab) { closeTab() },
         responderItem(.closeWindow, #selector(NSWindow.performClose(_:))) {
             NSApp.keyWindow?.performClose(nil)
         },

@@ -753,6 +753,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("peeked window chrome", VaneWindow.check),
                                ("little arc", LittleArc.check),
                                ("air traffic control", AirTraffic.check),
+                               ("which window a key acts on", Windows.check),
                                ("peek", Peek.check),
                                ("link gestures", TabActions.check),
                                ("recent tab switcher", TabSwitcher.check),
