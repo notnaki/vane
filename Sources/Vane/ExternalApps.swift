@@ -267,6 +267,11 @@ import SwiftUI
     private static func ask(_ url: URL, host: String, scheme: String, tab: Tab) {
         // The window the tab is in — a browser window, a Little Vane or a Peek all hold
         // their tabs the same way, which is what gives all three the same card.
+        //
+        // ponytail: `tabs`, not `everyTab`. A page in a Space the window is keeping alive
+        // behind this one has no row and no card to be anchored to, and a sheet over
+        // whatever is being read now, asking about a link fired by a page the user swiped
+        // away from, is worse than the silence. Finding nothing is the answer.
         guard let store = TabStore.all.first(where: { s in s.tabs.contains { $0 === tab } }),
               store.externalApp == nil else { return }
         let app = handler(for: url)

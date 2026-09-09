@@ -344,7 +344,10 @@ struct OffscreenPages: View {
     var body: some View {
         let shown = onScreen
         ZStack {
-            ForEach(store.tabs.filter { !shown.contains($0.id) && media.keepsRunning($0) }) { tab in
+            // `everyTab`: WebKit stops a media element the moment its web view leaves the
+            // view hierarchy, so a page playing in a Space you have swiped off only carries
+            // on playing because it is still hung here. Arc's does. See `Stash`.
+            ForEach(store.everyTab.filter { !shown.contains($0.id) && media.keepsRunning($0) }) { tab in
                 WebView(web: tab.web, offscreen: true).id(tab.id)
             }
         }
@@ -363,14 +366,17 @@ struct MediaTrayView: View {
     @ObservedObject private var media = MediaState.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The tab on the tray, resolved through the pure rule above.
+    /// The tab on the tray, resolved through the pure rule above. `everyTab`, because the
+    /// page playing in the Space you have just swiped off is exactly the one this tray is a
+    /// player for; its title is still the way back to it. See `TabStore.reveal`.
     private var tab: Tab? {
-        let rows = store.tabs.map {
+        let all = store.everyTab
+        let rows = all.map {
             MediaTray.Playing(id: $0.id, playing: TabAudio.isPlaying($0), lastActive: $0.lastActive)
         }
         guard let id = MediaTray.showing(rows, current: store.current, held: media.held)
         else { return nil }
-        return store.tabs.first { $0.id == id }
+        return all.first { $0.id == id }
     }
 
     var body: some View {
@@ -395,7 +401,7 @@ struct MediaTrayView: View {
             SiteIcon(icon: tab.favicon, fallback: "waveform", size: Look.rowIcon)
             // The whole title is the way back: Arc's mini player jumps to the tab that is
             // playing, which is the one thing you always want from it.
-            Button { store.current = tab.id } label: {
+            Button { store.reveal(tab.id) } label: {
                 Marquee(text: title).foregroundStyle(Look.barText)
             }
             .buttonStyle(.plain)

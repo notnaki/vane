@@ -78,7 +78,8 @@ import WebKit
 
     static func apply() {
         for store in TabStore.all {
-            for tab in store.tabs {
+            // `everyTab`: the Spaces a window is keeping alive hold real web views too.
+            for tab in store.everyTab {
                 tab.web.customUserAgent = userAgent
                 tab.web.isInspectable = inspectorEnabled
             }

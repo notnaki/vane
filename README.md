@@ -196,6 +196,14 @@ Everything here is implemented and reachable from the UI.
   back. The folders it makes are Today's, so the tabs in them keep auto-archiving on the
   usual clock and Clear still clears them; a Today folder disappears when the last tab
   leaves it.
+- Spaces stay loaded across a switch: a window keeps every Space it has been in alive behind
+  the one it is showing, so swiping back puts the same pages in front of you rather than
+  reloading them. The idle-suspension and auto-archive sweeps still reach them: a Space you
+  are not looking at unloads on the ordinary idle clock — pinned rows included, because the
+  exemption that keeps a pin resident is about the row you can click and a Space put away has
+  no rows — and gives its pages back under memory pressure. The page you were reading starts
+  its idle clock as you swipe off it, not when you first selected it. A Space something else
+  has edited while it was away is rebuilt from disk instead.
 - Multiple windows; private windows, which get a non-persistent website data store and are
   never written to disk.
 - Address bar that decides between navigation and search: bare hosts, `localhost:3000`,
@@ -324,9 +332,16 @@ Sources/` is the full ledger.
   all never triggers a save offer.
 - Browser import takes the newest N URLs, not the whole table. Cookies and sessions do not
   come across.
-- Switching spaces tears the tabs down and reloads them from URLs, so scroll position and
-  the back/forward list are lost. Session restore and reopen-closed-tab have the same
-  ceiling.
+- A Space kept alive holds its pages for the life of the window, so a window that has been
+  in six Spaces is holding six Spaces' tabs until the idle sweep — which reaches every one of
+  them, pinned rows included — unloads them; only the tabs on the strip in front of you are
+  exempt. A Space that has to be rebuilt from disk — one edited from another window or the
+  Library while it was away — comes back from URLs plus a saved `interactionState`, and
+  session restore and reopen-closed-tab have that same ceiling.
+- A live folder in a Space that is merely kept alive stops refreshing until the window is
+  showing that Space again, and then refreshes at once. A pinned page that navigates while
+  its Space is put away comes back on the page it reached, but the Space's URL list on disk
+  is not rewritten until that Space is on screen again.
 - Pins are one shared set per profile; pinning in two windows at once is last-writer-wins.
 
 **Platform**

@@ -1337,6 +1337,15 @@ extension TabStore {
                                           profileID)
     }
 
+    /// Both sections' shapes exactly as they sit in the defaults. Bytes rather than folders,
+    /// because the one caller is `TabStore.fingerprint`, which has to notice *any* edit —
+    /// see `Stash`.
+    static func shapeData(space: UUID?, profileID: UUID) -> [Data?] {
+        [TabKind.pinned, .today].map {
+            UserDefaults.vane.data(forKey: shapeKey($0, space: space, profileID: profileID))
+        }
+    }
+
     /// A Space being deleted takes its folders with it; the key would otherwise sit in the
     /// defaults for the life of the profile, waiting for a Space id that will never come back.
     static func forgetShape(space: UUID, profileID: UUID) {

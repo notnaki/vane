@@ -436,6 +436,10 @@ import WebKit
         return shim
     }
 
+    /// ponytail: `tabs`, not `everyTab`. WebExtensions are told about the strip and nothing
+    /// else — `browser.tabs.query` answers off it, and a Space kept alive behind the one on
+    /// screen has no rows to report. Finding nothing for a stashed page is what keeps the
+    /// query, the events and this in agreement.
     private func store(holding tab: Tab) -> TabStore? {
         myStores.first { $0.tabs.contains { $0 === tab } }
     }

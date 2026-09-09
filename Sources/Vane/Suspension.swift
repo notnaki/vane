@@ -56,6 +56,9 @@ extension Prefs {
         /// A favourite or a pinned tab: it stays in the sidebar, so the user expects it to
         /// be instant when they click it.
         var pinned = false
+        /// In a Space the window is keeping alive behind the one it is showing — so it has
+        /// no row in the sidebar at all. See `Stash`.
+        var stashed = false
         /// A private tab's data store is `.nonPersistent()` and a fresh one is made per web
         /// view, so a suspended private tab would come back logged out of everything.
         var isPrivate = false
@@ -80,9 +83,15 @@ extension Prefs {
     /// they are also the ones a user expects to be instant, and a pin that reloads on every
     /// click reads as a bug. ponytail: if this ever needs to change it is one more Prefs
     /// flag and one line here, not a redesign.
+    ///
+    /// That exemption is about the row in the sidebar, so it only covers a pin on the strip
+    /// in front of the user. A pin in a Space the window is keeping alive has no row to
+    /// click and is exactly what a switch used to release, so it goes idle and comes back
+    /// under pressure like any Today tab.
     static func shouldSuspend(_ f: Facts, after limit: TimeInterval) -> Bool {
         if f.suspended || !f.loaded { return false }
-        if f.active || f.pinned || f.isPrivate { return false }
+        if f.active || f.isPrivate { return false }
+        if f.pinned && !f.stashed { return false }
         if f.playing || f.loading || f.hasInput { return false }
         return f.idle >= limit
     }
@@ -135,7 +144,10 @@ extension Prefs {
         pressure = src
     }
 
-    static var allTabs: [Tab] { TabStore.all.flatMap(\.tabs) }
+    /// `everyTab`, not `tabs`: a Space a window is keeping alive behind the one it is showing
+    /// is exactly where an idle page hides, and one the sweep could not see would never be
+    /// unloaded at all. See `Stash`.
+    static var allTabs: [Tab] { TabStore.all.flatMap(\.everyTab) }
 
     /// On screen in some window — which for a split view is every one of its panes, not just
     /// the one the keyboard is in. Tearing down the pane beside the one being read is exactly
@@ -148,9 +160,16 @@ extension Prefs {
     /// process. `playing` and `hasInput` are filled in later, only for tabs that got this
     /// far, because both cost a round trip into WebKit.
     private static func facts(_ tab: Tab, now: Date) -> Facts {
-        Facts(active: isActive(tab), pinned: tab.stays, isPrivate: tab.isPrivate,
-              loading: tab.loading, suspended: tab.suspended, loaded: tab.web.url != nil,
-              idle: now.timeIntervalSince(tab.lastActive))
+        Facts(active: isActive(tab), pinned: tab.stays, stashed: isStashed(tab),
+              isPrivate: tab.isPrivate, loading: tab.loading, suspended: tab.suspended,
+              loaded: tab.web.url != nil, idle: now.timeIntervalSince(tab.lastActive))
+    }
+
+    /// Held for a Space no window is showing. Only the pinned exemption asks — a Today tab
+    /// is treated the same either way — so this runs over the handful of stashes a window
+    /// has rather than being carried on the tab.
+    private static func isStashed(_ tab: Tab) -> Bool {
+        TabStore.all.contains { $0.space(stashing: tab.id) != nil }
     }
 
     /// The periodic pass. Two phases: reject on the cheap facts, then ask WebKit about the
@@ -168,9 +187,9 @@ extension Prefs {
                     // requestMediaPlaybackState reports .playing for a page-muted tab, so
                     // without the mute check, muting a tab would make it permanently
                     // unsuspendable — backwards. Everything that could still want a muted
-                    // tab is excluded earlier: selected in any window, pinned, or detached
-                    // into PiP. What is left is a muted video in a background tab of a
-                    // background window, untouched for the idle limit.
+                    // tab is excluded earlier: selected in any window, pinned on a strip,
+                    // or detached into PiP. What is left is a muted video in a background
+                    // tab of a background window, untouched for the idle limit.
                     // ponytail: interactionState restores scroll and history, not playback
                     // position, so a resumed tab restarts its player.
                     f.playing = await tab.isPlayingMedia() && !TabAudio.isMuted(tab)
@@ -208,9 +227,9 @@ extension Prefs {
                     // requestMediaPlaybackState reports .playing for a page-muted tab, so
                     // without the mute check, muting a tab would make it permanently
                     // unsuspendable — backwards. Everything that could still want a muted
-                    // tab is excluded earlier: selected in any window, pinned, or detached
-                    // into PiP. What is left is a muted video in a background tab of a
-                    // background window, untouched for the idle limit.
+                    // tab is excluded earlier: selected in any window, pinned on a strip,
+                    // or detached into PiP. What is left is a muted video in a background
+                    // tab of a background window, untouched for the idle limit.
                     // ponytail: interactionState restores scroll and history, not playback
                     // position, so a resumed tab restarts its player.
                     f.playing = await tab.isPlayingMedia() && !TabAudio.isMuted(tab)
@@ -286,6 +305,22 @@ extension Prefs {
         assert("the active tab of a window never suspends", !shouldSuspend(active, after: 0))
         var pinned = idle; pinned.pinned = true
         assert("a pinned tab never suspends", !shouldSuspend(pinned, after: 0))
+        // The pin exemption is about the row you can click, and a Space kept alive behind the
+        // one on screen has no rows. Before Spaces stayed loaded a switch released these; now
+        // the sweep is the only thing that does.
+        var stashedPin = pinned; stashedPin.stashed = true
+        assert("a pinned tab in a Space kept alive is due once it has been idle long enough",
+               shouldSuspend(stashedPin, after: 30 * 60))
+        assert("…while the pinned row on the strip still is not",
+               !shouldSuspend(pinned, after: 30 * 60))
+        assert("critical pressure reclaims a kept-alive Space's pinned tabs",
+               shouldSuspend(stashedPin, after: 0))
+        var stashedIdle = Facts(idle: 60); stashedIdle.stashed = true
+        assert("a stashed tab is no more suspendable before the interval than any other",
+               !shouldSuspend(stashedIdle, after: 30 * 60))
+        var stashedPlaying = stashedPin; stashedPlaying.playing = true
+        assert("a kept-alive Space still playing a video is left alone",
+               !shouldSuspend(stashedPlaying, after: 0))
         var priv = idle; priv.isPrivate = true
         assert("a private tab never suspends", !shouldSuspend(priv, after: 0))
         var playing = idle; playing.playing = true
