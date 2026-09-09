@@ -70,18 +70,29 @@ enum Palette {
         return t.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains { $0.hasPrefix(q) }
     }
 
-    /// The bar's row order, in one place so it can be proved without a window. With nothing
-    /// typed the bar is the list of open tabs (ref 2). With a query, the tabs that match lead
-    /// — at most `leadingTabs`, so the typed row is never pushed under the fold — then what
-    /// was typed, what it completes to, the assistant two rows under the typed one (ref 3),
-    /// the rest of the matching tabs, the other places that match, and commands as a tail.
+    /// The bar before a character is typed (ref 2). Arc's ⌘T opens on this window's own
+    /// tabs, most recently used first — `TabSwitcher.recent`'s order, the one ⌃⇥ walks —
+    /// capped so the bar stays a glance, with one row under them to report a problem.
+    ///
+    /// Nothing else: no commands, no assistant, no completions, no Spaces. Those are all
+    /// answers to a query, and there is no query yet; a bar that opens on a wall of verbs
+    /// is a bar you have to read before you can type. Everything comes back with the first
+    /// character, where `arrange` below takes over.
+    static func empty<T>(tabs: [T], report: T, cap: Int = Look.barEmptyTabs) -> [T] {
+        Array(tabs.prefix(cap)) + [report]
+    }
+
+    /// The bar's row order once something is typed, in one place so it can be proved without
+    /// a window. The tabs that match lead — at most `leadingTabs`, so the typed row is never
+    /// pushed under the fold — then what was typed, what it completes to, the assistant two
+    /// rows under the typed one (ref 3), the rest of the matching tabs, the other places that
+    /// match, and commands as a tail.
     ///
     /// `rest` is the places that are neither open tabs nor completions: an archived tab to
     /// restore, a Space to switch to. They sit above the commands because they are somewhere
     /// to go, and below the tabs because a tab you already have open is the better answer.
-    static func arrange<T>(tabs: [T], typed: T?, suggestions: [T], ai: T?, rest: [T] = [],
+    static func arrange<T>(tabs: [T], typed: T, suggestions: [T], ai: T?, rest: [T] = [],
                            commands: [T], leadingTabs: Int = 3) -> [T] {
-        guard let typed else { return tabs + rest + commands }
         var out = Array(tabs.prefix(leadingTabs))
         let lead = out.count
         out.append(typed)
@@ -95,31 +106,25 @@ enum Palette {
 
     /// How much of the actions catalogue this keystroke asks for.
     enum ActionScope: Equatable {
-        /// No actions at all — the tab search is tabs and nothing else.
+        /// No actions at all — an empty bar is its tabs, and the tab search is tabs only.
         case none
-        /// The suggested handful, under the tabs, with nothing typed.
-        case top
         /// Everything the query matches.
         case matching
     }
 
-    /// When the bar offers actions. Arc's bar always has some in it: ⌘⇧P opens on a short
-    /// suggested set, and from the first character on it searches the whole catalogue. Vane
-    /// used to hold them back until three characters had been typed, which meant the only
-    /// way to find an action was to already know its name.
+    /// When the bar offers actions. From the first character on, every entry point searches
+    /// the whole catalogue — Vane used to hold actions back until three characters had been
+    /// typed, which meant the only way to find one was to already know its name.
     ///
-    /// ⌘L's bar is the one exception, and only while it is empty: it opens prefilled with
-    /// the page's address, selected, and a list of verbs under a url you are about to
-    /// replace is noise. One character in, it searches actions like every other entry point.
-    /// `filtered` is ⇥ — Arc's actions filter — which is a request for the catalogue itself,
-    /// so an empty query there means "all of them", not "the suggested five".
+    /// With nothing typed there are no actions at all, whichever key opened the bar: Arc's
+    /// bar at rest is the tabs you might switch to, and a list of verbs under an empty field
+    /// (or, in ⌘L's bar, under a url you are about to replace) is something to read before
+    /// you can type. `filtered` is ⇥ — Arc's actions filter — which is a request for the
+    /// catalogue itself, so an empty query there means "all of them", not "none".
     static func actions(query: String, mode: PaletteMode, filtered: Bool = false) -> ActionScope {
         if filtered { return .matching }
         if mode == .tabs { return .none }
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
-            return mode == .all ? .top : .none
-        }
-        return .matching
+        return query.trimmingCharacters(in: .whitespaces).isEmpty ? .none : .matching
     }
 
     /// ⌘T, ⌘L and ⌘⇧P over a bar that is already up close it (Arc v0.107): the same key that
@@ -142,7 +147,29 @@ enum Palette {
         let words = ["GitHub", "Gitlab", "git", "Hacker News"]
         let none: [String] = []
         let watched = MainActor.assumeIsolated { ChangeWatch.check() }
+        // The bar at rest. The order is `TabSwitcher.recent`'s — ⌃⇥'s own — so the list ⌘T
+        // opens on and the switcher's row can never disagree about which tab is "the last
+        // one". Six tabs, named, with a clock each; the third is the one in front.
+        let ids = (0..<6).map { _ in UUID() }
+        let named = ["one", "two", "three", "four", "five", "six"]
+        let clocks = [5.0, 9, 1, 7, 3, 8]
+        let stamped = zip(ids, clocks).map { ($0, Date(timeIntervalSince1970: $1)) }
+        let recent = TabSwitcher.recent(stamped, current: ids[2], limit: Look.barEmptyTabs)
+            .compactMap { id in ids.firstIndex(of: id) }.map { named[$0] }
+        let atRest = empty(tabs: recent, report: "report")
         return [
+            ("with nothing typed the bar is this window's tabs, the one in front first",
+             atRest.first == "three"),
+            ("…then the rest of them by when they were last looked at",
+             Array(atRest.dropLast()) == ["three", "two", "six", "four", "one"]),
+            ("…capped, so the bar opens as a glance rather than as the whole strip",
+             atRest.count == Look.barEmptyTabs + 1 && !atRest.contains("five")),
+            ("…and one row to report a problem, always last", atRest.last == "report"),
+            ("a shorter list is not padded", empty(tabs: ["t1"], report: "r") == ["t1", "r"]),
+            ("…and a window with no tabs is that one row alone",
+             empty(tabs: none, report: "r") == ["r"]),
+            ("the cap is a cap, whatever it is set to",
+             empty(tabs: ["t1", "t2", "t3"], report: "r", cap: 2) == ["t1", "t2", "r"]),
             // Where Return loads (§4 of the Arc spec): ⌘T makes a tab, ⌘L replaces the page.
             ("⌘T's bar always opens in a new tab",
              opensInNewTab(mode: .newTab, commandHeld: false, hasActiveTab: true)),
@@ -168,8 +195,6 @@ enum Palette {
             ("no strong tab means the search leads and the tabs follow the completions",
              arrange(tabs: ["t1", "t2"], typed: "q", suggestions: ["s1"], ai: nil, commands: none,
                      leadingTabs: 0) == ["q", "s1", "t1", "t2"]),
-            ("with nothing typed the bar lists the open tabs",
-             arrange(tabs: ["t1", "t2"], typed: nil, suggestions: none, ai: nil, commands: none) == ["t1", "t2"]),
             ("a matching tab comes before what was typed",
              arrange(tabs: ["t1"], typed: "q", suggestions: ["s1"], ai: nil, commands: none) == ["t1", "q", "s1"]),
             ("at most three tabs lead; the rest follow the completions",
@@ -195,23 +220,18 @@ enum Palette {
             ("…and under the completions and the assistant, which answer what was typed",
              arrange(tabs: none, typed: "q", suggestions: ["s1"], ai: "ai", rest: ["space"],
                      commands: none) == ["q", "s1", "ai", "space"]),
-            ("with nothing typed the bar is still just the tabs",
-             arrange(tabs: ["t1"], typed: nil, suggestions: none, ai: nil, rest: none,
-                     commands: none) == ["t1"]),
-            ("…with the suggested actions under them",
-             arrange(tabs: ["t1"], typed: nil, suggestions: none, ai: nil, rest: none,
-                     commands: ["c1", "c2"]) == ["t1", "c1", "c2"]),
 
-            // Actions are always in reach (Arc), not held back until three characters.
-            ("⌘⇧P's bar suggests actions before anything is typed",
-             actions(query: "", mode: .all) == .top),
+            // Actions are always in reach (Arc) from the first character, not held back
+            // until three — and never under an empty field, where the bar is its tabs.
+            ("nothing typed offers no actions: ⌘⇧P's bar at rest is tabs, not verbs",
+             actions(query: "", mode: .all) == .none),
             ("one character searches the whole catalogue",
              actions(query: "r", mode: .all) == .matching),
             ("…in ⌘L's bar too", actions(query: "r", mode: .address) == .matching),
             ("…and in ⌘T's", actions(query: "r", mode: .newTab) == .matching),
-            ("⌘L's bar stays out of the way while it is still showing the page's address",
+            ("…and ⌘L's bar stays out of the way while it is still showing an address",
              actions(query: "", mode: .address) == .none),
-            ("whitespace is not a query", actions(query: "   ", mode: .all) == .top),
+            ("whitespace is not a query", actions(query: "   ", mode: .all) == .none),
             ("the tab search is tabs and nothing else",
              actions(query: "reload", mode: .tabs) == .none),
             // ⇥ is Arc's actions filter, and asks for the catalogue rather than the top of
@@ -353,6 +373,10 @@ private struct PaletteRow: Identifiable {
     var detail: String = ""
     var subtitle: String = ""
     var trailing: String = ""
+    /// Draw `icon` inside a filled square rather than bare. Arc marks the one row in the bar
+    /// that is not a place — Report a Problem — this way: a chip where a favicon would be,
+    /// so it reads as a button in a list of pages.
+    var chip: Bool = false
     /// The keystroke that does this without opening the bar at all, drawn down the right of
     /// an action row the way Arc's are. Empty for everything else.
     var shortcut: String = ""
@@ -540,10 +564,10 @@ struct CommandField: NSViewRepresentable {
     /// Every open tab, in every window: a title or favicon arriving redraws the row for it.
     @StateObject private var tabs = ChangeWatch()
 
-    /// At most eight rows are visible; the rest are a scroll away. Arithmetic rather than a
-    /// preference-key measuring dance, which the fixed row height makes exact.
+    /// At most `Look.barVisibleRows` are visible; the rest are a scroll away. Arithmetic
+    /// rather than a preference-key measuring dance, which the fixed row height makes exact.
     private var listHeight: CGFloat {
-        let n = CGFloat(min(rows.count, 8))
+        let n = CGFloat(min(rows.count, Look.barVisibleRows))
         return n * Look.barRowHeight + max(0, n - 1) * Look.barRowGap
     }
     /// Above and below the rows: a row gap's less at the top, where the divider already
@@ -688,6 +712,15 @@ struct CommandField: NSViewRepresentable {
             if let image = row.image {
                 Image(nsImage: image).resizable()
                     .frame(width: Look.rowIcon, height: Look.rowIcon)
+            } else if row.chip {
+                Image(systemName: row.icon)
+                    .font(Look.chipGlyph)
+                    .foregroundStyle(Look.barGlyph)
+                    .frame(width: Look.chip, height: Look.chip)
+                    .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
+                    // The chip is wider than the icon column, and centred on it, so the
+                    // titles down the bar stay on one line whether or not a row wears one.
+                    .frame(width: Look.rowIcon)
             } else {
                 Image(systemName: row.icon)
                     .font(Look.symbol)
@@ -860,13 +893,15 @@ struct CommandField: NSViewRepresentable {
 
     private func refresh(reset: Bool = true) {
         var out: [PaletteRow] = []
-        let tabs = Palette.rank(query, tabRows(), key: { $0.title + " " + $0.detail })
+        func matchingTabs() -> [PaletteRow] {
+            Palette.rank(query, tabRows(), key: { $0.title + " " + $0.detail })
+        }
         if actionsOnly {
             // ⇥: the catalogue and nothing else, so the bar reads as one list of verbs.
             out = commandRows()
         } else if mode == .tabs {
-            out = tabs
-        } else {
+            out = matchingTabs()
+        } else if let typedRow = typedRow() {
             // Arc's order (refs 2, 3): a tab you already have open that matches is the
             // best answer there is, so it leads — "Switch to Tab" is what Return does. Then
             // what you typed, what the engine and your own history complete it to, the
@@ -876,19 +911,26 @@ struct CommandField: NSViewRepresentable {
             // typing two letters means a search far more often than "Archive Tab" — but
             // they are always *there*, from the first character on. Archived tabs and Spaces
             // are places, so they are searched the moment there is something to search with.
-            let places = typed.isEmpty ? []
-                : Palette.rank(typed, archiveRows() + spaceRows(), key: { $0.title + " " + $0.detail })
+            let places = Palette.rank(typed, archiveRows() + spaceRows(),
+                                      key: { $0.title + " " + $0.detail })
             // Only a strong match leads, and only one: a search is what two typed letters
             // mean far more often than "Switch to Tab", so the tabs that merely fuzz-match
             // wait until after what the engine completes the words to.
             // A tab row's detail is "address — Window n" when there are several windows.
+            let tabs = matchingTabs()
             let strong = tabs.filter {
                 Palette.strong(typed, title: $0.title, url: $0.detail.components(separatedBy: " — ")[0])
             }
             let weak = tabs.filter { row in !strong.contains { $0.id == row.id } }
             out = Palette.arrange(
-                tabs: strong + weak, typed: typedRow(), suggestions: suggestionRows(), ai: aiRow(),
+                tabs: strong + weak, typed: typedRow, suggestions: suggestionRows(), ai: aiRow(),
                 rest: places, commands: commandRows(), leadingTabs: min(strong.count, 1))
+        } else {
+            // Nothing typed (ref 2): Arc's bar at rest is the handful of tabs you are most
+            // likely to want back — this window's, most recently used first — with one row
+            // under them to report a problem. Not the other windows' tabs, not the archive,
+            // not the catalogue: all of that answers a query, and one letter brings it.
+            out = Palette.empty(tabs: recentTabRows(), report: reportRow())
         }
         // A cap so a bar over a hundred open tabs stays a list and not a scroll marathon —
         // but not while ⇥ is on, where the tail of the catalogue is the whole point.
@@ -956,19 +998,44 @@ struct CommandField: NSViewRepresentable {
         let manyWindows = TabStore.all.count > 1
         for (w, other) in TabStore.all.enumerated()
         where other === store || !(other.isPrivate || other.isLittle) {
-            for tab in other.tabs {
-                let place = manyWindows ? "Window \(w + 1)" : ""
-                let detail = [tab.address, place].filter { !$0.isEmpty }.joined(separator: " — ")
-                out.append(PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
-                                      image: tab.favicon, title: tab.title, detail: detail,
-                                      subtitle: place,
-                                      trailing: "Switch to Tab", kind: "Open tab") { _ in
-                    other.current = tab.id
-                    other.window?.makeKeyAndOrderFront(nil)
-                })
-            }
+            let place = manyWindows ? "Window \(w + 1)" : ""
+            out += other.tabs.map { tabRow($0, in: other, place: place) }
         }
         return out
+    }
+
+    /// One open tab, wherever it is: favicon, title, and "Switch to Tab" as what Return does.
+    private func tabRow(_ tab: Tab, in owner: TabStore, place: String) -> PaletteRow {
+        let detail = [tab.address, place].filter { !$0.isEmpty }.joined(separator: " — ")
+        return PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
+                          image: tab.favicon, title: tab.title, detail: detail, subtitle: place,
+                          trailing: "Switch to Tab", kind: "Open tab") { _ in
+            owner.current = tab.id
+            owner.window?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// The bar at rest: *this* window's tabs, most recently used first with the one in front
+    /// at the top. `TabSwitcher.recent` is the order ⌃⇥ walks, and the two lists answering
+    /// the same question differently is exactly the sort of thing nobody would notice for a
+    /// year. No "Window n" subtitle here — every row is this window's.
+    private func recentTabRows() -> [PaletteRow] {
+        let byID = Dictionary(store.tabs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let order = TabSwitcher.recent(store.tabs.map { ($0.id, $0.lastActive) },
+                                       current: store.current, limit: Look.barEmptyTabs)
+        return order.compactMap { byID[$0] }.map { tabRow($0, in: store, place: "") }
+    }
+
+    /// The one row in the bar at rest that is not a page you have open. Arc's is "Contact the
+    /// Team"; Vane has an issue tracker instead, and Return opens a fresh issue in a new tab
+    /// rather than handing the window's page over to it.
+    private func reportRow() -> PaletteRow {
+        let issues = "https://github.com/notnaki/vane/issues/new"
+        return PaletteRow(id: "report", icon: "bubble.left", title: "Report a Problem",
+                          detail: issues, chip: true, kind: "Feedback") { _ in
+            guard let url = URL(string: issues) else { return }
+            (Windows.current ?? Windows.open()).newTab(url)
+        }
     }
 
     /// Tabs that have left the sidebar but not the browser. Return puts one back where it
@@ -1005,20 +1072,16 @@ struct CommandField: NSViewRepresentable {
     /// keystroke rather than a "Command →" chip: an action row's right-hand side is where
     /// Arc teaches you the shortcut, and a bar that says "Command" forty times says nothing.
     private func commandRows() -> [PaletteRow] {
-        let scope = Palette.actions(query: query, mode: mode, filtered: actionsOnly)
-        guard scope != .none else { return [] }
-        func rows(_ commands: [PaletteCommand]) -> [PaletteRow] {
-            commands.map { c in
-                PaletteRow(id: "cmd:" + c.id, icon: c.icon, title: c.title,
-                           detail: c.shortcut, shortcut: c.shortcut, kind: "Action") { _ in
-                    c.run()
-                }
-            }
-        }
-        guard scope == .matching else { return rows(PaletteCommand.topActions(for: store)) }
+        guard Palette.actions(query: query, mode: mode, filtered: actionsOnly) == .matching
+        else { return [] }
         // Ranked on the title alone: matching the shortcut too would put every ⌘-something
         // under a query like "d", and the Shortcuts pane is where keys are searched.
-        return rows(Palette.rank(typed, PaletteCommand.all(for: store), key: \.title))
+        return Palette.rank(typed, PaletteCommand.all(for: store), key: \.title).map { c in
+            PaletteRow(id: "cmd:" + c.id, icon: c.icon, title: c.title,
+                       detail: c.shortcut, shortcut: c.shortcut, kind: "Action") { _ in
+                c.run()
+            }
+        }
     }
 
     private func aiRow() -> PaletteRow? {

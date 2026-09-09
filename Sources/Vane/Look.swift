@@ -80,6 +80,15 @@ enum Look {
     /// fill has a sliver of ground on every side instead of touching its neighbours.
     static let barRowHeight: CGFloat = 46
     static let barRowGap: CGFloat = 4
+    /// How many rows the bar draws before the rest are a scroll away.
+    static let barVisibleRows = 8
+    /// How many of this window's tabs the bar lists with nothing typed. Arc's ⌘T opens on a
+    /// short most-recently-used list rather than the whole strip: the tab you want is nearly
+    /// always the one you were just on, and anything further back is one typed letter away.
+    ///
+    /// A count, not a size, but it is a rule about what the bar *shows* — and it has to be
+    /// read against the row count above, which is the only reason either number is a number.
+    static let barEmptyTabs = 5
     /// The text field's row, which is deliberately taller than any result row.
     static let barFieldHeight: CGFloat = 62
     /// From the bar's edge to a row's fill, and to the ends of the field's divider.
@@ -788,6 +797,11 @@ extension Look {
         out.append(("the footer glyphs sit 24pt above the window's bottom edge",
                     footer / 2 + footerInset == 24))
         out.append(("rows and the bar share one radius", pillRadius == barRadius))
+        // The bar with nothing typed: a few recent tabs and one row to report a problem.
+        out.append(("the bar at rest is a glance at the recent tabs, not the whole strip",
+                    barEmptyTabs >= 4 && barEmptyTabs < tidyThreshold))
+        out.append(("…and it never opens scrolling: those tabs and the row under them fit",
+                    barEmptyTabs + 1 <= barVisibleRows))
         out.append(("a stand-in letter fills a favicon's box without touching its edges",
                     letterScale > 0.5 && letterScale < 1))
         out.append(("housekeeping waits for a pile: more tabs than fit in a glance, "
