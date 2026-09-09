@@ -590,12 +590,14 @@ import FoundationModels
     /// floor 160. A slope of 3 cut a 60-tab answer off mid-list.
     static func groupingTokens(_ count: Int) -> Int { max(160, 128 + 5 * count) }
 
-    /// How many tabs the model is shown. ponytail: somewhere past twenty the 3B model
-    /// degenerates — one group swallows most of the list and numbers repeat across groups —
-    /// and no token budget rescues that; thirty failed on a live run, twenty decoded every
-    /// time. So the tail is dropped rather than batched: batching would need cross-batch
-    /// group merging, which is a feature, not a safeguard.
-    static let listedTabLimit = 20
+    /// How many tabs the model is shown. ponytail: past fifteen the 3B model degenerates —
+    /// one group swallows most of the list and numbers repeat across groups — and no token
+    /// budget rescues that. Measured on live runs with a fresh session each: thirty failed,
+    /// twenty failed or degenerated on two of four realistic sets, fifteen decoded cleanly
+    /// three of three. So the tail is dropped rather than batched; batching would need
+    /// cross-batch group merging, which is a feature, not a safeguard. Everything past the
+    /// cap still gets the arithmetic grouping in `TidyTabs.plan`.
+    static let listedTabLimit = 15
 
     /// Cluster open tabs into named groups. The listing is numbered and the numbers are
     /// validated on the way back, so a hallucinated one can never name a tab the caller does
@@ -816,7 +818,7 @@ import FoundationModels
                groupingTokens(minimumTabsToGroup) == groupingTokens(0)
                && groupingTokens(0) >= 160)
         assert("the model is shown no more tabs than it can group without degenerating",
-               listedTabLimit <= 20 && listedTabLimit >= minimumTabsToGroup)
+               listedTabLimit <= 15 && listedTabLimit >= minimumTabsToGroup)
 
         return out
     }
