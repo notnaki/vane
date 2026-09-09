@@ -71,12 +71,58 @@ enum Popup {
     /// WebKit's own flag through the one SPI accessor there is, guarded the way `_close` and
     /// `developerExtrasEnabled` are. Ceiling: if the accessor is ever renamed this answers
     /// "yes" and the gate above is all that is left, which is where Vane already stands.
-    @MainActor static func userInitiated(_ action: WKNavigationAction) -> Bool {
-        // KVC for `userInitiated` finds the `_isUserInitiated` getter — but only asked for
-        // once that getter is known to exist, because an unknown key raises rather than
-        // returning nil.
-        guard action.responds(to: Selector(("_isUserInitiated"))) else { return true }
-        return action.value(forKey: "userInitiated") as? Bool ?? true
+    ///
+    /// The accessor is called through its own IMP, never through KVC. `WKNavigationAction`
+    /// declares the property `getter=_isUserInitiated`, and key-value coding looks for
+    /// `getKey`, `key`, `isKey` and `_key` — never `_isKey` — so `value(forKey: "userInitiated")`
+    /// found nothing and raised `NSUnknownKeyException`, an Objective-C exception and so
+    /// uncatchable from Swift: every popup was a crash. Asking the object for the selector
+    /// and calling it is all KVC was ever standing in for here, and it cannot raise.
+    ///
+    /// Typed `NSObject` rather than `WKNavigationAction` for one reason: the only thing this
+    /// asks of its argument is a selector, and `check()` needs a plain object that does *not*
+    /// answer to it to drive the branch that comes back "yes" with no SPI at all.
+    nonisolated static func userInitiated(_ action: NSObject) -> Bool {
+        typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+        let sel = NSSelectorFromString("_isUserInitiated")
+        guard action.responds(to: sel), let imp = action.method(for: sel) else { return true }
+        return unsafeBitCast(imp, to: Getter.self)(action, sel)
+    }
+
+    /// Whether the window a popup lands in comes to the front.
+    ///
+    /// A Little Vane is only ever *chosen* for a popup the user's own gesture asked for, so
+    /// it takes the key. A popup placed as a tab and floated anyway — which is what happens
+    /// inside a Little Vane or a Peek, where there is no sidebar to put a tab beside — keeps
+    /// the answer the placement gave it: `focus: false` is a ⌘-click or a popup with no
+    /// gesture behind it, and a floating window jumping in front of the page being read is
+    /// precisely what that asked *not* to happen.
+    nonisolated static func takesFocus(_ placement: Placement) -> Bool {
+        switch placement {
+        case .little: true
+        case .tab(let focus): focus
+        }
+    }
+
+    /// Whether a tab WebKit made for `window.open` is still a popup after this navigation.
+    ///
+    /// `Tab.isPopup` exists to keep the tab off the suspension sweep: the tie to
+    /// `window.opener` lives in this particular web view, and waking a parked tab builds a
+    /// new one. That is worth a page that can never be reclaimed for as long as the flow is
+    /// running — and not a moment longer. A main-frame navigation the user drove is the tell
+    /// that the flow is over and the popup is a tab someone is browsing in, so it goes back
+    /// on the sweep like every other tab.
+    ///
+    /// `.other` is deliberately not in the list: it is both the popup's own first load and
+    /// every `location =` hop an OAuth flow makes on its way to the redirect that
+    /// postMessages the credential home. Suspending in the middle of that is the exact bug
+    /// this flag exists to prevent.
+    nonisolated static func staysPopup(navigation: WKNavigationType, mainFrame: Bool) -> Bool {
+        guard mainFrame else { return true }
+        switch navigation {
+        case .linkActivated, .formSubmitted, .backForward, .reload, .formResubmitted: return false
+        default: return true
+        }
     }
 
     // MARK: - Checks
@@ -113,8 +159,58 @@ enum Popup {
              p(nil, nil, nil, true, background: true) == .tab(focus: false)),
             ("…and does not float, however much the page wanted a window",
              p(451, 600, false, true, background: true) == .tab(focus: false)),
+
+            // The gesture flag itself. Both branches, on real objects: one that does not
+            // answer to the SPI at all — the day WebKit renames it — and one that does and
+            // says no. The version of this that asked KVC for the flag raised
+            // NSUnknownKeyException on every popup there was, and no row could have caught
+            // it, because an Objective-C exception is not something Swift can hold.
+            ("with no gesture accessor to read, a popup is taken at its word",
+             userInitiated(NSObject())),
+            ("…and where there is one, its answer is the answer",
+             userInitiated(GestureStub(answer: false)) == false
+                && userInitiated(GestureStub(answer: true))),
+
+            // Where a floated popup lands in the stack, for the Little Vane / Peek case in
+            // `TabStore.popup` — the one place a `.tab` placement is floated anyway.
+            ("a Little Vane opened for a popup comes to the front", takesFocus(.little)),
+            ("a popup that asked for a tab in front floats in front",
+             takesFocus(.tab(focus: true))),
+            ("…and one that asked to stay behind stays behind, floating or not",
+             takesFocus(.tab(focus: false)) == false),
+
+            // When a popup stops being one. See `Tab.isPopup` and the suspension sweep.
+            ("a popup being navigated by its own flow is still a popup",
+             staysPopup(navigation: .other, mainFrame: true)),
+            ("…and a link the user clicked inside it makes it an ordinary tab",
+             staysPopup(navigation: .linkActivated, mainFrame: true) == false),
+            ("…as does submitting a form, or going Back",
+             staysPopup(navigation: .formSubmitted, mainFrame: true) == false
+                && staysPopup(navigation: .backForward, mainFrame: true) == false),
+            ("a subframe navigating is not the popup leaving its flow",
+             staysPopup(navigation: .linkActivated, mainFrame: false)),
+
+            // ⇧⌘T. A sign-in window nobody chose to open is not a page anyone wants back.
+            ("an ordinary tab closed with ⌘W is remembered for Reopen Closed Tab",
+             TabStore.remembersClosed(keep: false, byScript: false, isPrivate: false)),
+            ("a popup that closed itself is not",
+             TabStore.remembersClosed(keep: false, byScript: true, isPrivate: false) == false),
+            ("a favourite is not closed at all, so nothing is remembered for it",
+             TabStore.remembersClosed(keep: true, byScript: false, isPrivate: false) == false),
+            ("and a private tab is never written down anywhere",
+             TabStore.remembersClosed(keep: false, byScript: false, isPrivate: true) == false),
         ]
     }
+}
+
+/// An object that answers to WebKit's gesture accessor, so `Popup.check` can drive the
+/// branch that reads it as well as the branch that finds nothing to read. The name is the
+/// SPI's, spelled out in `@objc` rather than in Swift, because that is the only part that
+/// has to match.
+private final class GestureStub: NSObject {
+    let answer: Bool
+    init(answer: Bool) { self.answer = answer }
+    @objc(_isUserInitiated) func gesture() -> Bool { answer }
 }
 
 // MARK: - Where the popup lands
@@ -129,19 +225,18 @@ extension TabStore {
     ///
     /// Out of a Little Vane or a Peek every popup floats, whatever it asked for: there is no
     /// sidebar to put a tab beside, and a page that escaped from a floating window into the
-    /// window behind it is not what the user clicked.
+    /// window behind it is not what the user clicked. It floats where the placement said it
+    /// should go, though — `Popup.takesFocus` — so a ⌘-click or a gesture-less popup inside
+    /// a Little Vane opens *behind* it rather than jumping in front of the page being read.
     func popup(_ cfg: WKWebViewConfiguration, placement: Popup.Placement,
                opener: Tab.ID?) -> WKWebView {
         let tab = Tab(popup: cfg, isPrivate: isPrivate, profileID: profileID)
         switch placement {
-        case .little:
-            LittleArc.open(popup: tab, isPrivate: isPrivate, profileID: profileID)
-        case .tab(let focus):
-            if isLittle {
-                LittleArc.open(popup: tab, isPrivate: isPrivate, profileID: profileID)
-            } else {
-                adoptBeside(tab, opener: opener, focus: focus)
-            }
+        case .tab(let focus) where !isLittle:
+            adoptBeside(tab, opener: opener, focus: focus)
+        default:
+            LittleArc.open(popup: tab, isPrivate: isPrivate, profileID: profileID,
+                           focus: Popup.takesFocus(placement))
         }
         return tab.web
     }
@@ -177,8 +272,10 @@ extension TabStore {
     }
 
     /// A popup that called `window.close()` on itself — the last thing every OAuth flow on
-    /// the web does. It goes without a trace: not archived, not pushed for Reopen Closed
-    /// Tab, because a sign-in window nobody chose to open is not a page anyone wants back.
+    /// the web does. It goes without a trace: not archived, and not pushed for Reopen Closed
+    /// Tab either, because a sign-in window nobody chose to open is not a page anyone wants
+    /// back. Nothing archives it because nothing routes through `archive`; nothing remembers
+    /// it because `byScript` tells `close` not to — see `TabStore.remembersClosed`.
     ///
     /// A Little Vane is its one page, so closing that page closes the window, exactly as
     /// ⌘W does — see `closeOrArchive`.
@@ -186,7 +283,7 @@ extension TabStore {
         if isLittle, tabs.count <= 1, tabs.first?.id == id {
             window?.performClose(nil)
         } else {
-            close(id)
+            close(id, byScript: true)
         }
     }
 }

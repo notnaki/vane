@@ -116,7 +116,12 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// one thing it changes is that this tab is never suspended: the tie to its opener lives
     /// in this particular web view, and `resume()` builds a new one, so a popup that was
     /// suspended would come back with `window.opener` null and nothing to hand its result to.
-    let isPopup: Bool
+    ///
+    /// It is not for life. A popup the user has started browsing in — a link clicked, a form
+    /// submitted, a Back — has left whatever flow opened it, and a tab that can never be
+    /// reclaimed is too high a price for an opener nobody is going to postMessage to any
+    /// more. Cleared in `decidePolicyFor`; the rule is `Popup.staysPopup`.
+    private(set) var isPopup: Bool
 
     /// The profile-scoped singletons this tab must use. `Store.shared` and friends resolve to
     /// the *active* profile, which is the wrong one for a background window.
@@ -778,6 +783,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
                 break
             }
         }
+        // A popup the user has started browsing in stops being one, so the suspension sweep
+        // can have it back. Last, because everything above this cancels and hands the
+        // navigation to some other window; from here down it happens in this tab, whichever
+        // way HTTPS-only answers.
+        if isPopup, !Popup.staysPopup(navigation: navigationAction.navigationType,
+                                      mainFrame: navigationAction.targetFrame?.isMainFrame == true) {
+            isPopup = false
+        }
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             decisionHandler(.allow)
@@ -1347,7 +1360,21 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         newTab(u)
     }
 
-    func close(_ id: Tab.ID) {
+    /// Whether a tab that is going leaves its url behind on the ⇧⌘T stack.
+    ///
+    /// Three kinds of close leave no trace, for three different reasons. A favourite or a
+    /// pinned tab is not closed at all — it is parked in place — so there is nothing to
+    /// reopen. A private tab is never written down anywhere. And a popup that called
+    /// `window.close()` on itself is the last frame of an OAuth flow: offering the user
+    /// Reopen Closed Tab on a sign-in window they never chose to open would hand them back
+    /// a dead redirect url. Pure, so `selfcheck --pure` can prove all three.
+    nonisolated static func remembersClosed(keep: Bool, byScript: Bool, isPrivate: Bool) -> Bool {
+        !keep && !byScript && !isPrivate
+    }
+
+    /// `byScript` is a popup dismissing itself — see `closedByScript`. Everything else about
+    /// the close is the same; only the trace it leaves differs.
+    func close(_ id: Tab.ID, byScript: Bool = false) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[i]
         let outcome = TabStore.closing(i, kinds: tabs.map(\.kind), lastActive: tabs.map(\.lastActive))
@@ -1355,7 +1382,8 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // it leaves it exactly as it is, and only Unfavourite/Unpin ever takes it out.
         // Nothing is "closed", so nothing is pushed for Reopen Closed Tab either.
         if !outcome.keep {
-            if !isPrivate { ClosedTabs.push(tab.currentURL) }
+            if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
+                                        isPrivate: isPrivate) { ClosedTabs.push(tab.currentURL) }
             Motion.list { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it

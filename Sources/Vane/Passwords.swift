@@ -863,8 +863,12 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                     w.evaluateJavaScript("document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}))") { _, _ in
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                             check("submit offered the credential back to the app", b.offered?.0 == user && b.offered?.1 == pass)
-                            print(failures == 0 ? "\nPASS" : "\n\(failures) FAILED")
-                            exit(failures == 0 ? 0 : 1)
+                            print("window.open against a real page")
+                            popupRows { rows in
+                                for (name, ok) in rows { check(name, ok) }
+                                print(failures == 0 ? "\nPASS" : "\n\(failures) FAILED")
+                                exit(failures == 0 ? 0 : 1)
+                            }
                         }
                     }
                 }
@@ -873,6 +877,90 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         w.loadSimulatedRequest(URLRequest(url: URL(string: "https://\(host)/login")!), responseHTML: page)
         NSApplication.shared.run()
         fatalError("unreachable")
+    }
+
+    private static var popupWeb: WKWebView?
+    private static var popupHolder: NSWindow?
+    private static var popupProbe: PopupProbe?
+
+    /// The one thing `--pure` cannot prove: `Popup.userInitiated` asked about a
+    /// `WKNavigationAction` WebKit actually made.
+    ///
+    /// Worth a stage of its own because the version of that function which read the gesture
+    /// flag with `value(forKey: "userInitiated")` passed every pure row there is and then
+    /// raised `NSUnknownKeyException` — an Objective-C exception, so a hard abort, not a
+    /// catchable error — on the *first real popup*, every time. Nothing short of a real page
+    /// calling `window.open` and a real delegate call finds that.
+    ///
+    /// So: an off-screen page in a simulated https origin calls `window.open`, and the
+    /// delegate asks the same three questions `Tab.webView(_:createWebViewWith:…)` asks.
+    /// Nothing is opened — the popup is refused with nil, which is the delegate's own way of
+    /// saying "no window" and leaves no tab and no floating window behind.
+    private static func popupRows(_ done: @escaping @MainActor ([(String, Bool)]) -> Void) {
+        let cfg = Tab.configuration()
+        // The app leaves this false — which is exactly why a gesture-less popup never gets
+        // this far in the app. Turned on here so the delegate *is* reached, because the
+        // delegate is what is under test.
+        cfg.preferences.javaScriptCanOpenWindowsAutomatically = true
+        let w = WKWebView(frame: .init(x: 0, y: 0, width: 480, height: 320), configuration: cfg)
+        let probe = PopupProbe()
+        w.uiDelegate = probe
+        w.navigationDelegate = probe
+        popupWeb = w
+        popupProbe = probe
+        let win = NSWindow(contentRect: w.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        win.contentView = w
+        win.setFrameOrigin(NSPoint(x: -4000, y: -4000))
+        win.orderFront(nil)
+        popupHolder = win
+
+        probe.onLoaded = {
+            w.evaluateJavaScript("window.open('about:blank', '_blank', 'width=451,height=600')") { _, _ in
+                // The delegate call is synchronous inside window.open, so it has already
+                // happened; the hop is only to get off WebKit's own stack before asserting.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    let said = probe.gesture.map { $0 ? "yes" : "no" } ?? "nothing — it raised or was never asked"
+                    done([
+                        ("a page's window.open reaches createWebViewWith", probe.asked),
+                        ("Popup.userInitiated survives a real WKNavigationAction, and said \(said)",
+                         probe.gesture != nil),
+                        ("the size the page asked for arrives in WKWindowFeatures",
+                         probe.width == 451 && probe.height == 600),
+                        ("…and the placement is the one the pure table gives for that row",
+                         probe.placement == Popup.placement(width: probe.width, height: probe.height,
+                                                            toolbars: nil,
+                                                            userInitiated: probe.gesture ?? true)),
+                    ])
+                }
+            }
+        }
+        w.loadSimulatedRequest(URLRequest(url: URL(string: "https://\(host)/opener")!),
+                               responseHTML: "<!doctype html><meta charset=utf-8><body>opener")
+    }
+
+    /// A page that really calls `window.open`, answered by a delegate that asks Popups.swift
+    /// the same questions the browser does and then refuses the window.
+    private final class PopupProbe: NSObject, WKUIDelegate, WKNavigationDelegate {
+        var onLoaded: (() -> Void)?
+        var asked = false
+        var gesture: Bool?
+        var width: Double?
+        var height: Double?
+        var placement: Popup.Placement?
+
+        func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) { onLoaded?() }
+
+        func webView(_ w: WKWebView, createWebViewWith cfg: WKWebViewConfiguration,
+                     for action: WKNavigationAction,
+                     windowFeatures: WKWindowFeatures) -> WKWebView? {
+            asked = true
+            let initiated = Popup.userInitiated(action)   // the line that used to abort here
+            gesture = initiated
+            width = windowFeatures.width?.doubleValue
+            height = windowFeatures.height?.doubleValue
+            placement = Popup.placement(features: windowFeatures, userInitiated: initiated)
+            return nil
+        }
     }
 
     private final class Bridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
