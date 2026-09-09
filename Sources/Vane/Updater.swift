@@ -206,6 +206,26 @@ enum Release {
         return isNewer(tag, than: installedVersion)
     }
 
+    /// The tag a check may actually put on screen, or nil for "there is nothing to offer".
+    ///
+    /// An update has to clear *two* versions, not one: the copy that is running, and the copy
+    /// at the destination it would be written over. Almost always those are the same bundle
+    /// and the second question costs nothing — but not always, and the exception is the one
+    /// that bites. An old release still sitting in ~/Downloads runs 1.0.0 while
+    /// `/Applications/Vane.app` is already 2.0.0; tag 2.0.0 is newer than what is *running*,
+    /// so the offer went up, the whole zip came down, and only then did `shouldInstall` refuse
+    /// it — "Update failed", and the next tick offered exactly the same thing again. Asking
+    /// both questions before arming is that same decision, made before the download rather
+    /// than after it.
+    ///
+    /// `installed` keeps `shouldInstall`'s convention: nil when nothing is at the destination,
+    /// "" when something is there whose version cannot be read.
+    static func offerable(tag: String, running: String, installed: String?) -> String? {
+        guard isNewer(tag, than: running),
+              shouldInstall(tag: tag, installedVersion: installed) else { return nil }
+        return tag
+    }
+
     // MARK: - What a download has to prove
 
     /// The Developer ID team every Vane release is signed by. Pinned: this constant, and
@@ -350,6 +370,33 @@ extension Release {
         out.append(("pressing it when there IS one offers it, same as a launch",
                     answer(newer: "v2", manual: true, reachable: true) == .offer("v2")))
 
+        // The whole answer, arming included: what a check says about a tag given the version
+        // running *and* the version at the destination it would be written over. The pair
+        // matters when they are different bundles — an old copy left in ~/Downloads, running
+        // 1.0.0, while /Applications is already on 2.0.0.
+        func says(_ tag: String, running: String, atDestination: String?, manual: Bool) -> Answer {
+            answer(newer: offerable(tag: tag, running: running, installed: atDestination),
+                   manual: manual, reachable: true)
+        }
+        out.append(("an old copy is not offered a release the installed Vane already has",
+                    says("v2.0.0", running: "1.0.0", atDestination: "2.0.0", manual: true)
+                        == .upToDate))
+        out.append(("...and a background check does not even mention it",
+                    says("v2.0.0", running: "1.0.0", atDestination: "2.0.0", manual: false)
+                        == .nothing))
+        out.append(("a release newer than both the running copy and the installed one is offered",
+                    says("v3.0.0", running: "1.0.0", atDestination: "2.0.0", manual: false)
+                        == .offer("v3.0.0")))
+        out.append(("a destination whose version cannot be read is never offered over",
+                    says("v2.0.0", running: "1.0.0", atDestination: "", manual: true)
+                        == .upToDate))
+        out.append(("...while an empty destination is offered into",
+                    says("v2.0.0", running: "1.0.0", atDestination: nil, manual: false)
+                        == .offer("v2.0.0")))
+        out.append(("a release this copy is already running is not offered, wherever it lives",
+                    says("v2.0.0", running: "2.0.0", atDestination: nil, manual: true)
+                        == .upToDate))
+
         func relocate(_ path: String, official: Bool = true, isolated: Bool = false,
                       running: String = "1.0.0", installed: String? = nil) -> Bool {
             shouldRelocate(bundlePath: path, home: home, official: official, isolated: isolated,
@@ -483,7 +530,30 @@ extension Release {
         case downloading(Double)    // 0…1
         case installing             // unpacking and swapping
         case ready                  // the new copy is in place; only a relaunch is left
-        case failed
+        /// The payload is the tag that must never be offered again — a release this copy
+        /// has *decided* against, rather than one that merely had a bad network day. A
+        /// transient failure carries nil, so pressing Update again, or the next tick, may
+        /// retry it.
+        case failed(String?)
+    }
+
+    /// Whether an offer of `tag` may be armed over whatever is already on screen. Pure, so
+    /// the rule that stopped a refused release re-arming itself every half hour is provable
+    /// without a network or a sidebar.
+    ///
+    /// Nothing may interrupt an update already in flight; a tag the user has been offered
+    /// and put away must not re-stick; and a tag that has been refused must not come back to
+    /// be refused again — which is what `.failed` carrying its tag is for. Before it did,
+    /// `fail()` moved the phase off `.available`, so the "already offered" test stopped
+    /// matching and every check re-armed the same doomed offer.
+    nonisolated static func mayArm(tag: String, over phase: Phase?, working: Bool) -> Bool {
+        guard !working else { return false }
+        switch phase {
+        case .none:                             return true
+        case .downloading, .installing, .ready: return false
+        case let .available(offered):           return offered != tag
+        case let .failed(refused):              return refused != tag
+        }
     }
 
     private(set) var phase: Phase?
@@ -644,7 +714,15 @@ extension Release {
         // The whole of the "when may this say anything" rule, in one pure call. A launch and
         // a half-hourly tick may only ever offer a real update; "up to date" belongs to the
         // person who pressed Check for Updates and to nobody else.
-        let newer = tag.flatMap { Release.isNewer($0, than: Self.currentVersion) ? $0 : nil }
+        //
+        // What counts as "a real update" is measured against both the running copy and the
+        // one at the destination — see `Release.offerable`. Measuring it against the running
+        // copy alone armed offers that `install` would later refuse, which cost a whole zip
+        // per press and came back every half hour.
+        let newer = tag.flatMap {
+            Release.offerable(tag: $0, running: Self.currentVersion,
+                              installed: Self.destinationBundle.version)
+        }
         switch Release.answer(newer: newer, manual: !silent, reachable: true) {
         case .upToDate:
             Toasts.show("Vane \(Self.currentVersion) is up to date")
@@ -676,10 +754,9 @@ extension Release {
         }
         // Belt and braces with the guard in `check`: a reply that was already in flight when
         // an install started must not put an Update button back on screen underneath it.
-        if working || phase == .installing || phase == .ready { return }
-        // Already offered this one. Re-sticking it would undo the ×: a toast the user has
-        // put away must not come back every half hour for the same release.
-        if case let .available(offered) = phase, offered == tag { return }
+        // Also the ×: a toast the user has put away must not come back every half hour for
+        // the same release, and neither must one this copy has already refused.
+        guard Self.mayArm(tag: tag, over: phase, working: working) else { return }
         pending = (tag, asset)
         set(.available(tag))
     }
@@ -734,21 +811,20 @@ extension Release {
     // MARK: - Install
 
     private func install(_ zip: URL, tag: String) {
-        let bundle = Bundle.main.bundleURL
-        let path = Release.destination(forBundleAt: bundle.path, home: Self.realHome).path
-        let target = URL(fileURLWithPath: path)
-        // What is at the destination, read the way `relocateIfNeeded` reads it: `nil` for an
-        // empty destination, `""` for one whose Info.plist could not be read. The offer was
-        // measured against the version *running*, which is not always the version installed
-        // — so the copy about to be overwritten gets its own say before anything is unpacked.
-        let installed = FileManager.default.fileExists(atPath: target.path)
-            ? (Release.version(ofBundleAt: target) ?? "") : nil
-        guard Release.shouldInstall(tag: tag, installedVersion: installed) else {
+        let (target, atDestination) = Self.destinationBundle
+        // Belt and braces with `Release.offerable`, which asked this same question before the
+        // offer was ever armed. It is asked again here because the destination is read off
+        // disk and a download takes minutes: another copy of Vane may have installed itself
+        // over it while this one was fetching. Refusing costs a discarded zip; not refusing
+        // would downgrade the installed Vane.
+        guard Release.shouldInstall(tag: tag, installedVersion: atDestination) else {
             NSLog("[vane] update: %@ is not newer than what is at %@ — refusing to install it",
                   tag, target.path)
             try? FileManager.default.removeItem(at: zip)
             pending = nil
-            return fail()
+            // The tag goes with the failure: this is a decision, not a bad connection, and
+            // the next half-hourly check must not offer it all over again.
+            return fail(tag)
         }
         // `working` deliberately stays true across the swap — it is the flag every other
         // entry point checks. Only the detached task below clears it, and only after
@@ -771,6 +847,19 @@ extension Release {
     /// Applications folder of its own that nobody's apps are in.
     nonisolated static var realHome: String {
         getpwuid(getuid()).map { String(cString: $0.pointee.pw_dir) } ?? NSHomeDirectory()
+    }
+
+    /// The bundle an update would be written over, and the version already there — read the
+    /// way `relocateIfNeeded` reads it: `nil` for an empty destination, `""` for one whose
+    /// Info.plist could not be read. Not always the bundle this process runs out of, which is
+    /// the whole reason both the offer and the install ask.
+    nonisolated private static var destinationBundle: (url: URL, version: String?) {
+        let path = Release.destination(forBundleAt: Bundle.main.bundleURL.path,
+                                       home: realHome).path
+        let url = URL(fileURLWithPath: path)
+        let version = FileManager.default.fileExists(atPath: path)
+            ? (Release.version(ofBundleAt: url) ?? "") : nil
+        return (url, version)
     }
 
     /// Unpack the release and put it at `target`, replacing whatever is there.
@@ -869,10 +958,13 @@ extension Release {
         }
     }
 
-    private func fail() {
+    /// `refused` is the tag this copy has decided against and must never be offered again;
+    /// nil for a failure that was only bad luck — a dropped download, a zip that would not
+    /// unpack — which the next check is welcome to try again.
+    private func fail(_ refused: String? = nil) {
         working = false
         progress = nil
-        set(.failed)
+        set(.failed(refused))
     }
 
     /// Relaunch into the copy that was just put in place, then go.

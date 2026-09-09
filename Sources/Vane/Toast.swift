@@ -341,7 +341,30 @@ extension Toasts {
                     Updater.text(for: .downloading(0.4249)) == "Downloading… 42%"))
         out.append(("a finished install leaves only the relaunch",
                     Updater.text(for: .ready) == "Restart to update"))
-        out.append(("a failure says so", Updater.text(for: .failed) == "Update failed"))
+        out.append(("a failure says so", Updater.text(for: .failed(nil)) == "Update failed"))
+
+        // Which offer may go up over what is already on screen. The two rows that matter are
+        // the last two: a release this copy refused used to be re-armed by every half-hourly
+        // check, because `fail()` moved the phase off `.available` and the "already offered"
+        // test stopped matching — so each press fetched the whole zip again on its way to the
+        // same refusal.
+        func arm(_ tag: String, over phase: Updater.Phase?, working: Bool = false) -> Bool {
+            Updater.mayArm(tag: tag, over: phase, working: working)
+        }
+        out.append(("the first offer of a release goes up", arm("v2", over: nil)))
+        out.append(("...and a later release goes up over the one on screen",
+                    arm("v3", over: .available("v2"))))
+        out.append(("the same release does not re-stick after the user put it away",
+                    !arm("v2", over: .available("v2"))))
+        out.append(("nothing interrupts a download, an install, or a finished one",
+                    !arm("v2", over: .downloading(0.5)) && !arm("v2", over: .installing)
+                        && !arm("v2", over: .ready)))
+        out.append(("...nor an update already working, whatever the phase says",
+                    !arm("v2", over: nil, working: true)))
+        out.append(("a release this copy refused is never offered again",
+                    !arm("v2", over: .failed("v2"))))
+        out.append(("...but a newer one still is, and a failure that was only bad luck retries",
+                    arm("v3", over: .failed("v2")) && arm("v2", over: .failed(nil))))
         return out
     }
 }
