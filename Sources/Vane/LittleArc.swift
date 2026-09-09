@@ -67,8 +67,37 @@ import SwiftUI
     @discardableResult
     static func open(_ url: URL?, isPrivate: Bool = false) -> TabStore {
         let profile = ProfileManager.shared.active
-        let store = floatingStore(url, profileID: profile.id, isPrivate: isPrivate)
+        return present(floatingStore(url, profileID: profile.id, isPrivate: isPrivate))
+    }
 
+    /// A Little Vane around a page WebKit has already made: a sign-in popup, a share sheet,
+    /// a payment frame — `window.open` at the size of a dialog rather than of a page. See
+    /// Popups.swift for which popups land here and why, and `Tab.init(popup:)` for why the
+    /// tab has to be the one WebKit handed over rather than a fresh one on the same url.
+    ///
+    /// The profile is the *opener's*, passed rather than read off the active one: a popup
+    /// out of a background window belongs to that window's profile, and a private opener's
+    /// popup has to stay private — it is already sharing the opener's data store, and a
+    /// window around it that thought otherwise would be the only part of the pair writing
+    /// history.
+    ///
+    /// `focus` comes from the placement rather than being a constant. Inside a Little Vane or
+    /// a Peek there is no sidebar, so a popup that asked for a *background tab* is floated
+    /// anyway — and floating it in front would turn a ⌘-click, or a popup with no gesture
+    /// behind it at all, into a window that interrupts the page being read. See
+    /// `Popup.takesFocus`.
+    @discardableResult
+    static func open(popup tab: Tab, isPrivate: Bool, profileID: UUID,
+                     focus: Bool = true) -> TabStore {
+        let store = floatingStore(nil, profileID: profileID, isPrivate: isPrivate)
+        store.adopt(popup: tab)
+        return present(store, focus: focus)
+    }
+
+    /// The window itself. One definition for both, so a Little Vane holding a popup is the
+    /// same window in every respect but what is in it.
+    @discardableResult
+    private static func present(_ store: TabStore, focus: Bool = true) -> TabStore {
         let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: Look.littleWidth, height: Look.littleHeight),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -113,7 +142,11 @@ import SwiftUI
         keptDelegates.append(delegate)
         window.delegate = delegate
         store.window = window
-        window.makeKeyAndOrderFront(nil)
+        // `orderBack`, not merely `orderFront`, for the unfocused case: a window ordered to
+        // the front without the key still covers the page the user is reading, which is the
+        // whole of what they asked not to happen. It is a real window either way — in the
+        // Window menu, in Mission Control — just not one that arrived over anything.
+        if focus { window.makeKeyAndOrderFront(nil) } else { window.orderBack(nil) }
         // The Window menu names what its toggle will do, and that just changed.
         rebuild()
         return store

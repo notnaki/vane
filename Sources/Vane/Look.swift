@@ -183,6 +183,17 @@ enum Look {
     /// obviously not your browser window.
     static let littleWidth: CGFloat = 1000
     static let littleHeight: CGFloat = 700
+    /// The biggest window a page can ask `window.open` for and still be read as a popup
+    /// rather than as another page — a sign-in sheet, a share dialog, a payment frame. Every
+    /// OAuth popup on the web is well inside this: Google's is 451×600, Microsoft's 483×600,
+    /// Apple's 600×600, Stripe's 450×700. Anything larger is a page, and pages are tabs.
+    /// See Popups.swift.
+    ///
+    /// The ceiling is the Little Vane it would float in, not a number of its own: a page
+    /// asking for a window taller than the one Vane has to give it is not asking for a
+    /// dialog, and floating it would only crop it.
+    static let popupWidth: CGFloat = 800
+    static let popupHeight: CGFloat = littleHeight
     /// Above Little Arc's bar. Its row is the address pill's own height rather than the
     /// sidebar's `topRow`, so the padding that puts that row's centre on the traffic
     /// lights' line is a different number — the same line, arrived at from a taller row.
@@ -790,6 +801,12 @@ extension Look {
                     littleTopInset + pillHeight / 2 == lightsCentre))
         out.append(("…so its whole bar is 41pt, the sidebar's row pitch",
                     littleTopInset + pillHeight == rowHeight + rowGap))
+        // The popup threshold, against the window it opens into. A page asking for a window
+        // bigger than the one it would get is asking for a page, not a dialog.
+        out.append(("the biggest popup still fits the Little Vane it floats in",
+                    popupWidth <= littleWidth && popupHeight <= littleHeight))
+        out.append(("…and every OAuth sheet on the web is inside it: Apple's 600×600 is the widest",
+                    popupWidth >= 600 && popupHeight >= 600))
         out.append(("the sidebar is laid out on Arc's 41pt row pitch", rowHeight + rowGap == 41))
         out.append(("the top strip is Arc's 45pt", topInset + topRow + inset == 45))
         out.append(("the Tidy row and New Tab are Arc's 31pt apart",

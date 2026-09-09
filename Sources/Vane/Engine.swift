@@ -101,10 +101,33 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// Left nil in a window with nowhere to float one, which is what keeps the test in
     /// `decidePolicyFor` a single condition rather than a list of exceptions.
     var onPeek: ((URL) -> Void)?
+    /// A window this page asked for with `window.open` or `target=_blank`, and where its
+    /// window said it should go. The web view that comes back is WebKit's own — see
+    /// `createWebViewWith`, which hands it straight on. Nil is a popup that was refused.
+    var onPopup: ((WKWebViewConfiguration, Popup.Placement) -> WKWebView?)?
+    /// `window.close()`. Only ever called for a page a script opened, which is why every tab
+    /// can carry it: WebKit refuses the call on a page the user navigated to themselves.
+    var onClose: (() -> Void)?
 
     let isPrivate: Bool
     /// Which profile's data this tab reads and writes. Never changes for the life of the tab.
     let profileID: UUID
+    /// A page WebKit made for `window.open` — see `init(popup:isPrivate:profileID:)` — which
+    /// is still inside the flow its opener started and has not been browsed away from.
+    ///
+    /// It buys no exemption from the suspension sweep, and must not. *Every*
+    /// `createWebViewWith` comes through the popup path, so a plain left-click on a
+    /// `target="_blank"` link makes a tab with this flag set, and a flag that kept those
+    /// resident would be a browser where the commonest link on the web opens a tab that can
+    /// never be reclaimed — not on the idle sweep and not under critical memory pressure.
+    /// What keeps a sign-in popup alive while it is being used is the thing that keeps any
+    /// page the user can see alive: it is the current tab of its window, which the one page
+    /// of a Little Vane always is. See `Suspension.shouldSuspend`.
+    ///
+    /// It is not for life. A popup the user has started browsing in — a link clicked, a form
+    /// submitted, a Back — has left whatever flow opened it. Cleared in `decidePolicyFor`;
+    /// the rule is `Popup.staysPopup`.
+    private(set) var isPopup: Bool
 
     /// The profile-scoped singletons this tab must use. `Store.shared` and friends resolve to
     /// the *active* profile, which is the wrong one for a background window.
@@ -116,43 +139,87 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
          profileID: UUID = ProfileManager.shared.active.id) {
         self.isPrivate = isPrivate
         self.profileID = profileID
+        self.isPopup = false
         web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
         super.init()
         attach()
         if let url { go(url) }
     }
 
+    /// A tab around a page WebKit has already made: the popup behind `window.open` and
+    /// `target=_blank`. The configuration is not ours to build — WebKit derives it from the
+    /// opener's and hands it to the delegate, and a web view made from *that one* is what
+    /// puts the opener on the popup's `window.opener`, gives the popup a page to be navigated
+    /// to, and makes `window.close()` mean something. Building a plain tab and loading the
+    /// url into it instead — which is what Vane used to do — quietly loses all three.
+    ///
+    /// So the configuration is taken as it comes, and the data store on it above all: it is
+    /// already the opener's, which is how a popup out of a Private Window stays private
+    /// without anything here knowing which window that was.
+    ///
+    /// Everything else a tab has, this tab gets: `attach()` puts the delegates, the user
+    /// agent, the developer settings and the KVO on it exactly as for any other page.
+    init(popup cfg: WKWebViewConfiguration, isPrivate: Bool, profileID: UUID) {
+        self.isPrivate = isPrivate
+        self.profileID = profileID
+        self.isPopup = true
+        // The one thing that must *not* be shared. WebKit copies the configuration but not
+        // its content controller — the popup arrives holding the opener's own object — and
+        // two tabs on one controller is two bugs: `attach()` would throw on script message
+        // handlers that are already registered under those names, and suspending either tab
+        // would tear the other's password bridge, media tray and status bar out from under
+        // it. The scripts and the blocker's rules go onto one of this tab's own instead.
+        cfg.userContentController = Tab.contentController(profileID: profileID)
+        web = WKWebView(frame: .zero, configuration: cfg)
+        super.init()
+        attach()
+        // Deliberately no load: WebKit navigates the view it is handed back, and for a popup
+        // opened blank and written into by its opener there is nothing to navigate it to.
+    }
+
     /// A WKWebView with nothing in it. WebKit does not spawn a WebContent process until
     /// something is actually loaded, which is what makes a suspended tab free.
     private static func freshWebView(isPrivate: Bool, profileID: UUID) -> WKWebView {
         let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID)
-        cfg.userContentController.addUserScript(
+        cfg.userContentController = contentController(profileID: profileID)
+        return WKWebView(frame: .zero, configuration: cfg)
+    }
+
+    /// The scripts every page of a tab runs, and the blocker's rules, on a content controller
+    /// of their own. Split out of `freshWebView` for the popup path, which is handed a
+    /// configuration whose controller belongs to somebody else — see `init(popup:)`.
+    private static func contentController(profileID: UUID) -> WKUserContentController {
+        let c = WKUserContentController()
+        c.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: true, in: Autofill.world))
-        cfg.userContentController.addUserScript(
+        c.addUserScript(
             WKUserScript(source: Previews.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         // All frames, unlike the password script: an embedded player lives in an iframe.
         // Its own content world: `__vanePiP` is then not on the page's `window` at all.
-        cfg.userContentController.addUserScript(
+        c.addUserScript(
             WKUserScript(source: PictureInPicture.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false, in: PictureInPicture.world))
-        cfg.userContentController.addUserScript(
+        c.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
         // Document *start*: the media-session wrapper has to be in place before the page
         // registers its handlers. See MediaPlayer.swift.
-        cfg.userContentController.addUserScript(
+        c.addUserScript(
             WKUserScript(source: MediaTray.script, injectionTime: .atDocumentStart,
                          forMainFrameOnly: false))
-        cfg.userContentController.addUserScript(
+        c.addUserScript(
             WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
         // Document *start* and every frame: the listeners have to be in place before a page
         // can autofocus its search box, and a comment box is as often in an iframe as not.
-        cfg.userContentController.addUserScript(
+        c.addUserScript(
             WKUserScript(source: PageFocus.script, injectionTime: .atDocumentStart,
                          forMainFrameOnly: false, in: PageFocus.world))
-        return WKWebView(frame: .zero, configuration: cfg)
+        // A tab built around WebKit's own configuration never went through
+        // `Tab.configuration`, so the blocker is attached here rather than there.
+        Blocker.apply(to: c, profileID: profileID)
+        return c
     }
 
     /// Point `web` at this tab: the password bridge, the delegates, the developer settings
@@ -252,7 +319,18 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         parkedState = web.interactionState as? Data
         parkedURL = url
         suspended = true
+        release()
+    }
 
+    /// The half of suspension that lets go: the observers, the script message handlers, the
+    /// view, and the WebContent process behind it — with a fresh unloaded view put in its
+    /// place, so every `tab.web.…` call site elsewhere still has a real object to talk to
+    /// and none of them costs a process.
+    ///
+    /// Split out of `suspend()` for `tearDown()`, which has to let go whatever the state of
+    /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
+    /// "nothing was parked" must never mean "nothing was released".
+    private func release() {
         let old = web
         TabAudio.unwatch(self)         // KVO on a dead observee is a crash, not a leak
         obs = []                       // KVO on a view that is about to die
@@ -280,8 +358,6 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // NSViewRepresentable is the next place to look. The leak is an empty view with no
         // page and no process, bounded per suspend, so it is a wart, not a regression.
         Tab.close(old)
-        // The replacement is unloaded, so every `tab.web.…` call site elsewhere still has a
-        // real object to talk to and none of them costs a process.
         web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
         attach()
     }
@@ -318,13 +394,20 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         Zoom.apply(to: self)
     }
 
-    /// The window holding this tab is closing. `suspend` is what drops the KVO observers,
+    /// The window holding this tab is closing. `release` is what drops the KVO observers,
     /// the script message handlers and the WebContent process; without it `TabAudio`'s
     /// observer outlives the web view it was watching — a crash, not a leak — the process
     /// is never given back, and a page handed to another window carries on playing sound
     /// from a window nobody can see any more.
+    ///
+    /// `release` and not `suspend`: suspension is about *parking* a page, so it declines a
+    /// tab with nothing to park — one already suspended, one that never loaded — and a
+    /// closing window has to be let go either way. This is the path a Little Vane takes when
+    /// its popup calls `window.close()`: `closedByScript` → `performClose` →
+    /// `windowWillClose` → here, and a `suspend()` that decided there was nothing to do left
+    /// that popup's WebContent process running for the life of the app.
     func tearDown() {
-        suspend()
+        release()
         TabAudio.forget(id)
         MediaState.shared.forget(id)
     }
@@ -720,6 +803,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
                 break
             }
         }
+        // A popup the user has started browsing in stops being one, so the suspension sweep
+        // can have it back. Last, because everything above this cancels and hands the
+        // navigation to some other window; from here down it happens in this tab, whichever
+        // way HTTPS-only answers.
+        if isPopup, !Popup.staysPopup(navigation: navigationAction.navigationType,
+                                      mainFrame: navigationAction.targetFrame?.isMainFrame == true) {
+            isPopup = false
+        }
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             decisionHandler(.allow)
@@ -886,7 +977,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func back()    { web.goBack() }
     func forward() { web.goForward() }
 
-    // target="_blank" and window.open — hand it to a real tab instead of a popup window.
+    /// `target="_blank"` and `window.open` — a tab beside this one, or a Little Vane for a
+    /// popup that asked to be one. See Popups.swift for which, and why.
+    ///
+    /// The web view handed back is built from `cfg`, WebKit's own configuration for this
+    /// popup, and it is handed back *unloaded*: WebKit navigates it itself. Vane used to
+    /// open a plain tab on `action.request.url` and return nil, which is three bugs in one
+    /// line — no `window.opener` for the popup to postMessage a credential back over, a
+    /// blank page for any popup opened empty and written into afterwards, and a
+    /// `window.close()` that did nothing.
     func webView(_ w: WKWebView, createWebViewWith cfg: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         // `window.open('zoommtg:…')`. Belt and braces around the same test in
@@ -896,13 +995,16 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
             ExternalApps.offer(url, from: w.url ?? currentURL, tab: self)
             return nil
         }
-        if let url = action.request.url, let open = onOpenBeside {
-            open(url, !action.modifierFlags.contains(.command))
-        } else {
-            onNewTab?(action.request.url)
-        }
-        return nil
+        return onPopup?(cfg, Popup.placement(features: windowFeatures,
+                                             userInitiated: Popup.userInitiated(action),
+                                             background: action.modifierFlags.contains(.command)))
     }
+
+    /// `window.close()`, which a page may only call on a window a script opened — so this
+    /// arrives for a popup and for nothing else. Arc dismisses it, and so does this: an
+    /// OAuth popup that has handed its credential back and closed itself must not be left
+    /// sitting in the sidebar for the user to tidy up.
+    func webViewDidClose(_ w: WKWebView) { onClose?() }
 }
 
 @MainActor final class TabStore: ObservableObject {
@@ -1176,6 +1278,25 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     @discardableResult
     func newBlankTab(focus: Bool = true, as kind: TabKind = .today) -> Tab {
         let t = Tab(isPrivate: isPrivate, profileID: profileID)
+        wire(t)
+        t.kind = kind
+        // Into its own section, not onto the end of the strip: the sections are contiguous
+        // runs (see `clampedDestination`), and a pinned row appended past the Today tabs
+        // breaks ⌘1…9, ⌃⇥ and the next drag's clamp.
+        Motion.list {
+            tabs.insert(t, at: TabStore.clampedDestination(others: tabs.map(\.kind),
+                                                           moving: kind, to: tabs.count))
+        }
+        if focus { current = t.id }
+        extensions.sync()
+        return t
+    }
+
+    /// Everything a tab asks its window for. Split out of `newBlankTab` because one tab is
+    /// not made here at all: a popup, whose web view WebKit builds and hands to the
+    /// delegate. It needs exactly the same wiring, and a second copy of this list is how
+    /// popups would quietly stop peeking, or stop opening beside, a release later.
+    func wire(_ t: Tab) {
         t.onNewTab = { [weak self] u in self?.newTab(u) }
         // A popup or a `target=_blank` link belongs next to the page that opened it, not at
         // the bottom of a list of thirty tabs — and it is what the user just asked for, so
@@ -1194,17 +1315,20 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
                 Peek.open(u, from: t, in: self)
             }
         }
-        t.kind = kind
-        // Into its own section, not onto the end of the strip: the sections are contiguous
-        // runs (see `clampedDestination`), and a pinned row appended past the Today tabs
-        // breaks ⌘1…9, ⌃⇥ and the next drag's clamp.
-        Motion.list {
-            tabs.insert(t, at: TabStore.clampedDestination(others: tabs.map(\.kind),
-                                                           moving: kind, to: tabs.count))
+        // `window.open` and `target=_blank`: WebKit's own web view, put in a window of
+        // Vane's choosing. See Popups.swift.
+        t.onPopup = { [weak self, weak t] cfg, placement in
+            guard let self else { return nil }
+            return popup(cfg, placement: placement, opener: t?.id)
         }
-        if focus { current = t.id }
-        extensions.sync()
-        return t
+        // `window.close()`. Deferred a turn: WebKit is inside this web view's own delegate
+        // call, and closing the tab drops the view — freeing it under the frame that is
+        // still running is how a page that closes itself becomes a crash report.
+        t.onClose = { [weak self, weak t] in
+            guard let self, let t else { return }
+            let id = t.id
+            Task { @MainActor [weak self] in self?.closedByScript(id) }
+        }
     }
 
     /// Close a tab — or, for a favourite, close its *page*: the tile stays, parked back at
@@ -1256,7 +1380,21 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         newTab(u)
     }
 
-    func close(_ id: Tab.ID) {
+    /// Whether a tab that is going leaves its url behind on the ⇧⌘T stack.
+    ///
+    /// Three kinds of close leave no trace, for three different reasons. A favourite or a
+    /// pinned tab is not closed at all — it is parked in place — so there is nothing to
+    /// reopen. A private tab is never written down anywhere. And a popup that called
+    /// `window.close()` on itself is the last frame of an OAuth flow: offering the user
+    /// Reopen Closed Tab on a sign-in window they never chose to open would hand them back
+    /// a dead redirect url. Pure, so `selfcheck --pure` can prove all three.
+    nonisolated static func remembersClosed(keep: Bool, byScript: Bool, isPrivate: Bool) -> Bool {
+        !keep && !byScript && !isPrivate
+    }
+
+    /// `byScript` is a popup dismissing itself — see `closedByScript`. Everything else about
+    /// the close is the same; only the trace it leaves differs.
+    func close(_ id: Tab.ID, byScript: Bool = false) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[i]
         let outcome = TabStore.closing(i, kinds: tabs.map(\.kind), lastActive: tabs.map(\.lastActive))
@@ -1264,7 +1402,8 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         // it leaves it exactly as it is, and only Unfavourite/Unpin ever takes it out.
         // Nothing is "closed", so nothing is pushed for Reopen Closed Tab either.
         if !outcome.keep {
-            if !isPrivate { ClosedTabs.push(tab.currentURL) }
+            if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
+                                        isPrivate: isPrivate) { ClosedTabs.push(tab.currentURL) }
             Motion.list { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
