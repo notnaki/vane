@@ -125,7 +125,7 @@ struct AIAssistant: Identifiable, Codable, Hashable {
         defaults = scratch
         defer {
             defaults = real
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
 
         func of(_ id: String) -> Assistant { all.first { $0.id == id }! }

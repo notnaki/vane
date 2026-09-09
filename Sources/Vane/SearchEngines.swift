@@ -212,7 +212,7 @@ struct SearchEngine: Identifiable, Codable, Hashable {
         defaults = scratch
         defer {
             defaults = real
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
         func str(_ input: String) -> String { url(for: input)?.absoluteString ?? "<nil>" }
         func isSearch(_ input: String) -> Bool { str(input).hasPrefix("https://www.google.com/search?q=") }

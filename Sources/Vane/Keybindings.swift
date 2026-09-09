@@ -454,8 +454,10 @@ enum Command: String, CaseIterable, Codable, Sendable {
         .pinTab: Keybinding("d", [.command, .shift]),
     ]
 
-    /// Bumped when `movedDefaults` grows or the rule below changes, so each migration runs
-    /// once per user.
+    /// The version a saved table is stamped with, so each migration runs once per user.
+    /// A future move is a *new* step, never an edit to an old one: bump this and add a
+    /// matching `from < N` block to `migrate`, leaving the blocks already there as they are —
+    /// they belong to the tables that were saved before them.
     nonisolated static let migration = 2
 
     /// Pure, so `selfcheck --pure` can prove the rule without a defaults suite. `from` is the
@@ -900,7 +902,7 @@ extension Keybindings {
         defer {
             defaults = real
             cached = realCache
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
         return body()
     }
@@ -1024,6 +1026,14 @@ extension Keybindings {
                     Set(conflicts(Keybinding("t", .command))) == [.newTab, .newWindow]))
         out.append(("the override wins over the default",
                     binding(for: .newWindow).display == "⌘T"))
+
+        // The scratch suite this check runs against is emptied when it returns and its file
+        // deleted when the run ends — see `UserDefaults.dropScratchSuite`. Only the path
+        // arithmetic is pure enough to assert here; that the file actually goes is proved by
+        // the count in ~/Library/Preferences not growing over a run.
+        out.append(("a scratch suite's file is the plist cfprefsd writes for it",
+                    UserDefaults.suitePlist("vane.check.keys.1", home: "/Users/ada")
+                        == "/Users/ada/Library/Preferences/vane.check.keys.1.plist"))
 
         // Persistence: drop the cache so the read has to come back off the suite.
         cached = nil

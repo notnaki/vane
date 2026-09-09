@@ -339,7 +339,7 @@ import Foundation
         defer {
             defaults = realMine
             Search.defaults = realSearch
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
 
         var results: [(String, Bool)] = [

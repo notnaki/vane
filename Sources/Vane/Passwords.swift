@@ -613,6 +613,18 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             print((ok ? "  ok    " : "  FAIL  ") + name)
             if !ok { failures += 1 }
         }
+        // Print the tally, take this run's own defaults suite with it, and go. `VANE_DATA_DIR`
+        // gets a suite of its own (see `UserDefaults.vane`), and a check run is not a user
+        // whose preferences should outlive it. Only here: the app itself must never delete
+        // that suite, because a real instance on a data dir wants its settings back next launch.
+        func finish(_ label: String) -> Never {
+            print(failures == 0 ? "\n\(label)" : "\n\(failures) FAILED")
+            if let dir = Store.overrideDirectory {
+                UserDefaults.dropScratchSuite(UserDefaults.suiteName(forDataDir: dir))
+            }
+            UserDefaults.sweepScratchSuites()
+            exit(failures == 0 ? 0 : 1)
+        }
 
         print("store")
         let dir = FileManager.default.temporaryDirectory
@@ -793,10 +805,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         do { _ = try PasswordImport.parse("a,b,c\n1,2,3\n") } catch { rejected = true }
         check("a file with no password column is rejected, not half-imported", rejected)
 
-        if pureOnly {
-            print(failures == 0 ? "\nPASS (pure)" : "\n\(failures) FAILED")
-            exit(failures == 0 ? 0 : 1)
-        }
+        if pureOnly { finish("PASS (pure)") }
 
         // Not pure: `buildMenu` is the app's own menu bar, and building it needs `NSApp`.
         // No window is opened — the whole point is to read the bar the user gets and prove
@@ -881,8 +890,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                             print("window.open against a real page")
                             popupRows { rows in
                                 for (name, ok) in rows { check(name, ok) }
-                                print(failures == 0 ? "\nPASS" : "\n\(failures) FAILED")
-                                exit(failures == 0 ? 0 : 1)
+                                finish("PASS")
                             }
                         }
                     }

@@ -282,7 +282,7 @@ import WebKit
         defaults = scratch
         defer {
             defaults = real
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
 
         let a = String(repeating: "a1", count: 32)   // stand-in fingerprints, 64 hex chars

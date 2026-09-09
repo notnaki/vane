@@ -170,7 +170,7 @@ extension SidebarWidth {
 
         let suite = "vane.check.sidebar.\(ProcessInfo.processInfo.processIdentifier)"
         if let scratch = UserDefaults(suiteName: suite) {
-            defer { scratch.removePersistentDomain(forName: suite) }
+            defer { UserDefaults.dropScratchSuite(suite) }
             out.append(("an unset width reads back as the default", load(scratch) == standard))
             scratch.set(Double(999), forKey: key)
             out.append(("a stored width is clamped on the way back in", load(scratch) == maximum))

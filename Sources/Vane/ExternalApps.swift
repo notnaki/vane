@@ -388,7 +388,7 @@ import SwiftUI
         defaults = scratch
         defer {
             defaults = real
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
 
         out.append(("a site nobody has answered for is not remembered",

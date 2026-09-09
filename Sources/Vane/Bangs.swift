@@ -283,7 +283,7 @@ extension SearchEngine {
         defaults = scratch
         defer {
             defaults = real
-            scratch.removePersistentDomain(forName: suite)
+            UserDefaults.dropScratchSuite(suite)
         }
         func str(_ input: String) -> String { Search.url(for: input)?.absoluteString ?? "<nil>" }
 
