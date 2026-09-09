@@ -149,7 +149,10 @@ import Foundation
     }
 
     static func shouldOffer(_ store: TabStore) -> Bool {
-        shouldOffer(today: todayCount(store), threshold: threshold, enabled: enabled)
+        // The same windows `apply` refuses: a private window writes nothing down, so a
+        // folder made in one would be a control that only ever says "Nothing to tidy".
+        !store.isPrivate && !store.isLittle
+            && shouldOffer(today: todayCount(store), threshold: threshold, enabled: enabled)
     }
 
     static func todayCount(_ store: TabStore) -> Int {
