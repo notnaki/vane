@@ -66,6 +66,12 @@ struct TitleReveal: Equatable, Sendable {
     /// Playing in a detached window. Kept so suspension leaves it alone even when the tab
     /// is in the background — which is exactly when a PiP video is being watched.
     @Published var pictureInPicture = false
+    /// The frame of this page that last said it holds a video, and so the frame ⌥⌘P and
+    /// auto-PiP are aimed at: `evaluateJavaScript(in: nil)` only ever reaches the main
+    /// frame, and an embedded player is always in an iframe. Nil until a frame speaks up,
+    /// which is also the fallback — the main frame. Deliberately not `@Published`: nothing
+    /// draws it. See `PictureInPicture.script`.
+    var pipFrame: WKFrameInfo?
     /// Making noise the user can hear. Muting the tab clears it.
     @Published var audible = false
     @Published var favicon: NSImage?
@@ -347,6 +353,7 @@ struct TitleReveal: Equatable, Sendable {
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
         let old = web
+        pipFrame = nil                // it named a frame of the view that is going
         TabAudio.unwatch(self)         // KVO on a dead observee is a crash, not a leak
         obs = []                       // KVO on a view that is about to die
         old.stopLoading()
@@ -688,6 +695,7 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
         Zoom.apply(to: self)
         closeChooser(.navigate)       // a redirect lands here without a fresh provisional
+        pipFrame = nil                // main-frame navigation: every frame it named has gone
     }
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
@@ -899,6 +907,10 @@ struct TitleReveal: Equatable, Sendable {
             return
         }
         if m.name == PictureInPicture.messageName {
+            // Not a mode: the frame this page's video is in, so the toggle can be aimed at it.
+            if m.body as? String == "has-video" { pipFrame = m.frameInfo; return }
+            // Nor this: the PiP window's ⤢, which wants the tab as well as the video back.
+            if m.body as? String == "return" { PictureInPicture.returnToTab(self); return }
             if let active = PictureInPicture.state(from: m.body) { pictureInPicture = active }
             return
         }
