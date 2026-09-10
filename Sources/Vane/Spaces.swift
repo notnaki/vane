@@ -203,7 +203,7 @@ enum Spaces {
         // a Space would put a page the user asked not to be remembered into spaces.json.
         guard !store.isPrivate,
               let tab = store.tabs.first(where: { $0.id == id }),
-              let url = tab.currentURL, url.scheme?.hasPrefix("http") == true,
+              let url = tab.pinnedURL, url.scheme?.hasPrefix("http") == true,   // home, not the wander
               var space = store.spaces.first(where: { $0.id == spaceID }),
               space.id != store.currentSpaceID
         else { return }
@@ -212,10 +212,15 @@ enum Spaces {
         default:      space.tabURLs = appending(url, to: space.tabURLs)
         }
         // The state sidecar too, so the tab comes up where it was left rather than reloading
-        // from the top.
+        // from the top — unless it has wandered from its home: then it is handed over the
+        // way its × would hand it over, at home with none of the wander's state, or the
+        // list would say one page and the sidecar wake it on another.
         var parked = Suspension.SpaceState.load(space: spaceID, profileID: store.profileID,
                                                 in: Store.directory)
-        parked[url.absoluteString] = tab.snapshot
+        // `==`, not `atHome`: in the resume gap a row has no `currentURL` yet, reads as
+        // at home, and its snapshot is still the wander's.
+        parked[url.absoluteString] = tab.currentURL == url ? tab.snapshot
+            : Parked(title: TabStore.homeTitle(known: tab.history.title(for: url), url: url))
         Suspension.SpaceState.save(parked, space: spaceID, profileID: store.profileID,
                                    in: Store.directory)
         ProfileManager.shared.updateSpace(space)

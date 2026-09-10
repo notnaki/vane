@@ -135,6 +135,17 @@ struct Visit: Identifiable, Hashable, Sendable {
             [title, url.absoluteString])
     }
 
+    /// The last title this profile saw for a page. For a row that has to be redrawn as a
+    /// page it is no longer on — a pinned tab sent back to the url it was pinned at, see
+    /// `TabStore.close` — where leaving the wandered page's name on the row would be a lie.
+    /// nil for a page never visited, and for one whose title never arrived.
+    func title(for url: URL) -> String? {
+        var out: String?
+        run("SELECT title FROM visits WHERE url = ? AND title <> '' ORDER BY at DESC LIMIT 1",
+            [url.absoluteString]) { out = self.text($0, 0) }
+        return out
+    }
+
     /// Bulk insert in one transaction, keeping each visit's real timestamp.
     /// ponytail: the single-row `record` above is one implicit transaction — and one fsync
     /// — per row. That is why importing used to cap at 5000 pages and throw the real dates

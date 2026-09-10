@@ -353,11 +353,63 @@ import WebKit
             ("closing the only tab leaves nothing to show",
              TabStore.closing(0, kinds: [.today], lastActive: [d(0)]) == (false, nil)),
 
-            // What stays is written down as its current page, wherever it has gone.
-            ("a favourite is saved as its current page",
+            // What stays is written down as the page it stands for, wherever it has since
+            // been taken. See `Tab.homeURL`: a pinned row or a favourite remembers the url
+            // it was pinned at, and that is the one that goes to disk.
+            ("a favourite is saved as the page it is on",
              TabStore.pinURL(u("https://elsewhere.example/x")) == "https://elsewhere.example/x"),
             ("one on no page is not written down", TabStore.pinURL(nil) == nil),
             ("a non-http page is not written down", TabStore.pinURL(u("file:///x.html")) == nil),
+
+            // Home: the url a favourite or a pinned row stands for.
+            ("pinning a tab records the page it was pinned at",
+             TabStore.home(entering: .pinned, at: u("https://google.example/")) == u("https://google.example/")),
+            ("favouriting one records it the same way",
+             TabStore.home(entering: .favourite, at: u("https://google.example/")) == u("https://google.example/")),
+            ("a row that leaves for Today stands for nothing and forgets it",
+             TabStore.home(entering: .today, at: u("https://google.example/")) == nil),
+            ("a tab pinned while it is still blank has no home to be sent back to",
+             TabStore.home(entering: .pinned, at: nil) == nil),
+
+            // …and that home, not the wander, is what both writers put on disk. `savePins`
+            // and `saveCurrentSpace` write the same two lists and the Space fingerprint is
+            // taken off what they leave there, so they read this one expression.
+            ("a pinned row browsed elsewhere is still written down as its own page",
+             TabStore.pinned(home: u("https://google.example/"), at: u("https://wandered.example/x"))
+                == u("https://google.example/")),
+            ("…which is what the Space fingerprint is taken off, so a wander is no edit",
+             TabStore.fingerprint(
+                tabURLs: [], pinnedTabURLs: [TabStore.pinned(home: u("https://google.example/"),
+                                                             at: u("https://wandered.example/x"))!],
+                shapes: [nil, nil])
+                == TabStore.fingerprint(tabURLs: [], pinnedTabURLs: [u("https://google.example/")],
+                                        shapes: [nil, nil])),
+            ("a row with no home is written down as the page it is on, exactly as before",
+             TabStore.pinned(home: nil, at: u("https://wandered.example/x")) == u("https://wandered.example/x")),
+            ("a Today tab has no home, so its url is untouched by any of this",
+             TabStore.pinned(home: TabStore.home(entering: .today, at: u("https://a.example/")),
+                             at: u("https://a.example/")) == u("https://a.example/")),
+
+            // Closing a row that has wandered sends it home rather than parking it there.
+            ("a pinned row browsed away from its page is sent back to it",
+             TabStore.goesHome(home: u("https://google.example/"), at: u("https://wandered.example/x"))
+                == u("https://google.example/")),
+            ("one already on its own page has nowhere to go and parks in place",
+             TabStore.goesHome(home: u("https://google.example/"), at: u("https://google.example/")) == nil),
+            ("a row with no home parks in place, which is what every row used to do",
+             TabStore.goesHome(home: nil, at: u("https://wandered.example/x")) == nil),
+            // The resume gap: `resume` clears `parkedURL` before `WKWebView.url` catches up,
+            // so for that width the tab has no url at all. Unknown is not "wandered".
+            ("a row whose whereabouts are unknown is left exactly where it is",
+             TabStore.goesHome(home: u("https://google.example/"), at: nil) == nil),
+
+            // And it says where it went. The wandered page's title goes with the wander.
+            ("a row sent home takes the name history knows that page by",
+             TabStore.homeTitle(known: "Google", url: u("https://google.example/")) == "Google"),
+            ("…the host when this profile has never been there",
+             TabStore.homeTitle(known: nil, url: u("https://google.example/")) == "google.example"),
+            ("…and the host again for a page whose title never arrived",
+             TabStore.homeTitle(known: "", url: u("https://google.example/")) == "google.example"),
             ("favourites and pinned rows are written to different keys",
              TabStore.defaultsKey(.favourite, ProfileManager.defaultID)
                 != TabStore.defaultsKey(.pinned, ProfileManager.defaultID)),
