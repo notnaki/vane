@@ -353,6 +353,7 @@ struct TitleReveal: Equatable, Sendable {
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
         let old = web
+        pipFrame = nil                // it named a frame of the view that is going
         TabAudio.unwatch(self)         // KVO on a dead observee is a crash, not a leak
         obs = []                       // KVO on a view that is about to die
         old.stopLoading()
