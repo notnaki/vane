@@ -299,18 +299,12 @@ enum GitHub {
     /// and closed twice. The first is the folder's; the extra copy is left alone, which is
     /// what "never close what you did not open" means when the two are indistinguishable.
     ///
-    /// A row taken somewhere else entirely — off github, or onto another pull request — stops
-    /// matching and so stops being the folder's. It is left exactly where it is: the user
-    /// took that tab somewhere, and the folder is not entitled to steer it back or to close
-    /// it. Its pull request does not come back as a second row either — a folder cannot tell
-    /// that row from one dragged out, so the pull request is hidden instead. See
-    /// `GitHub.dismissed`, where that is decided.
-    ///
-    /// ponytail: which is the ceiling here, said plainly — click a link inside a pull request
-    /// and the row is no longer the folder's, so the next refresh hides the pull request and
-    /// the row you are reading in stops being live. It is recoverable ("Show Hidden Again")
-    /// and it is not what anybody wants. The fix is to key a row on the url it was pinned at
-    /// rather than the page it is on (`Tab.homeURL`), which lands separately.
+    /// A row is named by the pull request it was pinned at, not the page it is on
+    /// (`rowURL`, over `Tab.pinnedURL`): click a link inside a pull request and the row is
+    /// still the folder's, still live, and still goes when the pull request does — the way
+    /// its × sends it back to the pull request rather than parking it on the link. Only a
+    /// row *taken out* of the folder — unpinned, dragged away, archived — stops matching,
+    /// and that is what `GitHub.dismissed` reads as the user's hand.
     static func mine(_ here: [String], owned: [String]) -> [String] {
         var seen = Set<String>()
         return here.filter { r in
@@ -333,14 +327,10 @@ enum GitHub {
     /// A row the folder does not own is no part of this: a page dragged into the folder is
     /// not in `owned`, and dragging it out again dismisses nothing.
     ///
-    /// ponytail: the ceiling on `mine` — "a row taken somewhere else entirely stops being the
-    /// folder's" — decides one case here, so it is decided out loud. `have` is built from the
-    /// page each row is *on* (`TabStore.rowURL` answers `currentURL`), so a row browsed off
-    /// github is missing from it for the same reason a row dragged out is, and the pull
-    /// request is hidden rather than added a second time. The two cannot be told apart from a
-    /// list of urls, and hiding is the recoverable half: the tab is still there, holding the
-    /// page the user went to, and "Show Hidden Again" brings the row back. Re-adding instead
-    /// leaves the user with two rows for one pull request and nothing to say which is which.
+    /// `have` is built from the pull request each row was pinned at (`TabStore.rowURL`
+    /// answers `Tab.pinnedURL`), so a row browsed off github — a link inside the pull
+    /// request — is still in it and still the folder's. Only a row taken out of the folder
+    /// is missing, which is what makes "missing but still open" mean the user's hand.
     static func dismissed(previous: [String], owned: [String], have: [String],
                           want: [String]) -> [String] {
         var out = previous.filter { want.contains($0) }
@@ -1081,9 +1071,11 @@ enum GitHubOAuth {
 // MARK: - The store's side
 
 extension TabStore {
-    /// The page a pinned row is on, by the row's id. nil for a row whose tab has gone.
+    /// The page a pinned row stands for, by the row's id — the pull request it was pinned at,
+    /// whatever it has been browsed to since (`Tab.pinnedURL`). nil for a row whose tab has
+    /// gone.
     func rowURL(_ id: String) -> String? {
-        tabs.first { $0.id.uuidString == id }?.currentURL?.absoluteString
+        tabs.first { $0.id.uuidString == id }?.pinnedURL?.absoluteString
     }
 
     /// "New Live Folder…", the whole of it. Arc has one kind of live folder and asks nothing
@@ -1519,15 +1511,15 @@ extension GitHub {
                !p.changesRows && p.order == [a, b])
         p = plan(have: [a], want: [a, b].filter { !unpinned.contains($0) }, closing: [])
         assert("…and the window it was taken out of does not get it back", p.add.isEmpty)
-        // The ceiling, decided out loud: `have` is built from the page each row is *on*, so a
-        // row browsed off github is missing from it exactly the way a row dragged out is, and
-        // the pull request is hidden rather than added to the folder a second time. See
-        // `dismissed`. The tab stays where the user left it either way.
-        let strayed = mine([note], owned: [a])
-        assert("a live row browsed somewhere else entirely is no longer one of the folder's",
-               strayed.isEmpty)
-        assert("…so its pull request is hidden, not put back as a second row",
-               dismissed(previous: [], owned: [a], have: strayed, want: [a]) == [a])
+        // `have` is built from the page each row *stands for* (`rowURL` → `Tab.pinnedURL`),
+        // so a row browsed off github is still in it and still the folder's; only a row
+        // taken out of the folder is missing. That `pinnedURL` survives a wander is the
+        // pin-home block's to prove (Passwords.swift); here, that the rule reads the two apart.
+        assert("a live row browsed somewhere else is still one of the folder's, by the pull request it stands for",
+               mine([a], owned: [a]) == [a]
+                   && dismissed(previous: [], owned: [a], have: [a], want: [a]).isEmpty)
+        assert("…and only a row taken out of the folder hides its pull request",
+               dismissed(previous: [], owned: [a], have: [], want: [a]) == [a])
 
         // The relaunch. Ownership rides with the folder, so what a window comes back to is
         // what it wrote down — and a pull request page put in the folder by hand is still
