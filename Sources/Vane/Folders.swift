@@ -29,6 +29,16 @@ struct Folder: Identifiable, Codable, Equatable, Sendable {
     /// whole Pinned section with it. nil and [] both mean "this folder has put nothing
     /// anywhere"; `GitHub.mine` takes it as a list and never sees the difference.
     var owned: [String]? = nil
+    /// The pull requests this folder has been told to stop showing, by url: the ones whose
+    /// row the user took out by hand — unpinned, dragged elsewhere, archived, its tab closed.
+    /// Without it the next refresh finds the pull request still open, sees no row for it, and
+    /// puts it straight back; with it a row taken out stays out until the pull request itself
+    /// closes, or until "Show Hidden Again" in Edit Live Folder.
+    ///
+    /// Optional for exactly the reason `owned` is — a non-optional default would make every
+    /// folder saved before today fail to decode — and nil and [] both mean "nothing hidden".
+    /// See `GitHub.dismissed`.
+    var dismissed: [String]? = nil
 
     static let defaultIcon = "folder"
 

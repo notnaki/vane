@@ -57,9 +57,37 @@ struct GitHubQuery: Codable, Equatable, Sendable {
         }
     }
 
+    /// How far back the folder looks: "Active in the last 7 days", and so on. A folder on a
+    /// busy account fills up with pull requests nobody has touched in months, and Optional is
+    /// what says "any time" — the default, the answer for every folder saved before this
+    /// existed, and the one that adds no qualifier to the search at all.
+    enum Age: String, Codable, CaseIterable, Sendable, Identifiable {
+        case week, month, quarter
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .week: "Last 7 Days"
+            case .month: "Last 30 Days"
+            case .quarter: "Last 90 Days"
+            }
+        }
+
+        var days: Int {
+            switch self {
+            case .week: 7
+            case .month: 30
+            case .quarter: 90
+            }
+        }
+    }
+
     var filter: Filter = .involved
     /// "owner/name", or nil for every repository the token can see.
     var repo: String?
+    /// How recently the pull request was touched, or nil for any time.
+    var age: Age? = nil
 }
 
 // MARK: - The wire, and the reconcile
@@ -162,17 +190,33 @@ enum GitHub {
 
     /// The search GitHub is asked. Only open pull requests: a folder of closed ones is the
     /// Library's job, and `is:open` is also what makes a row's disappearance mean something.
-    static func terms(_ q: GitHubQuery) -> String {
+    /// `now` is a parameter so the whole query is provable offline: an age turns into a date
+    /// on the wire, and a check against "seven days before whenever this ran" proves nothing.
+    static func terms(_ q: GitHubQuery, now: Date = .now) -> String {
         var out = ["is:pr", "is:open", q.filter.qualifier]
         if let repo = q.repo.flatMap(repository) { out.append("repo:" + repo) }
+        // GitHub reads a bare `updated:>=` date in UTC, so the day is counted in UTC too —
+        // in the user's own calendar the folder would quietly hold a day more or less
+        // depending on which side of midnight GMT they live.
+        if let age = q.age { out.append("updated:>=" + day(now, minus: age.days)) }
         return out.joined(separator: " ")
+    }
+
+    /// `days` before `now`, as GitHub's YYYY-MM-DD. Nothing here is localised: this is a
+    /// search qualifier, not a date shown to anybody.
+    static func day(_ now: Date, minus days: Int) -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = .gmt
+        let then = cal.date(byAdding: .day, value: -days, to: now) ?? now
+        let d = cal.dateComponents([.year, .month, .day], from: then)
+        return String(format: "%04d-%02d-%02d", d.year ?? 0, d.month ?? 0, d.day ?? 0)
     }
 
     /// `URLComponents` does the escaping — the terms carry spaces, `:` and `/`, and hand
     /// rolling that is exactly how a repo name ends up meaning two qualifiers.
     static func search(_ q: GitHubQuery) -> URL? {
         var c = URLComponents(string: api + "/search/issues")
-        c?.queryItems = [URLQueryItem(name: "q", value: terms(q)),
+        c?.queryItems = [URLQueryItem(name: "q", value: terms(q, now: .now)),
                          URLQueryItem(name: "per_page", value: String(perPage))]
         return c?.url
     }
@@ -265,6 +309,43 @@ enum GitHub {
         return here.filter { r in
             owned.contains { row(r, isFor: $0) } && seen.insert(r).inserted
         }
+    }
+
+    /// Which pull requests this folder has been told to stop showing. A row the folder put
+    /// here and that is not here any more — unpinned, dragged out, archived, its tab closed —
+    /// was taken out by the user, and putting it straight back because GitHub still lists the
+    /// pull request is the folder arguing with them. So the pull request is written down as
+    /// dismissed and the next search skips it.
+    ///
+    /// `previous` is what the folder already had hidden, and an entry leaves it the moment
+    /// its pull request stops coming back from GitHub: the pull request closed, and if it is
+    /// ever reopened it is news again rather than something hidden months ago. That is also
+    /// what keeps the list from growing forever — it can never be longer than one page of
+    /// search results.
+    ///
+    /// A row the folder does not own is no part of this: a page dragged into the folder is
+    /// not in `owned`, and dragging it out again dismisses nothing.
+    ///
+    /// ponytail: the ceiling on `mine` — "a row taken somewhere else entirely stops being the
+    /// folder's" — decides one case here, so it is decided out loud. `have` is built from the
+    /// page each row is *on* (`TabStore.rowURL` answers `currentURL`), so a row browsed off
+    /// github is missing from it for the same reason a row dragged out is, and the pull
+    /// request is hidden rather than added a second time. The two cannot be told apart from a
+    /// list of urls, and hiding is the recoverable half: the tab is still there, holding the
+    /// page the user went to, and "Show Hidden Again" brings the row back. Re-adding instead
+    /// leaves the user with two rows for one pull request and nothing to say which is which.
+    static func dismissed(previous: [String], owned: [String], have: [String],
+                          want: [String]) -> [String] {
+        var out = previous.filter { want.contains($0) }
+        var seen = Set(out)
+        for pr in want where !seen.contains(pr) {
+            guard owned.contains(where: { row($0, isFor: pr) }),
+                  !have.contains(where: { row($0, isFor: pr) })
+            else { continue }
+            out.append(pr)
+            seen.insert(pr)
+        }
+        return out
     }
 
     /// What a refresh does to a folder's rows. The rows become exactly the pull requests the
@@ -887,16 +968,24 @@ enum GitHubOAuth {
     }
 
     private func apply(_ prs: [GitHub.PR], to folder: UUID) {
-        let want = prs.map(\.url)
-        var glyphs: [String: GitHub.State] = [:]
-        for pr in prs { glyphs[pr.url] = pr.draft ? .draft : .open }
-        var mine = Set(want)
+        let found = prs.map(\.url)
+        var mine = Set<String>()
+        var hidden: [String] = []
+        var goodbyes = Set<String>()
         var showing = false
         for store in stores() where store.pins.folder(folder) != nil {
             showing = true
-            let owned = store.pins.folder(folder)?.owned ?? []
+            let record = store.pins.folder(folder)
+            let owned = record?.owned ?? []
             let have = GitHub.mine(store.pins.children(of: folder).compactMap(store.rowURL),
                                    owned: owned)
+            // What the user took out stays out. Before the plan, not after: a dismissed pull
+            // request is one the search never asked for, so there is nothing to add, nothing
+            // to order and nothing to say goodbye to.
+            hidden = GitHub.dismissed(previous: record?.dismissed ?? [], owned: owned,
+                                      have: have, want: found)
+            let want = found.filter { !hidden.contains($0) }
+            mine.formUnion(want)
             let closing = Set((states[folder] ?? [:]).filter { $0.value == .closed }.keys)
             var plan = GitHub.plan(have: have, want: want, closing: closing)
             plan.titles = Dictionary(prs.map { ($0.url, $0.title) }, uniquingKeysWith: { a, _ in a })
@@ -906,7 +995,7 @@ enum GitHubOAuth {
             // would disown the very row it still means to take, and nothing would ever
             // come for it again.
             for url in plan.closing + store.applyLive(plan, to: folder) {
-                glyphs[url] = .closed
+                goodbyes.insert(url)
                 mine.insert(url)
             }
         }
@@ -915,6 +1004,9 @@ enum GitHubOAuth {
         // by a map entry — the glyphs would outlive the folder and `forget(folder:)` would
         // already have run.
         guard showing else { return }
+        var glyphs: [String: GitHub.State] = [:]
+        for pr in prs where !hidden.contains(pr.url) { glyphs[pr.url] = pr.draft ? .draft : .open }
+        for url in goodbyes { glyphs[url] = .closed }
         states[folder] = glyphs
         // Written down with the folder, in every window showing it, because it is the one
         // thing a relaunch cannot guess. `applyLive` has already saved the shape around the
@@ -926,9 +1018,10 @@ enum GitHubOAuth {
         // suddenly unequal, so every pinned row redraws — for nothing.
         let claimed = mine.sorted()
         for store in stores() {
-            guard let had = store.pins.folder(folder), (had.owned ?? []) != claimed
+            guard let had = store.pins.folder(folder),
+                  (had.owned ?? []) != claimed || (had.dismissed ?? []) != hidden
             else { continue }
-            store.pins.edit(folder: folder) { $0.owned = claimed }
+            store.pins.edit(folder: folder) { $0.owned = claimed; $0.dismissed = hidden }
             store.savePins()
         }
     }
@@ -959,7 +1052,7 @@ enum GitHubOAuth {
         var name: String?
         for store in stores() where store.pins.folder(folder) != nil {
             name = name ?? store.pins.folder(folder)?.name
-            store.pins.edit(folder: folder) { $0.live = nil; $0.owned = nil }
+            store.pins.edit(folder: folder) { $0.live = nil; $0.owned = nil; $0.dismissed = nil }
             store.savePins()
         }
         forget(folder: folder)
@@ -1045,8 +1138,29 @@ extension TabStore {
     /// without renaming the folder leaves a folder called "Review Requested" full of the
     /// pull requests you wrote.
     func editLiveFolder(_ id: UUID, named name: String, source: LiveSource) {
-        pins.edit(folder: id) { $0.name = name; $0.live = source }
+        pins.edit(folder: id) {
+            // A different search is a different view, and what was hidden from the old one
+            // has nothing to say about this one. A rename is not: the folder still shows the
+            // same pull requests, minus the ones taken out of it.
+            if $0.live != source { $0.dismissed = nil }
+            $0.name = name
+            $0.live = source
+        }
         savePins()
+        LiveFolders.shared(for: profileID).refreshNow(id)
+    }
+
+    /// "Show Hidden Again": every pull request taken out of this folder by hand comes back on
+    /// the refresh this asks for. In every window showing the folder, for the reason
+    /// `LiveFolders.stopKeepingFilled` does it in every window — each holds its own copy of
+    /// the Space and each writes it back, so one left holding the old list would put it
+    /// straight back on its next save.
+    func showHiddenAgain(_ id: UUID) {
+        for store in TabStore.all where store.profileID == profileID
+            && store.pins.folder(id) != nil {
+            store.pins.edit(folder: id) { $0.dismissed = nil }
+            store.savePins()
+        }
         LiveFolders.shared(for: profileID).refreshNow(id)
     }
 
@@ -1169,6 +1283,34 @@ extension GitHub {
         assert("a folder with a bad repo asks for every repository instead",
                terms(GitHubQuery(repo: "not a repo")) == "is:pr is:open involves:@me")
 
+        // "Active in". A fixed date, because the qualifier is a date and a check against
+        // "whenever this ran" would pass however the arithmetic went.
+        let noon = Date(timeIntervalSince1970: 1_757_246_400)     // 2025-09-07 12:00 UTC
+        assert("any time asks for no date at all",
+               terms(GitHubQuery(), now: noon) == "is:pr is:open involves:@me")
+        assert("last 7 days is a date a week back",
+               terms(GitHubQuery(age: .week), now: noon)
+                   == "is:pr is:open involves:@me updated:>=2025-08-31")
+        assert("last 30 days is a month back",
+               terms(GitHubQuery(age: .month), now: noon)
+                   == "is:pr is:open involves:@me updated:>=2025-08-08")
+        assert("last 90 days is a quarter back",
+               terms(GitHubQuery(age: .quarter), now: noon)
+                   == "is:pr is:open involves:@me updated:>=2025-06-09")
+        assert("…and it goes after the repository, not instead of it",
+               terms(GitHubQuery(repo: "apple/swift", age: .week), now: noon)
+                   == "is:pr is:open involves:@me repo:apple/swift updated:>=2025-08-31")
+        // The day is counted in UTC: a minute past midnight in Auckland is still yesterday
+        // to GitHub, and a folder that quietly held a day more or less depending on where
+        // the user is, is a folder nobody could describe.
+        assert("the day is GitHub's, not the machine's",
+               day(Date(timeIntervalSince1970: 1_757_289_540), minus: 0) == "2025-09-07")
+        assert("…and a month boundary is a real calendar's",
+               day(Date(timeIntervalSince1970: 1_740_960_000), minus: 30) == "2025-02-01")
+        assert("every age says how far back it goes",
+               GitHubQuery.Age.allCases.map(\.days) == [7, 30, 90]
+                   && GitHubQuery.Age.allCases.allSatisfy { !$0.title.isEmpty })
+
         // The rows arrive already named.
         var named = GitHub.plan(have: [], want: ["https://github.com/a/b/pull/1"], closing: [])
         named.titles = ["https://github.com/a/b/pull/1": "Fix the thing"]
@@ -1284,6 +1426,54 @@ extension GitHub {
                p.remove == [a, b] && !p.remove.contains(note) && !p.order.contains(note)
                    && !p.remove.contains(c) && !p.order.contains(c))
 
+        // Taking a row out. The whole of the bug this exists for: unpin, drag out or archive
+        // a pull request's row and the next refresh finds the pull request still open, sees
+        // no row for it, and puts it straight back.
+        assert("a row the folder put here and that is gone is one the user took out",
+               dismissed(previous: [], owned: [a, b], have: [a], want: [a, b]) == [b])
+        // The folder stops owning what it stops showing, so the second refresh has only the
+        // written-down list to go on — which is the whole reason it is written down.
+        assert("…and stays hidden while the pull request is still open, owned or not",
+               dismissed(previous: [b], owned: [a], have: [a], want: [a, b]) == [b])
+        assert("a folder holding everything it is owed hides nothing",
+               dismissed(previous: [], owned: [a, b], have: [a, b], want: [a, b]).isEmpty)
+        assert("a row navigated inside its own pull request is still here",
+               dismissed(previous: [], owned: [a], have: [a + "/files"], want: [a]).isEmpty)
+        // A pull request the user dragged in by hand: the folder does not own its row, so
+        // dragging it out again is nothing to do with the folder and hides nothing. The
+        // folder is left owing it a row, and puts one there on the next refresh.
+        assert("a pull request the folder never owned is not one the user took out",
+               dismissed(previous: [], owned: [a], have: mine([a], owned: [a]),
+                         want: [a, c]).isEmpty)
+        assert("a pull request that has closed is forgotten, not hidden forever",
+               dismissed(previous: [b], owned: [a], have: [a], want: [a]).isEmpty)
+        assert("…so reopening it makes it news again",
+               dismissed(previous: [], owned: [a], have: [a], want: [a, b]).isEmpty)
+        assert("a row on its way out is not a row taken out",
+               dismissed(previous: [], owned: [a, b], have: [a, b], want: [a]).isEmpty)
+        assert("…nor is one held back because the user is looking at it",
+               dismissed(previous: [], owned: [a, b], have: [a, b], want: []).isEmpty)
+        assert("nothing is hidden twice, however many refreshes see it gone",
+               dismissed(previous: [b], owned: [a, b], have: [a], want: [a, b]) == [b])
+        assert("what was hidden stays at the front, and the new ones follow in search order",
+               dismissed(previous: [c], owned: [a, b, c], have: [], want: [a, b, c])
+                   == [c, a, b])
+        // What the folder then asks for. The plan never hears about a hidden pull request,
+        // so there is nothing to add, nothing to order and nothing to close.
+        let hidden = dismissed(previous: [], owned: [a, b], have: [a], want: [a, b])
+        p = plan(have: [a], want: [a, b].filter { !hidden.contains($0) }, closing: [])
+        assert("the plan is given the search minus what was taken out",
+               p.add.isEmpty && p.order == [a] && !p.changesRows)
+        // The ceiling, decided out loud: `have` is built from the page each row is *on*, so a
+        // row browsed off github is missing from it exactly the way a row dragged out is, and
+        // the pull request is hidden rather than added to the folder a second time. See
+        // `dismissed`. The tab stays where the user left it either way.
+        let strayed = mine([note], owned: [a])
+        assert("a live row browsed somewhere else entirely is no longer one of the folder's",
+               strayed.isEmpty)
+        assert("…so its pull request is hidden, not put back as a second row",
+               dismissed(previous: [], owned: [a], have: strayed, want: [a]) == [a])
+
         // The relaunch. Ownership rides with the folder, so what a window comes back to is
         // what it wrote down — and a pull request page put in the folder by hand is still
         // not the folder's, however much it looks like one of its rows.
@@ -1298,10 +1488,32 @@ extension GitHub {
         p = plan(have: have, want: [], closing: [a, b])
         assert("…and the first refresh after it still cannot touch that row",
                p.remove == [a, b] && !p.order.contains(c))
-        assert("a folder saved before any of this owns nothing",
+        let old = try? JSONDecoder().decode(Folder.self, from: Data("""
+        {"id": "\(UUID().uuidString)", "name": "Work", "icon": "folder", "collapsed": false}
+        """.utf8))
+        assert("a folder saved before any of this owns nothing", old?.owned?.isEmpty ?? true)
+        assert("…and has hidden nothing either", old?.dismissed?.isEmpty ?? true)
+        assert("a folder saved before the hidden list still reads",
                (try? JSONDecoder().decode(Folder.self, from: Data("""
-               {"id": "\(UUID().uuidString)", "name": "Work", "icon": "folder", "collapsed": false}
-               """.utf8)))?.owned?.isEmpty ?? true)
+               {"id": "\(UUID().uuidString)", "name": "Work", "icon": "folder",
+                "collapsed": false, "owned": ["\(a)"]}
+               """.utf8)))?.owned == [a])
+        // The same reason `owned` is an Optional, one field along: a query saved before
+        // "Active in" existed has no `age` key, and a non-optional would take the folder,
+        // the Space and the whole Pinned section down with it.
+        assert("a query saved before Active in existed means any time",
+               (try? JSONDecoder().decode(GitHubQuery.self,
+                                          from: Data(#"{"filter": "assigned"}"#.utf8)))?.age == nil)
+        assert("…and still knows what it tracks",
+               (try? JSONDecoder().decode(GitHubQuery.self,
+                                          from: Data(#"{"filter": "assigned"}"#.utf8)))?.filter
+                   == .assigned)
+        assert("an age survives the trip to disk",
+               (try? JSONDecoder().decode(GitHubQuery.self, from: JSONEncoder()
+                   .encode(GitHubQuery(age: .quarter))))?.age == .quarter)
+        assert("and so does the hidden list",
+               (try? JSONDecoder().decode(Folder.self, from: JSONEncoder()
+                   .encode(Folder(name: "Live", dismissed: [a]))))?.dismissed == [a])
 
         // The page you are reading. A refresh has exactly one reason to want at `current`
         // — closing the tab that is on it — and this is where that reason goes away.
