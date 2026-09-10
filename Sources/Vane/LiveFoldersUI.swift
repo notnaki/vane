@@ -25,6 +25,10 @@ struct LiveFolderSheet: View {
     @State private var login: String?
     @State private var problem: String?
     @State private var checking = false
+    /// The pull requests this folder has been told to stop showing, as they stood when the
+    /// sheet opened. Held here rather than read off `editing` so the row goes away the moment
+    /// the button is pressed — `editing` is the copy the sheet was handed.
+    @State private var hidden: [String] = []
 
     private var repoIsWrong: Bool {
         !repo.trimmingCharacters(in: .whitespaces).isEmpty && GitHub.repository(repo) == nil
@@ -124,6 +128,14 @@ struct LiveFolderSheet: View {
                 .labelsHidden().fixedSize()
                 .accessibilityLabel("What the folder tracks")
             }
+            SettingsRow("Active in") {
+                Picker("", selection: $query.age) {
+                    Text("Any Time").tag(GitHubQuery.Age?.none)
+                    ForEach(GitHubQuery.Age.allCases) { Text($0.title).tag(Optional($0)) }
+                }
+                .labelsHidden().fixedSize()
+                .accessibilityLabel("How recently the pull requests were touched")
+            }
             SettingsRow("In repository") {
                 TextField("Every repository", text: $repo)
                     .textFieldStyle(.roundedBorder)
@@ -135,6 +147,16 @@ struct LiveFolderSheet: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 220)
                     .accessibilityLabel("Folder name")
+            }
+            // Only when there is something hidden to bring back. A row that says "Show 0
+            // Hidden Again" is a row explaining a feature nobody has used yet.
+            if let editing, !hidden.isEmpty {
+                SettingsRow("Hidden rows") {
+                    Button("Show \(hidden.count) Hidden Again") {
+                        store.showHiddenAgain(editing.id)
+                        hidden = []
+                    }
+                }
             }
             Footnote(repoIsWrong
                      ? "A repository is written “owner/name”, like apple/swift."
@@ -148,6 +170,7 @@ struct LiveFolderSheet: View {
     private func load() {
         login = live.signIn?.login
         guard let editing, case .github(let q)? = editing.live else { return }
+        hidden = editing.dismissed ?? []
         query = q
         repo = q.repo ?? ""
         name = editing.name
@@ -182,7 +205,8 @@ struct LiveFolderSheet: View {
 
     private func commit() {
         let source = LiveSource.github(GitHubQuery(filter: query.filter,
-                                                   repo: GitHub.repository(repo)))
+                                                   repo: GitHub.repository(repo),
+                                                   age: query.age))
         if let editing {
             store.editLiveFolder(editing.id, named: folderName, source: source)
         } else {
