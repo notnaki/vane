@@ -83,10 +83,18 @@
        malware site; the sandbox denies the lookup by name
        ("deny(1) mach-lookup com.apple.Safari.SafeBrowsing.Service") and the deceptive-site
        interstitial silently stops appearing. Sandboxing a browser must not cost it a
-       security feature, so this is granted back explicitly. -->
+       security feature, so this is granted back explicitly.
+
+       Picture in Picture. The floating window is not ours: WebKit hands the video to
+       PIPAgent (/System/Library/CoreServices/PIPAgent.app, mach service com.apple.PIPAgent)
+       and the sandbox denies that lookup silently — the page says "playing in picture in
+       picture", the engine reports the mode change, and no window ever appears. Measured
+       with a probe signed with these entitlements: without the name, no window; with it,
+       the "Picture in Picture" window comes and goes with the mode. -->
   <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
   <array>
     <string>com.apple.Safari.SafeBrowsing.Service</string>
+    <string>com.apple.PIPAgent</string>
   </array>
 
   <!-- Hardened Runtime (only enforced on the Developer ID branch of make-app.sh). WebKit's
