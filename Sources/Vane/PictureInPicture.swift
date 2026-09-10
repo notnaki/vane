@@ -248,7 +248,9 @@ import WebKit
                  && script.contains("webkit.messageHandlers.vanepip.postMessage('return')")),
             // Esc out of a playing fullscreen video lands in the same listener as the ⤢.
             ("…and only when it was in picture-in-picture, not fullscreen",
-             script.contains("var from = last;") && script.contains("last = mode;")),
+             script.range(of: "var from = last;").map {
+                 script[$0.upperBound...].prefix(40).contains("last = mode;")
+             } == true),
             ("the auto exit is marked as ours, so it does not read as the ⤢",
              script.range(of: "v.webkitSetPresentationMode('inline');").map {
                  script[..<$0.lowerBound].suffix(40).contains("ours = true;")
