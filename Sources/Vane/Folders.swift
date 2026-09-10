@@ -1415,7 +1415,9 @@ extension TabStore {
             return
         }
         let byID = Dictionary(tabs.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { a, _ in a })
-        let named = self[keyPath: shape].mapped { byID[$0].flatMap { TabStore.pinURL($0.currentURL) } }
+        // `pinnedURL`, like `savePins`: the shape and the list must name a row by the same url,
+        // or `pinOrder` cannot put a wandered row back in its folder. See `Tab.homeURL`.
+        let named = self[keyPath: shape].mapped { byID[$0].flatMap { TabStore.pinURL($0.pinnedURL) } }
         // Nothing but loose tabs is nothing worth writing: an empty shape is what a fresh
         // profile has, and leaving the key absent keeps `savedShape` honest about that.
         guard named.entries.contains(where: { $0.folder != nil }) else {

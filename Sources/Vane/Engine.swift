@@ -1945,13 +1945,8 @@ struct Stash {
         // `pinnedURL`, not `currentURL`: what is written down is the page the row stands
         // for. A pinned row browsed away from its page used to write the page it wandered
         // to into the Space, so the next launch came up on it — see `Tab.homeURL`.
-        //
-        // ponytail: `saveShape` (Folders.swift) still names the rows of the *folder* shape
-        // by `pinURL(currentURL)`, so a row inside a folder that is wandered at the moment
-        // of a save writes one url into the shape and another into this list, and
-        // `pinOrder` cannot match the two: after a relaunch that one row comes back loose
-        // at the end of Pinned rather than in its folder. Left alone because that file had
-        // a PR in flight; the fix is the same expression there, `$0.pinnedURL`.
+        // `saveShape` (Folders.swift) names the folder shape's rows by the same expression,
+        // which is what lets `pinOrder` put a wandered row back in its folder.
         func urls(_ kind: TabKind) -> [String] {
             tabs.filter { $0.kind == kind }.compactMap { TabStore.pinURL($0.pinnedURL) }
         }
