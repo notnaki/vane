@@ -87,7 +87,32 @@ struct TitleReveal: Equatable, Sendable {
     @Published var secureContent = true
     @Published var certificateTrusted = true
     /// Which section of the sidebar this tab is in. The strip is sorted by it.
-    @Published var kind: TabKind = .today
+    ///
+    /// The `didSet` is the one place a row's `homeURL` is decided, and it is here rather
+    /// than at the half-dozen callers because they are a half-dozen: `move`, `drop`, the
+    /// pin and favourite actions, `newBlankTab(as:)`, a folder dragged between the sections
+    /// (Folders.swift) and a popup being adopted all set this field, and a home recorded at
+    /// five of them is a home the sixth quietly forgets.
+    @Published var kind: TabKind = .today {
+        didSet { homeURL = TabStore.home(entering: kind, at: currentURL) }
+    }
+    /// The page this row *stands for*: the one it was pinned or favourited at. Arc's rule —
+    /// browse a pinned row wherever you like, and ⌘W or the row's × puts it back on the page
+    /// it was pinned at, which is also the page written down for the next launch.
+    ///
+    /// nil for a Today tab, and for a row pinned while it was still blank: a row with
+    /// nowhere to be sent back to parks in place exactly as it always did. Set on the way
+    /// into a section (above) and by `park`, which is how a row restored from disk — where
+    /// the saved list *is* the home — and a live folder's row both get one.
+    @Published private(set) var homeURL: URL?
+    /// Whether this row is on the page it stands for. Always true for a row with no home.
+    /// See `TabRowGlyph.decide`, which turns a wandered parked row's × back into "go home".
+    var atHome: Bool { TabStore.goesHome(home: homeURL, at: currentURL) == nil }
+    /// What a favourite or a pinned row is written down as. `savePins` and
+    /// `saveCurrentSpace` both write it and must agree, or the Space fingerprint they feed
+    /// would read one of the two as somebody else's edit and tear the Space down on every
+    /// switch.
+    var pinnedURL: URL? { TabStore.pinned(home: homeURL, at: currentURL) }
     /// Favourites and Pinned both *stay*: neither auto-archives, ⌘W leaves both where they
     /// are, and both are written down so they come back after a relaunch. Almost everything
     /// that used to ask "is this pinned?" means this.
@@ -437,7 +462,19 @@ struct TitleReveal: Equatable, Sendable {
         // it has one before it has ever run a navigation. Without this the very first × on a
         // restored pinned row, pressed in the gap after it was clicked awake, unpinned it.
         hasEverLoaded = true
-        if !p.title.isEmpty { title = p.title }
+        // A row that comes up from disk, and one a live folder makes, is at home by
+        // definition: the url in the saved list *is* the page it stands for. A row that
+        // already has one keeps it — going home parks at the home url, and parking a
+        // wandered row in place must never move its home to where it wandered.
+        if stays, homeURL == nil { homeURL = url }
+        // A row nothing remembers a title for used to come up called "New Tab", and a
+        // wandered pinned row is now exactly that row: what is written down for it is its
+        // home, while the sidecar of titles and scroll offsets is keyed by the page it was
+        // left on. So it gets the same name the × gives one it sends home — what history
+        // calls that page, else its host. Never worse than "New Tab", and the page replaces
+        // it the moment it loads.
+        title = TabStore.homeTitle(known: p.title.isEmpty ? history.title(for: url) : p.title,
+                                   url: url)
         address = url.absoluteString
         favicon = favicons.icon(for: url)      // from the cache, no page needed
     }
@@ -1508,6 +1545,24 @@ struct Stash {
         !keep && !byScript && !isPrivate
     }
 
+    /// Put a row back on the page it stands for, and say whether it moved. The page it
+    /// wandered to goes, and so does that wander's back/forward list — that is what makes
+    /// this a *reset* rather than an unload, and it is why the `Parked` handed over carries
+    /// no state. `suspend` first, and only then park: a park with a live web view still on
+    /// the old page would leave `currentURL` reading that page. `suspend` declines a tab
+    /// that is already parked, which is exactly the row this is most often called for.
+    ///
+    /// False for every row that has nowhere to go — a Today tab, one pinned while it was
+    /// still blank, one already at home — which is the "park in place" every row did before.
+    @discardableResult
+    private func sendHome(_ tab: Tab) -> Bool {
+        guard let home = TabStore.goesHome(home: tab.homeURL, at: tab.currentURL) else { return false }
+        tab.suspend()
+        tab.park(url: home, Parked(title: TabStore.homeTitle(
+            known: tab.history.title(for: home), url: home)))
+        return true
+    }
+
     /// `byScript` is a popup dismissing itself — see `closedByScript`. Everything else about
     /// the close is the same; only the trace it leaves differs.
     ///
@@ -1539,12 +1594,20 @@ struct Stash {
         // the width of that gap a tab that is very much alive has no url to show — and a ×
         // pressed right after clicking a parked pinned row read that as "nothing left to
         // unload" and took the pin off in one click.
-        switch TabRowGlyph.decide(
-            kind: tab.kind, suspended: tab.suspended,
-            pane: TabRowGlyph.isPane(inSplit: split(containing: id) != nil, forced: asPane)) {
+        let asPaneClose = TabRowGlyph.isPane(inSplit: split(containing: id) != nil, forced: asPane)
+        switch TabRowGlyph.decide(kind: tab.kind, suspended: tab.suspended,
+                                  pane: asPaneClose, atHome: tab.atHome) {
         case .close:
-            break
+            // The grid follows the same rule as the Pinned rows: a favourite's × parks the
+            // tile back on the page it was favourited at rather than wherever it was left.
+            // Not for a pane — a pane's × closes the pane — and it still falls through, so
+            // the window hands over to a Today tab and the tile stops showing, which is
+            // what closing a favourite has always done.
+            if tab.stays, !asPaneClose { sendHome(tab) }
         case .unload:
+            // Arc's rule: a pinned row remembers the url it was pinned at, and this press
+            // puts it back there. It is the middle step of three — page → home → unpin.
+            if sendHome(tab) { return }
             tab.suspend()
             // `suspend` parks a *page*, and a pinned row that has never been given one has
             // none to park — a press that did nothing at all would be worse than the second
@@ -1826,6 +1889,41 @@ struct Stash {
         return s
     }
 
+    /// The home a row takes on when it changes section: the page it is on as it enters
+    /// Favourites or Pinned — that is the url it is being pinned *at* — and none at all
+    /// when it leaves for Today, where a row stands for nothing but itself. A tab pinned
+    /// while it is still blank gets nil and behaves exactly as every row did before.
+    nonisolated static func home(entering kind: TabKind, at: URL?) -> URL? {
+        kind == .today ? nil : at
+    }
+
+    /// What a favourite or a pinned row is written down as — see `Tab.pinnedURL`, and the
+    /// two callers that must agree, `savePins` and `saveCurrentSpace`.
+    nonisolated static func pinned(home: URL?, at: URL?) -> URL? { home ?? at }
+
+    /// Where a favourite or a pinned row's × leaves it: the page it was pinned at, or nil
+    /// for "park in place", which is what every row did before and what a row with no home
+    /// still does. A row whose whereabouts are unknown — the gap between `resume` handing
+    /// the view a load and `WKWebView.url` catching up, where `currentURL` is nil — has not
+    /// wandered anywhere as far as anyone can tell, and is left exactly where it is.
+    ///
+    /// Pure, so `selfcheck --pure` can drive it with no tab: it is the same rule the glyph
+    /// (`Tab.atHome` → `TabRowGlyph.decide`) and `close` both read, and those two drifting
+    /// apart is a row whose × does not do what it says.
+    nonisolated static func goesHome(home: URL?, at: URL?) -> URL? {
+        guard let home, let at, home != at else { return nil }
+        return home
+    }
+
+    /// What a row says once it has been sent home. The page it wandered to has gone, so its
+    /// title has too — leaving "Some Article" on a row that is now google.com is a row
+    /// lying about where it goes. History's last title for the page is the honest answer,
+    /// and its host is the fallback for a page this profile has never been to.
+    nonisolated static func homeTitle(known: String?, url: URL) -> String {
+        if let known, !known.isEmpty { return known }
+        return url.host ?? url.absoluteString
+    }
+
     /// A favourite or a pinned tab that navigated is still itself, now pointing where it
     /// went.
     ///
@@ -1844,8 +1942,18 @@ struct Stash {
         // would erase the profile's.
         guard !isPrivate, !isLittle else { return }
         saveShape()          // the folders around the urls; see Folders.swift
+        // `pinnedURL`, not `currentURL`: what is written down is the page the row stands
+        // for. A pinned row browsed away from its page used to write the page it wandered
+        // to into the Space, so the next launch came up on it — see `Tab.homeURL`.
+        //
+        // ponytail: `saveShape` (Folders.swift) still names the rows of the *folder* shape
+        // by `pinURL(currentURL)`, so a row inside a folder that is wandered at the moment
+        // of a save writes one url into the shape and another into this list, and
+        // `pinOrder` cannot match the two: after a relaunch that one row comes back loose
+        // at the end of Pinned rather than in its folder. Left alone because that file had
+        // a PR in flight; the fix is the same expression there, `$0.pinnedURL`.
         func urls(_ kind: TabKind) -> [String] {
-            tabs.filter { $0.kind == kind }.compactMap { TabStore.pinURL($0.currentURL) }
+            tabs.filter { $0.kind == kind }.compactMap { TabStore.pinURL($0.pinnedURL) }
         }
         let favourites = urls(.favourite), pinned = urls(.pinned)
         // Arc: the only thing Spaces share is Favourites. The grid belongs to the profile and
@@ -1966,8 +2074,13 @@ struct Stash {
         guard !isPrivate, !isLittle,
               let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
         else { return }
+        // `pinnedURL` — the same expression `savePins` writes, and it has to be: these two
+        // write the same two lists, the Space fingerprint is taken off what they leave on
+        // disk, and a fingerprint that moves on its own tears the Space down on the way
+        // back in. A Today tab has no home, so for those it is `currentURL` exactly as
+        // before. See `Tab.homeURL`.
         func urls(_ keep: (Tab) -> Bool) -> [URL] {
-            tabs.filter(keep).compactMap(\.currentURL).filter { $0.scheme?.hasPrefix("http") == true }
+            tabs.filter(keep).compactMap(\.pinnedURL).filter { $0.scheme?.hasPrefix("http") == true }
         }
         space.tabURLs = urls { $0.kind == .today }
         space.pinnedURLs = []              // Favourites are the profile's; see `savePins`

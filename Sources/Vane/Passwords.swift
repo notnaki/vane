@@ -886,6 +886,81 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             print("  --    no private VANE_DATA_DIR, nothing to switch")
         }
 
+        // Not pure: the claim is about a real `Tab` being sent back to a real url, and about
+        // what a Space holds on disk afterwards — neither of which a row over values can
+        // say. Only on a private `VANE_DATA_DIR`; this writes a Space and reads it back.
+        // No page is ever loaded: a pinned row comes up parked, and `park` is also how a
+        // wander is staged, so there is no network in any of it.
+        print("a pinned row browsed away from the page it was pinned at")
+        if Store.overrideDirectory != nil {
+            let profileID = ProfileManager.shared.active.id
+            let home = URL(string: "https://home.example/")!
+            let away = URL(string: "https://away.example/x")!
+            var space = ProfileManager.shared.createSpace(name: "Pin Home", in: profileID)
+            space.pinnedTabURLs = [home]
+            ProfileManager.shared.updateSpace(space)
+            let store = TabStore(profileID: profileID, space: space)
+            if let row = store.tabs.first(where: { $0.kind == .pinned }) {
+                check("a row restored from disk stands for the url the saved list held",
+                      row.homeURL == home)
+                // The wander, staged: a page, a title and a back/forward list of its own.
+                let wander = Data("the wander's back/forward list".utf8)
+                row.park(url: away, Parked(title: "Away", state: wander))
+                check("browsing it elsewhere leaves its home where it was",
+                      row.homeURL == home && row.currentURL == away)
+                check("…and its × offers to send it home rather than to take the pin off",
+                      TabRowGlyph.decide(kind: row.kind, suspended: row.suspended,
+                                         pane: false, atHome: row.atHome) == .unload)
+                store.savePins()
+                check("the Space holds the page it was pinned at, not the one it wandered to",
+                      ProfileManager.shared.spaces(for: profileID)
+                          .first { $0.id == space.id }?.pinnedTabURLs == [home])
+                // What a relaunch brings up, measured rather than reasoned about: the quit
+                // writes the Space and the sidecar, and a second store reads both back.
+                store.saveCurrentSpace()
+                if let saved = ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == space.id }) {
+                    check("quitting writes the same page down, so both writers agree",
+                          saved.pinnedTabURLs == [home])
+                    let relaunched = TabStore(profileID: profileID, space: saved)
+                    let back = relaunched.tabs.first { $0.kind == .pinned }
+                    check("the next launch comes up on the page it was pinned at",
+                          back?.currentURL == home)
+                    check("…parked, and with none of the wander's state to come back to",
+                          back?.suspended == true && back?.snapshot.state != wander)
+                    check("…under the name of the page it stands for, not \"New Tab\"",
+                          back?.title == "home.example")
+                    relaunched.tabs.forEach { $0.tearDown() }
+                    TabStore.all.removeAll { $0 === relaunched }
+                }
+                store.close(row.id)
+                check("its × puts it back on its own page", row.currentURL == home)
+                check("…leaves it pinned, exactly where it was in the section",
+                      row.kind == .pinned && store.tabs.contains { $0 === row })
+                check("…throws the wander's back/forward list away with it",
+                      row.snapshot.state != wander)
+                check("…and stops calling itself by the name of a page it is not on",
+                      row.title == "home.example")
+                check("…so the press after that is the one that takes the pin off",
+                      TabRowGlyph.decide(kind: row.kind, suspended: row.suspended,
+                                         pane: false, atHome: row.atHome) == .unpin)
+                // The grid keeps the same promise. A favourite's × never reads as an
+                // unload — the tile closes — so this is the other arm of `close`.
+                let tile = store.restore([home], as: .favourite, parked: [:])[0]
+                tile.park(url: away, Parked(title: "Away", state: wander))
+                store.close(tile.id)
+                check("a favourite browsed elsewhere is put back on its own page too",
+                      tile.currentURL == home && tile.kind == .favourite)
+            } else {
+                check("the Space came up with its pinned row", false)
+            }
+            store.tabs.forEach { $0.tearDown() }
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+            ProfileManager.shared.deleteSpace(space.id, in: profileID)
+        } else {
+            print("  --    no private VANE_DATA_DIR, nothing to pin")
+        }
+
         print("keychain round-trip")
         Passwords.delete(host: host, account: user)
         Passwords.save(host: host, account: user, password: pass)

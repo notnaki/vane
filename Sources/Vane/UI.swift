@@ -3047,7 +3047,8 @@ private struct TabRow: View {
     /// What ⌘W will actually do to this row, in words. See `TabRowGlyph`.
     private var closeVerb: String {
         TabRowGlyph.decide(kind: tab.kind, suspended: tab.suspended,
-                           pane: store.split(containing: tab.id) != nil).verb
+                           pane: store.split(containing: tab.id) != nil,
+                           atHome: tab.atHome).verb
     }
 
     /// What a click on a row means, by what is held down: ⌘ ticks it into the selection, ⇧
@@ -3160,7 +3161,8 @@ struct TabMenu: View {
         Button(tab.kind == .today
                ? "Archive Tab"
                : TabRowGlyph.decide(kind: tab.kind, suspended: tab.suspended,
-                                    pane: store.split(containing: tab.id) != nil).verb) {
+                                    pane: store.split(containing: tab.id) != nil,
+                                    atHome: tab.atHome).verb) {
             store.archive(tab.id)
         }
         if tab.kind == .today {
@@ -3385,9 +3387,19 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
     ///
     /// `pane` is "this row is one pane of the split on screen", which wins over everything:
     /// what a pane's × closes is the pane.
-    static func decide(kind: TabKind, suspended: Bool, pane: Bool) -> TabRowGlyph {
+    ///
+    /// `atHome` is "this row is on the page it was pinned at" (`Tab.atHome`). It is what
+    /// makes the two-step a *three*-step, and only for a row that has wandered: page →
+    /// home → unpin. A parked row sitting somewhere it was never pinned still has something
+    /// to take away — the wander — so it answers `.unload`, which `TabStore.close` reads as
+    /// "send it home"; only the press after that, on a row back on its own page, takes the
+    /// pin off. Its glyph is the minus every unload draws, not the × that would promise to
+    /// take the pin off. A row with no home to go back to — one pinned while it was still
+    /// blank — is `atHome` by definition and is the two-step it always was.
+    static func decide(kind: TabKind, suspended: Bool, pane: Bool,
+                       atHome: Bool = true) -> TabRowGlyph {
         guard !pane, kind == .pinned else { return .close }
-        return suspended ? .unpin : .unload
+        return suspended && atHome ? .unpin : .unload
     }
 
     /// Whether this close is a pane close. `inSplit` is what `splits` says right now;
@@ -3502,6 +3514,43 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
         assert("…while the same pinned row closed on its own is still the two-step",
                decide(kind: .pinned, suspended: true,
                       pane: isPane(inSplit: false, forced: false)) == .unpin)
+        // --- A row that has wandered off its own page: page → home → unpin ---
+        // `atHome` is the only new input, and it only ever speaks about a *parked* pinned
+        // row: one with a page still loaded already unloads, and every other row closes.
+        assert("a parked pinned row browsed away from its page goes home, not out of Pinned",
+               decide(kind: .pinned, suspended: true, pane: false, atHome: false) == .unload)
+        assert("…and the press after that, on a row back on its own page, takes the pin off",
+               decide(kind: .pinned, suspended: true, pane: false, atHome: true) == .unpin)
+        assert("a loaded pinned row unloads whether it has wandered or not",
+               [true, false].allSatisfy {
+                   decide(kind: .pinned, suspended: false, pane: false, atHome: $0) == .unload
+               })
+        assert("the × on a wandered parked row draws the minus, not the × that would unpin",
+               decide(kind: .pinned, suspended: true, pane: false, atHome: false).symbol == "minus")
+        assert("a wandered row is never closed, and never a two-step twice over",
+               [true, false].allSatisfy {
+                   decide(kind: .pinned, suspended: $0, pane: false, atHome: false) == .unload
+               })
+        assert("a pane is a pane wherever its tab has been",
+               TabKind.allCases.allSatisfy { k in
+                   decide(kind: k, suspended: true, pane: true, atHome: false) == .close
+               })
+        assert("nothing outside Pinned reads home at all",
+               TabKind.allCases.filter { $0 != .pinned }.allSatisfy { k in
+                   decide(kind: k, suspended: true, pane: false, atHome: false) == .close
+               })
+        // A row with no home — pinned while it was still blank — is at home by definition,
+        // so `Tab.atHome` hands `true` in and the whole table is the one it always was.
+        assert("with no home to go back to, every answer is the one from before",
+               TabKind.allCases.allSatisfy { k in
+                   [true, false].allSatisfy { s in
+                       [true, false].allSatisfy { p in
+                           decide(kind: k, suspended: s, pane: p)
+                               == decide(kind: k, suspended: s, pane: p, atHome: true)
+                       }
+                   }
+               })
+
         assert("the minus is only ever the unload glyph",
                TabRowGlyph.allCases.filter { $0.symbol == "minus" } == [.unload])
         assert("every state says out loud what it will do",
@@ -3570,7 +3619,7 @@ private struct TabRowTrailing: View {
                 // an input to it rather than a special case around it, so `TabStore.close`
                 // reaches the same answer for the same row.
                 let glyph = TabRowGlyph.decide(kind: closing.kind, suspended: closing.suspended,
-                                               pane: pane)
+                                               pane: pane, atHome: closing.atHome)
                 Button { store.close(closing.id) } label: {
                     Image(systemName: glyph.symbol).font(Look.rowGlyph).rowTarget()
                 }
