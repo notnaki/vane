@@ -300,10 +300,17 @@ enum GitHub {
     /// what "never close what you did not open" means when the two are indistinguishable.
     ///
     /// A row taken somewhere else entirely — off github, or onto another pull request — stops
-    /// matching and so stops being the folder's. It is left exactly where it is, and the pull
-    /// request it used to stand for comes back as a new row on the next refresh. Which is
-    /// right: the user took that tab somewhere, and the folder is not entitled to steer it
-    /// back or to close it.
+    /// matching and so stops being the folder's. It is left exactly where it is: the user
+    /// took that tab somewhere, and the folder is not entitled to steer it back or to close
+    /// it. Its pull request does not come back as a second row either — a folder cannot tell
+    /// that row from one dragged out, so the pull request is hidden instead. See
+    /// `GitHub.dismissed`, where that is decided.
+    ///
+    /// ponytail: which is the ceiling here, said plainly — click a link inside a pull request
+    /// and the row is no longer the folder's, so the next refresh hides the pull request and
+    /// the row you are reading in stops being live. It is recoverable ("Show Hidden Again")
+    /// and it is not what anybody wants. The fix is to key a row on the url it was pinned at
+    /// rather than the page it is on (`Tab.homeURL`), which lands separately.
     static func mine(_ here: [String], owned: [String]) -> [String] {
         var seen = Set<String>()
         return here.filter { r in
@@ -970,7 +977,7 @@ enum GitHubOAuth {
     private func apply(_ prs: [GitHub.PR], to folder: UUID) {
         let found = prs.map(\.url)
         var mine = Set<String>()
-        var hidden: [String] = []
+        var hidden = Set<String>()
         var goodbyes = Set<String>()
         var showing = false
         for store in stores() where store.pins.folder(folder) != nil {
@@ -979,12 +986,18 @@ enum GitHubOAuth {
             let owned = record?.owned ?? []
             let have = GitHub.mine(store.pins.children(of: folder).compactMap(store.rowURL),
                                    owned: owned)
-            // What the user took out stays out. Before the plan, not after: a dismissed pull
+            // What the user took out stays out. Asked of *this* window, and answered for its
+            // own rows: two windows on one Space do not share tabs, so a row unpinned in one
+            // is still sitting in the other, and a list computed from one window's tabs is
+            // nonsense applied to the other's. Before the plan, not after: a dismissed pull
             // request is one the search never asked for, so there is nothing to add, nothing
-            // to order and nothing to say goodbye to.
-            hidden = GitHub.dismissed(previous: record?.dismissed ?? [], owned: owned,
-                                      have: have, want: found)
-            let want = found.filter { !hidden.contains($0) }
+            // to order and nothing to say goodbye to. The window that still holds the row
+            // keeps it this time round; the folder's hidden list is the union below, so the
+            // next refresh takes it there too, wearing its goodbye like any other.
+            let gone = GitHub.dismissed(previous: record?.dismissed ?? [], owned: owned,
+                                        have: have, want: found)
+            hidden.formUnion(gone)
+            let want = found.filter { !gone.contains($0) }
             mine.formUnion(want)
             let closing = Set((states[folder] ?? [:]).filter { $0.value == .closed }.keys)
             var plan = GitHub.plan(have: have, want: want, closing: closing)
@@ -1004,6 +1017,11 @@ enum GitHubOAuth {
         // by a map entry — the glyphs would outlive the folder and `forget(folder:)` would
         // already have run.
         guard showing else { return }
+        // One list for the folder, whatever order the windows came in: hidden anywhere is
+        // hidden for the folder. The glyphs are one map for the whole folder and the record
+        // is written into every window, so both take the union — sorted, so a refresh that
+        // found nothing new writes nothing at all.
+        let taken = hidden.sorted()
         var glyphs: [String: GitHub.State] = [:]
         for pr in prs where !hidden.contains(pr.url) { glyphs[pr.url] = pr.draft ? .draft : .open }
         for url in goodbyes { glyphs[url] = .closed }
@@ -1019,9 +1037,9 @@ enum GitHubOAuth {
         let claimed = mine.sorted()
         for store in stores() {
             guard let had = store.pins.folder(folder),
-                  (had.owned ?? []) != claimed || (had.dismissed ?? []) != hidden
+                  (had.owned ?? []) != claimed || (had.dismissed ?? []) != taken
             else { continue }
-            store.pins.edit(folder: folder) { $0.owned = claimed; $0.dismissed = hidden }
+            store.pins.edit(folder: folder) { $0.owned = claimed; $0.dismissed = taken }
             store.savePins()
         }
     }
@@ -1154,10 +1172,12 @@ extension TabStore {
     /// the refresh this asks for. In every window showing the folder, for the reason
     /// `LiveFolders.stopKeepingFilled` does it in every window — each holds its own copy of
     /// the Space and each writes it back, so one left holding the old list would put it
-    /// straight back on its next save.
+    /// straight back on its next save. Private and Little windows are no part of it, for the
+    /// reason `LiveFolders.stores()` leaves them out: they are not where this profile's
+    /// Spaces live, and a live folder never refreshes in one.
     func showHiddenAgain(_ id: UUID) {
         for store in TabStore.all where store.profileID == profileID
-            && store.pins.folder(id) != nil {
+            && !store.isPrivate && !store.isLittle && store.pins.folder(id) != nil {
             store.pins.edit(folder: id) { $0.dismissed = nil }
             store.savePins()
         }
@@ -1305,6 +1325,12 @@ extension GitHub {
         // the user is, is a folder nobody could describe.
         assert("the day is GitHub's, not the machine's",
                day(Date(timeIntervalSince1970: 1_757_289_540), minus: 0) == "2025-09-07")
+        // Both sides of midnight GMT, because a `Calendar.current` here would be wrong in
+        // opposite directions east and west of it and one fixture would let half of that
+        // through: 23:59 UTC is already tomorrow in Auckland, 00:00:30 UTC is still
+        // yesterday in New York.
+        assert("…on both sides of it",
+               day(Date(timeIntervalSince1970: 1_757_203_230), minus: 0) == "2025-09-07")
         assert("…and a month boundary is a real calendar's",
                day(Date(timeIntervalSince1970: 1_740_960_000), minus: 30) == "2025-02-01")
         assert("every age says how far back it goes",
@@ -1449,10 +1475,20 @@ extension GitHub {
                dismissed(previous: [b], owned: [a], have: [a], want: [a]).isEmpty)
         assert("…so reopening it makes it news again",
                dismissed(previous: [], owned: [a], have: [a], want: [a, b]).isEmpty)
+        // A row on its goodbye: the folder owns it, it is still here, and the search has
+        // stopped asking for it. It is on its way out because the pull request closed, which
+        // is not the user taking it out — and the pull request they *had* hidden goes with
+        // the search that dropped it.
         assert("a row on its way out is not a row taken out",
-               dismissed(previous: [], owned: [a, b], have: [a, b], want: [a]).isEmpty)
+               dismissed(previous: [c], owned: [a, b], have: [a, b], want: [a]).isEmpty)
+        // The same row, one refresh later, held back because the user is looking at it: it
+        // sits in `closing` waiting its turn and is still nothing to do with hiding.
         assert("…nor is one held back because the user is looking at it",
-               dismissed(previous: [], owned: [a, b], have: [a, b], want: []).isEmpty)
+               plan(have: [a, b], want: [a], closing: [b]).remove == [b]
+                   && dismissed(previous: [b], owned: [a, b], have: [a, b], want: [a]).isEmpty)
+        assert("…while one the folder owns and the search still wants, with no row here to "
+                   + "show for it, is exactly one taken out",
+               dismissed(previous: [c], owned: [a, b], have: [a], want: [a, b, c]) == [c, b])
         assert("nothing is hidden twice, however many refreshes see it gone",
                dismissed(previous: [b], owned: [a, b], have: [a], want: [a, b]) == [b])
         assert("what was hidden stays at the front, and the new ones follow in search order",
@@ -1464,6 +1500,25 @@ extension GitHub {
         p = plan(have: [a], want: [a, b].filter { !hidden.contains($0) }, closing: [])
         assert("the plan is given the search minus what was taken out",
                p.add.isEmpty && p.order == [a] && !p.changesRows)
+        // Two windows on one Space, both showing the folder. They do not share tabs, so the
+        // row unpinned in one is still sitting in the other, and each window is asked about
+        // its own rows. What the folder writes down is the union of the answers — hidden
+        // anywhere is hidden for the folder — and a union does not care which window the
+        // loop reached last, which is the whole point: the other way round, whichever window
+        // came second decided for both, and the folder either forgot the unpin or told the
+        // window that still had the row to say goodbye to it.
+        let unpinned = dismissed(previous: [], owned: [a, b], have: [a], want: [a, b])
+        let untouched = dismissed(previous: [], owned: [a, b], have: [a, b], want: [a, b])
+        assert("a window is only ever asked about the rows it holds",
+               unpinned == [b] && untouched.isEmpty)
+        assert("…and the folder writes down the union, in whichever order it asked",
+               Set(unpinned).union(untouched).sorted() == [b]
+                   && Set(untouched).union(unpinned).sorted() == [b])
+        p = plan(have: [a, b], want: [a, b].filter { !untouched.contains($0) }, closing: [])
+        assert("the window that still has the row does not lose it on this refresh",
+               !p.changesRows && p.order == [a, b])
+        p = plan(have: [a], want: [a, b].filter { !unpinned.contains($0) }, closing: [])
+        assert("…and the window it was taken out of does not get it back", p.add.isEmpty)
         // The ceiling, decided out loud: `have` is built from the page each row is *on*, so a
         // row browsed off github is missing from it exactly the way a row dragged out is, and
         // the pull request is hidden rather than added to the folder a second time. See
