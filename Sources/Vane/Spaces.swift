@@ -212,10 +212,13 @@ enum Spaces {
         default:      space.tabURLs = appending(url, to: space.tabURLs)
         }
         // The state sidecar too, so the tab comes up where it was left rather than reloading
-        // from the top.
+        // from the top — unless it has wandered from its home: then it is handed over the
+        // way its × would hand it over, at home with none of the wander's state, or the
+        // list would say one page and the sidecar wake it on another.
         var parked = Suspension.SpaceState.load(space: spaceID, profileID: store.profileID,
                                                 in: Store.directory)
-        parked[url.absoluteString] = tab.snapshot
+        parked[url.absoluteString] = tab.atHome ? tab.snapshot
+            : Parked(title: TabStore.homeTitle(known: tab.history.title(for: url), url: url))
         Suspension.SpaceState.save(parked, space: spaceID, profileID: store.profileID,
                                    in: Store.directory)
         ProfileManager.shared.updateSpace(space)

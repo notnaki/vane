@@ -917,7 +917,10 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                           .first { $0.id == space.id }?.pinnedTabURLs == [home])
                 // What a relaunch brings up, measured rather than reasoned about: the quit
                 // writes the Space and the sidecar, and a second store reads both back.
+                store.current = row.id          // the row being looked at is what a Space remembers
                 store.saveCurrentSpace()
+                check("leaving the Space remembers the row by its home, which is where a rebuilt Space finds it",
+                      Spaces.lastTab(in: space.id) == home.absoluteString)
                 if let saved = ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == space.id }) {
                     check("quitting writes the same page down, so both writers agree",
                           saved.pinnedTabURLs == [home])

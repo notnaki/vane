@@ -449,7 +449,7 @@ extension Library {
         let kind: TabKind = pinned ? .pinned : .today
         let into = owner(of: target)
 
-        if let live = owner(of: source), let tab = live.tabs.first(where: { $0.currentURL == url }) {
+        if let live = owner(of: source), let tab = live.tabs.first(where: { $0.pinnedURL == url }) {
             // The source is on screen: hand the live tab to the code that already moves one,
             // which carries its scroll position and back/forward list across. That also
             // writes the target's list — harmless when the target is on screen too, because
