@@ -2100,7 +2100,9 @@ struct Stash {
         // first. Only a web page is worth coming back to (see `Spaces.rememberTab`), and
         // never a favourite: the grid is the profile's, so every Space would remember the
         // same tile and land on it. See `Spaces.landing`.
-        let leftOn = active.flatMap { $0.kind == .favourite ? nil : $0.currentURL }
+        // `pinnedURL`, and the same in `landing(in:)`: a Space rebuilt from disk brings a
+        // wandered pinned row up at its home, and the row is what was left on, not the wander.
+        let leftOn = active.flatMap { $0.kind == .favourite ? nil : $0.pinnedURL }
         Spaces.rememberTab(leftOn.flatMap {
             $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
         }, in: id)
@@ -2190,7 +2192,7 @@ struct Stash {
     /// The tab showing a Space lands on: the one it was left on, else the ladder down through
     /// the first Today tab and the first pinned row in `Spaces.landing`.
     private func landing(in space: UUID) -> Tab.ID? {
-        Spaces.landing(on: tabs.map { ($0.currentURL?.absoluteString, $0.kind) },
+        Spaces.landing(on: tabs.map { ($0.pinnedURL?.absoluteString, $0.kind) },
                        last: Spaces.lastTab(in: space)).map { tabs[$0].id }
     }
 

@@ -3371,7 +3371,7 @@ private struct ShimmerTitle: View {
 /// VoiceOver label and `close` all read, and one of those drifting is exactly the bug this
 /// replaces. `selfcheck --pure` drives every row of it with no window and no tab.
 enum TabRowGlyph: Equatable, Sendable, CaseIterable {
-    /// The tab goes: Today's ×, a favourite's — which parks the tile in place — and any
+    /// The tab goes: Today's ×, a favourite's — which parks the tile at its home — and any
     /// pane's, which takes the pane out of the split.
     case close
     /// The page goes, the row stays exactly where it is. A loaded pinned tab.

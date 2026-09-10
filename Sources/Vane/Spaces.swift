@@ -203,7 +203,7 @@ enum Spaces {
         // a Space would put a page the user asked not to be remembered into spaces.json.
         guard !store.isPrivate,
               let tab = store.tabs.first(where: { $0.id == id }),
-              let url = tab.currentURL, url.scheme?.hasPrefix("http") == true,
+              let url = tab.pinnedURL, url.scheme?.hasPrefix("http") == true,   // home, not the wander
               var space = store.spaces.first(where: { $0.id == spaceID }),
               space.id != store.currentSpaceID
         else { return }
