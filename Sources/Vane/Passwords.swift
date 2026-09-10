@@ -910,6 +910,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                 row.park(url: away, Parked(title: "Away", state: wander))
                 check("browsing it elsewhere leaves its home where it was",
                       row.homeURL == home && row.currentURL == away)
+                check("…and a live folder still knows the row by the pull request it stands for",
+                      store.rowURL(row.id.uuidString) == home.absoluteString)
                 check("…and its × offers to send it home rather than to take the pin off",
                       TabRowGlyph.decide(kind: row.kind, suspended: row.suspended,
                                          pane: false, atHome: row.atHome) == .unload)
