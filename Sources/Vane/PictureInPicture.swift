@@ -20,6 +20,10 @@ import WebKit
       // rather than in Swift because it dies with the video it is about: a navigation takes
       // both away, and coming back to a tab must never yank a PiP window the user opened.
       var autoed = false;
+      // Whether the inline that is about to happen is one *we* asked for. The PiP window's
+      // ⤢ leaves picture-in-picture still playing, which is the user asking for the tab
+      // back; this is how that is told apart from our own auto-exit.
+      var ours = false;
       function biggest() {
         var vs = Array.prototype.slice.call(document.querySelectorAll('video'));
         if (!vs.length) { return null; }
@@ -33,11 +37,21 @@ import WebKit
       document.addEventListener('webkitpresentationmodechanged', function (e) {
         var mode = e.target && e.target.webkitPresentationMode;
         if (!mode) { return; }
+        var mine = ours;
+        ours = false;
         // Left picture-in-picture by any route — the PiP window's own close button, the
         // page's controls, going fullscreen — so our claim on it is over. Without this a
         // detach the *user* started next would be read as ours and yanked back inline.
         if (mode !== 'picture-in-picture') { autoed = false; }
         webkit.messageHandlers.vanepip.postMessage(mode);
+        // The PiP window has two buttons and the page cannot see either. WebCore tells them
+        // apart for us: -pipActionStop: (×) pauses the element and *then* exits, while
+        // -pipShouldClose: (⤢) exits still playing. So an inline nobody here asked for, with
+        // the video still running, is the user hitting ⤢ — "put this back and take me to it".
+        // × lands here paused and says nothing extra: the video is home, and no tab switches.
+        if (mode === 'inline' && !mine && !e.target.paused) {
+          webkit.messageHandlers.vanepip.postMessage('return');
+        }
       }, true);
       // Auto picture-in-picture: called on the way out of a tab and on the way back in.
       // Everything it refuses to do is a named reason, so a page that will not detach can
@@ -58,6 +72,7 @@ import WebKit
           return 'pip';
         }
         if (autoed && v.webkitPresentationMode === 'picture-in-picture') {
+          ours = true;
           v.webkitSetPresentationMode('inline');
           autoed = false;
           return 'inline';
@@ -70,10 +85,20 @@ import WebKit
         var v = biggest();
         if (!v || !v.webkitSetPresentationMode) { return 'unsupported'; }
         var next = v.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture';
+        ours = (next === 'inline');
         v.webkitSetPresentationMode(next);
         autoed = false;
         return next;
       }
+      // evaluateJavaScript(in: nil) only ever reaches the main frame, and the video worth
+      // detaching is usually in an iframe, so a frame that holds one says so and Swift
+      // remembers which frame to aim the toggle at. ponytail: last announcer wins — a tiny
+      // ad iframe that loads after the player takes the aim with it. Ceiling: rank the
+      // announcements by video size, which needs them to keep arriving as the page changes.
+      document.addEventListener('loadedmetadata', function () {
+        webkit.messageHandlers.vanepip.postMessage('has-video');
+      }, true);
+      if (biggest()) { webkit.messageHandlers.vanepip.postMessage('has-video'); }
       // Non-writable and non-enumerable: a page cannot swap either helper for its own
       // function and have us call it. ponytail: the names are still *readable*, so a page
       // that goes looking can tell it is in Vane. Ceiling: no global at all, which needs the
@@ -90,8 +115,20 @@ import WebKit
     static let world = WKContentWorld.world(name: "vane")
 
     static func toggle(_ tab: Tab?) {
-        tab?.web.evaluateJavaScript("window.__vanePiP && window.__vanePiP()", in: nil,
+        tab?.web.evaluateJavaScript("window.__vanePiP && window.__vanePiP()", in: tab?.pipFrame,
                                     in: world, completionHandler: nil)
+    }
+
+    /// The user hit the PiP window's ⤢: the video is already back in its tab, and the tab is
+    /// what they asked for. The window too — a PiP video is very often watched over a
+    /// minimised window, which is how it got detached in the first place.
+    static func returnToTab(_ tab: Tab) {
+        guard let store = TabStore.all.first(where: { $0.everyTab.contains { $0 === tab } })
+        else { return }
+        store.reveal(tab.id)           // goes to its Space first if the window is stashing it
+        guard let window = store.window else { return }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
     }
 
     // MARK: - Auto picture-in-picture
@@ -120,7 +157,7 @@ import WebKit
         guard autoEnabled, let tab, !tab.suspended else { return }
         let id = tab.id                 // the closure carries a UUID, never the Tab
         MediaState.shared.asking.insert(id)
-        tab.web.evaluateJavaScript(autoCommand(enter: true), in: nil, in: world) { _ in
+        tab.web.evaluateJavaScript(autoCommand(enter: true), in: tab.pipFrame, in: world) { _ in
             MainActor.assumeIsolated { _ = MediaState.shared.asking.remove(id) }
         }
     }
@@ -129,7 +166,7 @@ import WebKit
     /// video detached before the preference was turned off still has to come home.
     static func exitIfAuto(_ tab: Tab?) {
         guard let tab, !tab.suspended else { return }
-        tab.web.evaluateJavaScript(autoCommand(enter: false), in: nil, in: world,
+        tab.web.evaluateJavaScript(autoCommand(enter: false), in: tab.pipFrame, in: world,
                                    completionHandler: nil)
     }
 
@@ -178,6 +215,31 @@ import WebKit
             ("leaving picture-in-picture by any route drops our claim",
              script.contains("if (mode !== 'picture-in-picture') { autoed = false; }")),
             ("the preference has one key, shared with Settings", prefKey == "autoPiP"),
+            // Aiming: `evaluateJavaScript(in: nil)` only ever reaches the main frame, so an
+            // embedded player answers 'unsupported' unless the frame holding it says so.
+            ("a frame with a video announces itself",
+             script.contains("webkit.messageHandlers.vanepip.postMessage('has-video')")),
+            ("a video that arrives later announces itself too",
+             script.contains("document.addEventListener('loadedmetadata'")),
+            ("the announcement is not mistaken for a mode", state(from: "has-video") == nil),
+            // The ⤢. Both PiP buttons come back as 'inline'; only "still playing" separates
+            // them, and only if our own exits are marked before they happen.
+            ("the request for the tab is not mistaken for a mode", state(from: "return") == nil),
+            ("only a playing video nobody here sent inline asks for the tab",
+             script.contains("if (mode === 'inline' && !mine && !e.target.paused) {")
+                 && script.contains("webkit.messageHandlers.vanepip.postMessage('return')")),
+            ("the auto exit is marked as ours, so it does not read as the ⤢",
+             script.range(of: "v.webkitSetPresentationMode('inline');").map {
+                 script[..<$0.lowerBound].suffix(40).contains("ours = true;")
+             } == true),
+            ("⌥⌘P going inline is marked as ours too",
+             script.range(of: "v.webkitSetPresentationMode(next);").map {
+                 script[..<$0.lowerBound].suffix(40).contains("ours = (next === 'inline');")
+             } == true),
+            ("the mark is cleared by the mode change it was set for",
+             script.range(of: "var mine = ours;").map {
+                 script[$0.upperBound...].prefix(20).contains("ours = false;")
+             } == true),
         ]
     }
 }
