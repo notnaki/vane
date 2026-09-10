@@ -565,6 +565,18 @@ extension VaneWindow {
         func windowDidResignKey(_ n: Notification) { recentre() }
         func windowDidEnterFullScreen(_ n: Notification) { recentre() }
         func windowDidExitFullScreen(_ n: Notification) { recentre() }
+        /// Arc's auto picture-in-picture, the other way out of a page: minimising the window
+        /// pops the playing video out, and bringing the window back puts it home. *Will*, not
+        /// did: the page has to still be on screen when it is asked, the same reason
+        /// `enterIfPlaying` keeps the tab mounted while it waits for the answer.
+        /// Every pane of a split, not just the focused one — the other pane is just as much
+        /// what the user was watching.
+        func windowWillMiniaturize(_ n: Notification) {
+            MainActor.assumeIsolated { store.onScreenTabs.forEach(PictureInPicture.enterIfPlaying) }
+        }
+        func windowDidDeminiaturize(_ n: Notification) {
+            MainActor.assumeIsolated { store.onScreenTabs.forEach(PictureInPicture.exitIfAuto) }
+        }
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
                 Session.save()
