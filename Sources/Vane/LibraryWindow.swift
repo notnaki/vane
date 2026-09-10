@@ -448,12 +448,17 @@ extension Library {
         guard source != target else { return }
         let kind: TabKind = pinned ? .pinned : .today
         let into = owner(of: target)
+        // What the target opens. The card names a row by the page it is on, and a pinned row
+        // browsed away from its home travels as its home — the same page `Spaces.move`
+        // writes down — or the target window's strip would put the wander back on disk.
+        var opens = url
 
         if let live = owner(of: source), let tab = live.tabs.first(where: { $0.currentURL == url }) {
             // The source is on screen: hand the live tab to the code that already moves one,
             // which carries its scroll position and back/forward list across. That also
             // writes the target's list — harmless when the target is on screen too, because
             // that window rewrites the same list from its strip when it saves.
+            opens = tab.pinnedURL ?? url
             Spaces.move(tab.id, to: target, as: kind, from: live)
         } else {
             let spaces = ProfileManager.shared.spaces(for: profile)
@@ -486,7 +491,7 @@ extension Library {
         // The target is on screen: that window's strip is the truth, so the page has to open
         // there rather than only landing in a file the window is about to overwrite.
         if let into {
-            into.newTab(url)
+            into.newTab(opens)
             if pinned, let id = into.tabs.last?.id { into.move(id, to: .pinned) }
         }
         // Every window of the profile draws these columns, and `spaces` is a file read.

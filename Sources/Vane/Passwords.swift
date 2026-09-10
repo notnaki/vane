@@ -959,7 +959,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                 store.current = row.id
                 store.saveCurrentSpace()
                 check("leaving the Space on a wandered row remembers it by its home",
-                      row.currentURL == away && Spaces.lastTab(in: space.id) == home.absoluteString)
+                      row.homeURL == home && Spaces.lastTab(in: space.id) == home.absoluteString)
             } else {
                 check("the Space came up with its pinned row", false)
             }
