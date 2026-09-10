@@ -889,8 +889,10 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         // Not pure: the claim is about a real `Tab` being sent back to a real url, and about
         // what a Space holds on disk afterwards — neither of which a row over values can
         // say. Only on a private `VANE_DATA_DIR`; this writes a Space and reads it back.
-        // No page is ever loaded: a pinned row comes up parked, and `park` is also how a
-        // wander is staged, so there is no network in any of it.
+        // Almost no page is loaded: a pinned row comes up parked, and `park` is also how a
+        // wander is staged. The one exception is the last row, which makes the wandered row
+        // current to see what the Space remembers on the way out; that starts a load of a
+        // reserved `.example` name, which resolves nowhere and is asserted on by nothing.
         print("a pinned row browsed away from the page it was pinned at")
         if Store.overrideDirectory != nil {
             let profileID = ProfileManager.shared.active.id
@@ -917,10 +919,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                           .first { $0.id == space.id }?.pinnedTabURLs == [home])
                 // What a relaunch brings up, measured rather than reasoned about: the quit
                 // writes the Space and the sidecar, and a second store reads both back.
-                store.current = row.id          // the row being looked at is what a Space remembers
                 store.saveCurrentSpace()
-                check("leaving the Space remembers the row by its home, which is where a rebuilt Space finds it",
-                      Spaces.lastTab(in: space.id) == home.absoluteString)
                 if let saved = ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == space.id }) {
                     check("quitting writes the same page down, so both writers agree",
                           saved.pinnedTabURLs == [home])
@@ -953,6 +952,14 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                 store.close(tile.id)
                 check("a favourite browsed elsewhere is put back on its own page too",
                       tile.currentURL == home && tile.kind == .favourite)
+                // Last, because making it current wakes it: the row is wandered again and
+                // looked at, and the Space is left. What it remembers has to be the home,
+                // which is the row a Space rebuilt from disk comes up with.
+                row.park(url: away, Parked(title: "Away", state: wander))
+                store.current = row.id
+                store.saveCurrentSpace()
+                check("leaving the Space on a wandered row remembers it by its home",
+                      row.currentURL == away && Spaces.lastTab(in: space.id) == home.absoluteString)
             } else {
                 check("the Space came up with its pinned row", false)
             }

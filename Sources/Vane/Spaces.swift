@@ -217,7 +217,9 @@ enum Spaces {
         // list would say one page and the sidecar wake it on another.
         var parked = Suspension.SpaceState.load(space: spaceID, profileID: store.profileID,
                                                 in: Store.directory)
-        parked[url.absoluteString] = tab.atHome ? tab.snapshot
+        // `==`, not `atHome`: in the resume gap a row has no `currentURL` yet, reads as
+        // at home, and its snapshot is still the wander's.
+        parked[url.absoluteString] = tab.currentURL == url ? tab.snapshot
             : Parked(title: TabStore.homeTitle(known: tab.history.title(for: url), url: url))
         Suspension.SpaceState.save(parked, space: spaceID, profileID: store.profileID,
                                    in: Store.directory)
