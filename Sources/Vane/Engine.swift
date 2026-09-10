@@ -1319,6 +1319,11 @@ struct Stash {
     }
 
     var active: Tab? { tabs.first { $0.id == current } }
+    /// What the card is drawing: the active tab, or every pane of its split.
+    var onScreenTabs: [Tab] {
+        let ids = activeSplit?.tabs ?? [current].compactMap { $0 }
+        return ids.compactMap { id in tabs.first { $0.id == id } }
+    }
 
     /// A new tab with nowhere to go loads *nothing* and opens the command bar instead. Arc's
     /// bet, and the right one: the homepage is a page nobody asked for, and about:blank at
