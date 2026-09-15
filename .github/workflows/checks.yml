@@ -23,3 +23,6 @@ jobs:
 
       - name: Bundle
         run: ./make-app.sh
+
+      - name: DMG package
+        run: ./scripts/test-build-dmg.sh
