@@ -201,9 +201,9 @@ struct BrowserWindow: View {
                 .frame(width: sidebar.width)
                 // The same near-opaque ground as the command bar: this one floats over
                 // the page, and a bare material over a white page is a white panel.
-                .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
-                .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
-                .hairline(radius: Look.cardRadius)
+                .background(Look.barFill, in: .rect(cornerRadius: Look.floatingSidebarRadius))
+                .background(Look.barMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
+                .hairline(radius: Look.floatingSidebarRadius)
                 .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                 .padding(Look.cardGap)
                 .transition(.move(edge: .leading).combined(with: .opacity))
