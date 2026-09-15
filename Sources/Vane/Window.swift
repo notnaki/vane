@@ -268,7 +268,7 @@ final class TrafficLightRest: NSView {
         NSAnimationContext.runAnimationGroup {
             $0.duration = animated && !Motion.reduced ? Look.listSeconds : 0
             animator().alphaValue = lit ? 0 : Look.lightHoverAlpha
-            for light in lights { light.animator().alphaValue = lit ? Look.lightHoverAlpha : 0 }
+            for light in lights { light.animator().alphaValue = lit ? Look.lightHoverAlpha : 0.001 }
         }
     }
 
@@ -292,6 +292,21 @@ final class TrafficLightRest: NSView {
             Look.lightColours[i].withAlphaComponent(ringed).setStroke()
             ring.stroke()
         }
+    }
+}
+
+extension TrafficLightRest {
+    /// AppKit owns the buttons under this painted face, including their keyboard actions.
+    /// This needs a real window because AppKit itself disables a standard control at zero alpha.
+    @MainActor static func checkControls() -> [(String, Bool)] {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              backing: .buffered, defer: false)
+        let buttons = VaneWindow.lightKinds.compactMap { window.standardWindowButton($0) }
+        let rest = TrafficLightRest()
+        rest.follow(buttons, key: true)
+        return [("the resting face keeps AppKit's buttons enabled for keyboard actions",
+                 buttons.count == VaneWindow.lightKinds.count && buttons.allSatisfy(\.isEnabled))]
     }
 }
 
