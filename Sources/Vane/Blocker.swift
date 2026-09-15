@@ -164,6 +164,8 @@ private struct BlockRule: Encodable, Equatable {
             return
         }
         Task {
+            await compileGate.acquire()
+            defer { compileGate.release() }
             var validationID: String?
             do {
                 guard let ruleStore = WKContentRuleListStore.default() else {
@@ -201,6 +203,7 @@ private struct BlockRule: Encodable, Equatable {
     // MARK: - Compilation
 
     private static var refreshState = BlockerRefreshState<WKContentRuleList>()
+    private static let compileGate = BlockerAsyncGate()
     private static var compiled: WKContentRuleList? { refreshState.current }
     private static var lastFailure: String?
     private static var importedDirectory: URL { Store.directory.appendingPathComponent("FilterLists", isDirectory: true) }
@@ -209,6 +212,8 @@ private struct BlockRule: Encodable, Equatable {
     /// protected identifiers after WebKit answers so a newer refresh that ran while this
     /// task was suspended cannot lose its current or recovery entry.
     private static func sweepCompiledLists(keeping identifier: String, generation: UInt64) async {
+        await compileGate.acquire()
+        defer { compileGate.release() }
         guard refreshState.isCurrent(generation) else { return }
         guard let store = WKContentRuleListStore.default(),
               let available = await store.availableIdentifiers() else { return }
@@ -265,6 +270,8 @@ private struct BlockRule: Encodable, Equatable {
     /// Compile the full candidate before touching any installed rules. A failed source
     /// read or compiler response is an error, never an empty replacement list.
     private static func build() async throws -> WKContentRuleList {
+        await compileGate.acquire()
+        defer { compileGate.release() }
         let json = convert(try sources()).json
         guard json != "[]" else { throw BlockerFiles.Failure("The filter lists contain no usable rules.") }
         let id = "vane-\(hash(json))"
@@ -646,6 +653,7 @@ private struct BlockRule: Encodable, Equatable {
         out += BlockerFiles.check()
         out += BlockerRefreshState<String>.check()
         out += BlockerCache.check()
+        out += BlockerAsyncGate.check()
         return out
     }
 }
@@ -671,6 +679,86 @@ enum BlockerCache {
             ("failed validation compile is removable when it is unreferenced",
              stale(["vane-validation"], keeping: protected) == ["vane-validation"]),
         ]
+    }
+}
+
+/// Serializes WebKit list-store operations across their suspension points. A refresh may
+/// begin while an old cleanup is awaiting WebKit, but it cannot publish its identifier until
+/// that cleanup releases the gate; if the old task removed the wanted identifier, the newer
+/// build recompiles it before publishing.
+final class BlockerAsyncGate: @unchecked Sendable {
+    private let stateLock = NSLock()
+    private var held: Bool
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(held: Bool = false) { self.held = held }
+
+    func acquire() async {
+        await withCheckedContinuation { continuation in
+            stateLock.lock()
+            if held {
+                waiters.append(continuation)
+                stateLock.unlock()
+            } else {
+                held = true
+                stateLock.unlock()
+                continuation.resume()
+            }
+        }
+    }
+
+    func release() {
+        stateLock.lock()
+        let next = waiters.isEmpty ? nil : waiters.removeFirst()
+        if next == nil { held = false }
+        stateLock.unlock()
+        next?.resume()
+    }
+
+    /// A controlled reproduction of the cleanup race: removal owns the gate and pauses;
+    /// promotion starts while it is paused, then must run after removal and restore the id.
+    static func check() -> [(String, Bool)] {
+        final class Fixture: @unchecked Sendable {
+            let lock = NSLock()
+            let removalEntered = DispatchSemaphore(value: 0)
+            let promotionStarted = DispatchSemaphore(value: 0)
+            let finished = DispatchSemaphore(value: 0)
+            var identifiers = Set(["vane-promoted"])
+            func remove() { lock.withLock { _ = identifiers.remove("vane-promoted") } }
+            func promote() { lock.withLock { _ = identifiers.insert("vane-promoted") } }
+            func containsPromoted() -> Bool { lock.withLock { identifiers.contains("vane-promoted") } }
+        }
+
+        let gate = BlockerAsyncGate()
+        let removalPause = BlockerAsyncGate(held: true)
+        let fixture = Fixture()
+        Task.detached {
+            await gate.acquire()
+            fixture.removalEntered.signal()
+            await removalPause.acquire()
+            removalPause.release()
+            fixture.remove()
+            gate.release()
+        }
+        guard fixture.removalEntered.wait(timeout: .now() + 2) == .success else {
+            removalPause.release()
+            return [("compiled-list operations serialize across WebKit suspension", false)]
+        }
+        Task.detached {
+            fixture.promotionStarted.signal()
+            await gate.acquire()
+            fixture.promote()
+            gate.release()
+            fixture.finished.signal()
+        }
+        guard fixture.promotionStarted.wait(timeout: .now() + 2) == .success else {
+            removalPause.release()
+            return [("compiled-list operations serialize across WebKit suspension", false)]
+        }
+        removalPause.release()
+        let completed = fixture.finished.wait(timeout: .now() + 2) == .success
+        return [("a newly promoted compiled identifier cannot be left removed",
+                 completed && fixture.containsPromoted())]
     }
 }
 
