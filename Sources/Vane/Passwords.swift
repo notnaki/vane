@@ -128,6 +128,17 @@ enum Passwords {
             == errSecSuccess
     }
 
+    /// Persist an integration credential and make it the deterministic fresh-read choice.
+    /// The preference is written only after Keychain accepted the secret, so a later failure
+    /// to remove duplicate accounts cannot revive an older credential on the next launch.
+    static func savePreferredCredential(host: String, account: String, password: String,
+                                        profileID: UUID) -> Bool {
+        guard save(host: host, account: account, password: password, profileID: profileID)
+        else { return false }
+        recordUse(host: host, account: account, profileID: profileID)
+        return true
+    }
+
     /// Nil when nothing is stored. With several accounts for one host this is the one the
     /// chooser would put first — see `matches`.
     static func lookup(host: String,
@@ -136,6 +147,101 @@ enum Passwords {
               let secret = password(host: hit.host, account: hit.account, profileID: profileID)
         else { return nil }
         return (hit.account, secret)
+    }
+
+    enum CredentialRead {
+        case found(account: String, password: String)
+        case missing
+        case unavailable(OSStatus)
+    }
+
+    enum CredentialCleanup {
+        case complete
+        case unavailable(OSStatus)
+    }
+
+    private enum CredentialItems {
+        case found([[String: Any]])
+        case missing
+        case unavailable(OSStatus)
+    }
+
+    /// Fresh metadata for one service, narrowed by the same creator/profile rules as every
+    /// password read. Keeping the status is what lets callers distinguish no item from a
+    /// Keychain they could not inspect.
+    private static func credentialItems(host: String, profileID: UUID) -> CredentialItems {
+        var q = query(host: host, profileID: profileID)
+        q[kSecReturnAttributes as String] = true
+        q[kSecReturnPersistentRef as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitAll
+        var out: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        if status == errSecItemNotFound { return .missing }
+        guard status == errSecSuccess else { return .unavailable(status) }
+        guard let items = out as? [[String: Any]] else { return .unavailable(errSecDecode) }
+        let scope = domain(profileID)
+        return .found(items.filter {
+            owns(scope: scope, itemDomain: $0[kSecAttrSecurityDomain as String] as? String)
+        })
+    }
+
+    /// A fresh, scoped read for service credentials. Attribute-list caches are intended
+    /// for the password UI, not deciding whether a persisted integration is signed in.
+    /// A locked/temporarily inaccessible keychain is not a missing credential.
+    static func readCredential(host: String, profileID: UUID) -> CredentialRead {
+        let items: [[String: Any]]
+        switch credentialItems(host: host, profileID: profileID) {
+        case .missing: return .missing
+        case .unavailable(let status): return .unavailable(status)
+        case .found(let found): items = found
+        }
+        let logins = items.map {
+            Login(host: host, account: $0[kSecAttrAccount as String] as? String ?? "")
+        }
+        guard let account = rank(logins, used: lastUsed(profileID: profileID)).first?.account,
+              let item = items.first(where: { $0[kSecAttrAccount as String] as? String == account })
+        else { return .missing }
+        guard let ref = item[kSecValuePersistentRef as String] as? Data,
+              !account.isEmpty else { return .unavailable(errSecDecode) }
+        var out: CFTypeRef?
+        let readStatus = SecItemCopyMatching([
+            kSecClass as String: kSecClassInternetPassword,
+            kSecValuePersistentRef as String: ref,
+            kSecReturnData as String: true,
+        ] as CFDictionary, &out)
+        guard readStatus == errSecSuccess else { return .unavailable(readStatus) }
+        guard let data = out as? Data, let password = String(data: data, encoding: .utf8), !password.isEmpty
+        else { return .unavailable(errSecDecode) }
+        return .found(account: account, password: password)
+    }
+
+    /// Enforce the integration's one-token-per-profile rule after its replacement is safely
+    /// stored. Every deletion uses an owned persistent reference; failure leaves the new
+    /// credential intact and is returned to the caller instead of being mistaken for success.
+    static func deleteOtherCredentials(host: String, keeping account: String,
+                                       profileID: UUID) -> CredentialCleanup {
+        let items: [[String: Any]]
+        switch credentialItems(host: host, profileID: profileID) {
+        case .missing: return .complete
+        case .unavailable(let status): return .unavailable(status)
+        case .found(let found): items = found
+        }
+        for item in items {
+            guard let other = item[kSecAttrAccount as String] as? String,
+                  other != account,
+                  let ref = item[kSecValuePersistentRef as String] as? Data else { continue }
+            let status = SecItemDelete([
+                kSecClass as String: kSecClassInternetPassword,
+                kSecValuePersistentRef as String: ref,
+            ] as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                invalidate()
+                return .unavailable(status)
+            }
+            forgetUse(host: host, account: other, profileID: profileID)
+        }
+        invalidate()
+        return .complete
     }
 
     /// Every saved login for one host, best first: whatever was filled here most recently,
