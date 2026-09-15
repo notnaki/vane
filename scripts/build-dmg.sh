@@ -28,12 +28,20 @@ if [ ! -f "$BACKGROUND" ]; then
   echo "error: DMG background not found: $BACKGROUND" >&2
   exit 1
 fi
+if ! codesign --verify --deep --strict "$APP"; then
+  echo "error: app bundle signature is invalid: $APP" >&2
+  exit 1
+fi
 
 STAGE="$WORK/stage"
 RW_IMAGE="$WORK/Vane-rw.dmg"
 BUILD_VOLUME="Vane DMG $$"
 mkdir -p "$STAGE/.background"
 ditto "$APP" "$STAGE/Vane.app"
+if ! codesign --verify --deep --strict "$STAGE/Vane.app"; then
+  echo "error: staged app bundle signature is invalid" >&2
+  exit 1
+fi
 ln -s /Applications "$STAGE/Applications"
 sips -s format png "$BACKGROUND" \
   --out "$STAGE/.background/background@2x.png" >/dev/null
@@ -56,6 +64,21 @@ DEVICE=$(plutil -p "$ATTACH_PLIST" \
 
 if [ -z "$MOUNT_POINT" ]; then
   echo "error: could not mount writable DMG" >&2
+  exit 1
+fi
+
+diskutil rename "$DEVICE" Vane >/dev/null
+BUILD_VOLUME=Vane
+FINDER_VOLUME=false
+for _ in {1..50}; do
+  if [ "$(osascript -e 'tell application "Finder" to exists disk "Vane"')" = "true" ]; then
+    FINDER_VOLUME=true
+    break
+  fi
+  sleep 0.1
+done
+if [ "$FINDER_VOLUME" != true ]; then
+  echo "error: renamed DMG did not appear in Finder" >&2
   exit 1
 fi
 
@@ -91,7 +114,6 @@ end run
 APPLESCRIPT
 
 sync
-diskutil rename "$DEVICE" Vane >/dev/null
 hdiutil detach "$DEVICE" -quiet
 MOUNT_POINT=""
 DEVICE=""
