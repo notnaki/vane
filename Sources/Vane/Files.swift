@@ -107,12 +107,16 @@ import WebKit
 
     /// The title transition while a parked tab reconstructs its WebKit page. Kept pure so
     /// session restoration can prove its placeholder lifecycle without creating a web view.
+    /// WebKit may publish the host as a provisional title before the document title arrives;
+    /// that loading label is no more final than an empty title.
     nonisolated static func restoredTitle(cached: String, placeholderURL: URL?,
                                           page: String?, url: URL?)
         -> (title: String, placeholderURL: URL?) {
         if let placeholderURL,
            (url == nil || url == placeholderURL),
-           page?.isEmpty != false {
+           (page?.isEmpty != false
+            || page == placeholderURL.host()
+            || page == pillLabel(placeholderURL)) {
             return (cached, placeholderURL)
         }
         return (title(page: page, url: url), nil)
@@ -170,6 +174,10 @@ import WebKit
             ("a waking pinned tab keeps its cached title before WebKit restores its URL",
              restoredTitle(cached: "Readable title", placeholderURL: remote,
                            page: nil, url: nil).title == "Readable title"),
+            ("a waking pinned tab keeps its cached title through WebKit's provisional host title",
+             restoredTitle(cached: "Readable title", placeholderURL: remote,
+                           page: "example.com", url: remote)
+                == (title: "Readable title", placeholderURL: remote)),
             ("a live page title replaces the cached pinned title",
              restoredTitle(cached: "Readable title", placeholderURL: remote,
                            page: "Live title", url: remote)
