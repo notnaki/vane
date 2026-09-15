@@ -88,6 +88,29 @@ import WebKit
                 try require(tab.history.history().contains { URL(string: $0.url)?.path == "/a" },
                             "normal navigation records a real history visit")
 
+                let hostSource = makeTab(profile: profile)
+                try await load(hostSource, "\(base)/host-title", title: "127.0.0.1")
+                guard let restoredURL = hostSource.web.url,
+                      let restoredState = hostSource.snapshot.state else {
+                    throw Failure("host-title page did not expose interaction state")
+                }
+                let restored = makeTab(profile: profile)
+                restored.kind = .pinned
+                restored.park(url: restoredURL,
+                              Parked(title: "Cached Host Title", state: restoredState))
+                restored.resume()
+                try await wait("interaction-state page restoration") {
+                    restored.web.url == restoredURL && restored.web.title == "127.0.0.1"
+                        && !restored.web.isLoading
+                }
+                try require(restored.title == "Cached Host Title",
+                            "interaction-state restoration never publishes its provisional host title")
+                try await wait("a final host-shaped title settles") {
+                    restored.title == "127.0.0.1"
+                }
+                try require(restored.title == "127.0.0.1",
+                            "a final host-shaped title eventually replaces stale cached text")
+
                 let find = Find()
                 await find.run("needle", in: tab, fresh: true)
                 try require(find.count == 2 && find.index == 1, "Find selects the first of two visible matches")
@@ -385,6 +408,8 @@ import WebKit
                     <script>window.inputState='';document.getElementById('query').addEventListener('input',e=>window.inputState=e.target.value);</script>
                     """
             case "/submitted": title = "Submitted"; content = "<p>Form received</p>"
+            case "/host-title":
+                return "<!doctype html><meta charset=utf-8><title>127.0.0.1</title><body>Host title</body>"
             case "/storage": title = "Storage"; content = "<p>Regular storage</p>"
             case "/private": title = "Private"; content = "<p>Private storage</p>"
             default: title = "Empty"; content = ""
