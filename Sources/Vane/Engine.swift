@@ -35,7 +35,7 @@ struct TitleReveal: Equatable, Sendable {
 /// WebKit already tracks all of this.
 @MainActor final class Tab: NSObject, ObservableObject, Identifiable, WKUIDelegate,
                             WKNavigationDelegate, WKScriptMessageHandler {
-    let id = UUID()
+    let id: UUID
     /// A `var` only because suspension swaps it: the whole point of suspending a tab is
     /// dropping the WKWebView so WebKit tears its WebContent process down with it. Every
     /// reader outside this file keeps working — a suspended tab holds a fresh, unloaded
@@ -174,8 +174,9 @@ struct TitleReveal: Equatable, Sendable {
     var favicons: Favicons { Favicons.cache(for: profileID) }
     var extensions: ExtensionHost { ExtensionHost.host(for: profileID) }
 
-    init(url: URL? = nil, isPrivate: Bool = false,
+    init(id: UUID = UUID(), url: URL? = nil, isPrivate: Bool = false,
          profileID: UUID = ProfileManager.shared.active.id) {
+        self.id = id
         self.isPrivate = isPrivate
         self.profileID = profileID
         web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
@@ -198,6 +199,7 @@ struct TitleReveal: Equatable, Sendable {
     /// Everything else a tab has, this tab gets: `attach()` puts the delegates, the user
     /// agent, the developer settings and the KVO on it exactly as for any other page.
     init(popup cfg: WKWebViewConfiguration, isPrivate: Bool, profileID: UUID) {
+        self.id = UUID()
         self.isPrivate = isPrivate
         self.profileID = profileID
         // The one thing that must *not* be shared. WebKit copies the configuration but not
@@ -484,6 +486,14 @@ struct TitleReveal: Equatable, Sendable {
                                    url: url)
         address = url.absoluteString
         favicon = favicons.icon(for: url)      // from the cache, no page needed
+    }
+
+    /// Restore a session row whose current page may differ from the page its pinned row
+    /// stands for. `park` deliberately treats its URL as home for ordinary pin restoration;
+    /// the session is the one source that knows both values.
+    func restore(url: URL, home: URL?, parked: Parked) {
+        park(url: url, parked)
+        if stays { homeURL = home ?? url }
     }
 
 
@@ -1265,13 +1275,23 @@ struct Stash {
     /// its interactionState. A tab we have state for comes up suspended instead of loading.
     init(isPrivate: Bool = false, urls: [URL] = [],
          profileID: UUID = ProfileManager.shared.active.id, space: Space? = nil,
-         parked: [String: Parked] = [:], isLittle: Bool = false) {
+         parked: [String: Parked] = [:], isLittle: Bool = false,
+         session: [Session.Entry]? = nil, selected: UUID? = nil) {
         self.isPrivate = isPrivate
         self.isLittle = isLittle
         self.profileID = profileID
         self.currentSpaceID = space?.id
         TabStore.all.append(self)
         Suspension.begin()        // idempotent; here so main.swift needs no wiring
+        if let session {
+            restoreSession(session)
+            current = selected.flatMap { wanted in tabs.first { $0.id == wanted }?.id }
+                ?? tabs.first { $0.kind == .today }?.id
+            if tabs.isEmpty { openPalette(.newTab) }
+            else if current == nil { openPalette(.newTab) }
+            rememberSpace()
+            return
+        }
         // A space carries its own tabs, favourites and pinned rows; otherwise fall back to
         // the profile's.
         // A Space's own Today tabs, plus whatever this window was asked to open — a url
@@ -1424,8 +1444,9 @@ struct Stash {
     /// playing video out of Picture in Picture. Setting it and setting it back still does
     /// both, and a folder refreshing in the background must do neither.
     @discardableResult
-    func newBlankTab(focus: Bool = true, as kind: TabKind = .today) -> Tab {
-        let t = Tab(isPrivate: isPrivate, profileID: profileID)
+    func newBlankTab(focus: Bool = true, as kind: TabKind = .today,
+                     id: UUID = UUID()) -> Tab {
+        let t = Tab(id: id, isPrivate: isPrivate, profileID: profileID)
         wire(t)
         t.kind = kind
         // Into its own section, not onto the end of the strip: the sections are contiguous
@@ -1442,6 +1463,32 @@ struct Stash {
         if focus { current = t.id }
         extensions.sync()
         return t
+    }
+
+    /// Rebuild one v4 window from its own entries. This path intentionally does not merge
+    /// the Space's URL lists: those describe shared Space furniture, while this snapshot
+    /// describes the distinct tabs and navigation state this particular window owned.
+    private func restoreSession(_ entries: [Session.Entry]) {
+        var today: [(url: URL, tab: Tab)] = []
+        var pinned: [(url: URL, tab: Tab)] = []
+        for entry in entries {
+            guard let id = entry.id.flatMap(UUID.init(uuidString:)),
+                  let url = URL(string: entry.url), let kind = entry.kind else { continue }
+            let tab = newBlankTab(focus: false, as: kind, id: id)
+            let parked = Parked(title: entry.title ?? "",
+                                state: entry.state.flatMap { Data(base64Encoded: $0) })
+            tab.restore(url: url, home: entry.home.flatMap(URL.init(string:)), parked: parked)
+            if kind == .today { today.append((url, tab)) }
+            if kind == .pinned { pinned.append((entry.home.flatMap(URL.init(string:)) ?? url, tab)) }
+        }
+        if !isPrivate && !isLittle {
+            adopt(\.pins, saved: TabStore.savedShape(space: currentSpaceID, profileID: profileID),
+                  tabs: pinned)
+            applyOrder(.pinned)
+            adoptTodayShape(tabs: today)
+        } else {
+            syncShapes()
+        }
     }
 
     /// Everything a tab asks its window for. Split out of `newBlankTab` because one tab is
@@ -2077,10 +2124,11 @@ struct Stash {
     /// window is not in a space, and never for a private window — nothing private is written.
     /// A Little Arc is neither in a Space nor holding the profile's favourites, and writing
     /// its one tab down as both would empty the grid and the Space it was opened from.
-    func saveCurrentSpace() {
+    @discardableResult
+    func saveCurrentSpace() -> Bool {
         guard !isPrivate, !isLittle,
               let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
-        else { return }
+        else { return true }
         // `pinnedURL` — the same expression `savePins` writes, and it has to be: these two
         // write the same two lists, the Space fingerprint is taken off what they leave on
         // disk, and a fingerprint that moves on its own tears the Space down on the way
@@ -2093,7 +2141,7 @@ struct Stash {
         space.pinnedURLs = []              // Favourites are the profile's; see `savePins`
         space.pinnedTabURLs = urls { $0.kind == .pinned }
         saveShape()                        // and the folders those urls are arranged in
-        ProfileManager.shared.updateSpace(space)
+        let savedSpace = ProfileManager.shared.updateSpace(space)
         UserDefaults.vane.set(urls { $0.kind == .favourite }.map(\.absoluteString),
                                   forKey: TabStore.defaultsKey(.favourite, profileID))
         // Scroll position and back/forward list, in a sidecar — `Space` is another file's
@@ -2105,7 +2153,7 @@ struct Stash {
                   key.scheme?.hasPrefix("http") == true else { continue }
             parked[key.absoluteString] = t.snapshot
         }
-        Suspension.SpaceState.save(parked, space: id, profileID: profileID, in: Store.directory)
+        let savedState = Suspension.SpaceState.save(parked, space: id, profileID: profileID, in: Store.directory)
         // And which tab the Space is being left on, so switching back lands on it rather
         // than on whatever is first. Written here rather than in `switchTo` so the swipe
         // commit, the Spaces menu, ⌥⌘←/→ and ⌃1–9 all get it — every one of them saves
@@ -2118,6 +2166,7 @@ struct Stash {
         Spaces.rememberTab(leftOn.flatMap {
             $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
         }, in: id)
+        return savedSpace && savedState
     }
 
     /// The Spaces this window has been in and is keeping alive behind the one it is showing,

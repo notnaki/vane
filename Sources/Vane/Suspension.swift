@@ -1,6 +1,43 @@
 import AppKit
 import WebKit
 
+/// Shared snapshot writer. Foundation stages an atomic write beside the destination,
+/// so a failed write cannot truncate the last completed snapshot.
+enum SnapshotPersistence {
+    @discardableResult
+    static func write(_ data: Data, to url: URL,
+                      writer: (Data, URL, Data.WritingOptions) throws -> Void = {
+                          try $0.write(to: $1, options: $2)
+                      }) -> Bool {
+        do { try writer(data, url, .atomic); return true }
+        catch {
+            NSLog("Vane: could not save %@: %@", url.lastPathComponent, error.localizedDescription)
+            return false
+        }
+    }
+
+    static func check() -> [(String, Bool)] {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("vane-snapshot-\(UUID())")
+        do { try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true) }
+        catch { return [("snapshot fixture directory is available", false)] }
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("session.json")
+        let first = Data("previous complete session".utf8), next = Data("new complete session".utf8)
+        var out = [("a snapshot reaches disk", write(first, to: file))]
+        let failed = write(next, to: file) { _, _, options in
+            guard options.contains(.atomic) else { throw CocoaError(.fileWriteUnknown) }
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        out.append(("a failed snapshot is reported and preserves the completed file",
+                    !failed && (try? Data(contentsOf: file)) == first))
+        out.append(("a later successful snapshot replaces the completed file",
+                    write(next, to: file) && (try? Data(contentsOf: file)) == next))
+        let missing = root.appendingPathComponent("missing/session.json")
+        out.append(("a real filesystem error reports failure", !write(next, to: missing)))
+        return out
+    }
+}
+
 /// Everything a tab needs to be drawn in the strip and later brought back exactly where it
 /// was, without a WKWebView being alive in the meantime.
 ///
@@ -275,12 +312,13 @@ extension Prefs {
             }
         }
 
+        @discardableResult
         static func save(_ parked: [String: Parked], space: UUID,
-                         profileID: UUID, in dir: URL) {
+                         profileID: UUID, in dir: URL) -> Bool {
             var all = read(profileID, in: dir)
             all[space.uuidString] = parked.mapValues { Row(t: $0.title, s: $0.state?.base64EncodedString()) }
-            guard let data = try? JSONEncoder().encode(all) else { return }
-            try? data.write(to: url(for: profileID, in: dir))
+            guard let data = try? JSONEncoder().encode(all) else { return false }
+            return SnapshotPersistence.write(data, to: url(for: profileID, in: dir))
         }
     }
 
@@ -290,7 +328,7 @@ extension Prefs {
     /// that are put back exactly as they were found. No window server, no network, no
     /// WKWebView.
     static func check() -> [(String, Bool)] {
-        var out: [(String, Bool)] = []
+        var out = SnapshotPersistence.check()
         func assert(_ name: String, _ ok: Bool) { out.append((name, ok)) }
 
         // MARK: the decision table
@@ -379,7 +417,41 @@ extension Prefs {
         assert("window grouping survives the round-trip",
                decoded.count == 2 && decoded[0].count == 2 && decoded[1].count == 1)
 
-        // The exact bytes the current build writes: an array of arrays of url strings.
+        let firstID = UUID(uuidString: "00000000-0000-0000-0000-0000000000A1")!
+        let secondID = UUID(uuidString: "00000000-0000-0000-0000-0000000000A2")!
+        let identityEntries = [[
+            Session.Entry(id: firstID.uuidString, url: "https://same.example/",
+                          title: "first", state: Data("first".utf8).base64EncodedString(),
+                          kind: .today),
+            Session.Entry(id: secondID.uuidString, url: "https://same.example/",
+                          title: "second", state: Data("second".utf8).base64EncodedString(),
+                          kind: .pinned, home: "https://pin.example/")
+        ]]
+        let identityData = Session.encode(identityEntries, selected: [secondID.uuidString]) ?? Data()
+        let identityBack = Session.decode(identityData)
+        assert("v4 keeps duplicate-url tabs as distinct identified entries",
+               identityBack == identityEntries && identityBack[0][0].state != identityBack[0][1].state)
+        assert("v4 remembers the selected tab by identity",
+               Session.decodeSelected(identityData) == [secondID])
+        assert("v4 remembers a wandered pin's section and home separately from its page",
+               identityBack[0][1].kind == .pinned
+               && identityBack[0][1].home == "https://pin.example/"
+               && identityBack[0][1].url == "https://same.example/")
+
+        let damaged = Session.normalizedEntries([
+            identityEntries[0][0],
+            Session.Entry(id: firstID.uuidString, url: "https://same.example/", state: "second"),
+            Session.Entry(id: "broken", url: "https://other.example/", title: "Keep me")
+        ])
+        assert("damaged session IDs recover without collapsing duplicate tabs",
+               Set(damaged.compactMap(\.id)).count == 3 && damaged[0] == identityEntries[0][0]
+               && damaged[1].state == "second" && damaged[2].title == "Keep me")
+        let damagedKind = Data("{\"version\":4,\"windows\":[[{\"url\":\"https://keep.example/\",\"title\":\"Keep\",\"kind\":\"broken\"},{\"url\":\"https://also.example/\",\"kind\":\(TabKind.pinned.rawValue)}]]}".utf8)
+        let recovered = Session.decode(damagedKind)
+        assert("an unknown tab kind does not discard the rest of a session",
+               recovered.first?.count == 2 && recovered.first?.last?.kind == .pinned)
+
+        // The bytes the original URL-only format wrote.
         let legacy = Data(#"[["https://a.example/","https://b.example/"],["https://c.example/"]]"#.utf8)
         let old = Session.decode(legacy)
         assert("an old url-only session file still reads",
