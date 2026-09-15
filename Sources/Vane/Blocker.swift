@@ -92,18 +92,43 @@ private struct BlockRule: Encodable, Equatable {
     /// the first run — the identifier is a hash of the generated JSON, so an unchanged
     /// filter set is a store lookup rather than a compile. Call it at startup.
     static func refresh() {
+        let generation = refreshState.begin()
         Task {
-            // One compiled list for the app — the filters are the same everywhere, only
-            // whether they are attached is per profile.
             let wanted = ProfileManager.shared.profiles.contains { enabled(for: $0.id) }
-            compiled = wanted ? await build() : nil
+            if wanted {
+                do {
+                    let fresh = try await build()
+                    guard refreshState.finish(.success(fresh), generation: generation) else { return }
+                    UserDefaults.vane.set(fresh.identifier, forKey: "blockerLastGoodList")
+                    lastFailure = nil
+                    // Publish first: recovery must always name a list that still exists.
+                    // Only then can prior Vane-owned compile results be swept.
+                    await sweepCompiledLists(keeping: fresh.identifier, generation: generation)
+                } catch {
+                    // On relaunch, recover the last successful WebKit list even if an
+                    // imported source has since gone missing or become unreadable.
+                    if compiled == nil,
+                       let id = UserDefaults.vane.string(forKey: "blockerLastGoodList"),
+                       let store = WKContentRuleListStore.default(),
+                       let previous = try? await store.contentRuleList(forIdentifier: id) {
+                        guard refreshState.finish(.success(previous), generation: generation) else { return }
+                    }
+                    guard refreshState.finish(.failure(error), generation: generation) else { return }
+                    let detail = error.localizedDescription
+                    if lastFailure != detail {
+                        lastFailure = detail
+                        NSLog("[vane] content blocker update failed: %@", detail)
+                        Toasts.show(compiled == nil
+                            ? "Content blocking couldn’t start. " + detail
+                            : "Filter update failed; previous blocking rules remain active. " + detail)
+                    }
+                }
+            }
+            guard refreshState.isCurrent(generation) else { return }
             for store in TabStore.all {
                 let on = enabled(for: store.profileID)
-                // `everyTab`: a Space kept alive behind the one on screen holds real web views,
-                // and one that missed a rule-list change would keep the old rules.
                 for tab in store.everyTab {
                     let controller = tab.web.configuration.userContentController
-                    // Vane is the only thing adding rule lists, so a blunt reset is fine.
                     controller.removeAllContentRuleLists()
                     if on, let compiled { controller.add(compiled) }
                 }
@@ -138,68 +163,132 @@ private struct BlockRule: Encodable, Equatable {
             alert.runModal()
             return
         }
-        // ponytail: the path is remembered, not the file. Move or delete the list and it
-        // silently stops applying. Copying it into Application Support is the fix if that
-        // ever bites; not worth the code until it does.
-        guard ScopedPaths.add(file, to: "blockerLists") else {
-            alert.alertStyle = .warning
-            alert.messageText = "Couldn’t remember that file."
-            alert.informativeText = "macOS would not let Vane keep access to it after quitting."
-            alert.runModal()
-            return
-        }
-        refresh()
+        Task {
+            await compileGate.acquire()
+            defer { compileGate.release() }
+            var validationID: String?
+            do {
+                guard let ruleStore = WKContentRuleListStore.default() else {
+                    throw BlockerFiles.Failure("WebKit’s content-blocking store is unavailable.")
+                }
+                let candidate = convert(try sources() + "\n" + text).json
+                let candidateID = "vane-\(hash(candidate))"
+                validationID = candidateID
+                guard try await ruleStore.compileContentRuleList(forIdentifier: candidateID,
+                                                                 encodedContentRuleList: candidate) != nil else {
+                    throw BlockerFiles.Failure("WebKit could not compile that filter list.")
+                }
+                let name = try BlockerFiles.importList(text, into: importedDirectory)
+                var names = UserDefaults.vane.stringArray(forKey: "blockerImportedLists") ?? []
+                if !names.contains(name) { names.append(name) }
+                UserDefaults.vane.set(names, forKey: "blockerImportedLists")
+            } catch {
+                if let validationID { await removeValidationCompileIfUnreferenced(validationID) }
+                alert.alertStyle = .warning
+                alert.messageText = "Couldn’t add that filter list."
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+                return
+            }
+            refresh()
 
-        alert.messageText = "Added \(result.rules) rule\(result.rules == 1 ? "" : "s")."
-        alert.informativeText = result.skipped > 0
-            ? "\(result.skipped) line(s) use syntax WebKit cannot express and were skipped."
-            : "Every line converted."
-        alert.runModal()
+            alert.messageText = "Added \(result.rules) rule\(result.rules == 1 ? "" : "s")."
+            alert.informativeText = result.skipped > 0
+                ? "\(result.skipped) line(s) use syntax WebKit cannot express and were skipped."
+                : "Every line converted."
+            alert.runModal()
+        }
     }
 
     // MARK: - Compilation
 
-    private static var compiled: WKContentRuleList?
+    private static var refreshState = BlockerRefreshState<WKContentRuleList>()
+    private static let compileGate = BlockerAsyncGate()
+    private static var compiled: WKContentRuleList? { refreshState.current }
+    private static var lastFailure: String?
+    private static var importedDirectory: URL { Store.directory.appendingPathComponent("FilterLists", isDirectory: true) }
 
-    /// Extra lists the user added, by path. The built-in list is always on top of these.
-    /// Security-scoped bookmarks, not paths: under the App Sandbox a file picked in the
-    /// panel is readable for that launch only. `paths` starts access before returning.
-    private static var listPaths: [String] { ScopedPaths.paths("blockerLists") }
-
-    private static func sources() -> String {
-        var text = builtin
-        for path in listPaths {
-            if let extra = try? String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8) {
-                text += "\n" + extra
-            }
+    /// Sweep only after the caller has persisted `identifier` as last-good. Re-read both
+    /// protected identifiers after WebKit answers so a newer refresh that ran while this
+    /// task was suspended cannot lose its current or recovery entry.
+    private static func sweepCompiledLists(keeping identifier: String, generation: UInt64) async {
+        await compileGate.acquire()
+        defer { compileGate.release() }
+        guard refreshState.isCurrent(generation) else { return }
+        guard let store = WKContentRuleListStore.default(),
+              let available = await store.availableIdentifiers() else { return }
+        let protected = Set([identifier, compiled?.identifier,
+                             UserDefaults.vane.string(forKey: "blockerLastGoodList")].compactMap { $0 })
+        for stale in BlockerCache.stale(available, keeping: protected) {
+            guard refreshState.isCurrent(generation) else { return }
+            try? await store.removeContentRuleList(forIdentifier: stale)
         }
-        return text
     }
 
-    /// Look the compiled list up by identifier first — compiling is the slow part and
-    /// WebKit already persists the result on disk, so startup after the first run is a
-    /// lookup. The identifier carries a hash of the JSON, so editing the filters (or the
-    /// built-in list shipping a new version) invalidates the cache by construction.
-    private static func build() async -> WKContentRuleList? {
-        let json = convert(sources()).json
-        guard json != "[]" else { return nil }     // WebKit refuses to compile an empty list
-        let id = "vane-\(hash(json))"
-        // Unannotated `instancetype` on the ObjC side, so Swift sees it as optional.
-        guard let store = WKContentRuleListStore.default() else { return nil }
+    /// A prospective import compile is disposable when persistence fails, unless another
+    /// refresh has meanwhile published that same identifier as current or last-good.
+    private static func removeValidationCompileIfUnreferenced(_ identifier: String) async {
+        let protected = Set([compiled?.identifier,
+                             UserDefaults.vane.string(forKey: "blockerLastGoodList")].compactMap { $0 })
+        guard BlockerCache.stale([identifier], keeping: protected) == [identifier],
+              let store = WKContentRuleListStore.default() else { return }
+        try? await store.removeContentRuleList(forIdentifier: identifier)
+    }
 
-        if let hit: WKContentRuleList = try? await store.contentRuleList(forIdentifier: id) {
-            return hit
-        }
-        let fresh: WKContentRuleList? = try? await store.compileContentRuleList(
-            forIdentifier: id, encodedContentRuleList: json)
-        // Every edit leaves a compiled list behind on disk; sweep the old ones.
-        if fresh != nil {
-            for old in await store.availableIdentifiers() ?? []
-            where old.hasPrefix("vane-") && old != id {
-                try? await store.removeContentRuleList(forIdentifier: old)
+    private static func sources() throws -> String {
+        var files: [URL] = []
+        // Resolve legacy selections without ScopedPaths.urls: that helper drops failed
+        // bookmarks, which would silently discard part of the user's blocking rules.
+        var accessed: [URL] = []
+        defer { accessed.forEach { $0.stopAccessingSecurityScopedResource() } }
+        for entry in UserDefaults.vane.array(forKey: "blockerLists") ?? [] {
+            let url: URL
+            if let data = entry as? Data {
+                var stale = false
+                guard let resolved = (try? URL(resolvingBookmarkData: data, options: .withSecurityScope, bookmarkDataIsStale: &stale))
+                    ?? (try? URL(resolvingBookmarkData: data, options: [], bookmarkDataIsStale: &stale)) else {
+                    throw BlockerFiles.Failure("A previously added filter file is unavailable. Reconnect its drive or restore the file.")
+                }
+                url = resolved
+            } else if let path = entry as? String {
+                url = URL(fileURLWithPath: path)
+            } else {
+                throw BlockerFiles.Failure("A saved filter file reference is unreadable. Restore your filter-list settings.")
             }
+            if url.startAccessingSecurityScopedResource() { accessed.append(url) }
+            files.append(url)
         }
-        return fresh
+        for name in UserDefaults.vane.stringArray(forKey: "blockerImportedLists") ?? [] {
+            guard name == URL(fileURLWithPath: name).lastPathComponent, name.hasSuffix(".txt") else {
+                throw BlockerFiles.Failure("A saved filter-list filename is invalid.")
+            }
+            files.append(importedDirectory.appendingPathComponent(name))
+        }
+        return try BlockerFiles.sources(builtin: builtin, files: files)
+    }
+
+    /// Compile the full candidate before touching any installed rules. A failed source
+    /// read or compiler response is an error, never an empty replacement list.
+    private static func build() async throws -> WKContentRuleList {
+        await compileGate.acquire()
+        defer { compileGate.release() }
+        let json = convert(try sources()).json
+        guard json != "[]" else { throw BlockerFiles.Failure("The filter lists contain no usable rules.") }
+        let id = "vane-\(hash(json))"
+        guard let store = WKContentRuleListStore.default() else {
+            throw BlockerFiles.Failure("WebKit’s content-blocking store is unavailable. Try restarting Vane.")
+        }
+        if let hit = try? await store.contentRuleList(forIdentifier: id) { return hit }
+        do {
+            guard let fresh = try await store.compileContentRuleList(forIdentifier: id, encodedContentRuleList: json) else {
+                throw BlockerFiles.Failure("WebKit did not return compiled rules.")
+            }
+            return fresh
+        } catch {
+            throw BlockerFiles.Failure("WebKit couldn’t compile the filter lists. Restore the most recently changed list and try again.")
+        }
+        // Keep prior compiled versions available for recovery after a failed refresh or
+        // relaunch. A stale concurrent task must never sweep another task's active list.
     }
 
     /// FNV-1a. `hashValue` is seeded per process, which would miss the cache every launch.
@@ -561,6 +650,205 @@ private struct BlockRule: Encodable, Equatable {
         assert("the built-in list is valid JSON",
                (try? JSONSerialization.jsonObject(with: Data(shipped.json.utf8))) != nil)
         assert("the same filters hash the same way", hash(shipped.json) == hash(convert(builtin).json))
+        out += BlockerFiles.check()
+        out += BlockerRefreshState<String>.check()
+        out += BlockerCache.check()
+        out += BlockerAsyncGate.check()
         return out
+    }
+}
+
+/// Vane owns only identifiers with its prefix. The protected set is captured after a new
+/// last-good identifier is published, so cleanup can never remove the recovery target.
+enum BlockerCache {
+    static func stale(_ available: [String], keeping protected: Set<String>) -> [String] {
+        available.filter { $0.hasPrefix("vane-") && !protected.contains($0) }
+    }
+
+    static func check() -> [(String, Bool)] {
+        let available = ["foreign", "vane-old", "vane-current", "vane-last-good"]
+        let protected = Set(["vane-current", "vane-last-good"])
+        let swept = stale(available, keeping: protected)
+        return [
+            ("compiled-list cleanup preserves current and persisted last-good rules",
+             swept == ["vane-old"]),
+            ("compiled-list cleanup never removes another owner's cache",
+             !swept.contains("foreign")),
+            ("failed validation compile is retained when it became current",
+             stale(["vane-current"], keeping: protected).isEmpty),
+            ("failed validation compile is removable when it is unreferenced",
+             stale(["vane-validation"], keeping: protected) == ["vane-validation"]),
+        ]
+    }
+}
+
+/// Serializes WebKit list-store operations across their suspension points. A refresh may
+/// begin while an old cleanup is awaiting WebKit, but it cannot publish its identifier until
+/// that cleanup releases the gate; if the old task removed the wanted identifier, the newer
+/// build recompiles it before publishing.
+final class BlockerAsyncGate: @unchecked Sendable {
+    private let stateLock = NSLock()
+    private var held: Bool
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(held: Bool = false) { self.held = held }
+
+    func acquire() async {
+        await withCheckedContinuation { continuation in
+            stateLock.lock()
+            if held {
+                waiters.append(continuation)
+                stateLock.unlock()
+            } else {
+                held = true
+                stateLock.unlock()
+                continuation.resume()
+            }
+        }
+    }
+
+    func release() {
+        stateLock.lock()
+        let next = waiters.isEmpty ? nil : waiters.removeFirst()
+        if next == nil { held = false }
+        stateLock.unlock()
+        next?.resume()
+    }
+
+    /// A controlled reproduction of the cleanup race: removal owns the gate and pauses;
+    /// promotion starts while it is paused, then must run after removal and restore the id.
+    static func check() -> [(String, Bool)] {
+        final class Fixture: @unchecked Sendable {
+            let lock = NSLock()
+            let removalEntered = DispatchSemaphore(value: 0)
+            let promotionStarted = DispatchSemaphore(value: 0)
+            let finished = DispatchSemaphore(value: 0)
+            var identifiers = Set(["vane-promoted"])
+            func remove() { lock.withLock { _ = identifiers.remove("vane-promoted") } }
+            func promote() { lock.withLock { _ = identifiers.insert("vane-promoted") } }
+            func containsPromoted() -> Bool { lock.withLock { identifiers.contains("vane-promoted") } }
+        }
+
+        let gate = BlockerAsyncGate()
+        let removalPause = BlockerAsyncGate(held: true)
+        let fixture = Fixture()
+        Task.detached {
+            await gate.acquire()
+            fixture.removalEntered.signal()
+            await removalPause.acquire()
+            removalPause.release()
+            fixture.remove()
+            gate.release()
+        }
+        guard fixture.removalEntered.wait(timeout: .now() + 2) == .success else {
+            removalPause.release()
+            return [("compiled-list operations serialize across WebKit suspension", false)]
+        }
+        Task.detached {
+            fixture.promotionStarted.signal()
+            await gate.acquire()
+            fixture.promote()
+            gate.release()
+            fixture.finished.signal()
+        }
+        guard fixture.promotionStarted.wait(timeout: .now() + 2) == .success else {
+            removalPause.release()
+            return [("compiled-list operations serialize across WebKit suspension", false)]
+        }
+        removalPause.release()
+        let completed = fixture.finished.wait(timeout: .now() + 2) == .success
+        return [("a newly promoted compiled identifier cannot be left removed",
+                 completed && fixture.containsPromoted())]
+    }
+}
+
+/// Only the newest refresh may publish. Failed candidates leave the current value intact.
+struct BlockerRefreshState<Value> {
+    private(set) var current: Value?
+    private var generation: UInt64 = 0
+    mutating func begin() -> UInt64 { generation &+= 1; return generation }
+    func isCurrent(_ candidate: UInt64) -> Bool { candidate == generation }
+    @discardableResult
+    mutating func finish(_ result: Result<Value, Error>, generation candidate: UInt64) -> Bool {
+        guard isCurrent(candidate) else { return false }
+        if case let .success(value) = result { current = value }
+        return true
+    }
+}
+
+extension BlockerRefreshState where Value == String {
+    static func check() -> [(String, Bool)] {
+        var state = Self()
+        let first = state.begin()
+        state.finish(.success("working"), generation: first)
+        let failed = state.begin()
+        state.finish(.failure(BlockerFiles.Failure("compiler failure")), generation: failed)
+        let retained = state.current == "working"
+        let obsolete = state.begin()
+        let newest = state.begin()
+        state.finish(.success("newest"), generation: newest)
+        let rejected = !state.finish(.success("obsolete"), generation: obsolete)
+        _ = state.finish(.failure(BlockerFiles.Failure("late failure")), generation: obsolete)
+        return [("failed filter compilation retains working rules", retained),
+                ("out-of-order filter refresh cannot replace current rules", rejected && state.current == "newest")]
+    }
+}
+
+/// Files imported into Vane are owned snapshots, so moving the original cannot silently
+/// change protection. Source loading fails as a whole if any requested list is unreadable.
+enum BlockerFiles {
+    struct Failure: LocalizedError {
+        let message: String
+        init(_ message: String) { self.message = message }
+        var errorDescription: String? { message }
+    }
+
+    static func importList(_ text: String, into directory: URL) throws -> String {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let name = UUID().uuidString + ".txt"
+        try text.write(to: directory.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        return name
+    }
+
+    static func sources(builtin: String, files: [URL]) throws -> String {
+        var result = builtin
+        for file in files {
+            do { result += "\n" + (try String(contentsOf: file, encoding: .utf8)) }
+            catch { throw Failure("Couldn’t read filter list “\(file.lastPathComponent)”. Restore that file or reconnect its drive, then retry.") }
+        }
+        return result
+    }
+
+    static func check() -> [(String, Bool)] {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("Vane-filter-check-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        do {
+            try fm.createDirectory(at: root, withIntermediateDirectories: true)
+            let original = root.appendingPathComponent("original.txt")
+            let text = "||fixture.example^"
+            try text.write(to: original, atomically: true, encoding: .utf8)
+            let folder = root.appendingPathComponent("owned")
+            let name = try importList(try String(contentsOf: original, encoding: .utf8), into: folder)
+            try fm.removeItem(at: original)
+            let owned = folder.appendingPathComponent(name)
+            let loaded = try sources(builtin: "builtin", files: [owned])
+            var out = [("imported filter list survives removal of original", loaded == "builtin\n" + text)]
+            do {
+                _ = try sources(builtin: "builtin", files: [owned, original])
+                out.append(("missing filter input fails whole candidate instead of dropping protection", false))
+            } catch {
+                out.append(("missing filter input fails whole candidate instead of dropping protection", true))
+            }
+            let file = root.appendingPathComponent("not-a-directory")
+            try Data().write(to: file)
+            do {
+                _ = try importList(text, into: file)
+                out.append(("failed filter import reports persistence failure", false))
+            } catch {
+                out.append(("failed filter import reports persistence failure", true))
+            }
+            return out
+        } catch { return [("filter filesystem fixtures: \(error.localizedDescription)", false)] }
     }
 }
