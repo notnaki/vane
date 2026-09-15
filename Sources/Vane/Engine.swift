@@ -342,6 +342,9 @@ struct TitleReveal: Equatable, Sendable {
     /// Set when a page is being edited in the URL field, so KVO doesn't fight the user.
     var editing = false
     private var obs: [NSKeyValueObservation] = []
+    /// Debounces WebKit's loading label after an interaction-state restore. `isLoading`
+    /// becomes false just before the final title KVO, so settling on that edge alone is early.
+    private var titleSettleTask: Task<Void, Never>?
     var onNewTab: ((URL?) -> Void)?
     /// A link the user asked for *beside* this tab — ⌘-click, middle-click, `target=_blank`.
     /// The Bool is whether to go there; ⌘-click deliberately does not.
@@ -505,8 +508,20 @@ struct TitleReveal: Equatable, Sendable {
                                                      url: w.url)
                     self.title = update.title
                     self.titlePlaceholderURL = update.placeholderURL
+                    if update.placeholderURL == nil {
+                        self.titleSettleTask?.cancel()
+                        self.titleSettleTask = nil
+                    } else {
+                        self.scheduleTitleSettle(for: w)
+                    }
                     if !self.isPrivate, let u = w.url { self.history.retitle(u, title: self.title) }
                     self.extensions.sync()
+                }
+            },
+            web.observe(\.isLoading, options: [.new]) { [weak self] w, _ in
+                MainActor.assumeIsolated {
+                    guard !w.isLoading else { return }
+                    self?.scheduleTitleSettle(for: w)
                 }
             },
             web.observe(\.url, options: [.new]) { [weak self] w, _ in
@@ -546,6 +561,31 @@ struct TitleReveal: Equatable, Sendable {
         // attach() re-runs on resume, so this covers a waking tab too.
         TabAudio.watch(self) { [weak self] in self?.audible = $0 }
         TabAudio.reapply(self)
+    }
+
+    /// A restored page reports `isLoading == false` before its final title KVO. Give that
+    /// title one short turn to arrive; if it remains a host label, it is now authoritative
+    /// rather than a provisional value. This also bounds a titleless page's placeholder.
+    private func scheduleTitleSettle(for observedWeb: WKWebView) {
+        guard web === observedWeb, titlePlaceholderURL != nil, !observedWeb.isLoading else { return }
+        titleSettleTask?.cancel()
+        titleSettleTask = Task { @MainActor [weak self, weak observedWeb] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled, let self, let observedWeb,
+                  self.web === observedWeb, !observedWeb.isLoading,
+                  self.titlePlaceholderURL != nil else { return }
+            let update = Files.settledRestoredTitle(cached: self.title,
+                                                    placeholderURL: self.titlePlaceholderURL,
+                                                    page: observedWeb.title,
+                                                    url: observedWeb.url)
+            self.title = update.title
+            self.titlePlaceholderURL = update.placeholderURL
+            self.titleSettleTask = nil
+            if !self.isPrivate, let url = observedWeb.url {
+                self.history.retitle(url, title: self.title)
+            }
+            self.extensions.sync()
+        }
     }
 
     /// The on-device model has just handed back a shorter name for this page and it is now
@@ -591,6 +631,8 @@ struct TitleReveal: Equatable, Sendable {
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
         let old = web
+        titleSettleTask?.cancel()
+        titleSettleTask = nil
         CertificateTrust.navigationStarted(in: self)
         pipFrame = nil                // it named a frame of the view that is going
         TabAudio.unwatch(self)         // KVO on a dead observee is a crash, not a leak

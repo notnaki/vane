@@ -125,6 +125,17 @@ import WebKit
     /// Starts the title placeholder lifecycle shared by restored and live-suspended tabs.
     nonisolated static func restorationPlaceholder(for url: URL) -> URL? { url }
 
+    /// Resolve a retained restoration placeholder once WebKit says the reconstructed page
+    /// is no longer loading and has had a short turn to publish its final title.
+    nonisolated static func settledRestoredTitle(cached: String, placeholderURL: URL?,
+                                                 page: String?, url: URL?)
+        -> (title: String, placeholderURL: URL?) {
+        let update = restoredTitle(cached: cached, placeholderURL: placeholderURL,
+                                   page: page, url: url)
+        guard update.placeholderURL != nil else { return update }
+        return (page?.isEmpty != false ? cached : title(page: page, url: url), nil)
+    }
+
     /// What the address pill says: a local file's own name, or the host with `www.` dropped
     /// the way Arc shows it — the scheme is noise the user has never needed to read. Nil
     /// when there is no page, which is the pill's "Search or Enter URL".
@@ -144,6 +155,7 @@ import WebKit
         let page = URL(fileURLWithPath: "/tmp/index.html")
         let shot = URL(fileURLWithPath: "/tmp/shot.PNG")
         let remote = URL(string: "https://example.com/a.pdf")!
+        let wwwRemote = URL(string: "https://www.example.com/a.pdf")!
         return [
             ("a pdf is opened", opens([pdf]) == [pdf]),
             ("html, png, jpeg, gif, svg and webp are opened",
@@ -178,6 +190,18 @@ import WebKit
              restoredTitle(cached: "Readable title", placeholderURL: remote,
                            page: "example.com", url: remote)
                 == (title: "Readable title", placeholderURL: remote)),
+            ("a settled raw-host title replaces stale cached text",
+             settledRestoredTitle(cached: "Readable title", placeholderURL: remote,
+                                  page: "example.com", url: remote)
+                == (title: "example.com", placeholderURL: nil)),
+            ("a settled stripped-www title replaces stale cached text",
+             settledRestoredTitle(cached: "Readable title", placeholderURL: wwwRemote,
+                                  page: "example.com", url: wwwRemote)
+                == (title: "example.com", placeholderURL: nil)),
+            ("a settled titleless page keeps cached text without keeping the placeholder",
+             settledRestoredTitle(cached: "Readable title", placeholderURL: remote,
+                                  page: nil, url: remote)
+                == (title: "Readable title", placeholderURL: nil)),
             ("a live page title replaces the cached pinned title",
              restoredTitle(cached: "Readable title", placeholderURL: remote,
                            page: "Live title", url: remote)
