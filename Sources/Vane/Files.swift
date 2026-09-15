@@ -110,7 +110,12 @@ import WebKit
     nonisolated static func restoredTitle(cached: String, placeholderURL: URL?,
                                           page: String?, url: URL?)
         -> (title: String, placeholderURL: URL?) {
-        (title(page: page, url: url), nil)
+        if let placeholderURL,
+           (url == nil || url == placeholderURL),
+           page?.isEmpty != false {
+            return (cached, placeholderURL)
+        }
+        return (title(page: page, url: url), nil)
     }
 
     /// What the address pill says: a local file's own name, or the host with `www.` dropped
@@ -155,6 +160,17 @@ import WebKit
             ("a waking pinned tab keeps its cached title before WebKit reloads",
              restoredTitle(cached: "Readable title", placeholderURL: remote,
                            page: nil, url: remote).title == "Readable title"),
+            ("a waking pinned tab keeps its cached title before WebKit restores its URL",
+             restoredTitle(cached: "Readable title", placeholderURL: remote,
+                           page: nil, url: nil).title == "Readable title"),
+            ("a live page title replaces the cached pinned title",
+             restoredTitle(cached: "Readable title", placeholderURL: remote,
+                           page: "Live title", url: remote)
+                == (title: "Live title", placeholderURL: nil)),
+            ("navigation drops a pinned title placeholder",
+             restoredTitle(cached: "Readable title", placeholderURL: remote,
+                           page: nil, url: URL(string: "https://example.org")!)
+                == (title: "New Tab", placeholderURL: nil)),
 
             ("the pill shows a file by name", pillLabel(pdf) == "report.pdf"),
             ("the pill shows a site by host", pillLabel(remote) == "example.com"),
