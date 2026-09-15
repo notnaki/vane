@@ -101,6 +101,9 @@ private struct BlockRule: Encodable, Equatable {
                     guard refreshState.finish(.success(fresh), generation: generation) else { return }
                     UserDefaults.vane.set(fresh.identifier, forKey: "blockerLastGoodList")
                     lastFailure = nil
+                    // Publish first: recovery must always name a list that still exists.
+                    // Only then can prior Vane-owned compile results be swept.
+                    await sweepCompiledLists(keeping: fresh.identifier, generation: generation)
                 } catch {
                     // On relaunch, recover the last successful WebKit list even if an
                     // imported source has since gone missing or become unreadable.
@@ -161,12 +164,15 @@ private struct BlockRule: Encodable, Equatable {
             return
         }
         Task {
+            var validationID: String?
             do {
                 guard let ruleStore = WKContentRuleListStore.default() else {
                     throw BlockerFiles.Failure("WebKit’s content-blocking store is unavailable.")
                 }
                 let candidate = convert(try sources() + "\n" + text).json
-                guard try await ruleStore.compileContentRuleList(forIdentifier: "vane-\(hash(candidate))",
+                let candidateID = "vane-\(hash(candidate))"
+                validationID = candidateID
+                guard try await ruleStore.compileContentRuleList(forIdentifier: candidateID,
                                                                  encodedContentRuleList: candidate) != nil else {
                     throw BlockerFiles.Failure("WebKit could not compile that filter list.")
                 }
@@ -175,6 +181,7 @@ private struct BlockRule: Encodable, Equatable {
                 if !names.contains(name) { names.append(name) }
                 UserDefaults.vane.set(names, forKey: "blockerImportedLists")
             } catch {
+                if let validationID { await removeValidationCompileIfUnreferenced(validationID) }
                 alert.alertStyle = .warning
                 alert.messageText = "Couldn’t add that filter list."
                 alert.informativeText = error.localizedDescription
@@ -197,6 +204,31 @@ private struct BlockRule: Encodable, Equatable {
     private static var compiled: WKContentRuleList? { refreshState.current }
     private static var lastFailure: String?
     private static var importedDirectory: URL { Store.directory.appendingPathComponent("FilterLists", isDirectory: true) }
+
+    /// Sweep only after the caller has persisted `identifier` as last-good. Re-read both
+    /// protected identifiers after WebKit answers so a newer refresh that ran while this
+    /// task was suspended cannot lose its current or recovery entry.
+    private static func sweepCompiledLists(keeping identifier: String, generation: UInt64) async {
+        guard refreshState.isCurrent(generation) else { return }
+        guard let store = WKContentRuleListStore.default(),
+              let available = await store.availableIdentifiers() else { return }
+        let protected = Set([identifier, compiled?.identifier,
+                             UserDefaults.vane.string(forKey: "blockerLastGoodList")].compactMap { $0 })
+        for stale in BlockerCache.stale(available, keeping: protected) {
+            guard refreshState.isCurrent(generation) else { return }
+            try? await store.removeContentRuleList(forIdentifier: stale)
+        }
+    }
+
+    /// A prospective import compile is disposable when persistence fails, unless another
+    /// refresh has meanwhile published that same identifier as current or last-good.
+    private static func removeValidationCompileIfUnreferenced(_ identifier: String) async {
+        let protected = Set([compiled?.identifier,
+                             UserDefaults.vane.string(forKey: "blockerLastGoodList")].compactMap { $0 })
+        guard BlockerCache.stale([identifier], keeping: protected) == [identifier],
+              let store = WKContentRuleListStore.default() else { return }
+        try? await store.removeContentRuleList(forIdentifier: identifier)
+    }
 
     private static func sources() throws -> String {
         var files: [URL] = []
@@ -613,7 +645,32 @@ private struct BlockRule: Encodable, Equatable {
         assert("the same filters hash the same way", hash(shipped.json) == hash(convert(builtin).json))
         out += BlockerFiles.check()
         out += BlockerRefreshState<String>.check()
+        out += BlockerCache.check()
         return out
+    }
+}
+
+/// Vane owns only identifiers with its prefix. The protected set is captured after a new
+/// last-good identifier is published, so cleanup can never remove the recovery target.
+enum BlockerCache {
+    static func stale(_ available: [String], keeping protected: Set<String>) -> [String] {
+        available.filter { $0.hasPrefix("vane-") && !protected.contains($0) }
+    }
+
+    static func check() -> [(String, Bool)] {
+        let available = ["foreign", "vane-old", "vane-current", "vane-last-good"]
+        let protected = Set(["vane-current", "vane-last-good"])
+        let swept = stale(available, keeping: protected)
+        return [
+            ("compiled-list cleanup preserves current and persisted last-good rules",
+             swept == ["vane-old"]),
+            ("compiled-list cleanup never removes another owner's cache",
+             !swept.contains("foreign")),
+            ("failed validation compile is retained when it became current",
+             stale(["vane-current"], keeping: protected).isEmpty),
+            ("failed validation compile is removable when it is unreferenced",
+             stale(["vane-validation"], keeping: protected) == ["vane-validation"]),
+        ]
     }
 }
 
