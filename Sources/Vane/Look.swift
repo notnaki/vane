@@ -762,14 +762,17 @@ enum Look {
     // `toastDuration` is where that starts — unless the pointer is holding it there.
     static let toastHeight: CGFloat = 32
     static let toastDuration: Double = 3
-    /// Arc's "Quit Vane?" card: the least it is wide (three buttons in a row make it wider
-    /// when they need to) and the icon in its corner.
+    /// Quit confirmation: a dark glass card, with room outside its hosting view's content
+    /// for the soft shadow to fade instead of being cut at the card's bounds.
     static let quitDialogWidth: CGFloat = 440
-    static let quitDialogIcon: CGFloat = 56
+    static let quitDialogIcon: CGFloat = 48
+    static let quitDialogRadius: CGFloat = 20
+    static let quitShadowInset: CGFloat = 64
+    static let quitCardFill = Color(red: 0.065, green: 0.07, blue: 0.08)
     /// The scrim under the card: how much it darkens the page, and how far it blurs it.
-    /// Arc's is a clear dim with only a hint of blur — the page should still be readable.
-    static let quitScrim: CGFloat = 0.35
-    static let quitBlur: CGFloat = 3
+    /// The window remains recognizable, while page text recedes behind the question.
+    static let quitScrim: CGFloat = 0.50
+    static let quitBlur: CGFloat = 14
     /// The scrim blurs a picture of the window rather than the window itself, and takes it
     /// this much smaller than the window is: a quarter of the pixels is a quarter of the
     /// work, and the blur drawn back over them hides every one that shrinking lost.
@@ -933,8 +936,8 @@ extension Look {
                         && rowTarget + rowSpacing * 2 + rowTrailingInset < sidebarWidth))
         out.append(("the quit card starts wider than its margins and shows a real icon",
                     quitDialogWidth > paneMargin * 4 && quitDialogIcon >= control * 2))
-        out.append(("the quit scrim dims without hiding and blurs only a little",
-                    quitScrim > 0.2 && quitScrim < 0.6 && quitBlur >= 1 && quitBlur <= 6))
+        out.append(("the quit scrim keeps the window recognizable while softening page text",
+                    quitScrim > 0.2 && quitScrim < 0.6 && quitBlur >= 8 && quitBlur <= 24))
         out.append(("…on a picture small enough to be cheap, big enough to still blur",
                     quitBlurScale >= 2 && quitBlurScale <= 4 && quitBlur >= quitBlurScale))
         // A toast is one row, always: the sentence on the left, the verb and the × on the

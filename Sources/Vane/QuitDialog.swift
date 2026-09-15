@@ -6,8 +6,8 @@ import SwiftUI
 /// could trust; a question with a default button is answered by the same ⌘Q-then-⏎ people
 /// already do, and cannot be missed.
 ///
-/// The card sits *in* the window that asked, on a scrim that dims the page and blurs it a
-/// little — Arc's own treatment — so the question reads as part of the window rather than a
+/// The dark glass card sits *in* the window that asked, on a scrim that dims and blurs the
+/// page, so the question reads as part of the window rather than a
 /// second one floating over it. No sheet: a sheet hangs off a title bar and Vane's windows
 /// have none to hang it from. When no window is up (the Dock's menu with everything closed)
 /// a plain borderless panel stands in.
@@ -163,25 +163,55 @@ import SwiftUI
 
     private struct Card: View {
         let answer: (Answer) -> Void
+        @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
         var body: some View {
-            VStack(alignment: .leading, spacing: Look.inset * 2) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable().frame(width: Look.quitDialogIcon, height: Look.quitDialogIcon)
-                Text("Quit Vane?").font(Look.heading.weight(.bold)).foregroundStyle(Look.inkPrimary)
+            VStack(alignment: .leading, spacing: Look.inset * 3) {
+                HStack(spacing: Look.inset * 2) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable().frame(width: Look.quitDialogIcon, height: Look.quitDialogIcon)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: Look.inset) {
+                        Text("Quit Vane?")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(Look.barSelectedText)
+                        Text("This will close all Vane windows.")
+                            .font(Look.text).foregroundStyle(Look.barPlaceholder)
+                    }
+                }
                 HStack(spacing: Look.inset) {
-                    Choice("Quit, and don’t ask again") { answer(.quitForever) }
-                    Spacer(minLength: Look.inset)
                     Choice("Cancel", key: "ESC") { answer(.cancel) }
                         .keyboardShortcut(.cancelAction)
                     Choice("Quit", key: "⏎", primary: true) { answer(.quit) }
                         .keyboardShortcut(.defaultAction)
                 }
+                Button("Quit and don’t ask again") { answer(.quitForever) }
+                    .buttonStyle(.plain)
+                    .font(Look.small)
+                    .foregroundStyle(Look.barPlaceholder)
+                    .padding(.vertical, Look.inset / 2)
+                    .frame(maxWidth: .infinity)
             }
             .padding(Look.paneMargin)
-            .frame(minWidth: Look.quitDialogWidth)
+            .frame(width: Look.quitDialogWidth)
+            .background {
+                RoundedRectangle(cornerRadius: Look.quitDialogRadius)
+                    .fill(.ultraThinMaterial)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Look.quitDialogRadius)
+                            .fill(Look.quitCardFill.opacity(reduceTransparency ? 1 : 0.82))
+                    }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: Look.quitDialogRadius)
+                    .strokeBorder(LinearGradient(colors: [.white.opacity(0.26), .white.opacity(0.07)],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing),
+                                  lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
+            .padding(Look.quitShadowInset)
             .fixedSize()
-            .background(Look.panelFill, in: .rect(cornerRadius: Look.cardRadius * 2))
+            .environment(\.colorScheme, .dark)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Quit Vane?")
         }
@@ -211,12 +241,27 @@ import SwiftUI
                     }
                 }
                 .padding(.horizontal, Look.inset * 2).padding(.vertical, Look.inset)
-                .frame(minHeight: Look.control + Look.inset)
-                .background(primary ? Color.accentColor : Look.selected,
-                            in: .rect(cornerRadius: Look.cardRadius))
-                .foregroundStyle(primary ? Color.white : Look.inkPrimary)
+                .frame(maxWidth: .infinity, minHeight: Look.rowHeight)
+                .contentShape(.rect)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ChoiceStyle(primary: primary))
+        }
+    }
+
+    private struct ChoiceStyle: ButtonStyle {
+        var primary: Bool
+        @State private var hovering = false
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .foregroundStyle(primary ? Look.quitCardFill : Look.barSelectedText)
+                .background(primary ? Color.white.opacity(configuration.isPressed ? 0.72 : 0.92)
+                            : Color.white.opacity(configuration.isPressed ? 0.18 : hovering ? 0.12 : 0.07),
+                            in: .rect(cornerRadius: Look.pillRadius))
+                .hairline(radius: Look.pillRadius, .white.opacity(primary ? 0.2 : 0.1))
+                .onHover { hovering = $0 }
+                .animation(reduceMotion ? nil : Look.quick, value: hovering)
         }
     }
 }
