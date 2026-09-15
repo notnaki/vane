@@ -18,6 +18,193 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     case favourite = 0, pinned = 1, today = 2
     static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
 }
+// MARK: - Native page link context menu
+
+/// Capture the clicked link, not the hover status (which clears on mouse-down). The
+/// isolated world only accepts trusted user events and runs in every frame, so relative
+/// links, linked images, links inside iframes, and open shadow roots resolve in the document
+/// that owns them. Closed shadow roots deliberately remain opaque to the document listener.
+@MainActor final class LinkContextWebView: WKWebView {
+    static let messageName = "vanelinkcontext"
+    static let world = WKContentWorld.world(name: "vane-link-context")
+    static let itemID = NSUserInterfaceItemIdentifier("VaneOpenLinkInNewTab")
+    static let script = """
+    (() => {
+      document.addEventListener('contextmenu', event => {
+        if (!event.isTrusted) return;
+        const link = event.composedPath().find(node =>
+          node instanceof Element && node.matches('a[href], area[href]'));
+        webkit.messageHandlers.vanelinkcontext.postMessage({
+          url: link ? new URL(link.getAttribute('href'), link.baseURI).href : '',
+          at: Date.now()
+        });
+      }, true);
+    })();
+    """
+
+    var openBackground: ((URL) -> Void)?
+    var contextLink: URL? {
+        didSet { if let activeMenu { update(activeMenu) } }
+    }
+    private weak var activeMenu: NSMenu?
+    private var contextArmedAt: TimeInterval?
+
+    /// AppKit sees the physical gesture before WebKit dispatches its DOM event. That gives
+    /// the asynchronous script reply a native, bounded lifetime and prevents a reply from
+    /// a closed menu (or another frame's old document) attaching itself to a later menu.
+    override func rightMouseDown(with event: NSEvent) {
+        contextLink = nil
+        contextArmedAt = Date().timeIntervalSince1970
+        super.rightMouseDown(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) {
+            contextLink = nil
+            contextArmedAt = Date().timeIntervalSince1970
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        activeMenu = menu
+        update(menu)
+    }
+
+    override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+        activeMenu = nil
+        contextArmedAt = nil
+        contextLink = nil
+        super.didCloseMenu(menu, with: event)
+    }
+
+    func navigationStarted() {
+        contextArmedAt = nil
+        contextLink = nil
+    }
+
+    func receiveContextLink(_ body: Any) {
+        guard Self.isCurrentEvent(body, armedAt: contextArmedAt,
+                                  now: Date().timeIntervalSince1970) else { return }
+        contextLink = Self.link(from: (body as? [String: Any])?["url"] as Any)
+    }
+
+    /// Updating also handles the script message arriving just after AppKit opens the menu.
+    private func update(_ menu: NSMenu) {
+        if let previous = menu.items.first(where: { $0.identifier == Self.itemID }) {
+            menu.removeItem(previous)
+        }
+        guard let contextLink, openBackground != nil else { return }
+        let item = NSMenuItem(title: "Open Link in New Tab",
+                              action: #selector(openLinkInNewTab(_:)), keyEquivalent: "")
+        item.identifier = Self.itemID
+        item.target = self
+        // Keep the exact URL with this menu item, independent of later hover/navigation.
+        item.representedObject = contextLink
+        menu.insertItem(item, at: 0)
+    }
+
+    @objc private func openLinkInNewTab(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        openBackground?(url)
+    }
+
+    nonisolated static func link(from body: Any) -> URL? {
+        guard let value = body as? String, let url = URL(string: value),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https", "file"].contains(scheme) else { return nil }
+        if scheme != "file", url.host?.isEmpty != false { return nil }
+        return url
+    }
+
+    /// A WebKit process reply is useful only for the right-click that is presently opening
+    /// a menu. Wall time is shared across processes; unlike message order, it also tells an
+    /// old iframe/document reply apart from the next physical gesture.
+    nonisolated static func link(from body: Any, armedAt: TimeInterval?, now: TimeInterval) -> URL? {
+        guard isCurrentEvent(body, armedAt: armedAt, now: now) else { return nil }
+        return link(from: (body as? [String: Any])?["url"] as Any)
+    }
+
+    nonisolated private static func isCurrentEvent(_ body: Any, armedAt: TimeInterval?, now: TimeInterval) -> Bool {
+        guard let armedAt, let body = body as? [String: Any],
+              let milliseconds = body["at"] as? Double else { return false }
+        let occurredAt = milliseconds / 1_000
+        // Date.now is integer milliseconds while Date retains sub-millisecond precision.
+        guard occurredAt >= armedAt - 0.01, occurredAt <= now + 0.25,
+              now - occurredAt <= 2 else {
+            return false
+        }
+        return true
+    }
+
+    nonisolated static func acceptsDestination(sourceProfile: UUID, sourcePrivate: Bool,
+                                               targetProfile: UUID, targetPrivate: Bool,
+                                               targetIsLittle: Bool) -> Bool {
+        sourceProfile == targetProfile && sourcePrivate == targetPrivate && !targetIsLittle
+    }
+
+    /// AppKit menu fixture: preserves WebKit actions, installs once, and opens the URL
+    /// captured by the item even after the pointer's context changes.
+    static func checkMenu() -> [(String, Bool)] {
+        let view = LinkContextWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Copy Link", action: nil, keyEquivalent: "")
+        var opened: URL?
+        view.openBackground = { opened = $0 }
+        let first = URL(string: "https://example.test/actual-link?q=one")!
+        view.contextLink = first
+        view.update(menu)
+        view.update(menu)
+        let item = menu.items.first { $0.identifier == itemID }
+        var out = [("link menu preserves WebKit items", menu.items.contains { $0.title == "Copy Link" }),
+                   ("link menu adds one Open Link in New Tab item", menu.items.filter { $0.identifier == itemID }.count == 1)]
+        view.contextLink = URL(string: "https://other.test/")
+        if let item { view.openLinkInNewTab(item) }
+        out.append(("link menu action uses captured clicked URL", opened == first))
+        view.contextLink = nil
+        view.update(menu)
+        out.append(("non-link context has no new-tab action", !menu.items.contains { $0.identifier == itemID }))
+        out.append(("script URLs cannot open through the menu", link(from: "javascript:alert(1)") == nil))
+        out.append(("external-app URLs are not offered as tabs", link(from: "mailto:me@example.test") == nil))
+        out.append(("relative messages cannot reuse the current page URL", link(from: "/relative") == nil))
+        out.append(("web URLs retain their complete destination", link(from: first.absoluteString) == first))
+        view.contextArmedAt = Date().timeIntervalSince1970
+        view.contextLink = first
+        view.receiveContextLink(["url": "https://stale.test/", "at": 1_000.0])
+        out.append(("a rejected stale reply leaves the current menu destination intact", view.contextLink == first))
+        let timely: [String: Any] = ["url": first.absoluteString, "at": 1_000_100.0]
+        let stale: [String: Any] = ["url": first.absoluteString, "at": 999_900.0]
+        out.append(("the current right-click accepts its trusted context event",
+                    link(from: timely, armedAt: 1_000.0, now: 1_000.2) == first))
+        let rounded: [String: Any] = ["url": first.absoluteString, "at": 999_995.0]
+        out.append(("millisecond script timestamps tolerate native clock precision",
+                    link(from: rounded, armedAt: 1_000.0, now: 1_000.1) == first))
+        out.append(("a context event arriving after its menu closed is ignored",
+                    link(from: timely, armedAt: nil, now: 1_000.2) == nil))
+        out.append(("a delayed context event cannot attach to the next right-click",
+                    link(from: stale, armedAt: 1_000.0, now: 1_000.2) == nil))
+        out.append(("an unreasonably delayed context event is ignored",
+                    link(from: timely, armedAt: 1_000.0, now: 1_003.0) == nil))
+        let sourceProfile = UUID(), otherProfile = UUID()
+        out += [
+            ("a floating link can use its matching ordinary window", acceptsDestination(
+                sourceProfile: sourceProfile, sourcePrivate: false,
+                targetProfile: sourceProfile, targetPrivate: false, targetIsLittle: false)),
+            ("a floating link cannot cross profiles", !acceptsDestination(
+                sourceProfile: sourceProfile, sourcePrivate: false,
+                targetProfile: otherProfile, targetPrivate: false, targetIsLittle: false)),
+            ("a private floating link cannot enter ordinary browsing", !acceptsDestination(
+                sourceProfile: sourceProfile, sourcePrivate: true,
+                targetProfile: sourceProfile, targetPrivate: false, targetIsLittle: false)),
+            ("a context-menu tab cannot be another floating window", !acceptsDestination(
+                sourceProfile: sourceProfile, sourcePrivate: false,
+                targetProfile: sourceProfile, targetPrivate: false, targetIsLittle: true)),
+        ]
+        return out
+    }
+}
+
 
 /// One AI rename, as the row needs to draw it: how many have landed on this tab (so a
 /// second one still animates) and the name the row was showing before this one arrived.
@@ -152,6 +339,8 @@ struct TitleReveal: Equatable, Sendable {
     /// A link the user asked for *beside* this tab — ⌘-click, middle-click, `target=_blank`.
     /// The Bool is whether to go there; ⌘-click deliberately does not.
     var onOpenBeside: ((URL, Bool) -> Void)?
+    /// Explicit page-context action always targets an ordinary background tab.
+    var onOpenLinkInBackground: ((URL) -> Void)?
     /// A link this tab should show *over* the window instead of going to — see Peek.swift.
     /// Left nil in a window with nowhere to float one, which is what keeps the test in
     /// `decidePolicyFor` a single condition rather than a list of exceptions.
@@ -209,7 +398,7 @@ struct TitleReveal: Equatable, Sendable {
         // would tear the other's password bridge, media tray and status bar out from under
         // it. The scripts and the blocker's rules go onto one of this tab's own instead.
         cfg.userContentController = Tab.contentController(profileID: profileID)
-        web = WKWebView(frame: .zero, configuration: cfg)
+        web = LinkContextWebView(frame: .zero, configuration: cfg)
         super.init()
         attach()
         // Deliberately no load: WebKit navigates the view it is handed back, and for a popup
@@ -221,7 +410,7 @@ struct TitleReveal: Equatable, Sendable {
     private static func freshWebView(isPrivate: Bool, profileID: UUID) -> WKWebView {
         let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID)
         cfg.userContentController = contentController(profileID: profileID)
-        return WKWebView(frame: .zero, configuration: cfg)
+        return LinkContextWebView(frame: .zero, configuration: cfg)
     }
 
     /// The scripts every page of a tab runs, and the blocker's rules, on a content controller
@@ -255,6 +444,9 @@ struct TitleReveal: Equatable, Sendable {
         c.addUserScript(
             WKUserScript(source: PageFocus.script, injectionTime: .atDocumentStart,
                          forMainFrameOnly: false, in: PageFocus.world))
+        c.addUserScript(
+            WKUserScript(source: LinkContextWebView.script, injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false, in: LinkContextWebView.world))
         // A tab built around WebKit's own configuration never went through
         // `Tab.configuration`, so the blocker is attached here rather than there.
         Blocker.apply(to: c, profileID: profileID)
@@ -265,6 +457,12 @@ struct TitleReveal: Equatable, Sendable {
     /// and the KVO that republishes WebKit's state. Runs at init and again on every resume,
     /// because suspension swaps the web view out from under all of it.
     private func attach() {
+        if let linkView = web as? LinkContextWebView {
+            linkView.openBackground = { [weak self] url in self?.onOpenLinkInBackground?(url) }
+        }
+        web.configuration.userContentController.add(WeakHandler(self),
+                                                    contentWorld: LinkContextWebView.world,
+                                                    name: LinkContextWebView.messageName)
         web.configuration.userContentController.add(WeakHandler(self),
                                                     contentWorld: Autofill.world, name: "vanepw")
         web.configuration.userContentController.add(WeakHandler(self),
@@ -384,6 +582,9 @@ struct TitleReveal: Equatable, Sendable {
         TabAudio.unwatch(self)         // KVO on a dead observee is a crash, not a leak
         obs = []                       // KVO on a view that is about to die
         old.stopLoading()
+        (old as? LinkContextWebView)?.openBackground = nil
+        old.configuration.userContentController.removeScriptMessageHandler(
+            forName: LinkContextWebView.messageName, contentWorld: LinkContextWebView.world)
         old.uiDelegate = nil
         old.navigationDelegate = nil
         old.configuration.userContentController.removeScriptMessageHandler(
@@ -673,6 +874,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        (w as? LinkContextWebView)?.navigationStarted()
         Previews.shared.cancel()      // the link that raised it is gone
         // Whatever was focused belongs to the page being left, frames and all; the incoming
         // one says so itself as soon as its script runs in each of them.
@@ -936,6 +1138,12 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        if m.name == LinkContextWebView.messageName {
+            guard m.webView === web else { return }
+            guard let linkView = web as? LinkContextWebView else { return }
+            linkView.receiveContextLink(m.body)
+            return
+        }
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
         if m.name == MediaTray.messageName {
             MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
@@ -1504,6 +1712,30 @@ struct Stash {
         t.onOpenBeside = { [weak self] u, focus in
             guard let self else { return }
             if isLittle { LittleArc.open(u, isPrivate: isPrivate) } else { openBeside(u, focus: focus) }
+        }
+        t.onOpenLinkInBackground = { [weak self] url in
+            guard let self else { return }
+            if !isLittle {
+                openBeside(url, focus: false)
+                return
+            }
+            // A floating page has no tab strip. Prefer its Peek parent, otherwise an
+            // ordinary window of exactly the same profile and privacy mode.
+            let peekParent = Peek.live.flatMap { session -> TabStore? in
+                guard session.store === self,
+                      LinkContextWebView.acceptsDestination(
+                        sourceProfile: profileID, sourcePrivate: isPrivate,
+                        targetProfile: session.parent.profileID,
+                        targetPrivate: session.parent.isPrivate,
+                        targetIsLittle: session.parent.isLittle) else { return nil }
+                return session.parent
+            }
+            if let target = peekParent ?? Windows.current(in: profileID, isPrivate: isPrivate) {
+                target.openBeside(url, focus: false)
+            } else if let profile = ProfileManager.shared.profiles.first(where: { $0.id == profileID }) {
+                // Do not fall back to the globally selected profile if this one vanished.
+                Windows.open(isPrivate: isPrivate, urls: [url], profile: profile, focus: false)
+            }
         }
         // A Peek floats over a window with a sidebar in it. A Little Arc — or a Peek itself —
         // is already one floating page, so a link in it has nothing to float over and simply

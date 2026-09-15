@@ -808,6 +808,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
 
         if pureOnly { finish("PASS (pure)") }
 
+        for (name, ok) in LinkContextWebView.checkMenu() { check(name, ok) }
+
         // Not pure: `buildMenu` is the app's own menu bar, and building it needs `NSApp`.
         // No window is opened — the whole point is to read the bar the user gets and prove
         // every standard chord is on it exactly once, with the selector the table names.
