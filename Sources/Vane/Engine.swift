@@ -374,7 +374,7 @@ struct TitleReveal: Equatable, Sendable {
         guard !suspended, let url = web.url else { return }
         parkedState = web.interactionState as? Data
         parkedURL = url
-        titlePlaceholderURL = url
+        titlePlaceholderURL = Files.restorationPlaceholder(for: url)
         suspended = true
         release()
     }
@@ -475,7 +475,7 @@ struct TitleReveal: Equatable, Sendable {
     func park(url: URL, _ p: Parked) {
         parkedURL = url
         parkedState = p.state
-        titlePlaceholderURL = url
+        titlePlaceholderURL = Files.restorationPlaceholder(for: url)
         suspended = true
         // A tab that comes up from disk parked has a page — that is what parked means — and
         // it has one before it has ever run a navigation. Without this the very first × on a
