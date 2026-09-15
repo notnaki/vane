@@ -144,8 +144,44 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         sourceProfile == targetProfile && sourcePrivate == targetPrivate && !targetIsLittle
     }
 
-    /// AppKit menu fixture: preserves WebKit actions, installs once, and opens the URL
-    /// captured by the item even after the pointer's context changes.
+    nonisolated static func check() -> [(String, Bool)] {
+        let first = URL(string: "https://example.test/actual-link?q=one")!
+        let timely: [String: Any] = ["url": first.absoluteString, "at": 1_000_100.0]
+        let stale: [String: Any] = ["url": first.absoluteString, "at": 999_900.0]
+        let rounded: [String: Any] = ["url": first.absoluteString, "at": 999_995.0]
+        let sourceProfile = UUID(), otherProfile = UUID()
+        return [
+            ("script URLs cannot open through the menu", link(from: "javascript:alert(1)") == nil),
+            ("external-app URLs are not offered as tabs", link(from: "mailto:me@example.test") == nil),
+            ("relative messages cannot reuse the current page URL", link(from: "/relative") == nil),
+            ("web URLs retain their complete destination", link(from: first.absoluteString) == first),
+            ("the current right-click accepts its trusted context event",
+             link(from: timely, armedAt: 1_000.0, now: 1_000.2) == first),
+            ("millisecond script timestamps tolerate native clock precision",
+             link(from: rounded, armedAt: 1_000.0, now: 1_000.1) == first),
+            ("a context event arriving after its menu closed is ignored",
+             link(from: timely, armedAt: nil, now: 1_000.2) == nil),
+            ("a delayed context event cannot attach to the next right-click",
+             link(from: stale, armedAt: 1_000.0, now: 1_000.2) == nil),
+            ("an unreasonably delayed context event is ignored",
+             link(from: timely, armedAt: 1_000.0, now: 1_003.0) == nil),
+            ("a floating link can use its matching ordinary window", acceptsDestination(
+                sourceProfile: sourceProfile, sourcePrivate: false,
+                targetProfile: sourceProfile, targetPrivate: false, targetIsLittle: false)),
+            ("a floating link cannot cross profiles", !acceptsDestination(
+                sourceProfile: sourceProfile, sourcePrivate: false,
+                targetProfile: otherProfile, targetPrivate: false, targetIsLittle: false)),
+            ("a private floating link cannot enter ordinary browsing", !acceptsDestination(
+                sourceProfile: sourceProfile, sourcePrivate: true,
+                targetProfile: sourceProfile, targetPrivate: false, targetIsLittle: false)),
+            ("a context-menu tab cannot be another floating window", !acceptsDestination(
+                sourceProfile: sourceProfile, sourcePrivate: false,
+                targetProfile: sourceProfile, targetPrivate: false, targetIsLittle: true)),
+        ]
+    }
+
+    /// AppKit menu fixture: preserves WebKit actions, installs once, rejects a stale reply,
+    /// and opens the URL captured by the item even after the pointer's context changes.
     static func checkMenu() -> [(String, Bool)] {
         let view = LinkContextWebView(frame: .zero, configuration: WKWebViewConfiguration())
         let menu = NSMenu()
@@ -165,42 +201,10 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         view.contextLink = nil
         view.update(menu)
         out.append(("non-link context has no new-tab action", !menu.items.contains { $0.identifier == itemID }))
-        out.append(("script URLs cannot open through the menu", link(from: "javascript:alert(1)") == nil))
-        out.append(("external-app URLs are not offered as tabs", link(from: "mailto:me@example.test") == nil))
-        out.append(("relative messages cannot reuse the current page URL", link(from: "/relative") == nil))
-        out.append(("web URLs retain their complete destination", link(from: first.absoluteString) == first))
         view.contextArmedAt = Date().timeIntervalSince1970
         view.contextLink = first
         view.receiveContextLink(["url": "https://stale.test/", "at": 1_000.0])
         out.append(("a rejected stale reply leaves the current menu destination intact", view.contextLink == first))
-        let timely: [String: Any] = ["url": first.absoluteString, "at": 1_000_100.0]
-        let stale: [String: Any] = ["url": first.absoluteString, "at": 999_900.0]
-        out.append(("the current right-click accepts its trusted context event",
-                    link(from: timely, armedAt: 1_000.0, now: 1_000.2) == first))
-        let rounded: [String: Any] = ["url": first.absoluteString, "at": 999_995.0]
-        out.append(("millisecond script timestamps tolerate native clock precision",
-                    link(from: rounded, armedAt: 1_000.0, now: 1_000.1) == first))
-        out.append(("a context event arriving after its menu closed is ignored",
-                    link(from: timely, armedAt: nil, now: 1_000.2) == nil))
-        out.append(("a delayed context event cannot attach to the next right-click",
-                    link(from: stale, armedAt: 1_000.0, now: 1_000.2) == nil))
-        out.append(("an unreasonably delayed context event is ignored",
-                    link(from: timely, armedAt: 1_000.0, now: 1_003.0) == nil))
-        let sourceProfile = UUID(), otherProfile = UUID()
-        out += [
-            ("a floating link can use its matching ordinary window", acceptsDestination(
-                sourceProfile: sourceProfile, sourcePrivate: false,
-                targetProfile: sourceProfile, targetPrivate: false, targetIsLittle: false)),
-            ("a floating link cannot cross profiles", !acceptsDestination(
-                sourceProfile: sourceProfile, sourcePrivate: false,
-                targetProfile: otherProfile, targetPrivate: false, targetIsLittle: false)),
-            ("a private floating link cannot enter ordinary browsing", !acceptsDestination(
-                sourceProfile: sourceProfile, sourcePrivate: true,
-                targetProfile: sourceProfile, targetPrivate: false, targetIsLittle: false)),
-            ("a context-menu tab cannot be another floating window", !acceptsDestination(
-                sourceProfile: sourceProfile, sourcePrivate: false,
-                targetProfile: sourceProfile, targetPrivate: false, targetIsLittle: true)),
-        ]
         return out
     }
 }

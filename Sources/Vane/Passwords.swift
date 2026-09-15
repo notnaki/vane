@@ -806,6 +806,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         do { _ = try PasswordImport.parse("a,b,c\n1,2,3\n") } catch { rejected = true }
         check("a file with no password column is rejected, not half-imported", rejected)
 
+        for (name, ok) in LinkContextWebView.check() { check(name, ok) }
+
         if pureOnly { finish("PASS (pure)") }
 
         for (name, ok) in LinkContextWebView.checkMenu() { check(name, ok) }
