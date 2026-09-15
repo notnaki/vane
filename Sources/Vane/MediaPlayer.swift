@@ -389,8 +389,7 @@ struct MediaTrayView: View {
         // Going back to the tab ends the tray's claim on it: the page's own player is on
         // screen again, and a stale hold would bring the tray back on the next switch.
         .onChange(of: store.current) { if let id = store.current { media.held.remove(id) } }
-        // It slides up from under the footer, which is what clips it.
-        .clipped()
+        // Let the card's shadow extend beyond the tray's layout bounds, like the toast.
     }
 
     private func player(_ tab: Tab) -> some View {
@@ -426,7 +425,7 @@ struct MediaTrayView: View {
         .background(Look.barFill, in: RoundedRectangle(cornerRadius: Look.pillRadius))
         .hairline(radius: Look.pillRadius, Look.barStroke)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .transition(.opacity)
         .id(tab.id)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Mini audio player")

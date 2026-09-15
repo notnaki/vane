@@ -544,7 +544,7 @@ private struct Sidebar: View {
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.footerInset)
         .padding(.top, Look.topInset)
-        // Toasts and the mini audio player slide up from under the footer and sit just
+        // Toasts and the mini audio player fade in above the footer and sit just
         // above it, over the list — the toast above the player, so neither covers the other.
         .overlay(alignment: .bottom) {
             VStack(spacing: Look.inset) { ToastHost(); MediaTrayView() }
