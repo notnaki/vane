@@ -38,12 +38,12 @@ import AppKit
 
     /// The save itself, behind a variable so `check()` can count calls without writing to
     /// the user's real session.json.
-    static var write: () -> Void = { Session.save() }
+    static var write: () -> Bool = { Session.save() }
 
     /// Call before restoring anything — the marker has to be read before it is rewritten.
     static func begin(now: Date = .now) {
         crashed = FileManager.default.fileExists(atPath: marker.path)
-        try? Data().write(to: marker)
+        SnapshotPersistence.write(Data(), to: marker)
         lastSave = now
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
@@ -56,7 +56,8 @@ import AppKit
     static func markClean() {
         timer?.invalidate()
         timer = nil
-        write()
+        // A clean exit with an incomplete snapshot still needs recovery next launch.
+        guard write() else { return }
         try? FileManager.default.removeItem(at: marker)
     }
 
@@ -66,8 +67,8 @@ import AppKit
     @discardableResult
     static func autosave(now: Date = .now) -> Bool {
         guard now.timeIntervalSince(lastSave) >= interval else { return false }
+        guard write() else { return false }
         lastSave = now
-        write()
         return true
     }
 
@@ -97,7 +98,7 @@ import AppKit
         let realWrite = write
         var saves = 0
         directory = temp
-        write = { saves += 1 }
+        write = { saves += 1; return true }
         defer {
             timer?.invalidate()
             timer = nil
@@ -158,6 +159,18 @@ import AppKit
         out.append(("fifty calls inside one interval cost one write at most", saves == before))
         markClean()
         out.append(("markClean flushes past the throttle", saves == before + 1))
+        begin(now: t0)
+        write = { false }
+        markClean()
+        out.append(("a failed final save preserves the crash marker", markerExists()))
+        begin(now: t0)
+        out.append(("the next launch sees an incomplete final snapshot", didCrashLastLaunch))
+        out.append(("a failed autosave reports failure", !autosave(now: t0.addingTimeInterval(interval))))
+        write = { true }
+        out.append(("a failed autosave does not consume the retry interval",
+                    autosave(now: t0.addingTimeInterval(interval))))
+        markClean()
+        out.append(("a successful retry can mark the session clean", !markerExists()))
         return out
     }
 }

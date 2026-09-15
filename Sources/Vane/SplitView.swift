@@ -186,10 +186,43 @@ struct Split: Equatable, Sendable {
     /// on every launch, and the session file already keys everything it knows about a tab by
     /// its url. Same ceiling as `Session.parked` — the same page open in two windows' panes
     /// comes back once per window, which nobody has ever noticed.
+    /// Consume each URL occurrence as it is matched, including duplicates inside one
+    /// split. The caller commits reservations only after the split is valid.
+    static func restoredIDs(urls: [String], candidates: [(id: UUID, url: String)],
+                            taken: Set<UUID>) -> [UUID] {
+        var used = taken
+        return urls.compactMap { url in
+            guard let match = candidates.first(where: { $0.url == url && !used.contains($0.id) }) else { return nil }
+            used.insert(match.id)
+            return match.id
+        }
+    }
+
+    /// v4 names panes by the restored tab identities. Unknown or already-consumed ids are
+    /// omitted so the caller's existing `Split` validation rejects an incomplete group.
+    static func restoredIDs(ids: [String], candidates: Set<UUID>,
+                            taken: Set<UUID>) -> [UUID] {
+        var used = taken
+        return ids.compactMap { value in
+            guard let id = UUID(uuidString: value), candidates.contains(id), !used.contains(id)
+            else { return nil }
+            used.insert(id)
+            return id
+        }
+    }
+
     struct Saved: Codable, Equatable, Sendable {
         var urls: [String]
         var vertical: Bool
         var active: Int
+        var ids: [String]?
+
+        init(urls: [String], vertical: Bool, active: Int, ids: [String]? = nil) {
+            self.urls = urls
+            self.vertical = vertical
+            self.active = active
+            self.ids = ids
+        }
     }
 }
 
@@ -383,7 +416,8 @@ struct Split: Equatable, Sendable {
             // The focused pane if it survived, else the first — never whatever tab happens to
             // have landed on that index once the blanks were taken out.
             let active = kept.firstIndex { $0.pane == split.active } ?? 0
-            return Split.Saved(urls: kept.map(\.url), vertical: split.vertical, active: active)
+            return Split.Saved(urls: kept.map(\.url), vertical: split.vertical, active: active,
+                               ids: kept.map { split.tabs[$0.pane].uuidString })
         }
     }
 
@@ -392,11 +426,18 @@ struct Split: Equatable, Sendable {
     func applySplits(_ saved: [Split.Saved]) {
         var taken: Set<Tab.ID> = []
         for entry in saved {
-            let ids = entry.urls.compactMap { url in
-                tabs.first { $0.currentURL?.absoluteString == url && !taken.contains($0.id) }?.id
+            let candidates = tabs.compactMap { tab in
+                tab.currentURL.map { (id: tab.id, url: $0.absoluteString) }
             }
-            ids.forEach { taken.insert($0) }
+            let ids: [Tab.ID]
+            if let savedIDs = entry.ids {
+                ids = Split.restoredIDs(ids: savedIDs, candidates: Set(candidates.map(\.id)),
+                                        taken: taken)
+            } else {
+                ids = Split.restoredIDs(urls: entry.urls, candidates: candidates, taken: taken)
+            }
             guard var split = Split(tabs: ids, vertical: entry.vertical) else { continue }
+            split.tabs.forEach { taken.insert($0) }
             if split.tabs.indices.contains(entry.active) {
                 split = split.focusing(split.tabs[entry.active])
             }
@@ -890,6 +931,24 @@ extension Split {
             ("normalising nothing falls back to equal shares",
              near(Split.normalised([0, 0]), [0.5, 0.5])),
         ]
+
+        let duplicateCandidates = [(id: a, url: "same"), (id: b, url: "same"), (id: c, url: "other")]
+        let duplicateIDs = Split.restoredIDs(urls: ["same", "same"], candidates: duplicateCandidates, taken: [])
+        out.append(("duplicate URL panes restore as two distinct tabs", duplicateIDs == [a, b]
+                    && Split(tabs: duplicateIDs) != nil))
+        out.append(("split restoration does not reuse a tab owned by another split",
+                    Split.restoredIDs(urls: ["same", "other"], candidates: duplicateCandidates, taken: [a]) == [b, c]))
+        out.append(("a missing duplicate cannot fabricate a second pane",
+                    Split.restoredIDs(urls: ["same", "same", "same"], candidates: duplicateCandidates, taken: []) == [a, b]))
+        out.append(("saved pane identities select the intended duplicate-url tabs",
+                    Split.restoredIDs(ids: [b.uuidString, a.uuidString], candidates: [a, b, c], taken: [])
+                        == [b, a]))
+        out.append(("saved pane identities cannot reuse a tab reserved by another split",
+                    Split.restoredIDs(ids: [a.uuidString, b.uuidString], candidates: [a, b, c], taken: [a])
+                        == [b]))
+        out.append(("a corrupt split cannot reuse the same saved identity twice",
+                    Split.restoredIDs(ids: [a.uuidString, a.uuidString], candidates: [a, b], taken: [])
+                        == [a]))
 
         // The session's shape.
         let saved = Split.Saved(urls: ["https://a.example", "https://b.example"],

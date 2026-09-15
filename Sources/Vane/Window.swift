@@ -456,7 +456,8 @@ extension VaneWindow {
     @discardableResult
     static func open(isPrivate: Bool = false, urls: [URL] = [],
                      profile: Profile? = nil, space: Space? = nil,
-                     parked: [String: Parked] = [:]) -> TabStore {
+                     parked: [String: Parked] = [:], focus: Bool = true,
+                     session: [Session.Entry]? = nil, selected: UUID? = nil) -> TabStore {
         let profile = profile ?? space.flatMap { s in
             ProfileManager.shared.profiles.first { $0.id == s.profileID }
         } ?? ProfileManager.shared.active
@@ -466,7 +467,7 @@ extension VaneWindow {
         // private window is Arc's incognito: no Space, nothing written down.
         let space = isPrivate ? nil : Spaces.resolve(space, for: profile)
         let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space,
-                             parked: parked)
+                             parked: parked, session: session, selected: selected)
         // Live folders keep themselves filled for as long as a window is open. A private
         // window holds none — it has no Pinned section — so it does not start the clock.
         if !isPrivate { LiveFolders.shared(for: profile.id).begin() }
@@ -531,7 +532,9 @@ extension VaneWindow {
         // window is on the store, so a Space pinned to light or dark came up wearing the
         // system's appearance until something else edited it.
         store.applySpaceAppearance()
-        window.makeKeyAndOrderFront(nil)
+        // A link opened from a floating page may need its first ordinary window, but
+        // must leave the source window key just like a background tab does.
+        if focus { window.makeKeyAndOrderFront(nil) } else { window.orderBack(nil) }
         return store
     }
 
@@ -696,9 +699,34 @@ extension TabStore {
     /// One tab as the session file remembers it. `state` is a base64 `interactionState`:
     /// the back/forward list, the current item and its scroll offset.
     struct Entry: Codable, Equatable {
+        var id: String?
         var url: String
         var title: String?
         var state: String?
+        var kind: TabKind?
+        var home: String?
+
+        private enum CodingKeys: String, CodingKey { case id, url, title, state, kind, home }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            url = (try? values.decode(String.self, forKey: .url)) ?? ""
+            id = try? values.decode(String.self, forKey: .id)
+            title = try? values.decode(String.self, forKey: .title)
+            state = try? values.decode(String.self, forKey: .state)
+            kind = try? values.decode(TabKind.self, forKey: .kind)
+            home = try? values.decode(String.self, forKey: .home)
+        }
+
+        init(id: String? = nil, url: String, title: String? = nil, state: String? = nil,
+             kind: TabKind? = nil, home: String? = nil) {
+            self.id = id
+            self.url = url
+            self.title = title
+            self.state = state
+            self.kind = kind
+            self.home = home
+        }
     }
 
     private struct Disk: Codable {
@@ -711,6 +739,26 @@ extension TabStore {
         /// Optional so a session written before this existed still decodes, and `""` for a
         /// window that was in none — which only a pre-migration file can contain.
         var spaces: [String]?
+        /// Selected tab identity per window. Optional so every v1-v3 file still decodes.
+        var selected: [String?]?
+    }
+
+    /// Recover damaged optional identity metadata one row at a time. Healthy rows keep
+    /// their state and identity; duplicate identifiers keep their first unambiguous use.
+    static func normalizedEntries(_ entries: [Entry]) -> [Entry] {
+        var seen = Set<UUID>()
+        return entries.map { entry in
+            var result = entry
+            if let id = entry.id.flatMap(UUID.init(uuidString:)), seen.insert(id).inserted {
+                result.id = id.uuidString
+            } else {
+                var replacement = UUID()
+                while !seen.insert(replacement).inserted { replacement = UUID() }
+                result.id = replacement.uuidString
+            }
+            if result.kind == nil { result.kind = .today }
+            return result
+        }
     }
 
     /// v3 adds the splits and the per-window Space. v2 is a dictionary so it is
@@ -720,10 +768,11 @@ extension TabStore {
     /// ponytail: no writer for v1 or v2. Downgrading loses the session once, and a browser
     /// that can be downgraded mid-session is not a thing anyone does twice.
     static func encode(_ windows: [[Entry]], splits: [[Split.Saved]] = [],
-                       spaces: [String] = []) -> Data? {
-        try? JSONEncoder().encode(Disk(version: 3, windows: windows,
+                       spaces: [String] = [], selected: [String?] = []) -> Data? {
+        try? JSONEncoder().encode(Disk(version: 4, windows: windows,
                                        splits: splits.contains { !$0.isEmpty } ? splits : nil,
-                                       spaces: spaces.isEmpty ? nil : spaces))
+                                       spaces: spaces.isEmpty ? nil : spaces,
+                                       selected: selected.isEmpty ? nil : selected))
     }
 
     static func decode(_ data: Data) -> [[Entry]] { disk(data).windows }
@@ -742,13 +791,22 @@ extension TabStore {
         }
     }
 
+    /// The selected tab in each window, padded to the windows list like `decodeSpaces`.
+    static func decodeSelected(_ data: Data) -> [UUID?] {
+        let d = disk(data)
+        let ids = d.selected ?? []
+        return d.windows.indices.map { i in
+            ids.indices.contains(i) ? ids[i].flatMap(UUID.init(uuidString:)) : nil
+        }
+    }
+
     private static func disk(_ data: Data)
-        -> (windows: [[Entry]], splits: [[Split.Saved]]?, spaces: [String]?) {
+        -> (windows: [[Entry]], splits: [[Split.Saved]]?, spaces: [String]?, selected: [String?]?) {
         if let disk = try? JSONDecoder().decode(Disk.self, from: data) {
-            return (disk.windows, disk.splits, disk.spaces)
+            return (disk.windows, disk.splits, disk.spaces, disk.selected)
         }
         let legacy = (try? JSONSerialization.jsonObject(with: data)) as? [[String]] ?? []
-        return (legacy.map { $0.map { Entry(url: $0) } }, nil, nil)
+        return (legacy.map { $0.map { Entry(url: $0) } }, nil, nil, nil)
     }
 
     /// Every page the session file holds for a profile, in window order and deduped. What
@@ -780,33 +838,49 @@ extension TabStore {
     /// Every profile's open windows, each into its own file. A profile whose windows are all
     /// closed keeps the session it already had — only profiles with a live window are
     /// rewritten, so quitting from profile B does not erase profile A's session.
-    static func save() {
-        var byProfile: [UUID: [(entries: [Entry], splits: [Split.Saved], space: String)]] = [:]
+    @discardableResult
+    static func save() -> Bool {
+        var succeeded = true
+        var byProfile: [UUID: [(entries: [Entry], splits: [Split.Saved], space: String,
+                                       selected: String?)]] = [:]
+        // Restore opens each window in sequence. Save back-to-front so the window the
+        // user was working in comes forward last, regardless of its creation order.
+        let frontToBack = NSApp.orderedWindows
+        let orderedStores = TabStore.all.enumerated().sorted { left, right in
+            let a = left.element.window.flatMap { window in frontToBack.firstIndex { $0 === window } }
+                ?? Int.max
+            let b = right.element.window.flatMap { window in frontToBack.firstIndex { $0 === window } }
+                ?? Int.max
+            return a == b ? left.offset < right.offset : a > b
+        }.map(\.element)
         // Nothing private is written down, and neither is a Little Arc: it is a link
         // someone followed once, not a window to come back up in.
-        for store in TabStore.all where !store.isPrivate && !store.isLittle {
-            store.saveCurrentSpace()
+        for store in orderedStores where !store.isPrivate && !store.isLittle {
+            if !store.saveCurrentSpace() { succeeded = false }
             let entries = store.tabs.compactMap { tab -> Entry? in
                 // currentURL, not web.url: a suspended tab has no live page and would
                 // otherwise drop out of its own session.
                 guard let u = tab.currentURL,
                       u.scheme?.hasPrefix("http") == true else { return nil }
                 let snap = tab.snapshot
-                return Entry(url: u.absoluteString, title: snap.title,
-                             state: snap.state?.base64EncodedString())
+                return Entry(id: tab.id.uuidString, url: u.absoluteString, title: snap.title,
+                             state: snap.state?.base64EncodedString(), kind: tab.kind,
+                             home: tab.homeURL?.absoluteString)
             }
             byProfile[store.profileID, default: []]
-                .append((entries, store.savedSplits, store.currentSpaceID?.uuidString ?? ""))
+                .append((entries, store.savedSplits, store.currentSpaceID?.uuidString ?? "",
+                         store.current?.uuidString))
         }
         for (profileID, windows) in byProfile {
             // Windows are dropped as whole rows, so a window's splits and its Space never
             // end up filed under the next window's tabs.
             let kept = windows.filter { !$0.entries.isEmpty }
             guard let data = encode(kept.map(\.entries), splits: kept.map(\.splits),
-                                    spaces: kept.map(\.space))
-            else { continue }
-            try? data.write(to: file(profileID))
+                                    spaces: kept.map(\.space), selected: kept.map(\.selected))
+            else { succeeded = false; continue }
+            if !SnapshotPersistence.write(data, to: file(profileID)) { succeeded = false }
         }
+        return succeeded
     }
 
     /// Returns false when there was nothing to restore, so the caller opens a fresh window.
@@ -825,13 +899,18 @@ extension TabStore {
         let spaces = ProfileManager.shared.ensureSpaces(
             for: profile, sessionTabs: urls(for: profile.id, in: Store.directory))
         let inSpace = decodeSpaces(data)
+        let selected = decodeSelected(data)
+        let hasIdentityFormat = (try? JSONDecoder().decode(Disk.self, from: data).version) == 4
         let windows = decode(data).enumerated().filter { !$0.element.isEmpty }
         guard !windows.isEmpty else { return false }
         for (i, entries) in windows {
-            let store = Windows.open(urls: entries.compactMap { URL(string: $0.url) },
-                                     profile: profile,
-                                     space: spaces.first { $0.id == inSpace[i] },
-                                     parked: parked(entries))
+            let identified = hasIdentityFormat || entries.allSatisfy { $0.id.flatMap(UUID.init(uuidString:)) != nil
+                                                  && $0.kind != nil }
+            let store = Windows.open(urls: identified ? [] : entries.compactMap { URL(string: $0.url) },
+                                     profile: profile, space: spaces.first { $0.id == inSpace[i] },
+                                     parked: identified ? [:] : parked(entries),
+                                     session: identified ? normalizedEntries(entries) : nil,
+                                     selected: selected.indices.contains(i) ? selected[i] : nil)
             // After the window exists, because a split is named by its panes' urls and the
             // tabs that carry them are made by `TabStore.init`.
             store.applySplits(saved.indices.contains(i) ? saved[i] : [])

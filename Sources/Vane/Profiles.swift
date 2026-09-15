@@ -596,8 +596,7 @@ struct Space: Identifiable, Codable, Equatable {
     func saveSpaces(_ spaces: [Space], for profileID: UUID) -> Bool {
         let owned = spaces.filter { $0.profileID == profileID }
         guard let data = try? JSONEncoder().encode(owned) else { return false }
-        do { try data.write(to: Self.spacesURL(for: profileID, in: directory)) } catch { return false }
-        return true
+        return SnapshotPersistence.write(data, to: Self.spacesURL(for: profileID, in: directory))
     }
 
     /// The profile's Spaces, guaranteed non-empty, with anything the profile was keeping
@@ -663,10 +662,11 @@ struct Space: Identifiable, Codable, Equatable {
     }
 
     /// Insert-or-replace, into the file of the profile the space says it belongs to.
-    func updateSpace(_ space: Space) {
+    @discardableResult
+    func updateSpace(_ space: Space) -> Bool {
         var all = spaces(for: space.profileID)
         if let i = all.firstIndex(where: { $0.id == space.id }) { all[i] = space } else { all.append(space) }
-        saveSpaces(all, for: space.profileID)
+        return saveSpaces(all, for: space.profileID)
     }
 
     /// Deleted, or moved to another profile — either way it is off this profile's list, so no
