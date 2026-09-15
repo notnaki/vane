@@ -281,16 +281,19 @@ private struct FindBarBody: View {
     var body: some View {
         HStack(spacing: Look.inset) {
             Image(systemName: "magnifyingglass").font(Look.caption).foregroundStyle(.secondary)
-            if ready {
-                CommandField(text: $text, prompt: "Find on page", selectAll: true,
-                             label: "Find on Page",
-                             hint: "Return finds the next match, Shift-Return the previous "
-                                 + "one, Escape closes the bar.",
-                             font: .systemFont(ofSize: Look.findFontSize),
-                             onKey: key)
-                    .frame(width: Look.findFieldWidth)
-                    .foregroundStyle(miss ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+            ZStack {
+                Color.clear
+                if ready {
+                    CommandField(text: $text, prompt: "Find on page", selectAll: true,
+                                 label: "Find on Page",
+                                 hint: "Return finds the next match, Shift-Return the previous "
+                                     + "one, Escape closes the bar.",
+                                 font: .systemFont(ofSize: Look.findFontSize),
+                                 onKey: key)
+                        .foregroundStyle(miss ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                }
             }
+            .frame(width: Look.findFieldWidth, height: Look.control)
             // "3 of 12". Fixed width so stepping through matches does not shuffle the
             // buttons beside it a pixel at a time.
             Text(Find.label(index: session.index, count: session.count, query: text))
@@ -309,12 +312,14 @@ private struct FindBarBody: View {
             Button { close() } label: { Image(systemName: "xmark") }
                 .help("Close Find Bar").accessibilityLabel("Close Find Bar")
         }
-        .buttonStyle(.plain).font(Look.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .buttonStyle(FindControlStyle()).font(Look.caption).foregroundStyle(.secondary)
+        .padding(.horizontal, Look.rowTrailingInset).padding(.vertical, Look.rowPadding)
         .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
         .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
         .hairline(radius: Look.cardRadius)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
+        // This surface shares the command bar's dark fill in every Space appearance.
+        .environment(\.colorScheme, .dark)
         // ⌘F over a bar that is already up re-searches what is in it, so the query the
         // session remembers is what the field opens with — selected, ready to be replaced.
         .onAppear {
@@ -363,6 +368,25 @@ private struct FindBarBody: View {
         session.clearHighlight(in: tab)
         store.findOpen = false
         store.focusPage()
+    }
+}
+
+/// A full control-sized target without enlarging the find bar's quiet glyphs.
+private struct FindControlStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovering = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(width: Look.control, height: Look.control)
+            .contentShape(.rect)
+            .foregroundStyle(enabled ? Look.barText : Look.barText.opacity(Look.dimmed))
+            .background(enabled && (configuration.isPressed || hovering)
+                        ? Look.barSelected : .clear,
+                        in: .rect(cornerRadius: Look.chipRadius))
+            .onHover { hovering = $0 }
+            .animation(reduceMotion ? nil : Look.quick, value: hovering)
     }
 }
 
