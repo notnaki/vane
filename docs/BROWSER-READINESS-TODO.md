@@ -33,7 +33,11 @@ passing release checks.
 
 - Remove retained WebViews, Little Vane windows, delegates, observers, and media sessions
   when their owning tab or window closes.
-- Add memory, CPU, energy, and large-session checks for repeated open/close cycles.
+- Exercise 100 tab/Little Vane open-close cycles and a 200-tab session under Instruments,
+  then allow a 30-second idle settling period.
+- Require zero closed WebViews or windows retained by Vane, resident memory within the larger
+  of 50 MB or 10% of the pre-cycle baseline, average idle CPU below 3% over 60 seconds, and no
+  continuing timers, media activity, or wakeups attributable to the closed objects.
 
 ## Final documentation and compatibility pass
 
