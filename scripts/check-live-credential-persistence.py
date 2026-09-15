@@ -28,6 +28,7 @@ def declaration(source, marker):
 
 selected = ["struct Login", "static func key(", "private static func domain(", "static func namespace(", "private static func query(",
             "static func owns(", "private static func ref(", "static func save(",
+            "static func savePreferredCredential(",
             "enum CredentialRead", "enum CredentialCleanup", "private enum CredentialItems",
             "private static func credentialItems(", "static func readCredential(",
             "static func deleteOtherCredentials(", "static func delete(", "static func rank(",
@@ -59,10 +60,10 @@ switch args[1] {
 case "write":
     guard Passwords.save(host: host, account: account, password: fixture, profileID: profile) else { exit(1) }
     print("PASS dummy GitHub credential persisted")
-case "write-used":
-    guard Passwords.save(host: host, account: account, password: fixture, profileID: profile) else { exit(1) }
-    Passwords.recordUse(host: host, account: account, profileID: profile)
-    print("PASS dummy GitHub credential persisted and ranked")
+case "replace":
+    guard Passwords.savePreferredCredential(host: host, account: account, password: fixture,
+                                            profileID: profile) else { exit(1) }
+    print("PASS replacement credential persisted and preferred")
 case "read":
     switch Passwords.readCredential(host: host, profileID: profile) {
     case let .found(name, value):
@@ -101,7 +102,7 @@ with tempfile.TemporaryDirectory(prefix="vane-credential-persistence-") as direc
     try:
         subprocess.run([str(binary), "write", default_profile, old_account, old_token],
                        env=env_a, check=True, timeout=20)
-        subprocess.run([str(binary), "write-used", default_profile, new_account, new_token],
+        subprocess.run([str(binary), "replace", default_profile, new_account, new_token],
                        env=env_a, check=True, timeout=20)
         subprocess.run([str(binary), "read", default_profile, new_account, new_token],
                        env=env_a, check=True, timeout=20)

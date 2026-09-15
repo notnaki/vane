@@ -128,6 +128,17 @@ enum Passwords {
             == errSecSuccess
     }
 
+    /// Persist an integration credential and make it the deterministic fresh-read choice.
+    /// The preference is written only after Keychain accepted the secret, so a later failure
+    /// to remove duplicate accounts cannot revive an older credential on the next launch.
+    static func savePreferredCredential(host: String, account: String, password: String,
+                                        profileID: UUID) -> Bool {
+        guard save(host: host, account: account, password: password, profileID: profileID)
+        else { return false }
+        recordUse(host: host, account: account, profileID: profileID)
+        return true
+    }
+
     /// Nil when nothing is stored. With several accounts for one host this is the one the
     /// chooser would put first — see `matches`.
     static func lookup(host: String,

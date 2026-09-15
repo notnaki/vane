@@ -650,8 +650,8 @@ enum GitHubOAuth {
     func save(login: String, token: String) -> Bool {
         // One token per profile: a second login would mean asking which one every folder
         // meant, and Arc asks once.
-        let ok = Passwords.save(host: LiveFolders.host, account: login, password: token,
-                                profileID: profileID)
+        let ok = Passwords.savePreferredCredential(host: LiveFolders.host, account: login,
+                                                   password: token, profileID: profileID)
         if ok {
             if case .unavailable(let status) = Passwords.deleteOtherCredentials(
                 host: LiveFolders.host, keeping: login, profileID: profileID
