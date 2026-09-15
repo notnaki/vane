@@ -888,8 +888,11 @@ struct PasswordOffer: View {
             Spacer(minLength: Look.inset)
             Button { tab.pendingSave = nil } label: {
                 Image(systemName: "xmark").font(Look.glyph)
+                    .frame(width: Look.control, height: Look.control)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain).foregroundStyle(Look.inkTertiary)
+            .help("Not now")
             .accessibilityLabel("Not now")
         }
     }
@@ -901,15 +904,20 @@ struct PasswordOffer: View {
             Text(p.account.isEmpty ? "No username" : p.account)
                 .font(Look.text).foregroundStyle(Look.inkSecondary)
                 .lineLimit(1).truncationMode(.middle)
+                .accessibilityHidden(true)
             Spacer(minLength: Look.inset)
             Text(revealed ? p.password : PasswordsPane.dots)
                 .font(Look.text)
                 .foregroundStyle(revealed ? Look.inkPrimary : Look.inkTertiary)
                 .lineLimit(1).truncationMode(.tail)
+                .accessibilityHidden(true)
             Button { revealed.toggle() } label: {
                 Image(systemName: revealed ? "eye.slash" : "eye").font(Look.rowGlyph)
+                    .frame(width: Look.control, height: Look.control)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
+            .help(revealed ? "Hide password" : "Show password")
             .accessibilityLabel(revealed ? "Hide password" : "Show password")
         }
         .padding(.horizontal, Look.inset)
@@ -917,7 +925,7 @@ struct PasswordOffer: View {
         .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
         // The password is the user's own and is on its way into their keychain, but it is
         // still not something VoiceOver should read out unprompted.
-        .accessibilityElement(children: .ignore)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel(p.account.isEmpty ? "No username" : p.account)
         .accessibilityValue(PasswordsPane.spoken(revealed ? p.password : nil))
     }
