@@ -14,6 +14,7 @@ app.setActivationPolicy(.regular)
 app.delegate = AppLifecycle.shared
 if args.first == "drmcheck"  { DRMCheck.run(url: args.dropFirst().first) }
 if args.first == "selfcheck" { SelfCheck.run() }
+if args.first == "browsercheck" { BrowserChecks.run() }
 if args.first == "import", let file = args.dropFirst().first {
     let (n, skipped) = try! PasswordImport.importFile(URL(fileURLWithPath: file))
     print("imported \(n), skipped \(skipped) — now delete \(file), it is plain text")
