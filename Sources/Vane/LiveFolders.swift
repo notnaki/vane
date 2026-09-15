@@ -1,4 +1,5 @@
 import AppKit
+import Security
 import SwiftUI
 
 /// Arc's Live Folders: a folder in the Pinned section that fills itself. Today one source —
@@ -140,6 +141,7 @@ enum GitHub {
     enum Trouble: Error, Equatable, Sendable {
         case unauthorised
         case rateLimited
+        case forbidden
         /// 422: GitHub understood the request and refused the search — in practice a
         /// repository that does not exist, or one this token is not allowed to see.
         case badQuery
@@ -150,6 +152,7 @@ enum GitHub {
             switch self {
             case .unauthorised: "GitHub refused the token. Sign in again in Edit Live Folder."
             case .rateLimited: "GitHub is rate-limiting Vane. The folder will try again shortly."
+            case .forbidden: "GitHub denied access. Check the token’s repository permissions or your organization’s SSO authorization."
             case .badQuery: "GitHub would not run that search. Check the repository name, and "
                 + "that your token is allowed to see it."
             case .refused(let code): "GitHub answered \(code). The folder kept what it had."
@@ -158,14 +161,19 @@ enum GitHub {
         }
     }
 
-    /// nil when the reply is fine. 403 and 429 are both how GitHub says "too much"; 401 is
-    /// how it says "not you". Everything else is reported with its number rather than
-    /// guessed at, because a wrong explanation is worse than a bare one.
-    static func trouble(status: Int) -> Trouble? {
+    /// A 403 may be a permission/SSO denial or a rate limit. Only the response's
+    /// rate-limit evidence identifies the latter; neither means the token was revoked.
+    static func trouble(status: Int, remaining: String? = nil,
+                        retryAfter: String? = nil, message: String? = nil) -> Trouble? {
         switch status {
         case 200..<300: nil
         case 401: .unauthorised
-        case 403, 429: .rateLimited
+        case 429: .rateLimited
+        case 403:
+            remaining == "0" || retryAfter != nil
+                || (message?.lowercased().contains("rate limit") == true)
+                || (message?.lowercased().contains("abuse detection") == true)
+                ? .rateLimited : .forbidden
         case 422: .badQuery
         default: .refused(status)
         }
@@ -632,30 +640,25 @@ enum GitHubOAuth {
     /// which is the one keychain call that can put a panel up, and doing it on the main
     /// actor every five minutes is a hitch waiting for a slow keychain. `signOut` and a
     /// fresh sign-in are the only things that change it, and both go through here.
-    private var cachedToken: String??
+    private var credential = LiveCredentialCache()
 
     var signIn: (login: String, token: String)? {
-        if let cached = cachedToken { return cached.map { (login: cachedLogin ?? "", token: $0) } }
-        let hit = Passwords.lookup(host: LiveFolders.host, profileID: profileID)
-        cachedToken = hit?.password
-        cachedLogin = hit?.account
-        return hit.map { (login: $0.account, token: $0.password) }
+        credential.read { Passwords.readCredential(host: LiveFolders.host, profileID: profileID) }
     }
-
-    private var cachedLogin: String?
 
     @discardableResult
     func save(login: String, token: String) -> Bool {
         // One token per profile: a second login would mean asking which one every folder
         // meant, and Arc asks once.
-        if let old = signIn, old.login != login {
-            _ = Passwords.delete(host: LiveFolders.host, account: old.login, profileID: profileID)
-        }
         let ok = Passwords.save(host: LiveFolders.host, account: login, password: token,
                                 profileID: profileID)
         if ok {
-            cachedToken = token
-            cachedLogin = login
+            if case .unavailable(let status) = Passwords.deleteOtherCredentials(
+                host: LiveFolders.host, keeping: login, profileID: profileID
+            ) {
+                NSLog("[vane] GitHub credential saved but duplicate cleanup failed (status %d)", status)
+            }
+            credential = LiveCredentialCache(login: login, token: token)
             saidSignedOut = false
             failing.removeAll()          // a new token is a reason to try every folder again
         }
@@ -668,8 +671,7 @@ enum GitHubOAuth {
     func signOut() {
         guard let old = signIn else { return }
         _ = Passwords.delete(host: LiveFolders.host, account: old.login, profileID: profileID)
-        cachedToken = .some(nil)
-        cachedLogin = nil
+        credential = LiveCredentialCache()
     }
 
     /// Test a pasted token by asking GitHub who it belongs to. The login is the greeting in
@@ -829,8 +831,13 @@ enum GitHubOAuth {
         defer { session.invalidateAndCancel() }
         do {
             let (data, reply) = try await session.data(for: GitHub.request(url, token: token))
-            let status = (reply as? HTTPURLResponse)?.statusCode ?? 0
-            if let trouble = GitHub.trouble(status: status) { return .failure(trouble) }
+            let http = reply as? HTTPURLResponse
+            let status = http?.statusCode ?? 0
+            let message = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["message"] as? String
+            if let trouble = GitHub.trouble(status: status,
+                                           remaining: http?.value(forHTTPHeaderField: "X-RateLimit-Remaining"),
+                                           retryAfter: http?.value(forHTTPHeaderField: "Retry-After"),
+                                           message: message) { return .failure(trouble) }
             guard let out = shape(data) else { return .failure(.refused(status)) }
             return .success(out)
         } catch {
@@ -871,17 +878,18 @@ enum GitHubOAuth {
     /// A folder was unfolded: Arc refreshes what you are about to look at.
     func expanded(_ folder: UUID) {
         guard let q = live()[folder] else { return }
-        refresh(folder, query: q)
+        refresh(folder, query: q, token: signIn?.token)
     }
 
     /// "Refresh Now" — the one trigger that ignores the floor, because the user asked.
     func refreshNow(_ folder: UUID) {
         guard let q = live()[folder] else { return }
-        refresh(folder, query: q, force: true)
+        refresh(folder, query: q, token: signIn?.token, force: true)
     }
 
     func refreshAll() {
-        for (id, q) in live() { refresh(id, query: q) }
+        let token = signIn?.token
+        for (id, q) in live() { refresh(id, query: q, token: token) }
     }
 
     /// A folder has been deleted, or has stopped being live. Its glyphs go with it — this is
@@ -927,35 +935,45 @@ enum GitHubOAuth {
         Toasts.show(text, in: stores().first { $0.window?.isKeyWindow == true } ?? stores().last)
     }
 
-    private func refresh(_ folder: UUID, query: GitHubQuery, force: Bool = false) {
+    private func refresh(_ folder: UUID, query: GitHubQuery, token: String?, force: Bool = false) {
         guard !busy.contains(folder),
               force || GitHub.due(last: last[folder], now: .now, every: LiveFolders.minimum)
         else { return }
         // Signed out: the folders keep their rows, and the reason is said once rather than
         // every five minutes for the rest of the session.
-        guard let token = signIn?.token else {
+        guard let token else {
             failing.insert(folder)
             if !saidSignedOut {
                 saidSignedOut = true
-                say("Vane is signed out of GitHub. Edit Live Folder to sign in again.")
+                if let status = credential.unavailableStatus {
+                    NSLog("[vane] GitHub credential could not be read from Keychain (status %d)", status)
+                    say("Vane couldn’t read your GitHub sign-in from Keychain. Unlock Keychain or allow Vane access, then refresh the folder.")
+                } else {
+                    say("Vane is signed out of GitHub. Edit Live Folder to sign in again.")
+                }
             }
             return
         }
+        saidSignedOut = false
         busy.insert(folder)
         last[folder] = .now
         Task {
-            let answer = await LiveFolders.fetch(query, token: token)
+            var answer = await LiveFolders.fetch(query, token: token)
+            if case .failure(.unauthorised) = answer,
+               let replacement = credential.replacement(after: token, load: {
+                   Passwords.readCredential(host: LiveFolders.host, profileID: profileID)
+               }) {
+                // Another window/process may have saved a new credential while this
+                // request was in flight. Retry once only when the credential changed.
+                answer = await LiveFolders.fetch(query, token: replacement.token)
+            }
             busy.remove(folder)
             switch answer {
             // Never empty a folder on an error. A rate limit, an expired token and a train
             // tunnel all look like "no pull requests" to a reconcile that trusts the reply,
             // and the rows are the user's tabs.
             case .failure(let trouble):
-                // The kept token is the one thing here that can go stale behind our back —
-                // revoked on GitHub, or deleted from Settings ▸ Passwords. A 401 is how we
-                // hear about it, so the next refresh reads the keychain again rather than
-                // arguing with GitHub about a token that is gone.
-                if trouble == .unauthorised { cachedToken = nil }
+                // Network, permission and rate-limit failures never clear a stored token.
                 if failing.insert(folder).inserted { say(trouble.says) }
             case .success(let prs):
                 failing.remove(folder)
@@ -1258,6 +1276,66 @@ extension TabStore {
     }
 }
 
+/// Only successful reads are retained. Startup Keychain failures must be retried rather
+/// than turning an intact on-disk credential into a process-long signed-out state.
+struct LiveCredentialCache {
+    private var hit: (login: String, token: String)?
+    private(set) var unavailableStatus: OSStatus?
+
+    init(login: String? = nil, token: String? = nil) {
+        if let login, let token { hit = (login, token) }
+    }
+
+    mutating func read(_ load: () -> Passwords.CredentialRead) -> (login: String, token: String)? {
+        if let hit { return hit }
+        unavailableStatus = nil
+        switch load() {
+        case let .found(account, password): hit = (account, password)
+        case .missing: break
+        case let .unavailable(status): unavailableStatus = status
+        }
+        return hit
+    }
+
+    mutating func replacement(after rejected: String,
+                              load: () -> Passwords.CredentialRead) -> (login: String, token: String)? {
+        // Preserve a new sign-in that arrived while an old request was pending.
+        if let hit, hit.token != rejected { return hit }
+        hit = nil
+        guard let fresh = read(load), fresh.token != rejected else { return nil }
+        return fresh
+    }
+
+    static func check() -> [(String, Bool)] {
+        var cache = LiveCredentialCache()
+        let denied = cache.read { .unavailable(-25308) }
+        let recorded = cache.unavailableStatus == -25308
+        let recovered = cache.read { .found(account: "fixture", password: "nonsecret-fixture") }
+        var reread = false
+        let cached = cache.read { reread = true; return .missing }
+        var fresh = LiveCredentialCache()
+        _ = fresh.read { .missing }
+        let appeared = fresh.read { .found(account: "fixture", password: "nonsecret-fixture") }
+        var old = LiveCredentialCache(login: "fixture", token: "old-fixture")
+        let replaced = old.replacement(after: "old-fixture") { .found(account: "fixture", password: "new-fixture") }
+        let unchanged = old.replacement(after: "new-fixture") { .found(account: "fixture", password: "new-fixture") }
+        var pending = LiveCredentialCache(login: "fixture", token: "new-fixture")
+        var touched = false
+        let newer = pending.replacement(after: "old-fixture") { touched = true; return .missing }
+        let unavailable = old.replacement(after: "new-fixture") { .unavailable(-25308) }
+        return [
+            ("401 retries once with a changed persisted token", replaced?.token == "new-fixture"),
+            ("401 never retries the same rejected token", unchanged == nil),
+            ("late 401 preserves a newer sign-in", newer?.token == "new-fixture" && !touched),
+            ("401 with inaccessible keychain does not retry", unavailable == nil),
+            ("inaccessible keychain remains distinct from signed out", denied == nil && recorded),
+            ("GitHub sign-in recovers after transient startup keychain failure", recovered?.login == "fixture" && cache.unavailableStatus == nil),
+            ("successful token avoids repeated plaintext keychain reads", !reread && cached?.token == "nonsecret-fixture"),
+            ("missing startup credential is retried when it becomes available", appeared?.login == "fixture"),
+        ]
+    }
+}
+
 // MARK: - check
 
 extension GitHub {
@@ -1364,8 +1442,15 @@ extension GitHub {
         // What a status code means.
         assert("200 is no trouble", trouble(status: 200) == nil)
         assert("401 is the token", trouble(status: 401) == .unauthorised)
-        assert("403 and 429 are both the rate limit",
-               trouble(status: 403) == .rateLimited && trouble(status: 429) == .rateLimited)
+        assert("403 without rate-limit evidence is an access denial",
+               trouble(status: 403) == .forbidden)
+        assert("403 with exhausted quota and 429 are rate limits",
+               trouble(status: 403, remaining: "0") == .rateLimited && trouble(status: 429) == .rateLimited)
+        assert("secondary 403 rate limits are recognized by headers or message",
+               trouble(status: 403, retryAfter: "60") == .rateLimited
+                   && trouble(status: 403, message: "You have exceeded a secondary rate limit") == .rateLimited)
+        assert("SSO denial is not reported as an expired token or a rate limit",
+               trouble(status: 403, remaining: "4000", message: "Resource protected by organization SAML enforcement") == .forbidden)
         // Seen against the live API: a repository the token cannot look inside comes back
         // 422 with "the listed users and repositories cannot be searched", not 404.
         assert("422 is a repository this token cannot search", trouble(status: 422) == .badQuery)
@@ -1768,6 +1853,7 @@ extension GitHub {
         assert("…and it is not a scheme WebKit is asked to load either",
                !ExternalApps.webSchemes.contains(ExternalApps.ownScheme))
 
+        out += LiveCredentialCache.check()
         return out
     }
 }
