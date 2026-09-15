@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import WebKit
 
 // MARK: - Sandbox
@@ -384,7 +385,7 @@ struct Space: Identifiable, Codable, Equatable {
         // completion into a null run loop and the app segfaults on launch. Hopping to the
         // main actor puts it after the run loop is up, which is also when the profile's
         // stores are least likely to be open.
-        if !sandboxed {
+        if !sandboxed, Self.maySweepDataStores(dataDirectory: Store.overrideDirectory) {
             let live = profiles.map(\.id)
             Task { @MainActor in Self.sweepOrphanedDataStores(keeping: live) }
         }
@@ -486,11 +487,13 @@ struct Space: Identifiable, Codable, Equatable {
     /// for the next launch to sweep. Nothing registered is nothing to erase; the cached
     /// instance, if there is one, is dropped either way.
     private static func eraseWebsiteData(for id: UUID) {
-        // The default profile's is `.default()` — always there, no identifier to ask about.
-        guard id != defaultID else { return erase(for: id) }
+        // Only the normal installation's default profile uses `.default()`. A data-dir
+        // instance always has its own named store, including its Personal profile.
+        guard let storeID = dataStoreIdentifier(for: id, dataDirectory: Store.overrideDirectory)
+        else { return erase(for: id) }
         WKWebsiteDataStore.fetchAllDataStoreIdentifiers { registered in
             Task { @MainActor in
-                guard registered.contains(id) else {
+                guard registered.contains(storeID) else {
                     dataStores[id] = nil
                     return
                 }
@@ -502,12 +505,13 @@ struct Space: Identifiable, Codable, Equatable {
     /// The erase itself, once the profile is known to have a store worth emptying.
     private static func erase(for id: UUID) {
         let store = dataStore(for: id)
+        let storeID = dataStoreIdentifier(for: id, dataDirectory: Store.overrideDirectory)
         store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
                          modifiedSince: .distantPast) {
             MainActor.assumeIsolated {
                 dataStores[id] = nil
-                guard id != defaultID else { return }
-                WKWebsiteDataStore.remove(forIdentifier: id) { error in
+                guard let storeID else { return }
+                WKWebsiteDataStore.remove(forIdentifier: storeID) { error in
                     // Not fatal — the data is already gone — but never silent again.
                     if let error { NSLog("Vane: profile store \(id) not unregistered: \(error)") }
                 }
@@ -517,7 +521,9 @@ struct Space: Identifiable, Codable, Equatable {
 
     /// Registered stores that no profile owns any more. Pure, so it can be asserted on.
     nonisolated static func orphanedStores(_ registered: [UUID], keeping live: [UUID]) -> [UUID] {
-        registered.filter { !live.contains($0) }
+        // A regular installation must not sweep stores belonging to separate data-dir
+        // instances either. Their reserved namespace is outside this profile list.
+        registered.filter { !live.contains($0) && !isIsolatedDataStore($0) }
     }
 
     /// Run at launch. Picks up the store that `eraseWebsiteData` emptied but could not
@@ -525,6 +531,7 @@ struct Space: Identifiable, Codable, Equatable {
     /// ponytail: fire-and-forget. Worst case it fails again and next launch tries again —
     /// the data inside is already gone either way, so there is nothing to report to anyone.
     private static func sweepOrphanedDataStores(keeping live: [UUID]) {
+        guard maySweepDataStores(dataDirectory: Store.overrideDirectory) else { return }
         WKWebsiteDataStore.fetchAllDataStoreIdentifiers { registered in
             let orphans = orphanedStores(registered, keeping: live)
             guard !orphans.isEmpty else { return }
@@ -567,17 +574,47 @@ struct Space: Identifiable, Codable, Equatable {
 
     private static var dataStores: [UUID: WKWebsiteDataStore] = [:]
 
-    /// The real multi-store API. The default profile keeps `.default()` so existing cookies
-    /// and logins survive; every other profile gets its own persistent store. Private
-    /// windows never come through here — they use `.nonPersistent()`.
+    /// Only a normal launch owns the global profile list. A data-dir instance cannot
+    /// infer ownership from WebKit's global registry, even when its own list is empty.
+    nonisolated static func maySweepDataStores(dataDirectory: String?) -> Bool { dataDirectory == nil }
+
+    /// Preserve installed users' existing stores. Data-dir instances use a stable,
+    /// reserved UUID namespace derived from their directory and profile. In particular,
+    /// their fixed default profile must never resolve to WKWebsiteDataStore.default().
+    nonisolated static func dataStoreIdentifier(for profileID: UUID, dataDirectory: String?) -> UUID? {
+        guard let dataDirectory else { return profileID == defaultID ? nil : profileID }
+        let path = URL(fileURLWithPath: dataDirectory, isDirectory: true).standardizedFileURL.path
+        let input = "Vane.WebsiteData.v1\u{0}" + path + "\u{0}" + profileID.uuidString.lowercased()
+        var bytes = Array(SHA256.hash(data: Data(input.utf8)).prefix(16))
+        // 'VANE', version 8 UUID: recognizable by the normal launch's orphan sweep.
+        // The remaining 90 hash bits distinguish directories and profiles.
+        bytes[0] = 0x56; bytes[1] = 0x41; bytes[2] = 0x4e; bytes[3] = 0x45
+        bytes[6] = (bytes[6] & 0x0f) | 0x80
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+
+    nonisolated private static func isIsolatedDataStore(_ id: UUID) -> Bool {
+        let value = id.uuid
+        return value.0 == 0x56 && value.1 == 0x41 && value.2 == 0x4e && value.3 == 0x45
+            && value.6 & 0xf0 == 0x80
+    }
+
+    /// Private tabs use .nonPersistent() instead. Cache keys are profile IDs because
+    /// VANE_DATA_DIR is fixed for the process's lifetime.
     static func dataStore(for id: UUID) -> WKWebsiteDataStore {
-        guard id != defaultID else { return .default() }
+        guard let storeID = dataStoreIdentifier(for: id, dataDirectory: Store.overrideDirectory)
+        else { return .default() }
         if let existing = dataStores[id] { return existing }
-        // WebKit wants one instance per identifier for the life of the process.
-        let store = WKWebsiteDataStore(forIdentifier: id)
+        let store = WKWebsiteDataStore(forIdentifier: storeID)
         dataStores[id] = store
         return store
     }
+
+    /// Release Vane's strong reference before unregistering a temporary named store.
+    /// Callers must first tear down every web view that uses the profile.
+    static func releaseDataStore(for id: UUID) { dataStores[id] = nil }
 
     // MARK: Spaces
 
@@ -689,6 +726,28 @@ struct Space: Identifiable, Codable, Equatable {
         let root = fm.temporaryDirectory.appendingPathComponent("vane-profiles-\(UUID().uuidString)")
         try? fm.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: root) }
+
+        let isolatedDefault = dataStoreIdentifier(for: defaultID, dataDirectory: "/tmp/vane-isolated-a")!
+        let otherProfile = UUID()
+        assert("the installed default profile preserves its existing default store",
+               dataStoreIdentifier(for: defaultID, dataDirectory: nil) == nil)
+        assert("an installed named profile preserves its existing store identifier",
+               dataStoreIdentifier(for: otherProfile, dataDirectory: nil) == otherProfile)
+        assert("a data-dir default profile never uses the installed default store",
+               isolatedDefault != defaultID && isIsolatedDataStore(isolatedDefault))
+        assert("a data-dir store identifier survives relaunch",
+               dataStoreIdentifier(for: defaultID, dataDirectory: "/tmp/vane-isolated-a") == isolatedDefault)
+        assert("different data directories do not share website data",
+               dataStoreIdentifier(for: defaultID, dataDirectory: "/tmp/vane-isolated-b") != isolatedDefault)
+        assert("profiles inside one data directory do not share website data",
+               dataStoreIdentifier(for: otherProfile, dataDirectory: "/tmp/vane-isolated-a") != isolatedDefault)
+        assert("equivalent directory spellings use one store",
+               dataStoreIdentifier(for: defaultID, dataDirectory: "/tmp/vane-isolated-a/../vane-isolated-a") == isolatedDefault)
+        assert("data-dir instances cannot run the global orphan sweep",
+               !maySweepDataStores(dataDirectory: "/tmp/vane-isolated-a") && maySweepDataStores(dataDirectory: nil))
+        assert("the normal orphan sweep leaves data-dir stores alone",
+               !orphanedStores([isolatedDefault, otherProfile], keeping: []).contains(isolatedDefault)
+               && orphanedStores([isolatedDefault, otherProfile], keeping: []) == [otherProfile])
 
         // Pre-existing, pre-profiles data sitting in the directory before any profile exists.
         let legacyDB = root.appendingPathComponent("vane.db")
@@ -904,8 +963,13 @@ struct Space: Identifiable, Codable, Equatable {
         // The other half of the fix, and the only way to see it: this launch's startup sweep
         // clearing the store the *previous* run of this check deleted but could not
         // unregister. Vacuously true the first time, real every time after.
-        assert("a data store orphaned by an earlier launch is swept at startup",
-               wait(20) { orphanedStores(dataStoreIdentifiers(), keeping: pm.profiles.map(\.id)).isEmpty })
+        if maySweepDataStores(dataDirectory: Store.overrideDirectory) {
+            assert("a data store orphaned by an earlier launch is swept at startup",
+                   wait(20) { orphanedStores(dataStoreIdentifiers(), keeping: pm.profiles.map(\.id)).isEmpty })
+        } else {
+            assert("a data-dir deletion fixture does not sweep unrelated registered stores",
+                   !maySweepDataStores(dataDirectory: Store.overrideDirectory))
+        }
 
         // MARK: sentinels for the surviving default profile
         // Distinct hosts: `lookup` for the default profile carries no security domain, so a
@@ -949,6 +1013,7 @@ struct Space: Identifiable, Codable, Equatable {
 
         // MARK: the throwaway, populated the way a used profile is
         let victim = pm.create(name: "Deletion Check").id
+        let victimStoreID = dataStoreIdentifier(for: victim, dataDirectory: Store.overrideDirectory)!
         Passwords.save(host: goneHost, account: "victim", password: "gone", profileID: victim)
         Store.store(for: victim).record(URL(string: "https://vane-delete-check.invalid/v")!,
                                         title: "victim")
@@ -984,7 +1049,7 @@ struct Space: Identifiable, Codable, Equatable {
         assert("a throwaway profile's favicon cache is on disk before deletion",
                fm.fileExists(atPath: victimIcons.appendingPathComponent("example.com").path))
         assert("a throwaway profile's website data store is registered before deletion",
-               dataStoreIdentifiers().contains(victim))
+               dataStoreIdentifiers().contains(victimStoreID))
         assert("a throwaway profile's cookie is in its data store before deletion",
                cookieCount(victim) == 1)
 
@@ -1011,9 +1076,9 @@ struct Space: Identifiable, Codable, Equatable {
         // What can be checked is that the store is left in a state the next launch cleans
         // up, and that the data inside is gone now rather than at some later launch.
         let registered = dataStoreIdentifiers()
-        assert("a store WebKit would not unregister is classified as orphaned",
-               registered.contains(victim) == false
-               || orphanedStores(registered, keeping: survivors).contains(victim))
+        assert("an unregistered store is gone or retained safely for its namespace",
+               !registered.contains(victimStoreID) || isIsolatedDataStore(victimStoreID)
+               || orphanedStores(registered, keeping: survivors).contains(victimStoreID))
         assert("the sweep never classifies a surviving profile's store as orphaned",
                orphanedStores(registered, keeping: survivors).allSatisfy { !survivors.contains($0) })
         assert("deleting a profile erases its cookies and site data",
@@ -1032,7 +1097,7 @@ struct Space: Identifiable, Codable, Equatable {
         assert("another profile's UserDefaults keys survive",
                (UserDefaults.vane.array(forKey: defaultsKey("pinnedTabs", defaultID)) as? [String]) == keepPins)
         assert("another profile's website data store survives",
-               WKWebsiteDataStore.default().isPersistent)
+               dataStore(for: defaultID).isPersistent)
 
         // The neighbour has said what it had to say; the list below is the one thing it
         // would otherwise change.
@@ -1045,7 +1110,7 @@ struct Space: Identifiable, Codable, Equatable {
         try? fm.removeItem(at: keepIcon)
         // Reading the cookies back above re-created the store; put that away again.
         dataStores[victim] = nil
-        WKWebsiteDataStore.remove(forIdentifier: victim) { _ in }
+        WKWebsiteDataStore.remove(forIdentifier: victimStoreID) { _ in }
         return out
     }
 

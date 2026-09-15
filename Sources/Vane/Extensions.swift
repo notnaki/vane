@@ -56,6 +56,14 @@ import WebKit
         hosts[profileID] = nil
     }
 
+    /// Normal launches retain the controller identifiers shipped before data-directory
+    /// isolation. A VANE_DATA_DIR launch gets the same stable, directory-scoped identity as
+    /// its website data store, so extension storage and background pages cannot cross into
+    /// the installed app even for the fixed default profile.
+    nonisolated static func controllerIdentifier(for profileID: UUID, dataDirectory: String?) -> UUID? {
+        ProfileManager.dataStoreIdentifier(for: profileID, dataDirectory: dataDirectory)
+    }
+
     let profileID: UUID
     let controller: WKWebExtensionController
 
@@ -70,9 +78,10 @@ import WebKit
         // A profile-scoped controller configuration is what keeps extension storage and
         // background state from crossing profiles; the default profile keeps `.default()`
         // so already-installed extensions keep their storage.
-        let configuration = profileID == ProfileManager.defaultID
-            ? WKWebExtensionController.Configuration.default()
-            : WKWebExtensionController.Configuration(identifier: profileID)
+        let configuration = Self.controllerIdentifier(for: profileID,
+                                                       dataDirectory: Store.overrideDirectory)
+            .map(WKWebExtensionController.Configuration.init(identifier:))
+            ?? WKWebExtensionController.Configuration.default()
         configuration.defaultWebsiteDataStore = ProfileManager.dataStore(for: profileID)
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
@@ -724,6 +733,22 @@ import WebKit
 
         func rejects(_ url: URL) -> Bool {
             do { _ = try validate(url); return false } catch { return true }
+        }
+
+        let namedProfile = UUID()
+        expect("the installed default profile keeps the default extension controller") {
+            controllerIdentifier(for: ProfileManager.defaultID, dataDirectory: nil) == nil
+        }
+        expect("an installed named profile keeps its existing extension controller") {
+            controllerIdentifier(for: namedProfile, dataDirectory: nil) == namedProfile
+        }
+        expect("a data-dir default profile gets an isolated extension controller") {
+            controllerIdentifier(for: ProfileManager.defaultID, dataDirectory: "/tmp/vane-ext-a") != nil
+        }
+        expect("extension controller isolation is stable and directory-scoped") {
+            let first = controllerIdentifier(for: ProfileManager.defaultID, dataDirectory: "/tmp/vane-ext-a")
+            return first == controllerIdentifier(for: ProfileManager.defaultID, dataDirectory: "/tmp/vane-ext-a")
+                && first != controllerIdentifier(for: ProfileManager.defaultID, dataDirectory: "/tmp/vane-ext-b")
         }
 
         let good = folder("good", manifest:
