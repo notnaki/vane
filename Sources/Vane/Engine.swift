@@ -591,6 +591,7 @@ struct TitleReveal: Equatable, Sendable {
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
         let old = web
+        CertificateTrust.navigationStarted(in: self)
         pipFrame = nil                // it named a frame of the view that is going
         TabAudio.unwatch(self)         // KVO on a dead observee is a crash, not a leak
         obs = []                       // KVO on a view that is about to die
@@ -889,6 +890,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         (w as? LinkContextWebView)?.navigationStarted()
+        CertificateTrust.navigationStarted(in: self)
         Previews.shared.cancel()      // the link that raised it is gone
         // Whatever was focused belongs to the page being left, frames and all; the incoming
         // one says so itself as soon as its script runs in each of them.
@@ -942,7 +944,7 @@ struct TitleReveal: Equatable, Sendable {
     // is no location equivalent to implement here.
     func webView(_ w: WKWebView, respondTo challenge: URLAuthenticationChallenge) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
-        await CertificateTrust.handle(challenge: challenge)
+        await CertificateTrust.handle(challenge: challenge, tab: self, web: w)
     }
 
     func webView(_ w: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,

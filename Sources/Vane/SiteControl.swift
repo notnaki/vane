@@ -403,7 +403,7 @@ extension SiteControlModel {
         // The header advertises both of these — "a certificate problem was accepted here",
         // and http that HTTPS-only was told to allow. Clearing a site cannot leave standing
         // the two decisions that made it less safe than the others.
-        CertificateTrust.forget(host: host)
+        CertificateTrust.forget(host: host, profileID: tab.profileID)
         HTTPSOnly.forget(host: host, profileID: tab.profileID)
         // "Always Allow" for another app is one more thing this site was allowed to do.
         ExternalApps.reset(host: host)

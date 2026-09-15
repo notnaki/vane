@@ -8,20 +8,62 @@ import WebKit
 /// at all: a self-signed host is a dead end with an error page, and a Basic-auth realm is a
 /// 401 the user can do nothing about.
 ///
-/// ponytail: NSAlert, not a full-page interstitial the way Safari and Chrome do it. The
-/// callback doesn't carry the tab, so there is no window to attach a sheet to and no page
-/// to render into without threading one through. Ceiling: it is app-modal, so a background
-/// tab hitting a bad certificate steals focus. The upgrade path is passing the Tab in.
 @MainActor enum CertificateTrust {
 
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
     private static var defaults: UserDefaults = .vane
 
-    /// `|` is the separator because a hostname cannot contain one — a `.` separator would
-    /// make the prefix sweep in `forget(host:)` also eat `example.com.au`.
-    private static let prefix = "certException."
-    private static func key(host: String, fingerprint: String) -> String {
-        prefix + host.lowercased() + "|" + fingerprint
+    /// v1 keys contained only a hostname and fingerprint. They are deliberately never read:
+    /// treating one as a v2 decision would silently spread it to every profile and port.
+    private static let legacyPrefix = "certException."
+    private static let prefix = "certException.v2."
+
+    struct Scope: Hashable, Codable, Sendable {
+        let profileID: UUID
+        let host: String
+        let port: Int
+
+        init?(profileID: UUID, host: String, port: Int) {
+            let host = host.lowercased()
+            guard !host.isEmpty else { return nil }
+            self.profileID = profileID
+            self.host = host
+            self.port = port > 0 ? port : 443
+        }
+
+        var display: String { port == 443 ? host : "\(host):\(port)" }
+    }
+
+    private final class Memory: NSObject {
+        var exceptions: Set<String> = []
+        var generation = UUID()
+        var prompt: NSAlert?
+        weak var window: NSWindow?
+    }
+    private static let memories = NSMapTable<Tab, Memory>.weakToStrongObjects()
+
+    private static func memory(for tab: Tab) -> Memory {
+        if let memory = memories.object(forKey: tab) { return memory }
+        let memory = Memory()
+        memories.setObject(memory, forKey: tab)
+        return memory
+    }
+
+    private static func key(scope: Scope, fingerprint: String) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let data = try? encoder.encode(scope) else { return "" }
+        return prefix + data.base64EncodedString() + "|" + fingerprint
+    }
+
+    private static func scope(from key: String) -> Scope? {
+        guard key.hasPrefix(prefix),
+              let bar = key.lastIndex(of: "|"),
+              let data = Data(base64Encoded: String(key[key.index(key.startIndex,
+                                                                  offsetBy: prefix.count)..<bar])),
+              let scope = try? JSONDecoder().decode(Scope.self, from: data)
+        else { return nil }
+        return Scope(profileID: scope.profileID, host: scope.host, port: scope.port)
     }
 
     // MARK: - Remembered exceptions
@@ -29,25 +71,49 @@ import WebKit
     /// Keyed on the certificate too, not just the host: an exception for one certificate
     /// must not silently cover whatever certificate shows up tomorrow. Swapping the cert is
     /// exactly what an interception looks like, so it has to ask again.
-    static func trusted(host: String, fingerprint: String) -> Bool {
-        defaults.bool(forKey: key(host: host, fingerprint: fingerprint))
+    static func trusted(scope: Scope, fingerprint: String, privateMemory: Set<String>? = nil) -> Bool {
+        let key = key(scope: scope, fingerprint: fingerprint)
+        if let privateMemory { return privateMemory.contains(key) }
+        return defaults.bool(forKey: key)
     }
 
     /// Only ever called from the branch where the user clicked through both alerts.
-    static func remember(host: String, fingerprint: String) {
-        defaults.set(true, forKey: key(host: host, fingerprint: fingerprint))
+    private static func remember(scope: Scope, fingerprint: String, memory: Memory?) {
+        let key = key(scope: scope, fingerprint: fingerprint)
+        if let memory { memory.exceptions.insert(key) }
+        else { defaults.set(true, forKey: key) }
     }
 
-    static func forget(host: String) {
-        let stem = prefix + host.lowercased() + "|"
-        for k in defaults.dictionaryRepresentation().keys where k.hasPrefix(stem) {
-            defaults.removeObject(forKey: k)
+    static func forget(host: String, profileID: UUID) {
+        let host = host.lowercased()
+        for key in defaults.dictionaryRepresentation().keys {
+            guard let scope = scope(from: key), scope.profileID == profileID,
+                  scope.host == host else { continue }
+            defaults.removeObject(forKey: key)
+        }
+        for memory in memories.objectEnumerator()?.allObjects as? [Memory] ?? [] {
+            memory.exceptions = Set(memory.exceptions.filter {
+                guard let parsed = scope(from: $0) else { return false }
+                return parsed.profileID != profileID || parsed.host != host
+            })
+        }
+    }
+
+    static func forget(profile profileID: UUID) {
+        for key in defaults.dictionaryRepresentation().keys
+            where scope(from: key)?.profileID == profileID { defaults.removeObject(forKey: key) }
+        for memory in memories.objectEnumerator()?.allObjects as? [Memory] ?? [] {
+            memory.exceptions = Set(memory.exceptions.filter { scope(from: $0)?.profileID != profileID })
         }
     }
 
     static func forgetAll() {
-        for k in defaults.dictionaryRepresentation().keys where k.hasPrefix(prefix) {
+        for k in defaults.dictionaryRepresentation().keys
+            where k.hasPrefix(prefix) || k.hasPrefix(legacyPrefix) {
             defaults.removeObject(forKey: k)
+        }
+        for memory in memories.objectEnumerator()?.allObjects as? [Memory] ?? [] {
+            memory.exceptions.removeAll()
         }
     }
 
@@ -145,19 +211,20 @@ import WebKit
     /// Everything `webView(_:didReceive:)` has to answer. Anything that isn't a server
     /// trust or a login challenge goes back to the system, which is the only honest answer
     /// for a method that also covers client certificates and NTLM.
-    static func handle(challenge: URLAuthenticationChallenge) async
+    static func handle(challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        guard tab.web === web else { return (.cancelAuthenticationChallenge, nil) }
         switch challenge.protectionSpace.authenticationMethod {
         case NSURLAuthenticationMethodServerTrust:
-            return serverTrust(challenge)
+            return await serverTrust(challenge, tab: tab, web: web)
         case NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest:
-            return login(challenge)
+            return await login(challenge, tab: tab, web: web)
         default:
             return (.performDefaultHandling, nil)
         }
     }
 
-    private static func serverTrust(_ challenge: URLAuthenticationChallenge)
+    private static func serverTrust(_ challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
         guard let trust = challenge.protectionSpace.serverTrust else {
             return (.performDefaultHandling, nil)
@@ -168,28 +235,36 @@ import WebKit
         if SecTrustEvaluateWithError(trust, &error) { return (.performDefaultHandling, nil) }
 
         let host = challenge.protectionSpace.host
+        guard let scope = Scope(profileID: tab.profileID, host: host,
+                                port: challenge.protectionSpace.port) else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
         guard let cert = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else {
             // No certificate to pin an exception to, so there is no safe way to offer one.
             return (.cancelAuthenticationChallenge, nil)
         }
         let fp = fingerprint(cert)
-        if trusted(host: host, fingerprint: fp) {
+        let memory = memory(for: tab)
+        if trusted(scope: scope, fingerprint: fp,
+                   privateMemory: tab.isPrivate ? memory.exceptions : nil) {
             return (.useCredential, URLCredential(trust: trust))
         }
 
         let status = OSStatus(error.map { CFErrorGetCode($0) } ?? Int(errSecNotTrusted))
         let h = hints(for: cert)
-        guard ask(host: host, fault: fault(status: status, hints: h), hints: h, fingerprint: fp) else {
+        guard await ask(host: scope.display, fault: fault(status: status, hints: h), hints: h,
+                        fingerprint: fp, tab: tab, web: web, memory: memory) else {
             return (.cancelAuthenticationChallenge, nil)
         }
-        remember(host: host, fingerprint: fp)
+        remember(scope: scope, fingerprint: fp, memory: tab.isPrivate ? memory : nil)
         return (.useCredential, URLCredential(trust: trust))
     }
 
     /// Two alerts, deliberately. The first defaults to Go Back and its only other button
     /// asks to see the details — clicking through takes a second, separate decision, and
     /// neither Return nor Escape can reach the button that proceeds.
-    private static func ask(host: String, fault: Fault, hints: Hints, fingerprint: String) -> Bool {
+    private static func ask(host: String, fault: Fault, hints: Hints, fingerprint: String,
+                            tab: Tab, web: WKWebView, memory: Memory) async -> Bool {
         let first = NSAlert()
         first.alertStyle = .critical
         first.messageText = "Vane can’t verify that this is “\(host)”"
@@ -201,7 +276,8 @@ import WebKit
         first.addButton(withTitle: "Go Back")
         let details = first.addButton(withTitle: "Details…")
         details.keyEquivalent = ""
-        guard first.runModal() == .alertSecondButtonReturn else { return false }
+        guard await present(first, tab: tab, web: web, memory: memory) == .alertSecondButtonReturn
+        else { return false }
 
         let second = NSAlert()
         second.alertStyle = .critical
@@ -220,7 +296,7 @@ import WebKit
         let proceed = second.addButton(withTitle: "Visit This Site")
         proceed.keyEquivalent = ""
         proceed.hasDestructiveAction = true
-        return second.runModal() == .alertSecondButtonReturn
+        return await present(second, tab: tab, web: web, memory: memory) == .alertSecondButtonReturn
     }
 
     /// A 64-character hex run is unreadable and unverifiable; grouped bytes can actually be
@@ -234,14 +310,17 @@ import WebKit
 
     // MARK: - HTTP Basic / Digest
 
-    /// ponytail: the credential is `.forSession`, never `.permanent`. Writing a password
-    /// into the login keychain is a decision with its own UI in every other browser, and
-    /// this prompt has no "remember me" box to justify it.
-    private static func login(_ challenge: URLAuthenticationChallenge)
+    /// The credential answers this challenge only. WebKit's profile data store may reuse the
+    /// authenticated connection, but Vane never puts the password in process-wide session
+    /// credential storage or the login keychain.
+    private static func login(_ challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
         let space = challenge.protectionSpace
         let alert = NSAlert()
-        alert.messageText = "“\(space.host)” requires a username and password"
+        let defaultPort = space.protocol?.lowercased() == "http" ? 80 : 443
+        let site = space.port > 0 && space.port != defaultPort
+            ? "\(space.host):\(space.port)" : space.host
+        alert.messageText = "“\(site)” requires a username and password"
         var info = space.realm.map { $0.isEmpty ? "" : "Realm: \($0)\n" } ?? ""
         if space.protocol == "http" {
             info += "This connection is not encrypted, so the password is sent in the clear.\n"
@@ -261,12 +340,45 @@ import WebKit
 
         alert.addButton(withTitle: "Sign In")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn, !user.stringValue.isEmpty else {
+        guard await present(alert, tab: tab, web: web, memory: memory(for: tab))
+                == .alertFirstButtonReturn,
+              !user.stringValue.isEmpty else {
             return (.cancelAuthenticationChallenge, nil)
         }
-        return (.useCredential, URLCredential(user: user.stringValue,
-                                              password: password.stringValue,
-                                              persistence: .forSession))
+        return (.useCredential, loginCredential(user: user.stringValue,
+                                                password: password.stringValue))
+    }
+
+    private static func loginCredential(user: String, password: String) -> URLCredential {
+        URLCredential(user: user, password: password, persistence: .none)
+    }
+
+    private static func stillCurrent(generation: UUID, currentGeneration: UUID,
+                                     sameWeb: Bool, sameWindow: Bool, visible: Bool) -> Bool {
+        generation == currentGeneration && sameWeb && sameWindow && visible
+    }
+
+    private static func present(_ alert: NSAlert, tab: Tab, web: WKWebView,
+                                memory: Memory) async -> NSApplication.ModalResponse {
+        guard memory.prompt == nil, let window = web.window,
+              !web.isHiddenOrHasHiddenAncestor, window.attachedSheet == nil else { return .abort }
+        let generation = memory.generation
+        memory.prompt = alert
+        memory.window = window
+        let response = await alert.beginSheetModal(for: window)
+        if memory.prompt === alert { memory.prompt = nil; memory.window = nil }
+        guard stillCurrent(generation: generation, currentGeneration: memory.generation,
+                           sameWeb: tab.web === web, sameWindow: web.window === window,
+                           visible: !web.isHiddenOrHasHiddenAncestor) else { return .abort }
+        return response
+    }
+
+    static func navigationStarted(in tab: Tab) {
+        guard let memory = memories.object(forKey: tab) else { return }
+        memory.generation = UUID()
+        if let prompt = memory.prompt, let window = memory.window {
+            window.endSheet(prompt.window, returnCode: .abort)
+        }
     }
 
     // MARK: - check
@@ -285,34 +397,81 @@ import WebKit
             UserDefaults.dropScratchSuite(suite)
         }
 
+        let profile = UUID(), otherProfile = UUID()
+        let example = Scope(profileID: profile, host: "example.com", port: 443)!
+        let otherPort = Scope(profileID: profile, host: "example.com", port: 8443)!
+        let otherProfileScope = Scope(profileID: otherProfile, host: "example.com", port: 443)!
+        let other = Scope(profileID: profile, host: "other.example", port: 443)!
+        let neighbour = Scope(profileID: profile, host: "other.example.au", port: 443)!
+        let subdomain = Scope(profileID: profile, host: "sub.other.example", port: 443)!
         let a = String(repeating: "a1", count: 32)   // stand-in fingerprints, 64 hex chars
         let b = String(repeating: "b2", count: 32)
         var out: [(String, Bool)] = []
 
-        out.append(("an unvisited host is not trusted", trusted(host: "example.com", fingerprint: a) == false))
-        remember(host: "example.com", fingerprint: a)
-        out.append(("a remembered exception reads back", trusted(host: "example.com", fingerprint: a)))
-        out.append(("host matching is case-insensitive", trusted(host: "EXAMPLE.com", fingerprint: a)))
+        out.append(("an unvisited host is not trusted", !trusted(scope: example, fingerprint: a)))
+        remember(scope: example, fingerprint: a, memory: nil)
+        out.append(("a remembered exception reads back", trusted(scope: example, fingerprint: a)))
+        out.append(("host matching is case-insensitive",
+                    Scope(profileID: profile, host: "EXAMPLE.com", port: 443) == example))
         // The whole point of pinning the fingerprint: a swapped certificate re-prompts.
         out.append(("a different certificate for the same host is NOT trusted",
-                    trusted(host: "example.com", fingerprint: b) == false))
-        out.append(("the same certificate on another host is NOT trusted",
-                    trusted(host: "evil.example", fingerprint: a) == false))
+                    !trusted(scope: example, fingerprint: b)))
+        out.append(("an exception does not cross ports", !trusted(scope: otherPort, fingerprint: a)))
+        out.append(("an exception does not cross profiles", !trusted(scope: otherProfileScope, fingerprint: a)))
+        scratch.set(true, forKey: legacyPrefix + "example.com|" + a)
+        out.append(("a legacy global exception fails closed", !trusted(scope: otherProfileScope, fingerprint: a)))
 
-        remember(host: "other.example", fingerprint: b)
-        remember(host: "other.example.au", fingerprint: a)
-        remember(host: "sub.other.example", fingerprint: a)
-        forget(host: "other.example")
-        out.append(("forget(host:) drops that host's exception", trusted(host: "other.example", fingerprint: b) == false))
+        let privateMemory = Memory()
+        remember(scope: example, fingerprint: b, memory: privateMemory)
+        out.append(("a private exception stays out of persistent preferences",
+                    trusted(scope: example, fingerprint: b, privateMemory: privateMemory.exceptions)
+                    && !trusted(scope: example, fingerprint: b)))
+        out.append(("a private exception does not cross tabs",
+                    !trusted(scope: example, fingerprint: b, privateMemory: [])))
+
+        remember(scope: other, fingerprint: b, memory: nil)
+        remember(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
+                 fingerprint: b, memory: nil)
+        remember(scope: neighbour, fingerprint: a, memory: nil)
+        remember(scope: subdomain, fingerprint: a, memory: nil)
+        forget(host: "other.example", profileID: profile)
+        out.append(("forget(host:) drops that profile's host exception", !trusted(scope: other, fingerprint: b)))
+        out.append(("forget(host:) leaves another profile's decision alone",
+                    trusted(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
+                            fingerprint: b)))
         out.append(("forget(host:) does not eat a host that merely starts the same way",
-                    trusted(host: "other.example.au", fingerprint: a)))
+                    trusted(scope: neighbour, fingerprint: a)))
         out.append(("forget(host:) does not eat a subdomain",
-                    trusted(host: "sub.other.example", fingerprint: a)))
-        out.append(("forget(host:) leaves unrelated hosts alone", trusted(host: "example.com", fingerprint: a)))
+                    trusted(scope: subdomain, fingerprint: a)))
+        out.append(("forget(host:) leaves unrelated hosts alone", trusted(scope: example, fingerprint: a)))
+        forget(profile: otherProfile)
+        out.append(("deleting a profile drops only that profile's certificate decisions",
+                    !trusted(scope: Scope(profileID: otherProfile, host: "other.example", port: 443)!,
+                             fingerprint: b)
+                    && trusted(scope: example, fingerprint: a)))
         forgetAll()
         out.append(("forgetAll drops everything",
-                    trusted(host: "example.com", fingerprint: a) == false
-                    && trusted(host: "sub.other.example", fingerprint: a) == false))
+                    !trusted(scope: example, fingerprint: a)
+                    && !trusted(scope: subdomain, fingerprint: a)))
+
+        let generation = UUID()
+        out.append(("a newer navigation rejects a stale prompt answer",
+                    !stillCurrent(generation: generation, currentGeneration: UUID(),
+                                  sameWeb: true, sameWindow: true, visible: true)))
+        out.append(("a replacement web view rejects a stale prompt answer",
+                    !stillCurrent(generation: generation, currentGeneration: generation,
+                                  sameWeb: false, sameWindow: true, visible: true)))
+        out.append(("a moved or closed window rejects a stale prompt answer",
+                    !stillCurrent(generation: generation, currentGeneration: generation,
+                                  sameWeb: true, sameWindow: false, visible: true)))
+        out.append(("a hidden requesting tab cannot accept a prompt answer",
+                    !stillCurrent(generation: generation, currentGeneration: generation,
+                                  sameWeb: true, sameWindow: true, visible: false)))
+        out.append(("an unchanged visible request can accept its prompt answer",
+                    stillCurrent(generation: generation, currentGeneration: generation,
+                                 sameWeb: true, sameWindow: true, visible: true)))
+        out.append(("HTTP auth credentials are never put in session credential storage",
+                    loginCredential(user: "alice", password: "secret").persistence == .none))
 
         // Reason mapping: every status we claim to handle, and the generic ones that only
         // become specific once the leaf certificate is read.

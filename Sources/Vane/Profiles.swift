@@ -452,6 +452,7 @@ struct Space: Identifiable, Codable, Equatable {
         Downloads.forget(id, in: directory)
         TidyTitles.forget(id)
         Zoom.forget(profile: id)
+        CertificateTrust.forget(profile: id)
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
         try? fm.removeItem(at: Self.faviconDir(for: id, in: directory))
         return true
