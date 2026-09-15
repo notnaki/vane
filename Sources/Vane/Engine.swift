@@ -374,6 +374,7 @@ struct TitleReveal: Equatable, Sendable {
         guard !suspended, let url = web.url else { return }
         parkedState = web.interactionState as? Data
         parkedURL = url
+        titlePlaceholderURL = url
         suspended = true
         release()
     }
