@@ -105,6 +105,14 @@ import WebKit
         return "New Tab"
     }
 
+    /// The title transition while a parked tab reconstructs its WebKit page. Kept pure so
+    /// session restoration can prove its placeholder lifecycle without creating a web view.
+    nonisolated static func restoredTitle(cached: String, placeholderURL: URL?,
+                                          page: String?, url: URL?)
+        -> (title: String, placeholderURL: URL?) {
+        (title(page: page, url: url), nil)
+    }
+
     /// What the address pill says: a local file's own name, or the host with `www.` dropped
     /// the way Arc shows it — the scheme is noise the user has never needed to read. Nil
     /// when there is no page, which is the pill's "Search or Enter URL".
@@ -144,6 +152,9 @@ import WebKit
             ("a titleless remote page is still New Tab",
              title(page: nil, url: remote) == "New Tab"),
             ("no page at all is New Tab", title(page: nil, url: nil) == "New Tab"),
+            ("a waking pinned tab keeps its cached title before WebKit reloads",
+             restoredTitle(cached: "Readable title", placeholderURL: remote,
+                           page: nil, url: remote).title == "Readable title"),
 
             ("the pill shows a file by name", pillLabel(pdf) == "report.pdf"),
             ("the pill shows a site by host", pillLabel(remote) == "example.com"),

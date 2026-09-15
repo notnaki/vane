@@ -42,6 +42,9 @@ struct TitleReveal: Equatable, Sendable {
     /// WKWebView, which costs no process.
     private(set) var web: WKWebView
     @Published var title = "New Tab"
+    /// The page whose persisted title is standing in while a parked web view wakes. WebKit
+    /// briefly reports an empty title during reconstruction; that is not a page title.
+    private var titlePlaceholderURL: URL?
     /// The last time the on-device model renamed this tab, and what the row said before it
     /// did. Bumped by `noteAITitle` and by nothing else: a page navigating or swapping its
     /// own `<title>` is not a rename, and the row must not shimmer for it. See
@@ -294,7 +297,12 @@ struct TitleReveal: Equatable, Sendable {
                     // A suspended tab keeps the title it was parked with — the strip must
                     // not flicker back to "New Tab" the moment the page goes away.
                     guard let self, !self.suspended else { return }
-                    self.title = Files.title(page: w.title, url: w.url)
+                    let update = Files.restoredTitle(cached: self.title,
+                                                     placeholderURL: self.titlePlaceholderURL,
+                                                     page: w.title,
+                                                     url: w.url)
+                    self.title = update.title
+                    self.titlePlaceholderURL = update.placeholderURL
                     if !self.isPrivate, let u = w.url { self.history.retitle(u, title: self.title) }
                     self.extensions.sync()
                 }
@@ -466,6 +474,7 @@ struct TitleReveal: Equatable, Sendable {
     func park(url: URL, _ p: Parked) {
         parkedURL = url
         parkedState = p.state
+        titlePlaceholderURL = url
         suspended = true
         // A tab that comes up from disk parked has a page — that is what parked means — and
         // it has one before it has ever run a navigation. Without this the very first × on a
