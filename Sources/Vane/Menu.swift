@@ -598,6 +598,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 
 @MainActor func buildMenu() -> NSMenu {
     let root = NSMenu()
+    let bookmarkProfileID = BookmarkManager.currentActionProfile
     let makeDefaultApp = item(.makeDefaultBrowser) { URLHandling.makeDefaultBrowser() }
     makeDefaultApp.isEnabled = !URLHandling.isDefaultBrowser
     // macOS fills this in itself once it is `NSApp.servicesMenu`: what the Services submenu
@@ -794,12 +795,24 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         // Arc has no Bookmarks menu; what Vane imports from other browsers lives here.
         menu("Bookmarks", [
 
-            item(.bookmarkPage) { Windows.current?.active?.toggleBookmark(); rebuild() },
-            item("Export Bookmarks…", "") { Export.chooseAndExport(.bookmarks) },
+            item(.bookmarkPage) {
+                let profileID = Windows.current?.profileID ?? ProfileManager.activeProfileID
+                Windows.current?.active?.toggleBookmark(); rebuild()
+                BookmarkManager.refresh(profileID: profileID)
+            },
+            item("Manage Bookmarks…", "") { BookmarkManager.show(profileID: BookmarkManager.currentActionProfile) },
+            item("Import Bookmarks…", "") { BookmarkImport.chooseAndImport(profileID: BookmarkManager.currentActionProfile) },
+            item("Export Bookmarks…", "") { Export.chooseAndExport(.bookmarks, profileID: BookmarkManager.currentActionProfile) },
             .separator(),
-        ] + Store.shared.bookmarks(limit: 40).map { b in
+        ] + Store.store(for: bookmarkProfileID).bookmarks(limit: 15).map { b in
             item(b.title.isEmpty ? b.url : b.title, "") {
-                if let u = URL(string: b.url) { Windows.current?.active?.web.load(URLRequest(url: u)) }
+                guard let url = URL(string: b.url) else { return }
+                let profileID = BookmarkManager.currentActionProfile
+                let target = Windows.current(in: profileID)
+                    ?? ProfileManager.shared.profiles.first(where: { $0.id == profileID }).map {
+                        Windows.open(profile: $0)
+                    }
+                target?.shown.active?.web.load(URLRequest(url: url))
             }
         }),
     ]))

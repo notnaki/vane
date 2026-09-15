@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// RFC 4180. Not hand-rolled splitting on commas: passwords legitimately contain commas,
 /// quotes and newlines, and a naive split silently corrupts exactly the entries you would
@@ -110,6 +111,49 @@ enum PasswordImport {
         } catch {
             alert.alertStyle = .warning
             alert.messageText = "Could not import that file."
+            alert.informativeText = error.localizedDescription
+        }
+        alert.runModal()
+    }
+}
+
+/// Netscape bookmark HTML from Vane or another browser. Folder names are retained; nested
+/// paths are displayed as a single readable folder because the native manager is one level.
+@MainActor enum BookmarkImport {
+    @discardableResult
+    static func importFile(_ url: URL, profileID: UUID = ProfileManager.activeProfileID) throws
+        -> BookmarkImportResult {
+        let entries = Export.parseNetscapeEntries(try String(contentsOf: url, encoding: .utf8))
+        guard !entries.isEmpty else { throw PasswordImport.Failure("no bookmarks were found") }
+        let items = entries.compactMap { entry -> BookmarkImportItem? in
+            guard let url = URL(string: entry.row.url), url.scheme == "http" || url.scheme == "https"
+            else { return nil }
+            return BookmarkImportItem(url: url, title: entry.row.title,
+                                      folder: entry.folder, at: entry.importedAt)
+        }
+        guard !items.isEmpty else { throw PasswordImport.Failure("no usable web bookmarks were found") }
+        guard let result = Store.store(for: profileID).importBookmarks(items) else {
+            throw PasswordImport.Failure("the bookmarks could not be saved")
+        }
+        return result
+    }
+
+    static func chooseAndImport(profileID: UUID = ProfileManager.activeProfileID) {
+        let panel = NSOpenPanel()
+        panel.title = "Import Bookmarks"
+        panel.message = "Choose a bookmark HTML export from Vane, Safari, Chrome, Firefox or Edge."
+        panel.allowedContentTypes = [.html]
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        let alert = NSAlert()
+        do {
+            let result = try importFile(file, profileID: profileID)
+            alert.messageText = "Imported \(result.imported) bookmark\(result.imported == 1 ? "" : "s")."
+            alert.informativeText = result.folders == 0 ? "" : "Created \(result.folders) folder\(result.folders == 1 ? "" : "s")."
+            rebuild()
+            BookmarkManager.refresh(profileID: profileID)
+        } catch {
+            alert.alertStyle = .warning
+            alert.messageText = "Could not import that bookmark file."
             alert.informativeText = error.localizedDescription
         }
         alert.runModal()

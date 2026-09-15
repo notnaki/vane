@@ -29,6 +29,16 @@ import UniformTypeIdentifiers
         let at: Date
     }
 
+    struct BookmarkEntry: Equatable {
+        let row: Row
+        let folder: String?
+        let importedAt: Date?
+
+        init(row: Row, folder: String?, importedAt: Date? = nil) {
+            self.row = row; self.folder = folder; self.importedAt = importedAt
+        }
+    }
+
     struct Failure: LocalizedError {
         let errorDescription: String?
         init(_ m: String) { errorDescription = m }
@@ -39,27 +49,78 @@ import UniformTypeIdentifiers
     /// Read-only second connection to the active profile's db. Store keeps its own handle
     /// open in WAL mode; WAL is built for exactly this — one writer, many readers — so
     /// nothing has to be copied the way BrowserImport copies another browser's locked file.
-    private static func rows(_ sql: String, profileID: UUID) -> [Row] {
-        let path = ProfileManager.dbURL(for: profileID, in: Store.directory).path
+    private static func message(_ operation: String, db: OpaquePointer?, code: Int32) -> Failure {
+        let detail = db.map { String(cString: sqlite3_errmsg($0)) } ?? "SQLite error \(code)"
+        return Failure("Could not \(operation) the browsing database: \(detail)")
+    }
+
+    /// A complete read snapshot. Returning only after SQLITE_DONE is the important part:
+    /// SQLite may yield rows and then fail, and those rows are not a successful export.
+    private static func snapshot<T>(_ sql: String, path: String,
+                                    row: (OpaquePointer) -> T) throws -> [T] {
         var db: OpaquePointer?
         defer { sqlite3_close(db) }
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return [] }
+        let opened = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil)
+        guard opened == SQLITE_OK, let db else { throw message("open", db: db, code: opened) }
+        let began = sqlite3_exec(db, "BEGIN", nil, nil, nil)
+        guard began == SQLITE_OK else { throw message("begin reading", db: db, code: began) }
+        var committed = false
+        defer { if !committed { sqlite3_exec(db, "ROLLBACK", nil, nil, nil) } }
         var st: OpaquePointer?
         defer { sqlite3_finalize(st) }
-        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
-        var out: [Row] = []
-        while sqlite3_step(st) == SQLITE_ROW {
-            func text(_ c: Int32) -> String {
-                sqlite3_column_text(st, c).map { String(cString: $0) } ?? ""
-            }
-            out.append(Row(url: text(0), title: text(1),
-                           at: Date(timeIntervalSince1970: sqlite3_column_double(st, 2))))
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &st, nil)
+        guard prepared == SQLITE_OK, let statement = st else {
+            throw message("prepare the export", db: db, code: prepared)
         }
+        var out: [T] = []
+        var stepped = sqlite3_step(statement)
+        while stepped == SQLITE_ROW {
+            out.append(row(statement))
+            stepped = sqlite3_step(statement)
+        }
+        guard stepped == SQLITE_DONE else { throw message("read", db: db, code: stepped) }
+        sqlite3_finalize(statement)
+        st = nil
+        let ended = sqlite3_exec(db, "COMMIT", nil, nil, nil)
+        guard ended == SQLITE_OK else { throw message("finish reading", db: db, code: ended) }
+        committed = true
         return out
     }
 
-    static func bookmarkRows(profileID: UUID = ProfileManager.activeProfileID) -> [Row] {
-        rows("SELECT url, title, at FROM bookmarks ORDER BY at DESC", profileID: profileID)
+    private static func rows(_ sql: String, path: String) throws -> [Row] {
+        try snapshot(sql, path: path) { st in
+            func text(_ c: Int32) -> String {
+                sqlite3_column_text(st, c).map { String(cString: $0) } ?? ""
+            }
+            return Row(url: text(0), title: text(1),
+                       at: Date(timeIntervalSince1970: sqlite3_column_double(st, 2)))
+        }
+    }
+
+    private static func rows(_ sql: String, profileID: UUID) throws -> [Row] {
+        try rows(sql, path: ProfileManager.dbURL(for: profileID, in: Store.directory).path)
+    }
+
+    static func bookmarkRows(profileID: UUID = ProfileManager.activeProfileID) throws -> [Row] {
+        try rows("SELECT url, title, at FROM bookmarks ORDER BY at DESC", profileID: profileID)
+    }
+
+    static func bookmarkEntries(profileID: UUID = ProfileManager.activeProfileID) throws -> [BookmarkEntry] {
+        let path = ProfileManager.dbURL(for: profileID, in: Store.directory).path
+        let sql = """
+            SELECT b.url, b.title, b.at, f.name FROM bookmarks b
+            LEFT JOIN bookmark_folders f ON f.id = b.folder_id
+            ORDER BY f.position, b.at DESC
+            """
+        return try snapshot(sql, path: path) { st in
+            func text(_ col: Int32) -> String {
+                sqlite3_column_text(st, col).map { String(cString: $0) } ?? ""
+            }
+            let folder = sqlite3_column_type(st, 3) == SQLITE_NULL ? nil : text(3)
+            let at = Date(timeIntervalSince1970: sqlite3_column_double(st, 2))
+            return BookmarkEntry(row: Row(url: text(0), title: text(1), at: at),
+                                 folder: folder, importedAt: at)
+        }
     }
 
     /// One row per *visit*, not per url: that is what the table holds, and collapsing it
@@ -68,8 +129,8 @@ import UniformTypeIdentifiers
     /// hundred thousand rows — tens of MB, written once, on a user-initiated action. The
     /// ceiling is a machine where that matters; the fix then is streaming to a FileHandle,
     /// not a date range nobody asked for.
-    static func historyRows(profileID: UUID = ProfileManager.activeProfileID) -> [Row] {
-        rows("SELECT url, title, at FROM visits ORDER BY at DESC", profileID: profileID)
+    static func historyRows(profileID: UUID = ProfileManager.activeProfileID) throws -> [Row] {
+        try rows("SELECT url, title, at FROM visits ORDER BY at DESC", profileID: profileID)
     }
 
     // MARK: Bookmarks → Netscape HTML
@@ -82,6 +143,10 @@ import UniformTypeIdentifiers
     /// ADD_DATE is whole seconds since the unix epoch. Chrome reads a float here as garbage
     /// and shows 1970, so it is truncated to an Int rather than printed as a Double.
     static func bookmarksHTML(_ rows: [Row]) -> String {
+        bookmarksHTML(rows.map { BookmarkEntry(row: $0, folder: nil) })
+    }
+
+    static func bookmarksHTML(_ entries: [BookmarkEntry]) -> String {
         var s = """
         <!DOCTYPE NETSCAPE-Bookmark-file-1>
         <!-- This is an automatically generated file.
@@ -93,11 +158,19 @@ import UniformTypeIdentifiers
         <DL><p>
 
         """
-        for r in rows {
+        func anchor(_ r: Row, indent: String) -> String {
             // The url is escaped too: a query string with a bare `&` is legal in a url and
             // illegal in an attribute, and browsers that re-serialize the file will mangle it.
-            s += "    <DT><A HREF=\"\(escape(r.url))\" ADD_DATE=\"\(Int(r.at.timeIntervalSince1970))\">"
+            indent + "<DT><A HREF=\"\(escape(r.url))\" ADD_DATE=\"\(Int(r.at.timeIntervalSince1970))\">"
                 + escape(r.title) + "</A>\n"
+        }
+        for entry in entries where entry.folder == nil { s += anchor(entry.row, indent: "    ") }
+        var emitted = Set<String>()
+        for entry in entries {
+            guard let folder = entry.folder, emitted.insert(folder).inserted else { continue }
+            s += "    <DT><H3>\(escape(folder))</H3>\n    <DL><p>\n"
+            for child in entries where child.folder == folder { s += anchor(child.row, indent: "        ") }
+            s += "    </DL><p>\n"
         }
         s += "</DL><p>\n"
         return s
@@ -141,6 +214,49 @@ import UniformTypeIdentifiers
                        title: unescape(ns.substring(with: m.range(at: 2))),
                        at: Date(timeIntervalSince1970: Double(attribute("ADD_DATE", in: attributes) ?? "") ?? 0))
         }
+    }
+
+    /// Folder-aware companion to the legacy flat parser. A stack follows the Netscape
+    /// H3/DL convention, so files from other browsers may be nested even though Vane's
+    /// manager currently presents one folder level.
+    static func parseNetscapeEntries(_ html: String) -> [BookmarkEntry] {
+        var folders: [String] = [], levels: [Bool] = [], pending: String?
+        var out: [BookmarkEntry] = []
+        guard let tags = try? NSRegularExpression(
+            pattern: "<H3[^>]*>.*?</H3>|</?DL[^>]*>|<DT>\\s*<A\\b[^>]*>.*?</A>",
+            options: [.caseInsensitive, .dotMatchesLineSeparators]),
+              let h3 = try? NSRegularExpression(pattern: "<H3[^>]*>(.*?)</H3>",
+                                                options: [.caseInsensitive, .dotMatchesLineSeparators])
+        else { return [] }
+        let whole = NSRange(html.startIndex..., in: html)
+        for match in tags.matches(in: html, range: whole) {
+            guard let range = Range(match.range, in: html) else { continue }
+            let tag = String(html[range])
+            if tag.range(of: "<H3", options: .caseInsensitive) != nil,
+               let title = h3.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)),
+               let titleRange = Range(title.range(at: 1), in: tag) {
+                pending = unescape(String(tag[titleRange]))
+            } else if tag.range(of: "</DL", options: .caseInsensitive) != nil {
+                if levels.popLast() == true { _ = folders.popLast() }
+            } else if tag.range(of: "<DL", options: .caseInsensitive) != nil {
+                if let folder = pending { folders.append(folder); pending = nil; levels.append(true) }
+                else { levels.append(false) }
+            } else {
+                for row in parseNetscape(tag) {
+                    let anchor = tag as NSString
+                    let anchorRange = NSRange(location: 0, length: anchor.length)
+                    let attributes = try? NSRegularExpression(pattern: "<DT><A\\s([^>]*)>", options: [.caseInsensitive])
+                        .firstMatch(in: tag, range: anchorRange)
+                        .map { anchor.substring(with: $0.range(at: 1)) }
+                    let importedAt = attributes.flatMap { attribute("ADD_DATE", in: $0) }
+                        .flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
+                    out.append(BookmarkEntry(row: row,
+                                             folder: folders.isEmpty ? nil : folders.joined(separator: " / "),
+                                             importedAt: importedAt))
+                }
+            }
+        }
+        return out
     }
 
     private static func attribute(_ name: String, in attributes: String) -> String? {
@@ -247,11 +363,11 @@ import UniformTypeIdentifiers
 
     // MARK: Writing
 
-    static func text(for kind: Kind, profileID: UUID = ProfileManager.activeProfileID) -> String {
+    static func text(for kind: Kind, profileID: UUID = ProfileManager.activeProfileID) throws -> String {
         switch kind {
-        case .bookmarks:   bookmarksHTML(bookmarkRows(profileID: profileID))
-        case .historyJSON: historyJSON(historyRows(profileID: profileID))
-        case .historyCSV:  historyCSV(historyRows(profileID: profileID))
+        case .bookmarks:   bookmarksHTML(try bookmarkEntries(profileID: profileID))
+        case .historyJSON: historyJSON(try historyRows(profileID: profileID))
+        case .historyCSV:  historyCSV(try historyRows(profileID: profileID))
         case .passwords:   passwordsCSV(savedPasswords(profileID: profileID))
         }
     }
@@ -312,21 +428,24 @@ import UniformTypeIdentifiers
         return field.stringValue.trimmingCharacters(in: .whitespaces).uppercased() == "EXPORT"
     }
 
-    static func chooseAndExport(_ kind: Kind) {
+    static func chooseAndExport(_ kind: Kind,
+                                profileID: UUID = ProfileManager.activeProfileID) {
         if kind == .passwords, !confirmPlaintext() { return }
 
         let panel = NSSavePanel()
         panel.title = "Export"
         panel.nameFieldStringValue = defaultName(kind)
         panel.allowedContentTypes = [contentType(kind)]
+        let profileName = ProfileManager.shared.profiles.first(where: { $0.id == profileID })?.name
+            ?? "Unavailable Profile"
         panel.message = kind == .passwords
             ? "This file will contain your passwords in plain text. Delete it when you are done."
-            : "Exporting from the profile “\(ProfileManager.shared.active.name)”."
+            : "Exporting from the profile “\(profileName)”."
         guard panel.runModal() == .OK, let file = panel.url else { return }
 
         let alert = NSAlert()
         do {
-            let body = text(for: kind)
+            let body = try text(for: kind, profileID: profileID)
             try write(body, to: file, secret: kind == .passwords)
             alert.messageText = "Exported \(count(kind, body)) to \(file.lastPathComponent)."
             alert.informativeText = kind == .passwords
@@ -336,7 +455,7 @@ import UniformTypeIdentifiers
                    : "")
         } catch {
             alert.alertStyle = .warning
-            alert.messageText = "Could not write that file."
+            alert.messageText = "Could not export that data."
             alert.informativeText = error.localizedDescription
         }
         alert.runModal()
@@ -515,7 +634,7 @@ import UniformTypeIdentifiers
 
         // MARK: empty collections
 
-        let emptyHTML = bookmarksHTML([])
+        let emptyHTML = bookmarksHTML([Row]())
         assert("empty bookmarks: still a valid, importable Netscape file",
                emptyHTML.hasPrefix("<!DOCTYPE NETSCAPE-Bookmark-file-1>") && emptyHTML.hasSuffix("</DL><p>\n"))
         assert("empty bookmarks: parses back to nothing, no crash", parseNetscape(emptyHTML).isEmpty)
@@ -536,6 +655,34 @@ import UniformTypeIdentifiers
             .appendingPathComponent("vane-export-check-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
+
+        let brokenDB = dir.appendingPathComponent("broken.db").path
+        var broken: OpaquePointer?
+        sqlite3_open(brokenDB, &broken)
+        sqlite3_exec(broken, "CREATE TABLE unrelated (id INTEGER)", nil, nil, nil)
+        sqlite3_close(broken)
+        assert("database read: a missing export table throws instead of becoming an empty export",
+               (try? rows("SELECT url, title, at FROM bookmarks", path: brokenDB)) == nil)
+
+        let steppingDB = dir.appendingPathComponent("step-error.db").path
+        var stepping: OpaquePointer?
+        sqlite3_open(steppingDB, &stepping)
+        sqlite3_exec(stepping, """
+            CREATE TABLE visits (id INTEGER PRIMARY KEY, url TEXT, title TEXT, at REAL);
+            INSERT INTO visits VALUES (1, 'https://one.test', 'One', 1);
+            INSERT INTO visits VALUES (2, 'https://two.test', 'Two', 2);
+            """, nil, nil, nil)
+        sqlite3_close(stepping)
+        assert("database read: a complete real SQLite snapshot returns every row",
+               (try? rows("SELECT url, title, at FROM visits ORDER BY id", path: steppingDB)).map(\.count) == 2)
+        let runtimeError = """
+            SELECT url, title, CASE WHEN id = 2 THEN abs(-9223372036854775808) ELSE at END
+            FROM visits ORDER BY id
+            """
+        assert("database read: an error after the first row throws instead of exporting a partial list",
+               (try? rows(runtimeError, path: steppingDB)) == nil)
+        assert("database read: a failed snapshot rolls back and leaves the database readable",
+               (try? rows("SELECT url, title, at FROM visits ORDER BY id", path: steppingDB)).map(\.count) == 2)
 
         // The stamp is the user's local date, not UTC — a file saved on the evening of the
         // 14th in Istanbul is dated the 14th — so the assertion is on the shape, not on a
