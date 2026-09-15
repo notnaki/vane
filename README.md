@@ -179,6 +179,28 @@ the autofill script driven against a real form in a real `https` origin — stay
 Several modules take an injected `UserDefaults` or directory so their assertions never
 touch your real preferences, keychain items or Application Support folder.
 
+On a logged-in macOS 26 desktop, run a sandboxed WebKit smoke check without touching a
+normal Vane profile:
+
+```sh
+swift build
+python3 scripts/check-browser-smoke.py
+```
+
+To validate the exact signed and notarized release archive without rebuilding or
+re-signing it, run:
+
+```sh
+scripts/check-release-candidate.sh Vane.zip /path/to/evidence
+```
+
+The release-candidate check verifies the archive hash, every bundle path, file hash,
+symlink target, permission mode and extended attribute, code signature, expected Team ID,
+stapled notarization and Gatekeeper assessment before running the same WebKit smoke checks.
+It verifies the strict code signature again afterward, records the results in the evidence
+directory and fails if the bundle changes during testing. A clean-Mac claim still requires
+running it on a reset macOS test machine.
+
 ## Features
 
 Everything here is implemented and reachable from the UI.
