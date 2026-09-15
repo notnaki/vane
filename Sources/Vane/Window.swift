@@ -561,7 +561,7 @@ extension VaneWindow {
         }
         func windowDidResize(_ n: Notification) { recentre() }
         func windowDidEndLiveResize(_ n: Notification) { recentre() }
-        func windowDidBecomeKey(_ n: Notification) { recentre() }
+        func windowDidBecomeKey(_ n: Notification) { recentre(); MainActor.assumeIsolated { rebuild() } }
         func windowDidResignKey(_ n: Notification) { recentre() }
         func windowDidEnterFullScreen(_ n: Notification) { recentre() }
         func windowDidExitFullScreen(_ n: Notification) { recentre() }

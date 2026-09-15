@@ -32,6 +32,11 @@ import UniformTypeIdentifiers
     struct BookmarkEntry: Equatable {
         let row: Row
         let folder: String?
+        let importedAt: Date?
+
+        init(row: Row, folder: String?, importedAt: Date? = nil) {
+            self.row = row; self.folder = folder; self.importedAt = importedAt
+        }
     }
 
     struct Failure: LocalizedError {
@@ -112,9 +117,9 @@ import UniformTypeIdentifiers
                 sqlite3_column_text(st, col).map { String(cString: $0) } ?? ""
             }
             let folder = sqlite3_column_type(st, 3) == SQLITE_NULL ? nil : text(3)
-            return BookmarkEntry(row: Row(url: text(0), title: text(1),
-                                           at: Date(timeIntervalSince1970: sqlite3_column_double(st, 2))),
-                                 folder: folder)
+            let at = Date(timeIntervalSince1970: sqlite3_column_double(st, 2))
+            return BookmarkEntry(row: Row(url: text(0), title: text(1), at: at),
+                                 folder: folder, importedAt: at)
         }
     }
 
@@ -238,7 +243,16 @@ import UniformTypeIdentifiers
                 else { levels.append(false) }
             } else {
                 for row in parseNetscape(tag) {
-                out.append(BookmarkEntry(row: row, folder: folders.isEmpty ? nil : folders.joined(separator: " / ")))
+                    let anchor = tag as NSString
+                    let anchorRange = NSRange(location: 0, length: anchor.length)
+                    let attributes = try? NSRegularExpression(pattern: "<DT><A\\s([^>]*)>", options: [.caseInsensitive])
+                        .firstMatch(in: tag, range: anchorRange)
+                        .map { anchor.substring(with: $0.range(at: 1)) }
+                    let importedAt = attributes.flatMap { attribute("ADD_DATE", in: $0) }
+                        .flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
+                    out.append(BookmarkEntry(row: row,
+                                             folder: folders.isEmpty ? nil : folders.joined(separator: " / "),
+                                             importedAt: importedAt))
                 }
             }
         }

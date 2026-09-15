@@ -50,6 +50,11 @@ struct BookmarkImportItem: Sendable {
     let url: URL
     let title: String
     let folder: String?
+    let at: Date?
+
+    init(url: URL, title: String, folder: String?, at: Date? = nil) {
+        self.url = url; self.title = title; self.folder = folder; self.at = at
+    }
 }
 
 struct BookmarkImportResult: Equatable, Sendable {
@@ -367,10 +372,11 @@ struct BookmarkImportResult: Equatable, Sendable {
             }) else { return nil }
         }
         let fresh = rows.filter { !existing.contains($0.url.absoluteString) }
+        let fallbackDate = Date.now
         var folders: [String: BookmarkFolder] = [:]
         for folder in bookmarkFolders() { folders[folder.name.lowercased()] = folder }
         var imported = 0, made = 0
-        for item in fresh {
+        for (index, item) in fresh.enumerated() {
             let name = item.folder?.trimmingCharacters(in: .whitespacesAndNewlines)
             var folderID: String?
             if let name, !name.isEmpty {
@@ -382,8 +388,9 @@ struct BookmarkImportResult: Equatable, Sendable {
                 }
             }
             let folder: Any = folderID.map { $0 as Any } ?? NSNull()
+            let date = item.at ?? fallbackDate.addingTimeInterval(-Double(index))
             guard run("INSERT INTO bookmarks (url, title, at, folder_id) VALUES (?, ?, ?, ?)",
-                      [item.url.absoluteString, item.title, Date.now.timeIntervalSince1970, folder]) else { return nil }
+                      [item.url.absoluteString, item.title, date.timeIntervalSince1970, folder]) else { return nil }
             imported += 1
         }
         guard exec("COMMIT") else { return nil }

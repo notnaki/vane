@@ -6,6 +6,33 @@ import SwiftUI
     private static var window: NSWindow?
     private static var profileID: UUID?
 
+    enum KeyCommand: Equatable { case previous, next, open }
+
+    nonisolated static func actionProfile(window: UUID?, active: UUID) -> UUID {
+        window ?? active
+    }
+
+    static var currentActionProfile: UUID {
+        actionProfile(window: Windows.current?.profileID, active: ProfileManager.activeProfileID)
+    }
+
+    nonisolated static func keyboardSelection(ids: [Int64], selected: Set<Int64>,
+                                               step: Int) -> Set<Int64> {
+        guard !ids.isEmpty else { return [] }
+        guard let selectedID = ids.first(where: selected.contains),
+              let index = ids.firstIndex(of: selectedID) else { return [step < 0 ? ids.last! : ids.first!] }
+        return [ids[min(max(index + step, 0), ids.count - 1)]]
+    }
+
+    nonisolated static func keyCommand(for key: KeyEquivalent,
+                                        _ modifiers: EventModifiers) -> KeyCommand? {
+        guard modifiers.isEmpty else { return nil }
+        if key == .upArrow { return .previous }
+        if key == .downArrow { return .next }
+        if key == .return { return .open }
+        return nil
+    }
+
     static func show(profileID requested: UUID = ProfileManager.activeProfileID) {
         profileID = requested
         if let window {
@@ -51,6 +78,11 @@ import SwiftUI
         let second = URL(string: "https://swift.test")!
         var out: [(String, Bool)] = []
         func expect(_ name: String, _ condition: Bool) { out.append((name, condition)) }
+        let profileA = UUID(), profileB = UUID()
+        expect("bookmark actions prefer the focused window's profile",
+               actionProfile(window: profileB, active: profileA) == profileB)
+        expect("bookmark actions fall back to the active profile without a browser window",
+               actionProfile(window: nil, active: profileA) == profileA)
         expect("bookmark fixture imports pages", store.addBookmarks([(first, "A 100% Guide"), (second, "Swift")]) == 2)
         let duplicateImport = store.importBookmarks([
             BookmarkImportItem(url: first, title: "First source title", folder: "First"),
@@ -60,12 +92,13 @@ import SwiftUI
                duplicateImport == BookmarkImportResult(imported: 0, folders: 0))
         let fresh = Store(path: directory.appendingPathComponent("import.db").path)
         let ordered = fresh.importBookmarks([
-            BookmarkImportItem(url: first, title: "First source title", folder: "First"),
-            BookmarkImportItem(url: first, title: "Later source title", folder: "Later")
+            BookmarkImportItem(url: first, title: "First source title", folder: "First", at: Date(timeIntervalSince1970: 20)),
+            BookmarkImportItem(url: first, title: "Later source title", folder: "Later", at: Date(timeIntervalSince1970: 30))
         ])
         expect("the first duplicate in source order owns title and folder",
                ordered == BookmarkImportResult(imported: 1, folders: 1)
                && fresh.managedBookmarks().first?.title == "First source title"
+               && fresh.managedBookmarks().first?.at == Date(timeIntervalSince1970: 20)
                && fresh.bookmarkFolders().map(\.name) == ["First"])
         let bulk = Store(path: directory.appendingPathComponent("bulk.db").path)
         let many = (0..<1_005).map { (URL(string: "https://bulk.test/\($0)")!, "Page \($0)") }
@@ -102,6 +135,35 @@ import SwiftUI
         let compactParsed = Export.parseNetscapeEntries(compact)
         expect("folder import does not depend on line breaks",
                compactParsed.count == 1 && compactParsed.first?.folder == "Work")
+        let chronological = [
+            Export.BookmarkEntry(row: .init(url: "https://new.test", title: "New", at: Date(timeIntervalSince1970: 30)), folder: "Work"),
+            Export.BookmarkEntry(row: .init(url: "https://old.test", title: "Old", at: Date(timeIntervalSince1970: 10)), folder: "Work")
+        ]
+        let roundTrip = Export.parseNetscapeEntries(Export.bookmarksHTML(chronological))
+        let datedImport = Store(path: directory.appendingPathComponent("dated.db").path)
+        let importedRoundTrip = datedImport.importBookmarks(roundTrip.compactMap { entry in
+            URL(string: entry.row.url).map {
+                BookmarkImportItem(url: $0, title: entry.row.title,
+                                   folder: entry.folder, at: entry.importedAt)
+            }
+        })
+        expect("bookmark export and import preserve row order and ADD_DATE",
+               importedRoundTrip?.imported == 2
+               && datedImport.managedBookmarks().map(\.url) == chronological.map(\.row.url)
+               && datedImport.managedBookmarks().map(\.at) == chronological.map(\.row.at))
+        let undated = Store(path: directory.appendingPathComponent("undated.db").path)
+        _ = undated.importBookmarks([
+            BookmarkImportItem(url: URL(string: "https://first-undated.test")!, title: "First", folder: nil),
+            BookmarkImportItem(url: URL(string: "https://second-undated.test")!, title: "Second", folder: nil)
+        ])
+        expect("bookmarks without ADD_DATE keep deterministic source order",
+               undated.managedBookmarks().map(\.title) == ["First", "Second"])
+        expect("keyboard arrows choose adjacent rows and Return opens the chosen row",
+               keyboardSelection(ids: [1, 2, 3], selected: [], step: 1) == [1]
+               && keyboardSelection(ids: [1, 2, 3], selected: [1], step: 1) == [2]
+               && keyboardSelection(ids: [1, 2, 3], selected: [2], step: -1) == [1]
+               && keyCommand(for: .return, []) == .open
+               && keyCommand(for: .return, .command) == nil)
         return out
     }
 }
@@ -119,6 +181,7 @@ private struct BookmarkManagerView: View {
     @State private var selection: Set<Int64> = []
     @State private var editing: Bookmark?
     @FocusState private var searchFocused: Bool
+    @FocusState private var listFocused: Bool
 
     private var store: Store { Store.store(for: profileID) }
 
@@ -224,7 +287,11 @@ private struct BookmarkManagerView: View {
                 ForEach(marks) { mark in row(mark) }
             }
         }
-        .focusable().focusEffectDisabled().onDeleteCommand { deleteSelected() }
+        .focusable().focusEffectDisabled().focused($listFocused)
+        .onDeleteCommand { deleteSelected() }
+        .onKeyPress(keys: [.upArrow, .downArrow, .return], phases: .down) { press in
+            handle(BookmarkManager.keyCommand(for: press.key, press.modifiers))
+        }
         .accessibilityLabel("Bookmarks")
     }
 
@@ -244,7 +311,18 @@ private struct BookmarkManagerView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(picked ? Look.selected : .clear).contentShape(.rect)
         .onTapGesture(count: 2) { open(mark) }
-        .onTapGesture { select(mark) }
+        .onTapGesture { select(mark); listFocused = true }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(mark.display)
+        .accessibilityValue(mark.url)
+        .accessibilityAddTraits(picked ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint("Opens this page in a new tab.")
+        .accessibilityAction { open(mark) }
+        .accessibilityAction(named: picked ? "Deselect" : "Select") {
+            if picked { selection.remove(mark.id) } else { selection.insert(mark.id) }
+        }
+        .accessibilityAction(named: "Edit") { editing = mark }
+        .accessibilityAction(named: "Delete") { remove([mark.id]) }
         .contextMenu {
             Button("Open in New Tab") { open(mark) }
             Button("Edit…") { editing = mark }
@@ -273,7 +351,23 @@ private struct BookmarkManagerView: View {
         } else { selection = [mark.id] }
     }
 
+    private func handle(_ command: BookmarkManager.KeyCommand?) -> KeyPress.Result {
+        guard let command else { return .ignored }
+        switch command {
+        case .previous:
+            selection = BookmarkManager.keyboardSelection(ids: marks.map(\.id), selected: selection, step: -1)
+        case .next:
+            selection = BookmarkManager.keyboardSelection(ids: marks.map(\.id), selected: selection, step: 1)
+        case .open:
+            guard let mark = marks.first(where: { selection.contains($0.id) }) else { return .ignored }
+            open(mark)
+        }
+        return .handled
+    }
+
     private func open(_ mark: Bookmark) {
+        selection = [mark.id]
+        listFocused = true
         guard let url = URL(string: mark.url) else { return }
         let target = Windows.current(in: profileID)
             ?? ProfileManager.shared.profiles.first(where: { $0.id == profileID }).map {

@@ -128,7 +128,8 @@ enum PasswordImport {
         let items = entries.compactMap { entry -> BookmarkImportItem? in
             guard let url = URL(string: entry.row.url), url.scheme == "http" || url.scheme == "https"
             else { return nil }
-            return BookmarkImportItem(url: url, title: entry.row.title, folder: entry.folder)
+            return BookmarkImportItem(url: url, title: entry.row.title,
+                                      folder: entry.folder, at: entry.importedAt)
         }
         guard !items.isEmpty else { throw PasswordImport.Failure("no usable web bookmarks were found") }
         guard let result = Store.store(for: profileID).importBookmarks(items) else {
