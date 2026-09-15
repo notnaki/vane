@@ -35,9 +35,10 @@ passing release checks.
   when their owning tab or window closes.
 - Exercise 100 tab/Little Vane open-close cycles and a 200-tab session under Instruments,
   then allow a 30-second idle settling period.
-- Require zero closed WebViews or windows retained by Vane, resident memory within the larger
-  of 50 MB or 10% of the pre-cycle baseline, average idle CPU below 3% over 60 seconds, and no
-  continuing timers, media activity, or wakeups attributable to the closed objects.
+- Require zero closed WebViews or windows retained by Vane, a post-settling resident-memory
+  increase over the pre-cycle baseline no greater than the larger of 50 MB or 10% of that
+  baseline, average idle CPU below 3% over 60 seconds, and no continuing timers, media
+  activity, or wakeups attributable to the closed objects.
 
 ## Final documentation and compatibility pass
 
