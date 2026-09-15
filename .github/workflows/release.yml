@@ -250,7 +250,7 @@ jobs:
           # Both assets come from the STAPLED app, so a machine that is offline when it opens
           # one still sees the notarization.
           ditto -c -k --keepParent Vane.app Vane.zip
-          hdiutil create -volname Vane -srcfolder Vane.app -ov -format UDZO Vane.dmg
+          ./scripts/build-dmg.sh Vane.app Vane.dmg
           # The image gets a signature and a notarization of its own so that a browser
           # download is not stopped by Gatekeeper either. Skipped, like everything else,
           # without the secrets.

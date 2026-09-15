@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="840" viewBox="0 0 1320 840">
+  <defs>
+    <radialGradient id="halo" cx="50%" cy="47%" r="55%">
+      <stop offset="0" stop-color="#cbd2f2" stop-opacity=".70"/>
+      <stop offset=".55" stop-color="#dfe3f4" stop-opacity=".34"/>
+      <stop offset="1" stop-color="#f2f1ed" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="52"/>
+    </filter>
+  </defs>
+
+  <rect width="1320" height="840" fill="#f2f1ed"/>
+  <ellipse cx="660" cy="390" rx="540" ry="330" fill="url(#halo)"/>
+  <circle cx="350" cy="460" r="148" fill="#8793cb" opacity=".12" filter="url(#blur)"/>
+  <circle cx="970" cy="460" r="148" fill="#8793cb" opacity=".09" filter="url(#blur)"/>
+
+  <g fill="none" stroke="#23283b" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M628 80l32 72c27-35 31-58 32-72h-20c-1 25-5 43-8 54l-18-54z"
+          fill="#23283b" stroke="none" opacity=".94"/>
+  </g>
+
+  <text x="660" y="212" text-anchor="middle" fill="#1c2133"
+        font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="45"
+        font-weight="600" letter-spacing="-1">Install Vane</text>
+  <text x="660" y="258" text-anchor="middle" fill="#5d6478"
+        font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="21"
+        font-weight="400">Drag the app into Applications</text>
+
+  <g fill="none" stroke="#6573b2" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".82">
+    <path d="M520 460h270"/>
+    <path d="M758 428l32 32-32 32"/>
+  </g>
+
+  <text x="660" y="756" text-anchor="middle" fill="#767d8e"
+        font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="17"
+        font-weight="500" letter-spacing=".5">macOS 26 or later</text>
+</svg>
