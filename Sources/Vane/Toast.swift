@@ -170,8 +170,8 @@ struct ToastHost: View {
         // sidebar's overlay simply has more of it to draw.
         .padding(.horizontal, Look.inset)
         .animation(reduceMotion ? nil : Look.list, value: mine.map(\.id))
-        // Below the footer's edge is where the slide comes from; the sidebar itself clips it.
-        .clipped()
+        // Keep the shadow outside the stack's layout bounds. Clipping here cuts its
+        // top and bottom flush with the pill, leaving a hard rectangular edge.
     }
 
     /// One row, always: the sentence on the left, its verb and its × on the right, centred
@@ -200,7 +200,7 @@ struct ToastHost: View {
         .hairline(radius: Look.toastHeight / 2, Look.barStroke)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         .onHover { toasts.hover(toast, $0) }
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .transition(.opacity)
         .id(toast.id)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Toasts.spoken(toast.text))
