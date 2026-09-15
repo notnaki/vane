@@ -105,6 +105,22 @@ import WebKit
         return "New Tab"
     }
 
+    /// The title transition while a parked tab reconstructs its WebKit page. Kept pure so
+    /// session restoration can prove its placeholder lifecycle without creating a web view.
+    nonisolated static func restoredTitle(cached: String, placeholderURL: URL?,
+                                          page: String?, url: URL?)
+        -> (title: String, placeholderURL: URL?) {
+        if let placeholderURL,
+           (url == nil || url == placeholderURL),
+           page?.isEmpty != false {
+            return (cached, placeholderURL)
+        }
+        return (title(page: page, url: url), nil)
+    }
+
+    /// Starts the title placeholder lifecycle shared by restored and live-suspended tabs.
+    nonisolated static func restorationPlaceholder(for url: URL) -> URL? { url }
+
     /// What the address pill says: a local file's own name, or the host with `www.` dropped
     /// the way Arc shows it — the scheme is noise the user has never needed to read. Nil
     /// when there is no page, which is the pill's "Search or Enter URL".
@@ -144,6 +160,24 @@ import WebKit
             ("a titleless remote page is still New Tab",
              title(page: nil, url: remote) == "New Tab"),
             ("no page at all is New Tab", title(page: nil, url: nil) == "New Tab"),
+            ("a waking pinned tab keeps its cached title before WebKit reloads",
+             restoredTitle(cached: "Readable title", placeholderURL: remote,
+                           page: nil, url: remote).title == "Readable title"),
+            ("live suspension starts the cached-title placeholder lifecycle",
+             restoredTitle(cached: "Readable title",
+                           placeholderURL: restorationPlaceholder(for: remote),
+                           page: nil, url: remote).title == "Readable title"),
+            ("a waking pinned tab keeps its cached title before WebKit restores its URL",
+             restoredTitle(cached: "Readable title", placeholderURL: remote,
+                           page: nil, url: nil).title == "Readable title"),
+            ("a live page title replaces the cached pinned title",
+             restoredTitle(cached: "Readable title", placeholderURL: remote,
+                           page: "Live title", url: remote)
+                == (title: "Live title", placeholderURL: nil)),
+            ("navigation drops a pinned title placeholder",
+             restoredTitle(cached: "Readable title", placeholderURL: remote,
+                           page: nil, url: URL(string: "https://example.org")!)
+                == (title: "New Tab", placeholderURL: nil)),
 
             ("the pill shows a file by name", pillLabel(pdf) == "report.pdf"),
             ("the pill shows a site by host", pillLabel(remote) == "example.com"),
