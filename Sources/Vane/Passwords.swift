@@ -712,6 +712,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
 
         for (label, block) in [("window chrome", Look.check), ("sidebar motion", Motion.check), ("tab archive", Archive.check),
                                ("content blocker", Blocker.check), ("browser import", BrowserImport.check),
+                               ("bookmark manager", BookmarkManager.check),
                                ("favicons + tabs", Favicons.check), ("url handling", URLHandling.check),
                                ("error pages", ErrorPage.check), ("site permissions", SitePermissions.check),
                                ("site control center", SiteControl.check),

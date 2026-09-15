@@ -28,6 +28,35 @@ struct Visit: Identifiable, Hashable, Sendable {
     var display: String { title.isEmpty ? url : title }
 }
 
+/// A saved page as shown in the bookmark manager. Folder ids are strings because folders
+/// are portable UUIDs; bookmark ids stay SQLite row ids so edits survive title/url changes.
+struct Bookmark: Identifiable, Hashable, Sendable {
+    let id: Int64
+    let url: String
+    let title: String
+    let at: Date
+    let folderID: String?
+
+    var display: String { title.isEmpty ? url : title }
+}
+
+struct BookmarkFolder: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+    let position: Int
+}
+
+struct BookmarkImportItem: Sendable {
+    let url: URL
+    let title: String
+    let folder: String?
+}
+
+struct BookmarkImportResult: Equatable, Sendable {
+    let imported: Int
+    let folders: Int
+}
+
 /// History and bookmarks in one SQLite file.
 /// ponytail: sqlite3 ships in the OS, so no wrapper dependency and no Core Data. One
 /// connection, used from the main thread — writes are a single row and reads are indexed.
@@ -85,34 +114,95 @@ struct Visit: Identifiable, Hashable, Sendable {
         PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS visits (
             id INTEGER PRIMARY KEY, url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', at REAL NOT NULL);
-        CREATE INDEX IF NOT EXISTS visits_at  ON visits(at DESC);
+        CREATE INDEX IF NOT EXISTS visits_at ON visits(at DESC);
         CREATE INDEX IF NOT EXISTS visits_url ON visits(url);
         CREATE TABLE IF NOT EXISTS bookmarks (
             id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT NOT NULL DEFAULT '', at REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS bookmark_folders (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL, created_at REAL NOT NULL);
+        CREATE UNIQUE INDEX IF NOT EXISTS bookmark_folders_name
+            ON bookmark_folders(name COLLATE NOCASE);
         """)
+        var hasFolder = false
+        run("PRAGMA table_info(bookmarks)", [], {
+            if self.text($0, 1) == "folder_id" { hasFolder = true }
+        })
+        if !hasFolder { exec("ALTER TABLE bookmarks ADD COLUMN folder_id TEXT") }
     }
 
-    /// Deleting a profile drops its Store; close the file rather than leaking the handle.
     deinit { sqlite3_close(db) }
 
-    private func exec(_ sql: String) { sqlite3_exec(db, sql, nil, nil, nil) }
+    @discardableResult private func exec(_ sql: String) -> Bool {
+        sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK
+    }
 
-    /// Prepare, bind, step. Text binds use TRANSIENT because the Swift strings backing
-    /// them are gone before sqlite3_step runs.
-    private func run(_ sql: String, _ binds: [Any], _ row: ((OpaquePointer) -> Void)? = nil) {
+    @discardableResult
+    private func run(_ sql: String, _ binds: [Any], _ row: ((OpaquePointer) -> Void)? = nil) -> Bool {
         var st: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return }
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &st, nil)
+        guard prepared == SQLITE_OK, let st else { return false }
         defer { sqlite3_finalize(st) }
-        for (i, b) in binds.enumerated() {
-            let n = Int32(i + 1)
-            switch b {
-            case let s as String: sqlite3_bind_text(st, n, s, -1, TRANSIENT)
-            case let d as Double: sqlite3_bind_double(st, n, d)
-            case let i as Int:    sqlite3_bind_int64(st, n, Int64(i))
-            default: sqlite3_bind_null(st, n)
-            }
+        guard bind(binds, to: st) else { return false }
+        var code = sqlite3_step(st)
+        while code == SQLITE_ROW {
+            row?(st)
+            code = sqlite3_step(st)
         }
-        while sqlite3_step(st) == SQLITE_ROW { row?(st!) }
+        return code == SQLITE_DONE
+    }
+
+    private func bind(_ values: [Any], to statement: OpaquePointer) -> Bool {
+        for (i, value) in values.enumerated() {
+            let n = Int32(i + 1)
+            let code: Int32
+            switch value {
+            case let value as String: code = sqlite3_bind_text(statement, n, value, -1, TRANSIENT)
+            case let value as Double: code = sqlite3_bind_double(statement, n, value)
+            case let value as Int: code = sqlite3_bind_int64(statement, n, Int64(value))
+            case let value as Int64: code = sqlite3_bind_int64(statement, n, value)
+            default: code = sqlite3_bind_null(statement, n)
+            }
+            guard code == SQLITE_OK else { return false }
+        }
+        return true
+    }
+
+    /// A failed row or commit rolls the entire import back. Counts describe committed rows.
+    private func batch(_ sql: String, rows: [[Any]]) -> Int {
+        guard !rows.isEmpty, exec("BEGIN IMMEDIATE") else { return 0 }
+        var committed = false
+        // SQLITE_FULL can roll back the transaction itself. A redundant ROLLBACK would
+        // replace the useful disk-full error with "no transaction is active".
+        defer { if !committed && sqlite3_get_autocommit(db) == 0 { exec("ROLLBACK") } }
+        var statement: OpaquePointer?
+        let prepared = sqlite3_prepare_v2(db, sql, -1, &statement, nil)
+        guard prepared == SQLITE_OK, let statement else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        var count = 0
+        for row in rows {
+            guard bind(row, to: statement) else { return 0 }
+            let code = sqlite3_step(statement)
+            guard code == SQLITE_DONE else { return 0 }
+            count += Int(sqlite3_changes(db))
+            sqlite3_reset(statement)
+            sqlite3_clear_bindings(statement)
+        }
+        guard exec("COMMIT") else { return 0 }
+        committed = true
+        return count
+    }
+
+    private func transaction(_ body: () -> Bool) -> Bool {
+        guard exec("BEGIN IMMEDIATE") else { return false }
+        var committed = false
+        defer { if !committed && sqlite3_get_autocommit(db) == 0 { exec("ROLLBACK") } }
+        guard body(), exec("COMMIT") else { return false }
+        committed = true
+        return true
+    }
+
+    private func variableChunkSize(reserving reserved: Int = 0) -> Int {
+        max(1, min(900, Int(sqlite3_limit(db, SQLITE_LIMIT_VARIABLE_NUMBER, -1)) - reserved))
     }
 
     private func text(_ st: OpaquePointer, _ col: Int32) -> String {
@@ -152,17 +242,17 @@ struct Visit: Identifiable, Hashable, Sendable {
     /// away. One BEGIN and one reused statement makes both limits unnecessary.
     func record(_ visits: [(url: URL, title: String, at: Date)]) {
         guard !visits.isEmpty else { return }
-        var st: OpaquePointer?
+        var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, "INSERT INTO visits (url, title, at) VALUES (?, ?, ?)",
-                                 -1, &st, nil) == SQLITE_OK else { return }
-        defer { sqlite3_finalize(st) }
+                                 -1, &statement, nil) == SQLITE_OK, let statement else { return }
+        defer { sqlite3_finalize(statement) }
         exec("BEGIN")
-        for v in visits where v.url.scheme == "http" || v.url.scheme == "https" {
-            sqlite3_bind_text(st, 1, v.url.absoluteString, -1, TRANSIENT)
-            sqlite3_bind_text(st, 2, v.title, -1, TRANSIENT)
-            sqlite3_bind_double(st, 3, v.at.timeIntervalSince1970)
-            sqlite3_step(st)
-            sqlite3_reset(st)
+        for visit in visits where visit.url.scheme == "http" || visit.url.scheme == "https" {
+            sqlite3_bind_text(statement, 1, visit.url.absoluteString, -1, TRANSIENT)
+            sqlite3_bind_text(statement, 2, visit.title, -1, TRANSIENT)
+            sqlite3_bind_double(statement, 3, visit.at.timeIntervalSince1970)
+            sqlite3_step(statement)
+            sqlite3_reset(statement)
         }
         exec("COMMIT")
     }
@@ -214,7 +304,7 @@ struct Visit: Identifiable, Hashable, Sendable {
     /// `since: nil` is "all time", which is a DELETE with no WHERE rather than a very old
     /// date — a stored visit with a broken timestamp must not survive "clear everything".
     func clearHistory(since: Date? = nil) {
-        guard let since else { return exec("DELETE FROM visits") }
+        guard let since else { exec("DELETE FROM visits"); return }
         run("DELETE FROM visits WHERE at >= ?", [since.timeIntervalSince1970])
     }
 
@@ -242,23 +332,63 @@ struct Visit: Identifiable, Hashable, Sendable {
     /// bookmark it added the first time. Returns how many were actually new.
     @discardableResult
     func addBookmarks(_ marks: [(url: URL, title: String)]) -> Int {
-        guard !marks.isEmpty else { return 0 }
-        var st: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO bookmarks (url, title, at) VALUES (?, ?, ?)",
-                                 -1, &st, nil) == SQLITE_OK else { return 0 }
-        defer { sqlite3_finalize(st) }
-        exec("BEGIN")
-        var added = 0
         let now = Date.now.timeIntervalSince1970
-        for m in marks where m.url.scheme == "http" || m.url.scheme == "https" {
-            sqlite3_bind_text(st, 1, m.url.absoluteString, -1, TRANSIENT)
-            sqlite3_bind_text(st, 2, m.title, -1, TRANSIENT)
-            sqlite3_bind_double(st, 3, now)
-            if sqlite3_step(st) == SQLITE_DONE { added += Int(sqlite3_changes(db)) }
-            sqlite3_reset(st)
+        return batch("INSERT OR IGNORE INTO bookmarks (url, title, at) VALUES (?, ?, ?)",
+                     rows: marks.filter { $0.url.scheme == "http" || $0.url.scheme == "https" }
+                        .map { [$0.url.absoluteString, $0.title, now] })
+    }
+
+    @discardableResult
+    func addBookmarks(_ marks: [(url: URL, title: String)], to folderID: String?) -> Int {
+        let now = Date.now.timeIntervalSince1970
+        let folder: Any = folderID.map { $0 as Any } ?? NSNull()
+        return batch("INSERT OR IGNORE INTO bookmarks (url, title, at, folder_id) VALUES (?, ?, ?, ?)",
+                     rows: marks.filter { $0.url.scheme == "http" || $0.url.scheme == "https" }
+                        .map { [$0.url.absoluteString, $0.title, now, folder] })
+    }
+
+    /// One all-or-nothing folder-aware import. The first occurrence of a URL in source
+    /// order wins; bookmarks already in this profile are left exactly where they are.
+    func importBookmarks(_ source: [BookmarkImportItem]) -> BookmarkImportResult? {
+        var seen = Set<String>()
+        let rows = source.filter {
+            ($0.url.scheme == "http" || $0.url.scheme == "https")
+                && seen.insert($0.url.absoluteString).inserted
         }
-        exec("COMMIT")
-        return added
+        guard exec("BEGIN IMMEDIATE") else { return nil }
+        var committed = false
+        defer { if !committed && sqlite3_get_autocommit(db) == 0 { exec("ROLLBACK") } }
+        var existing = Set<String>()
+        let urls = rows.map { $0.url.absoluteString }
+        for chunk in urls.chunked(max: variableChunkSize()) {
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+            guard run("SELECT url FROM bookmarks WHERE url IN (\(placeholders))", chunk, {
+                existing.insert(self.text($0, 0))
+            }) else { return nil }
+        }
+        let fresh = rows.filter { !existing.contains($0.url.absoluteString) }
+        var folders: [String: BookmarkFolder] = [:]
+        for folder in bookmarkFolders() { folders[folder.name.lowercased()] = folder }
+        var imported = 0, made = 0
+        for item in fresh {
+            let name = item.folder?.trimmingCharacters(in: .whitespacesAndNewlines)
+            var folderID: String?
+            if let name, !name.isEmpty {
+                let key = name.lowercased()
+                if let folder = folders[key] { folderID = folder.id }
+                else {
+                    guard let folder = createBookmarkFolder(named: name) else { return nil }
+                    folders[key] = folder; folderID = folder.id; made += 1
+                }
+            }
+            let folder: Any = folderID.map { $0 as Any } ?? NSNull()
+            guard run("INSERT INTO bookmarks (url, title, at, folder_id) VALUES (?, ?, ?, ?)",
+                      [item.url.absoluteString, item.title, Date.now.timeIntervalSince1970, folder]) else { return nil }
+            imported += 1
+        }
+        guard exec("COMMIT") else { return nil }
+        committed = true
+        return BookmarkImportResult(imported: imported, folders: made)
     }
 
     func bookmarks(limit: Int = 500) -> [Suggestion] {
@@ -267,6 +397,115 @@ struct Visit: Identifiable, Hashable, Sendable {
             out.append(Suggestion(url: self.text($0, 0), title: self.text($0, 1), bookmarked: true))
         }
         return out
+    }
+
+    /// The manager's full-fidelity bookmark read. Search is done in SQLite so imported
+    /// libraries do not have to be loaded before they can be narrowed.
+    func managedBookmarks(matching query: String = "", folderID: String? = nil,
+                          unfiledOnly: Bool = false, limit: Int = .max) -> [Bookmark] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let like = "%" + q.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_") + "%"
+        var clauses: [String] = [], binds: [Any] = []
+        if !q.isEmpty {
+            clauses.append("(url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\')")
+            binds += [like, like]
+        }
+        if let folderID { clauses.append("folder_id = ?"); binds.append(folderID) }
+        else if unfiledOnly { clauses.append("folder_id IS NULL") }
+        let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
+        binds.append(limit)
+        var out: [Bookmark] = []
+        run("SELECT id, url, title, at, folder_id FROM bookmarks\(whereSQL) ORDER BY at DESC LIMIT ?", binds) {
+            let folder = sqlite3_column_type($0, 4) == SQLITE_NULL ? nil : self.text($0, 4)
+            out.append(Bookmark(id: sqlite3_column_int64($0, 0), url: self.text($0, 1),
+                                title: self.text($0, 2),
+                                at: Date(timeIntervalSince1970: sqlite3_column_double($0, 3)),
+                                folderID: folder))
+        }
+        return out
+    }
+
+    func bookmarkFolders() -> [BookmarkFolder] {
+        var out: [BookmarkFolder] = []
+        run("SELECT id, name, position FROM bookmark_folders ORDER BY position, name COLLATE NOCASE", []) {
+            out.append(BookmarkFolder(id: self.text($0, 0), name: self.text($0, 1),
+                                      position: Int(sqlite3_column_int64($0, 2))))
+        }
+        return out
+    }
+
+    @discardableResult func createBookmarkFolder(named rawName: String) -> BookmarkFolder? {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        var collision = false
+        guard run("SELECT 1 FROM bookmark_folders WHERE name = ? COLLATE NOCASE LIMIT 1",
+                  [name], { _ in collision = true }), !collision else { return nil }
+        let id = UUID().uuidString
+        let position = (bookmarkFolders().map(\.position).max() ?? -1) + 1
+        guard run("INSERT INTO bookmark_folders (id, name, position, created_at) VALUES (?, ?, ?, ?)",
+                  [id, name, position, Date.now.timeIntervalSince1970]) else { return nil }
+        return BookmarkFolder(id: id, name: name, position: position)
+    }
+
+    @discardableResult func renameBookmarkFolder(_ id: String, to rawName: String) -> Bool {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+        var collision = false
+        guard run("SELECT 1 FROM bookmark_folders WHERE name = ? COLLATE NOCASE AND id <> ? LIMIT 1",
+                  [name, id], { _ in collision = true }), !collision else { return false }
+        return run("UPDATE bookmark_folders SET name = ? WHERE id = ?", [name, id])
+    }
+
+    /// Removing a folder keeps its pages and returns them to Unfiled.
+    @discardableResult func deleteBookmarkFolder(_ id: String) -> Bool {
+        guard exec("BEGIN IMMEDIATE") else { return false }
+        var committed = false
+        defer { if !committed && sqlite3_get_autocommit(db) == 0 { exec("ROLLBACK") } }
+        guard run("UPDATE bookmarks SET folder_id = NULL WHERE folder_id = ?", [id]),
+              run("DELETE FROM bookmark_folders WHERE id = ?", [id]), exec("COMMIT") else { return false }
+        committed = true
+        return true
+    }
+
+    @discardableResult func updateBookmark(_ id: Int64, url: URL, title: String,
+                                           folderID: String?) -> Bool {
+        guard url.scheme == "http" || url.scheme == "https" else { return false }
+        var collision = false
+        guard run("SELECT 1 FROM bookmarks WHERE url = ? AND id <> ? LIMIT 1",
+                  [url.absoluteString, id], { _ in collision = true }), !collision else { return false }
+        let folder: Any = folderID.map { $0 as Any } ?? NSNull()
+        return run("UPDATE bookmarks SET url = ?, title = ?, folder_id = ? WHERE id = ?",
+                   [url.absoluteString, title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    folder, id])
+    }
+
+    @discardableResult func moveBookmarks(_ ids: Set<Int64>, to folderID: String?) -> Bool {
+        guard !ids.isEmpty else { return true }
+        let marks = ids.sorted()
+        let folder: Any = folderID.map { $0 as Any } ?? NSNull()
+        return transaction {
+            for chunk in marks.chunked(max: self.variableChunkSize(reserving: 1)) {
+                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+                guard self.run("UPDATE bookmarks SET folder_id = ? WHERE id IN (\(placeholders))",
+                               [folder] + chunk.map { $0 as Any }) else { return false }
+            }
+            return true
+        }
+    }
+
+    @discardableResult func deleteBookmarks(_ ids: Set<Int64>) -> Bool {
+        guard !ids.isEmpty else { return true }
+        let marks = ids.sorted()
+        return transaction {
+            for chunk in marks.chunked(max: self.variableChunkSize()) {
+                let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ",")
+                guard self.run("DELETE FROM bookmarks WHERE id IN (\(placeholders))",
+                               chunk.map { $0 as Any }) else { return false }
+            }
+            return true
+        }
     }
 
     // MARK: Address bar
@@ -299,6 +538,20 @@ struct Visit: Identifiable, Hashable, Sendable {
             if seen.insert(s.url).inserted { out.append(s) }
         }
         return Array(out.prefix(limit))
+    }
+}
+
+private extension Array {
+    func chunked(max size: Int) -> [[Element]] {
+        guard size > 0 else { return [] }
+        var chunks: [[Element]] = []
+        var start = 0
+        while start < count {
+            let end = Swift.min(start + size, count)
+            chunks.append(Array(self[start..<end]))
+            start = end
+        }
+        return chunks
     }
 }
 
