@@ -917,6 +917,9 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
 
         if pureOnly { finish("PASS (pure)") }
 
+        print("window controls")
+        for (name, ok) in TrafficLightRest.checkControls() { check(name, ok) }
+
         for (name, ok) in LinkContextWebView.checkMenu() { check(name, ok) }
 
         // Not pure: `buildMenu` is the app's own menu bar, and building it needs `NSApp`.
