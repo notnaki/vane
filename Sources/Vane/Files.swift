@@ -119,7 +119,7 @@ import WebKit
     }
 
     /// Starts the title placeholder lifecycle shared by restored and live-suspended tabs.
-    nonisolated static func restorationPlaceholder(for url: URL) -> URL? { nil }
+    nonisolated static func restorationPlaceholder(for url: URL) -> URL? { url }
 
     /// What the address pill says: a local file's own name, or the host with `www.` dropped
     /// the way Arc shows it — the scheme is noise the user has never needed to read. Nil
