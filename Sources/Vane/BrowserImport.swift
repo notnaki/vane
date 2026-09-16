@@ -90,7 +90,15 @@ struct BrowserProfile {
 
     // MARK: Import
 
-    static func importAll(from p: BrowserProfile) throws -> (history: Int, bookmarks: Int) {
+    /// `profileID` is the Vane profile the rows land in. It defaults to the active one,
+    /// which is what every existing caller means and what this used to do unconditionally
+    /// through `Store.shared`. Import from Arc is the first caller that brings several
+    /// browser profiles across at once, and each has to reach its own `Store` — Arc's work
+    /// profile's history in Vane's work profile, not all of it in whichever profile happened
+    /// to be on screen.
+    static func importAll(from p: BrowserProfile,
+                          profileID: UUID = ProfileManager.activeProfileID) throws
+        -> (history: Int, bookmarks: Int) {
         var visits: [(url: String, title: String, at: Date)] = []
         var marks: [(url: String, title: String)] = []
 
@@ -134,7 +142,7 @@ struct BrowserProfile {
             }
         }
 
-        return (commit(visits), commit(marks))
+        return (commit(visits, into: profileID), commit(marks, into: profileID))
     }
 
     /// A folder the user picked in the panel. Its family is sniffed from what is inside it,
@@ -179,25 +187,26 @@ struct BrowserProfile {
 
     /// Real visit dates go in as-is now, so there is no cap and no reliance on insertion
     /// order to fake the source browser's recency ranking.
-    private static func commit(_ visits: [(url: String, title: String, at: Date)]) -> Int {
+    private static func commit(_ visits: [(url: String, title: String, at: Date)],
+                               into profileID: UUID) -> Int {
         let rows = visits.compactMap { v -> (url: URL, title: String, at: Date)? in
             guard let u = URL(string: v.url), u.scheme == "http" || u.scheme == "https" else { return nil }
             return (u, v.title, v.at)
         }
-        Store.shared.record(rows)
+        Store.store(for: profileID).record(rows)
         return rows.count
     }
 
     /// The Set collapses urls filed in two folders; INSERT OR IGNORE in Store handles the
     /// already-bookmarked case, so re-importing adds nothing rather than deleting.
-    private static func commit(_ marks: [(url: String, title: String)]) -> Int {
+    private static func commit(_ marks: [(url: String, title: String)], into profileID: UUID) -> Int {
         var seen = Set<String>()
         let rows = marks.compactMap { m -> (url: URL, title: String)? in
             guard let u = URL(string: m.url), u.scheme == "http" || u.scheme == "https",
                   seen.insert(u.absoluteString).inserted else { return nil }
             return (u, m.title)
         }
-        return Store.shared.addBookmarks(rows)
+        return Store.store(for: profileID).addBookmarks(rows)
     }
 
     // MARK: Timestamps
@@ -297,7 +306,10 @@ struct BrowserProfile {
     /// Copy before opening: the other browser is probably running and holds a lock, and the
     /// newest rows may still be sitting in the WAL sidecar rather than the main file — so
     /// the sidecars have to travel with it or the import silently misses recent history.
-    private static func query(_ file: URL, _ sql: String, _ row: (OpaquePointer) -> Void) throws {
+    /// Not private, because `ArcImport` reads `Login Data` and `Cookies` out of the same
+    /// profile directories and must copy them the same way — Arc is running while the import
+    /// is, and the newest rows of both are in the WAL sidecar.
+    static func query(_ file: URL, _ sql: String, _ row: (OpaquePointer) -> Void) throws {
         try guardReadable(file)
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("vane-import-\(UUID().uuidString)")

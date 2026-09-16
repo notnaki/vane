@@ -1,6 +1,9 @@
+import AppKit
 import CommonCrypto
 import CryptoKit
 import Foundation
+import SQLite3
+import WebKit
 
 // MARK: - What Arc writes down
 
@@ -388,6 +391,386 @@ enum ArcImport {
         return (pins, urls, titles)
     }
 
+    // MARK: What is on disk
+
+    /// One Arc profile directory, with the rows that need the Safe Storage key already read
+    /// but not yet decrypted. Read once, before the summary alert, so the counts the user is
+    /// asked to approve are the real ones rather than an estimate.
+    struct Vault {
+        let directory: String
+        let path: URL
+        var logins: [(origin: String, account: String, value: Data)] = []
+        var cookies: [(host: String, name: String, path: String, value: Data,
+                       expires: Int64, secure: Bool)] = []
+    }
+
+    /// Everything one Arc installation has to say, read and parsed, before anything is
+    /// written into Vane.
+    struct Scan {
+        let root: URL
+        let sidebar: ArcSidebar
+        let profiles: [ArcProfile]
+        var vaults: [String: Vault] = [:]
+
+        /// Arc's `User Data`, where the Chromium half of the installation lives.
+        var userData: URL { root.appendingPathComponent("User Data") }
+        var passwordCount: Int { vaults.values.reduce(0) { $0 + $1.logins.count } }
+        var cookieCount: Int { vaults.values.reduce(0) { $0 + $1.cookies.count } }
+        var pinnedCount: Int { sidebar.spaces.reduce(0) { $0 + ArcSidebar.flatten($1.pinned).count } }
+    }
+
+    /// What the import managed to do, for the toast at the end.
+    struct Counts {
+        var profiles = 0, spaces = 0, spacesSkipped = 0
+        var favourites = 0
+        var passwords = 0, passwordsAlready = 0, passwordsLocked = 0
+        var cookies = 0, history = 0, bookmarks = 0
+        /// True when the keychain would not give up Arc's key, so the two things that need
+        /// it were skipped wholesale rather than one row at a time.
+        var noKey = false
+    }
+
+    private static func text(_ st: OpaquePointer, _ col: Int32) -> String {
+        sqlite3_column_text(st, col).map { String(cString: $0) } ?? ""
+    }
+
+    private static func blob(_ st: OpaquePointer, _ col: Int32) -> Data {
+        guard let bytes = sqlite3_column_blob(st, col) else { return Data() }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(st, col)))
+    }
+
+    /// Read one Arc profile directory's encrypted rows. Both files are copied before they are
+    /// opened — see `BrowserImport.query` — so Arc can stay open the whole time, which is the
+    /// difference between an import the user can run now and one that starts with "quit Arc".
+    ///
+    /// A file that is missing or unreadable leaves its list empty and takes nothing else with
+    /// it: a profile with no saved logins is ordinary, and a locked `Cookies` must not cost
+    /// the user their spaces.
+    @MainActor private static func read(vault directory: String, at path: URL) -> Vault {
+        var vault = Vault(directory: directory, path: path)
+        try? BrowserImport.query(path.appendingPathComponent("Login Data"), """
+            SELECT origin_url, username_value, password_value FROM logins
+            """) { vault.logins.append((text($0, 0), text($0, 1), blob($0, 2))) }
+        try? BrowserImport.query(path.appendingPathComponent("Cookies"), """
+            SELECT host_key, name, path, encrypted_value, expires_utc, is_secure FROM cookies
+            """) {
+            vault.cookies.append((text($0, 0), text($0, 1), text($0, 2), blob($0, 3),
+                                  sqlite3_column_int64($0, 4), sqlite3_column_int($0, 5) != 0))
+        }
+        return vault
+    }
+
+    /// Arc's folder, read into values. nil when the folder is not an Arc installation.
+    @MainActor static func scan(_ root: URL) -> Scan? {
+        guard let data = try? Data(contentsOf: root.appendingPathComponent("StorableSidebar.json")),
+              let sidebar = ArcSidebar.parse(data) else { return nil }
+        let userData = root.appendingPathComponent("User Data")
+        let listed = (try? Data(contentsOf: userData.appendingPathComponent("Local State")))
+            .map(ArcProfiles.parse) ?? []
+
+        // Every directory anything refers to, not just the ones Local State lists: a profile
+        // Chromium's cache has forgotten still has a space pointing at it, and that space's
+        // tabs are worth more than the tidiness of ignoring it.
+        var directories = Set(listed.map(\.directory))
+        directories.formUnion(sidebar.spaces.map(\.profileDirectory))
+        directories.formUnion(sidebar.favourites.keys)
+
+        var scan = Scan(root: root, sidebar: sidebar, profiles: listed)
+        for directory in directories.sorted() {
+            let path = userData.appendingPathComponent(directory)
+            guard FileManager.default.fileExists(atPath: path.path) else { continue }
+            scan.vaults[directory] = read(vault: directory, at: path)
+        }
+        return scan
+    }
+
+    // MARK: The keychain
+
+    /// Arc's Safe Storage secret, derived into the AES key every row below is sealed with.
+    ///
+    /// This is the one item Vane reads that is not its own, and macOS treats it as exactly
+    /// that: the first read raises the "Vane wants to use your confidential information
+    /// stored in Arc Safe Storage" panel, and the answer is remembered for this app.
+    ///
+    /// ponytail: no fallback and no retry. There is no second way to read a Chromium key —
+    /// refuse the panel and the passwords and sessions are simply skipped, while the spaces,
+    /// favourites, history and bookmarks still come across. Ceiling: an ad-hoc-signed build
+    /// changes identity on every rebuild, so the remembered answer does not stick across a
+    /// self-built Vane; a Developer ID build asks once and never again.
+    @MainActor private static func safeStorageKey() -> Data? {
+        var out: CFTypeRef?
+        let status = SecItemCopyMatching([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Arc Safe Storage",
+            kSecReturnData as String: true,
+        ] as CFDictionary, &out)
+        guard status == errSecSuccess, let data = out as? Data, !data.isEmpty else { return nil }
+        // The secret never leaves this function; what comes back is the derived key, and
+        // neither is ever printed.
+        let key = SafeStorage.key(secret: String(decoding: data, as: UTF8.self))
+        return key.isEmpty ? nil : key
+    }
+
+    // MARK: Writing it into Vane
+
+    /// The Vane profile an Arc profile directory becomes.
+    ///
+    /// `Default` is Vane's default profile by identity, never by name: Arc leaves Chromium's
+    /// placeholder ("Your Chromium") in `Local State` for it, and matching on that would
+    /// either rename the user's profile or make a second one beside it. Every other Arc
+    /// profile is matched to a Vane profile of the same name, and created when there is none.
+    @MainActor static func profileIDs(for scan: Scan, counts: inout Counts) -> [String: UUID] {
+        var byDirectory: [String: String] = [:]
+        for p in scan.profiles { byDirectory[p.directory] = p.name }
+
+        var out: [String: UUID] = [:]
+        for directory in scan.vaults.keys.sorted() {
+            if directory == "Default" { out[directory] = ProfileManager.defaultID; continue }
+            let name = byDirectory[directory] ?? directory
+            if let existing = ProfileManager.shared.profiles
+                .first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+                out[directory] = existing.id
+            } else {
+                out[directory] = ProfileManager.shared.create(name: name).id
+                counts.profiles += 1
+            }
+        }
+        return out
+    }
+
+    /// One Arc space, written down as a Vane Space: its theme, its Pinned rows with the
+    /// folders around them, its Today tabs, and the titles all of those come up under.
+    ///
+    /// A space whose name the profile already has is skipped whole. That is what makes a
+    /// second run safe: there is no field-by-field merge to get wrong, and a user who wants
+    /// one space again can rename or delete the one they have.
+    @MainActor private static func write(_ arc: ArcSpace, into profileID: UUID, counts: inout Counts) {
+        guard !ProfileManager.shared.spaces(for: profileID)
+            .contains(where: { $0.name.caseInsensitiveCompare(arc.title) == .orderedSame })
+        else { counts.spacesSkipped += 1; return }
+
+        let (pins, pinnedURLs, pinnedTitles) = shape(arc.pinned)
+        let today = ArcSidebar.flatten(arc.today)
+
+        var space = ProfileManager.shared.createSpace(name: arc.title, in: profileID)
+        space.pinnedTabURLs = pinnedURLs
+        space.tabURLs = today.map(\.url)
+        if let hex = arc.themeHex { Spaces.setThemeColors([hex], on: &space) }
+        ProfileManager.shared.updateSpace(space)
+
+        // The folders, beside the urls they order — the same key `TabStore.saveShape` writes
+        // and `restorePins` reads, so the Space comes up through the ordinary restore path.
+        if !pins.isEmpty, let data = try? JSONEncoder().encode(pins) {
+            UserDefaults.vane.set(data, forKey: TabStore.shapeKey(.pinned, space: space.id,
+                                                                  profileID: profileID))
+        }
+        // And the names, in the sidecar, keyed by url exactly as `saveCurrentSpace` keys it.
+        // Without this every restored row comes up named after its host — "github.com"
+        // instead of the page Arc was showing.
+        var parked: [String: Parked] = [:]
+        for (url, title) in pinnedTitles { parked[url] = Parked(title: title) }
+        for tab in today where !tab.title.isEmpty {
+            parked[tab.url.absoluteString] = Parked(title: tab.title)
+        }
+        if !parked.isEmpty {
+            Suspension.SpaceState.save(parked, space: space.id, profileID: profileID,
+                                       in: Store.directory)
+        }
+        counts.spaces += 1
+    }
+
+    /// The profile's favourites grid, appended to rather than replaced: a user who has
+    /// already set Vane up keeps what they put there, and a second run adds nothing.
+    @MainActor private static func write(favourites urls: [URL], into profileID: UUID,
+                                         counts: inout Counts) {
+        let key = TabStore.defaultsKey(.favourite, profileID)
+        var have = UserDefaults.vane.stringArray(forKey: key) ?? []
+        for url in urls where !have.contains(url.absoluteString) {
+            have.append(url.absoluteString)
+            counts.favourites += 1
+        }
+        UserDefaults.vane.set(have, forKey: key)
+    }
+
+    /// Arc's saved logins, into the profile's keychain items.
+    ///
+    /// An entry the profile already has is left exactly as it is — the keychain's own primary
+    /// key for an internet password is host plus account, so overwriting would silently
+    /// replace a password the user may have changed in Vane since.
+    @MainActor private static func write(logins: [(origin: String, account: String, value: Data)],
+                                         key: Data, into profileID: UUID, counts: inout Counts) {
+        let already = Set(Passwords.all(profileID: profileID).map(\.id))
+        for login in logins {
+            guard !login.account.isEmpty,
+                  let host = URLComponents(string: login.origin)?.host?.lowercased(),
+                  !host.isEmpty else { counts.passwordsAlready += 1; continue }
+            guard !already.contains(Passwords.key(host: host, account: login.account))
+            else { counts.passwordsAlready += 1; continue }
+            // Never logged, never held anywhere but this line.
+            guard let password = SafeStorage.decrypt(login.value, key: key), !password.isEmpty
+            else { counts.passwordsLocked += 1; continue }
+            if Passwords.save(host: host, account: login.account, password: password,
+                              profileID: profileID) {
+                counts.passwords += 1
+            } else {
+                counts.passwordsLocked += 1
+            }
+        }
+    }
+
+    /// Arc's cookies, into the profile's website data store — which is what carries the user
+    /// across still signed in to everything they were signed in to.
+    ///
+    /// ponytail: `HTTPCookie`'s public properties only. SameSite and HttpOnly have no
+    /// documented keys, so a cookie arrives without them; WebKit applies its own defaults and
+    /// the session still works. Ceiling: a site that depends on a cookie being HttpOnly sees
+    /// a script-readable one until the site rewrites it, which is on the first page load.
+    @MainActor private static func write(cookies: [(host: String, name: String, path: String,
+                                                    value: Data, expires: Int64, secure: Bool)],
+                                         key: Data, into profileID: UUID) async -> Int {
+        let store = ProfileManager.dataStore(for: profileID).httpCookieStore
+        var written = 0
+        for row in cookies {
+            guard !row.host.isEmpty, !row.name.isEmpty,
+                  let value = SafeStorage.decrypt(row.value, key: key, hostKey: row.host)
+            else { continue }
+            var properties: [HTTPCookiePropertyKey: Any] = [
+                .name: row.name, .value: value, .domain: row.host,
+                .path: row.path.isEmpty ? "/" : row.path,
+            ]
+            if row.secure { properties[.secure] = "TRUE" }
+            // nil is a session cookie and stays one; see `chromeTime`.
+            if let expires = chromeTime(row.expires) { properties[.expires] = expires }
+            guard let cookie = HTTPCookie(properties: properties) else { continue }
+            await store.setCookie(cookie)
+            written += 1
+        }
+        return written
+    }
+
+    /// The whole import, in the order the design calls for: profiles, then spaces, then
+    /// favourites, then passwords, then sessions, then history and bookmarks.
+    ///
+    /// One profile throwing never stops the next: a locked `History` in Arc's work profile
+    /// must not cost the user the personal profile's spaces.
+    @MainActor static func apply(_ scan: Scan) async -> Counts {
+        var counts = Counts()
+        let ids = profileIDs(for: scan, counts: &counts)
+        let key = safeStorageKey()
+        counts.noKey = key == nil
+
+        for space in scan.sidebar.spaces {
+            guard let profileID = ids[space.profileDirectory] else { continue }
+            write(space, into: profileID, counts: &counts)
+        }
+        for (directory, urls) in scan.sidebar.favourites.sorted(by: { $0.key < $1.key }) {
+            guard let profileID = ids[directory] else { continue }
+            write(favourites: urls, into: profileID, counts: &counts)
+        }
+        for (directory, vault) in scan.vaults.sorted(by: { $0.key < $1.key }) {
+            guard let profileID = ids[directory] else { continue }
+            if let key {
+                write(logins: vault.logins, key: key, into: profileID, counts: &counts)
+                counts.cookies += await write(cookies: vault.cookies, key: key, into: profileID)
+            }
+            let fm = FileManager.default
+            let hasHistory = fm.fileExists(atPath: vault.path.appendingPathComponent("History").path)
+            let hasBookmarks = fm.fileExists(atPath: vault.path.appendingPathComponent("Bookmarks").path)
+            guard hasHistory || hasBookmarks else { continue }
+            let profile = BrowserProfile(browser: "Arc", profile: directory, path: vault.path,
+                                         hasHistory: hasHistory, hasBookmarks: hasBookmarks)
+            // `importAll` reaches the right profile's Store because it was given one to reach;
+            // before Import from Arc it always wrote into whichever profile was on screen.
+            if let done = try? BrowserImport.importAll(from: profile, profileID: profileID) {
+                counts.history += done.history
+                counts.bookmarks += done.bookmarks
+            }
+        }
+        return counts
+    }
+
+    // MARK: UI
+
+    /// The menu item. One panel, one summary, one toast.
+    @MainActor static func chooseAndImport() {
+        let panel = NSOpenPanel()
+        panel.title = "Import from Arc"
+        panel.message = "Choose Arc's folder — Library/Application Support/Arc. "
+            + "macOS only lets Vane read a folder you pick yourself."
+        panel.prompt = "Import"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        // The sandbox hides ~/Library from the panel's sidebar but not from a path it is
+        // opened at, which is why this is set rather than left to the last-used folder.
+        panel.directoryURL = LegacyData.realHome
+            .appendingPathComponent("Library/Application Support/Arc", isDirectory: true)
+        guard panel.runModal() == .OK, let root = panel.url else { return }
+
+        guard let scan = scan(root) else {
+            let a = NSAlert()
+            a.alertStyle = .warning
+            a.messageText = "That folder doesn't look like Arc."
+            a.informativeText = "Vane looked for StorableSidebar.json in "
+                + "\(root.lastPathComponent) and found none. Arc's folder is usually "
+                + "Library/Application Support/Arc."
+            a.runModal()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Import from Arc"
+        alert.informativeText = summary(scan) + "\n\n"
+            + "Nothing in Arc is changed, and Arc can stay open. macOS will ask once to let "
+            + "Vane read Arc's key from your keychain — that is what saved passwords and "
+            + "staying signed in need. Spaces you already have with the same name are left "
+            + "alone."
+        alert.addButton(withTitle: "Import")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        Task { @MainActor in
+            let counts = await apply(scan)
+            Toasts.show(report(counts))
+            rebuild()                       // the History and Bookmarks menus are snapshots
+            BookmarkManager.refresh(profileID: ProfileManager.activeProfileID)
+        }
+    }
+
+    /// What the summary alert says it found. Pure, over the scan, so the sentence can be
+    /// read without running an import.
+    static func summary(_ scan: Scan) -> String {
+        func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
+        return "Found " + [
+            plural(scan.vaults.count, "profile", "profiles"),
+            plural(scan.sidebar.spaces.count, "space", "spaces"),
+            plural(scan.pinnedCount, "pinned tab", "pinned tabs"),
+            plural(scan.passwordCount, "password", "passwords"),
+            plural(scan.cookieCount, "cookie", "cookies"),
+        ].joined(separator: ", ") + "."
+    }
+
+    /// The toast. Only what actually happened, so a run that could not read the keychain says
+    /// so rather than quietly reporting no passwords.
+    static func report(_ c: Counts) -> String {
+        var parts: [String] = []
+        if c.profiles > 0 { parts.append("\(c.profiles) profile\(c.profiles == 1 ? "" : "s")") }
+        if c.spaces > 0 { parts.append("\(c.spaces) space\(c.spaces == 1 ? "" : "s")") }
+        if c.favourites > 0 { parts.append("\(c.favourites) favourite\(c.favourites == 1 ? "" : "s")") }
+        if c.passwords > 0 { parts.append("\(c.passwords) password\(c.passwords == 1 ? "" : "s")") }
+        if c.cookies > 0 { parts.append("\(c.cookies) session\(c.cookies == 1 ? "" : "s")") }
+        if c.history > 0 { parts.append("\(c.history) history entr\(c.history == 1 ? "y" : "ies")") }
+        if c.bookmarks > 0 { parts.append("\(c.bookmarks) bookmark\(c.bookmarks == 1 ? "" : "s")") }
+        guard !parts.isEmpty else {
+            return c.noKey ? "Nothing to import, and Arc's keychain key was not readable."
+                : "Arc had nothing left to import."
+        }
+        let tail = c.noKey ? " Passwords and sessions need Arc's keychain key." : ""
+        return "Imported " + parts.joined(separator: ", ") + "." + tail
+    }
+
     // MARK: Offline checks
 
     /// Pure: JSON literals, a known-answer key derivation, an encrypt/decrypt round trip in
@@ -579,6 +962,27 @@ enum ArcImport {
                SafeStorage.decrypt(hashed, key: key, hostKey: ".other.com") != secret)
         assert("safe storage: a login value has no host prefix and none is stripped",
                SafeStorage.decrypt(seal(secret, key: key), key: key, hostKey: host) == secret)
+
+        // MARK: what the user is told
+        //
+        // Both sentences are pure functions over counts, so what the alert and the toast say
+        // is provable without a panel to raise or an Arc to read.
+        let scan = Scan(root: URL(fileURLWithPath: "/tmp/Arc"), sidebar: sidebar,
+                        profiles: profiles,
+                        vaults: ["Default": Vault(directory: "Default",
+                                                  path: URL(fileURLWithPath: "/tmp/Arc"))])
+        assert("arc summary: the counts are the ones the parse actually found",
+               summary(scan) == "Found 1 profile, 3 spaces, 3 pinned tabs, 0 passwords, 0 cookies.")
+        var counts = Counts()
+        counts.spaces = 3; counts.passwords = 235; counts.cookies = 1
+        assert("arc report: only what happened is named, and one of a thing is singular",
+               report(counts) == "Imported 3 spaces, 235 passwords, 1 session.")
+        assert("arc report: a run with nothing to say does not claim a success",
+               report(Counts()) == "Arc had nothing left to import.")
+        var locked = Counts()
+        locked.spaces = 1; locked.noKey = true
+        assert("arc report: a refused keychain says which half was skipped",
+               locked.noKey && report(locked).hasSuffix("Passwords and sessions need Arc's keychain key."))
 
         // MARK: timestamps
         assert("chrome time: the FILETIME zero point is the unix epoch",
