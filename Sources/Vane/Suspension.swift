@@ -305,7 +305,9 @@ extension Prefs {
             var s: String?
             /// The page the state came from, written only for a row filed under a key that
             /// is not it — see `Parked.page`. Optional, so a sidecar written before it
-            /// existed decodes exactly as it always did.
+            /// existed decodes exactly as it always did. One-way, the way the session
+            /// file's versions are: an older build ignores `u` and parks such a row at its
+            /// home while the state it assigns wakes on the wander.
             var u: String?
         }
 
@@ -518,19 +520,49 @@ extension Prefs {
         // by its home, so that is the key it has to be findable under — this is the round
         // trip a Space rebuilt from disk makes, and the one that used to come up empty and
         // leave the row named after its host. See `TabStore.saveCurrentSpace`.
-        let home = "https://github.example/vane", wander = URL(string: "https://github.example/vane/pull/1")!
+        let home = "https://github.example/vane", pin = URL(string: home)!
+        let wander = URL(string: "https://github.example/vane/pull/1")!
         let spaceC = UUID()
-        SpaceState.save([home: Parked(title: "Pinned titles", state: state).on(wander),
-                         wander.absoluteString: Parked(title: "Pinned titles", state: state)],
+        SpaceState.save([home: Parked(title: "Pinned titles", state: state).on(wander)],
                         space: spaceC, profileID: profile, in: root)
         let backC = SpaceState.load(space: spaceC, profileID: profile, in: root)
         assert("a wandered pinned row is filed under the home its Space names it by",
                backC[home]?.title == "Pinned titles" && backC[home]?.state == state)
         assert("…and says which page that state came from, so the switch back is not a × home",
                backC[home]?.page == wander)
-        assert("…while the page it was on is still filed under itself, for a favourite's grid",
-               backC[wander.absoluteString]?.title == "Pinned titles"
-                   && backC[wander.absoluteString]?.page == nil)
+
+        // The rule that fills the file, driven with no tab in the room. See
+        // `TabStore.sidecarEntry`, the one writer, and `TabStore.restore` at the other end.
+        let row = Parked(title: "Pinned titles", state: state)
+        let atHome = TabStore.sidecarEntry(page: pin, home: pin, snapshot: row)
+        assert("a row on the page it was pinned at is filed under it, saying nothing about where it is",
+               atHome?.key == home && atHome?.parked.state == state && atHome?.parked.page == nil)
+        let wandered = TabStore.sidecarEntry(page: wander, home: pin, snapshot: row)
+        assert("a wandered row is filed under its home alone, carrying the page it was on",
+               wandered?.key == home && wandered?.parked.page == wander
+                   && wandered?.parked.state == state)
+        let today = TabStore.sidecarEntry(page: wander, home: nil, snapshot: Parked(title: "Pull 1"))
+        assert("a Today tab has no home, so it is filed under the page it is on",
+               today?.key == wander.absoluteString && today?.parked.page == nil)
+        let pdf = URL(string: "file:///Users/someone/paper.pdf")!
+        assert("a page that is not web stays out of a file every reader hands http urls to",
+               TabStore.sidecarEntry(page: pdf, home: nil, snapshot: Parked(title: "paper.pdf")) == nil)
+        assert("…and so does a row that has wandered onto one",
+               TabStore.sidecarEntry(page: pdf, home: pin, snapshot: row) == nil)
+        assert("a row whose whereabouts are unknown is not filed at all",
+               TabStore.sidecarEntry(page: nil, home: pin, snapshot: row) == nil)
+
+        // The bytes a sidecar written before the page field holds: `t` and nothing else.
+        let oldRoot = fm.temporaryDirectory.appendingPathComponent("vane-spacestate-\(UUID().uuidString)")
+        try? fm.createDirectory(at: oldRoot, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: oldRoot) }
+        let spaceD = UUID()
+        try? Data(#"{"\#(spaceD.uuidString)":{"https://a.example/":{"t":"Alpha"}}}"#.utf8)
+            .write(to: SpaceState.url(for: profile, in: oldRoot))
+        let oldBack = SpaceState.load(space: spaceD, profileID: profile, in: oldRoot)
+        assert("a sidecar written before the page field still reads, and parks at its key",
+               oldBack["https://a.example/"]?.title == "Alpha"
+                   && oldBack["https://a.example/"]?.page == nil)
 
         // MARK: defaults
         let defaults = UserDefaults.vane

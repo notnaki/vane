@@ -2258,6 +2258,28 @@ struct Stash {
     /// two callers that must agree, `savePins` and `saveCurrentSpace`.
     nonisolated static func pinned(home: URL?, at: URL?) -> URL? { home ?? at }
 
+    /// How one tab is filed in the per-space sidecar: the key, and the state to put under
+    /// it. Keyed by `pinned(home:at:)` — the url the Space's lists, the favourites grid,
+    /// `restorePins` and both `move`s all name a row by, and so the only url a rebuild has
+    /// to look one up under. A row that has wandered off its home is filed under that home
+    /// carrying the page its state actually came from; one on its home says nothing about
+    /// where it is, because the key is the page.
+    ///
+    /// nil for a row there is nothing to file: one with no page at all, and one on a page
+    /// that is not web — a dropped `file://` PDF has no business becoming a key in a file
+    /// every reader hands http urls to.
+    ///
+    /// Pure, so `selfcheck --pure` can drive it with no tab in the room: it is the write
+    /// half of the round trip `restore(_:as:parked:)` reads, and the two drifting apart is
+    /// a rebuilt Space full of rows named after their host.
+    nonisolated static func sidecarEntry(page: URL?, home: URL?,
+                                         snapshot: Parked) -> (key: String, parked: Parked)? {
+        guard let page, page.scheme?.hasPrefix("http") == true,
+              let key = pinned(home: home, at: page),
+              key.scheme?.hasPrefix("http") == true else { return nil }
+        return (key.absoluteString, key == page ? snapshot : snapshot.on(page))
+    }
+
     /// Where a favourite or a pinned row's × leaves it: the page it was pinned at, or nil
     /// for "park in place", which is what every row did before and what a row with no home
     /// still does. A row whose whereabouts are unknown — the gap between `resume` handing
@@ -2443,42 +2465,32 @@ struct Stash {
         UserDefaults.vane.set(urls { $0.kind == .favourite }.map(\.absoluteString),
                                   forKey: TabStore.defaultsKey(.favourite, profileID))
         // Scroll position and back/forward list, in a sidecar — `Space` is another file's
-        // Codable struct and is not mine to widen. Keyed by url: the page each tab is on,
-        // and below that the home of any row that has wandered off it.
+        // Codable struct and is not mine to widen. One entry per tab, keyed by `pinnedURL`
+        // exactly as the two lists above are: that is the url the rebuild hands `restore`,
+        // the url the favourites grid and `restorePins` look a row up by, and the url both
+        // `move`s file one under. Nobody looks a row up by the page it has wandered to, so
+        // nothing is filed there. See `TabStore.sidecarEntry` for the rule itself.
+        //
+        // A wandered row is filed under its home carrying the page it was actually on, and
+        // `restore` parks it there. Deliberate: the × is what sends a wandered row home (see
+        // `Tab.homeURL`), and a Space switch is not a ×. The stash path hands the same tab
+        // back on the page it was reading, and the rebuild is meant to be indistinguishable
+        // from it. Before the page travelled with the state there was nothing under the home
+        // at all, so `park` fell back to `homeTitle` — the page's host when history has never
+        // had a title for it: the "github.com" a pinned row turned into. And the rebuild is
+        // not a rare path — a Space this window has not shown yet has no stash to come back
+        // from, so *every* first switch into one runs it, as does a launch with no session
+        // file.
+        //
+        // Two rows genuinely sharing a url — the same page open twice — are indistinguishable
+        // in a file keyed by url, and the last one written wins. That was as true before this
+        // field existed; re-keying by row identity instead would mean a migration and a new
+        // id on disk, for a file whose one job is url → state.
         var parked: [String: Parked] = [:]
         for t in tabs {
-            guard let key = t.currentURL,
-                  key.scheme?.hasPrefix("http") == true else { continue }
-            parked[key.absoluteString] = t.snapshot
-        }
-        // A second key for a row that has wandered: its *home*. The two lists above name a
-        // favourite or a pinned row by `pinnedURL` — the page it was pinned at — so that is
-        // the url the rebuild hands `restore`, and a row browsed anywhere else had nothing
-        // filed under it. `park` then fell back to `homeTitle`, which is the page's host when
-        // history has never had a title for it: the "github.com" a pinned row turned into.
-        // And the rebuild is not a rare path — a Space this window has not shown yet has no
-        // stash to come back from, so *every* first switch into one runs it, as does a launch
-        // with no session file.
-        //
-        // The row is filed carrying the page it was actually on, and `restore` parks it
-        // there. Deliberate: the × is what sends a wandered row home (see `Tab.homeURL`), and
-        // a Space switch is not a ×. The stash path hands the same tab back on the page it
-        // was reading, and the rebuild is meant to be indistinguishable from it.
-        //
-        // Second pass, and never over a key some row is really on: two rows can name the same
-        // url — one at home on it, another wandered from it — and the one that is actually
-        // there must win.
-        //
-        // ponytail: two entries, so a wandered row's interactionState is written twice — a
-        // sidecar is a handful of rows at ~800 bytes each, and it is rewritten whole on every
-        // save, so nothing accumulates. Re-keying the file by row identity instead would mean
-        // a migration and a new id on disk, for a file whose one job is url → state.
-        for t in tabs {
-            guard let page = t.currentURL,
-                  let home = TabStore.goesHome(home: t.homeURL, at: page),
-                  home.scheme?.hasPrefix("http") == true,
-                  parked[home.absoluteString] == nil else { continue }
-            parked[home.absoluteString] = t.snapshot.on(page)
+            guard let e = TabStore.sidecarEntry(page: t.currentURL, home: t.homeURL,
+                                                snapshot: t.snapshot) else { continue }
+            parked[e.key] = e.parked
         }
         let savedState = Suspension.SpaceState.save(parked, space: id, profileID: profileID, in: Store.directory)
         // And which tab the Space is being left on, so switching back lands on it rather
@@ -2488,7 +2500,8 @@ struct Stash {
         // never a favourite: the grid is the profile's, so every Space would remember the
         // same tile and land on it. See `Spaces.landing`.
         // `pinnedURL`, and the same in `landing(in:)`: a Space rebuilt from disk brings a
-        // wandered pinned row up at its home, and the row is what was left on, not the wander.
+        // wandered row up on its wander, still standing for its home, and the home is what
+        // every list — this one included — names it by.
         let leftOn = active.flatMap { $0.kind == .favourite ? nil : $0.pinnedURL }
         Spaces.rememberTab(leftOn.flatMap {
             $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
