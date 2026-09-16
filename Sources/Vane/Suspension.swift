@@ -49,11 +49,24 @@ enum SnapshotPersistence {
 struct Parked {
     var title: String
     var state: Data?
+    /// The page this state actually came from, when it is filed under a key that is not it.
+    /// A favourite or a pinned row is written into the Space's list — and into the grid's —
+    /// by its *home*, so that is the key the rebuild looks it up by; a row that has wandered
+    /// off its home is not on that page any more, and this is where it says so.
+    ///
+    /// nil means "the key is the page", which is every Today tab, every row that never
+    /// wandered, and every row written down before this field existed.
+    var page: URL?
 
-    init(title: String = "", state: Data? = nil) {
+    init(title: String = "", state: Data? = nil, page: URL? = nil) {
         self.title = title
         self.state = state
+        self.page = page
     }
+
+    /// The same state, filed under a key that is not the page it came from. See
+    /// `TabStore.saveCurrentSpace`, the one caller.
+    func on(_ page: URL) -> Parked { Parked(title: title, state: state, page: page) }
 }
 
 extension Prefs {
@@ -290,6 +303,10 @@ extension Prefs {
         private struct Row: Codable {
             var t: String?
             var s: String?
+            /// The page the state came from, written only for a row filed under a key that
+            /// is not it — see `Parked.page`. Optional, so a sidecar written before it
+            /// existed decodes exactly as it always did.
+            var u: String?
         }
 
         nonisolated static func url(for profileID: UUID, in dir: URL) -> URL {
@@ -308,7 +325,8 @@ extension Prefs {
         /// in a nonisolated context.
         static func load(space: UUID, profileID: UUID, in dir: URL) -> [String: Parked] {
             (read(profileID, in: dir)[space.uuidString] ?? [:]).mapValues {
-                Parked(title: $0.t ?? "", state: $0.s.flatMap { Data(base64Encoded: $0) })
+                Parked(title: $0.t ?? "", state: $0.s.flatMap { Data(base64Encoded: $0) },
+                       page: $0.u.flatMap(URL.init(string:)))
             }
         }
 
@@ -316,7 +334,9 @@ extension Prefs {
         static func save(_ parked: [String: Parked], space: UUID,
                          profileID: UUID, in dir: URL) -> Bool {
             var all = read(profileID, in: dir)
-            all[space.uuidString] = parked.mapValues { Row(t: $0.title, s: $0.state?.base64EncodedString()) }
+            all[space.uuidString] = parked.mapValues {
+                Row(t: $0.title, s: $0.state?.base64EncodedString(), u: $0.page?.absoluteString)
+            }
             guard let data = try? JSONEncoder().encode(all) else { return false }
             return SnapshotPersistence.write(data, to: url(for: profileID, in: dir))
         }
@@ -491,6 +511,26 @@ extension Prefs {
                SpaceState.load(space: spaceA, profileID: UUID(), in: root).isEmpty)
         assert("the sidecar file lands under the profile's own name",
                SpaceState.url(for: profile, in: root).lastPathComponent == "spacestate.json")
+        assert("a row that never left home says nothing about where it is",
+               backA["https://a.example/"]?.page == nil)
+
+        // A pinned row browsed away from the page it was pinned at. The Space's list names it
+        // by its home, so that is the key it has to be findable under — this is the round
+        // trip a Space rebuilt from disk makes, and the one that used to come up empty and
+        // leave the row named after its host. See `TabStore.saveCurrentSpace`.
+        let home = "https://github.example/vane", wander = URL(string: "https://github.example/vane/pull/1")!
+        let spaceC = UUID()
+        SpaceState.save([home: Parked(title: "Pinned titles", state: state).on(wander),
+                         wander.absoluteString: Parked(title: "Pinned titles", state: state)],
+                        space: spaceC, profileID: profile, in: root)
+        let backC = SpaceState.load(space: spaceC, profileID: profile, in: root)
+        assert("a wandered pinned row is filed under the home its Space names it by",
+               backC[home]?.title == "Pinned titles" && backC[home]?.state == state)
+        assert("…and says which page that state came from, so the switch back is not a × home",
+               backC[home]?.page == wander)
+        assert("…while the page it was on is still filed under itself, for a favourite's grid",
+               backC[wander.absoluteString]?.title == "Pinned titles"
+                   && backC[wander.absoluteString]?.page == nil)
 
         // MARK: defaults
         let defaults = UserDefaults.vane
