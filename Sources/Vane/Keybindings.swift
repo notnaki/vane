@@ -161,7 +161,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
     // Bookmarks
     case bookmarkPage
     // Passwords
-    case fillPassword, importPasswords, importHistoryAndBookmarks, manageSavedPasswords
+    case fillPassword, importPasswords, importHistoryAndBookmarks, importFromArc
+    case manageSavedPasswords
     // Sites
     case blockAds, addFilterList, makeDefaultBrowser
     case forgetCertificateExceptions, resetMediaPermissions
@@ -239,6 +240,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .fillPassword: "Fill Password"
         case .importPasswords: "Import Passwords…"
         case .importHistoryAndBookmarks: "Import History & Bookmarks…"
+        case .importFromArc: "Import from Arc…"
         case .manageSavedPasswords: "Manage Saved Passwords…"
         case .blockAds: "Block Ads and Trackers"
         case .addFilterList: "Add Filter List…"
@@ -308,7 +310,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .back, .forward, .clearHistory, .viewArchive, .viewHistory, .showDownloads,
              .clearArchive: .history
         case .bookmarkPage: .bookmarks
-        case .fillPassword, .importPasswords, .importHistoryAndBookmarks,
+        case .fillPassword, .importPasswords, .importHistoryAndBookmarks, .importFromArc,
              .manageSavedPasswords: .passwords
         case .blockAds, .addFilterList, .makeDefaultBrowser, .forgetCertificateExceptions,
              .resetMediaPermissions: .sites
