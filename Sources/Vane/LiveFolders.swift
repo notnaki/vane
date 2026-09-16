@@ -163,11 +163,18 @@ enum GitHub {
 
     /// A 403 may be a permission/SSO denial or a rate limit. Only the response's
     /// rate-limit evidence identifies the latter; neither means the token was revoked.
+    ///
+    /// A 401 is the token only when GitHub says so. api.github.com answers a refused token
+    /// with "Bad credentials"; a TLS-intercepting corporate proxy answers 401 with whatever
+    /// it likes, and `refresh` deletes the credential on a `.unauthorised` — a pasted
+    /// personal access token thrown away on a proxy's word is one the user cannot copy back.
+    /// A 401 from anything else is reported with its number, and the token stays filed.
     static func trouble(status: Int, remaining: String? = nil,
                         retryAfter: String? = nil, message: String? = nil) -> Trouble? {
         switch status {
         case 200..<300: nil
-        case 401: .unauthorised
+        case 401: message?.lowercased().contains("bad credentials") == true
+            ? .unauthorised : .refused(401)
         case 429: .rateLimited
         case 403:
             remaining == "0" || retryAfter != nil
@@ -670,7 +677,12 @@ enum GitHubOAuth {
     /// deleting the user's tabs.
     func signOut() {
         guard let old = signIn else { return }
-        _ = Passwords.delete(host: LiveFolders.host, account: old.login, profileID: profileID)
+        if !Passwords.delete(host: LiveFolders.host, account: old.login, profileID: profileID) {
+            // The cache is cleared either way — the sheet must offer a sign-in again. But an
+            // item that survived on disk is a dead token still filed under github.com, and
+            // silence about it is a mystery in six months rather than a line in Console.
+            NSLog("[vane] GitHub credential could not be deleted from Keychain")
+        }
         credential = LiveCredentialCache()
     }
 
@@ -985,10 +997,10 @@ enum GitHubOAuth {
                     // "sign in again" while the sheet, seeing a login, showed no way to.
                     // Out it goes, and the folders keep their rows exactly as `signOut` does.
                     signOut()
-                    if !saidSignedOut {
+                    if LiveFolders.saysForgotten(first: first, said: saidSignedOut) {
                         saidSignedOut = true
-                        say("GitHub no longer accepts Vane’s sign-in. Connect again from "
-                            + "Edit Live Folder.")
+                        say("GitHub has withdrawn Vane’s sign-in, so Vane has forgotten it. "
+                            + "Sign in again in Edit Live Folder.")
                     }
                 } else if first {
                     say(trouble.says)
@@ -1012,6 +1024,16 @@ enum GitHubOAuth {
                                              replaced: Bool, keychain: OSStatus?) -> Bool {
         trouble == .unauthorised && !replaced && keychain == nil
     }
+
+    /// Whether this folder's failure is the one that tells the user the sign-in is gone.
+    ///
+    /// Both gates, not either. `first` is this folder's first failure of the streak, so a
+    /// profile with eight live folders does not stack eight toasts of the same sentence on
+    /// one tick. `said` is the profile's one telling, and it is cleared by every refresh
+    /// that has a token — which the tick after a keychain delete that did not take, or a
+    /// second account still answering, is. Either gate alone says it again every five
+    /// minutes for the rest of the session.
+    nonisolated static func saysForgotten(first: Bool, said: Bool) -> Bool { first && !said }
 
     private func apply(_ prs: [GitHub.PR], to folder: UUID) {
         let found = prs.map(\.url)
@@ -1472,7 +1494,11 @@ extension GitHub {
 
         // What a status code means.
         assert("200 is no trouble", trouble(status: 200) == nil)
-        assert("401 is the token", trouble(status: 401) == .unauthorised)
+        assert("401 is the token when GitHub says it is",
+               trouble(status: 401, message: "Bad credentials") == .unauthorised)
+        assert("…but a 401 nobody signed is only a 401: a proxy does not get to delete a token",
+               trouble(status: 401) == .refused(401)
+                   && trouble(status: 401, message: "Authentication required by proxy") == .refused(401))
         assert("403 without rate-limit evidence is an access denial",
                trouble(status: 403) == .forbidden)
         assert("403 with exhausted quota and 429 are rate limits",
@@ -1501,9 +1527,17 @@ extension GitHub {
         assert("…and a keychain that could not be read is not a keychain to delete out of",
                !LiveFolders.forgetCredential(after: .unauthorised, replaced: false, keychain: -25308))
         assert("nothing else ever clears the sign-in",
-               [GitHub.Trouble.forbidden, .rateLimited, .badQuery, .refused(500), .offline]
-                   .allSatisfy { !LiveFolders.forgetCredential(after: $0, replaced: false,
-                                                               keychain: nil) })
+               [GitHub.Trouble.forbidden, .rateLimited, .badQuery, .refused(500), .refused(401),
+                .offline].allSatisfy { !LiveFolders.forgetCredential(after: $0, replaced: false,
+                                                                     keychain: nil) })
+
+        // And it is told once. Every folder of the profile fails on the same tick, and the
+        // tick after a delete that did not take has a token again, so it starts over.
+        assert("the withdrawal is said once, not once per live folder",
+               LiveFolders.saysForgotten(first: true, said: false)
+                   && !LiveFolders.saysForgotten(first: true, said: true))
+        assert("…and not again next tick, however the sign-in outlived the delete",
+               !LiveFolders.saysForgotten(first: false, said: false))
 
         // A row is its pull request, and everything under it.
         let pr = "https://github.com/apple/swift/pull/1"
