@@ -20,13 +20,18 @@ import WebKit
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
     let web: WKWebView
+    /// Every page the window still has, so the host can tell a page that is merely not on
+    /// screen from one whose tab has been closed. Only the card passes it — see `WebCard`
+    /// and `WebHost.show`. Empty is "hold nothing but this page", which is what a host
+    /// showing one page for its whole life wants.
+    var live: [WKWebView] = []
     /// Out of the window's key loop and out of the accessibility tree: a page kept running
     /// off screen (see `OffscreenPages`) must not be Tab-able to or readable by VoiceOver.
     var offscreen = false
 
     func makeNSView(context: Context) -> WebHost { WebHost(web) }
     func updateNSView(_ host: WebHost, context: Context) {
-        host.show(web)
+        host.show(web, keeping: live)
         host.offscreen = offscreen
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: WebHost, context: Context) -> CGSize? {
@@ -35,13 +40,22 @@ struct WebView: NSViewRepresentable {
     }
 }
 
-/// A plain box whose only job is to hold whichever WKWebView the tab has *now*.
+/// A plain box whose only job is to hold whichever WKWebView the tab has *now* — and, for
+/// the page card, every page it has shown before, hidden behind that one.
 ///
 /// `Tab.suspend()` throws the web view away and puts a fresh one in its place, so a
 /// representable that hands back the view it was made with and does nothing in
 /// `updateNSView` leaves the dead one on screen — a blank page when you come back to a tab
 /// that was suspended under memory pressure. The swap has to happen somewhere, and this is
 /// the only place that sees both the old view and the new one.
+///
+/// The pages it keeps are why switching tabs no longer blinks. A WKWebView that has just
+/// been put into a window paints a frame or two later, so a host that took the old page out
+/// and put the new one in showed the card's own background in between — every switch, and
+/// every Space switch. Keeping the page as a hidden subview and unhiding it makes coming
+/// back to a tab a change of one flag on a layer that is already drawn. The first sight of
+/// a page is still a fresh attach, and still arrives a frame late; there is nothing to
+/// unhide that has never been shown.
 final class WebHost: NSView {
     private(set) var web: WKWebView?
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
@@ -60,13 +74,67 @@ final class WebHost: NSView {
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("not in a nib") }
 
-    func show(_ next: WKWebView) {
-        guard next !== web else { return }
-        web?.removeFromSuperview()
-        next.frame = bounds
-        next.autoresizingMask = [.width, .height]
-        addSubview(next)
+    /// Show `next`, keep every other page whose tab still has it, and let the rest go.
+    ///
+    /// `live` is the window's pages (`store.everyTab.map(\.web)`); a held page that is not
+    /// among them belongs to a tab that has been closed, and nothing will ever ask for it
+    /// again. Letting go is not tidiness: a subview is a strong reference, so a page left
+    /// here would keep its WebContent process — and its sound — for the life of the window.
+    /// A suspended or torn-down tab needs no rule at all, because `Tab.release()` takes its
+    /// old view out of whatever superview it is in before replacing it.
+    ///
+    /// ponytail: the pages are pruned on the way past rather than watched for. There is no
+    /// notification for "this tab has gone", the card redraws on every selection anyway, and
+    /// a window holds a handful of pages, so a pass over `subviews` per switch is cheaper
+    /// than anything that would keep a register. Ceiling: a tab closed while the card is not
+    /// redrawing keeps its page until the next switch, which is the next thing that happens.
+    func show(_ next: WKWebView, keeping live: [WKWebView] = []) {
+        if next.superview !== self {
+            next.frame = bounds
+            next.autoresizingMask = [.width, .height]
+            addSubview(next)
+        }
+        next.isHidden = false
         web = next
+        let held = subviews.compactMap { $0 as? WKWebView }
+        let going = Set(WebHost.dropping(held.map(ObjectIdentifier.init),
+                                         showing: ObjectIdentifier(next),
+                                         live: live.map(ObjectIdentifier.init)))
+        // The keyboard may not be left in a page nobody can see: AppKit does not resign a
+        // first responder because its view was hidden, so typing would go on reaching the
+        // tab you just left. Hand it to the page arriving — which is where taking the old
+        // page out of the window used to leave it, only without the trip through nobody.
+        if let window, let holder = window.firstResponder as? NSView,
+           held.contains(where: { $0 !== next && holder.isDescendant(of: $0) }) {
+            window.makeFirstResponder(next)
+        }
+        for page in held where page !== next {
+            if going.contains(ObjectIdentifier(page)) { page.removeFromSuperview() }
+            else { page.isHidden = true }
+        }
+    }
+
+    /// The held pages this host may let go of: everything that is neither the page being
+    /// shown nor a page some tab still has. Pure and over anything hashable, so
+    /// `selfcheck --pure` can prove the rule without a window to hang a view in.
+    nonisolated static func dropping<T: Hashable>(_ held: [T], showing: T, live: [T]) -> [T] {
+        let keep = Set(live).union([showing])
+        return held.filter { !keep.contains($0) }
+    }
+
+    /// Everything asserted here is the rule above, over stand-in ids rather than views.
+    static func check() -> [(String, Bool)] {
+        let a = "page a", b = "page b", gone = "closed tab's page"
+        return [
+            ("a page whose tab still has it is kept for the switch back",
+             dropping([a, b], showing: a, live: [a, b]).isEmpty),
+            ("a closed tab's page is let go of",
+             dropping([a, gone], showing: a, live: [a]) == [gone]),
+            ("the page on screen is kept even if the list has not caught up with it",
+             dropping([a, gone], showing: a, live: []) == [gone]),
+            ("a host given no list holds only the page it is showing",
+             dropping([a, b], showing: b, live: []) == [a]),
+        ]
     }
 }
 
@@ -395,7 +463,13 @@ struct WebCard: View {
                 // The list of saved accounts hangs off a field *in this page*, so it is an
                 // overlay on the page and not on the window's card — which is also what puts
                 // it in the right pane in a split. See SplitView's own `Pane`.
-                WebView(web: tab.web).id(tab.id)
+                // No `.id(tab.id)`: one host for the life of the card, so switching tabs
+                // unhides a page that is already drawn instead of tearing a host down and
+                // building another — which is what made every switch blink the card's
+                // background for a frame. `everyTab`, not `tabs`: the pages of a Space this
+                // window is keeping alive behind the one on screen are exactly the ones the
+                // swipe back has to find still hanging here. See `WebHost.show`.
+                WebView(web: tab.web, live: store.everyTab.map(\.web))
                     .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
             } else {
                 // No tabs: the sheet a page will land on, and nothing in it. With nothing
