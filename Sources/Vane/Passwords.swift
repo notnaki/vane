@@ -867,6 +867,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("toasts", Toasts.check),
                                ("self-update", Release.check),
                                ("pinned folders", Pins.check),
+                               ("the pages the card holds", WebHost.check),
                                ("split view", Split.check),
                                ("mini audio player", MediaTray.check),
                                ("multi-select", Selection.check),

@@ -427,6 +427,43 @@ enum Look {
     /// on the space's own wash, quieter than a hovered row so it is never mistaken for one.
     static let emptyPaneFillAlpha = 0.05
     static let emptyPaneFill = ink(emptyPaneFillAlpha)
+    /// The loading pill: a small capsule near the top of the page card, not a rule across
+    /// the whole of it. A proportion needs a beginning and an end to be read as one, and a
+    /// bar the width of the window has neither — it reads as the edge of the page rather
+    /// than as a thing filling up. Wide enough to show a quarter apart from a half, short
+    /// enough to sit on the page without dividing it, and inset from the corner so it clears
+    /// the card's own radius.
+    static let loadingPill = CGSize(width: 160, height: 5)
+    static let loadingInset: CGFloat = 8
+    /// The trailing strip of the card the pill may not reach into: the find bar and the
+    /// save-password offer both live there, an inset row of controls under the address
+    /// pill, and the widest of them is around this. The pill is centred in what is left
+    /// rather than dropped below them while one is showing — it keeps one place on the card
+    /// whatever else is open, and nothing jumps. Ceiling: a card narrower than
+    /// `loadingPill.width + loadingClear` slides the pill off its leading edge instead,
+    /// which wants a window narrower than the sidebar's own minimum plus a page.
+    static let loadingClear: CGFloat = 400
+    /// The unfilled part of it. A shade under a hovered row, so the pill is visible on the
+    /// page for the whole of a load without being something you look at.
+    static let loadingTrack = ink(0.10)
+
+    /// What the page area is before a page has painted anything of its own. A WKWebView
+    /// shows white until its first paint, so on a dark Space every switch and every load
+    /// flashed headlights.
+    ///
+    /// Not the Space's ground. `ground` is the Space's own colour — hue kept, tinted by its
+    /// slider — laid over the blurred desktop at `groundOpacity` with the grain on top, so
+    /// it is translucent, coloured and textured. This one is a flat opaque grey: neutral,
+    /// no tint, no grain, nothing behind it. It borrows only `ground`'s two brightnesses,
+    /// 14 % in dark and 96 % in light, so the two read as the same room. A page is opaque
+    /// the moment it paints, so anything translucent under it would be a frame of one thing
+    /// and then another; and the colour goes onto the web view itself, which has no Space to
+    /// ask. Ceiling: a heavily tinted Space shows a hair of neutral for that one frame.
+    static let pageGround = NSColor(name: nil) { appearance in
+        let dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        return NSColor(white: dark ? 0.14 : 0.96, alpha: 1)
+    }
+
     /// A settings button or popup's fill (45 on 30), 24 tall.
     static let controlFill = ink(0.08)
     static let control: CGFloat = 24

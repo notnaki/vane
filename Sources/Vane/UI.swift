@@ -20,13 +20,18 @@ import WebKit
 /// me", which is what a page inside a card actually wants.
 struct WebView: NSViewRepresentable {
     let web: WKWebView
+    /// Every page the window still has, so the host can tell a page that is merely not on
+    /// screen from one whose tab has been closed. Only the card passes it — see `WebCard`
+    /// and `WebHost.show`. Empty is "hold nothing but this page", which is what a host
+    /// showing one page for its whole life wants.
+    var live: [WKWebView] = []
     /// Out of the window's key loop and out of the accessibility tree: a page kept running
     /// off screen (see `OffscreenPages`) must not be Tab-able to or readable by VoiceOver.
     var offscreen = false
 
-    func makeNSView(context: Context) -> WebHost { WebHost(web) }
+    func makeNSView(context: Context) -> WebHost { WebHost(web, offscreen: offscreen) }
     func updateNSView(_ host: WebHost, context: Context) {
-        host.show(web)
+        host.show(web, keeping: live)
         host.offscreen = offscreen
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: WebHost, context: Context) -> CGSize? {
@@ -35,13 +40,22 @@ struct WebView: NSViewRepresentable {
     }
 }
 
-/// A plain box whose only job is to hold whichever WKWebView the tab has *now*.
+/// A plain box whose only job is to hold whichever WKWebView the tab has *now* — and, for
+/// the page card, every page it has shown before, hidden behind that one.
 ///
 /// `Tab.suspend()` throws the web view away and puts a fresh one in its place, so a
 /// representable that hands back the view it was made with and does nothing in
 /// `updateNSView` leaves the dead one on screen — a blank page when you come back to a tab
 /// that was suspended under memory pressure. The swap has to happen somewhere, and this is
 /// the only place that sees both the old view and the new one.
+///
+/// The pages it keeps are why switching tabs no longer blinks. A WKWebView that has just
+/// been put into a window paints a frame or two later, so a host that took the old page out
+/// and put the new one in showed the card's own background in between — every switch, and
+/// every Space switch. Keeping the page as a hidden subview and unhiding it makes coming
+/// back to a tab a change of one flag on a layer that is already drawn. The first sight of
+/// a page is still a fresh attach, and still arrives a frame late; there is nothing to
+/// unhide that has never been shown.
 final class WebHost: NSView {
     private(set) var web: WKWebView?
     /// Kept running but not on screen. `isHidden` is the whole of it: a hidden view is out
@@ -53,20 +67,165 @@ final class WebHost: NSView {
         didSet { if offscreen != oldValue { isHidden = offscreen } }
     }
 
-    init(_ web: WKWebView) {
+    /// `offscreen` at init and not only through the property, so a host is what it is from
+    /// the moment it exists: `WebHost.cardHolds` is asked about a page in the same pass the
+    /// host holding it was made, and an answer that depended on `updateNSView` having run
+    /// yet would be a race.
+    init(_ web: WKWebView, offscreen: Bool = false) {
         super.init(frame: .zero)
+        wantsLayer = true
+        self.offscreen = offscreen
+        isHidden = offscreen
         show(web)
+    }
+
+    /// Whether the page card is already holding this page — showing it, or keeping it hidden
+    /// for the switch back. A view has one superview, so anything else that wants to hang a
+    /// page in the window has to ask first: see `OffscreenPages`. A page in some host that is
+    /// not the card's, or in no host at all, is free.
+    static func cardHolds(_ web: WKWebView) -> Bool {
+        guard let host = web.superview as? WebHost else { return web.superview != nil }
+        return !host.offscreen
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("not in a nib") }
 
-    func show(_ next: WKWebView) {
-        guard next !== web else { return }
-        web?.removeFromSuperview()
-        next.frame = bounds
-        next.autoresizingMask = [.width, .height]
-        addSubview(next)
+    /// The ground the page sits on — the box's own colour behind the pages, and the colour
+    /// each page itself wears until it has painted. A WKWebView draws WebKit's own white
+    /// from the moment it is in a window until the page's first paint, so on a dark Space
+    /// every load and every first sight of a tab was a flash of headlights.
+    ///
+    /// `_setBackgroundColor:` is the fill of the view's *backing layer*, which is what shows
+    /// before the page has drawn; `underPageBackgroundColor` is the public colour the page
+    /// rubber-bands onto. Neither touches a page that paints a background of its own, which
+    /// is the whole difference from turning `drawsBackground` off: that was measured to
+    /// leave text/plain, view-source, JSON and bare HTML — every page that declares no
+    /// background — transparent, so their black text sat on the dark ground and could not
+    /// be read.
+    ///
+    /// ponytail: `updateLayer` rather than a colour set where the view is made — AppKit
+    /// calls it in the view's own appearance and calls it again when that changes, so the
+    /// grey resolves against the window's Space rather than against `NSApp`, and a Space
+    /// pinned to dark on a light system is right without anyone watching for it.
+    /// `_setBackgroundColor:` is SPI, so it is respondsToSelector-guarded like `_inspector`
+    /// in Develop.swift, and it must be `perform` — measured on macOS 26, KVC on
+    /// "backgroundColor" does not reach it. A WebKit that drops it leaves the public half
+    /// doing the work alone.
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        layer?.backgroundColor = Look.pageGround.cgColor
+        subviews.compactMap { $0 as? WKWebView }.forEach(ground)
+    }
+
+    private func ground(_ web: WKWebView) {
+        var colour = Look.pageGround
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            colour = colour.usingColorSpace(.sRGB) ?? colour
+        }
+        if web.responds(to: Selector(("_setBackgroundColor:"))) {
+            web.perform(Selector(("_setBackgroundColor:")), with: colour)
+        }
+        web.underPageBackgroundColor = colour
+    }
+
+    /// How many pages the card may hold. Pinned and favourite tabs are never suspended, so
+    /// without a ceiling a strip of twenty pinned tabs would leave twenty live web views —
+    /// and twenty tile stores — in the window for as long as it is open. Eight is more than
+    /// a switch back and forth ever reaches for.
+    /// ponytail: a count, not a size or an age. Ceiling: the ninth-oldest page is let go of
+    /// and comes back with the one-frame blink this whole thing is about, which is the right
+    /// thing to spend on the tab you last looked at eight tabs ago.
+    nonisolated static let keptPages = 8
+
+    /// The pages this host is holding, most recently shown first — the order `dropping`
+    /// measures the ceiling against.
+    private var recent: [WKWebView] = []
+
+    /// Show `next`, keep every other page whose tab still has it, and let the rest go.
+    ///
+    /// `live` is the window's pages (`store.everyTab.map(\.web)`); a held page that is not
+    /// among them belongs to a tab that has been closed, and nothing will ever ask for it
+    /// again. Letting go is not tidiness: a subview is a strong reference, so a page left
+    /// here would keep its WebContent process — and its sound — for the life of the window.
+    /// A suspended or torn-down tab needs no rule at all, because `Tab.release()` takes its
+    /// old view out of whatever superview it is in before replacing it.
+    ///
+    /// ponytail: the pages are pruned on the way past rather than watched for. There is no
+    /// notification for "this tab has gone", the card redraws on every selection anyway, and
+    /// a window holds a handful of pages, so a pass over `subviews` per switch is cheaper
+    /// than anything that would keep a register. Ceiling: a tab closed while the card is not
+    /// redrawing keeps its page until the next switch, which is the next thing that happens.
+    func show(_ next: WKWebView, keeping live: [WKWebView] = []) {
+        let outgoing = web
+        if next.superview !== self {
+            next.frame = bounds
+            next.autoresizingMask = [.width, .height]
+            addSubview(next)
+            ground(next)
+        }
+        next.isHidden = false
         web = next
+        recent.removeAll { $0 === next }
+        recent.insert(next, at: 0)
+        let held = subviews.compactMap { $0 as? WKWebView }
+        let going = Set(WebHost.dropping(held.map(ObjectIdentifier.init),
+                                         showing: ObjectIdentifier(next),
+                                         live: live.map(ObjectIdentifier.init),
+                                         recent: recent.map(ObjectIdentifier.init)))
+        // The keyboard may not be left in a page nobody can see: AppKit does not resign a
+        // first responder because its view was hidden, so typing would go on reaching the
+        // tab you just left. Hand it to the page arriving — which is where taking the old
+        // page out of the window used to leave it, only without the trip through nobody.
+        // Only when the page being left is the one that actually holds it: a first
+        // responder anywhere else in the window — the address pill, the find field — is
+        // somebody's on purpose and a switch must not pull it into the page. Deferred a
+        // turn, the way `TabStore.focusPage` is, so the hand-off happens after AppKit has
+        // finished with this pass and not in the middle of it.
+        if let window, let outgoing, outgoing !== next,
+           let holder = window.firstResponder as? NSView, holder.isDescendant(of: outgoing) {
+            DispatchQueue.main.async { [weak next] in
+                guard let next, next.window === window else { return }
+                window.makeFirstResponder(next)
+            }
+        }
+        for page in held where page !== next {
+            if going.contains(ObjectIdentifier(page)) { page.removeFromSuperview() }
+            else { page.isHidden = true }
+        }
+        // A page let go of here, and a page some other host or a suspension took out from
+        // under this one, must not be kept alive by the order alone.
+        recent.removeAll { $0.superview !== self }
+    }
+
+    /// The held pages this host may let go of: everything that is neither the page being
+    /// shown nor one of the `cap` most recently shown pages a tab still has. `recent` is the
+    /// host's own order, newest first. Pure and over anything hashable, so `selfcheck --pure`
+    /// can prove the rule without a window to hang a view in.
+    nonisolated static func dropping<T: Hashable>(_ held: [T], showing: T, live: [T],
+                                                  recent: [T], cap: Int = keptPages) -> [T] {
+        let alive = Set(live)
+        var keep: Set<T> = [showing]
+        for page in recent where alive.contains(page) && keep.count < cap { keep.insert(page) }
+        return held.filter { !keep.contains($0) }
+    }
+
+    /// Everything asserted here is the rule above, over stand-in ids rather than views.
+    static func check() -> [(String, Bool)] {
+        let a = "page a", b = "page b", gone = "closed tab's page"
+        let many = (0..<12).map { "pinned page \($0)" }
+        return [
+            ("a page whose tab still has it is kept for the switch back",
+             dropping([a, b], showing: a, live: [a, b], recent: [a, b]).isEmpty),
+            ("a closed tab's page is let go of",
+             dropping([a, gone], showing: a, live: [a], recent: [a, gone]) == [gone]),
+            ("the page on screen is kept even if the list has not caught up with it",
+             dropping([a, gone], showing: a, live: [], recent: [a, gone]) == [gone]),
+            ("a host given no list holds only the page it is showing",
+             dropping([a, b], showing: b, live: [], recent: [b, a]) == [a]),
+            ("only the most recently shown pages are held, however many tabs never suspend",
+             dropping(many, showing: many[0], live: many, recent: many)
+                == Array(many.dropFirst(keptPages))),
+        ]
     }
 }
 
@@ -395,7 +554,18 @@ struct WebCard: View {
                 // The list of saved accounts hangs off a field *in this page*, so it is an
                 // overlay on the page and not on the window's card — which is also what puts
                 // it in the right pane in a split. See SplitView's own `Pane`.
-                WebView(web: tab.web).id(tab.id)
+                // No `.id(tab.id)`: one host for the life of the card, so switching tabs
+                // unhides a page that is already drawn instead of tearing a host down and
+                // building another — which is what made every switch blink the card's
+                // background for a frame. `everyTab`, not `tabs`: the pages of a Space this
+                // window is keeping alive behind the one on screen are exactly the ones the
+                // swipe back has to find still hanging here. See `WebHost.show`.
+                // Without the `.id` the card no longer rebuilds when `tab.web` is swapped
+                // out from under it, which is safe only because the tab being shown is never
+                // the one swapped: suspension excludes the active tab on both paths, the
+                // idle timer and memory pressure. Entering a split takes this branch away
+                // altogether and the held pages go with it.
+                WebView(web: tab.web, live: store.everyTab.map(\.web))
                     .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
             } else {
                 // No tabs: the sheet a page will land on, and nothing in it. With nothing
@@ -472,8 +642,15 @@ struct EmptyPane: View {
     }
 }
 
-/// ponytail: a rectangle, not ProgressView(.linear) — that style draws its own track and
-/// rounded caps, which at 2pt reads as a stray dash lying on the page.
+/// How far the page has got: a small capsule near the top of the card, the same one for
+/// every tab, pinned or not. It used to be a 2pt rule across the whole width, which is the
+/// one shape a proportion cannot be read in — with no end in sight there is nothing for the
+/// fill to be a fraction *of*, and a line along the top edge reads as the edge.
+///
+/// ponytail: two capsules in a `ZStack`, not `ProgressView(.linear)` — that style brings its
+/// own track, its own caps and its own idea of how wide it should be, and this is a shape
+/// and a fraction. The track is drawn whenever the pill is, so the fill has something to
+/// fill; both go together behind the same fade.
 private struct LoadingBar: View {
     @ObservedObject var tab: Tab
     /// Reduce Motion turns the sweep and the fade into plain cuts — the bar still shows
@@ -481,13 +658,22 @@ private struct LoadingBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        GeometryReader { geo in
-            Rectangle()
-                .fill(.tint)
-                .frame(width: geo.size.width * tab.progress)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: tab.progress)
+        ZStack(alignment: .leading) {
+            Capsule().fill(Look.loadingTrack)
+            GeometryReader { geo in
+                Capsule()
+                    .fill(.tint)
+                    .frame(width: geo.size.width * tab.progress)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: tab.progress)
+            }
         }
-        .frame(height: 2)
+        .frame(width: Look.loadingPill.width, height: Look.loadingPill.height)
+        .padding(.top, Look.loadingInset)
+        // The find bar and the save-password offer share the top of the card, trailing. The
+        // pill keeps its 8pt from the top and gives up the trailing `Look.loadingClear`
+        // instead of moving down while one of them is showing: one place on the card
+        // whatever else is open, and no jump when a bar arrives mid-load.
+        .padding(.trailing, Look.loadingClear)
         // Fades out on finish instead of vanishing, and never sweeps backwards when the
         // next navigation resets progress to zero behind the fade.
         .opacity(tab.loading ? 1 : 0)
