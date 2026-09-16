@@ -204,7 +204,11 @@ struct BrowserProfile {
 
     /// Chromium counts microseconds from 1601-01-01 UTC — the Windows FILETIME epoch, which
     /// is 11644473600 seconds before the Unix one.
-    static func chromiumTime(_ micro: Int64) -> Date {
+    ///
+    /// `nonisolated` only so `ArcImport.chromeTime` can wrap it: this type is @MainActor for
+    /// the sake of its panels and its alerts, and one line of arithmetic has no business
+    /// being the reason a second copy of the epoch constant exists.
+    nonisolated static func chromiumTime(_ micro: Int64) -> Date {
         Date(timeIntervalSince1970: Double(micro) / 1_000_000 - 11_644_473_600)
     }
 
