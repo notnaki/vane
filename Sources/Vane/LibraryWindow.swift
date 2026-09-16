@@ -466,8 +466,8 @@ extension Library {
             from.tabURLs.removeAll { $0 == url }
             from.pinnedTabURLs?.removeAll { $0 == url }
             ProfileManager.shared.updateSpace(from)
-            // The state sidecar travels with the page, the way `Spaces.move` carries it, so
-            // a moved tab comes up where it was left rather than reloading from the top.
+            // The row leaves the source's sidecar with the page; what crosses into the
+            // target is stripped down to its title — see below.
             var parked = Suspension.SpaceState.load(space: source, profileID: profile,
                                                     in: Store.directory)
             let carried = parked.removeValue(forKey: url.absoluteString)
@@ -479,9 +479,12 @@ extension Library {
                 default:      to.tabURLs = Spaces.appending(url, to: to.tabURLs)
                 }
                 ProfileManager.shared.updateSpace(to)
-                if let carried {
+                if let carried = carried.map({ Parked(title: $0.title) }) {
                     var landing = Suspension.SpaceState.load(space: target, profileID: profile,
                                                              in: Store.directory)
+                    // Title only — no wander, no state — which is `Spaces.move`'s rule for
+                    // the same handover: the target's list names the row at home, and state
+                    // that wakes on another page would say otherwise.
                     landing[url.absoluteString] = carried
                     Suspension.SpaceState.save(landing, space: target, profileID: profile,
                                                in: Store.directory)
