@@ -959,12 +959,14 @@ enum GitHubOAuth {
         last[folder] = .now
         Task {
             var answer = await LiveFolders.fetch(query, token: token)
+            var replaced = false
             if case .failure(.unauthorised) = answer,
                let replacement = credential.replacement(after: token, load: {
                    Passwords.readCredential(host: LiveFolders.host, profileID: profileID)
                }) {
                 // Another window/process may have saved a new credential while this
                 // request was in flight. Retry once only when the credential changed.
+                replaced = true
                 answer = await LiveFolders.fetch(query, token: replacement.token)
             }
             busy.remove(folder)
@@ -973,13 +975,42 @@ enum GitHubOAuth {
             // tunnel all look like "no pull requests" to a reconcile that trusts the reply,
             // and the rows are the user's tabs.
             case .failure(let trouble):
+                let first = failing.insert(folder).inserted
                 // Network, permission and rate-limit failures never clear a stored token.
-                if failing.insert(folder).inserted { say(trouble.says) }
+                if LiveFolders.forgetCredential(after: trouble, replaced: replaced,
+                                                keychain: credential.unavailableStatus) {
+                    // The token is dead and nothing here can revive it: GitHub revokes one
+                    // when the authorization is removed, and it stays revoked. Keeping it
+                    // filed was the whole trap — every refresh for the rest of the week said
+                    // "sign in again" while the sheet, seeing a login, showed no way to.
+                    // Out it goes, and the folders keep their rows exactly as `signOut` does.
+                    signOut()
+                    if !saidSignedOut {
+                        saidSignedOut = true
+                        say("GitHub no longer accepts Vane’s sign-in. Connect again from "
+                            + "Edit Live Folder.")
+                    }
+                } else if first {
+                    say(trouble.says)
+                }
             case .success(let prs):
                 failing.remove(folder)
                 apply(prs, to: folder)
             }
         }
+    }
+
+    /// Whether a failed refresh means the stored credential should go.
+    ///
+    /// Only a 401, and only once the one retry has been spent: a 401 says GitHub looked at
+    /// this exact token and refused it, which for an OAuth App token means it was revoked —
+    /// they do not expire. A 403, a rate limit and a train tunnel say nothing about the
+    /// token at all. `replaced` is a retry with a *different* token that another window had
+    /// already saved: that one is not this refresh's to throw away. And a keychain that
+    /// could not be read is not a keychain to delete out of — the token there may be fine.
+    nonisolated static func forgetCredential(after trouble: GitHub.Trouble,
+                                             replaced: Bool, keychain: OSStatus?) -> Bool {
+        trouble == .unauthorised && !replaced && keychain == nil
     }
 
     private func apply(_ prs: [GitHub.PR], to folder: UUID) {
@@ -1458,6 +1489,21 @@ extension GitHub {
         assert("every trouble says something", [GitHub.Trouble.unauthorised, .rateLimited,
                                                 .badQuery, .refused(500),
                                                 .offline].allSatisfy { !$0.says.isEmpty })
+
+        // What a 401 costs the stored token. GitHub revokes a token when its authorization
+        // is removed and never takes it back, so a token it has refused is one to be rid of
+        // — otherwise every refresh for the rest of the week says "sign in again" about a
+        // sign-in the sheet can still see, and so does not offer to make again.
+        assert("a token GitHub refuses is not kept",
+               LiveFolders.forgetCredential(after: .unauthorised, replaced: false, keychain: nil))
+        assert("…but not one another window had already replaced: that one is not ours to throw away",
+               !LiveFolders.forgetCredential(after: .unauthorised, replaced: true, keychain: nil))
+        assert("…and a keychain that could not be read is not a keychain to delete out of",
+               !LiveFolders.forgetCredential(after: .unauthorised, replaced: false, keychain: -25308))
+        assert("nothing else ever clears the sign-in",
+               [GitHub.Trouble.forbidden, .rateLimited, .badQuery, .refused(500), .offline]
+                   .allSatisfy { !LiveFolders.forgetCredential(after: $0, replaced: false,
+                                                               keychain: nil) })
 
         // A row is its pull request, and everything under it.
         let pr = "https://github.com/apple/swift/pull/1"
