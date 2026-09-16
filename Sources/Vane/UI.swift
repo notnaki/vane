@@ -69,10 +69,22 @@ final class WebHost: NSView {
 
     init(_ web: WKWebView) {
         super.init(frame: .zero)
+        wantsLayer = true
         show(web)
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("not in a nib") }
+
+    /// The ground the page sits on — the box's own colour, and what shows in the frames
+    /// between a page being asked for and its first paint. The pages are transparent until
+    /// they paint (see `Tab.attach`), so without this the card is whatever is behind the
+    /// window for a frame, and with WebKit's own background it was white.
+    ///
+    /// ponytail: `updateLayer` rather than a colour set in `init` — AppKit calls it in the
+    /// view's own appearance and calls it again when that changes, which is the whole of
+    /// following a Space pinned to dark on a light system.
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = Look.pageGround.cgColor }
 
     /// Show `next`, keep every other page whose tab still has it, and let the rest go.
     ///
@@ -546,8 +558,15 @@ struct EmptyPane: View {
     }
 }
 
-/// ponytail: a rectangle, not ProgressView(.linear) — that style draws its own track and
-/// rounded caps, which at 2pt reads as a stray dash lying on the page.
+/// How far the page has got: a small capsule near the top of the card, the same one for
+/// every tab, pinned or not. It used to be a 2pt rule across the whole width, which is the
+/// one shape a proportion cannot be read in — with no end in sight there is nothing for the
+/// fill to be a fraction *of*, and a line along the top edge reads as the edge.
+///
+/// ponytail: two capsules in a `ZStack`, not `ProgressView(.linear)` — that style brings its
+/// own track, its own caps and its own idea of how wide it should be, and this is a shape
+/// and a fraction. The track is drawn whenever the pill is, so the fill has something to
+/// fill; both go together behind the same fade.
 private struct LoadingBar: View {
     @ObservedObject var tab: Tab
     /// Reduce Motion turns the sweep and the fade into plain cuts — the bar still shows
@@ -555,13 +574,17 @@ private struct LoadingBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        GeometryReader { geo in
-            Rectangle()
-                .fill(.tint)
-                .frame(width: geo.size.width * tab.progress)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: tab.progress)
+        ZStack(alignment: .leading) {
+            Capsule().fill(Look.loadingTrack)
+            GeometryReader { geo in
+                Capsule()
+                    .fill(.tint)
+                    .frame(width: geo.size.width * tab.progress)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: tab.progress)
+            }
         }
-        .frame(height: 2)
+        .frame(width: Look.loadingPill.width, height: Look.loadingPill.height)
+        .padding(.top, Look.loadingInset)
         // Fades out on finish instead of vanishing, and never sweeps backwards when the
         // next navigation resets progress to zero behind the fade.
         .opacity(tab.loading ? 1 : 0)

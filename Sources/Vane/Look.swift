@@ -427,6 +427,32 @@ enum Look {
     /// on the space's own wash, quieter than a hovered row so it is never mistaken for one.
     static let emptyPaneFillAlpha = 0.05
     static let emptyPaneFill = ink(emptyPaneFillAlpha)
+    /// The loading pill: a small capsule near the top of the page card, not a rule across
+    /// the whole of it. A proportion needs a beginning and an end to be read as one, and a
+    /// bar the width of the window has neither — it reads as the edge of the page rather
+    /// than as a thing filling up. Wide enough to show a quarter apart from a half, short
+    /// enough to sit on the page without dividing it, and inset from the corner so it clears
+    /// the card's own radius.
+    static let loadingPill = CGSize(width: 160, height: 5)
+    static let loadingInset: CGFloat = 8
+    /// The unfilled part of it. A shade under a hovered row, so the pill is visible on the
+    /// page for the whole of a load without being something you look at.
+    static let loadingTrack = ink(0.10)
+
+    /// What the page area is before a page has painted anything of its own, and behind a
+    /// page that paints no background of its own. A WKWebView shows white until its first
+    /// paint, so on a dark Space every switch and every load flashed headlights.
+    ///
+    /// The two brightnesses are `ground`'s own, so this is exactly the wash a grey Space
+    /// wears. ponytail: the appearance, not the Space's tint — the colour is put on the web
+    /// view in `Tab.attach`, which knows nothing of the window the tab will be shown in, and
+    /// what the tint would add is saturation on a 14 % grey for the frame before the page
+    /// paints. Ceiling: a heavily tinted Space shows a hair of neutral in that frame.
+    static let pageGround = NSColor(name: nil) { appearance in
+        let dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        return NSColor(white: dark ? 0.14 : 0.96, alpha: 1)
+    }
+
     /// A settings button or popup's fill (45 on 30), 24 tall.
     static let controlFill = ink(0.08)
     static let control: CGFloat = 24
