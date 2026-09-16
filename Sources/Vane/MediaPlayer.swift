@@ -327,6 +327,13 @@ enum MediaTray {
 /// hierarchy, so "keep the music on while I read something else" is literally this list —
 /// and it is what the mini audio player is a player *for*.
 ///
+/// Only pages the card has never shown reach this list. The card holds every page it has
+/// shown as a hidden subview, and a hidden page goes on playing for exactly the same reason
+/// these do — so the card is already doing this job for those tabs, and claiming one would
+/// mean pulling it out of the card the frame after a switch away from it. What is left is
+/// the stashed Spaces: a page playing in a Space that has been swiped off has no card to be
+/// hidden in, and this is the only thing holding it in the window.
+///
 /// ponytail: bounded by what is actually making noise, so a window of thirty tabs still
 /// carries one extra page. They are `isHidden` (see `WebHost`), which is what keeps them out
 /// of the key loop, out of the accessibility tree and out of compositing — measured, that
@@ -347,7 +354,12 @@ struct OffscreenPages: View {
             // `everyTab`: WebKit stops a media element the moment its web view leaves the
             // view hierarchy, so a page playing in a Space you have swiped off only carries
             // on playing because it is still hung here. Arc's does. See `Stash`.
-            ForEach(store.everyTab.filter { !shown.contains($0.id) && media.keepsRunning($0) }) { tab in
+            // `cardHolds`: a view has one superview, so a page the card is keeping hidden
+            // would be *moved* here rather than shared, and the switch back would race this
+            // host's teardown for it — a blink, and a stopped song.
+            ForEach(store.everyTab.filter {
+                !shown.contains($0.id) && !WebHost.cardHolds($0.web) && media.keepsRunning($0)
+            }) { tab in
                 WebView(web: tab.web, offscreen: true).id(tab.id)
             }
         }
