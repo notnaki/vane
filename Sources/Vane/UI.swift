@@ -1220,6 +1220,8 @@ private struct FavoriteTile: View {
             // The same go-home a wandered pinned row wears, in the corner rather than in
             // the icon's place: a tile *is* its icon, and trading that for an arrow would
             // leave nothing on screen saying which favourite you are about to send home.
+            // It brings its `rowTarget` square with it, so the corner is something to aim
+            // at rather than a 16pt glyph sitting on top of a button that shows the tab.
             .overlay(alignment: .topTrailing) {
                 if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome,
                                            hovering: hovering) {
@@ -3883,6 +3885,9 @@ private struct TabHomeIcon: View {
 
     var body: some View {
         if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
+            // The favicon's box, so the row's text starts exactly where it always did. The
+            // glyph's hit target is bigger than this and is allowed to spill past it — a
+            // frame is a layout box, not a clip — which is what `rowTarget` is for.
             GoHomeGlyph(store: store, tab: tab).frame(width: size, height: size)
         } else {
             TabIcon(tab: tab, size: size)
@@ -3901,10 +3906,13 @@ private struct GoHomeGlyph: View {
         Button { store.goHome(tab.id) } label: {
             // The sidebar's own glyph size and ink — this stands where a favicon stands, so
             // it has to sit at the same weight as the × at the other end of the row.
+            // `rowTarget`, the same square the × and the speaker at the other end of the row
+            // aim with: a 16pt glyph inside a row that answers a click of its own is a
+            // target you have to hunt for, and half the misses land on "show this tab".
             Image(systemName: "arrow.uturn.backward")
                 .font(Look.rowGlyph)
                 .foregroundStyle(Look.inkSecondary)
-                .contentShape(.rect)
+                .rowTarget()
         }
         .buttonStyle(.plain)
         .help("Go back to pinned page")
