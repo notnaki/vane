@@ -307,11 +307,13 @@ import Foundation
 
     // MARK: - Storage
     //
-    // Two dictionaries per profile, both url → string, and they are separate because their
-    // lifetimes are: the cache is disposable and the rename is the user's own data.
+    // Three dictionaries per profile, all url → string, and they are separate because their
+    // lifetimes are: the cache is disposable, the rename is the user's own data, and the
+    // pin-time name lives exactly as long as the pin.
 
     private static let cacheKey = "tidyTitleCache"
     private static let overrideKey = "tidyTitleOverrides"
+    private static let pinnedKey = "pinnedNames"
 
     private static func dict(_ base: String, _ profileID: UUID) -> [String: String] {
         UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(base, profileID))
@@ -346,7 +348,54 @@ import Foundation
         tab.objectWillChange.send()      // the chip re-reads `title(for:)`
     }
 
+    /// What the page was called at the moment its row was pinned. Not a rename and not the
+    /// cache: it is the raw title, written down once so a row that has since wandered still
+    /// has something honest to be called when nothing else is remembered about its home.
+    static func pinnedName(for url: URL, in profileID: UUID) -> String? {
+        let name = dict(pinnedKey, profileID)[url.absoluteString]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (name?.isEmpty ?? true) ? nil : name
+    }
+
+    /// Freeze a name against the page a row stands for. `Tab.kind`'s didSet is the caller
+    /// that matters — it is the one place a row's home is decided, so it is also the one
+    /// place a row's name is frozen and dropped — and a nil name clears it, which is what an
+    /// unpin is. An importer bringing pinned tabs in from another browser calls this with
+    /// the name that browser had for the row.
+    static func recordPinnedName(_ title: String?, for url: URL, in profileID: UUID) {
+        let name = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        put(pinnedKey, profileID, url.absoluteString, (name?.isEmpty ?? true) ? nil : name)
+    }
+
     // MARK: - What the UI shows
+
+    /// The url a row is *named* by. Arc's rule, and the whole of the frozen name: a row that
+    /// stays is a place — the page it was pinned at — so browsing it somewhere else changes
+    /// the page under it and not the name on it. A Today tab is named by where it is, as
+    /// every tab always was, and a row pinned while it was still blank has no home to be
+    /// named by and falls back to the page it is on.
+    ///
+    /// Pure, so `selfcheck --pure` can drive it with no tab in the room: it is the one place
+    /// this key is decided, and a chrome that read it one way while the store wrote it
+    /// another is a pinned row named after whatever link it last followed.
+    nonisolated static func named(stays: Bool, home: URL?, at: URL?) -> URL? {
+        stays ? (home ?? at) : at
+    }
+
+    /// The order the names are tried in, as one expression so `check()` can prove it: what
+    /// the user typed, then what the tidier made of the pinned page, then the title that
+    /// page had at the moment it was pinned. The recorded title stands in for the live one
+    /// and goes through the same cleaner, so a row whose name was frozen before the tidier
+    /// ever ran still reads as a chip rather than as a paragraph.
+    static func pick(override: String?, tidied: String?, recorded: String?,
+                     raw: String, host: String?) -> String {
+        if let override { return override }
+        if let tidied { return tidied }
+        let text = recorded ?? raw
+        // The deterministic answer is available *now*, so show it rather than flashing the
+        // long title while `refresh` decides whether to ask the model.
+        return clean(text, host: host) ?? text
+    }
 
     /// The one thing the chrome should call. Sync, because SwiftUI's `body` is.
     ///
@@ -354,13 +403,14 @@ import Foundation
     /// is a rule about *us* inventing a name behind the user's back; a name the user typed
     /// is not us, and Arc keeps it across an unpin too.
     static func title(for tab: Tab) -> String {
-        guard let url = tab.currentURL else { return tab.title }
-        if let name = override(for: url, in: tab.profileID) { return name }
-        guard enabled, tab.stays else { return tab.title }
-        if let hit = dict(cacheKey, tab.profileID)[url.absoluteString] { return hit }
-        // Nothing cached yet: the deterministic answer is available *now*, so show it rather
-        // than flashing the long title while `refresh` decides whether to ask the model.
-        return clean(tab.title, host: url.host()) ?? tab.title
+        guard let url = named(stays: tab.stays, home: tab.homeURL, at: tab.currentURL)
+        else { return tab.title }
+        let typed = override(for: url, in: tab.profileID)
+        guard enabled, tab.stays else { return typed ?? tab.title }
+        return pick(override: typed,
+                    tidied: dict(cacheKey, tab.profileID)[url.absoluteString],
+                    recorded: pinnedName(for: url, in: tab.profileID),
+                    raw: tab.title, host: url.host())
     }
 
     /// Fill the cache for a pinned tab, asking the model only if it has to. Fire and forget:
@@ -373,8 +423,14 @@ import Foundation
     /// keeps the first name it was tidied under. Ceiling: refreshing it would need a
     /// title-versus-cache comparison on every KVO tick, which is a lot of machinery to fix
     /// the label on a chip.
+    ///
+    /// A row that has wandered off its home is not tidied at all: the title in front of us
+    /// belongs to the page it went to, and the name on the row belongs to the page it was
+    /// pinned at (`named`), so tidying here would spend an inference on a name nothing will
+    /// ever show. At home the two urls are the same one, which is every call that matters —
+    /// a tab is refreshed as it is pinned.
     static func refresh(_ tab: Tab) {
-        guard enabled, tab.stays, !tab.isPrivate,
+        guard enabled, tab.stays, !tab.isPrivate, tab.atHome,
               let url = tab.currentURL, url.scheme?.hasPrefix("http") == true else { return }
         let key = url.absoluteString
         guard dict(cacheKey, tab.profileID)[key] == nil else { return }
@@ -405,7 +461,7 @@ import Foundation
     /// Drop everything remembered for a profile. For profile deletion and for a settings
     /// toggle that should not leave stale names behind.
     static func forget(_ profileID: UUID) {
-        for base in [cacheKey, overrideKey] {
+        for base in [cacheKey, overrideKey, pinnedKey] {
             UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(base, profileID))
         }
     }
@@ -554,7 +610,8 @@ import Foundation
         let alpha = UUID(uuidString: "00000000-0000-0000-0000-0000000A1FA0")!
         let beta = UUID(uuidString: "00000000-0000-0000-0000-0000000BE7A0")!
         let keys = [alpha, beta].flatMap {
-            [ProfileManager.defaultsKey(cacheKey, $0), ProfileManager.defaultsKey(overrideKey, $0)]
+            [ProfileManager.defaultsKey(cacheKey, $0), ProfileManager.defaultsKey(overrideKey, $0),
+             ProfileManager.defaultsKey(pinnedKey, $0)]
         } + ["tidyTitles"]
         let saved = keys.map { ($0, UserDefaults.vane.object(forKey: $0)) }
         defer { for (k, v) in saved { UserDefaults.vane.set(v, forKey: k) } }
@@ -577,6 +634,50 @@ import Foundation
         rename(docs, in: beta, to: "   ")
         assert("an all-whitespace rename clears rather than blanking the tab",
                override(for: docs, in: beta) == nil)
+
+        // --- The frozen name: what a row that stays is called, and the page it is called by ---
+        assert("nothing pinned reads back as nil", pinnedName(for: docs, in: alpha) == nil)
+        recordPinnedName("Guide - Docs", for: docs, in: alpha)
+        assert("a pinned name round-trips", pinnedName(for: docs, in: alpha) == "Guide - Docs")
+        assert("a pinned name is keyed by url", pinnedName(for: other, in: alpha) == nil)
+        assert("a pinned name in one profile is invisible in another",
+               pinnedName(for: docs, in: beta) == nil)
+        recordPinnedName(nil, for: docs, in: alpha)
+        assert("unpinning clears the name the row was frozen under",
+               pinnedName(for: docs, in: alpha) == nil)
+        recordPinnedName("  ", for: docs, in: alpha)
+        assert("a page with nothing but spaces for a title records no name",
+               pinnedName(for: docs, in: alpha) == nil)
+        recordPinnedName("Guide", for: docs, in: beta)
+        forget(beta)
+        assert("a forgotten profile takes its pinned names with it",
+               pinnedName(for: docs, in: beta) == nil)
+
+        // The precedence, in the order the row reads it.
+        assert("a name the user typed beats everything",
+               pick(override: "Mine", tidied: "Tidied", recorded: "Recorded",
+                    raw: "Raw - Site", host: "example.com") == "Mine")
+        assert("the tidied name of the pinned page beats the name it was pinned under",
+               pick(override: nil, tidied: "Tidied", recorded: "Recorded",
+                    raw: "Raw - Site", host: "example.com") == "Tidied")
+        assert("the name the page had when it was pinned beats the page it wandered to",
+               pick(override: nil, tidied: nil, recorded: "Apollo program - Wikipedia",
+                    raw: "Google", host: "en.wikipedia.org") == "Apollo program")
+        assert("with nothing recorded the row is the cleaned-up page it is on",
+               pick(override: nil, tidied: nil, recorded: nil,
+                    raw: "Apollo program - Wikipedia", host: "en.wikipedia.org")
+                   == "Apollo program")
+
+        // The key. A row that stays is named by its home wherever it has been; a Today tab
+        // is named by the page it is on, exactly as every tab always was.
+        assert("a wandered pinned row is still named by the page it was pinned at",
+               named(stays: true, home: docs, at: other) == docs)
+        assert("a Today tab is named by the page it is on",
+               named(stays: false, home: docs, at: other) == other)
+        assert("a row pinned while it was still blank is named by where it went",
+               named(stays: true, home: nil, at: other) == other)
+        assert("a row with no page at all has no name to look up",
+               named(stays: true, home: nil, at: nil) == nil)
 
         UserDefaults.vane.removeObject(forKey: "tidyTitles")
         let byDefault = enabled

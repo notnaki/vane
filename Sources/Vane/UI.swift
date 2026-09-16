@@ -1217,6 +1217,15 @@ private struct FavoriteTile: View {
             .overlay(alignment: side == .after ? .trailing : .leading) {
                 DropLine(on: side != nil, axis: .horizontal)
             }
+            // The same go-home a wandered pinned row wears, in the corner rather than in
+            // the icon's place: a tile *is* its icon, and trading that for an arrow would
+            // leave nothing on screen saying which favourite you are about to send home.
+            .overlay(alignment: .topTrailing) {
+                if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome,
+                                           hovering: hovering) {
+                    GoHomeGlyph(store: store, tab: tab).padding(4)
+                }
+            }
             .animation(reduceMotion ? nil : Look.quick, value: hovering)
             .inStrip(tab.id, strip)
             .contentShape(.rect)
@@ -1237,6 +1246,13 @@ private struct FavoriteTile: View {
             .accessibilityValue(tabState(tab, in: store))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
             .accessibilityHint("Shows this tab.")
+            // Only on a tile that has wandered — see `TabRow`, where the same action is
+            // offered on the same terms.
+            .accessibilityActions {
+                if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: true) {
+                    Button("Go back to pinned page") { store.goHome(tab.id) }
+                }
+            }
             .accessibilityAction(named: "Rename Tab") { store.renamingTab = tab.id }
             .accessibilityAction(named: "Unfavourite Tab") { store.toggleFavourite(tab.id) }
             .accessibilityAction(named: "Pin Tab") { store.move(tab.id, to: .pinned) }
@@ -3156,7 +3172,7 @@ private struct TabRow: View {
         let selected = store.current == tab.id
         let ticked = store.selection.contains(tab.id)
         SidebarRow(selected: selected, ticked: ticked, action: select) {
-            TabIcon(tab: tab)
+            TabHomeIcon(store: store, tab: tab)
         } label: {
             // Arc's in-row rename: the title becomes a field and the row keeps its shape.
             if store.renamingTab == tab.id {
@@ -3220,6 +3236,15 @@ private struct TabRow: View {
         }
         .accessibilityAction(named: tab.kind == .pinned ? "Unpin Tab" : "Pin Tab") {
             store.togglePinned(tab.id)
+        }
+        // The row reads as one element, so the favicon's return arrow is an action on the
+        // row rather than a second thing for VoiceOver to find — and only on a row that has
+        // somewhere to go, because an action offered on every row that did nothing on most
+        // of them is worse than no action at all. Same words as the glyph's own label.
+        .accessibilityActions {
+            if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: true) {
+                Button("Go back to pinned page") { store.goHome(tab.id) }
+            }
         }
         .accessibilityAction(named: "Rename Tab") { store.renamingTab = tab.id }
         .accessibilityAction(named: "Duplicate Tab") { TabActions.duplicate(tab, in: store) }
@@ -3606,6 +3631,16 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
     /// awake to a press that asked to unload. `Tab.hasEverLoaded` tells the two apart.
     static func unpinsWithNothingParked(hasEverLoaded: Bool) -> Bool { !hasEverLoaded }
 
+    /// The other end of the row: whether the favicon is showing the return arrow instead.
+    /// A row that stays, off the page it stands for, under the pointer — Arc's go-home, and
+    /// the shortest way to the trip the × takes at its middle step. It lives here rather
+    /// than in the view because it is the same question `decide` asks with `atHome`, and
+    /// two places disagreeing about "has this row wandered" is a row offering to go home
+    /// while its × says there is nowhere to go.
+    static func showsGoHome(stays: Bool, atHome: Bool, hovering: Bool) -> Bool {
+        stays && !atHome && hovering
+    }
+
     var symbol: String {
         switch self {
         case .close, .unpin: "xmark"
@@ -3737,6 +3772,15 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
                    }
                })
 
+        // --- The favicon's return arrow, at the other end of the same row ---
+        assert("a wandered row offers to go home under the pointer",
+               showsGoHome(stays: true, atHome: false, hovering: true))
+        assert("a row at home keeps its favicon, and so does every Today tab",
+               !showsGoHome(stays: true, atHome: true, hovering: true)
+                   && !showsGoHome(stays: false, atHome: false, hovering: true))
+        assert("nothing swaps a favicon out from under a pointer that is not there",
+               ![true, false].contains { showsGoHome(stays: true, atHome: $0, hovering: false) })
+
         assert("the minus is only ever the unload glyph",
                TabRowGlyph.allCases.filter { $0.symbol == "minus" } == [.unload])
         assert("every state says out loud what it will do",
@@ -3823,6 +3867,48 @@ private struct TabRowTrailing: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(Look.inkSecondary)
+    }
+}
+
+/// A row's favicon, with Arc's go-home under the pointer: a row that stays and has been
+/// browsed off the page it was pinned at trades its icon for a return arrow, and pressing
+/// it is the middle step of that row's × asked for on its own. Every other row — at home,
+/// or in Today — is the favicon it always was, and nothing moves when the pointer arrives.
+/// See `TabRowGlyph.showsGoHome`, where that is decided.
+private struct TabHomeIcon: View {
+    let store: TabStore
+    @ObservedObject var tab: Tab
+    var size: CGFloat = Look.rowIcon
+    @Environment(\.rowHovering) private var hovering
+
+    var body: some View {
+        if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
+            GoHomeGlyph(store: store, tab: tab).frame(width: size, height: size)
+        } else {
+            TabIcon(tab: tab, size: size)
+        }
+    }
+}
+
+/// The return arrow itself. Its own view because a favourite draws it in the corner of its
+/// tile rather than in the icon's place, and because the two must say the same words: the
+/// tooltip, the VoiceOver label and the row's own accessibility action are all these.
+private struct GoHomeGlyph: View {
+    let store: TabStore
+    let tab: Tab
+
+    var body: some View {
+        Button { store.goHome(tab.id) } label: {
+            // The sidebar's own glyph size and ink — this stands where a favicon stands, so
+            // it has to sit at the same weight as the × at the other end of the row.
+            Image(systemName: "arrow.uturn.backward")
+                .font(Look.rowGlyph)
+                .foregroundStyle(Look.inkSecondary)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .help("Go back to pinned page")
+        .accessibilityLabel("Go back to pinned page")
     }
 }
 

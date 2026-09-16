@@ -294,7 +294,26 @@ struct TitleReveal: Equatable, Sendable {
     /// (Folders.swift) and a popup being adopted all set this field, and a home recorded at
     /// five of them is a home the sixth quietly forgets.
     @Published var kind: TabKind = .today {
-        didSet { homeURL = TabStore.home(entering: kind, at: currentURL) }
+        didSet {
+            // The name a row wears is frozen against the page it stands for, so it is
+            // written and dropped in the same breath as that page — see
+            // `TidyTitles.recordPinnedName`. The old home is still in the field on the way
+            // in, which is what an unpin has to clear; the new one is what this pin is
+            // called. A pin and a favourite are the same event here: both *stay*.
+            //
+            // Never for a private tab: this is a page title written to disk, and a private
+            // window's pins would be writing one *and* clearing the ordinary profile's name
+            // for the same url on the way out. `TidyTitles.refresh` stands aside for the
+            // same reason.
+            let remembering = !isPrivate
+            if remembering, let leaving = homeURL {
+                TidyTitles.recordPinnedName(nil, for: leaving, in: profileID)
+            }
+            homeURL = TabStore.home(entering: kind, at: currentURL)
+            if remembering, let home = homeURL {
+                TidyTitles.recordPinnedName(title, for: home, in: profileID)
+            }
+        }
     }
     /// The page this row *stands for*: the one it was pinned or favourited at. Arc's rule —
     /// browse a pinned row wherever you like, and ⌘W or the row's × puts it back on the page
@@ -753,6 +772,16 @@ struct TitleReveal: Equatable, Sendable {
     func restore(url: URL, home: URL?, parked: Parked) {
         park(url: url, parked)
         if stays { homeURL = home ?? url }
+        // A row pinned before this profile began writing pin names down — or one imported
+        // from another browser — has nothing recorded for its home, and the title saved
+        // beside it is the only thing that knows what it was called. Only when it came back
+        // on its own page: what a *wandered* row was left reading is the page it went to,
+        // which is exactly the name this feature exists to stop showing. First one wins, so
+        // a name already recorded is never overwritten by a relaunch.
+        if stays, !isPrivate, let home = homeURL, home == url, !parked.title.isEmpty,
+           TidyTitles.pinnedName(for: home, in: profileID) == nil {
+            TidyTitles.recordPinnedName(parked.title, for: home, in: profileID)
+        }
     }
 
 
@@ -1918,6 +1947,19 @@ struct Stash {
         tab.park(url: home, Parked(title: TabStore.homeTitle(
             known: tab.history.title(for: home), url: home)))
         return true
+    }
+
+    /// The return arrow a wandered row wears where its favicon goes: the same trip the ×
+    /// takes at its middle step, asked for on its own. A row nowhere to go back to is left
+    /// alone, which is what `sendHome` answering false means.
+    ///
+    /// The row you are *looking at* is loaded again rather than left parked: `sendHome`
+    /// parks, and the window only resumes a tab it is handed (see `current`'s didSet), so a
+    /// go-home click on the tab on screen would otherwise trade the page for a blank card.
+    func goHome(_ id: Tab.ID) {
+        guard let tab = tabs.first(where: { $0.id == id }), sendHome(tab) else { return }
+        if current == id { tab.resume() }
+        axAnnounce("Back on the pinned page.")
     }
 
     /// `byScript` is a popup dismissing itself — see `closedByScript`. Everything else about
