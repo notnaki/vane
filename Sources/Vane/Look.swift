@@ -435,19 +435,30 @@ enum Look {
     /// the card's own radius.
     static let loadingPill = CGSize(width: 160, height: 5)
     static let loadingInset: CGFloat = 8
+    /// The trailing strip of the card the pill may not reach into: the find bar and the
+    /// save-password offer both live there, an inset row of controls under the address
+    /// pill, and the widest of them is around this. The pill is centred in what is left
+    /// rather than dropped below them while one is showing — it keeps one place on the card
+    /// whatever else is open, and nothing jumps. Ceiling: a card narrower than
+    /// `loadingPill.width + loadingClear` slides the pill off its leading edge instead,
+    /// which wants a window narrower than the sidebar's own minimum plus a page.
+    static let loadingClear: CGFloat = 400
     /// The unfilled part of it. A shade under a hovered row, so the pill is visible on the
     /// page for the whole of a load without being something you look at.
     static let loadingTrack = ink(0.10)
 
-    /// What the page area is before a page has painted anything of its own, and behind a
-    /// page that paints no background of its own. A WKWebView shows white until its first
-    /// paint, so on a dark Space every switch and every load flashed headlights.
+    /// What the page area is before a page has painted anything of its own. A WKWebView
+    /// shows white until its first paint, so on a dark Space every switch and every load
+    /// flashed headlights.
     ///
-    /// The two brightnesses are `ground`'s own, so this is exactly the wash a grey Space
-    /// wears. ponytail: the appearance, not the Space's tint — the colour is put on the web
-    /// view in `Tab.attach`, which knows nothing of the window the tab will be shown in, and
-    /// what the tint would add is saturation on a 14 % grey for the frame before the page
-    /// paints. Ceiling: a heavily tinted Space shows a hair of neutral in that frame.
+    /// Not the Space's ground. `ground` is the Space's own colour — hue kept, tinted by its
+    /// slider — laid over the blurred desktop at `groundOpacity` with the grain on top, so
+    /// it is translucent, coloured and textured. This one is a flat opaque grey: neutral,
+    /// no tint, no grain, nothing behind it. It borrows only `ground`'s two brightnesses,
+    /// 14 % in dark and 96 % in light, so the two read as the same room. A page is opaque
+    /// the moment it paints, so anything translucent under it would be a frame of one thing
+    /// and then another; and the colour goes onto the web view itself, which has no Space to
+    /// ask. Ceiling: a heavily tinted Space shows a hair of neutral for that one frame.
     static let pageGround = NSColor(name: nil) { appearance in
         let dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         return NSColor(white: dark ? 0.14 : 0.96, alpha: 1)

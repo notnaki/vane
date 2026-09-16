@@ -463,32 +463,6 @@ struct TitleReveal: Equatable, Sendable {
         return c
     }
 
-    /// Stop the page flashing white before it has painted. A WKWebView draws WebKit's own
-    /// white background from the moment it is in a window until the page's first paint — and
-    /// goes on drawing it for a page that sets no background of its own — so on a dark Space
-    /// every load, and every switch to a tab whose page was not yet up, was a flash of
-    /// headlights on the card.
-    ///
-    /// Two halves, because either alone leaves a case: `drawsBackground` takes WebKit's white
-    /// out of the picture altogether and lets the card's own ground show through (see
-    /// `WebHost.updateLayer`), and `underPageBackgroundColor` is what the page rubber-bands
-    /// onto and what WebKit fills with while a page is arriving.
-    ///
-    /// ponytail: `drawsBackground` is SPI, so it is respondsToSelector-guarded exactly like
-    /// `_inspector` in Develop.swift, and a WebKit that has dropped it leaves the public half
-    /// doing the work on its own. The guard is on `_setDrawsBackground:` and the write is
-    /// KVC: measured on macOS 26, the public-looking `setDrawsBackground:` does not exist —
-    /// `setValue(false, forKey: "drawsBackground")` is what resolves to the underscored
-    /// setter, and guarding on the name it resolves *to* is the only guard that means
-    /// anything. Here rather than in `freshWebView`: `attach` is the one place every web view
-    /// a tab ever has goes through, the one from `init(popup:)` included.
-    private static func ground(_ web: WKWebView) {
-        if web.responds(to: Selector(("_setDrawsBackground:"))) {
-            web.setValue(false, forKey: "drawsBackground")
-        }
-        web.underPageBackgroundColor = Look.pageGround
-    }
-
     /// Point `web` at this tab: the password bridge, the delegates, the developer settings
     /// and the KVO that republishes WebKit's state. Runs at init and again on every resume,
     /// because suspension swaps the web view out from under all of it.
@@ -518,7 +492,6 @@ struct TitleReveal: Equatable, Sendable {
         editableFrames = []
         web.customUserAgent = Settings.userAgent
         web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
-        Tab.ground(web)
         web.allowsBackForwardNavigationGestures = true
         web.allowsMagnification = true
         web.uiDelegate = self
