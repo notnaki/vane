@@ -323,12 +323,14 @@ private struct SpacePreviewList: View {
         let saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
                                                in: Store.directory)
         VStack(alignment: .leading, spacing: Look.rowGap) {
+            // The same metrics as `SpaceRow`, glyph for glyph: the ghost slides under the real
+            // heading and any difference in size or ink reads as the row jumping on landing.
             HStack(spacing: Look.rowSpacing) {
-                Image(systemName: space.icon ?? "cloud").font(Look.icon)
+                Image(systemName: space.icon ?? "cloud").font(Look.spaceIcon).frame(width: Look.tileIcon)
                 Text(space.name).font(Look.text)
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(Look.inkSecondary)
+            .foregroundStyle(Look.inkTertiary)
             .padding(.horizontal, Look.rowInset)
             .frame(height: Look.rowHeight)
             // Offsets, not the url: the same page can be pinned and open at once, and two

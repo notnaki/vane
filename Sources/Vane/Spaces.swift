@@ -367,9 +367,10 @@ enum Spaces {
         enum Phase { case began, changed, ended, momentum }
 
         /// How far across the sidebar the fingers have to have carried the strip for
-        /// fingers-up to commit. Arc's is a bit over a third; below ~0.25 a diagonal scroll
+        /// fingers-up to commit. A shade under Arc's third, so the page changes a little
+        /// earlier under the fingers; below ~0.25 a diagonal scroll
         /// down a long tab list changes Space by accident.
-        static let commitFraction: CGFloat = 0.35
+        static let commitFraction: CGFloat = 0.3
         /// …or this fast, in points per second, so a flick that barely moves still switches.
         static let flickSpeed: CGFloat = 600
         /// How much of the travel past the first or last Space actually shows: the strip
@@ -709,8 +710,8 @@ enum Spaces {
         assert("nothing is committed while the fingers are still down",
                swipe([(0, .began), (-200, .changed)]).commits.isEmpty)
         assert("a short slow drag springs back rather than switching",
-               swipe(slow(-w * 0.3, steps: 60), dt: 0.05).commits.isEmpty)
-        assert("past a third of the sidebar, fingers up switches to the next space",
+               swipe(slow(-w * 0.2, steps: 60), dt: 0.05).commits.isEmpty)
+        assert("past three tenths of the sidebar, fingers up switches to the next space",
                swipe(slow(-w * 0.4, steps: 60), dt: 0.05).commits == [1])
         assert("dragging the other way goes to the previous space",
                swipe(slow(w * 0.4, steps: 60), dt: 0.05).commits == [-1])
