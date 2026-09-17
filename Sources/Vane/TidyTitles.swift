@@ -456,6 +456,24 @@ import Foundation
         return clean(text, host: host) ?? text
     }
 
+    /// What a Space's ghost calls a row it has no `Tab` for — the sidebar sliding under a
+    /// swipe is built from `spaces.json`, and for the width of that swipe it used to call
+    /// every row by its host. Same ladder as `title(for:)`, with the sidecar's saved title
+    /// standing in for the live one, and the host only when nothing has ever named the row.
+    static func previewName(for url: URL, in profileID: UUID, saved: String?) -> String {
+        pick(override: override(for: url, in: profileID),
+             tidied: enabled ? dict(cacheKey, profileID)[url.absoluteString] : nil,
+             recorded: pinnedName(for: url, in: profileID),
+             raw: previewRaw(saved: saved, url: url), host: url.host())
+    }
+
+    /// The bottom rung: the saved title when it is a real one, else the host without its
+    /// `www.` — the same label the address pill would show.
+    nonisolated static func previewRaw(saved: String?, url: URL) -> String {
+        if let saved, realTitle(saved, at: url) { return saved }
+        return Files.pillLabel(url) ?? url.absoluteString
+    }
+
     /// The one thing the chrome should call. Sync, because SwiftUI's `body` is.
     ///
     /// ponytail: the rename wins even for an unpinned tab. "Never retitle an unpinned tab"
@@ -718,6 +736,12 @@ import Foundation
                !realTitle("docs.example.com", at: docs))
         assert("nor one with no title at all", !realTitle("", at: docs))
         assert("the page's own title is what gets frozen", realTitle("Guide - Docs", at: docs))
+        assert("a Space's ghost calls a row by the title the sidecar saved for it",
+               previewRaw(saved: "Guide - Docs", url: docs) == "Guide - Docs")
+        assert("…and by its host only when nothing real was saved",
+               previewRaw(saved: "docs.example.com", url: docs) == "docs.example.com"
+                   && previewRaw(saved: nil, url: URL(string: "https://www.google.com/search?q=x")!)
+                       == "google.com")
 
         // The key, from both sides. The rename and the chip are one expression — `key(for:)`,
         // which is `named` with a tab's fields in it — and this is that expression driven

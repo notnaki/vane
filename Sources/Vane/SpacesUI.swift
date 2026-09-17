@@ -304,8 +304,9 @@ private struct SpaceSlide: ViewModifier {
 /// ponytail: rows built from the urls in `spaces.json`, not from tabs. A Space that is not on
 /// screen has no `Tab` objects and no web views, and making them so the user can glance at
 /// them mid-swipe would mean loading another Space's pages in order to slide past them.
-/// Ceiling: a site never visited has no cached favicon, and the label is the host rather than
-/// the page's own title — a history lookup keyed on the url would fix the second.
+/// Ceiling: a site never visited has no cached favicon. The label climbs the same ladder the
+/// real row does — a typed name, the tidied name, the name it was pinned under, the title
+/// the sidecar saved — and only a row nothing has ever named is its host.
 private struct SpacePreviewList: View {
     let space: Space
 
@@ -319,6 +320,8 @@ private struct SpacePreviewList: View {
 
     var body: some View {
         let rows = self.rows
+        let saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
+                                               in: Store.directory)
         VStack(alignment: .leading, spacing: Look.rowGap) {
             HStack(spacing: Look.rowSpacing) {
                 Image(systemName: space.icon ?? "cloud").font(Look.icon)
@@ -330,10 +333,10 @@ private struct SpacePreviewList: View {
             .frame(height: Look.rowHeight)
             // Offsets, not the url: the same page can be pinned and open at once, and two
             // rows sharing an id makes SwiftUI draw one of them.
-            ForEach(Array(rows.pinned.enumerated()), id: \.offset) { row($0.element) }
+            ForEach(Array(rows.pinned.enumerated()), id: \.offset) { row($0.element, saved) }
             tidy
             newTab
-            ForEach(Array(rows.today.enumerated()), id: \.offset) { row($0.element) }
+            ForEach(Array(rows.today.enumerated()), id: \.offset) { row($0.element, saved) }
             Spacer(minLength: 0)
         }
     }
@@ -388,7 +391,7 @@ private struct SpacePreviewList: View {
         .frame(height: Look.rowHeight)
     }
 
-    @ViewBuilder private func row(_ row: Row) -> some View {
+    @ViewBuilder private func row(_ row: Row, _ saved: [String: Parked]) -> some View {
         HStack(spacing: Look.rowSpacing) {
             switch row {
             case .folder(let f):
@@ -399,20 +402,15 @@ private struct SpacePreviewList: View {
                 Text(f.name).font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
             case .site(let url):
                 SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
-                Text(Self.name(url)).font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
+                Text(TidyTitles.previewName(for: url, in: space.profileID,
+                                            saved: saved[url.absoluteString]?.title))
+                    .font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
             }
             Spacer(minLength: 0)
         }
         .padding(.leading, Look.rowInset)
         .padding(.trailing, Look.rowTrailingInset)
         .frame(height: Look.rowHeight)
-    }
-
-    /// Anchored, so a host that merely contains "www." somewhere — `bewww.example` — keeps
-    /// all of its name.
-    private static func name(_ url: URL) -> String {
-        guard let host = url.host() else { return url.absoluteString }
-        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 }
 
