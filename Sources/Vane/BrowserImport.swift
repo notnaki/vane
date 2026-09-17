@@ -21,7 +21,10 @@ struct BrowserProfile {
 /// Safe Storage decryption PasswordImport deliberately avoids.
 @MainActor enum BrowserImport {
 
-    struct Failure: LocalizedError {
+    /// `nonisolated` along with `query` and `guardReadable` below: those three are a file
+    /// copy, a `sqlite3_step` loop and the error it can fail with, and `ArcImport` runs them
+    /// off the main actor so a heavy profile does not freeze the window.
+    nonisolated struct Failure: LocalizedError {
         let errorDescription: String?
         init(_ m: String) { errorDescription = m }
     }
@@ -289,7 +292,7 @@ struct BrowserProfile {
 
     /// Full Disk Access is the usual reason a file that exists cannot be opened; TCC lets
     /// stat through and denies open, so `isReadableFile` is what actually distinguishes it.
-    private static func guardReadable(_ file: URL) throws {
+    nonisolated private static func guardReadable(_ file: URL) throws {
         let fm = FileManager.default
         guard fm.fileExists(atPath: file.path) else {
             throw Failure("\(file.lastPathComponent) is not there.")
@@ -301,7 +304,7 @@ struct BrowserProfile {
         }
     }
 
-    private static let sidecars = ["", "-wal", "-shm", "-journal"]
+    nonisolated private static let sidecars = ["", "-wal", "-shm", "-journal"]
 
     /// Copy before opening: the other browser is probably running and holds a lock, and the
     /// newest rows may still be sitting in the WAL sidecar rather than the main file — so
@@ -309,7 +312,7 @@ struct BrowserProfile {
     /// Not private, because `ArcImport` reads `Login Data` and `Cookies` out of the same
     /// profile directories and must copy them the same way — Arc is running while the import
     /// is, and the newest rows of both are in the WAL sidecar.
-    static func query(_ file: URL, _ sql: String, _ row: (OpaquePointer) -> Void) throws {
+    nonisolated static func query(_ file: URL, _ sql: String, _ row: (OpaquePointer) -> Void) throws {
         try guardReadable(file)
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("vane-import-\(UUID().uuidString)")
