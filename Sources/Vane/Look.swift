@@ -435,14 +435,6 @@ enum Look {
     /// the card's own radius.
     static let loadingPill = CGSize(width: 160, height: 5)
     static let loadingInset: CGFloat = 8
-    /// The trailing strip of the card the pill may not reach into: the find bar and the
-    /// save-password offer both live there, an inset row of controls under the address
-    /// pill, and the widest of them is around this. The pill is centred in what is left
-    /// rather than dropped below them while one is showing — it keeps one place on the card
-    /// whatever else is open, and nothing jumps. Ceiling: a card narrower than
-    /// `loadingPill.width + loadingClear` slides the pill off its leading edge instead,
-    /// which wants a window narrower than the sidebar's own minimum plus a page.
-    static let loadingClear: CGFloat = 400
     /// The unfilled part of it. A shade under a hovered row, so the pill is visible on the
     /// page for the whole of a load without being something you look at.
     static let loadingTrack = ink(0.10)

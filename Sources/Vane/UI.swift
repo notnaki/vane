@@ -580,7 +580,7 @@ struct WebCard: View {
                     }
             }
             OffscreenPages()
-            if let tab = store.active { LoadingBar(tab: tab) }
+            if let tab = store.active { LoadingBar(tab: tab, hidden: store.findOpen) }
             VStack(spacing: 8) {
                 if store.findOpen, let tab = store.active {
                     FindBar(tab: tab).frame(maxWidth: .infinity, alignment: .trailing)
@@ -653,6 +653,9 @@ struct EmptyPane: View {
 /// fill; both go together behind the same fade.
 private struct LoadingBar: View {
     @ObservedObject var tab: Tab
+    /// The find bar shares the top of the card; while it is open the pill steps aside
+    /// entirely rather than sitting off-centre for the rest of the time.
+    var hidden = false
     /// Reduce Motion turns the sweep and the fade into plain cuts — the bar still shows
     /// the same thing, it just stops moving.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -669,14 +672,11 @@ private struct LoadingBar: View {
         }
         .frame(width: Look.loadingPill.width, height: Look.loadingPill.height)
         .padding(.top, Look.loadingInset)
-        // The find bar and the save-password offer share the top of the card, trailing. The
-        // pill keeps its 8pt from the top and gives up the trailing `Look.loadingClear`
-        // instead of moving down while one of them is showing: one place on the card
-        // whatever else is open, and no jump when a bar arrives mid-load.
-        .padding(.trailing, Look.loadingClear)
+        // Centred on the page, not on what is left beside the find bar: the pill is the
+        // page's, and a pill that sits a third of the way across reads as misplaced.
         // Fades out on finish instead of vanishing, and never sweeps backwards when the
         // next navigation resets progress to zero behind the fade.
-        .opacity(tab.loading ? 1 : 0)
+        .opacity(tab.loading && !hidden ? 1 : 0)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: tab.loading)
         .allowsHitTesting(false)
         // Decoration: the tab row says "loading" in words, which is the accessible copy of
