@@ -401,6 +401,13 @@ private struct SpacePreviewList: View {
                     if f.iconIsEmoji { Text(f.icon).font(Look.small) } else { Image(systemName: f.icon) }
                 }
                 .frame(width: Look.tileIcon)
+                // A live folder wears its source here too, or the badge pops in on landing.
+                .overlay(alignment: .bottomTrailing) {
+                    if f.live != nil {
+                        LiveBadge(live: LiveFolders.shared(for: space.profileID), folder: f.id)
+                            .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
+                    }
+                }
                 Text(f.name).font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
             case .site(let url):
                 SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
@@ -550,29 +557,26 @@ private struct SpaceSwipe: ViewModifier {
             rebuild()
             return
         }
-        // What the swipe promised to switch away from. A third of a second is long enough
-        // for ⌥⌘←, ⌃1–9, ⌃N or a footer dot to have moved the window somewhere else under
-        // the spring, and switching anyway would silently undo it.
-        let from = store.currentSpaceID
+        // The Space changes *now*, at fingers-up, not at the end of the spring: the page
+        // is what the user is waiting for, and a third of a second after the strip has
+        // visibly landed reads as lag. The incoming sections are put down, without
+        // animation, exactly where the ghost was standing — one Space-width further along
+        // than the strip — so the spring that carries them home is the same slide the ghost
+        // was making, with the real rows under it. `spaceSwiping` stays true across the
+        // switch, which is what keeps `SpaceSlide`'s own transition off this update.
         landing = true
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) {
+            store.spaceDrag += CGFloat(direction) * width
+            store.switchTo(space: target)
+        }
+        rebuild()
         withAnimation(Look.spaceSpring) {
-            store.spaceDrag = -CGFloat(direction) * width
+            store.spaceDrag = 0
         } completion: { [weak store] in
             self.landing = false
-            guard let store, store.window != nil, store.currentSpaceID == from else {
-                // Somebody else got there first, or the window is gone: drop the offset and
-                // leave the Space alone.
-                store?.spaceDrag = 0
-                store?.spaceSwiping = false
-                return
-            }
-            // `spaceSwiping` is still true here, which is what keeps `SpaceSlide`'s own
-            // transition off this update; the offset going back to zero in the same breath
-            // lands the incoming sections on the preview they replace.
-            store.switchTo(space: target)
-            store.spaceDrag = 0
-            rebuild()
-            DispatchQueue.main.async { store.spaceSwiping = false }
+            store?.spaceSwiping = false
         }
     }
 
