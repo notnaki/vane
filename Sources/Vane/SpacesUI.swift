@@ -470,18 +470,36 @@ private struct SpaceSwipe: ViewModifier {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
             guard let store, self.mine(event, store) else { return event }
             let phase = Self.phase(of: event)
-            let index = self.list.firstIndex { $0.id == store.currentSpaceID } ?? 0
             let width = SidebarWidth.shared.width
             let dt = self.last > 0 ? event.timestamp - self.last : 0
             self.last = event.timestamp
+            // The Create a Space form is one slot past the last Space: a swipe back from it
+            // is Cancel, the same as ⎋, and a swipe further on is the band. Its offset is
+            // never applied — the form does not slide, it goes.
+            let creating = store.creatingSpace
+            let index = creating ? self.list.count
+                : (self.list.firstIndex { $0.id == store.currentSpaceID } ?? 0)
+            let count = creating ? self.list.count + 1 : self.list.count
+            let creatable = !store.isPrivate && !store.isLittle && !creating
             let out = self.swipe.feed(dx: event.scrollingDeltaX, dt: dt, phase: phase,
-                                      width: width, count: self.list.count, index: index)
+                                      width: width, count: count, index: index,
+                                      create: creatable)
+            if creating {
+                if let direction = out.commit, direction < 0 { store.cancelCreatingSpace() }
+                if phase == .ended || event.momentumPhase.contains(.ended) { self.forget() }
+                return nil
+            }
             if let offset = out.offset {
                 store.spaceSwiping = true
                 store.spaceDrag = offset             // straight on, no animation: it is the fingers
             }
+            store.spacePull = out.pull
             if let direction = out.commit {
-                self.land(direction, from: index, width: width, store: store)
+                if creatable, direction > 0, index == self.list.count - 1 {
+                    self.create(store)
+                } else {
+                    self.land(direction, from: index, width: width, store: store)
+                }
             } else if phase == .ended, !self.landing {
                 // Not while landing: a `.cancelled` followed by an `.ended` would otherwise
                 // spring the strip home over the top of the spring taking it the other way.
@@ -534,6 +552,7 @@ private struct SpaceSwipe: ViewModifier {
         forget()
         guard let store, !landed, store.spaceDrag != 0 || store.spaceSwiping else { return }
         store.spaceDrag = 0
+        store.spacePull = 0
         store.spaceSwiping = false
     }
 
@@ -580,8 +599,19 @@ private struct SpaceSwipe: ViewModifier {
         }
     }
 
+    /// The plus is full: the form takes the sidebar, and the strip, which only banded,
+    /// goes home underneath it. Nothing is made yet — Create Space is a button.
+    private func create(_ store: TabStore) {
+        withAnimation(Look.spaceSlide) {
+            store.spacePull = 0
+            store.creatingSpace = true
+        }
+        settle(store)
+    }
+
     /// Not far enough, or nowhere to go: the strip goes home.
     private func settle(_ store: TabStore) {
+        withAnimation(Look.spaceSpring) { store.spacePull = 0 }
         guard store.spaceDrag != 0 else { store.spaceSwiping = false; return }
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             store.spaceDrag = 0
@@ -638,4 +668,153 @@ private struct SpaceSwipe: ViewModifier {
     /// …and points *down* after which it can never be a Space swipe, however far it then
     /// wanders sideways.
     private static let verticalVeto: CGFloat = 6
+}
+
+// MARK: - Pull to create
+
+/// Arc's plus at the sidebar's edge: a ring that fills as the fingers pull past the last
+/// Space, and a form the moment it is full. Overlaid on the sidebar's scroll view, trailing
+/// and centred, so it sits where the pull is coming from.
+struct PullPlus: View {
+    @ObservedObject var store: TabStore
+
+    var body: some View {
+        let pull = store.spacePull
+        let ring = min(1, pull)
+        let solid = max(0, pull - 1)
+        ZStack {
+            Circle().fill(Look.barFill)
+            // The second stage: the circle fills from the centre out, and only a full one
+            // makes a Space. The plus turns dark against it so it stays a plus.
+            Circle().fill(Look.inkPrimary).scaleEffect(solid)
+            Circle().stroke(Look.inkTertiary, lineWidth: 1.5)
+            Circle()
+                .trim(from: 0, to: ring)
+                .stroke(Look.inkPrimary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Image(systemName: "plus").font(.system(size: 13, weight: .medium))
+                .foregroundStyle(solid > 0.5 ? Look.barFill : Look.inkPrimary)
+        }
+        .frame(width: Look.pullPlus, height: Look.pullPlus)
+        // Rides in from the edge with the first stage, and is gone the moment it is over:
+        // the ring is the progress, not a control.
+        .offset(x: Look.pullPlus / 2 - ring * Look.pullPlus)
+        .opacity(pull > 0 ? 1 : 0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Arc's Create a Space: the sidebar's sections give way to a name, a profile, a theme and
+/// two buttons. Nothing exists until Create Space is pressed; Cancel puts the sections back.
+struct CreateSpaceForm: View {
+    @ObservedObject var store: TabStore
+    @ObservedObject private var profiles = ProfileManager.shared
+    @State private var name = ""
+    @State private var profile: Profile?
+    @State private var colorHex: String?
+    @State private var theming = false
+    @FocusState private var naming: Bool
+
+    private var chosenProfile: Profile {
+        profile ?? profiles.profiles.first { $0.id == store.profileID } ?? profiles.active
+    }
+
+    var body: some View {
+        VStack(spacing: Look.inset) {
+            Spacer(minLength: Look.rowHeight)
+            Image(systemName: "square.stack.3d.up.fill")
+                .font(.system(size: 40, weight: .regular))
+                .foregroundStyle(Look.inkSecondary)
+                .padding(.bottom, Look.inset)
+            Text("Create a Space").font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(Look.inkPrimary)
+            Text("Separate your tabs for life, work, projects, and more.")
+                .font(Look.text).foregroundStyle(Look.inkSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, Look.inset * 2)
+            field {
+                Image(systemName: "plus.square.dashed").frame(width: Look.tileIcon)
+                TextField("Space name…", text: $name)
+                    .textFieldStyle(.plain)
+                    .focused($naming)
+                    .onSubmit(create)
+            }
+            field {
+                Image(systemName: "person.crop.square").frame(width: Look.tileIcon)
+                Text("Profile")
+                Spacer(minLength: 0)
+                Menu {
+                    ForEach(profiles.profiles) { p in
+                        Button(p.name) { profile = p }
+                    }
+                } label: {
+                    Text(chosenProfile.name)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            field {
+                Image(systemName: "paintbrush").frame(width: Look.tileIcon)
+                Button(colorHex == nil ? "Choose a Theme" : "Theme") { theming.toggle() }
+                    .buttonStyle(.plain)
+                Spacer(minLength: 0)
+                if let colorHex, let color = Color(hex: colorHex) {
+                    Circle().fill(color).frame(width: 14, height: 14)
+                }
+            }
+            if theming {
+                // The first page of the theme editor's own swatches: one tap, one colour.
+                // The full editor, with its gradients and grain, is a right-click away once
+                // the Space exists.
+                HStack(spacing: Look.inset / 2) {
+                    ForEach(Look.themeSwatches.prefix(Look.swatchPage), id: \.self) { hex in
+                        Button { colorHex = hex; theming = false } label: {
+                            Circle().fill(Color(hex: hex) ?? .clear)
+                                .frame(width: Look.swatch * 0.6, height: Look.swatch * 0.6)
+                                .overlay(Circle().stroke(Look.inkPrimary,
+                                                         lineWidth: colorHex == hex ? 2 : 0))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Theme colour \(hex)")
+                    }
+                }
+                .padding(.vertical, Look.inset / 2)
+            }
+            Spacer(minLength: 0)
+            Button(action: create) {
+                Text("Create Space").font(Look.rowTitle).frame(maxWidth: .infinity)
+                    .frame(height: Look.rowHeight)
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(cleaned == nil)
+            Button("Cancel") { store.cancelCreatingSpace() }
+                .buttonStyle(.plain)
+                .foregroundStyle(Look.inkSecondary)
+                .keyboardShortcut(.cancelAction)
+                .padding(.bottom, Look.inset)
+        }
+        .padding(.horizontal, Look.inset)
+        .onAppear { naming = true }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Create a Space")
+    }
+
+    private var cleaned: String? { TabActions.cleanName(name) }
+
+    private func create() {
+        guard let cleaned else { return }
+        store.createSpace(named: cleaned, in: chosenProfile, colorHex: colorHex)
+    }
+
+    @ViewBuilder private func field<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: Look.rowSpacing) { content() }
+            .font(Look.rowTitle)
+            .foregroundStyle(Look.inkPrimary)
+            .padding(.horizontal, Look.rowInset)
+            .frame(height: Look.rowHeight)
+            .background(Look.selected, in: .rect(cornerRadius: Look.pillRadius))
+    }
 }

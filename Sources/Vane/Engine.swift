@@ -2511,6 +2511,37 @@ struct Stash {
     /// which `currentSpaceID` changes must still know a swipe is what changed it — otherwise
     /// the sidebar's own slide transition plays on top of a slide that has already happened.
     @Published var spaceSwiping = false
+    /// How far a pull past the last Space has got, 0…1: the plus at the sidebar's edge fills
+    /// with it, and 1 is the moment the Create a Space form takes the sidebar.
+    @Published var spacePull: CGFloat = 0
+    /// The Create a Space form is standing in for the sidebar's sections.
+    @Published var creatingSpace = false
+
+    /// The form's Cancel, and ⎋: the sections come back.
+    func cancelCreatingSpace() {
+        creatingSpace = false            // the sidebar animates the swap itself
+    }
+
+    /// The form's Create button. A Space in this window's profile is switched into here; one
+    /// in another profile is made there and that profile's window brought forward with it.
+    func createSpace(named name: String, in profile: Profile, colorHex: String?) {
+        guard !isPrivate, !isLittle else { return }
+        creatingSpace = false
+        var space = ProfileManager.shared.createSpace(name: name, in: profile.id)
+        if let colorHex {
+            Spaces.setThemeColors([colorHex], on: &space)
+            _ = ProfileManager.shared.updateSpace(space)
+        }
+        if profile.id == profileID {
+            saveCurrentSpace()
+            spaceDirection = 1
+            switchTo(space: space)
+            rememberSpace()
+        } else {
+            Windows.switchTo(profile: profile).switchTo(space: space)
+        }
+        Toasts.show("New Space created", in: self)
+    }
 
     /// Same thing a `spaceRevision` bump does, for the code outside `update(space:)` that
     /// edits `spaces.json` directly — a move, a reorder, a delete.
