@@ -618,6 +618,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         // Arc keeps both of these in the app menu; Vane had them filed under Passwords and
         // Sites, where nobody looking for them would think to open.
         item(.importHistoryAndBookmarks) { BrowserImport.chooseAndImport() },
+        // Beside it rather than under Passwords: this is the item someone switching from Arc
+        // comes looking for, and it brings across everything the one above it does and more.
+        item(.importFromArc) { ArcImport.chooseAndImport() },
         makeDefaultApp,
         .separator(),
         menu("Passwords", passwordItems()),
