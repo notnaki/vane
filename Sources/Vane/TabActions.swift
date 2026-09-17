@@ -304,9 +304,11 @@ extension TabActions {
         return name.isEmpty ? nil : name
     }
 
-    /// The user's own name for a tab, or nil if it is still wearing the page's.
+    /// The user's own name for a tab, or nil if it is still wearing the page's. Asked under
+    /// `TidyTitles.key(for:)` — the url the row is *named* by — so that "Use the Page's Own
+    /// Title" appears for a wandered pinned row that has one, and clears the one it shows.
     @MainActor static func rename(_ tab: Tab) -> String? {
-        tab.currentURL.flatMap { TidyTitles.override(for: $0, in: tab.profileID) }
+        TidyTitles.key(for: tab).flatMap { TidyTitles.override(for: $0, in: tab.profileID) }
     }
 
     /// Arc renames a tab from a double-click on its row. ponytail: the same `askForName`

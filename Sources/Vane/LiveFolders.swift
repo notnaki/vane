@@ -1267,6 +1267,12 @@ extension TabStore {
                   let tab = tabs.first(where: { $0.id.uuidString == id }),
                   tab.suspended, tab.title != title else { continue }
             tab.title = title
+            // And the name frozen against that page, or the row would go on wearing the
+            // title the pull request had when it was pinned: the frozen name sits above the
+            // live one (`TidyTitles.pick`), which is the whole point of it everywhere else.
+            if !tab.isPrivate, let home = URL(string: url) {
+                TidyTitles.recordPinnedName(title, for: home, in: profileID)
+            }
         }
         guard plan.changesRows || liveRows(in: folder, owning: plan) != plan.order else { return [] }
         var byURL: [String: Tab.ID] = [:]

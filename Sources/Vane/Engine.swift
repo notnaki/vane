@@ -294,7 +294,35 @@ struct TitleReveal: Equatable, Sendable {
     /// (Folders.swift) and a popup being adopted all set this field, and a home recorded at
     /// five of them is a home the sixth quietly forgets.
     @Published var kind: TabKind = .today {
-        didSet { homeURL = TabStore.home(entering: kind, at: currentURL) }
+        didSet {
+            // The name a row wears is frozen against the page it stands for, so it is
+            // written and dropped in the same breath as that page — see
+            // `TidyTitles.recordPinnedName`. The old home is still in the field on the way
+            // in, which is what an unpin has to clear; the new one is what this pin is
+            // called. A pin and a favourite are the same event here: both *stay*.
+            //
+            // Never for a private tab: this is a page title written to disk, and a private
+            // window's pins would be writing one *and* clearing the ordinary profile's name
+            // for the same url on the way out. `TidyTitles.refresh` stands aside for the
+            // same reason.
+            let remembering = !isPrivate
+            // Only when no other row is still standing for that page: the names are per
+            // profile, and the same page can be pinned in two Spaces — or in two windows —
+            // at once, so unpinning it here must not take the name off the row over there.
+            if remembering, let leaving = homeURL,
+               !TabStore.stands(for: leaving, in: profileID, besides: self) {
+                TidyTitles.recordPinnedName(nil, for: leaving, in: profileID)
+            }
+            homeURL = TabStore.home(entering: kind, at: currentURL)
+            // Only a title the page gave itself. A row pinned while it was still loading is
+            // wearing "New Tab", and a parked one its host — freeze either and the row wears
+            // it forever, because `refresh` skips those titles too. The row is left with
+            // nothing recorded and `TidyTitles.note` fills it in from the first real title
+            // the page reports.
+            if remembering, let home = homeURL, TidyTitles.realTitle(title, at: home) {
+                TidyTitles.recordPinnedName(title, for: home, in: profileID)
+            }
+        }
     }
     /// The page this row *stands for*: the one it was pinned or favourited at. Arc's rule —
     /// browse a pinned row wherever you like, and ⌘W or the row's × puts it back on the page
@@ -515,6 +543,10 @@ struct TitleReveal: Equatable, Sendable {
                         self.scheduleTitleSettle(for: w)
                     }
                     if !self.isPrivate, let u = w.url { self.history.retitle(u, title: self.title) }
+                    // A pinned row that had no real title to freeze when it was pinned takes
+                    // the first one the page gives it — see `TidyTitles.note`, which is a
+                    // no-op for every other row.
+                    TidyTitles.note(self)
                     self.extensions.sync()
                 }
             },
@@ -584,6 +616,9 @@ struct TitleReveal: Equatable, Sendable {
             if !self.isPrivate, let url = observedWeb.url {
                 self.history.retitle(url, title: self.title)
             }
+            // The settled title is a title too: a row pinned while its page was still a host
+            // label freezes the real name here rather than one KVO earlier.
+            TidyTitles.note(self)
             self.extensions.sync()
         }
     }
@@ -753,6 +788,21 @@ struct TitleReveal: Equatable, Sendable {
     func restore(url: URL, home: URL?, parked: Parked) {
         park(url: url, parked)
         if stays { homeURL = home ?? url }
+        // A row pinned before this profile began writing pin names down — or one imported
+        // from another browser — has nothing recorded for its home, and the title saved
+        // beside it is the only thing that knows what it was called. Only when it came back
+        // on its own page: what a *wandered* row was left reading is the page it went to,
+        // which is exactly the name this feature exists to stop showing. First one wins, so
+        // a name already recorded is never overwritten by a relaunch.
+        // `realTitle`, not merely "not empty": what was written down for a row that has never
+        // been loaded is its host, and freezing that is the same forever-placeholder the pin
+        // itself guards against. Such a row records its name on the first title it reports,
+        // through `TidyTitles.note`.
+        if stays, !isPrivate, let home = homeURL, home == url,
+           TidyTitles.realTitle(parked.title, at: home),
+           TidyTitles.pinnedName(for: home, in: profileID) == nil {
+            TidyTitles.recordPinnedName(parked.title, for: home, in: profileID)
+        }
     }
 
 
@@ -1920,6 +1970,21 @@ struct Stash {
         return true
     }
 
+    /// The return arrow a wandered row wears where its favicon goes: the same trip the ×
+    /// takes at its middle step, asked for on its own. A row nowhere to go back to is left
+    /// alone, which is what `sendHome` answering false means.
+    ///
+    /// The row you are *looking at* is loaded again rather than left parked: `sendHome`
+    /// parks, and the window only resumes a tab it is handed (see `current`'s didSet), so a
+    /// go-home click on the tab on screen would otherwise trade the page for a blank card.
+    /// Every pane of a split is on screen, not just the active one — `onScreenTabs` is what
+    /// the card is actually drawing.
+    func goHome(_ id: Tab.ID) {
+        guard let tab = tabs.first(where: { $0.id == id }), sendHome(tab) else { return }
+        if onScreenTabs.contains(where: { $0.id == id }) { tab.resume() }
+        axAnnounce("Back on the pinned page.")
+    }
+
     /// `byScript` is a popup dismissing itself — see `closedByScript`. Everything else about
     /// the close is the same; only the trace it leaves differs.
     ///
@@ -2143,6 +2208,11 @@ struct Stash {
     /// Undo, for the toast `unpin` puts up. A no-op if the tab has gone in the meantime, and
     /// tabs opened since keep their places — `TidyTabs.restore` is the same "put back exactly
     /// what is still here" the tidy's undo uses.
+    ///
+    /// It does not undo the *name*: `move` re-homes the row to the page it is on now and
+    /// freezes whatever it is called there, so a row that had wandered before it was unpinned
+    /// comes back pinned to the wander rather than to where it started. The undo of a pin is
+    /// a pin, which is exactly what the strip shows.
     private func repin(_ id: Tab.ID, spot: Pins.Spot?, order: [Tab.ID]) {
         guard tabs.contains(where: { $0.id == id }) else { return }
         move(id, to: .pinned)          // which also `syncShapes`, so the row exists to place
@@ -2252,6 +2322,22 @@ struct Stash {
     /// while it is still blank gets nil and behaves exactly as every row did before.
     nonisolated static func home(entering kind: TabKind, at: URL?) -> URL? {
         kind == .today ? nil : at
+    }
+
+    /// Is some other row still standing for this page? The frozen names are the profile's,
+    /// not the window's: the same page can be pinned in two Spaces, or in two windows, so an
+    /// unpin over here must not take the name off a row over there. A stashed Space's rows
+    /// count — they are every bit as pinned, they are only not on screen — and a private
+    /// row never does, because it never wrote a name down in the first place.
+    ///
+    /// `besides` is the row doing the unpinning: its `kind` has already changed by the time
+    /// this is asked, but it is still in the strip.
+    static func stands(for home: URL, in profileID: UUID, besides tab: Tab) -> Bool {
+        all.contains { store in
+            store.profileID == profileID && store.everyTab.contains {
+                $0 !== tab && $0.stays && !$0.isPrivate && $0.homeURL == home
+            }
+        }
     }
 
     /// What a favourite or a pinned row is written down as — see `Tab.pinnedURL`, and the
