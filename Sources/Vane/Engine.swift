@@ -150,7 +150,15 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         let stale: [String: Any] = ["url": first.absoluteString, "at": 999_900.0]
         let rounded: [String: Any] = ["url": first.absoluteString, "at": 999_995.0]
         let sourceProfile = UUID(), otherProfile = UUID()
+        let gh = URL(string: "https://github.com/notnaki/vane/pulls")!
         return [
+            ("a parked row is called what was saved for it",
+             TabStore.parkedTitle(saved: "Pull requests · notnaki/vane", remembered: nil, url: gh)
+                == "Pull requests · notnaki/vane"),
+            ("…but a saved host label is not a name, and history gets its turn",
+             TabStore.parkedTitle(saved: "github.com", remembered: "Pull requests", url: gh) == "Pull requests"),
+            ("…and a host label in both is a host label the page will replace, not a name",
+             TabStore.parkedTitle(saved: "github.com", remembered: "New Tab", url: gh) == "github.com"),
             ("script URLs cannot open through the menu", link(from: "javascript:alert(1)") == nil),
             ("external-app URLs are not offered as tabs", link(from: "mailto:me@example.test") == nil),
             ("relative messages cannot reuse the current page URL", link(from: "/relative") == nil),
@@ -542,7 +550,9 @@ struct TitleReveal: Equatable, Sendable {
                     } else {
                         self.scheduleTitleSettle(for: w)
                     }
-                    if !self.isPrivate, let u = w.url { self.history.retitle(u, title: self.title) }
+                    if !self.isPrivate, let u = w.url, TidyTitles.realTitle(self.title, at: u) {
+                        self.history.retitle(u, title: self.title)
+                    }
                     // A pinned row that had no real title to freeze when it was pinned takes
                     // the first one the page gives it — see `TidyTitles.note`, which is a
                     // no-op for every other row.
@@ -613,7 +623,7 @@ struct TitleReveal: Equatable, Sendable {
             self.title = update.title
             self.titlePlaceholderURL = update.placeholderURL
             self.titleSettleTask = nil
-            if !self.isPrivate, let url = observedWeb.url {
+            if !self.isPrivate, let url = observedWeb.url, TidyTitles.realTitle(self.title, at: url) {
                 self.history.retitle(url, title: self.title)
             }
             // The settled title is a title too: a row pinned while its page was still a host
@@ -641,7 +651,10 @@ struct TitleReveal: Equatable, Sendable {
 
     /// Enough to redraw the strip and to come back exactly where the user left off.
     var snapshot: Parked {
-        Parked(title: title, state: parkedState ?? web.interactionState as? Data)
+        // A host label is a placeholder, not a name: written down it comes back as the
+        // name, and the row is called "github.com" for good. See `TabStore.parkedTitle`.
+        Parked(title: TidyTitles.realTitle(title, at: currentURL) ? title : "",
+               state: parkedState ?? web.interactionState as? Data)
     }
 
     /// Drop the WKWebView, and with it the WebContent process, keeping only the
@@ -776,8 +789,7 @@ struct TitleReveal: Equatable, Sendable {
         // for it is its home while the sidecar was keyed only by the page it was left on; it
         // is now filed under both, so this is the fallback it was meant to be rather than the
         // ordinary way a pinned row comes back named after its host. See `saveCurrentSpace`.
-        title = TabStore.homeTitle(known: p.title.isEmpty ? history.title(for: url) : p.title,
-                                   url: url)
+        title = TabStore.parkedTitle(saved: p.title, remembered: history.title(for: url), url: url)
         address = url.absoluteString
         favicon = favicons.icon(for: url)      // from the cache, no page needed
     }
@@ -2387,6 +2399,19 @@ struct Stash {
     nonisolated static func homeTitle(known: String?, url: URL) -> String {
         if let known, !known.isEmpty { return known }
         return url.host ?? url.absoluteString
+    }
+
+    /// What a row that comes up parked is called. The saved title first, then what history
+    /// calls the page, then the host — but a placeholder is never a title: the old rebuild
+    /// named rows after their host, that name was saved back as if it were real, and every
+    /// launch since restored it faithfully. A host label or "New Tab" in either source is
+    /// read as "nothing known", so the row falls through to the next source and, failing
+    /// that, is a host label the page replaces the moment it loads — rather than one that
+    /// is written down again.
+    nonisolated static func parkedTitle(saved: String, remembered: String?, url: URL) -> String {
+        if TidyTitles.realTitle(saved, at: url) { return saved }
+        if let remembered, TidyTitles.realTitle(remembered, at: url) { return remembered }
+        return homeTitle(known: nil, url: url)
     }
 
     /// A favourite or a pinned tab that navigated is still itself, now pointing where it
