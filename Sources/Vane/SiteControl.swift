@@ -207,7 +207,7 @@ extension SiteControlModel {
                        control: .action))
         out.append(Row(id: .developer, title: "Developer Mode", glyph: "hammer",
                        control: .toggle(developer),
-                       note: "Web Inspector for this tab."))
+                       note: "The dev bar and Web Inspector for this site. On by itself for localhost."))
         return out
     }
 
@@ -257,7 +257,7 @@ extension SiteControlModel {
             let handler = URL(string: scheme + "://open").flatMap(ExternalApps.handler(for:))
             return App(scheme: scheme, name: ExternalApps.name(of: handler) ?? scheme)
         }
-        developer = tab.web.isInspectable
+        developer = tab.developer
     }
 }
 
@@ -309,7 +309,7 @@ extension SiteControlModel {
         // back, which puts the site back to being asked.
         case .app(let i): forgetApp(i, host: host)
         case .clearData: clearSiteData(host: host, tab: tab)
-        case .developer: setDeveloper(!tab.web.isInspectable, on: tab)
+        case .developer: DeveloperMode.toggle(tab)
         }
         SiteChanges.shared.bump()
     }
@@ -360,25 +360,6 @@ extension SiteControlModel {
         let all = contexts(on: tab)
         guard all.indices.contains(index) else { return }
         toggleAccess(all[index], on: tab)
-    }
-
-    /// Web Inspector for this tab only. `Settings.inspectorEnabled` is the global default
-    /// this starts from; flipping it here is deliberately not written back, so turning the
-    /// inspector on for one page does not turn it on for the whole browser.
-    ///
-    /// Both halves, because they are different switches: `isInspectable` opens the view to
-    /// Safari's Develop menu, while "Inspect Element" and the in-app inspector window are
-    /// gated on the `developerExtrasEnabled` preference — the same KVC hop
-    /// `Tab.configuration` makes, and the reason setting only the first did nothing
-    /// visible. It takes effect on the live page, with no reload.
-    ///
-    /// ponytail: the intent lives on the web view, not on the Tab, so suspending the tab
-    /// or changing the global setting (which rebuild or re-apply to the view) puts it back
-    /// to `Settings.inspectorEnabled`. Upgrade path: a `developerMode: Bool?` on Tab that
-    /// `attach()` re-applies, which is a field, a line in `attach`, and a line here.
-    static func setDeveloper(_ on: Bool, on tab: Tab) {
-        tab.web.isInspectable = on
-        tab.web.configuration.preferences.setValue(on, forKey: "developerExtrasEnabled")
     }
 
     /// Cookies, storage and caches belonging to this host, and the answers Vane itself is

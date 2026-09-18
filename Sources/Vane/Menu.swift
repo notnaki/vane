@@ -172,6 +172,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     let console = item(.showJavaScriptConsole) {
         Inspector.showConsole(Windows.current?.active?.web)
     }
+    let developer = item(.toggleDeveloperMode) {
+        if let tab = Windows.current?.active { DeveloperMode.toggle(tab) }
+    }
     // The SPI is the only way in from a menu item; without it, say so rather than
     // offering a item that quietly does nothing.
     if !Inspector.available || !Settings.inspectorEnabled {
@@ -200,6 +203,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     return [
         inspector,
         console,
+        developer,
         item(.viewSource) {
             if let s = Windows.current { s.active?.viewSource(into: s) }
         },

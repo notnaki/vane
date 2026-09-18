@@ -498,7 +498,7 @@ private struct Pane: View {
     let focus: () -> Void
 
     var body: some View {
-        WebView(web: tab.web).id(tab.id)
+        DeveloperFrame(tab: tab) { WebView(web: tab.web).id(tab.id) }
             // Anchored to a field in *this* pane's page, so it is drawn on the pane. On the
             // card it would hang over the neighbour at whatever offset this page asked for.
             .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }

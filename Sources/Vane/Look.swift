@@ -6,6 +6,8 @@ import SwiftUI
 /// screenshots at 2x (scratchpad `ARC-LOOK.md`): fills are white-over-ground alphas, type
 /// sizes were matched by rendering the same strings with SF and comparing widths.
 enum Look {
+    /// The hazard tape round a Developer Mode page, and its "DEV" tag.
+    static let developerYellow = Color(red: 1.0, green: 0.82, blue: 0.0)
     static let sidebarWidth: CGFloat = 250
     /// Settings cards, the find bar, and compact popovers. Arc's card corner is tight —
     /// 5–6pt fitted to the 2x corner profile — while their rows are round; they are not one

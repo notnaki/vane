@@ -169,7 +169,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     // Extensions
     case installExtension
     // Develop
-    case showWebInspector, showJavaScriptConsole, viewSource, allowWebInspector
+    case showWebInspector, showJavaScriptConsole, viewSource, allowWebInspector, toggleDeveloperMode
     // Profiles
     case newProfile, renameProfile, deleteProfile
     // Spaces
@@ -250,6 +250,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .installExtension: "Install Extension…"
         case .showWebInspector: "Show Web Inspector"
         case .showJavaScriptConsole: "Show JavaScript Console"
+        case .toggleDeveloperMode: "Toggle Developer Mode"
         case .viewSource: "View Source"
         case .allowWebInspector: "Allow Web Inspector"
         case .newProfile: "New Profile…"
@@ -315,7 +316,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .blockAds, .addFilterList, .makeDefaultBrowser, .forgetCertificateExceptions,
              .resetMediaPermissions: .sites
         case .installExtension: .extensions
-        case .showWebInspector, .showJavaScriptConsole, .viewSource, .allowWebInspector: .develop
+        case .showWebInspector, .showJavaScriptConsole, .viewSource, .allowWebInspector,
+             .toggleDeveloperMode: .develop
         case .newProfile, .renameProfile, .deleteProfile: .profiles
         case .newSpace, .nextSpace, .previousSpace, .goToSpace1, .goToSpace2, .goToSpace3,
              .goToSpace4, .goToSpace5, .goToSpace6, .goToSpace7, .goToSpace8,
@@ -381,6 +383,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .goToSpace9:       Keybinding("9", .control)
         case .showWebInspector: Keybinding("i", [.command, .option])
         case .showJavaScriptConsole: Keybinding("c", [.command, .option])
+        case .toggleDeveloperMode: Keybinding("d", .option)          // Arc's ⌥D
         case .viewSource:       Keybinding("u", [.command, .option])
         // Arc: ⌥⌘↑/↓ walk the sidebar, ⌃⇥ is the switcher and goes *forwards*.
         // The init folds backtab + ⌃⇧ to tab + ⌃⇧.

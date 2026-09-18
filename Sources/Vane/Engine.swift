@@ -294,6 +294,9 @@ struct TitleReveal: Equatable, Sendable {
     /// insecure glyph. Both start true and are only ever set by a live page.
     @Published var secureContent = true
     @Published var certificateTrusted = true
+    /// Developer Mode — the bar above the page and the outline round it. Decided by
+    /// `DeveloperMode.apply` from where the tab is; never set by hand.
+    @Published var developer = false
     /// Which section of the sidebar this tab is in. The strip is sorted by it.
     ///
     /// The `didSet` is the one place a row's `homeURL` is decided, and it is here rather
@@ -538,7 +541,7 @@ struct TitleReveal: Equatable, Sendable {
         hoveredLink = nil
         editableFrames = []
         web.customUserAgent = Settings.userAgent
-        web.isInspectable = Settings.inspectorEnabled     // right-click → Inspect Element
+        DeveloperMode.apply(to: self)     // isInspectable, and the dev bar for local sites
         web.allowsBackForwardNavigationGestures = true
         web.allowsMagnification = true
         web.uiDelegate = self
@@ -1120,6 +1123,7 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
         Trace.note("committed")
         Zoom.apply(to: self)
+        DeveloperMode.apply(to: self)   // localhost → deployed site, and back
         closeChooser(.navigate)       // a redirect lands here without a fresh provisional
         pipFrame = nil                // main-frame navigation: every frame it named has gone
     }

@@ -567,7 +567,7 @@ struct WebCard: View {
                 // the one swapped: suspension excludes the active tab on both paths, the
                 // idle timer and memory pressure. Entering a split takes this branch away
                 // altogether and the held pages go with it.
-                WebView(web: tab.web, live: store.everyTab.map(\.web))
+                DeveloperFrame(tab: tab) { WebView(web: tab.web, live: store.everyTab.map(\.web)) }
                     .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
             } else {
                 // No tabs: the sheet a page will land on, and nothing in it. With nothing
