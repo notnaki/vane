@@ -543,7 +543,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 
 @MainActor private func spaceItems() -> [NSMenuItem] {
     let store = spaceStore()
-    let spaces = store?.spaces ?? []
+    // The strip, not the front window's profile: Arc's Spaces menu lists every profile's
+    // Spaces in one run, and picking one of another profile's moves that window there.
+    let spaces = store?.strip ?? []
     // Arc's order: New Space, Manage Spaces…, the two arrows, then the Spaces themselves
     // wearing ⌃1…⌃9 — the shortcut sits on the row it switches to, not on a hidden twin.
     let switchers = spaces.enumerated().map { n, space in

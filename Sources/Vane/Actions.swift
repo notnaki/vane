@@ -181,7 +181,9 @@ extension PaletteCommand {
         // Spaces: a private window is in none, and a Little Arc left the one it came from.
         if !store.isPrivate, !store.isLittle {
             out.append(PaletteCommand(.newSpace, icon: "square.stack"))
-            if store.spaces.count > 1 {
+            // The strip: the two arrows walk every profile's Spaces, so one Space in this
+            // profile and one in the next is still somewhere to go.
+            if store.strip.count > 1 {
                 out += [
                     PaletteCommand(.nextSpace, icon: "arrow.right"),
                     PaletteCommand(.previousSpace, icon: "arrow.left"),
