@@ -381,6 +381,8 @@ struct TitleReveal: Equatable, Sendable {
     /// Debounces WebKit's loading label after an interaction-state restore. `isLoading`
     /// becomes false just before the final title KVO, so settling on that edge alone is early.
     private var titleSettleTask: Task<Void, Never>?
+    /// Debounces the history row's title. See `scheduleRetitle`.
+    private var retitleTask: Task<Void, Never>?
     var onNewTab: ((URL?) -> Void)?
     /// A link the user asked for *beside* this tab — ⌘-click, middle-click, `target=_blank`.
     /// The Bool is whether to go there; ⌘-click deliberately does not.
@@ -559,9 +561,7 @@ struct TitleReveal: Equatable, Sendable {
                     } else {
                         self.scheduleTitleSettle(for: w)
                     }
-                    if !self.isPrivate, let u = w.url, TidyTitles.realTitle(self.title, at: u) {
-                        self.history.retitle(u, title: self.title)
-                    }
+                    if let u = w.url { self.scheduleRetitle(u, title: self.title) }
                     // A pinned row that had no real title to freeze when it was pinned takes
                     // the first one the page gives it — see `TidyTitles.note`, which is a
                     // no-op for every other row.
@@ -643,13 +643,32 @@ struct TitleReveal: Equatable, Sendable {
             self.title = update.title
             self.titlePlaceholderURL = update.placeholderURL
             self.titleSettleTask = nil
-            if !self.isPrivate, let url = observedWeb.url, TidyTitles.realTitle(self.title, at: url) {
-                self.history.retitle(url, title: self.title)
-            }
+            if let url = observedWeb.url { self.scheduleRetitle(url, title: self.title) }
             // The settled title is a title too: a row pinned while its page was still a host
             // label freezes the real name here rather than one KVO earlier.
             TidyTitles.note(self)
             self.extensions.sync()
+        }
+    }
+
+    /// The history row for this page, 150ms after the last title the page gave it. Same
+    /// window as `scheduleTitleSettle`, for a different reason: `Store.retitle` is an UPDATE
+    /// in its own implicit transaction, and a single-page app that rewrites its title on
+    /// every route change — a chat, a mail client, a dashboard counting unread items — was
+    /// paying for one of those per KVO tick, on the main actor, while the page was loading.
+    /// The row only has to end up right.
+    ///
+    /// The write is deliberately not tied to the tab's life: a tab closed inside the window
+    /// still leaves the title it earned behind.
+    private func scheduleRetitle(_ url: URL, title: String) {
+        guard !isPrivate, TidyTitles.realTitle(title, at: url) else { return }
+        retitleTask?.cancel()
+        let store = history
+        retitleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            self?.retitleTask = nil
+            store.retitle(url, title: title)
         }
     }
 
