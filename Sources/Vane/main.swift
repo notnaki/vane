@@ -23,6 +23,11 @@ if args.first == "import", let file = args.dropFirst().first {
 
 Crash.begin()
 
+// Before any window: the refresh reattaches the compiled rules to every live web view, and
+// doing that to pages that are already loading is reconfiguring a load underneath itself.
+// Its work is a detached read-and-convert either way — see `Blocker.build`.
+Blocker.refresh()
+
 // `vane <url>` beats a restored session; otherwise pick up where the user left off. The url
 // is routed exactly as a link from any other app is, so `open -a Vane <url>` and a click in
 // Mail land in the same place — a Little Arc, or a window with the page in it.
@@ -38,7 +43,6 @@ NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotif
 }
 
 Inspector.configure()
-Blocker.refresh()
 AppleAI.prewarm()      // first request otherwise pays model load on top of its own latency
 Updater.sweep()        // the version this one replaced, if there is one beside it
 Updater.shared.begin() // a first look five seconds in, then a conditional one on a tick

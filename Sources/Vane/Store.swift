@@ -101,7 +101,9 @@ struct BookmarkImportResult: Equatable, Sendable {
         ProcessInfo.processInfo.environment["VANE_DATA_DIR"]
     }
 
-    static var directory: URL {
+    /// nonisolated: a path and a mkdir, with nothing of the store in it. The blocker reads
+    /// its filter lists off the main actor and needs to know where they are.
+    nonisolated static var directory: URL {
         // VANE_DATA_DIR: a second instance — a debug build running beside the real app —
         // gets its own history, session and spaces instead of racing the other over one
         // set of files (and tripping its crash marker). Unset in normal use.
