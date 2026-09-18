@@ -375,6 +375,37 @@ enum Spaces {
         return min(max(value + delta / dialSweep, 0), 1)
     }
 
+    // MARK: - The strip runs across profiles
+
+    /// Every Space of every profile, in one list: the profiles in their own order, each
+    /// profile's Spaces in theirs.
+    ///
+    /// Arc's sidebar is *one* strip for the whole app — profile A's Spaces, then B's, then
+    /// C's, side by side — so the swipe, ⌥⌘←/→, ⌃1…9, the footer dots and the Spaces menu all
+    /// walk this rather than one profile's list. Arriving at a Space another profile owns is
+    /// what moves the window to that profile, in place; see `Windows.hop`.
+    ///
+    /// Generic over the profile and pure, so `selfcheck --pure` can prove the order with no
+    /// profiles on disk and no `spaces.json` to read.
+    static func strip<P>(profiles: [P], spacesOf: (P) -> [Space]) -> [Space] {
+        profiles.flatMap(spacesOf)
+    }
+
+    /// Which way the strip slides going from one Space to another: +1 when the destination is
+    /// later along it — contents come in from the right — and -1 when it is earlier.
+    ///
+    /// Over the whole strip, not over one profile's Spaces: a hop into the next profile is a
+    /// step to the *right*, and computed per profile it read as a step back to that profile's
+    /// first Space. A Space that is not on the strip at all — deleted from under the window —
+    /// slides forwards, which is what every other unanswerable case here does.
+    ///
+    /// Pure, so `selfcheck --pure` proves it across profiles.
+    static func direction(from: UUID?, to: UUID, in strip: [UUID]) -> Int {
+        guard let from, let here = strip.firstIndex(of: from),
+              let there = strip.firstIndex(of: to) else { return 1 }
+        return there > here ? 1 : -1
+    }
+
     // MARK: - Two-finger swipe
 
     /// The horizontal swipe on the sidebar, as a state machine over scroll deltas so the
@@ -561,6 +592,36 @@ enum Spaces {
                pick(asked: nil, last: nil, from: []) == nil)
         assert("a space that is not this profile's is not opened just because it was asked for",
                pick(asked: Space(name: "Gone", profileID: pid), last: b.id, from: [a, b])?.id == b.id)
+
+        // The one strip that runs across every profile: what the swipe, ⌥⌘←/→, ⌃1…9 and the
+        // footer dots all walk. Profiles in their own order, each profile's Spaces in theirs.
+        let one = UUID(), two = UUID(), three = UUID()
+        let owned: [UUID: [Space]] = [
+            one: [Space(name: "Personal", profileID: one), Space(name: "Reading", profileID: one)],
+            two: [Space(name: "School", profileID: two)],
+            three: [Space(name: "Dev", profileID: three)],
+        ]
+        let whole = Spaces.strip(profiles: [one, two, three]) { owned[$0] ?? [] }
+        assert("the strip is every profile's spaces end to end, in profile order",
+               whole.map(\.name) == ["Personal", "Reading", "School", "Dev"])
+        assert("a profile with no spaces at all simply takes up no room on it",
+               Spaces.strip(profiles: [one, UUID(), two]) { owned[$0] ?? [] }.map(\.name)
+                   == ["Personal", "Reading", "School"])
+        assert("and no profiles at all is an empty strip, not a crash",
+               Spaces.strip(profiles: [UUID]()) { owned[$0] ?? [] }.isEmpty)
+        let order = whole.map(\.id)
+        assert("the next space along is a step forwards, whichever profile owns it",
+               Spaces.direction(from: order[1], to: order[2], in: order) == 1)
+        assert("\u{2026}and the one before it a step back, across the same profile boundary",
+               Spaces.direction(from: order[2], to: order[1], in: order) == -1)
+        assert("two spaces of the same profile are ordered by the strip like any other pair",
+               Spaces.direction(from: order[0], to: order[1], in: order) == 1
+                   && Spaces.direction(from: order[1], to: order[0], in: order) == -1)
+        assert("the last profile's last space back round to the first is a step back",
+               Spaces.direction(from: order[3], to: order[0], in: order) == -1)
+        assert("a space deleted from under the window slides forwards rather than refusing",
+               Spaces.direction(from: UUID(), to: order[0], in: order) == 1
+                   && Spaces.direction(from: nil, to: order[0], in: order) == 1)
 
         // …and which *tab* it lands on once it is showing. The strip as `switchTo` rebuilds
         // it: the profile's favourites, then the Space's pinned rows, then its Today tabs.
