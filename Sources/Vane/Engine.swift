@@ -860,7 +860,12 @@ struct TitleReveal: Equatable, Sendable {
         // WKWebsiteDataStore(forIdentifier:). A private window gets a store that lives only as
         // long as the window does — that is the whole of private browsing.
         cfg.websiteDataStore = isPrivate ? .nonPersistent() : ProfileManager.dataStore(for: profileID)
-        cfg.mediaTypesRequiringUserActionForPlayback = []
+        // A muted video may start on its own — that is a background loop or a silent GIF
+        // replacement, and blocking it leaves a poster frame where a page expects motion.
+        // Sound waits for a gesture: an autoplaying ad that is also fetching and decoding
+        // audio is the single most expensive thing a page can do to a load it was not asked
+        // to do, and there is no version of it the user wanted.
+        cfg.mediaTypesRequiringUserActionForPlayback = .audio
         cfg.allowsAirPlayForMediaPlayback = true
         cfg.preferences.isElementFullscreenEnabled = true
         // Picture in picture is off by default in WKWebView on macOS — measured: the key is
