@@ -107,62 +107,68 @@ import WebKit
     }
 }
 
-// MARK: - The bar and the outline
+// MARK: - The bar
 
-/// A tab's page with Developer Mode drawn round it: the bar above, the outline about.
-/// Nothing at all when the mode is off, so the page sits exactly where it always did.
+/// A tab's page with Developer Mode's bar above it, in the gap Arc leaves: the pill wears
+/// the Space's colour and the page's top corners round off under it. Nothing at all when
+/// the mode is off, so the page sits exactly where it always did.
 struct DeveloperFrame<Content: View>: View {
     @ObservedObject var tab: Tab
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: Look.inset) {
             if tab.developer { DeveloperBar(tab: tab) }
             content()
+                .clipShape(.rect(cornerRadius: tab.developer ? Look.paneRadius : 0))
         }
-        .overlay {
-            if tab.developer {
-                // Yellow over black, dashed: the hazard tape Arc puts round a dev tab.
-                let shape = RoundedRectangle(cornerRadius: Look.paneRadius)
-                shape.strokeBorder(.black, lineWidth: 2)
-                shape.inset(by: 1).stroke(Look.developerYellow, style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
-            }
-        }
+        .padding(tab.developer ? Look.inset : 0)
         .accessibilityElement(children: .contain)
     }
 }
 
-/// Arc's dev toolbar: the whole url, then copy, reload, console, capture, and off.
+/// Arc's dev toolbar: the lock, the whole url, then copy, capture, console, inspector, reload.
 private struct DeveloperBar: View {
     @ObservedObject var tab: Tab
+    @EnvironmentObject var store: TabStore
 
     var body: some View {
         HStack(spacing: Look.inset) {
-            Text("DEV").font(Look.caption.weight(.bold)).foregroundStyle(Look.developerYellow)
+            Image(systemName: tab.currentURL?.scheme == "https" ? "lock.fill" : "lock.open")
             Text(tab.currentURL?.absoluteString ?? tab.address)
                 .font(.system(size: Look.findFontSize, design: .monospaced))
                 .lineLimit(1).truncationMode(.middle)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            tool("doc.on.doc", "Copy URL") {
+            tool("link", "Copy URL") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(tab.currentURL?.absoluteString ?? "", forType: .string)
                 Toasts.show("URL copied")
             }
-            tool("arrow.clockwise", "Reload Ignoring Cache") { tab.web.reloadFromOrigin() }
+            divider
+            tool("camera", "Capture Page") { DeveloperMode.capture(tab) }
+            divider
             if Inspector.available {
                 tool("terminal", "Console") { Inspector.showConsole(tab.web) }
-                tool("hammer", "Web Inspector") { Inspector.show(tab.web) }
+                tool("scope", "Web Inspector") { Inspector.show(tab.web) }
             }
-            tool("camera", "Capture Page") { DeveloperMode.capture(tab) }
-            tool("xmark", "Turn Off Developer Mode for This Site") { DeveloperMode.set(false, on: tab) }
+            tool("arrow.clockwise", "Reload Ignoring Cache") { tab.web.reloadFromOrigin() }
         }
-        .buttonStyle(FindControlStyle()).font(Look.caption).foregroundStyle(.secondary)
-        .padding(.horizontal, Look.rowTrailingInset).padding(.vertical, Look.rowPadding)
-        .background(Look.barFill)
+        .font(Look.caption.weight(.medium)).foregroundStyle(.white)
+        .buttonStyle(FindControlStyle())
+        .padding(.horizontal, Look.rowTrailingInset).frame(height: Look.rowHeight)
+        .background(tint, in: .rect(cornerRadius: Look.pillRadius))
         .environment(\.colorScheme, .dark)
         .accessibilityLabel("Developer Mode")
     }
+
+    /// The Space's own colour, the way Arc paints the bar in the Space's accent.
+    private var tint: Color {
+        let hex = store.currentSpace.map(Spaces.themeColors(of:))?.first ?? store.profile.colorHex
+        return Color(hex: hex) ?? .accentColor
+    }
+
+    private var divider: some View { Divider().frame(height: 14).opacity(0.5) }
 
     private func tool(_ glyph: String, _ name: String, _ run: @escaping () -> Void) -> some View {
         Button(action: run) { Image(systemName: glyph) }

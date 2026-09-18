@@ -3220,6 +3220,13 @@ private struct TabRow: View {
         } trailing: {
             TabRowTrailing(store: store, tab: tab, selected: selected)
         }
+        // Arc's hazard tape: a Developer Mode tab is marked on its row, not on the page.
+        .overlay {
+            if tab.developer {
+                RoundedRectangle(cornerRadius: Look.pillRadius)
+                    .strokeBorder(Look.developerYellow, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+            }
+        }
         .inStrip(tab.id, strip)
         .help(tab.title)
         .onDrag {
