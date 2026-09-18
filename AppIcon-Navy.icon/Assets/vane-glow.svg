@@ -1,0 +1,4 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs><radialGradient id="g" cx="0.5" cy="0.46" r="0.5"><stop offset="0" stop-color="#6E7DD2" stop-opacity="0.6"/><stop offset="0.55" stop-color="#6E7DD2" stop-opacity="0.210"/><stop offset="1" stop-color="#6E7DD2" stop-opacity="0"/></radialGradient></defs>
+  <rect width="1024" height="1024" fill="url(#g)"/>
+</svg>

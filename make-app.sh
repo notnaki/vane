@@ -26,11 +26,12 @@ ICONOUT="$(mktemp -d)"
 if [ -f AppIcon-prebuilt/Assets.car ] && [ -f AppIcon-prebuilt/AppIcon.icns ]; then
   cp AppIcon-prebuilt/AppIcon.icns AppIcon-prebuilt/Assets.car "$ICONOUT/"
   echo ">> using pre-rendered Icon Composer assets (AppIcon-prebuilt/)"
-elif [ -d AppIcon.icon ] && xcrun actool AppIcon.icon --compile "$ICONOUT" --app-icon AppIcon \
+elif [ -d AppIcon.icon ] && xcrun actool AppIcon.icon AppIcon-Navy.icon --compile "$ICONOUT" \
+     --app-icon AppIcon --alternate-app-icon AppIcon-Navy \
      --platform macosx --minimum-deployment-target 26.0 \
      --output-partial-info-plist "$ICONOUT/icon.plist" >/dev/null 2>&1 \
      && [ -f "$ICONOUT/AppIcon.icns" ]; then
-  echo ">> rendered AppIcon.icon (Icon Composer)"
+  echo ">> rendered AppIcon.icon + AppIcon-Navy.icon (Icon Composer)"
 else
   echo "  WARN: no icon assets; the bundle will use the generic app icon"
 fi
@@ -42,6 +43,11 @@ cp "$BIN" "$APP/Contents/MacOS/Vane"
 # The Icon Composer output. Assets.car carries the Tahoe icon the system shapes itself
 # (read via CFBundleIconName); the .icns is the compatibility plate. The .icns alone would
 # make Tahoe draw a second squircle under an already-rounded bitmap, so both ship.
+# The car holds BOTH icons — AppIcon and AppIcon-Navy — which is what Settings ▸ General's
+# app-icon picker reads by name. Nothing extra goes in the Info.plist for that: macOS has no
+# alternate-icon API (setAlternateIconName is UIKit's), so actool's partial plist adds only
+# the CFBundleIconFile/CFBundleIconName pair already written below, and Vane switches the
+# icon by assigning NSApp.applicationIconImage. See AppIcon.swift.
 if [ -f "$ICONOUT/AppIcon.icns" ]; then cp "$ICONOUT/AppIcon.icns" "$APP/Contents/Resources/"; fi
 if [ -f "$ICONOUT/Assets.car" ];   then cp "$ICONOUT/Assets.car"   "$APP/Contents/Resources/"; fi
 

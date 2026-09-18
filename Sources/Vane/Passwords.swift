@@ -880,6 +880,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("back/forward history menu", NavHistory.check),
                                ("drag landing", Landing.check),
                                ("window.open popups", Popup.check),
+                               ("app icon", AppIcon.check),
                                ("live folders", GitHub.check)] {
             print(label)
             for (name, ok) in block() { check(name, ok) }
