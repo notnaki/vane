@@ -313,7 +313,8 @@ enum Spaces {
     }
 
     /// The wheel's black zone: everything within this much of the centre is plain black,
-    /// so "black" is a place a dot can be put and not a point it has to hit.
+    /// so "black" is a place a dot can be put and not a point it has to hit. Not drawn —
+    /// the canvas is Arc's plain dot grid, and the zone shows itself when a dot lands in it.
     static let wheelBlack = 0.15
 
     /// …and back. Past the rim is clamped rather than wrapped: a dot dragged out of the

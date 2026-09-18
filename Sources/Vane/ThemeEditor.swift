@@ -136,17 +136,6 @@ struct ThemeEditor: View {
             .equatable()
             .frame(height: Look.themeCanvas)
             .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
-            // The black zone, drawn: the middle of the wheel is a disc of black, not a point.
-            .overlay {
-                GeometryReader { geo in
-                    let side = field(geo.size).width * Spaces.wheelBlack
-                    Circle().fill(.black)
-                        .frame(width: side, height: side)
-                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                }
-            }
             .overlay(alignment: .top) { appearance.padding(.top, Look.inset * 1.5) }
             .overlay(alignment: .bottom) { steps.padding(.bottom, Look.inset * 1.5) }
             .overlay {
