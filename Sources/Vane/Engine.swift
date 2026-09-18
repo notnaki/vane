@@ -454,7 +454,9 @@ struct TitleReveal: Equatable, Sendable {
     /// A WKWebView with nothing in it. WebKit does not spawn a WebContent process until
     /// something is actually loaded, which is what makes a suspended tab free.
     private static func freshWebView(isPrivate: Bool, profileID: UUID) -> WKWebView {
-        let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID)
+        // `blocking: false`: the controller `configuration` would attach the rules to is
+        // replaced on the very next line, and `contentController` blocks the one that lives.
+        let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID, blocking: false)
         cfg.userContentController = contentController(profileID: profileID)
         return LinkContextWebView(frame: .zero, configuration: cfg)
     }
@@ -853,8 +855,14 @@ struct TitleReveal: Equatable, Sendable {
         return (try? await web.evaluateJavaScript(js)) as? Bool ?? false
     }
 
+    /// `blocking: false` is for the one caller that is about to throw this configuration's
+    /// content controller away and put its own there — see `freshWebView`. Attaching the
+    /// rules to a controller nobody will ever use is not free: reading
+    /// `cfg.userContentController` is what brings the default one into existence in the
+    /// first place, and every tab paid for one it never ran a page in.
     static func configuration(isPrivate: Bool = false,
-                              profileID: UUID = ProfileManager.shared.active.id) -> WKWebViewConfiguration {
+                              profileID: UUID = ProfileManager.shared.active.id,
+                              blocking: Bool = true) -> WKWebViewConfiguration {
         let cfg = WKWebViewConfiguration()
         // Persistent: cookies, logins, media keys — and one persistent store per profile, via
         // WKWebsiteDataStore(forIdentifier:). A private window gets a store that lives only as
@@ -884,7 +892,7 @@ struct TitleReveal: Equatable, Sendable {
         // rename degrades to "no dev tools" rather than a crash.
         cfg.preferences.setValue(Settings.inspectorEnabled, forKey: "developerExtrasEnabled")
         cfg.webExtensionController = ExtensionHost.host(for: profileID).controller
-        Blocker.apply(to: cfg, profileID: profileID)
+        if blocking { Blocker.apply(to: cfg, profileID: profileID) }
         return cfg
     }
 
