@@ -777,14 +777,16 @@ struct TitleReveal: Equatable, Sendable {
     /// synchronously, so the url check below is a genuine "that state was no good".
     func resume() {
         guard suspended else { return }
-        suspended = false
-        if let parkedState { web.interactionState = parkedState }
-        if web.url == nil, let parkedURL { go(parkedURL) }
-        parkedState = nil
-        parkedURL = nil
-        // interactionState restores a page without running a navigation, so didCommit
-        // never fires for a waking tab.
-        Zoom.apply(to: self)
+        Trace.span("resume") {
+            suspended = false
+            if let parkedState { web.interactionState = parkedState }
+            if web.url == nil, let parkedURL { go(parkedURL) }
+            parkedState = nil
+            parkedURL = nil
+            // interactionState restores a page without running a navigation, so didCommit
+            // never fires for a waking tab.
+            Zoom.apply(to: self)
+        }
     }
 
     /// The window holding this tab is closing. `release` is what drops the KVO observers,
@@ -1044,6 +1046,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        Trace.begin(id)
         (w as? LinkContextWebView)?.navigationStarted()
         CertificateTrust.navigationStarted(in: self)
         Previews.shared.cancel()      // the link that raised it is gone
@@ -1099,7 +1102,9 @@ struct TitleReveal: Equatable, Sendable {
     // is no location equivalent to implement here.
     func webView(_ w: WKWebView, respondTo challenge: URLAuthenticationChallenge) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
-        await CertificateTrust.handle(challenge: challenge, tab: self, web: w)
+        Trace.note("trust")
+        defer { Trace.note("trust answered") }
+        return await CertificateTrust.handle(challenge: challenge, tab: self, web: w)
     }
 
     func webView(_ w: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,
@@ -1113,6 +1118,7 @@ struct TitleReveal: Equatable, Sendable {
     /// redirect applies the wrong site's level) and didFinish is too late (the page has
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
+        Trace.note("committed")
         Zoom.apply(to: self)
         closeChooser(.navigate)       // a redirect lands here without a fresh provisional
         pipFrame = nil                // main-frame navigation: every frame it named has gone
@@ -1121,15 +1127,22 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
         progress = 1
         loading = false
+        Trace.end(id)
         fillPassword()
+        Trace.note("favicon")
         favicons.load(for: self)
         guard let url = w.url else { return }
         bookmarked = history.isBookmarked(url)
-        Task { readerAvailable = await Reader.isAvailable(in: w) }
+        Task {
+            Trace.note("reader probe")
+            readerAvailable = await Reader.isAvailable(in: w)
+            Trace.note("reader probe answered")
+        }
         TabAudio.reapply(self)         // no-op unless this tab is muted
         if suppressHistoryOnce {
             suppressHistoryOnce = false
         } else if !isPrivate {
+            Trace.note("history")
             history.record(url, title: w.title ?? "")
         }
         // A favourite or a pinned tab is the tab itself, wherever it has gone: the record
