@@ -77,6 +77,7 @@ import WebKit
         muted = !!on;
         var list = all();
         for (var i = 0; i < list.length; i++) { list[i].muted = muted; }
+        if (muted) { watch(); }
         report();
         return muted;
       };
@@ -86,15 +87,25 @@ import WebKit
       // page and querySelectorAll is not free. Ceiling: a player inserted and started
       // inside that window is audible for up to 250ms before it inherits the mute —
       // measured, and the reason page mute is the primary and this is the fallback.
-      new MutationObserver(function () {
-        if (pending) { return; }
-        pending = true;
-        setTimeout(function () {
-          pending = false;
-          if (muted) { window.__vaneMute(true); }
-          report();
-        }, 250);
-      }).observe(document.documentElement, { childList: true, subtree: true });
+      //
+      // Not started until the tab is muted, which is the only thing it exists to keep
+      // true. Until then a subtree observer on every frame of every page was watching for
+      // an event nothing would have done anything about; the capture listeners above are
+      // what does the reporting, and they cover a player built after load already.
+      var watching = false;
+      function watch() {
+        if (watching) { return; }
+        watching = true;
+        new MutationObserver(function () {
+          if (pending) { return; }
+          pending = true;
+          setTimeout(function () {
+            pending = false;
+            if (muted) { window.__vaneMute(true); }
+            report();
+          }, 250);
+        }).observe(document.documentElement, { childList: true, subtree: true });
+      }
     })();
     """
 
@@ -377,6 +388,13 @@ import WebKit
                script.contains("window.__vaneMute = function"))
         assert("the fallback mute is re-applied to elements added later",
                script.contains("MutationObserver") && script.contains("if (muted) { window.__vaneMute(true); }"))
+        // The observer is inside `watch()`, and `watch()` is reached only from the muting
+        // branch — so an unmuted page never builds one.
+        assert("the observer costs nothing until the tab is actually muted",
+               script.contains("if (muted) { watch(); }")
+               && script.range(of: "function watch()").map {
+                   script.range(of: "new MutationObserver")?.lowerBound ?? script.startIndex > $0.lowerBound
+               } == true)
 
         return out
     }

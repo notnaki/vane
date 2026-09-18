@@ -62,21 +62,30 @@ import WebKit
         // document is what it is recognised by everywhere else on the Mac.
         if let url = tab.web.url, url.isFileURL { tab.favicon = Files.icon(for: url); return }
         guard let url = tab.web.url, let key = Favicons.key(for: url) else { tab.favicon = nil; return }
-        if let img = memory[key] ?? readDisk(key) {
-            memory[key] = img
-            tab.favicon = img
-            return
-        }
-        guard !misses.contains(key) else { tab.favicon = nil; return }
-        tab.web.evaluateJavaScript(Favicons.linkJS) { [weak tab] result, _ in
-            let declared = ((result as? String) ?? "").split(separator: "\n")
-                .compactMap { URL(string: String($0)) }
+        // The memory cache stays in front and stays synchronous: the second tab on a host
+        // has its icon in the same turn the page finished in.
+        if let img = memory[key] { tab.favicon = img; return }
+        // Everything past here is a file read and a PNG decode, and didFinish is the single
+        // busiest moment in a page's life. ponytail: a cold host's icon now appears a turn
+        // after its title rather than with it, which is what a favicon appearing looks like
+        // anyway. `icon(for:)` keeps the synchronous read — SwiftUI's `body` is sync.
+        let file = dir.appendingPathComponent(key)
+        Task { @MainActor [weak self, weak tab] in
+            if let img = await Favicons.decoded(file) {
+                self?.memory[key] = img
+                tab?.favicon = img
+                return
+            }
+            guard let self, let tab else { return }
+            guard !self.misses.contains(key) else { tab.favicon = nil; return }
+            let declared = ((try? await tab.web.evaluateJavaScript(Favicons.linkJS)) as? String ?? "")
+                .split(separator: "\n").compactMap { URL(string: String($0)) }
             var candidates = Favicons.ordered(declared)
             if let f = Favicons.fallback(for: url) { candidates.append(f) }
             // A private tab may read the shared cache but never writes to it — a favicon
             // on disk is a record that the host was visited.
-            let task = self.warm(key: key, urls: candidates, persist: !(tab?.isPrivate ?? true))
-            Task { await task.value; tab?.favicon = self.memory[key] }
+            await self.warm(key: key, urls: candidates, persist: !tab.isPrivate).value
+            tab.favicon = self.memory[key]
         }
     }
 
@@ -191,10 +200,24 @@ import WebKit
     }
 
     private func readDisk(_ key: String) -> NSImage? {
-        guard let data = try? Data(contentsOf: dir.appendingPathComponent(key)),
-              let img = NSImage(data: data), img.isValid else { return nil }
+        Favicons.read(dir.appendingPathComponent(key)).image
+    }
+
+    /// Freshly made here and handed over untouched, which is the whole of what the box
+    /// asserts: nothing else has a reference to it on either side.
+    private struct Icon: @unchecked Sendable { let image: NSImage? }
+
+    private nonisolated static func read(_ file: URL) -> Icon {
+        guard let data = try? Data(contentsOf: file),
+              let img = NSImage(data: data), img.isValid else { return Icon(image: nil) }
         img.size = NSSize(width: 16, height: 16)
-        return img
+        return Icon(image: img)
+    }
+
+    /// The same read, off the main actor. The caller publishes the result — nothing here
+    /// touches the cache, because the cache belongs to the actor this has just left.
+    private nonisolated static func decoded(_ file: URL) async -> NSImage? {
+        await Task.detached(priority: .userInitiated) { read(file) }.value.image
     }
 
     private func writeDisk(_ key: String, _ data: Data) {

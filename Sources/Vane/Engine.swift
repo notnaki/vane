@@ -381,6 +381,8 @@ struct TitleReveal: Equatable, Sendable {
     /// Debounces WebKit's loading label after an interaction-state restore. `isLoading`
     /// becomes false just before the final title KVO, so settling on that edge alone is early.
     private var titleSettleTask: Task<Void, Never>?
+    /// Debounces the history row's title. See `scheduleRetitle`.
+    private var retitleTask: Task<Void, Never>?
     var onNewTab: ((URL?) -> Void)?
     /// A link the user asked for *beside* this tab — ⌘-click, middle-click, `target=_blank`.
     /// The Bool is whether to go there; ⌘-click deliberately does not.
@@ -454,7 +456,9 @@ struct TitleReveal: Equatable, Sendable {
     /// A WKWebView with nothing in it. WebKit does not spawn a WebContent process until
     /// something is actually loaded, which is what makes a suspended tab free.
     private static func freshWebView(isPrivate: Bool, profileID: UUID) -> WKWebView {
-        let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID)
+        // `blocking: false`: the controller `configuration` would attach the rules to is
+        // replaced on the very next line, and `contentController` blocks the one that lives.
+        let cfg = Tab.configuration(isPrivate: isPrivate, profileID: profileID, blocking: false)
         cfg.userContentController = contentController(profileID: profileID)
         return LinkContextWebView(frame: .zero, configuration: cfg)
     }
@@ -478,13 +482,20 @@ struct TitleReveal: Equatable, Sendable {
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
         // Document *start*: the media-session wrapper has to be in place before the page
-        // registers its handlers. See MediaPlayer.swift.
+        // registers its handlers. See MediaPlayer.swift. Main frame only, unlike the PiP
+        // script above: this one is a wrapper around `navigator.mediaSession` installed
+        // before any of the frame's own script runs, and a page with thirty ad iframes paid
+        // for thirty of them at the moment it could least afford to. Ceiling: a player
+        // embedded in an iframe no longer names the track in the tray — it still plays, it
+        // still pops out, and it is still what the mute button mutes.
         c.addUserScript(
             WKUserScript(source: MediaTray.script, injectionTime: .atDocumentStart,
-                         forMainFrameOnly: false))
+                         forMainFrameOnly: true))
+        // Main frame only: a link hovered inside an iframe does not show its url in the
+        // status capsule, which is not worth two mouse listeners in every advert on the page.
         c.addUserScript(
             WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: false))
+                         forMainFrameOnly: true))
         // Document *start* and every frame: the listeners have to be in place before a page
         // can autofocus its search box, and a comment box is as often in an iframe as not.
         c.addUserScript(
@@ -550,9 +561,7 @@ struct TitleReveal: Equatable, Sendable {
                     } else {
                         self.scheduleTitleSettle(for: w)
                     }
-                    if !self.isPrivate, let u = w.url, TidyTitles.realTitle(self.title, at: u) {
-                        self.history.retitle(u, title: self.title)
-                    }
+                    if let u = w.url { self.scheduleRetitle(u, title: self.title) }
                     // A pinned row that had no real title to freeze when it was pinned takes
                     // the first one the page gives it — see `TidyTitles.note`, which is a
                     // no-op for every other row.
@@ -596,7 +605,18 @@ struct TitleReveal: Equatable, Sendable {
             web.observe(\.serverTrust, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
                     guard let self, !self.suspended else { return }
-                    self.certificateTrusted = w.serverTrust.map { SecTrustEvaluateWithError($0, nil) } ?? true
+                    guard let trust = w.serverTrust else { self.certificateTrusted = true; return }
+                    // Off the main actor, and usually straight out of the session's memory
+                    // — see `CertificateTrust.evaluate`. `serverTrust` still being this one
+                    // on the way back is the ordering guard: if it has moved on, a later
+                    // evaluation is in flight for the page the pill is actually showing.
+                    Task { [weak self, weak w] in
+                        let ok = await CertificateTrust.evaluate(
+                            trust, host: w?.url?.host ?? "", port: w?.url?.port ?? 443).ok
+                        guard let self, let w, self.web === w, !self.suspended,
+                              w.serverTrust === trust else { return }
+                        self.certificateTrusted = ok
+                    }
                 }
             },
         ]
@@ -623,13 +643,32 @@ struct TitleReveal: Equatable, Sendable {
             self.title = update.title
             self.titlePlaceholderURL = update.placeholderURL
             self.titleSettleTask = nil
-            if !self.isPrivate, let url = observedWeb.url, TidyTitles.realTitle(self.title, at: url) {
-                self.history.retitle(url, title: self.title)
-            }
+            if let url = observedWeb.url { self.scheduleRetitle(url, title: self.title) }
             // The settled title is a title too: a row pinned while its page was still a host
             // label freezes the real name here rather than one KVO earlier.
             TidyTitles.note(self)
             self.extensions.sync()
+        }
+    }
+
+    /// The history row for this page, 150ms after the last title the page gave it. Same
+    /// window as `scheduleTitleSettle`, for a different reason: `Store.retitle` is an UPDATE
+    /// in its own implicit transaction, and a single-page app that rewrites its title on
+    /// every route change — a chat, a mail client, a dashboard counting unread items — was
+    /// paying for one of those per KVO tick, on the main actor, while the page was loading.
+    /// The row only has to end up right.
+    ///
+    /// The write is deliberately not tied to the tab's life: a tab closed inside the window
+    /// still leaves the title it earned behind.
+    private func scheduleRetitle(_ url: URL, title: String) {
+        guard !isPrivate, TidyTitles.realTitle(title, at: url) else { return }
+        retitleTask?.cancel()
+        let store = history
+        retitleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            self?.retitleTask = nil
+            store.retitle(url, title: title)
         }
     }
 
@@ -738,14 +777,16 @@ struct TitleReveal: Equatable, Sendable {
     /// synchronously, so the url check below is a genuine "that state was no good".
     func resume() {
         guard suspended else { return }
-        suspended = false
-        if let parkedState { web.interactionState = parkedState }
-        if web.url == nil, let parkedURL { go(parkedURL) }
-        parkedState = nil
-        parkedURL = nil
-        // interactionState restores a page without running a navigation, so didCommit
-        // never fires for a waking tab.
-        Zoom.apply(to: self)
+        Trace.span("resume") {
+            suspended = false
+            if let parkedState { web.interactionState = parkedState }
+            if web.url == nil, let parkedURL { go(parkedURL) }
+            parkedState = nil
+            parkedURL = nil
+            // interactionState restores a page without running a navigation, so didCommit
+            // never fires for a waking tab.
+            Zoom.apply(to: self)
+        }
     }
 
     /// The window holding this tab is closing. `release` is what drops the KVO observers,
@@ -842,14 +883,25 @@ struct TitleReveal: Equatable, Sendable {
         return (try? await web.evaluateJavaScript(js)) as? Bool ?? false
     }
 
+    /// `blocking: false` is for the one caller that is about to throw this configuration's
+    /// content controller away and put its own there — see `freshWebView`. Attaching the
+    /// rules to a controller nobody will ever use is not free: reading
+    /// `cfg.userContentController` is what brings the default one into existence in the
+    /// first place, and every tab paid for one it never ran a page in.
     static func configuration(isPrivate: Bool = false,
-                              profileID: UUID = ProfileManager.shared.active.id) -> WKWebViewConfiguration {
+                              profileID: UUID = ProfileManager.shared.active.id,
+                              blocking: Bool = true) -> WKWebViewConfiguration {
         let cfg = WKWebViewConfiguration()
         // Persistent: cookies, logins, media keys — and one persistent store per profile, via
         // WKWebsiteDataStore(forIdentifier:). A private window gets a store that lives only as
         // long as the window does — that is the whole of private browsing.
         cfg.websiteDataStore = isPrivate ? .nonPersistent() : ProfileManager.dataStore(for: profileID)
-        cfg.mediaTypesRequiringUserActionForPlayback = []
+        // A muted video may start on its own — that is a background loop or a silent GIF
+        // replacement, and blocking it leaves a poster frame where a page expects motion.
+        // Sound waits for a gesture: an autoplaying ad that is also fetching and decoding
+        // audio is the single most expensive thing a page can do to a load it was not asked
+        // to do, and there is no version of it the user wanted.
+        cfg.mediaTypesRequiringUserActionForPlayback = .audio
         cfg.allowsAirPlayForMediaPlayback = true
         cfg.preferences.isElementFullscreenEnabled = true
         // Picture in picture is off by default in WKWebView on macOS — measured: the key is
@@ -868,7 +920,7 @@ struct TitleReveal: Equatable, Sendable {
         // rename degrades to "no dev tools" rather than a crash.
         cfg.preferences.setValue(Settings.inspectorEnabled, forKey: "developerExtrasEnabled")
         cfg.webExtensionController = ExtensionHost.host(for: profileID).controller
-        Blocker.apply(to: cfg, profileID: profileID)
+        if blocking { Blocker.apply(to: cfg, profileID: profileID) }
         return cfg
     }
 
@@ -994,6 +1046,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        Trace.begin(id)
         (w as? LinkContextWebView)?.navigationStarted()
         CertificateTrust.navigationStarted(in: self)
         Previews.shared.cancel()      // the link that raised it is gone
@@ -1049,7 +1102,9 @@ struct TitleReveal: Equatable, Sendable {
     // is no location equivalent to implement here.
     func webView(_ w: WKWebView, respondTo challenge: URLAuthenticationChallenge) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
-        await CertificateTrust.handle(challenge: challenge, tab: self, web: w)
+        Trace.note("trust")
+        defer { Trace.note("trust answered") }
+        return await CertificateTrust.handle(challenge: challenge, tab: self, web: w)
     }
 
     func webView(_ w: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,
@@ -1063,6 +1118,7 @@ struct TitleReveal: Equatable, Sendable {
     /// redirect applies the wrong site's level) and didFinish is too late (the page has
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
+        Trace.note("committed")
         Zoom.apply(to: self)
         closeChooser(.navigate)       // a redirect lands here without a fresh provisional
         pipFrame = nil                // main-frame navigation: every frame it named has gone
@@ -1071,15 +1127,22 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
         progress = 1
         loading = false
+        Trace.end(id)
         fillPassword()
+        Trace.note("favicon")
         favicons.load(for: self)
         guard let url = w.url else { return }
         bookmarked = history.isBookmarked(url)
-        Task { readerAvailable = await Reader.isAvailable(in: w) }
+        Task {
+            Trace.note("reader probe")
+            readerAvailable = await Reader.isAvailable(in: w)
+            Trace.note("reader probe answered")
+        }
         TabAudio.reapply(self)         // no-op unless this tab is muted
         if suppressHistoryOnce {
             suppressHistoryOnce = false
         } else if !isPrivate {
+            Trace.note("history")
             history.record(url, title: w.title ?? "")
         }
         // A favourite or a pinned tab is the tab itself, wherever it has gone: the record
@@ -1743,7 +1806,7 @@ struct Stash {
         // which is what a new window does.
         if isLittle { LittleArc.open(url, isPrivate: isPrivate); return }
         if let url {
-            newBlankTab().go(url)
+            newBlankTab(loading: url)
         } else {
             openPalette(.newTab)
         }
@@ -1780,11 +1843,19 @@ struct Stash {
     /// playing video out of Picture in Picture. Setting it and setting it back still does
     /// both, and a folder refreshing in the background must do neither.
     @discardableResult
+    /// `loading` is the whole point of the parameter over `newBlankTab().go(url)`: the load
+    /// starts here, ahead of the strip insert, the `current` didSet and `extensions.sync()`.
+    /// `go` needs the tab's own web view and nothing else — not the sidebar, not `current`,
+    /// not the extension host — and WebKit cannot begin fetching until it is asked, so
+    /// everything below was a frame of SwiftUI the page waited on for no reason.
+    /// Deliberately after `kind`: its didSet reads `currentURL` to decide a row's home, and
+    /// a load in flight is exactly the thing that would change the answer.
     func newBlankTab(focus: Bool = true, as kind: TabKind = .today,
-                     id: UUID = UUID()) -> Tab {
+                     id: UUID = UUID(), loading url: URL? = nil) -> Tab {
         let t = Tab(id: id, isPrivate: isPrivate, profileID: profileID)
         wire(t)
         t.kind = kind
+        if let url { t.go(url) }
         // Into its own section, not onto the end of the strip: the sections are contiguous
         // runs (see `clampedDestination`), and a pinned row appended past the Today tabs
         // breaks ⌘1…9, ⌃⇥ and the next drag's clamp.

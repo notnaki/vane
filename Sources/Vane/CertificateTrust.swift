@@ -176,9 +176,53 @@ import WebKit
 
     // MARK: - Reading the certificate
 
-    static func fingerprint(_ cert: SecCertificate) -> String {
+    nonisolated static func fingerprint(_ cert: SecCertificate) -> String {
         SHA256.hash(data: SecCertificateCopyData(cert) as Data)
             .map { String(format: "%02x", $0) }.joined()
+    }
+
+    // MARK: - Evaluating the chain
+
+    /// What the system made of a chain, and which leaf it made it of. `status` is only
+    /// meaningful when `ok` is false.
+    struct Outcome: Sendable {
+        var fingerprint: String?
+        var ok = false
+        var status: OSStatus = errSecSuccess
+    }
+
+    /// `SecTrust` is WebKit's, alive for the length of the challenge and touched by nothing
+    /// else while `judge` has it. Swift has no way to know that, hence the box.
+    private struct Chain: @unchecked Sendable { let trust: SecTrust }
+
+    /// The last answer per `host:port`. `SecTrustEvaluateWithError` rebuilds the chain and,
+    /// on a first sight of an issuer, goes to the network for OCSP — and WebKit raises a
+    /// challenge per *connection*, so a page of thirty subresources across six hosts paid
+    /// for thirty of them. Held for the session only, and only for as long as the host keeps
+    /// presenting the same leaf: a swapped certificate is re-evaluated from scratch, which
+    /// is the one case where a stale yes would matter.
+    private static var outcomes: [String: Outcome] = [:]
+
+    /// Evaluate a server trust off the main actor, answering from the session's memory when
+    /// the same host is still presenting the same certificate.
+    static func evaluate(_ trust: SecTrust, host: String, port: Int) async -> Outcome {
+        let key = "\(host.lowercased()):\(port)"
+        let known = outcomes[key]
+        let chain = Chain(trust: trust)
+        let outcome = await Task.detached(priority: .userInitiated) { judge(chain, known: known) }.value
+        outcomes[key] = outcome
+        return outcome
+    }
+
+    /// Off the main actor: hashing the leaf is cheap, the evaluation is not.
+    private nonisolated static func judge(_ chain: Chain, known: Outcome?) -> Outcome {
+        let leaf = (SecTrustCopyCertificateChain(chain.trust) as? [SecCertificate])?.first
+        let fp = leaf.map(fingerprint)
+        if let known, let fp, known.fingerprint == fp { return known }
+        var error: CFError?
+        let ok = SecTrustEvaluateWithError(chain.trust, &error)
+        return Outcome(fingerprint: fp, ok: ok,
+                       status: OSStatus(error.map { CFErrorGetCode($0) } ?? Int(errSecNotTrusted)))
     }
 
     /// ponytail: only the leaf is inspected. The chain is where an unknown *intermediate*
@@ -229,28 +273,32 @@ import WebKit
         guard let trust = challenge.protectionSpace.serverTrust else {
             return (.performDefaultHandling, nil)
         }
+        let host = challenge.protectionSpace.host
+        let port = challenge.protectionSpace.port
+        let outcome = await evaluate(trust, host: host, port: port)
         // The overwhelmingly common case: the certificate is fine. Hand it back to the
         // system rather than minting a credential of our own.
-        var error: CFError?
-        if SecTrustEvaluateWithError(trust, &error) { return (.performDefaultHandling, nil) }
+        if outcome.ok { return (.performDefaultHandling, nil) }
+        // The evaluation suspended, so the tab may have been navigated away or suspended
+        // out from under this challenge. Answered either way — a challenge left unanswered
+        // hangs the load until WebKit's own timeout.
+        guard tab.web === web else { return (.cancelAuthenticationChallenge, nil) }
 
-        let host = challenge.protectionSpace.host
-        guard let scope = Scope(profileID: tab.profileID, host: host,
-                                port: challenge.protectionSpace.port) else {
+        guard let scope = Scope(profileID: tab.profileID, host: host, port: port) else {
             return (.cancelAuthenticationChallenge, nil)
         }
-        guard let cert = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else {
+        guard let fp = outcome.fingerprint,
+              let cert = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else {
             // No certificate to pin an exception to, so there is no safe way to offer one.
             return (.cancelAuthenticationChallenge, nil)
         }
-        let fp = fingerprint(cert)
         let memory = memory(for: tab)
         if trusted(scope: scope, fingerprint: fp,
                    privateMemory: tab.isPrivate ? memory.exceptions : nil) {
             return (.useCredential, URLCredential(trust: trust))
         }
 
-        let status = OSStatus(error.map { CFErrorGetCode($0) } ?? Int(errSecNotTrusted))
+        let status = outcome.status
         let h = hints(for: cert)
         guard await ask(host: scope.display, fault: fault(status: status, hints: h), hints: h,
                         fingerprint: fp, tab: tab, web: web, memory: memory) else {

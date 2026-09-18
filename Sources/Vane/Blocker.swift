@@ -206,7 +206,7 @@ private struct BlockRule: Encodable, Equatable {
     private static let compileGate = BlockerAsyncGate()
     private static var compiled: WKContentRuleList? { refreshState.current }
     private static var lastFailure: String?
-    private static var importedDirectory: URL { Store.directory.appendingPathComponent("FilterLists", isDirectory: true) }
+    private nonisolated static var importedDirectory: URL { Store.directory.appendingPathComponent("FilterLists", isDirectory: true) }
 
     /// Sweep only after the caller has persisted `identifier` as last-good. Re-read both
     /// protected identifiers after WebKit answers so a newer refresh that ran while this
@@ -235,7 +235,10 @@ private struct BlockRule: Encodable, Equatable {
         try? await store.removeContentRuleList(forIdentifier: identifier)
     }
 
-    private static func sources() throws -> String {
+    /// nonisolated, and called from `build`'s detached task: resolving a dozen bookmarks
+    /// and reading the filter lists off disk is file work, not UI work, and it used to
+    /// happen on the main actor at launch with the first page already loading.
+    private nonisolated static func sources() throws -> String {
         var files: [URL] = []
         // Resolve legacy selections without ScopedPaths.urls: that helper drops failed
         // bookmarks, which would silently discard part of the user's blocking rules.
@@ -272,7 +275,10 @@ private struct BlockRule: Encodable, Equatable {
     private static func build() async throws -> WKContentRuleList {
         await compileGate.acquire()
         defer { compileGate.release() }
-        let json = convert(try sources()).json
+        // Off the actor: reading a few megabytes of filter text and parsing every line of
+        // it into WebKit's rule vocabulary is the whole cost of a refresh, and none of it
+        // touches a window.
+        let json = try await Task.detached(priority: .utility) { try convert(sources()).json }.value
         guard json != "[]" else { throw BlockerFiles.Failure("The filter lists contain no usable rules.") }
         let id = "vane-\(hash(json))"
         guard let store = WKContentRuleListStore.default() else {
