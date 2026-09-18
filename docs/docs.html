@@ -6,79 +6,52 @@
 <title>Vane Docs</title>
 <meta name="description" content="How Vane works: sidebar tabs, Spaces, Live Folders, importing from Arc, passwords, privacy, and every keyboard shortcut.">
 <link rel="icon" href="icon.png">
-<style>
-  :root { color-scheme: dark; --bg: #000; --ink: #f2f0e8; --quiet: rgba(242,240,232,.62); --faint: rgba(242,240,232,.38); --line: rgba(242,240,232,.14); --fill: rgba(242,240,232,.08); }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--ink);
-         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-  a { color: var(--ink); }
-  header { display: flex; align-items: center; gap: 12px; padding: 18px 24px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: rgba(0,0,0,.85); backdrop-filter: blur(12px); }
-  header img { width: 28px; height: 28px; filter: drop-shadow(0 2px 8px rgba(90,110,240,.6)); }
-  header b { font-weight: 600; }
-  header nav { margin-left: auto; display: flex; gap: 6px; }
-  header nav a { text-decoration: none; padding: 6px 12px; border-radius: 8px; color: var(--quiet); }
-  header nav a:hover, header nav a.here { color: var(--ink); background: var(--fill); }
-  .wrap { display: grid; grid-template-columns: 220px minmax(0, 720px); gap: 48px; max-width: 1040px; margin: 0 auto; padding: 40px 24px 96px; }
-  aside { position: sticky; top: 84px; align-self: start; font-size: 14px; }
-  aside a { display: block; color: var(--quiet); text-decoration: none; padding: 4px 0; }
-  aside a:hover { color: var(--ink); }
-  main h1 { font-size: 36px; letter-spacing: -.02em; margin: 0 0 8px; }
-  main .lede { color: var(--quiet); margin: 0 0 40px; font-size: 18px; }
-  main h2 { font-size: 22px; letter-spacing: -.01em; margin: 48px 0 12px; padding-top: 8px; }
-  main h3 { font-size: 16px; margin: 24px 0 6px; }
-  main p, main li { color: var(--quiet); }
-  main li strong, main p strong { color: var(--ink); font-weight: 600; }
-  main ul { padding-left: 20px; }
-  main li { margin: 6px 0; }
-  kbd { font: 13px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); background: var(--fill); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 3px 7px; white-space: nowrap; }
-  table { width: 100%; border-collapse: collapse; font-size: 15px; margin: 8px 0 8px; }
-  th { text-align: left; color: var(--faint); font-weight: 500; font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--line); }
-  td { padding: 8px 0; border-bottom: 1px solid var(--line); color: var(--quiet); vertical-align: top; }
-  td:first-child { color: var(--ink); width: 58%; }
-  code { font: 14px ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); background: var(--fill); padding: 1px 5px; border-radius: 5px; }
-  .note { border: 1px solid var(--line); background: var(--fill); border-radius: 10px; padding: 12px 16px; color: var(--quiet); }
-  @media (max-width: 760px) { .wrap { grid-template-columns: 1fr; } aside { position: static; display: flex; flex-wrap: wrap; gap: 4px 14px; } }
-</style>
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-<header>
-  <img src="icon.png" alt="">
-  <b>Vane</b>
-  <nav>
-    <a href="./">Home</a>
-    <a class="here" href="docs.html">Docs</a>
-    <a href="https://github.com/notnaki/vane">GitHub</a>
-    <a href="https://github.com/notnaki/vane/releases/latest">Download</a>
-  </nav>
-</header>
-<div class="wrap">
-<aside>
+  <header class="nav"><div class="wrap">
+    <a class="brand" href="./"><img src="icon.png" alt="">Vane</a>
+    <span class="spacer"></span>
+    <a class="lnk" href="./">Home</a>
+    <a class="lnk" href="https://github.com/notnaki/vane/releases/latest">Download</a>
+    <a class="ghbtn" href="https://github.com/notnaki/vane">GitHub ↗</a>
+  </div></header>
+  <div class="wrap docs">
+    <nav class="toc">
+  <span class="grp-t">Start</span>
   <a href="#start">Getting started</a>
+  <a href="#arc">Import from Arc</a>
+  <a href="#import">Other imports</a>
+  <span class="grp-t">Use</span>
   <a href="#sidebar">The sidebar</a>
   <a href="#spaces">Spaces</a>
   <a href="#live">Live Folders</a>
-  <a href="#arc">Import from Arc</a>
-  <a href="#import">Other imports</a>
-  <a href="#passwords">Passwords</a>
-  <a href="#privacy">Privacy and blocking</a>
   <a href="#little">Little Vane and splits</a>
   <a href="#shortcuts">Keyboard shortcuts</a>
+  <span class="grp-t">Keep</span>
+  <a href="#passwords">Passwords</a>
+  <a href="#privacy">Privacy and blocking</a>
   <a href="#develop">Developer</a>
   <a href="#updates">Updates</a>
-</aside>
-<main>
-<h1>Docs</h1>
-<p class="lede">Vane is a native macOS browser in the shape of Arc, built on WebKit. This page is how it works day to day.</p>
+</nav>
+    <main class="doc">
 
-<h2 id="start">Getting started</h2>
+<h1>Docs</h1>
+<p class="sub">Vane is a native macOS browser in the shape of Arc, built on WebKit. This page is how it works day to day.</p>
+
+
+<section id="start">
+<h2>Getting started</h2>
 <ul>
   <li><strong>Install.</strong> Download the DMG from the <a href="https://github.com/notnaki/vane/releases/latest">latest release</a>, drag Vane to Applications, and open it. Builds are signed and notarized. Requires macOS 26 or later.</li>
   <li><strong>Default browser.</strong> Vane offers once to become the default; later it is Sites → Make Vane the Default Browser. Links from Mail, Slack and <code>open -a Vane</code> land in a tab.</li>
   <li><strong>Address bar.</strong> <kbd>⌘L</kbd> or <kbd>⌘T</kbd> opens the bar over the page. It decides between navigation and search: bare hosts, <code>localhost:3000</code>, IPs, file paths and <code>~/</code> paths navigate; anything else searches. A leading <code>!g</code>, <code>!ddg</code>, <code>!b</code> picks a search engine for that one query. Suggestions come from history and bookmarks.</li>
   <li><strong>Coming from Arc?</strong> See <a href="#arc">Import from Arc</a>. Profiles, Spaces, pinned tabs, favourites, passwords and logged-in sessions all come across.</li>
 </ul>
+</section>
 
-<h2 id="sidebar">The sidebar</h2>
+<section id="sidebar">
+<h2>The sidebar</h2>
 <p>Top to bottom: the address pill, the Favourites grid, the Space's name, its Pinned section, the Tidy | Clear divider, the Today tabs, and the footer with the Space dots.</p>
 <ul>
   <li><strong>Favourites</strong> are the tiles at the top. They belong to the profile, so they stay put while you switch Spaces. Drag a row onto the grid to make one; drag a tile back into the list to remove it. Closing a favourite (<kbd>⌘W</kbd>) sends it back to the page it was favourited at rather than closing it.</li>
@@ -87,8 +60,10 @@
   <li><strong>Today tabs</strong> are the ordinary ones. They auto-archive after a while; the Archive is in the Library (<kbd>⇧⌘L</kbd>). <strong>Clear</strong> archives all of them at once and <strong>Tidy</strong> groups them into named folders using the on-device model, with one Undo.</li>
   <li><strong>Renaming.</strong> Double-click a row to rename it. A name you type wins over everything and survives an unpin. "Use the Page's Own Title" in the row's menu removes it.</li>
 </ul>
+</section>
 
-<h2 id="spaces">Spaces</h2>
+<section id="spaces">
+<h2>Spaces</h2>
 <ul>
   <li><strong>Switching.</strong> Swipe horizontally on the sidebar with two fingers, use <kbd>⌥⌘→</kbd> / <kbd>⌥⌘←</kbd>, <kbd>⌃1</kbd>–<kbd>⌃9</kbd>, or click a dot in the footer. The page changes the moment the swipe commits.</li>
   <li><strong>Creating.</strong> On the last Space, keep pulling left: a plus at the sidebar's edge fills, then the circle behind it fills solid, and you land on Create a Space with a name field, a profile, and a theme. Swipe right or press <kbd>⎋</kbd> to cancel. Spaces → New Space… does the same from the menu.</li>
@@ -96,37 +71,47 @@
   <li><strong>Kept alive.</strong> A window keeps the Spaces it has visited loaded behind the one on screen, so swiping back puts the same pages in front of you. Idle pages are unloaded on the usual clock and come back exactly where they were.</li>
   <li><strong>Library.</strong> <kbd>⇧⌘L</kbd> shows every Space and the Archive, and lets you move Spaces between profiles.</li>
 </ul>
+</section>
 
-<h2 id="live">Live Folders</h2>
+<section id="live">
+<h2>Live Folders</h2>
 <p>A Live Folder is a pinned folder that fills itself. Today it has one source: GitHub pull requests.</p>
 <ul>
   <li><strong>Make one</strong> from the Space name's menu or the dot's menu: New Live Folder…. The first time, Vane signs you in to GitHub in a tab; one click, no token to paste. A build from source without the OAuth secret asks for a personal access token instead.</li>
   <li><strong>What it shows.</strong> Every open pull request you are involved in, or one repository's, optionally only the recent ones. Rows appear and vanish as pull requests open and close; a row you take out stays out. Each row is named after its pull request.</li>
   <li><strong>Refresh.</strong> Every five minutes, when the folder is unfolded, and on Refresh Now. A folder that GitHub refuses says so in a toast; if GitHub has revoked the sign-in Vane forgets it and Edit Live Folder offers to connect again.</li>
 </ul>
+</section>
 
-<h2 id="arc">Import from Arc</h2>
+<section id="arc">
+<h2>Import from Arc</h2>
 <p>File → Import from Arc… brings a whole Arc installation across in one go.</p>
 <ul>
   <li><strong>What comes across.</strong> Every Arc profile becomes a Vane profile (Arc's default maps to Vane's). Each Space arrives with its name, theme colour, pinned tabs, folders, live folders, and Today tabs; the profile's favourites fill the grid. Passwords and logged-in sessions are decrypted with Arc's own key and saved into the matching profile. History and bookmarks come too.</li>
   <li><strong>How.</strong> Pick Arc's folder in the panel (it opens there). Vane shows what it found; press Import. macOS asks once to let Vane read Arc's Safe Storage key; allow it, or passwords and sessions are skipped and the toast says so.</li>
   <li><strong>Safe to repeat.</strong> Arc can stay open. Running the import again skips Spaces, passwords and bookmarks that are already there. Nothing in Arc is written.</li>
 </ul>
+</section>
 
-<h2 id="import">Other imports</h2>
+<section id="import">
+<h2>Other imports</h2>
 <ul>
   <li><strong>History and bookmarks</strong> from Chrome, Chromium, Edge, Brave, Vivaldi, Opera, Arc, Firefox and Safari: File → Import History &amp; Bookmarks…. Read-only.</li>
   <li><strong>Passwords</strong> from a CSV export of Chrome, Edge, Brave, Opera, Vivaldi, Arc, Firefox, Safari, macOS Passwords, 1Password or Bitwarden: Passwords → Import Passwords….</li>
 </ul>
+</section>
 
-<h2 id="passwords">Passwords</h2>
+<section id="passwords">
+<h2>Passwords</h2>
 <ul>
   <li>Saved as ordinary Internet keychain items, per profile, that only Vane can read. Nothing syncs.</li>
   <li>Autofill offers only over <code>https</code> and never submits for you. <kbd>⌥⌘L</kbd> fills the focused form; with several accounts saved, a chooser appears on the field.</li>
   <li>Manage Saved Passwords… opens the list; deleting there deletes the keychain item.</li>
 </ul>
+</section>
 
-<h2 id="privacy">Privacy and blocking</h2>
+<section id="privacy">
+<h2>Privacy and blocking</h2>
 <ul>
   <li><strong>Ad and tracker blocking</strong> uses WebKit's own declarative blocker, so blocked requests never leave the machine and nothing is injected into pages. On by default, per profile: Sites → Block Ads and Trackers. Add Filter List… accepts EasyList-style files from disk.</li>
   <li><strong>Private windows</strong> (<kbd>⇧⌘N</kbd>) get a data store that is never written to disk.</li>
@@ -134,19 +119,23 @@
   <li><strong>Certificates.</strong> A bad certificate shows a two-step alert with the fingerprint; an exception is tied to that exact certificate, so a swapped one asks again.</li>
   <li><strong>Profiles</strong> keep everything apart: data store, history, passwords, favicons, pins, session, extensions and Spaces.</li>
 </ul>
+</section>
 
-<h2 id="little">Little Vane and splits</h2>
+<section id="little">
+<h2>Little Vane and splits</h2>
 <ul>
   <li><strong>Little Vane</strong> (<kbd>⌥⌘N</kbd>) is a small single-page window for a quick look, the way a link from another app opens. Its menu can move the page into your main window.</li>
   <li><strong>Split view.</strong> <kbd>⌃⇧+</kbd> puts a second page beside the current one; up to four panes in one card, one row in the sidebar. <kbd>⌃⇧N</kbd> moves between panes and <kbd>⌃⇧_</kbd> removes the split.</li>
   <li><strong>Picture in picture</strong> (<kbd>⌥⌘P</kbd>) detaches the page's video; a tab playing in that window is never unloaded.</li>
   <li><strong>Reader</strong> (<kbd>⌥⌘R</kbd>) shows the article alone, with adjustable size and a serif toggle.</li>
 </ul>
+</section>
 
-<h2 id="shortcuts">Keyboard shortcuts</h2>
+<section id="shortcuts">
+<h2>Keyboard shortcuts</h2>
 <p>Every one of these can be rebound in Settings → Keyboard. AppKit's own chords (⌘C, ⌘Q, ⌘H and friends) are left alone. <kbd>⇧⌘P</kbd> searches commands by name or by shortcut.</p>
 <h3>Tabs and windows</h3>
-<table><tr><th>Command</th><th>Shortcut</th></tr>
+<table class="tbl"><tr><th>Command</th><th>Shortcut</th></tr>
 <tr><td>New Tab</td><td><kbd>⌘T</kbd></td></tr>
 <tr><td>Reopen Closed Tab</td><td><kbd>⇧⌘T</kbd></td></tr>
 <tr><td>Archive Tab</td><td><kbd>⌘W</kbd></td></tr>
@@ -168,7 +157,7 @@
 <tr><td>Minimize</td><td><kbd>⌘M</kbd></td></tr>
 </table>
 <h3>Navigation</h3>
-<table><tr><th>Command</th><th>Shortcut</th></tr>
+<table class="tbl"><tr><th>Command</th><th>Shortcut</th></tr>
 <tr><td>Open Location</td><td><kbd>⌘L</kbd></td></tr>
 <tr><td>Back / Forward</td><td><kbd>⌘[ / ⌘]</kbd></td></tr>
 <tr><td>Reload Page</td><td><kbd>⌘R</kbd></td></tr>
@@ -183,13 +172,13 @@
 <tr><td>Print…</td><td><kbd>⌘P</kbd></td></tr>
 </table>
 <h3>Spaces</h3>
-<table><tr><th>Command</th><th>Shortcut</th></tr>
+<table class="tbl"><tr><th>Command</th><th>Shortcut</th></tr>
 <tr><td>Next Space / Previous Space</td><td><kbd>⌥⌘→ / ⌥⌘←</kbd></td></tr>
 <tr><td>Go to Space 1–9</td><td><kbd>⌃1 … ⌃9</kbd></td></tr>
 <tr><td>New Space</td><td><kbd>Pull past the last Space, or Spaces → New Space…</kbd></td></tr>
 </table>
 <h3>View</h3>
-<table><tr><th>Command</th><th>Shortcut</th></tr>
+<table class="tbl"><tr><th>Command</th><th>Shortcut</th></tr>
 <tr><td>Toggle Sidebar</td><td><kbd>⌘S</kbd></td></tr>
 <tr><td>Search… (command palette)</td><td><kbd>⇧⌘P</kbd></td></tr>
 <tr><td>Search Tabs…</td><td><kbd>⇧⌘A</kbd></td></tr>
@@ -203,24 +192,34 @@
 <tr><td>Settings…</td><td><kbd>⌘,</kbd></td></tr>
 </table>
 <h3>Develop</h3>
-<table><tr><th>Command</th><th>Shortcut</th></tr>
+<table class="tbl"><tr><th>Command</th><th>Shortcut</th></tr>
 <tr><td>Show Web Inspector</td><td><kbd>⌥⌘I</kbd></td></tr>
 <tr><td>Show JavaScript Console</td><td><kbd>⌥⌘C</kbd></td></tr>
 <tr><td>View Source</td><td><kbd>⌥⌘U</kbd></td></tr>
 </table>
+</section>
 
-<h2 id="develop">Developer</h2>
+<section id="develop">
+<h2>Developer</h2>
 <ul>
   <li><strong>Extensions.</strong> Extensions → Install Extension… takes an unpacked MV2 or MV3 extension folder containing <code>manifest.json</code>, one set per profile.</li>
   <li><strong>Inspector.</strong> Web Inspector (<kbd>⌥⌘I</kbd>), JavaScript console (<kbd>⌥⌘C</kbd>), View Source (<kbd>⌥⌘U</kbd>), a user-agent picker, and Allow Web Inspector for pages.</li>
   <li><strong>Build from source.</strong> <code>swift build -c release &amp;&amp; ./make-app.sh</code> on macOS 26. <code>./.build/release/vane selfcheck --pure</code> runs the offline checks. The <a href="https://github.com/notnaki/vane#readme">README</a> has the rest.</li>
 </ul>
+</section>
 
-<h2 id="updates">Updates</h2>
+<section id="updates">
+<h2>Updates</h2>
 <p>Vane checks for a new release on launch and then quietly; when one is ready a toast waits for you, and one click swaps in the signed build and relaunches. Vane → Check for Updates… asks now. Releases and notes are on <a href="https://github.com/notnaki/vane/releases">GitHub</a>.</p>
 
-<p class="note" style="margin-top:48px">Something missing or wrong here? <a href="https://github.com/notnaki/vane/issues">Open an issue</a>.</p>
-</main>
-</div>
+<p class="sub">Something missing or wrong here? <a href="https://github.com/notnaki/vane/issues">Open an issue</a>.</p>
+</section>
+
+    </main>
+  </div>
+  <footer class="foot">
+    <span>Alpha · macOS 26 · built on WebKit</span>
+    <a href="https://github.com/notnaki/vane">GitHub ↗</a>
+  </footer>
 </body>
 </html>
