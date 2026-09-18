@@ -210,9 +210,15 @@ import WebKit
         return URL(fileURLWithPath: String(cString: dir))
     }
 
-    private static var legacy: URL {
+    static var legacy: URL {
         realHome.appendingPathComponent("Library/Application Support/Vane", isDirectory: true)
     }
+
+    /// The file whose presence says the copy has been done. `EraseEverything` writes it
+    /// into the fresh, empty folder it leaves behind: the stamp went with the erased folder,
+    /// and the next launch copied the pre-sandbox data — a Space named "asd" and all — right
+    /// back in.
+    static let stampName = ".migrated-from-legacy"
 
     /// Runs before anything reads a profile file. A no-op when unsandboxed (the container
     /// *is* the legacy folder), when it has already run, or when there is nothing to copy.
@@ -224,7 +230,7 @@ import WebKit
         // "asd" turned up in a data dir that had just been created empty.
         guard Store.overrideDirectory == nil else { return }
         guard container.standardizedFileURL != legacy.standardizedFileURL else { return }
-        let stamp = container.appendingPathComponent(".migrated-from-legacy")
+        let stamp = container.appendingPathComponent(stampName)
         guard !fm.fileExists(atPath: stamp.path) else { return }
         defer { try? Data(Date.now.description.utf8).write(to: stamp) }
         guard let names = try? fm.contentsOfDirectory(atPath: legacy.path) else { return }
