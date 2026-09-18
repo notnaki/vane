@@ -369,11 +369,15 @@ private struct SpacePreviewList: View {
     }
 
     /// The divider under Pinned. Not the real `TidyRow`: its two buttons act on the window's
-    /// own tabs, and a preview has none — the line is the part that holds the shape.
+    /// own tabs, and a preview has none — the line is the part that holds the shape. The
+    /// words only when the real row would have them (six Today tabs, `Look.tidyThreshold`):
+    /// drawn always, they flashed in beside a bare line on every swipe into a small Space.
     private var tidy: some View {
         HStack(spacing: 8) {
             Hairline()
-            Text("Tidy | Clear").font(Look.sectionCaption).foregroundStyle(Look.inkTertiary)
+            if space.tabURLs.count >= Look.tidyThreshold {
+                Text("Tidy | Clear").font(Look.sectionCaption).foregroundStyle(Look.inkTertiary)
+            }
         }
         .padding(.horizontal, Look.rowInset)
         .frame(height: Look.tidyRow)
