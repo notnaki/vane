@@ -480,13 +480,20 @@ struct TitleReveal: Equatable, Sendable {
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
         // Document *start*: the media-session wrapper has to be in place before the page
-        // registers its handlers. See MediaPlayer.swift.
+        // registers its handlers. See MediaPlayer.swift. Main frame only, unlike the PiP
+        // script above: this one is a wrapper around `navigator.mediaSession` installed
+        // before any of the frame's own script runs, and a page with thirty ad iframes paid
+        // for thirty of them at the moment it could least afford to. Ceiling: a player
+        // embedded in an iframe no longer names the track in the tray — it still plays, it
+        // still pops out, and it is still what the mute button mutes.
         c.addUserScript(
             WKUserScript(source: MediaTray.script, injectionTime: .atDocumentStart,
-                         forMainFrameOnly: false))
+                         forMainFrameOnly: true))
+        // Main frame only: a link hovered inside an iframe does not show its url in the
+        // status capsule, which is not worth two mouse listeners in every advert on the page.
         c.addUserScript(
             WKUserScript(source: StatusBar.script, injectionTime: .atDocumentEnd,
-                         forMainFrameOnly: false))
+                         forMainFrameOnly: true))
         // Document *start* and every frame: the listeners have to be in place before a page
         // can autofocus its search box, and a comment box is as often in an iframe as not.
         c.addUserScript(
