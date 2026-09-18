@@ -71,13 +71,15 @@ struct SpaceName: View {
     }
 }
 
-/// Left-clicking the Space's name: every Space in the profile, with its icon, the current one
-/// ticked — Arc's Space list. An `NSMenu` rather than a SwiftUI `Menu` because the same row
-/// also has to take a double-click to rename, and a SwiftUI menu swallows both clicks.
+/// Left-clicking the Space's name: every Space on the strip, with its icon, the current one
+/// ticked — Arc's Space list. The strip runs across profiles, so this is every Space of every
+/// profile, in the order the footer's dots draw them, and picking one of another profile's
+/// moves the window there. An `NSMenu` rather than a SwiftUI `Menu` because the same row also
+/// has to take a double-click to rename, and a SwiftUI menu swallows both clicks.
 @MainActor func showSpaceList(_ store: TabStore) {
     let menu = NSMenu()
     var keep: [MenuAction] = []
-    for (n, space) in store.spaces.enumerated() {
+    for (n, space) in store.strip.enumerated() {
         let item = NSMenuItem(title: space.name, action: #selector(MenuAction.fire), keyEquivalent: "")
         let action = MenuAction { store.switchTo(space: space); rebuild() }
         item.target = action
@@ -144,7 +146,9 @@ struct NewSpaceButton: View {
             .popover(isPresented: Binding(get: { store.editingSpace != nil },
                                           set: { if !$0 { store.editingSpace = nil } }),
                      arrowEdge: .top) {
-                if let id = store.editingSpace, let space = store.spaces.first(where: { $0.id == id }) {
+                // The strip, not this profile's list: `+` can make a Space in another
+                // profile, and the editor that opens on it hangs off this same button.
+                if let id = store.editingSpace, let space = store.strip.first(where: { $0.id == id }) {
                     ThemeEditor(store: store, space: space, naming: true)
                 }
             }
@@ -168,7 +172,10 @@ struct SpaceDrop: DropDelegate {
     @Binding var over: Bool
 
     func validateDrop(info: DropInfo) -> Bool {
-        if Dragging.shared.tab != nil { return true }
+        // A tab may not cross profiles: its page belongs to this profile's cookie jar and its
+        // history, and `Spaces.move` only ever writes into a Space this store owns. Refused
+        // here rather than in `performDrop` so the dot never lights up as somewhere to drop.
+        if Dragging.shared.tab != nil { return space.profileID == store.profileID }
         return SpaceDragging.shared.id.map { $0 != space.id } ?? false
     }
     func dropEntered(info: DropInfo) { over = true }
@@ -189,12 +196,17 @@ struct SpaceDrop: DropDelegate {
         }
         guard let dragged = SpaceDragging.shared.id else { return false }
         SpaceDragging.shared.id = nil
-        let list = store.spaces
+        // The strip runs across profiles, but an *order* only exists inside one: dragging a
+        // dot onto another profile's would have to change which profile the Space belongs to,
+        // which is what the context menu's "Set Profile" is for. So the drop is simply
+        // refused unless both ends are the same profile's, and the list it reorders is that
+        // profile's own rather than the strip's.
+        let list = ProfileManager.shared.spaces(for: space.profileID)
         guard let from = list.firstIndex(where: { $0.id == dragged }),
               let to = list.firstIndex(where: { $0.id == space.id }) else { return false }
         // A dot dropped on a dot means "put it where that one is", so a rightward drag has to
         // land *after* the target — which is what `reordered` reads `to` as.
-        store.reorderSpaces(from: from, to: to > from ? to + 1 : to)
+        store.reorderSpaces(from: from, to: to > from ? to + 1 : to, in: space.profileID)
         return true
     }
 }
@@ -291,7 +303,9 @@ private struct SpaceSlide: ViewModifier {
     }
 
     private func neighbour(of drag: CGFloat) -> Space? {
-        let list = store.spaces
+        // The strip: the Space on the other side of a profile boundary is the next one along
+        // just as any other neighbour is, and its ghost is what the fingers are pulling in.
+        let list = store.strip
         guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return nil }
         let n = drag < 0 ? i + 1 : i - 1
         return list.indices.contains(n) ? list[n] : nil
@@ -458,8 +472,9 @@ private struct SpaceSwipe: ViewModifier {
     /// True while the landing spring is running, so a stray second fingers-up cannot spring
     /// the strip home over the top of it.
     private var landing = false
-    /// The profile's Spaces as they were when this gesture was claimed. `store.spaces` reads
-    /// and decodes `spaces.json` every time it is touched, and a gesture is a hundred events.
+    /// The strip as it was when this gesture was claimed — every profile's Spaces, which is
+    /// what a swipe walks. `store.strip` reads and decodes one `spaces.json` per profile every
+    /// time it is touched, and a gesture is a hundred events.
     private var list: [Space] = []
 
     /// Which way a gesture turned out to be going. Undecided until it has travelled far
@@ -573,7 +588,13 @@ private struct SpaceSwipe: ViewModifier {
     private func land(_ direction: Int, from index: Int, width: CGFloat, store: TabStore) {
         guard list.indices.contains(index + direction) else { return settle(store) }
         let target = list[index + direction]
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+        // A landing over a profile boundary is a cut, like reduced motion below: the window
+        // hops to that profile's store and the chrome is built again around it, so there is
+        // no shared view tree left for a spring to carry home — and springing the store being
+        // parked would leave it holding an offset nobody is looking at. The ghost has already
+        // drawn where the strip lands. See `Windows.hop`.
+        guard target.profileID == store.profileID,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             store.spaceDrag = 0
             store.spaceSwiping = false          // a cut, not a slide: `SpaceSlide` will not animate
             store.switchTo(space: target)
@@ -663,7 +684,7 @@ private struct SpaceSwipe: ViewModifier {
         // concerned: the `.began` that opened it carried no deltas and went to the tab list.
         swipe = Spaces.Swipe()
         last = 0
-        list = store.spaces
+        list = store.strip
         return true
     }
 

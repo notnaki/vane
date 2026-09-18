@@ -446,8 +446,10 @@ extension VaneWindow {
     /// The frontmost ordinary browser window, never a Little Arc. What a link from another
     /// app opens a tab in, what a Little Arc hands its page over to, and what every menu
     /// item that needs a sidebar acts on. See LittleArc.swift.
+    /// Never a parked store: it is a profile a window *has been* in, with no window of its
+    /// own to raise and no chrome on screen to act on. See `Windows.hop`.
     static var main: TabStore? {
-        let ordinary = TabStore.all.filter { !$0.isLittle }
+        let ordinary = TabStore.all.filter { !$0.isLittle && !$0.isParked }
         return ordinary.first { $0.window?.isKeyWindow == true } ?? ordinary.last
     }
 
@@ -461,9 +463,13 @@ extension VaneWindow {
     /// the one thing a Private Window exists not to allow. It reads the other way too: a
     /// page from an ordinary Little Vane must not land in an incognito window that will
     /// throw it away.
+    ///
+    /// A parked store is not one either: it is this profile all right, but it is behind
+    /// another profile's in a window that is showing that one, so handing a page to it would
+    /// put it somewhere nobody is looking. `switchTo(profile:)` is what brings one back.
     static func current(in profileID: UUID, isPrivate: Bool = false) -> TabStore? {
         let mine = TabStore.all.filter {
-            $0.profileID == profileID && !$0.isLittle && $0.isPrivate == isPrivate
+            $0.profileID == profileID && !$0.isLittle && !$0.isParked && $0.isPrivate == isPrivate
         }
         return mine.first { $0.window?.isKeyWindow == true } ?? mine.last
     }
@@ -519,16 +525,19 @@ extension VaneWindow {
         // with the glyphs under it. A hair of alpha makes the whole window hit-testable and
         // draws nothing anyone can see.
         window.backgroundColor = NSColor.black.withAlphaComponent(0.001)
-        // ProfileManager is in the environment so chrome can show the profile/space it is in
-        // and redraw when the list changes; a view that does not want it simply ignores it.
-        window.contentView = NSHostingView(rootView: BrowserWindow()
-            .environmentObject(store)
-            .environmentObject(ProfileManager.shared))
+        let delegate = WindowDelegate(store)
+        delegates.append(delegate)
+        window.delegate = delegate
+        // `BrowserWindowHost`, not `BrowserWindow` directly: a window hops profiles in place,
+        // so which store it is showing is a thing that changes. The host is what watches it.
+        window.contentView = NSHostingView(rootView: BrowserWindowHost(shown: delegate.shown))
         // Position first, autosave second, as SettingsWindow does: `setFrameUsingName`
         // says whether there was a saved frame, and centring after it would throw the
         // saved position away and keep only the size — which is what every launch did.
         let name = isPrivate ? "" : "VaneMain"
-        if TabStore.all.count > 1 {
+        // Windows, not stores: a window that has hopped profiles holds several, and cascading
+        // the first real window off a parked one would lose the saved frame.
+        if TabStore.all.contains(where: { $0 !== store && !$0.isParked }) {
             window.cascadeTopLeft(from: NSPoint(x: 40, y: 40))
         } else if name.isEmpty || !window.setFrameUsingName(name) {
             window.center()
@@ -538,10 +547,6 @@ extension VaneWindow {
         // window size. Cosmetic, and the upgrade path is saving the frame ourselves — a
         // whole second frame-restoration path for a window that opens in the right place.
         window.setFrameAutosaveName(name)
-
-        let delegate = WindowDelegate(store)
-        delegates.append(delegate)
-        window.delegate = delegate
         store.window = window
         // Here, not only in `BrowserWindow.onAppear`: the content view appears before the
         // window is on the store, so a Space pinned to light or dark came up wearing the
@@ -554,8 +559,8 @@ extension VaneWindow {
     }
 
     /// Make a profile active and put a window for it in front: the one that is already open,
-    /// else its restored session, else a fresh window. This is what a "Profiles" menu item
-    /// calls.
+    /// the one the front window has parked behind the profile it is showing, else its restored
+    /// session, else a fresh window. This is what a "Profiles" menu item calls.
     @discardableResult
     static func switchTo(profile: Profile) -> TabStore {
         ProfileManager.shared.active = profile
@@ -563,13 +568,85 @@ extension VaneWindow {
             existing.window?.makeKeyAndOrderFront(nil)
             return existing
         }
+        // A window that has walked along the strip into another profile is still holding this
+        // one, parked, with its pages loaded. Bringing that back is the same window — opening
+        // a second one for a profile the user can already see the Spaces of would be two
+        // windows where the strip says there is one.
+        if let front = main, let window = front.window,
+           let held = parked(profile.id, in: window),
+           let space = held.currentSpace ?? Spaces.resolve(nil, for: profile),
+           let hopped = hop(front, to: space) {
+            window.makeKeyAndOrderFront(nil)
+            return hopped
+        }
         if Session.restore(profile: profile), let restored = current(in: profile.id) { return restored }
         return open(profile: profile)
     }
 
-    private final class WindowDelegate: NSObject, NSWindowDelegate {
-        let store: TabStore
-        init(_ store: TabStore) { self.store = store }
+    // MARK: Hopping profile in place
+
+    /// Show another profile in this window, in place.
+    ///
+    /// Arc's Spaces strip runs across every profile, so walking off the end of one profile's
+    /// Spaces arrives in the next profile's — in the *same* window, not another one. A window
+    /// keeps one store per profile it has been in: the one on screen, and the ones parked
+    /// behind it with their pages still loaded and their Spaces still stashed, so hopping back
+    /// is as cheap as a Space switch.
+    ///
+    /// Not one store showing two profiles: a `TabStore` is built out of its profile's website
+    /// data store, cookie jar, history, favicon cache and extension host, and none of those
+    /// can be re-homed under a live web view. The window swaps which store it points at
+    /// instead, which is the same tear-down and rebuild opening a window does — see
+    /// `BrowserWindowHost`, and `TabStore.parkedIn` for what "behind" means.
+    ///
+    /// Returns nil, changing nothing, for a window that has no profile to hop *to*: a private
+    /// window and a Little Vane are both spaceless.
+    @discardableResult
+    static func hop(_ store: TabStore, to space: Space) -> TabStore? {
+        guard !store.isPrivate, !store.isLittle, !store.isParked,
+              space.profileID != store.profileID,
+              let window = store.window,
+              let delegate = window.delegate as? WindowDelegate,
+              let profile = ProfileManager.shared.profiles.first(where: { $0.id == space.profileID })
+        else { return nil }
+        // Either the store this window already has for that profile, or a new one opened
+        // straight into the Space being walked to — there is no intermediate Space to show.
+        let arriving = parked(profile.id, in: window)
+            ?? TabStore(profileID: profile.id, space: space)
+        store.parkedIn = window
+        store.window = nil
+        arriving.parkedIn = nil
+        arriving.window = window
+        delegate.shown.store = arriving         // and the chrome is rebuilt around it
+        ProfileManager.shared.active = profile
+        // Live folders keep themselves filled for as long as a window is showing the profile.
+        LiveFolders.shared(for: profile.id).begin()
+        // A Space deleted while this store was parked leaves it pointing at one that is not
+        // on disk, and an ordinary window always shows a real Space.
+        arriving.resolveStaleSpace()
+        arriving.switchTo(space: space)         // a no-op for a store built into it just now
+        arriving.applySpaceAppearance()
+        arriving.extensions.sync()
+        // The profile is in the window's title because there is otherwise nothing on screen
+        // that says which set of logins the page is using. See `open`.
+        window.title = "Vane" + (profile.isDefault ? "" : " — " + profile.name)
+        rebuild()                               // the Spaces menu's checkmark has changed profile
+        return arriving
+    }
+
+    /// The store this window is holding for `profileID` behind the one it is showing, if it
+    /// has been in that profile before.
+    private static func parked(_ profileID: UUID, in window: NSWindow) -> TabStore? {
+        TabStore.all.first { $0.parkedIn === window && $0.profileID == profileID }
+    }
+
+    @MainActor fileprivate final class WindowDelegate: NSObject, NSWindowDelegate {
+        /// Which of the window's stores is on screen. A window keeps one store per profile it
+        /// has been in (see `hop`), so the delegate follows the swap rather than holding one
+        /// store for the window's life — and the chrome watches the same object.
+        let shown: ShownStore
+        var store: TabStore { shown.store }
+        init(_ store: TabStore) { shown = ShownStore(store) }
         /// Belt and braces around `VaneWindow.layoutIfNeeded`: a resize that AppKit satisfies
         /// without a full layout pass still moves the lights, and this catches it.
         /// The store's window, not the notification's: a `Notification` is not Sendable and
@@ -598,15 +675,25 @@ extension VaneWindow {
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
                 Session.save()
-                // Then take the pages down with the window: see `Tab.tearDown`. Every Space
-                // the window was keeping alive behind this one goes too — see `Stash`.
-                store.tabs.forEach { $0.tearDown() }
-                store.dropStashes()
-                TabStore.all.removeAll { $0 === store }
+                // Every store the window is holding, not only the one on screen: a window
+                // that has hopped profiles keeps the ones behind it alive, pages and all.
+                // See `hop`.
+                let window = store.window
+                let held = [store] + (window.map { w in
+                    TabStore.all.filter { $0.parkedIn === w }
+                } ?? [])
+                for one in held {
+                    // Take the pages down with the window: see `Tab.tearDown`. Every Space
+                    // the store was keeping alive behind its own goes too — see `Stash`.
+                    one.tabs.forEach { $0.tearDown() }
+                    one.dropStashes()
+                    TabStore.all.removeAll { $0 === one }
+                    // After the removal, so it can see whether this was the profile's last
+                    // window: the live folders' timer must not outlive the sidebar drawing
+                    // them.
+                    LiveFolders.forget(one.profileID)
+                }
                 delegates.removeAll { $0 === self }
-                // After the removal, so it can see whether this was the profile's last
-                // window: the live folders' timer must not outlive the sidebar drawing them.
-                LiveFolders.forget(store.profileID)
             }
         }
     }
@@ -660,6 +747,40 @@ extension VaneWindow {
              + "panel's search, not find-in-page",
              !handsKeyboardBack(nobodyHasIt: true, hasPage: true, libraryOpen: true)),
         ]
+    }
+}
+
+/// Which `TabStore` a window is showing right now.
+///
+/// A window hops profiles in place — Arc's Spaces strip runs across every profile — so the
+/// store is not fixed for the window's life. One small object, watched by the chrome and
+/// written by `Windows.hop`, is the whole of that.
+@MainActor final class ShownStore: ObservableObject {
+    @Published var store: TabStore
+    init(_ store: TabStore) { self.store = store }
+}
+
+/// What a browser window actually hosts: the chrome, pointed at whichever store its window is
+/// showing.
+///
+/// The environment is re-made on every change and the tree is keyed on the store's identity,
+/// so a hop tears the chrome down and builds it again exactly as opening a window does. That
+/// is deliberate rather than cheap: the sidebar, the page card, the footer, the Library and
+/// the swipe monitor all hold `@State` and `@Namespace` belonging to the profile they came up
+/// in, and carrying that across a profile boundary is how a monitor goes on feeding a store
+/// nobody is looking at. The cost is that a cross-profile switch cuts rather than slides —
+/// there is no shared tree left for a transition to run in.
+///
+/// ProfileManager is in the environment so chrome can show the profile and Space it is in and
+/// redraw when either list changes; a view that does not want it simply ignores it.
+struct BrowserWindowHost: View {
+    @ObservedObject var shown: ShownStore
+
+    var body: some View {
+        BrowserWindow()
+            .environmentObject(shown.store)
+            .environmentObject(ProfileManager.shared)
+            .id(ObjectIdentifier(shown.store))
     }
 }
 
@@ -872,6 +993,22 @@ extension TabStore {
         // someone followed once, not a window to come back up in.
         for store in orderedStores where !store.isPrivate && !store.isLittle {
             if !store.saveCurrentSpace() { succeeded = false }
+            // A store parked behind another profile in the same window has just had its Space
+            // written, which is where its tabs actually live — but it is not a window of its
+            // own, and writing it down as one would bring a second window up for that profile
+            // on the next launch, beside the window it is really a part of. See `Windows.hop`.
+            //
+            // Listed with no window rather than left out, though: a profile left out keeps the
+            // session it already had, and what it *had* is this — so the row written back when
+            // it was last a window of its own would come back holding pages its Space has
+            // since moved on from. A profile with no windows left restores nothing and opens
+            // in its Space, which is exactly where the hop left it. A profile that also has a
+            // real window elsewhere is unaffected: the empty row is filtered out below.
+            guard !store.isParked else {
+                byProfile[store.profileID, default: []]
+                    .append((entries: [], splits: [], space: "", selected: nil))
+                continue
+            }
             let entries = store.tabs.compactMap { tab -> Entry? in
                 // currentURL, not web.url: a suspended tab has no live page and would
                 // otherwise drop out of its own session.
