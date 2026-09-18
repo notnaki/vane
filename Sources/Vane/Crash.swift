@@ -78,6 +78,12 @@ import AppKit
     @discardableResult
     static func offerRestore() -> Bool {
         guard crashed else { return Session.restore() }
+        // Settings › General decides; the alert is only for whoever asked to be asked.
+        switch Prefs.afterCrash {
+        case "fresh": return false
+        case "ask": break
+        default: return Session.restore()
+        }
         let alert = NSAlert()
         alert.messageText = "Vane quit unexpectedly the last time it was open."
         alert.informativeText = "Reopen the windows and tabs from that session?"

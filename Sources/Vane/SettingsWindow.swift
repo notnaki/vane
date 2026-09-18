@@ -25,6 +25,17 @@ import SwiftUI
         set { UserDefaults.vane.set(newValue, forKey: "restoreSession") }
     }
 
+    /// Settings › General: what a launch after an unclean exit does. "continue" reopens the
+    /// session without asking, exactly as a launch after a clean quit does; "fresh" opens
+    /// one empty window; "ask" is the old alert, for whoever wants to be asked.
+    static let afterCrashChoices: [(name: String, key: String)] = [
+        ("Continue where I left off", "continue"), ("Start fresh", "fresh"), ("Ask me", "ask"),
+    ]
+    static var afterCrash: String {
+        get { UserDefaults.vane.string(forKey: "afterCrash") ?? "continue" }
+        set { UserDefaults.vane.set(newValue, forKey: "afterCrash") }
+    }
+
     /// Settings › General: which way a new split opens. Side by side is Arc's answer and the
     /// default, so the key is only ever written by someone asking for stacked — and it is
     /// stored as the Bool `Split.vertical` already asks, rather than a second spelling of it.
@@ -386,6 +397,7 @@ private struct GeneralPane: View {
     @AppStorage("warnBeforeQuit") private var warnQuit = true
     @AppStorage("checkForUpdates") private var autoUpdate = true
     @State private var restore = Prefs.restoreSession
+    @State private var afterCrash = Prefs.afterCrash
     @State private var archiveAfter = Prefs.archiveAfter
     @State private var toastSeconds = Prefs.toastSeconds
     @State private var stackSplits = Prefs.stackSplits
@@ -405,6 +417,13 @@ private struct GeneralPane: View {
                 SettingsRow("Reopen windows and tabs on launch") {
                     Toggle("", isOn: $restore).labelsHidden()
                         .onChange(of: restore) { Prefs.restoreSession = restore }
+                }
+                SettingsRow("If Vane didn't quit cleanly") {
+                    Picker("", selection: $afterCrash) {
+                        ForEach(Prefs.afterCrashChoices, id: \.key) { Text($0.name).tag($0.key) }
+                    }
+                    .labelsHidden().fixedSize()
+                    .onChange(of: afterCrash) { Prefs.afterCrash = afterCrash }
                 }
                 // AppLifecycle reads this key on every terminate, so writing it here is the
                 // whole of the preference.
