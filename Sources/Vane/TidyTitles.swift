@@ -323,9 +323,21 @@ import Foundation
     private static let overrideKey = "tidyTitleOverrides"
     private static let pinnedKey = "pinnedNames"
 
+    /// `UserDefaults.dictionary(forKey:)` decodes the stored plist and hands back a fresh
+    /// dictionary every time it is asked, and `title(for:)` asks up to three times — per
+    /// row, per SwiftUI `body`. A loading row redraws on every progress tick, so a strip of
+    /// twenty pinned tabs was decoding sixty plists a frame while the page was loading.
+    ///
+    /// Held until something writes. Everything that writes one of these three keys goes
+    /// through `put` or `drop`, which is what makes that true.
+    private static var decoded: [String: [String: String]] = [:]
+
     private static func dict(_ base: String, _ profileID: UUID) -> [String: String] {
-        UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(base, profileID))
-            as? [String: String] ?? [:]
+        let key = ProfileManager.defaultsKey(base, profileID)
+        if let hit = decoded[key] { return hit }
+        let d = UserDefaults.vane.dictionary(forKey: key) as? [String: String] ?? [:]
+        decoded[key] = d
+        return d
     }
 
     private static func put(_ base: String, _ profileID: UUID, _ url: String, _ value: String?) {
@@ -334,6 +346,14 @@ import Foundation
         let key = ProfileManager.defaultsKey(base, profileID)
         if d.isEmpty { UserDefaults.vane.removeObject(forKey: key) }
         else { UserDefaults.vane.set(d, forKey: key) }
+        decoded[key] = d
+    }
+
+    /// Throw one of the three keys away, cache and all. The only other way they are written.
+    private static func drop(_ base: String, _ profileID: UUID) {
+        let key = ProfileManager.defaultsKey(base, profileID)
+        UserDefaults.vane.removeObject(forKey: key)
+        decoded[key] = [:]
     }
 
     /// The user's own name for this tab, from a double-click on the chip.
@@ -381,9 +401,7 @@ import Foundation
         // freezes its name again from its next title (`note`) or its next launch
         // (`Tab.restore`). Ceiling: a user who really does keep 200 pins loses the frozen
         // names every time they pin the next one.
-        if dict(pinnedKey, profileID).count > 200 {
-            UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(pinnedKey, profileID))
-        }
+        if dict(pinnedKey, profileID).count > 200 { drop(pinnedKey, profileID) }
         put(pinnedKey, profileID, url.absoluteString, (name?.isEmpty ?? true) ? nil : name)
     }
 
@@ -527,7 +545,7 @@ import Foundation
             // ponytail: no LRU. A pinned strip is a handful of urls; if it ever gets absurd,
             // throwing the whole cache away costs one re-run per pin and zero code.
             if cache.count > 200 {
-                UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(cacheKey, profileID))
+                drop(cacheKey, profileID)
                 cache = [:]
             }
             put(cacheKey, profileID, key, out.text)
@@ -541,9 +559,7 @@ import Foundation
     /// Drop everything remembered for a profile. For profile deletion and for a settings
     /// toggle that should not leave stale names behind.
     static func forget(_ profileID: UUID) {
-        for base in [cacheKey, overrideKey, pinnedKey] {
-            UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(base, profileID))
-        }
+        for base in [cacheKey, overrideKey, pinnedKey] { drop(base, profileID) }
     }
 
     // MARK: - check
@@ -694,8 +710,14 @@ import Foundation
              ProfileManager.defaultsKey(pinnedKey, $0)]
         } + ["tidyTitles"]
         let saved = keys.map { ($0, UserDefaults.vane.object(forKey: $0)) }
-        defer { for (k, v) in saved { UserDefaults.vane.set(v, forKey: k) } }
+        // These go straight to UserDefaults, behind `dict`'s back, so the memo has to go too
+        // — on the way in and on the way out.
+        defer {
+            for (k, v) in saved { UserDefaults.vane.set(v, forKey: k) }
+            decoded.removeAll()
+        }
         for k in keys { UserDefaults.vane.removeObject(forKey: k) }
+        decoded.removeAll()
 
         let docs = URL(string: "https://docs.example.com/guide")!
         let other = URL(string: "https://other.example.com/")!
