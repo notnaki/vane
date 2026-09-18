@@ -126,6 +126,13 @@ import WebKit
     private static func fetch(_ url: URL) async -> Data? {
         var req = URLRequest(url: url)
         req.timeoutInterval = 8
+        // An icon is small and already compressed, so asking for it uncompressed costs
+        // nothing — and it sidesteps a class of misconfigured server that answers a
+        // gzip-accepting request for /favicon.ico with its cached, gzipped index page.
+        // Seen on a school portal: the same url gave curl the icon and URLSession the html,
+        // and the html decoded to no image, so the host was filed as a miss.
+        req.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        req.setValue("image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
               (1...maxBytes).contains(data.count)
