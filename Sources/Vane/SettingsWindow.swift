@@ -445,12 +445,12 @@ private struct GeneralPane: View {
 
             SettingsCard {
                 SettingsRow("App icon") { AppIconPicker() }
-                Footnote("Current is the icon Vane already wears — the Dock composes it "
+                Footnote("Default is the icon Vane already wears — the Dock composes it "
                          + "from the bundle itself. " + (AppIcon.stamps
                          ? "Glass and Navy show in the Dock while Vane runs, and stay on "
                            + "Vane in the Finder once it is quit."
                          : "Glass and Navy show in the Dock while Vane runs. Finder keeps "
-                           + "Current: Vane is sandboxed, and the sandbox will not let an "
+                           + "Default: Vane is sandboxed, and the sandbox will not let an "
                            + "app write an icon onto its own bundle."))
             }
 

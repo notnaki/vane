@@ -18,7 +18,7 @@ import AppKit
 
     /// The three the app offers, in the order the picker shows them.
     ///
-    /// Current is not a picture: it is the absence of one. The Dock composes the bundle's
+    /// Default is not a picture: it is the absence of one. The Dock composes the bundle's
     /// icon itself, and its composition is not the asset catalogue's — measured, the tile
     /// the Dock draws averages rgb 36,39,56 in the body where `NSImage(named: "AppIcon")`
     /// averages 39,45,81, in either appearance. So "the icon I have today" is a third
@@ -28,7 +28,7 @@ import AppKit
     /// label and the value that is persisted, so renaming an asset cannot silently reset
     /// somebody's choice.
     nonisolated static let catalogue: [(name: String, asset: String?)] = [
-        ("Current", nil), ("Glass", "AppIcon"), ("Navy", "AppIcon-Navy"),
+        ("Default", nil), ("Glass", "AppIcon"), ("Navy", "AppIcon-Navy"),
     ]
 
     /// The shipped default — the Dock's own composition, with nothing overriding it.
@@ -39,8 +39,8 @@ import AppKit
     nonisolated static func overrides(_ name: String) -> Bool { name != `default` }
 
     /// What the Dock draws for the running copy with nothing overriding it — which is what
-    /// Current's preview has to be, since a picker that shows the catalogue render beside
-    /// "Current" would be showing the wrong icon under the right word.
+    /// Default's preview has to be, since a picker that shows the catalogue render beside
+    /// "Default" would be showing the wrong icon under the right word.
     ///
     /// Captured once, before anything is applied: `restoreAtLaunch` may set an override
     /// seconds later, and `applicationIconImage` would then answer with that instead.
@@ -52,7 +52,7 @@ import AppKit
     /// still offers the real ones back.
     ///
     /// A dev build is the bare binary out of `.build`: no bundle, so no catalogue and no
-    /// choice. Current alone then, and nothing crashes.
+    /// choice. Default alone then, and nothing crashes.
     static var variants: [(name: String, image: NSImage)] {
         catalogue.compactMap { row in
             guard let asset = row.asset else { return (row.name, composed) }
@@ -74,11 +74,11 @@ import AppKit
     static func apply(_ name: String) -> Bool {
         guard let v = variants.first(where: { $0.name == name }) else { return false }
         // nil hands the tile back to AppKit, which composes the bundle's own icon — not the
-        // same thing as assigning the catalogue render, which is why Current exists.
+        // same thing as assigning the catalogue render, which is why Default exists.
         NSApp.applicationIconImage = overrides(name) ? v.image : nil
         UserDefaults.vane.set(name, forKey: key)
         guard stamps else { return false }
-        // Current *clears* the custom icon rather than writing one, so the bundle goes back
+        // Default *clears* the custom icon rather than writing one, so the bundle goes back
         // to drawing the icon it ships with.
         return NSWorkspace.shared.setIcon(overrides(name) ? v.image : nil,
                                           forFile: Bundle.main.bundleURL.path, options: [])
@@ -87,7 +87,7 @@ import AppKit
     /// Called once at launch, before the first window. The Dock tile belongs to the running
     /// process, so a chosen icon has to be put back every time — and `Updater` replaces the
     /// whole bundle on an in-place update, which takes any stamped Finder icon with it.
-    /// Current is the one choice that does nothing at all: touching the tile to say "leave
+    /// Default is the one choice that does nothing at all: touching the tile to say "leave
     /// it alone" is exactly what would not leave it alone.
     static func restoreAtLaunch() {
         let name = current
