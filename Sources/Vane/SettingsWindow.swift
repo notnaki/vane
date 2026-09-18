@@ -516,6 +516,12 @@ private struct GeneralPane: View {
                         }
                     }
                 }
+                SettingsRow("Start over") {
+                    Button("Erase Everything…") { EraseEverything.ask() }
+                }
+                Footnote("Every profile, Space, password, cookie, history entry, bookmark, "
+                         + "extension and setting goes, and Vane opens again empty. It asks "
+                         + "you to type a word first.")
             }
         }
     }

@@ -449,6 +449,16 @@ enum Passwords {
         }
     }
 
+    /// Every Internet password Vane has ever filed, whatever profile or domain — the GitHub
+    /// token Live Folders keeps under the same creator included. For `EraseEverything`.
+    static func deleteEverything() {
+        defer { invalidate() }
+        SecItemDelete([
+            kSecClass as String: kSecClassInternetPassword,
+            kSecAttrCreator as String: creator,
+        ] as CFDictionary)
+    }
+
     /// Every credential belonging to one profile, for when that profile is deleted.
     /// A non-default profile is one SecItemDelete against its security domain. The default
     /// profile has no domain to key on, so its items are enumerated and the ones carrying
@@ -824,6 +834,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("error pages", ErrorPage.check), ("site permissions", SitePermissions.check),
                                ("site control center", SiteControl.check),
                                ("developer mode", DeveloperMode.check),
+                               ("erase everything", EraseEverything.check),
                                ("links that open another app", ExternalApps.check),
                                ("extensions", ExtensionHost.check),
                                ("pinned extension actions", ExtensionPins.check),
