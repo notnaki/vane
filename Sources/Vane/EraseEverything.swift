@@ -69,6 +69,13 @@ import WebKit
         }
 
         try? FileManager.default.removeItem(at: Store.directory)
+        // The pre-sandbox folder is Vane's data too. If the sandbox lets it go, it goes;
+        // either way the fresh folder gets the migration stamp, so the next launch does not
+        // copy that old data straight back in over the erase.
+        if Store.overrideDirectory == nil {
+            try? FileManager.default.removeItem(at: LegacyData.legacy)
+            try? Data().write(to: Store.directory.appendingPathComponent(LegacyData.stampName))
+        }
         if let dir = Store.overrideDirectory {
             let suite = UserDefaults.suiteName(forDataDir: dir)
             UserDefaults.vane.removePersistentDomain(forName: suite)
@@ -79,13 +86,16 @@ import WebKit
     }
 
     /// The same detached shell `Updater.restart` uses: waits for this pid to go, then opens
-    /// the bundle again. Whether it manages is not our problem any more.
+    /// Vane again — by bundle id, not by path. A quarantined copy runs translocated, from a
+    /// random path under /private/var; opening *that* path started a second Vane with its
+    /// own Dock tile beside the real one. Whether it manages is not our problem any more.
     private static func relaunch() {
-        let path = "'" + Bundle.main.bundleURL.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        func quoted(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let target = Bundle.main.bundleIdentifier.map { "-b " + quoted($0) } ?? quoted(Bundle.main.bundleURL.path)
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
         helper.arguments = ["-c", "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.1; done; "
-            + "for i in 1 2 3; do /usr/bin/open \(path) && exit 0; sleep 1; done"]
+            + "for i in 1 2 3; do /usr/bin/open \(target) && exit 0; sleep 1; done"]
         try? helper.run()
     }
 
