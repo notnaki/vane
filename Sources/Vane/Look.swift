@@ -532,10 +532,13 @@ enum Look {
     /// Pure, so `selfcheck --pure` can prove it; `groundColor` wraps it for views.
     nonisolated static func ground(hex: String, dark: Bool, strength: Double = defaultTint)
         -> (r: Double, g: Double, b: Double)? {
-        guard let (h, s, _) = hsb(hex: hex) else { return nil }
+        guard let (h, s, b) = hsb(hex: hex) else { return nil }
         let k = 0.5 + 2 * min(max(strength, 0), 1)
         let sat = dark ? min(1, s * 1.2 * k) : min(1, s * 0.2 * k)
-        let bri = dark ? 0.14 : 0.96
+        // A dark colour takes the dark ground down with it: 14 % for anything at half
+        // brightness or more, sliding to 4 % for black. Arc's black theme stops at 36; a
+        // black dot on the wheel should mean black, and 36 read as grey.
+        let bri = dark ? 0.04 + 0.10 * min(1, b / 0.5) : 0.96
         return rgb(h: h, s: sat, b: bri)
     }
 
@@ -1073,8 +1076,11 @@ extension Look {
         // The ground. Tolerances are ±2/255: what a screenshot can be measured to.
         func near(_ v: Double, _ want: Double) -> Bool { abs(v * 255 - want) <= 2 }
         let black = ground(hex: "#000000", dark: true)
-        out.append(("a black space is a dark neutral grey (36,36,36), not black and not blue",
-                    black.map { near($0.r, 36) && near($0.g, 36) && near($0.b, 36) } == true))
+        out.append(("a black space is near-black (10,10,10) and neutral, not blue",
+                    black.map { near($0.r, 10) && near($0.g, 10) && near($0.b, 10) } == true))
+        let dim = ground(hex: "#404040", dark: true)
+        out.append(("a dim grey space sits between black's ground and a bright colour's",
+                    dim.map { $0.r * 255 > 12 && $0.r * 255 < 34 } == true))
         let blue = ground(hex: "#5A9BD5", dark: true)
         out.append(("a blue space's dark ground keeps its hue: blue leads, red trails",
                     blue.map { $0.b > $0.g && $0.g > $0.r } == true))

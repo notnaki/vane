@@ -308,9 +308,13 @@ enum Spaces {
     /// dragged dot's own place in hand for exactly that reason.
     static func themePoint(hex: String) -> (x: Double, y: Double)? {
         guard let c = Look.hsb(hex: hex) else { return nil }
-        let r = c.b < 0.999 ? c.b / 2 : 1 - c.s / 2
+        let r = c.b < 0.999 ? wheelBlack + c.b * (0.5 - wheelBlack) : 1 - c.s / 2
         return wheelPoint(r: r, a: c.h * 2 * .pi)
     }
+
+    /// The wheel's black zone: everything within this much of the centre is plain black,
+    /// so "black" is a place a dot can be put and not a point it has to hit.
+    static let wheelBlack = 0.15
 
     /// …and back. Past the rim is clamped rather than wrapped: a dot dragged out of the
     /// wheel should stop at its edge, not reappear across it.
@@ -318,7 +322,8 @@ enum Spaces {
         let (r, a) = wheel(x: x, y: y)
         var h = (a / (2 * .pi)).truncatingRemainder(dividingBy: 1)
         if h < 0 { h += 1 }
-        let c = Look.rgb(h: h, s: min(1, 2 - 2 * r), b: min(1, 2 * r))
+        let b = min(1, max(0, (r - wheelBlack) / (0.5 - wheelBlack)))
+        let c = Look.rgb(h: h, s: min(1, 2 - 2 * r), b: b)
         return String(format: "#%02X%02X%02X", Int((c.r * 255).rounded()),
                       Int((c.g * 255).rounded()), Int((c.b * 255).rounded()))
     }
@@ -673,6 +678,11 @@ enum Spaces {
         // The canvas is a wheel: angle is hue, distance from the centre is strength — black
         // in the middle, the pure hues half-way out, white on the rim.
         assert("the centre is black", themeHex(x: 0.5, y: 0.5) == "#000000")
+        assert("…and so is the whole zone round it",
+               themeHex(x: 0.5 + wheelBlack * 0.9 / 2, y: 0.5) == "#000000"
+                   && themeHex(x: 0.5, y: 0.5 - wheelBlack * 0.9 / 2) == "#000000")
+        assert("just outside the zone the colour begins",
+               themeHex(x: 0.5 + (wheelBlack + 0.05) / 2, y: 0.5) != "#000000")
         assert("a pure red sits half-way out, to the right",
                themePoint(hex: "#FF0000").map { abs($0.x - 0.75) < 0.001 && abs($0.y - 0.5) < 0.001 } == true)
         assert("…and that place is red back again", themeHex(x: 0.75, y: 0.5) == "#FF0000")
@@ -685,7 +695,9 @@ enum Spaces {
         // The canvas is a lossy view of a colour, which is why the editor keeps the dragged
         // dot's own place in hand rather than re-deriving it from the hex it just wrote.
         assert("a grey sits inside the dark half, at its brightness",
-               themePoint(hex: "#808080").map { abs(wheel(x: $0.x, y: $0.y).r - 0.251) < 0.001 } == true)
+               themePoint(hex: "#808080").map {
+                   abs(wheel(x: $0.x, y: $0.y).r - (wheelBlack + 128.0 / 255 * (0.5 - wheelBlack))) < 0.001
+               } == true)
         assert("a dot dragged off the wheel stops at the rim rather than wrapping",
                themeHex(x: 5, y: 0.5) == themeHex(x: 1, y: 0.5))
         assert("a colour that is not #RRGGBB has no place on the canvas",
