@@ -641,7 +641,7 @@ enum Look {
 
     /// How much of the noise a `grain` of 1 actually shows. Past this it stops reading as a
     /// texture on the wash and starts reading as a broken screen.
-    static let grainMax: Double = 0.09
+    static let grainMax: Double = 0.05
 
     /// `#RRGGBB` → hue (0…1), saturation, brightness. Nil for anything else.
     nonisolated static func hsb(hex: String) -> (h: Double, s: Double, b: Double)? {

@@ -152,18 +152,17 @@ struct ThemeEditor: View {
             .accessibilityLabel("Theme colours")
     }
 
-    /// A dot's travel is the canvas inset by its own radius, so a colour at either end of a
-    /// channel still draws as a whole dot inside the field rather than half over its edge.
-    private func field(_ size: CGSize) -> CGSize {
-        CGSize(width: max(size.width - Look.themeDot, 1),
-               height: max(size.height - Look.themeDot, 1))
+    /// The wheel's square, centred in the canvas and inset by a dot's radius, so a colour on
+    /// the rim still draws as a whole dot inside the field rather than half over its edge.
+    private func field(_ size: CGSize) -> CGRect {
+        let side = max(min(size.width, size.height) - Look.themeDot, 1)
+        return CGRect(x: (size.width - side) / 2, y: (size.height - side) / 2, width: side, height: side)
     }
 
     private func dot(_ i: Int, _ hex: String, in size: CGSize) -> some View {
-        let travel = field(size)
+        let box = field(size)
         let p = place(i, hex)
-        let centre = CGPoint(x: Look.themeDot / 2 + p.x * travel.width,
-                             y: Look.themeDot / 2 + p.y * travel.height)
+        let centre = CGPoint(x: box.minX + p.x * box.width, y: box.minY + p.y * box.height)
         return Circle()
             .fill(Color(hex: hex) ?? Look.inkQuiet)
             .overlay { Circle().strokeBorder(Look.themeThumbInk, lineWidth: Look.themeRing) }
@@ -176,12 +175,13 @@ struct ThemeEditor: View {
                     let grab = held?.index == i ? held!.grab
                         : CGSize(width: drag.startLocation.x - centre.x,
                                  height: drag.startLocation.y - centre.y)
-                    let point = CGPoint(
-                        x: clamp((drag.location.x - grab.width - Look.themeDot / 2) / travel.width),
-                        y: clamp((drag.location.y - grab.height - Look.themeDot / 2) / travel.height))
+                    let point = CGPoint(x: (drag.location.x - grab.width - box.minX) / box.width,
+                                        y: (drag.location.y - grab.height - box.minY) / box.height)
                     held = (i, grab)
                     let from = place(i, hex)
-                    shift(CGSize(width: point.x - from.x, height: point.y - from.y))
+                    let was = Spaces.wheel(x: from.x, y: from.y)
+                    let now = Spaces.wheel(x: point.x, y: point.y)
+                    shift(dr: now.r - was.r, da: now.a - was.a)
                 }
                 .onEnded { _ in held = nil; commitLive() })
             .position(centre)
@@ -191,7 +191,7 @@ struct ThemeEditor: View {
             .accessibilityAdjustableAction { direction in
                 selected = i
                 let step = direction == .increment ? Self.hueStep : -Self.hueStep
-                shift(CGSize(width: step, height: 0))
+                shift(dr: 0, da: step * 2 * .pi)
                 commitLive()
             }
     }
@@ -334,7 +334,9 @@ struct ThemeEditor: View {
         if list.indices.contains(selected) {
             if list.count > 1, let target = Spaces.themePoint(hex: hex) {
                 let from = place(selected, list[selected])
-                shift(CGSize(width: target.x - from.x, height: target.y - from.y))
+                let was = Spaces.wheel(x: from.x, y: from.y)
+                let to = Spaces.wheel(x: target.x, y: target.y)
+                shift(dr: to.r - was.r, da: to.a - was.a)
                 list = colors
             }
             list[selected] = hex
@@ -361,40 +363,36 @@ struct ThemeEditor: View {
 
     // MARK: Writing it down
 
-    private func clamp(_ v: CGFloat) -> Double { Double(min(max(v, 0), 1)) }
-
-    /// Arc's dots travel as one constellation: move any of them and the rest keep their
-    /// offsets from it, and they stop together at the field's edge.
-    private func shift(_ delta: CGSize) {
+    /// Arc's dots move as one constellation about the wheel's centre: pull any of them out
+    /// and they all move out by as much, turn one and they all turn.
+    private func shift(dr: Double, da: Double) {
         var list = colors
-        let places = list.indices.map { place($0, list[$0]) }
-        let (dx, dy) = Self.constellationShift(places, by: delta)
+        let places = list.indices.map { i -> (r: Double, a: Double) in
+            let p = place(i, list[i])
+            return Spaces.wheel(x: p.x, y: p.y)
+        }
+        let step = Self.constellationStep(places.map(\.r), by: dr)
         for i in list.indices {
-            let p = CGPoint(x: places[i].x + dx, y: places[i].y + dy)
-            placed[i] = p
+            let p = Spaces.wheelPoint(r: places[i].r + step, a: places[i].a + da)
+            placed[i] = CGPoint(x: p.x, y: p.y)
             list[i] = Spaces.themeHex(x: p.x, y: p.y)
         }
         slide { Spaces.setThemeColors(list, on: &$0) }
     }
 
-    /// The move that keeps every dot inside the unit field: the asked-for delta, cut back
-    /// by however far the outermost dot would have gone past an edge.
-    nonisolated static func constellationShift(_ places: [CGPoint], by delta: CGSize) -> (CGFloat, CGFloat) {
-        guard let minX = places.map(\.x).min(), let maxX = places.map(\.x).max(),
-              let minY = places.map(\.y).min(), let maxY = places.map(\.y).max() else { return (0, 0) }
-        return (min(max(delta.width, -minX), 1 - maxX), min(max(delta.height, -minY), 1 - maxY))
+    /// The radial move that keeps every dot on the wheel: the asked-for change, cut back by
+    /// however far the innermost dot would pass the centre or the outermost the rim.
+    nonisolated static func constellationStep(_ radii: [Double], by dr: Double) -> Double {
+        guard let inner = radii.min(), let outer = radii.max() else { return 0 }
+        return min(max(dr, -inner), 1 - outer)
     }
 
     static func check() -> [(String, Bool)] {
-        let two = [CGPoint(x: 0.2, y: 0.5), CGPoint(x: 0.6, y: 0.5)]
-        let s1 = constellationShift(two, by: CGSize(width: 0.1, height: -0.2))
-        let s2 = constellationShift(two, by: CGSize(width: 0.9, height: 0))
-        let s3 = constellationShift(two, by: CGSize(width: -0.5, height: 0.9))
-        return [
-            ("a move inside the field is taken whole", s1 == (0.1, -0.2)),
-            ("the outermost dot stops at the edge and the rest with it", s2 == (0.4, 0)),
-            ("…on every side", s3 == (-0.2, 0.5)),
-            ("no dots, no move", constellationShift([], by: CGSize(width: 1, height: 1)) == (0, 0)),
+        [
+            ("a move inside the wheel is taken whole", constellationStep([0.2, 0.6], by: 0.1) == 0.1),
+            ("the outermost dot stops at the rim and the rest with it", constellationStep([0.2, 0.6], by: 0.9) == 0.4),
+            ("the innermost stops at the centre", constellationStep([0.2, 0.6], by: -0.5) == -0.2),
+            ("no dots, no move", constellationStep([], by: 1) == 0),
         ]
     }
 
