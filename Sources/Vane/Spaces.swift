@@ -298,33 +298,58 @@ enum Spaces {
         space.colorHex = capped.first
     }
 
-    /// Where a colour sits on the editor's canvas: x is its hue, y its saturation, both 0…1.
+    /// Where a colour sits on the editor's canvas, which is a wheel: its angle is the hue and
+    /// its distance from the centre its strength — black in the middle, the pure hues half-way
+    /// out, white on the rim. Unit-square coordinates, so the editor's dot maths is unchanged.
     ///
-    /// ponytail: two axes for three channels, and brightness is the one dropped —
-    /// `Look.ground` throws it away anyway (a Space's wash is its hue and saturation at a
-    /// fixed 14 % or 96 % brightness), so the field carries exactly the two channels the
-    /// window can actually show. Ceiling: a dot dragged off a dark preset comes back at full
-    /// brightness, which is the same ground and a brighter dot.
+    /// ponytail: two channels on one radius. Inside the half-way ring the colour darkens to
+    /// black (saturation full), outside it pales to white (brightness full); a colour that is
+    /// both dark and pale has no exact place and reads back darker. The editor keeps a
+    /// dragged dot's own place in hand for exactly that reason.
     static func themePoint(hex: String) -> (x: Double, y: Double)? {
-        Look.hsb(hex: hex).map { (x: $0.h, y: $0.s) }
+        guard let c = Look.hsb(hex: hex) else { return nil }
+        let r = c.b < 0.999 ? wheelBlack + c.b * (0.5 - wheelBlack) : 1 - c.s / 2
+        return wheelPoint(r: r, a: c.h * 2 * .pi)
     }
 
-    /// …and back. Off the edges is clamped rather than wrapped: a dot dragged out of the
-    /// canvas should stop at the edge, not reappear at the other one.
+    /// The wheel's black zone: everything within this much of the centre is plain black,
+    /// so "black" is a place a dot can be put and not a point it has to hit. Not drawn —
+    /// the canvas is Arc's plain dot grid, and the zone shows itself when a dot lands in it.
+    static let wheelBlack = 0.15
+
+    /// …and back. Past the rim is clamped rather than wrapped: a dot dragged out of the
+    /// wheel should stop at its edge, not reappear across it.
     static func themeHex(x: Double, y: Double) -> String {
-        let c = Look.rgb(h: min(max(x, 0), 1), s: min(max(y, 0), 1), b: 1)
+        let (r, a) = wheel(x: x, y: y)
+        var h = (a / (2 * .pi)).truncatingRemainder(dividingBy: 1)
+        if h < 0 { h += 1 }
+        let b = min(1, max(0, (r - wheelBlack) / (0.5 - wheelBlack)))
+        let c = Look.rgb(h: h, s: min(1, 2 - 2 * r), b: b)
         return String(format: "#%02X%02X%02X", Int((c.r * 255).rounded()),
                       Int((c.g * 255).rounded()), Int((c.b * 255).rounded()))
     }
 
-    /// The colour "+" adds: the last one, a fifth of the way round the wheel and saturated
-    /// enough to tell apart, so a new dot always makes a gradient you can see rather than a
+    /// A unit-square point as (distance from the centre 0…1, angle in radians), and back.
+    static func wheel(x: Double, y: Double) -> (r: Double, a: Double) {
+        let dx = x - 0.5, dy = y - 0.5
+        return (min(1, 2 * (dx * dx + dy * dy).squareRoot()), atan2(dy, dx))
+    }
+
+    static func wheelPoint(r: Double, a: Double) -> (x: Double, y: Double) {
+        (0.5 + r / 2 * cos(a), 0.5 + r / 2 * sin(a))
+    }
+
+    /// The colour "+" adds: the last one, a fifth of the way round the wheel and far enough
+    /// out to be a colour, so a new dot always makes a gradient you can see rather than a
     /// second dot hiding under the first.
     static func nextThemeColor(after list: [String]) -> String {
         guard let last = list.last, let p = themePoint(hex: last) else {
-            return themeHex(x: 0.6, y: 0.7)
+            let q = wheelPoint(r: 0.6, a: 0.6 * 2 * .pi)
+            return themeHex(x: q.x, y: q.y)
         }
-        return themeHex(x: (p.x + 0.2).truncatingRemainder(dividingBy: 1), y: max(p.y, 0.35))
+        let w = wheel(x: p.x, y: p.y)
+        let q = wheelPoint(r: min(max(w.r, 0.35), 0.8), a: w.a + 0.2 * 2 * .pi)
+        return themeHex(x: q.x, y: q.y)
     }
 
     /// The grain dial's sweep: three quarters of a turn. The dead quarter is at the bottom,
@@ -651,32 +676,31 @@ enum Spaces {
         assert("clearing the colours clears both fields, not just the list",
                themed.colors == nil && themed.colorHex == nil && themeColors(of: themed).isEmpty)
 
-        // The canvas: x is hue, y is saturation.
-        assert("a fully saturated red is at the left edge, at the bottom",
-               themePoint(hex: "#FF0000").map { $0.x == 0 && $0.y == 1 } == true)
-        assert("dragging down saturates: the top edge is white, whatever the hue",
-               themeHex(x: 0.35, y: 0) == "#FFFFFF" && themeHex(x: 0.9, y: 0) == "#FFFFFF")
-        assert("the bottom-left corner is that same pure red back again",
-               themeHex(x: 0, y: 1) == "#FF0000")
+        // The canvas is a wheel: angle is hue, distance from the centre is strength — black
+        // in the middle, the pure hues half-way out, white on the rim.
+        assert("the centre is black", themeHex(x: 0.5, y: 0.5) == "#000000")
+        assert("…and so is the whole zone round it",
+               themeHex(x: 0.5 + wheelBlack * 0.9 / 2, y: 0.5) == "#000000"
+                   && themeHex(x: 0.5, y: 0.5 - wheelBlack * 0.9 / 2) == "#000000")
+        assert("just outside the zone the colour begins",
+               themeHex(x: 0.5 + (wheelBlack + 0.05) / 2, y: 0.5) != "#000000")
+        assert("a pure red sits half-way out, to the right",
+               themePoint(hex: "#FF0000").map { abs($0.x - 0.75) < 0.001 && abs($0.y - 0.5) < 0.001 } == true)
+        assert("…and that place is red back again", themeHex(x: 0.75, y: 0.5) == "#FF0000")
+        assert("the rim is white, whatever the angle",
+               themeHex(x: 1, y: 0.5) == "#FFFFFF" && themeHex(x: 0.5, y: 0) == "#FFFFFF")
         assert("a colour round-trips through the canvas",
                themePoint(hex: "#00FF00").map { themeHex(x: $0.x, y: $0.y) == "#00FF00" } == true)
-        assert("…and so does the ground it makes, which is all the window shows of it",
-               Look.hsb(hex: "#5A9BD5").map { c in
-                   themePoint(hex: "#5A9BD5").map { p in
-                       Look.hsb(hex: themeHex(x: p.x, y: p.y)).map {
-                           abs($0.h - c.h) < 0.01 && abs($0.s - c.s) < 0.01
-                       } == true
-                   } == true
-               } == true)
+        assert("…and so does a pale one, which lives outside the half-way ring",
+               themePoint(hex: "#80C0FF").map { themeHex(x: $0.x, y: $0.y) == "#80C0FF" } == true)
         // The canvas is a lossy view of a colour, which is why the editor keeps the dragged
         // dot's own place in hand rather than re-deriving it from the hex it just wrote.
-        assert("a grey has no hue to read back, so it reads as the unsaturated top edge",
-               themePoint(hex: "#808080").map { $0.y == 0 } == true)
-        assert("both ends of the hue axis are the same colour, so a place cannot be recovered",
-               themeHex(x: 0, y: 1) == themeHex(x: 1, y: 1)
-                   && themePoint(hex: themeHex(x: 1, y: 1)).map { $0.x == 0 } == true)
-        assert("a dot dragged off the canvas stops at the edge rather than wrapping",
-               themeHex(x: -3, y: 4) == themeHex(x: 0, y: 1))
+        assert("a grey sits inside the dark half, at its brightness",
+               themePoint(hex: "#808080").map {
+                   abs(wheel(x: $0.x, y: $0.y).r - (wheelBlack + 128.0 / 255 * (0.5 - wheelBlack))) < 0.001
+               } == true)
+        assert("a dot dragged off the wheel stops at the rim rather than wrapping",
+               themeHex(x: 5, y: 0.5) == themeHex(x: 1, y: 0.5))
         assert("a colour that is not #RRGGBB has no place on the canvas",
                themePoint(hex: "sky") == nil)
         assert("the colour + adds is a different one, so the gradient is visible",

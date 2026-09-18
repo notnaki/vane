@@ -152,18 +152,17 @@ struct ThemeEditor: View {
             .accessibilityLabel("Theme colours")
     }
 
-    /// A dot's travel is the canvas inset by its own radius, so a colour at either end of a
-    /// channel still draws as a whole dot inside the field rather than half over its edge.
-    private func field(_ size: CGSize) -> CGSize {
-        CGSize(width: max(size.width - Look.themeDot, 1),
-               height: max(size.height - Look.themeDot, 1))
+    /// The wheel's square, centred in the canvas and inset by a dot's radius, so a colour on
+    /// the rim still draws as a whole dot inside the field rather than half over its edge.
+    private func field(_ size: CGSize) -> CGRect {
+        let side = max(min(size.width, size.height) - Look.themeDot, 1)
+        return CGRect(x: (size.width - side) / 2, y: (size.height - side) / 2, width: side, height: side)
     }
 
     private func dot(_ i: Int, _ hex: String, in size: CGSize) -> some View {
-        let travel = field(size)
+        let box = field(size)
         let p = place(i, hex)
-        let centre = CGPoint(x: Look.themeDot / 2 + p.x * travel.width,
-                             y: Look.themeDot / 2 + p.y * travel.height)
+        let centre = CGPoint(x: box.minX + p.x * box.width, y: box.minY + p.y * box.height)
         return Circle()
             .fill(Color(hex: hex) ?? Look.inkQuiet)
             .overlay { Circle().strokeBorder(Look.themeThumbInk, lineWidth: Look.themeRing) }
@@ -176,12 +175,13 @@ struct ThemeEditor: View {
                     let grab = held?.index == i ? held!.grab
                         : CGSize(width: drag.startLocation.x - centre.x,
                                  height: drag.startLocation.y - centre.y)
-                    let point = CGPoint(
-                        x: clamp((drag.location.x - grab.width - Look.themeDot / 2) / travel.width),
-                        y: clamp((drag.location.y - grab.height - Look.themeDot / 2) / travel.height))
+                    let point = CGPoint(x: (drag.location.x - grab.width - box.minX) / box.width,
+                                        y: (drag.location.y - grab.height - box.minY) / box.height)
                     held = (i, grab)
-                    placed[i] = point
-                    write(i, Spaces.themeHex(x: point.x, y: point.y))
+                    let from = place(i, hex)
+                    let was = Spaces.wheel(x: from.x, y: from.y)
+                    let now = Spaces.wheel(x: point.x, y: point.y)
+                    shift(dr: now.r - was.r, da: now.a - was.a)
                 }
                 .onEnded { _ in held = nil; commitLive() })
             .position(centre)
@@ -191,9 +191,7 @@ struct ThemeEditor: View {
             .accessibilityAdjustableAction { direction in
                 selected = i
                 let step = direction == .increment ? Self.hueStep : -Self.hueStep
-                let next = CGPoint(x: (p.x + step + 1).truncatingRemainder(dividingBy: 1), y: p.y)
-                placed[i] = next
-                write(i, Spaces.themeHex(x: next.x, y: next.y))
+                shift(dr: 0, da: step * 2 * .pi)
                 commitLive()
             }
     }
@@ -329,11 +327,22 @@ struct ThemeEditor: View {
         .accessibilityLabel(label)
     }
 
-    /// A preset lands on the dot last touched, so a two-colour gradient can be built out of
-    /// two presets rather than only by dragging.
+    /// A preset lands on the dot last touched — and, as in Arc, the other dots come with it,
+    /// keeping their offsets, so a gradient built round one colour is rebuilt round the next.
     private func pick(_ hex: String) {
         var list = colors
-        if list.indices.contains(selected) { list[selected] = hex } else { list.append(hex) }
+        if list.indices.contains(selected) {
+            if list.count > 1, let target = Spaces.themePoint(hex: hex) {
+                let from = place(selected, list[selected])
+                let was = Spaces.wheel(x: from.x, y: from.y)
+                let to = Spaces.wheel(x: target.x, y: target.y)
+                shift(dr: to.r - was.r, da: to.a - was.a)
+                list = colors
+            }
+            list[selected] = hex
+        } else {
+            list.append(hex)
+        }
         // The colour came from a preset, not from the canvas, so the dot goes where the new
         // colour reads back to rather than staying where the last drag left it.
         placed[selected] = nil
@@ -354,13 +363,37 @@ struct ThemeEditor: View {
 
     // MARK: Writing it down
 
-    private func clamp(_ v: CGFloat) -> Double { Double(min(max(v, 0), 1)) }
-
-    private func write(_ i: Int, _ hex: String) {
+    /// Arc's dots move as one constellation about the wheel's centre: pull any of them out
+    /// and they all move out by as much, turn one and they all turn.
+    private func shift(dr: Double, da: Double) {
         var list = colors
-        guard list.indices.contains(i) else { return }
-        list[i] = hex
+        let places = list.indices.map { i -> (r: Double, a: Double) in
+            let p = place(i, list[i])
+            return Spaces.wheel(x: p.x, y: p.y)
+        }
+        let step = Self.constellationStep(places.map(\.r), by: dr)
+        for i in list.indices {
+            let p = Spaces.wheelPoint(r: places[i].r + step, a: places[i].a + da)
+            placed[i] = CGPoint(x: p.x, y: p.y)
+            list[i] = Spaces.themeHex(x: p.x, y: p.y)
+        }
         slide { Spaces.setThemeColors(list, on: &$0) }
+    }
+
+    /// The radial move that keeps every dot on the wheel: the asked-for change, cut back by
+    /// however far the innermost dot would pass the centre or the outermost the rim.
+    nonisolated static func constellationStep(_ radii: [Double], by dr: Double) -> Double {
+        guard let inner = radii.min(), let outer = radii.max() else { return 0 }
+        return min(max(dr, -inner), 1 - outer)
+    }
+
+    static func check() -> [(String, Bool)] {
+        [
+            ("a move inside the wheel is taken whole", constellationStep([0.2, 0.6], by: 0.1) == 0.1),
+            ("the outermost dot stops at the rim and the rest with it", constellationStep([0.2, 0.6], by: 0.9) == 0.4),
+            ("the innermost stops at the centre", constellationStep([0.2, 0.6], by: -0.5) == -0.2),
+            ("no dots, no move", constellationStep([], by: 1) == 0),
+        ]
     }
 
     private func commit() {

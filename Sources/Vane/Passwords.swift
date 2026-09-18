@@ -835,6 +835,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("site control center", SiteControl.check),
                                ("developer mode", DeveloperMode.check),
                                ("erase everything", EraseEverything.check),
+                               ("theme editor", ThemeEditor.check),
                                ("links that open another app", ExternalApps.check),
                                ("extensions", ExtensionHost.check),
                                ("pinned extension actions", ExtensionPins.check),
