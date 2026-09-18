@@ -37,8 +37,15 @@ import WebKit
 
     private var memory: [String: NSImage] = [:]
     private var inflight: [String: Task<Void, Never>] = [:]
-    /// Hosts that had nothing to give, so a 404 isn't re-requested on every page load.
-    private var misses: Set<String> = []
+    /// Hosts that had nothing to give, and when they said so. A 404 isn't re-requested on
+    /// every page load — but a timeout during a busy restore is not a verdict for the whole
+    /// session either, and it left a real icon showing as a letter until relaunch. After
+    /// `missFor` the host is asked again.
+    private var misses: [String: Date] = [:]
+    private static let missFor: TimeInterval = 600
+    private func missed(_ key: String) -> Bool {
+        misses[key].map { Date.now.timeIntervalSince($0) < Self.missFor } ?? false
+    }
 
     private static let maxBytes = 512_000     // an icon that big is a mistake, not an icon
     private static let maxFiles = 300
@@ -51,7 +58,7 @@ import WebKit
         guard let key = Favicons.key(for: url) else { return nil }
         if let img = memory[key] { return img }
         if let img = readDisk(key) { memory[key] = img; return img }
-        guard !misses.contains(key), let fallback = Favicons.fallback(for: url) else { return nil }
+        guard !missed(key), let fallback = Favicons.fallback(for: url) else { return nil }
         warm(key: key, urls: [fallback], persist: true)
         return nil
     }
@@ -77,7 +84,7 @@ import WebKit
                 return
             }
             guard let self, let tab else { return }
-            guard !self.misses.contains(key) else { tab.favicon = nil; return }
+            guard !self.missed(key) else { tab.favicon = nil; return }
             let declared = ((try? await tab.web.evaluateJavaScript(Favicons.linkJS)) as? String ?? "")
                 .split(separator: "\n").compactMap { URL(string: String($0)) }
             var candidates = Favicons.ordered(declared)
@@ -110,7 +117,7 @@ import WebKit
                 self.generation += 1
                 return
             }
-            self?.misses.insert(key)
+            self?.misses[key] = .now
         }
         inflight[key] = task
         return task
