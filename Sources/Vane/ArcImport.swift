@@ -655,12 +655,25 @@ enum ArcImport {
         for p in scan.profiles { byDirectory[p.directory] = p.name }
 
         var out: [String: UUID] = [:]
+        let profiles = ProfileManager.shared.profiles
         for directory in scan.directories {
-            if directory == "Default" { out[directory] = ProfileManager.defaultID; continue }
-            let name = byDirectory[directory]
-                ?? scan.sidebar.spaces.first { $0.profileDirectory == directory }?.title
-                ?? directory
-            if let existing = ProfileManager.shared.profiles
+            // …unless the user has deleted Vane's default profile, which is allowed. Then
+            // Arc's default is a profile like any other, named as Arc names it — or
+            // "Personal", the name Vane's own default is born with, when Arc only has
+            // Chromium's placeholder for it.
+            if directory == "Default" {
+                if profiles.contains(where: { $0.id == ProfileManager.defaultID }) {
+                    out[directory] = ProfileManager.defaultID
+                    continue
+                }
+            }
+            let name = directory == "Default"
+                ? (byDirectory[directory].flatMap { $0 == "Your Chromium" || $0.isEmpty ? nil : $0 }
+                   ?? "Personal")
+                : (byDirectory[directory]
+                   ?? scan.sidebar.spaces.first { $0.profileDirectory == directory }?.title
+                   ?? directory)
+            if let existing = profiles
                 .first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
                 out[directory] = existing.id
             } else {
