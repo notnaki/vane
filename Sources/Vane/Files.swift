@@ -81,7 +81,7 @@ import WebKit
             // history — the one thing that window exists not to do. See `LittleArc.open`.
             files.dropFirst().forEach { LittleArc.open($0, isPrivate: store.isPrivate) }
         } else {
-            for url in files { store.newBlankTab().go(url) }
+            for url in files { store.newBlankTab(loading: url) }
         }
         axAnnounce(files.count == 1
                    ? "Opened \(files[0].lastPathComponent)."

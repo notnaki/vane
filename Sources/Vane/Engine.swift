@@ -1793,7 +1793,7 @@ struct Stash {
         // which is what a new window does.
         if isLittle { LittleArc.open(url, isPrivate: isPrivate); return }
         if let url {
-            newBlankTab().go(url)
+            newBlankTab(loading: url)
         } else {
             openPalette(.newTab)
         }
@@ -1830,11 +1830,19 @@ struct Stash {
     /// playing video out of Picture in Picture. Setting it and setting it back still does
     /// both, and a folder refreshing in the background must do neither.
     @discardableResult
+    /// `loading` is the whole point of the parameter over `newBlankTab().go(url)`: the load
+    /// starts here, ahead of the strip insert, the `current` didSet and `extensions.sync()`.
+    /// `go` needs the tab's own web view and nothing else — not the sidebar, not `current`,
+    /// not the extension host — and WebKit cannot begin fetching until it is asked, so
+    /// everything below was a frame of SwiftUI the page waited on for no reason.
+    /// Deliberately after `kind`: its didSet reads `currentURL` to decide a row's home, and
+    /// a load in flight is exactly the thing that would change the answer.
     func newBlankTab(focus: Bool = true, as kind: TabKind = .today,
-                     id: UUID = UUID()) -> Tab {
+                     id: UUID = UUID(), loading url: URL? = nil) -> Tab {
         let t = Tab(id: id, isPrivate: isPrivate, profileID: profileID)
         wire(t)
         t.kind = kind
+        if let url { t.go(url) }
         // Into its own section, not onto the end of the strip: the sections are contiguous
         // runs (see `clampedDestination`), and a pinned row appended past the Today tabs
         // breaks ⌘1…9, ⌃⇥ and the next drag's clamp.
