@@ -81,7 +81,7 @@ import WebKit
             // `everyTab`: the Spaces a window is keeping alive hold real web views too.
             for tab in store.everyTab {
                 tab.web.customUserAgent = userAgent
-                tab.web.isInspectable = inspectorEnabled
+                DeveloperMode.apply(to: tab)
             }
         }
     }

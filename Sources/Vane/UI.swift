@@ -567,7 +567,7 @@ struct WebCard: View {
                 // the one swapped: suspension excludes the active tab on both paths, the
                 // idle timer and memory pressure. Entering a split takes this branch away
                 // altogether and the held pages go with it.
-                WebView(web: tab.web, live: store.everyTab.map(\.web))
+                DeveloperFrame(tab: tab) { WebView(web: tab.web, live: store.everyTab.map(\.web)) }
                     .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
             } else {
                 // No tabs: the sheet a page will land on, and nothing in it. With nothing
@@ -3219,6 +3219,13 @@ private struct TabRow: View {
             }
         } trailing: {
             TabRowTrailing(store: store, tab: tab, selected: selected)
+        }
+        // Arc's hazard tape: a Developer Mode tab is marked on its row, not on the page.
+        .overlay {
+            if tab.developer {
+                RoundedRectangle(cornerRadius: Look.pillRadius)
+                    .strokeBorder(Look.developerYellow, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+            }
         }
         .inStrip(tab.id, strip)
         .help(tab.title)

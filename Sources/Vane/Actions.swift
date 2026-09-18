@@ -123,9 +123,8 @@ extension PaletteCommand {
                 PaletteCommand("Duplicate Tab", icon: "plus.square.on.square") {
                     TabActions.duplicate(tab, in: store)
                 },
-                PaletteCommand("Toggle Developer Mode", icon: "chevron.left.forwardslash.chevron.right") {
-                    SiteControl.setDeveloper(!tab.web.isInspectable, on: tab)
-                },
+                PaletteCommand(.toggleDeveloperMode, icon: "chevron.left.forwardslash.chevron.right",
+                               title: tab.developer ? "Turn Off Developer Mode" : "Turn On Developer Mode"),
                 PaletteCommand("Clear Site Data…", icon: "trash") {
                     SiteControl.clearSiteData(host: SiteControl.host(of: tab), tab: tab)
                 },

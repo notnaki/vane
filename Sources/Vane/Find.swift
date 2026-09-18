@@ -372,7 +372,7 @@ private struct FindBarBody: View {
 }
 
 /// A full control-sized target without enlarging the find bar's quiet glyphs.
-private struct FindControlStyle: ButtonStyle {
+struct FindControlStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false

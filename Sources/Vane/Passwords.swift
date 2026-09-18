@@ -823,6 +823,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("favicons + tabs", Favicons.check), ("url handling", URLHandling.check),
                                ("error pages", ErrorPage.check), ("site permissions", SitePermissions.check),
                                ("site control center", SiteControl.check),
+                               ("developer mode", DeveloperMode.check),
                                ("links that open another app", ExternalApps.check),
                                ("extensions", ExtensionHost.check),
                                ("pinned extension actions", ExtensionPins.check),
