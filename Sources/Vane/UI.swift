@@ -700,6 +700,13 @@ private struct Sidebar: View {
         VStack(spacing: Look.inset) {
             TopRow()
             AddressPill(tab: store.active)
+            ZStack {
+            if store.creatingSpace {
+                // Arc's Create a Space takes the whole strip, favourites included: the form
+                // is about what comes next, not what is here.
+                CreateSpaceForm(store: store)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else {
             ScrollView {
                 VStack(spacing: Look.rowGap) {
                     Favorites()
@@ -723,6 +730,14 @@ private struct Sidebar: View {
             }
             .scrollIndicators(.never)
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
+            // The plus that fills as the fingers pull past the last Space.
+            .overlay(alignment: .trailing) { PullPlus(store: store) }
+            .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+            }
+            .animation(Look.spaceSlide, value: store.creatingSpace)
+            // On the stack, not the list: the swipe has to keep working while the form is
+            // standing where the list was, because swiping back is how the form is left.
             .spaceSwipe(store)
             BottomRow()
         }
@@ -2325,9 +2340,27 @@ private struct SpaceDots: View {
         let lit = weights(list)
         HStack(spacing: 8) {
             ForEach(list) { dot($0, lit: lit[$0.id] ?? 0) }
+            // The Space a pull is making gets a dot of its own before it exists: it fills
+            // with the pull, and on the form it is simply the one you are on.
+            if store.creatingSpace || store.spacePull > 0 {
+                newDot(lit: store.creatingSpace ? 1 : Double(min(1, store.spacePull / Spaces.Swipe.pullFull)))
+            }
         }
+        .animation(reduceMotion ? nil : Look.quick, value: store.creatingSpace)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
+    }
+
+    private func newDot(lit: Double) -> some View {
+        // A dot like the others — it has no icon yet — that brightens as the pull fills.
+        ZStack {
+            Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
+            Circle().fill(Look.inkPrimary).frame(width: Look.dot, height: Look.dot)
+                .opacity(lit)
+        }
+        .frame(width: Look.spaceDotHit, height: Look.spaceDotHit)
+        .accessibilityLabel("New Space")
+        .accessibilityHidden(!store.creatingSpace)
     }
 
     /// Both shapes are always in the tree, cross-fading on one number, so a live swipe can

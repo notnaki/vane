@@ -402,32 +402,56 @@ enum Spaces {
         /// for "leave it where it is" — an event that is not the fingers moving must never
         /// stomp on a spring that is already running. `commit` is +1 for "next Space", -1
         /// for "previous", nil for "spring back".
+        /// `create`: past the last Space there is one more thing to pull for — the Space
+        /// that does not exist yet. The strip bands as it always did, but `pull` reports how
+        /// far towards the line the fingers have got, and reaching it commits `+1` from the
+        /// last index *while the fingers are still down*: Arc's plus fills up and then you
+        /// are on the form, no fingers-up wanted. Off by default so the band checks hold.
         mutating func feed(dx: CGFloat, dt: Double, phase: Phase,
-                           width: CGFloat, count: Int, index: Int) -> (offset: CGFloat?, commit: Int?) {
+                           width: CGFloat, count: Int, index: Int,
+                           create: Bool = false) -> (offset: CGFloat?, commit: Int?, pull: CGFloat) {
             switch phase {
             case .momentum:
-                return (nil, nil)
+                return (nil, nil, 0)
             case .began:
                 travel = 0
                 speed = 0
                 armed = true
-                return (0, nil)
+                return (0, nil, 0)
             case .changed:
-                guard armed else { return (nil, nil) }
+                guard armed else { return (nil, nil, 0) }
                 travel += dx
                 if dt > 0 {
                     let step = CGFloat(max(dt, Self.minInterval))
                     speed = Self.speedSmoothing * (dx / step) + (1 - Self.speedSmoothing) * speed
                 }
-                return (Self.offset(travel, width: width, count: count, index: index), nil)
+                let offset = Self.offset(travel, width: width, count: count, index: index)
+                let pull = Self.pull(travel, width: width, count: count, index: index, create: create)
+                if pull >= Self.pullFull {
+                    armed = false
+                    return (offset, 1, Self.pullFull)
+                }
+                return (offset, nil, pull)
             case .ended:
                 defer { travel = 0; speed = 0 }
                 guard armed, let direction = Self.commit(travel: travel, speed: speed, width: width,
                                                          count: count, index: index)
-                else { return (nil, nil) }
+                else { return (nil, nil, 0) }
                 armed = false
-                return (nil, direction)
+                return (nil, direction, 0)
             }
+        }
+
+        /// A pull past the last Space is two stages of the same motion: the ring fills to
+        /// 1, then the circle behind it fills solid to `pullFull`. Only solid commits, so a
+        /// pull that stops at a full ring is a pull that changed its mind.
+        static let pullFull: CGFloat = 2
+
+        /// How far the pull has got, 0…`pullFull` — zero anywhere but past the last Space.
+        static func pull(_ travel: CGFloat, width: CGFloat, count: Int, index: Int,
+                         create: Bool) -> CGFloat {
+            guard create, travel < 0, index >= count - 1 else { return 0 }
+            return min(pullFull, -travel / (width * commitFraction))
         }
 
         /// Where the strip sits for a given travel: 1:1 with the fingers, up to the one
@@ -711,6 +735,28 @@ enum Spaces {
                swipe([(0, .began), (-200, .changed)]).commits.isEmpty)
         assert("a short slow drag springs back rather than switching",
                swipe(slow(-w * 0.2, steps: 60), dt: 0.05).commits.isEmpty)
+        do {
+            var s = Swipe()
+            _ = s.feed(dx: 0, dt: 0, phase: .began, width: w, count: 2, index: 1, create: true)
+            let half = s.feed(dx: -w * 0.15, dt: 0.02, phase: .changed, width: w, count: 2, index: 1,
+                              create: true)
+            let ring = s.feed(dx: -w * 0.15, dt: 0.02, phase: .changed, width: w, count: 2, index: 1,
+                              create: true)
+            let solid = s.feed(dx: -w * 0.3, dt: 0.02, phase: .changed, width: w, count: 2, index: 1,
+                               create: true)
+            let after = s.feed(dx: -w * 0.15, dt: 0.02, phase: .changed, width: w, count: 2, index: 1,
+                               create: true)
+            assert("a pull past the last space fills the ring by the same line a swipe commits at",
+                   half.commit == nil && abs(half.pull - 0.5) < 0.001
+                       && abs(half.offset ?? 0) <= w * Swipe.bandCap)
+            assert("…a full ring is not yet a space: the circle still has to fill",
+                   ring.commit == nil && abs(ring.pull - 1) < 0.001)
+            assert("…and a solid circle commits the new space while the fingers are still down",
+                   solid.commit == 1 && solid.pull == Swipe.pullFull && after.commit == nil)
+            assert("…while the same pull with nothing to create only bands",
+                   Swipe.pull(-w * 0.5, width: w, count: 2, index: 1, create: false) == 0
+                       && Swipe.pull(-w * 0.5, width: w, count: 2, index: 0, create: true) == 0)
+        }
         assert("past three tenths of the sidebar, fingers up switches to the next space",
                swipe(slow(-w * 0.4, steps: 60), dt: 0.05).commits == [1])
         assert("dragging the other way goes to the previous space",

@@ -434,6 +434,8 @@ enum Look {
     /// enough to sit on the page without dividing it, and inset from the corner so it clears
     /// the card's own radius.
     static let loadingPill = CGSize(width: 160, height: 5)
+    /// The plus that fills at the sidebar's edge during a pull past the last Space.
+    static let pullPlus: CGFloat = 32
     static let loadingInset: CGFloat = 8
     /// The unfilled part of it. A shade under a hovered row, so the pill is visible on the
     /// page for the whole of a load without being something you look at.
