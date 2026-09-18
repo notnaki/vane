@@ -464,6 +464,11 @@ enum Look {
     /// A footer dot for a space that is not the current one (101 on 66, 16px).
     static let dotFill = ink(0.20)
 
+    /// An app icon in the Settings picker. Big enough that the glass, the shadow and the
+    /// difference between the two fills are all visible — which is the whole reason the
+    /// choice is shown as pictures rather than as a popup of two words.
+    static let appIconPreview: CGFloat = 48
+
     /// The traffic lights have three faces, and these are the two Vane draws itself.
     ///
     /// At rest in the key window: a disc barely lifted off the chrome behind it — a hair

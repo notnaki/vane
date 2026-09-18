@@ -444,6 +444,17 @@ private struct GeneralPane: View {
             }
 
             SettingsCard {
+                SettingsRow("App icon") { AppIconPicker() }
+                Footnote("Default is the icon Vane already wears — the Dock composes it "
+                         + "from the bundle itself. " + (AppIcon.stamps
+                         ? "Glass and Navy show in the Dock while Vane runs, and stay on "
+                           + "Vane in the Finder once it is quit."
+                         : "Glass and Navy show in the Dock while Vane runs. Finder keeps "
+                           + "Default: Vane is sandboxed, and the sandbox will not let an "
+                           + "app write an icon onto its own bundle."))
+            }
+
+            SettingsCard {
                 SettingsRow("New splits") {
                     Picker("", selection: $stackSplits) {
                         Text("Side by side").tag(false)
@@ -505,6 +516,38 @@ private struct GeneralPane: View {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// The app-icon choice, as pictures. An icon is the one preference nobody can pick from a
+/// list of names, so both tiles show the composed icon the Dock will actually draw — macOS
+/// shapes and lights it, the same way it does the one on screen now.
+private struct AppIconPicker: View {
+    @State private var chosen = AppIcon.current
+
+    var body: some View {
+        HStack(spacing: Look.inset * 1.5) {
+            ForEach(AppIcon.variants, id: \.name) { variant in
+                let picked = variant.name == chosen
+                Button {
+                    AppIcon.apply(variant.name)
+                    chosen = AppIcon.current
+                } label: {
+                    VStack(spacing: Look.captionGap + 2) {
+                        Image(nsImage: variant.image).resizable()
+                            .frame(width: Look.appIconPreview, height: Look.appIconPreview)
+                        Text(variant.name).font(Look.caption)
+                            .foregroundStyle(picked ? Look.inkPrimary : Look.inkQuiet)
+                    }
+                    .padding(Look.inset - 2)
+                    // The chosen one sits in the accent tile every other selected row in this
+                    // window sits in; the others are bare.
+                    .background(picked ? Look.accentSelected : .clear,
+                                in: .rect(cornerRadius: Look.chipRadius))
+                }
+                .buttonStyle(.plain)
             }
         }
     }

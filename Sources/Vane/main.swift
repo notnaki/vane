@@ -21,6 +21,10 @@ if args.first == "import", let file = args.dropFirst().first {
     exit(0)
 }
 
+// Before the first window, and so before the Dock tile is first drawn: the tile belongs to
+// the running process, so a chosen icon has to be put back on every launch. See AppIcon.
+AppIcon.restoreAtLaunch()
+
 Crash.begin()
 
 // `vane <url>` beats a restored session; otherwise pick up where the user left off. The url
