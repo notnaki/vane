@@ -1,0 +1,77 @@
+/* Vane — plain, single-screen, the same bones as the Vesta site. Near-black, one mark,
+   one wordmark, one line, two buttons. System sans for words, mono for controls. */
+
+:root{
+  --bg:#0c0c0e;
+  --fg:#ededee;
+  --muted:#86888c;
+  --faint:#5a5c60;
+  --line:rgba(255,255,255,.12);
+  --line-2:rgba(255,255,255,.22);
+  --accent:#8b93ff;
+  --mono:ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  --sans:-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Inter, system-ui, sans-serif;
+}
+
+*{ box-sizing:border-box; }
+html{ -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+body{ margin:0; background:var(--bg); color:var(--fg); font-family:var(--sans); font-size:16px; line-height:1.6; }
+a{ color:inherit; text-decoration:none; }
+a:hover{ color:var(--accent); }
+
+/* ───────────────── Home (single screen) ───────────────── */
+.home{ display:flex; flex-direction:column; min-height:100vh; }
+.hero{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:26px; padding:64px 24px; }
+.mark{ width:128px; height:128px; border-radius:28px;
+  /* drop-shadow traces the PNG alpha, so the glow hugs the mark */
+  filter:drop-shadow(0 0 34px rgba(255,255,255,.30)); }
+.wordmark{ font-family:var(--sans); font-weight:700; font-size:clamp(56px, 11vw, 132px); letter-spacing:-.04em;
+  margin:0; color:#fafafa; cursor:default; text-align:center; white-space:nowrap; line-height:1; height:1em; }
+.lede{ max-width:50ch; margin:0; color:var(--muted); font-size:clamp(15px,2.4vw,18px); line-height:1.65; }
+.lede a{ color:var(--fg); border-bottom:1px solid var(--line-2); }
+.lede a:hover{ color:var(--accent); border-color:var(--accent); }
+.actions{ display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:6px; }
+.btn{ font-family:var(--mono); font-size:13.5px; letter-spacing:.01em; color:var(--fg); padding:11px 20px;
+  border:1px solid var(--line-2); border-radius:9px; transition:border-color .18s ease, color .18s ease, background .18s ease; }
+.btn:hover{ border-color:var(--accent); color:var(--accent); background:rgba(139,147,255,.06); }
+.foot{ display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; padding:20px 28px;
+  font-family:var(--mono); font-size:12px; color:var(--faint); border-top:1px solid var(--line); }
+.foot a:hover{ color:var(--accent); }
+
+/* ───────────────── Docs ───────────────── */
+.wrap{ max-width:980px; margin:0 auto; padding:0 28px; }
+.nav{ border-bottom:1px solid var(--line); position:sticky; top:0; background:rgba(12,12,14,.86); backdrop-filter:saturate(140%) blur(8px); z-index:5; }
+.nav .wrap{ display:flex; align-items:center; gap:18px; height:58px; }
+.brand{ display:flex; align-items:center; gap:10px; font-weight:700; font-size:20px; letter-spacing:-.02em; color:#fafafa; }
+.brand img{ width:24px; height:24px; border-radius:6px; filter:drop-shadow(0 0 8px rgba(255,255,255,.28)); }
+.nav .spacer{ flex:1; }
+.nav .lnk{ font-family:var(--mono); font-size:13px; color:var(--muted); }
+.nav .lnk:hover{ color:var(--accent); }
+.nav .ghbtn{ font-family:var(--mono); font-size:12.5px; color:var(--fg); border:1px solid var(--line-2); padding:7px 13px; border-radius:8px; }
+.nav .ghbtn:hover{ border-color:var(--accent); color:var(--accent); }
+.docs{ display:grid; grid-template-columns:200px 1fr; gap:48px; padding:56px 0 96px; align-items:start; }
+.toc{ position:sticky; top:90px; font-family:var(--mono); font-size:12.5px; display:flex; flex-direction:column; gap:6px; }
+.toc a{ color:var(--muted); padding:3px 0; }
+.toc a:hover{ color:var(--accent); }
+.toc .grp-t{ color:var(--faint); text-transform:uppercase; letter-spacing:.08em; font-size:10.5px; margin-top:16px; }
+.toc .grp-t:first-child{ margin-top:0; }
+.doc{ min-width:0; }
+.doc h1{ font-weight:700; letter-spacing:-.03em; font-size:clamp(40px,7vw,64px); margin:0 0 8px; }
+.doc .sub{ color:var(--muted); max-width:62ch; margin:0 0 40px; }
+.doc section{ margin-bottom:56px; scroll-margin-top:84px; }
+.doc h2{ font-size:15px; font-family:var(--mono); font-weight:500; text-transform:uppercase; letter-spacing:.08em; color:var(--accent); border-bottom:1px solid var(--line); padding-bottom:10px; margin:0 0 18px; }
+.doc h3{ font-size:15px; margin:24px 0 8px; color:var(--fg); }
+.doc p, .doc li{ color:#c9cacc; max-width:68ch; }
+.doc ul{ padding-left:20px; }
+.doc li{ margin:8px 0; }
+.doc li strong{ color:var(--fg); font-weight:600; }
+.doc p a, .doc li a{ color:var(--fg); border-bottom:1px solid var(--line-2); }
+.doc p a:hover, .doc li a:hover{ color:var(--accent); border-color:var(--accent); }
+.tbl{ width:100%; border-collapse:collapse; font-family:var(--mono); font-size:13px; }
+.tbl th{ text-align:left; color:var(--faint); font-weight:400; text-transform:uppercase; letter-spacing:.06em; font-size:10.5px; padding:0 16px 10px 0; border-bottom:1px solid var(--line); }
+.tbl td{ padding:11px 16px 11px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+.tbl td.desc{ color:#c1c2c4; font-family:var(--sans); font-size:13.5px; }
+code{ font-family:var(--mono); font-size:.88em; color:#dfe0e2; background:rgba(255,255,255,.05); padding:.12em .4em; border-radius:4px; }
+kbd{ font-family:var(--mono); font-size:12px; color:var(--fg); background:#17181b; border:1px solid var(--line-2); border-bottom-width:2px; border-radius:6px; padding:2px 7px; white-space:nowrap; }
+@media (max-width:760px){ .docs{ grid-template-columns:1fr; gap:0; } .toc{ display:none; } }
+@media (prefers-reduced-motion:reduce){ *{ transition:none !important; } }

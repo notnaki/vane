@@ -3,40 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vane</title>
-<meta name="description" content="Vane is a native macOS browser in the shape of Arc: sidebar tabs, Spaces, splits, Little Vane windows, and Live Folders.">
+<title>Vane — a native macOS browser in the shape of Arc</title>
+<meta name="description" content="Vane is a native macOS browser in the shape of Arc: sidebar tabs, Spaces, splits, Little Vane windows, and Live Folders. Built on WebKit.">
 <link rel="icon" href="icon.png">
-<style>
-  :root { color-scheme: dark; --bg: #000; --ink: #f2f0e8; --quiet: rgba(242,240,232,.62); --line: rgba(242,240,232,.14); --fill: rgba(242,240,232,.08); }
-  * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--ink);
-         font: 16px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-  main { text-align: center; padding: 48px 24px; max-width: 520px; }
-  .icon { width: 128px; height: 128px; margin: 0 auto 28px; }
-  /* One soft white halo that hugs the mark — drop-shadow traces the icon's alpha, so it
-     sits on the shape rather than in a box behind it. The same glow Vesta's site uses. */
-  .icon img { width: 128px; height: 128px; display: block; border-radius: 28px;
-    filter: drop-shadow(0 0 34px rgba(255,255,255,.30)); }
-  h1 { margin: 0 0 8px; font-size: 40px; letter-spacing: -.02em; font-weight: 700; }
-  p { margin: 0 0 28px; color: var(--quiet); }
-  nav { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
-  a { color: var(--ink); text-decoration: none; padding: 10px 18px; border-radius: 10px; border: 1px solid var(--line); background: var(--fill); }
-  a:hover { background: rgba(242,240,232,.14); }
-  a.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
-  small { display: block; margin-top: 36px; color: var(--quiet); font-size: 13px; }
-</style>
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="stylesheet" href="css/style.css">
 </head>
-<body>
-<main>
-  <div class="icon"><img src="icon.png" alt="" width="128" height="128"></div>
-  <h1>Vane</h1>
-  <p>A native macOS browser in the shape of Arc. Sidebar tabs, Spaces, splits, Little Vane windows, Live Folders. Signed, notarized, and it updates itself.</p>
-  <nav>
-    <a class="primary" href="https://github.com/notnaki/vane/releases/latest">Download for macOS</a>
-    <a href="docs.html">Docs</a>
-    <a href="https://github.com/notnaki/vane">GitHub</a>
-  </nav>
-  <small>Requires macOS 26 or later.</small>
-</main>
+<body class="home">
+  <main class="hero">
+    <img class="mark" src="icon.png" width="128" height="128" alt="Vane">
+    <h1 class="wordmark">Vane</h1>
+    <p class="lede">A native&nbsp;macOS browser in the shape of Arc, on <a href="https://webkit.org">WebKit</a> —
+      sidebar tabs, Spaces, splits, Little Vane windows, Live&nbsp;Folders.</p>
+    <nav class="actions">
+      <a class="btn" href="https://github.com/notnaki/vane/releases/latest">Download</a>
+      <a class="btn" href="docs.html">Documentation</a>
+    </nav>
+    <p class="lede"><code>brew install --cask notnaki/tap/vane</code></p>
+  </main>
+  <footer class="foot">
+    <span>Alpha · macOS 26 · built on WebKit</span>
+    <a href="https://github.com/notnaki/vane">GitHub ↗</a>
+  </footer>
 </body>
 </html>
