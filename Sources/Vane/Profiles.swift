@@ -492,7 +492,7 @@ struct Space: Identifiable, Codable, Equatable {
         // instance always has its own named store, including its Personal profile.
         guard let storeID = dataStoreIdentifier(for: id, dataDirectory: Store.overrideDirectory)
         else { return erase(for: id) }
-        WKWebsiteDataStore.fetchAllDataStoreIdentifiers { registered in
+        registeredDataStores { registered in
             Task { @MainActor in
                 guard registered.contains(storeID) else {
                     dataStores[id] = nil
@@ -533,7 +533,7 @@ struct Space: Identifiable, Codable, Equatable {
     /// the data inside is already gone either way, so there is nothing to report to anyone.
     private static func sweepOrphanedDataStores(keeping live: [UUID]) {
         guard maySweepDataStores(dataDirectory: Store.overrideDirectory) else { return }
-        WKWebsiteDataStore.fetchAllDataStoreIdentifiers { registered in
+        registeredDataStores { registered in
             let orphans = orphanedStores(registered, keeping: live)
             guard !orphans.isEmpty else { return }
             Task { @MainActor in
@@ -578,6 +578,19 @@ struct Space: Identifiable, Codable, Equatable {
     /// Only a normal launch owns the global profile list. A data-dir instance cannot
     /// infer ownership from WebKit's global registry, even when its own list is empty.
     nonisolated static func maySweepDataStores(dataDirectory: String?) -> Bool { dataDirectory == nil }
+
+    /// `fetchAllDataStoreIdentifiers` is a class method, so it can be the first WebKit call
+    /// this process makes — and it delivers its answer through WTF's main run loop, which
+    /// does not exist until some WebKit object has been made on the main thread. Called
+    /// before that it segfaults on a null lock: a ten-line program that calls it cold exits
+    /// 139, and the same program after one `WKProcessPool()` is fine. Launch after a crash
+    /// is exactly the cold case — the restore alert spins the run loop, the deferred sweep
+    /// runs, and no window has made a web view yet — so every relaunch crashed again.
+    private static let webKitWarm: Void = { _ = WKProcessPool() }()
+    private static func registeredDataStores(_ done: @escaping @Sendable ([UUID]) -> Void) {
+        _ = webKitWarm
+        WKWebsiteDataStore.fetchAllDataStoreIdentifiers(done)
+    }
 
     /// Preserve installed users' existing stores. Data-dir instances use a stable,
     /// reserved UUID namespace derived from their directory and profile. In particular,
@@ -1137,7 +1150,7 @@ struct Space: Identifiable, Codable, Equatable {
 
     private static func dataStoreIdentifiers() -> [UUID] {
         let box = Box()
-        WKWebsiteDataStore.fetchAllDataStoreIdentifiers { ids in
+        registeredDataStores { ids in
             box.ids = ids
             box.done = true
         }
