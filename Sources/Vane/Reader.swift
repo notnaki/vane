@@ -72,11 +72,14 @@ import WebKit
     // MARK: - Entry points
 
     /// Cheap enough to call on every didFinish: it is the same single DOM pass the real
-    /// extraction does, so availability can never disagree with what entering would show.
+    /// extraction does, so availability can never disagree with what entering would show —
+    /// but only the word count comes back over the wire. See `extractJS(probe:)`.
     static func isAvailable(in web: WKWebView) async -> Bool {
         guard web.url?.scheme?.hasPrefix("http") == true else { return false }
-        guard let e = await extract(from: web) else { return false }
-        return isEnough(words: e.words)
+        let raw: Any? = try? await web.evaluateJavaScript(extractJS(probe: true))
+        guard let json = raw as? String, let data = json.data(using: .utf8),
+              let p = try? JSONDecoder().decode(Probe.self, from: data) else { return false }
+        return isEnough(words: p.words)
     }
 
     static func toggle(_ tab: Tab) { isOn(tab) ? exit(tab) : enter(tab) }
@@ -137,6 +140,9 @@ import WebKit
         }
     }
 
+    /// All `extractJS(probe: true)` sends back.
+    private struct Probe: Decodable { var words = 0 }
+
     private struct Payload: Decodable {
         var title: String?
         var byline: String?
@@ -168,7 +174,7 @@ import WebKit
 
     // internal, not private: the throwaway real-page harness drives this directly.
     static func extract(from web: WKWebView) async -> Extraction? {
-        let raw: Any? = try? await web.evaluateJavaScript(extractJS)
+        let raw: Any? = try? await web.evaluateJavaScript(extractJS())
         guard let json = raw as? String, let data = json.data(using: .utf8),
               let p = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
         return build(p)
@@ -374,8 +380,14 @@ import WebKit
     /// ponytail deliberately skipped: Readability's sibling-append pass, so an article body
     /// split across several equal siblings loses the tail; and <table>, because a table
     /// worth reading and a table used for layout look identical from here.
-    static let extractJS = #"""
-    (function () {
+    ///
+    /// `probe: true` runs the identical walk and hands back only `{words: n}`. That is all
+    /// availability needs, and an article's node tree is a few hundred kilobytes of JSON to
+    /// stringify, ship across the process boundary and decode on the main actor — once per
+    /// page load, for a button. The count is taken from the same nodes with the same rules
+    /// `plainText` uses, so the two can never disagree about what entering would show.
+    static func extractJS(probe: Bool = false) -> String { #"""
+    (function (PROBE) {
       var BAD = /combx|comment|com-|contact|foot|masthead|outbrain|promo|related|scroll|shoutbox|sidebar|sponsor|shopping|widget|nav|menu|share|social|banner|newsletter|subscribe|popup|modal|cookie|breadcrumb|advert|recirc|teaser|paywall|\bads?\b/i;
       var GOOD = /article|body|content|entry|hentry|h-entry|main|page|post|text|blog|story|prose/i;
       var DROP = {SCRIPT:1,STYLE:1,NOSCRIPT:1,IFRAME:1,FORM:1,BUTTON:1,INPUT:1,SELECT:1,
@@ -495,9 +507,30 @@ import WebKit
 
       var root = ser(best);
       var nodes = !root ? [] : (root.e === '' && root.c) ? root.c : [root];
+      if (PROBE) {
+        // `Reader.plainText` and `build`, in the two places they are allowed to be: the
+        // same separators, the same headline de-duplication, the same whitespace split.
+        function flat(ns) {
+          var out = '';
+          for (var i = 0; i < ns.length; i++) {
+            var n = ns[i];
+            if (n.x) { out += n.x; }
+            if (n.c) { out += flat(n.c); }
+            if (n.e === 'p' || n.e === 'br' || n.e === 'li') { out += ' '; }
+          }
+          return out.trim();
+        }
+        var head = nodes[0];
+        if (head && (head.e === 'h1' || head.e === 'h2')
+            && flat([head]).toLowerCase() === title.trim().toLowerCase()) {
+          nodes = nodes.slice(1);
+        }
+        var text = flat(nodes);
+        return JSON.stringify({ words: text ? text.split(/\s+/).length : 0 });
+      }
       return JSON.stringify({ title: title, byline: byline, lead: lead, nodes: nodes });
-    })()
-    """#
+    })(\#(probe))
+    """# }
 
     // MARK: - check
 
