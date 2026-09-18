@@ -180,8 +180,8 @@ struct ThemeEditor: View {
                         x: clamp((drag.location.x - grab.width - Look.themeDot / 2) / travel.width),
                         y: clamp((drag.location.y - grab.height - Look.themeDot / 2) / travel.height))
                     held = (i, grab)
-                    placed[i] = point
-                    write(i, Spaces.themeHex(x: point.x, y: point.y))
+                    let from = place(i, hex)
+                    shift(CGSize(width: point.x - from.x, height: point.y - from.y))
                 }
                 .onEnded { _ in held = nil; commitLive() })
             .position(centre)
@@ -191,9 +191,7 @@ struct ThemeEditor: View {
             .accessibilityAdjustableAction { direction in
                 selected = i
                 let step = direction == .increment ? Self.hueStep : -Self.hueStep
-                let next = CGPoint(x: (p.x + step + 1).truncatingRemainder(dividingBy: 1), y: p.y)
-                placed[i] = next
-                write(i, Spaces.themeHex(x: next.x, y: next.y))
+                shift(CGSize(width: step, height: 0))
                 commitLive()
             }
     }
@@ -329,11 +327,20 @@ struct ThemeEditor: View {
         .accessibilityLabel(label)
     }
 
-    /// A preset lands on the dot last touched, so a two-colour gradient can be built out of
-    /// two presets rather than only by dragging.
+    /// A preset lands on the dot last touched — and, as in Arc, the other dots come with it,
+    /// keeping their offsets, so a gradient built round one colour is rebuilt round the next.
     private func pick(_ hex: String) {
         var list = colors
-        if list.indices.contains(selected) { list[selected] = hex } else { list.append(hex) }
+        if list.indices.contains(selected) {
+            if list.count > 1, let target = Spaces.themePoint(hex: hex) {
+                let from = place(selected, list[selected])
+                shift(CGSize(width: target.x - from.x, height: target.y - from.y))
+                list = colors
+            }
+            list[selected] = hex
+        } else {
+            list.append(hex)
+        }
         // The colour came from a preset, not from the canvas, so the dot goes where the new
         // colour reads back to rather than staying where the last drag left it.
         placed[selected] = nil
@@ -356,11 +363,39 @@ struct ThemeEditor: View {
 
     private func clamp(_ v: CGFloat) -> Double { Double(min(max(v, 0), 1)) }
 
-    private func write(_ i: Int, _ hex: String) {
+    /// Arc's dots travel as one constellation: move any of them and the rest keep their
+    /// offsets from it, and they stop together at the field's edge.
+    private func shift(_ delta: CGSize) {
         var list = colors
-        guard list.indices.contains(i) else { return }
-        list[i] = hex
+        let places = list.indices.map { place($0, list[$0]) }
+        let (dx, dy) = Self.constellationShift(places, by: delta)
+        for i in list.indices {
+            let p = CGPoint(x: places[i].x + dx, y: places[i].y + dy)
+            placed[i] = p
+            list[i] = Spaces.themeHex(x: p.x, y: p.y)
+        }
         slide { Spaces.setThemeColors(list, on: &$0) }
+    }
+
+    /// The move that keeps every dot inside the unit field: the asked-for delta, cut back
+    /// by however far the outermost dot would have gone past an edge.
+    nonisolated static func constellationShift(_ places: [CGPoint], by delta: CGSize) -> (CGFloat, CGFloat) {
+        guard let minX = places.map(\.x).min(), let maxX = places.map(\.x).max(),
+              let minY = places.map(\.y).min(), let maxY = places.map(\.y).max() else { return (0, 0) }
+        return (min(max(delta.width, -minX), 1 - maxX), min(max(delta.height, -minY), 1 - maxY))
+    }
+
+    static func check() -> [(String, Bool)] {
+        let two = [CGPoint(x: 0.2, y: 0.5), CGPoint(x: 0.6, y: 0.5)]
+        let s1 = constellationShift(two, by: CGSize(width: 0.1, height: -0.2))
+        let s2 = constellationShift(two, by: CGSize(width: 0.9, height: 0))
+        let s3 = constellationShift(two, by: CGSize(width: -0.5, height: 0.9))
+        return [
+            ("a move inside the field is taken whole", s1 == (0.1, -0.2)),
+            ("the outermost dot stops at the edge and the rest with it", s2 == (0.4, 0)),
+            ("…on every side", s3 == (-0.2, 0.5)),
+            ("no dots, no move", constellationShift([], by: CGSize(width: 1, height: 1)) == (0, 0)),
+        ]
     }
 
     private func commit() {

@@ -229,7 +229,7 @@ enum Look {
     /// The theme editor popover, measured off `arc-ref/arc-theme-editor.png` at 2x: a 350pt
     /// panel over a near-square dot-grid canvas, a row of preset circles under it, and the
     /// intensity slider beside the grain dial along the bottom.
-    static let themeWidth: CGFloat = 350
+    static let themeWidth: CGFloat = 380
     /// The canvas' height; its width is whatever the panel leaves (690px at 2x = 345).
     static let themeCanvas: CGFloat = 300
     /// The fine grid printed on it: pitch and dot.
@@ -243,7 +243,7 @@ enum Look {
     static let themeRingGap: CGFloat = 3
     /// A preset circle (58px at 2x) and how many fit a page between the two chevrons.
     static let swatch: CGFloat = 30
-    static let swatchPage = 8
+    static let swatchPage = 9
     /// The intensity slider: a `themeTrack`-tall pill with a sinusoid along it and a thumb
     /// standing proud of it, the way Arc's does.
     static let themeTrack: CGFloat = 30
@@ -501,7 +501,14 @@ enum Look {
     /// The colours a space can be tinted with. The profile palette first, so a space and its
     /// profile can wear the same colour, then the spread Arc offers.
     /// @MainActor because `ProfileManager.palette` is; every caller is a view anyway.
-    @MainActor static let themeSwatches = ProfileManager.palette
+    /// Arc's five pages of nine: bright, vivid, pale, earthy, grey.
+    static let themeSwatches = [
+        "#F1ECEA", "#EBA2C5", "#A87CBE", "#E5646F", "#F2925F", "#F2D45E", "#7CE39B", "#7FBEE8", "#6D6FA8",
+        "#E9E9E9", "#E4A9A4", "#7D5F7C", "#E8906C", "#E6B85A", "#A9D25C", "#5FD3B2", "#6F7EE6", "#5F6079",
+        "#FFFDFC", "#F7E9F2", "#E5CCE6", "#F2C7C9", "#F7DDCE", "#FAF3DA", "#DBF0E2", "#D9ECF8", "#C7CAE6",
+        "#5A4A78", "#7A4A6A", "#8A4A48", "#B0703C", "#D4B054", "#C8D2B4", "#7CA88A", "#3D6A54", "#3A5288",
+        "#FFFFFF", "#E2E2E2", "#BDBDBD", "#9A9A9A", "#777777", "#5C5C5C", "#3A3A3A", "#1C1C1C", "#000000",
+    ]
         + ["#F2EDE4", "#E48FB1", "#9B6FB0", "#D9564F", "#E08A3C", "#E3C34A", "#4CAF6E", "#5A9BD5"]
 
     /// The strength a space's colour has before anyone touches the slider.
@@ -596,12 +603,13 @@ enum Look {
     /// A tile of static noise, laid over the ground at `grain` × `grainMax`. Arc's themes
     /// have a faint film grain over the wash; this is that, and nothing else.
     ///
-    /// ponytail: one 64pt tile of white pixels at a fixed pseudo-random alpha, generated
+    /// ponytail: one 256pt tile of white pixels at a fixed pseudo-random alpha, generated
     /// once and tiled by the image view. Deliberately *static* — a per-frame shader would be
     /// a real graphics project, and grain that crawls is a distraction rather than a texture.
-    /// Ceiling: the tile repeats every 64pt, which at these opacities is invisible.
+    /// 256 and not 64: a 64pt tile repeated across a window reads as a pattern — the eye
+    /// finds the same clump every 64pt — and at 256pt it does not.
     @MainActor static let grain: NSImage = {
-        let n = 64
+        let n = 256
         // The context owns its own buffer: a Swift array's pointer is only valid inside
         // `withUnsafeMutableBytes`, and `makeImage()` reads it after that closure returns.
         guard let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8,
@@ -614,8 +622,14 @@ enum Look {
         var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
         for y in 0..<n {
             for x in 0..<n {
-                seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-                let v = UInt8(truncatingIfNeeded: seed >> 33)
+                // splitmix64, not a bare LCG: an LCG's neighbouring outputs are correlated
+                // enough that the noise showed faint diagonal streaks.
+                seed &+= 0x9E37_79B9_7F4A_7C15
+                var z = seed
+                z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+                z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+                z ^= z >> 31
+                let v = UInt8(truncatingIfNeeded: z >> 56)
                 // Premultiplied white: the alpha is the noise, so the tile lightens the
                 // ground where it is bright and leaves it alone where it is not.
                 for c in 0..<4 { pixels[y * ctx.bytesPerRow + x * 4 + c] = v }
