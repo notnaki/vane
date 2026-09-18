@@ -130,12 +130,13 @@ final class WebHost: NSView {
 
     /// How many pages the card may hold. Pinned and favourite tabs are never suspended, so
     /// without a ceiling a strip of twenty pinned tabs would leave twenty live web views —
-    /// and twenty tile stores — in the window for as long as it is open. Eight is more than
-    /// a switch back and forth ever reaches for.
-    /// ponytail: a count, not a size or an age. Ceiling: the ninth-oldest page is let go of
+    /// and twenty tile stores — in the window for as long as it is open. Four is more than
+    /// a switch back and forth ever reaches for, and every one of them is a WebContent
+    /// process competing with the page actually being loaded for CPU and memory bandwidth.
+    /// ponytail: a count, not a size or an age. Ceiling: the fifth-oldest page is let go of
     /// and comes back with the one-frame blink this whole thing is about, which is the right
-    /// thing to spend on the tab you last looked at eight tabs ago.
-    nonisolated static let keptPages = 8
+    /// thing to spend on the tab you last looked at four tabs ago.
+    nonisolated static let keptPages = 4
 
     /// The pages this host is holding, most recently shown first — the order `dropping`
     /// measures the ceiling against.
@@ -225,6 +226,7 @@ final class WebHost: NSView {
             ("only the most recently shown pages are held, however many tabs never suspend",
              dropping(many, showing: many[0], live: many, recent: many)
                 == Array(many.dropFirst(keptPages))),
+            ("the ceiling is the number of live pages a window pays for", keptPages == 4),
         ]
     }
 }
