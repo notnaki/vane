@@ -596,7 +596,18 @@ struct TitleReveal: Equatable, Sendable {
             web.observe(\.serverTrust, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
                     guard let self, !self.suspended else { return }
-                    self.certificateTrusted = w.serverTrust.map { SecTrustEvaluateWithError($0, nil) } ?? true
+                    guard let trust = w.serverTrust else { self.certificateTrusted = true; return }
+                    // Off the main actor, and usually straight out of the session's memory
+                    // — see `CertificateTrust.evaluate`. `serverTrust` still being this one
+                    // on the way back is the ordering guard: if it has moved on, a later
+                    // evaluation is in flight for the page the pill is actually showing.
+                    Task { [weak self, weak w] in
+                        let ok = await CertificateTrust.evaluate(
+                            trust, host: w?.url?.host ?? "", port: w?.url?.port ?? 443).ok
+                        guard let self, let w, self.web === w, !self.suspended,
+                              w.serverTrust === trust else { return }
+                        self.certificateTrusted = ok
+                    }
                 }
             },
         ]
