@@ -298,6 +298,8 @@ import WebKit
                 try require(try files.allSatisfy { try Data(contentsOf: $0) == Data("Vane download fixture\n".utf8) },
                             "real WKDownload writes complete bytes without replacing the earlier file")
 
+                try await profileHopCheck(base: base)
+
                 await clean()
                 print("PASS browsercheck: \(assertions) real-WebKit assertions")
                 print("Coverage excludes live permissions/devices, upload dialogs, printing, DRM, persisted session relaunch and TLS trust.")
@@ -368,6 +370,70 @@ import WebKit
             guard condition else { throw Failure(label) }
             assertions += 1
             print("  ok  \(label)")
+        }
+
+        /// A parked profile still belongs to the same window. Exercise both routes back to
+        /// it: the Profiles menu and the command bar's open-tab row. The former must write
+        /// the outgoing Space before parking it; the latter must actually show the tab.
+        private func profileHopCheck(base: String) async throws {
+            let manager = ProfileManager.shared
+            let first = manager.active
+            let second = manager.create(name: "Browsercheck Other")
+            guard let firstSpace = manager.ensureSpaces(for: first).first,
+                  let secondSpace = manager.ensureSpaces(for: second).first,
+                  let firstURL = URL(string: "\(base)/a"),
+                  let secondURL = URL(string: "\(base)/b") else {
+                throw Failure("profile hop fixture could not create its Spaces")
+            }
+            let firstStore = Windows.open(profile: first, space: firstSpace)
+            guard let window = firstStore.window else { throw Failure("profile hop has no window") }
+            firstStore.newTab(firstURL)
+            firstStore.palette = nil
+            firstStore.switchTo(space: secondSpace)
+            guard let secondStore = Windows.current(in: second.id),
+                  secondStore.window === window else {
+                throw Failure("cross-profile Space switch did not keep the same window")
+            }
+            secondStore.newTab(secondURL)
+            secondStore.palette = nil
+            guard let secondTab = secondStore.tabs.last else { throw Failure("second profile has no tab") }
+            try await loaded(secondTab, path: "/b", title: "Fixture B")
+
+            _ = Windows.switchTo(profile: first)
+            try require(firstStore.window === window && secondStore.isParked,
+                        "Profiles menu returns to a parked profile in the same window")
+            try require(manager.spaces(for: second.id).first?.tabURLs.contains(secondURL) == true,
+                        "Profiles menu saves the outgoing Space before parking it")
+
+            NSApp.activate(ignoringOtherApps: true)
+            try require(Windows.reveal(secondTab, in: secondStore),
+                        "an open-tab result can reveal a tab in a parked profile")
+            try require(secondStore.window === window && secondStore.current == secondTab.id,
+                        "revealing a parked tab shows its profile and selects it")
+            do {
+                try await wait("keyboard focus returns to the revealed page") {
+                    window.firstResponder === secondTab.web
+                }
+            } catch {
+                let responder = window.firstResponder
+                throw Failure("keyboard focus stayed on \(String(describing: responder)) "
+                              + "(key=\(window.isKeyWindow), pageWindow=\(secondTab.web.window === window), "
+                              + "palette=\(String(describing: secondStore.palette)))")
+            }
+            try require(window.firstResponder === secondTab.web,
+                        "revealing a parked tab leaves the page ready for typing")
+
+            window.performClose(nil)
+            try require(!TabStore.all.contains(where: { $0 === firstStore || $0 === secondStore }),
+                        "closing a hopped window removes both of its profile stores")
+            window.contentView = nil
+            window.delegate = nil
+            // tearDown() replaces each closed page with a fresh unloaded WKWebView. Release
+            // those fixture tabs before the separate cleanup process unregisters the stores.
+            firstStore.tabs.removeAll()
+            secondStore.tabs.removeAll()
+            ExtensionHost.forget(second.id)
+            ProfileManager.releaseDataStore(for: second.id)
         }
 
         private func clean() async {

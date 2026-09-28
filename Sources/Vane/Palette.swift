@@ -1010,8 +1010,7 @@ struct CommandField: NSViewRepresentable {
         return PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
                           image: tab.favicon, title: tab.title, detail: detail, subtitle: place,
                           trailing: "Switch to Tab", kind: "Open tab") { _ in
-            owner.current = tab.id
-            owner.window?.makeKeyAndOrderFront(nil)
+            Windows.reveal(tab, in: owner)
         }
     }
 

@@ -2877,7 +2877,6 @@ struct Stash {
         // can go: the hop parks this store and brings that profile's forward in the same
         // window, and that store does the switch with its own stash. See `Windows.hop`.
         guard space.profileID == profileID else {
-            saveCurrentSpace()
             Windows.hop(self, to: space)
             return
         }

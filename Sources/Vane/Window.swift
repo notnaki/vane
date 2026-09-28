@@ -583,6 +583,25 @@ extension VaneWindow {
         return open(profile: profile)
     }
 
+    /// Select an open tab, including one held behind another profile in this same window.
+    /// The command bar lists tabs from every store; a parked store has no `window` to raise,
+    /// so bring its profile to the front before selecting its tab.
+    @discardableResult
+    static func reveal(_ tab: Tab, in owner: TabStore) -> Bool {
+        guard owner.tabs.contains(where: { $0 === tab }) else { return false }
+        if let window = owner.parkedIn {
+            guard let showing = TabStore.all.first(where: { $0.window === window }),
+                  let space = owner.currentSpace,
+                  hop(showing, to: space) === owner else { return false }
+        } else if owner.window == nil {
+            return false
+        }
+        owner.current = tab.id
+        owner.window?.makeKeyAndOrderFront(nil)
+        owner.focusPageAfterHop()
+        return true
+    }
+
     // MARK: Hopping profile in place
 
     /// Show another profile in this window, in place.
@@ -609,6 +628,10 @@ extension VaneWindow {
               let delegate = window.delegate as? WindowDelegate,
               let profile = ProfileManager.shared.profiles.first(where: { $0.id == space.profileID })
         else { return nil }
+        // Every route into a hop must persist the departing Space, including the Profiles
+        // menu's direct call above. Otherwise its tabs exist only in the parked store until
+        // the next session save and a crash before then loses them.
+        store.saveCurrentSpace()
         // Either the store this window already has for that profile, or a new one opened
         // straight into the Space being walked to — there is no intermediate Space to show.
         let arriving = parked(profile.id, in: window)
@@ -631,6 +654,9 @@ extension VaneWindow {
         // that says which set of logins the page is using. See `open`.
         window.title = "Vane" + (profile.isDefault ? "" : " — " + profile.name)
         rebuild()                               // the Spaces menu's checkmark has changed profile
+        // Rebuilding the chrome detaches the old first responder. Put the keyboard on the
+        // arriving page once AppKit has mounted it, so a keyboard Space switch can keep typing.
+        arriving.focusPageAfterHop()
         return arriving
     }
 
@@ -821,6 +847,24 @@ extension TabStore {
             guard Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
                                             libraryOpen: libraryOpen), let page else { return }
             window.makeFirstResponder(page)
+        }
+    }
+
+    /// A profile hop replaces the whole SwiftUI tree. Its new WebHost may mount one or two
+    /// turns after the old first responder disappears, so a single `focusPage()` can run too
+    /// early and leave the window holding the keyboard. Retry briefly while nobody else has
+    /// taken focus; a newly opened command bar or a clicked field stops the handoff.
+    func focusPageAfterHop(remaining: Int = 6) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+            guard let self, let window, palette == nil, !libraryOpen,
+                  let page = active?.web else { return }
+            let holder = window.firstResponder
+            let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
+            guard nobody else { return }
+            if page.window === window { window.makeFirstResponder(page) }
+            let stillNobody = window.firstResponder === window
+                || (window.firstResponder as? NSView).map { $0.window !== window } ?? false
+            if stillNobody && remaining > 1 { focusPageAfterHop(remaining: remaining - 1) }
         }
     }
 }
