@@ -614,10 +614,30 @@ struct PasswordChoice: Equatable {
         }
         return { user: user, pass: pw };
       }
+      var lastPair = null;
+      function pairFor(el) {
+        if (!el) { return null; }
+        var p = pair(el.form || document);
+        return p && (el === p.user || el === p.pass) ? p : null;
+      }
+      function visible(p) {
+        return p && p.pass.isConnected && p.pass.getClientRects().length > 0;
+      }
+      function targetPair() {
+        var focused = pairFor(document.activeElement);
+        if (visible(focused)) { return focused; }
+        if (visible(lastPair)) { return lastPair; }
+        for (var i = 0; i < document.forms.length; i++) {
+          var candidate = pair(document.forms[i]);
+          if (visible(candidate)) { return candidate; }
+        }
+        var ungrouped = pair(document);
+        return visible(ungrouped) ? ungrouped : null;
+      }
       // Where a chooser should hang: under the username field, its width, in CSS pixels
       // relative to the viewport — which is exactly what the web view is showing.
       function anchor() {
-        var p = pair(document);
+        var p = targetPair();
         if (!p) { return null; }
         var r = (p.user || p.pass).getBoundingClientRect();
         return { x: r.left, y: r.bottom, w: r.width };
@@ -628,13 +648,15 @@ struct PasswordChoice: Equatable {
         listOpen = !!m.focus;
         webkit.messageHandlers.vanepw.postMessage(m);
       }
-      function ours(el) { var p = pair(document); return !!p && (el === p.user || el === p.pass); }
+      function ours(el) { return !!pairFor(el); }
       // Chromium drops its list of saved accounts under the username field the moment you
       // focus it, and Arc inherits that. Capture phase throughout: a site that stops these
       // events from bubbling must not also stop the browser's own chrome from appearing —
       // or, worse, from going away again.
       document.addEventListener('focusin', function (e) {
-        if (!ours(e.target)) { return; }
+        var p = pairFor(e.target);
+        if (!p) { return; }
+        lastPair = p;
         var a = anchor();
         if (a) { send({ focus: true, x: a.x, y: a.y, w: a.w }); }
       }, true);
@@ -653,18 +675,17 @@ struct PasswordChoice: Equatable {
       }, true);
       // A single-page app changes the form under us without a navigation.
       window.addEventListener('popstate', function () { send({ dismiss: 'navigate' }); });
-      function offer() {
-        var p = pair(document);
+      function offer(p) {
         if (!p || !p.pass.value) { return; }
         send({ account: p.user ? p.user.value : '', password: p.pass.value });
       }
-      document.addEventListener('submit', offer, true);
+      document.addEventListener('submit', function (e) { offer(pair(e.target)); }, true);
       // Plenty of logins never fire submit — a button posts via fetch and then navigates.
       // pagehide catches those. ponytail: best effort; a site that logs in without any
       // navigation at all still slips through.
-      window.addEventListener('pagehide', offer);
+      window.addEventListener('pagehide', function () { offer(targetPair()); });
       window.__vaneFill = function (account, password) {
-        var p = pair(document);
+        var p = targetPair();
         if (!p) { return false; }
         if (p.user && account) { setValue(p.user, account); }
         setValue(p.pass, password);
@@ -703,6 +724,10 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
 
     private static let page = """
     <!doctype html><meta charset=utf-8><body>
+    <form id=signup>
+      <input type=email id=signupUser value=signup@example.com>
+      <input type=password id=signupPass value=signup-secret>
+    </form>
     <form id=f>
       <input type=text name=other value=decoy>
       <input type=email id=u name=email>
@@ -1156,28 +1181,38 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         b.onLoaded = {
             // In the script's own world, like the app does it — the page world has no
             // `__vaneFill` at all any more, which is the point of the world.
-            w.evaluateJavaScript(Autofill.fillJS(account: user, password: pass),
-                                 in: nil, in: Autofill.world) { result in
-                let filled = try? result.get()
-                check("fill reports a form was found", (filled as? Bool) == true)
-                w.evaluateJavaScript("window.__state()") { state, _ in
-                    let s = (state as? String) ?? ""
-                    check("username reached component state", s.contains(user))
-                    check("password reached component state", s.contains(pass))
-                    check("decoy text field was not mistaken for the username", !s.contains("decoy"))
-                    // The whole point of the content world: a page cannot replace the fill
-                    // hook with one that keeps whatever the browser hands it.
-                    w.evaluateJavaScript("typeof window.__vaneFill + \" \" + typeof window.__vaneAnchor") { kinds, _ in
-                        check("the page's own world cannot see the autofill hooks",
-                              (kinds as? String) == "undefined undefined")
-                    }
-                    w.evaluateJavaScript("document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}))") { _, _ in
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                            check("submit offered the credential back to the app", b.offered?.0 == user && b.offered?.1 == pass)
-                            print("window.open against a real page")
-                            popupRows { rows in
-                                for (name, ok) in rows { check(name, ok) }
-                                finish("PASS")
+            w.evaluateJavaScript("document.getElementById('u').focus()") { _, _ in
+                w.evaluateJavaScript(Autofill.fillJS(account: user, password: pass),
+                                     in: nil, in: Autofill.world) { result in
+                    let filled = try? result.get()
+                    check("fill reports a form was found", (filled as? Bool) == true)
+                    w.evaluateJavaScript("window.__state()") { state, _ in
+                        let s = (state as? String) ?? ""
+                        check("username reached component state", s.contains(user))
+                        check("password reached component state", s.contains(pass))
+                        check("decoy text field was not mistaken for the username", !s.contains("decoy"))
+                        w.evaluateJavaScript("document.getElementById('signupPass').value") { value, _ in
+                            check("fill leaves another form's password alone",
+                                  (value as? String) == "signup-secret")
+                        }
+                        // The page's own world cannot replace the isolated fill hook.
+                        w.evaluateJavaScript("typeof window.__vaneFill + \" \" + typeof window.__vaneAnchor") { kinds, _ in
+                            check("the page's own world cannot see the autofill hooks",
+                                  (kinds as? String) == "undefined undefined")
+                        }
+                        w.evaluateJavaScript("""
+                            document.getElementById('signupUser').value = 'signup@example.com';
+                            document.getElementById('signupPass').value = 'signup-secret';
+                            document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}));
+                            """) { _, _ in
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                check("submitting login offers its credential, not signup's",
+                                      b.offered?.0 == user && b.offered?.1 == pass)
+                                print("window.open against a real page")
+                                popupRows { rows in
+                                    for (name, ok) in rows { check(name, ok) }
+                                    finish("PASS")
+                                }
                             }
                         }
                     }
