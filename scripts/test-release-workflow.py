@@ -44,6 +44,7 @@ def tag_from_environment(path):
 
 
 def main():
+    assert "concurrency:\n  group: release\n  queue: max\n" in WORKFLOW.read_text()
     names = [line.strip() for line in LINES if line.startswith("      - name: ")]
     assert names.index("- name: Require public release credentials") < names.index("- name: Pick the tag")
     assert names.index("- name: Notarize + staple the app") < names.index("- name: Package")

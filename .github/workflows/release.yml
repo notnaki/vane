@@ -42,8 +42,10 @@ on:
 permissions:
   contents: write   # push the tag, create the release
 
-# Two releases cut in a row queue rather than race over the same tag sequence.
-concurrency: release
+# Serialize release runs without canceling an older pending tag event.
+concurrency:
+  group: release
+  queue: max
 
 jobs:
   release:
