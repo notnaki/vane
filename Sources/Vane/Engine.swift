@@ -1693,6 +1693,7 @@ struct Stash {
         // A Space's own Today tabs, plus whatever this window was asked to open — a url
         // handed to a window that is in a Space opens *in* that Space rather than replacing
         // it, which is what "new windows open in the current space" means.
+        let requestedURL = urls.first
         let urls = space.map { s in s.tabURLs + urls.filter { !s.tabURLs.contains($0) } } ?? urls
         // Favourites are the one thing every Space shares, so they come from the profile
         // whether this window is in a Space or not. `Spaces.favourites` also folds any
@@ -1719,20 +1720,24 @@ struct Stash {
         let rest = urls.filter { !kept.contains($0) }
         // Today is a shape too — its folders are where a tidy puts its groups — so the tabs
         // are collected on the way past and handed the shape the Space was left in.
-        adoptTodayShape(tabs: rest.map { url in
+        let restoredToday = rest.map { url in
             let t = newBlankTab()
             t.open(url, parked: parked[url.absoluteString])
             // Named by the url it was opened with, not the one it has: with suspension off
             // `open` hands it straight to `go` and there is no `currentURL` yet.
             return (url: url, tab: t)
-        })
-        // Favourites and pinned rows come back parked and stay parked: focus lands on the
-        // first Today tab, and with none the column is bare and the search bar is up — the
-        // same thing an empty window does, because as far as pages go it is one.
-        current = tabs.first { $0.kind == .today }?.id
-        // `openPalette`, not `newTab(nil)`: they do the same thing, but `newTab` on a Little
-        // Arc opens another window, and a window opening itself does not end.
-        if rest.isEmpty { openPalette(.newTab) }
+        }
+        adoptTodayShape(tabs: restoredToday)
+        // Favourites and pinned rows come back parked and stay parked. An explicit URL
+        // selects its matching tab; otherwise focus lands on the first Today tab.
+        current = requestedURL.flatMap { requested in
+            restoredToday.first { $0.url == requested }?.tab.id
+                ?? tabs.first { $0.currentURL == requested || $0.homeURL == requested }?.id
+        } ?? tabs.first { $0.kind == .today }?.id
+        // With nothing selected the column is bare and the search bar is up. `openPalette`,
+        // not `newTab(nil)`: a Little Arc would open another window, and a window opening
+        // itself does not end. A requested favourite or pin still counts as a selection.
+        if current == nil { openPalette(.newTab) }
         rememberSpace()
     }
 
