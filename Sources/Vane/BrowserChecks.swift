@@ -430,6 +430,49 @@ import WebKit
             try require(window.firstResponder === secondTab.web,
                         "revealing a parked tab leaves the page ready for typing")
 
+            _ = Windows.switchTo(profile: first)
+            renameSpace(secondSpace, in: firstStore)
+            try require(secondStore.window === window && secondStore.renamingSpace == secondSpace.id,
+                        "a foreign Space dot opens its inline rename field")
+            secondStore.renamingSpace = nil
+
+            _ = Windows.switchTo(profile: first)
+            let spare = manager.createSpace(name: "Browsercheck Spare", in: second.id)
+            guard let formURL = URL(string: "\(base)/form") else {
+                throw Failure("profile hop fixture has no form URL")
+            }
+            // This navigation happens in the live parked store after its last disk save.
+            // Moving from the foreign dot must read that live URL, not the stale /b snapshot.
+            secondTab.web.load(URLRequest(url: formURL))
+            try await loaded(secondTab, path: "/form", title: "Fixture Form")
+            moveSpace(secondSpace, to: first, from: firstStore)
+            try require(manager.spaces(for: first.id).first(where: { $0.id == secondSpace.id })?
+                            .tabURLs.contains(formURL) == true,
+                        "moving a foreign Space preserves navigation in its parked profile")
+            try require(secondStore.currentSpaceID == spare.id,
+                        "moving a foreign Space resolves its parked owner to a surviving Space")
+
+            let keep = manager.createSpace(name: "Browsercheck Keep", in: second.id)
+            guard let submittedURL = URL(string: "\(base)/submitted") else {
+                throw Failure("profile hop fixture has no submitted URL")
+            }
+            secondStore.newTab(firstURL)
+            guard let parkedTab = secondStore.tabs.last else {
+                throw Failure("parked profile has no deletion fixture tab")
+            }
+            try await loaded(parkedTab, path: "/a", title: "Fixture A")
+            try require(secondStore.saveCurrentSpace(),
+                        "the deletion fixture has a stale parked Space snapshot")
+            parkedTab.web.load(URLRequest(url: submittedURL))
+            try await loaded(parkedTab, path: "/submitted", title: "Fixture Submitted")
+            try require(deleteSpaceConfirmed(spare, in: firstStore),
+                        "a foreign Space dot can delete a parked profile's Space")
+            try require(Archive.shared(for: second.id).entries.contains {
+                            $0.url == submittedURL.absoluteString
+                        }, "deleting a foreign Space archives its live parked URL")
+            try require(secondStore.currentSpaceID == keep.id,
+                        "deleting a foreign Space resolves its parked owner to a surviving Space")
+
             window.performClose(nil)
             try require(!TabStore.all.contains(where: { $0 === firstStore || $0 === secondStore }),
                         "closing a hopped window removes both of its profile stores")

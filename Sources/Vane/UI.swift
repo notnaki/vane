@@ -2252,8 +2252,14 @@ private struct SpaceMenu: View {
 
 /// Arc renames a Space in the sidebar, not in a dialog: this only arms the field, and
 /// `SpaceName` is what commits it.
-@MainActor private func renameSpace(_ space: Space, in store: TabStore) {
-    store.renamingSpace = space.id
+@MainActor func renameSpace(_ space: Space, in store: TabStore) {
+    guard let window = store.window else { return }
+    // The header only edits the Space this window is showing. A dot can belong to another
+    // Space or profile, so go there before arming the editor on the store now in the window.
+    store.switchTo(space: space)
+    guard let showing = TabStore.all.first(where: { $0.window === window }),
+          showing.currentSpaceID == space.id else { return }
+    showing.renamingSpace = space.id
 }
 
 @MainActor private func deleteSpace(_ space: Space, in store: TabStore) {
@@ -2270,20 +2276,41 @@ private struct SpaceMenu: View {
     a.addButton(withTitle: "Delete")
     a.buttons.last?.hasDestructiveAction = true
     guard a.runModal() == .alertSecondButtonReturn else { return }
-    let survivor = siblings.first { $0.id != space.id }
-    guard Spaces.delete(space.id, in: space.profileID) else { return }
-    // Only when the window was standing in the Space that has just gone. Deleting another
-    // profile's Space off the strip leaves this window exactly where it is.
-    if space.id == store.currentSpaceID, let survivor { store.switchTo(space: survivor) }
+    _ = deleteSpaceConfirmed(space, in: store)
+}
+
+/// The destructive half of Delete Space, separate from the alert so the browser smoke can
+/// prove that a parked profile's live navigation is archived before the Space disappears.
+@discardableResult
+@MainActor func deleteSpaceConfirmed(_ space: Space, in store: TabStore) -> Bool {
+    let owners = storesShowing(space)
+    guard saveSpaces(in: owners, reportingIn: store) else { return false }
+    guard Spaces.delete(space.id, in: space.profileID) else { return false }
+    // A parked store is still showing this Space in memory. Walk every owner into a
+    // survivor now, or a later hop would save pages back to a Space that no longer exists.
+    for owner in owners { owner.resolveStaleSpace(); owner.spacesChanged() }
     store.spacesChanged()                  // the strip is a dot shorter
     rebuild()
+    return true
+}
+
+@MainActor private func storesShowing(_ space: Space) -> [TabStore] {
+    TabStore.all.filter { !$0.isPrivate && !$0.isLittle && $0.currentSpaceID == space.id }
+}
+
+@MainActor private func saveSpaces(in owners: [TabStore], reportingIn store: TabStore) -> Bool {
+    for owner in owners where !owner.saveCurrentSpace() {
+        Toasts.show("Could not save Space", in: store)
+        return false
+    }
+    return true
 }
 
 /// A *store's* profile is fixed for its lifetime — the data store, the cookie jar and the
 /// extension host are all built from it in `TabStore.init` — but a window's is not: the strip
 /// runs across profiles, so a Space that changes profile has only moved along it, and a window
 /// showing it follows in place. See `Windows.hop`.
-@MainActor private func moveSpace(_ space: Space, to profile: Profile, from store: TabStore) {
+@MainActor func moveSpace(_ space: Space, to profile: Profile, from store: TabStore) {
     // The source profile is losing a Space, so the same rule as Delete applies: never its
     // last one. Without this the profile is left with none, this window's close writes its
     // tabs into that profile's session, and the next window there invents a Space holding a
@@ -2291,13 +2318,16 @@ private struct SpaceMenu: View {
     guard profile.id != space.profileID,
           ProfileManager.shared.spaces(for: space.profileID).count > 1 else { return }
     let showing = space.id == store.currentSpaceID
-    if showing { store.saveCurrentSpace() }
+    let owners = storesShowing(space)
+    guard saveSpaces(in: owners, reportingIn: store),
+          let fresh = ProfileManager.shared.spaces(for: space.profileID).first(where: { $0.id == space.id })
+    else { return }
     ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
     // Out of the Space *before* it changes profile, so this store leaves it the way it leaves
     // any Space that has gone from under it — pages down, nothing stashed — rather than being
     // parked still claiming to be in one its own profile no longer owns.
-    if showing { store.resolveStaleSpace() }
-    var moved = space
+    for owner in owners { owner.resolveStaleSpace(); owner.spacesChanged() }
+    var moved = fresh
     moved.profileID = profile.id
     ProfileManager.shared.updateSpace(moved)
     store.spacesChanged()
