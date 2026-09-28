@@ -84,6 +84,15 @@ import WebKit
                             "the isolated regular store remains persistent")
                 try require(expectedStore != profile,
                             "the isolated store cannot collide with an installed profile store")
+                let background = TabStore(urls: [URL(string: "\(base)/a")!], profileID: profile)
+                let original = background.current
+                background.active?.passwordChoice = PasswordChoice(
+                    host: "example.test", accounts: ["ada"], anchor: .zero)
+                background.openBeside(URL(string: "\(base)/b")!, focus: false)
+                try require(background.current == original
+                            && background.active?.passwordChoice != nil,
+                            "a background link does not interrupt the active tab's password chooser")
+                tabs += background.tabs
                 try await load(tab, "\(base)/a", title: "Fixture A")
                 try require(tab.history.history().contains { URL(string: $0.url)?.path == "/a" },
                             "normal navigation records a real history visit")
