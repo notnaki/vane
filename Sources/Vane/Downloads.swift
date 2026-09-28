@@ -55,6 +55,10 @@ import WebKit
         self.directory = directory
         self.sandboxed = sandboxed
         super.init()
+        // History, resumed transfers and Finder actions inspect saved destination URLs
+        // before the next download asks for a destination. Reopen the folder's sandbox
+        // grant before `load()` decides that a finished file has gone missing.
+        if !sandboxed { _ = DownloadLocation.directory(for: profileID) }
         load()
         guard !sandboxed else { return }
         // Quitting mid-download is the interruption people actually hit; see `pauseAll`.
@@ -865,8 +869,11 @@ import WebKit
             let picked = root.appendingPathComponent("picked", isDirectory: true)
             try? fm.createDirectory(at: picked, withIntermediateDirectories: true)
             DownloadLocation.setDirectory(picked, for: id, defaults: scratch)
+            assert("a chosen folder is persisted as a bookmark, not a path",
+                   (scratch.array(forKey: DownloadLocation.directoryKey(id)) as? [Data])?.count == 1)
             assert("a chosen folder is where downloads go",
-                   DownloadLocation.directory(for: id, defaults: scratch).path == picked.path)
+                   DownloadLocation.directory(for: id, defaults: scratch)
+                       .resolvingSymlinksInPath().path == picked.resolvingSymlinksInPath().path)
             assert("the choice is per profile, not global",
                    DownloadLocation.directory(for: other, defaults: scratch)
                        == DownloadLocation.systemDownloads)
@@ -874,6 +881,17 @@ import WebKit
             assert("a folder that has since been deleted falls back rather than failing",
                    DownloadLocation.directory(for: id, defaults: scratch)
                        == DownloadLocation.systemDownloads)
+            let disconnected = root.appendingPathComponent("disconnected", isDirectory: true)
+            try? fm.createDirectory(at: disconnected, withIntermediateDirectories: true)
+            let bookmark = (try? disconnected.bookmarkData(options: .withSecurityScope))
+                ?? (try? disconnected.bookmarkData())
+            try? fm.removeItem(at: disconnected)
+            scratch.set(bookmark.map { [$0] }, forKey: DownloadLocation.directoryKey(id))
+            assert("an unavailable folder falls back until its volume returns",
+                   DownloadLocation.directory(for: id, defaults: scratch)
+                       == DownloadLocation.systemDownloads)
+            assert("an unavailable folder keeps its bookmark for a later relaunch",
+                   (scratch.array(forKey: DownloadLocation.directoryKey(id)) as? [Data])?.count == 1)
             let notADirectory = root.appendingPathComponent("afile.txt")
             try? Data("x".utf8).write(to: notADirectory)
             DownloadLocation.setDirectory(notADirectory, for: id, defaults: scratch)
@@ -952,9 +970,9 @@ import WebKit
 /// engine and the archive cadence, because a work profile and a personal one do not file
 /// their downloads in the same place.
 ///
-/// ponytail: a path string in UserDefaults, not a security-scoped bookmark. Vane is not
-/// sandboxed, so a path is the whole of it; a folder the user later deletes falls back to
-/// ~/Downloads rather than failing the download.
+/// The user's choice is a security-scoped bookmark. A path alone loses the open panel's
+/// sandbox grant at relaunch; resolving the bookmark reopens that grant before WebKit
+/// decides where to write the next download.
 @MainActor enum DownloadLocation {
     /// The system folder, and what an unset preference means.
     nonisolated static var systemDownloads: URL {
@@ -973,20 +991,37 @@ import WebKit
     /// or renamed is not an error the user should meet as a failed download.
     static func directory(for id: UUID, defaults: UserDefaults = .vane,
                           fm: FileManager = .default) -> URL {
-        guard let path = defaults.string(forKey: directoryKey(id)), !path.isEmpty else {
-            return systemDownloads
+        let key = directoryKey(id)
+        // Older builds saved a path. Upgrade it if it is still accessible (for example,
+        // a folder under ~/Downloads); otherwise make the default visible so the user can
+        // pick it again. A path outside the sandbox cannot grant itself access.
+        if let legacy = defaults.string(forKey: key) {
+            let url = URL(fileURLWithPath: legacy, isDirectory: true)
+            if !setDirectory(url, for: id, defaults: defaults) {
+                defaults.removeObject(forKey: key)
+                return systemDownloads
+            }
         }
+        guard let url = ScopedPaths.availableURL(key, in: defaults) else { return systemDownloads }
         var isDirectory: ObjCBool = false
-        guard fm.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue,
+              fm.isWritableFile(atPath: url.path) else {
             return systemDownloads
         }
-        return URL(fileURLWithPath: path, isDirectory: true)
+        return url
     }
 
-    /// Nil resets to the system folder rather than storing an empty path.
-    static func setDirectory(_ url: URL?, for id: UUID, defaults: UserDefaults = .vane) {
-        guard let url else { return defaults.removeObject(forKey: directoryKey(id)) }
-        defaults.set(url.path, forKey: directoryKey(id))
+    /// Nil resets to the system folder. A failed choice leaves the previous one intact.
+    @discardableResult
+    static func setDirectory(_ url: URL?, for id: UUID, defaults: UserDefaults = .vane) -> Bool {
+        guard let url else { return ScopedPaths.replace(nil, at: directoryKey(id), in: defaults) }
+        var isDirectory: ObjCBool = false
+        guard url.isFileURL,
+              FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue, FileManager.default.isWritableFile(atPath: url.path) else {
+            return false
+        }
+        return ScopedPaths.replace(url, at: directoryKey(id), in: defaults)
     }
 
     static func askEveryTime(for id: UUID, defaults: UserDefaults = .vane) -> Bool {
@@ -1008,7 +1043,13 @@ import WebKit
         panel.prompt = "Choose"
         panel.message = "Where should downloads be saved?"
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        setDirectory(url, for: id)
+        guard setDirectory(url, for: id) else {
+            let alert = NSAlert()
+            alert.messageText = "Could not use this download folder"
+            alert.informativeText = "Choose a writable folder that Vane can reopen after relaunch."
+            alert.runModal()
+            return nil
+        }
         return url
     }
 

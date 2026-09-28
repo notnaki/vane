@@ -43,6 +43,14 @@ import WebKit
         urls(key, in: defaults).map(\.path)
     }
 
+    /// Resolve a single saved choice without deleting it when a drive is temporarily
+    /// unavailable. Callers can fall back now and regain the choice on a later launch.
+    static func availableURL(_ key: String, in defaults: UserDefaults = .vane) -> URL? {
+        guard let data = raw(key, in: defaults).first,
+              let url = resolve(data), start(url) else { return nil }
+        return url
+    }
+
     /// Bookmark `url` and append it. False means the sandbox will not let this folder be
     /// remembered — the honest answer to "can this be reopened next launch", and a caller
     /// must not write down a path it cannot reopen.
@@ -54,6 +62,22 @@ import WebKit
         all.append(data)
         defaults.set(all, forKey: key)
         _ = start(url)
+        return true
+    }
+
+    /// Store one selected folder, replacing the previous choice only after the new
+    /// bookmark and access are valid. A sandboxed caller must not fall back to a plain
+    /// bookmark: it would appear to work until the panel's grant expires at relaunch.
+    @discardableResult
+    static func replace(_ url: URL?, at key: String, in defaults: UserDefaults = .vane) -> Bool {
+        guard let url else {
+            defaults.removeObject(forKey: key)
+            return true
+        }
+        guard let data = bookmark(url, requireScope: AppIcon.isSandboxed), start(url) else {
+            return false
+        }
+        defaults.set([data], forKey: key)
         return true
     }
 
@@ -91,10 +115,12 @@ import WebKit
 
     /// Outside the sandbox `.withSecurityScope` is refused; a plain bookmark is all that is
     /// needed there, and resolving one grants access the process already had.
-    private static func bookmark(_ url: URL) -> Data? {
-        (try? url.bookmarkData(options: .withSecurityScope,
-                               includingResourceValuesForKeys: nil, relativeTo: nil))
-            ?? (try? url.bookmarkData())
+    private static func bookmark(_ url: URL, requireScope: Bool = false) -> Data? {
+        if let scoped = try? url.bookmarkData(options: .withSecurityScope,
+                                               includingResourceValuesForKeys: nil, relativeTo: nil) {
+            return scoped
+        }
+        return requireScope ? nil : (try? url.bookmarkData())
     }
 
     private static func resolve(_ data: Data) -> URL? {
