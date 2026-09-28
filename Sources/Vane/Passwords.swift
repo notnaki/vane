@@ -626,7 +626,10 @@ struct PasswordChoice: Equatable {
       function targetPair() {
         var focused = pairFor(document.activeElement);
         if (visible(focused)) { return focused; }
-        if (visible(lastPair)) { return lastPair; }
+        // A SPA can replace the username alone. Re-pair from the cached password node
+        // so a connected password never carries a detached username into a fill.
+        var recent = lastPair && pairFor(lastPair.pass);
+        if (visible(recent)) { return recent; }
         for (var i = 0; i < document.forms.length; i++) {
           var candidate = pair(document.forms[i]);
           if (visible(candidate)) { return candidate; }
@@ -675,24 +678,26 @@ struct PasswordChoice: Equatable {
       }, true);
       // A single-page app changes the form under us without a navigation.
       window.addEventListener('popstate', function () { send({ dismiss: 'navigate' }); });
-      var submittedSinceInput = false;
+      var submittedForm = null;
       function offer(p) {
         if (!p || !p.pass.value) { return; }
         send({ account: p.user ? p.user.value : '', password: p.pass.value });
       }
       document.addEventListener('submit', function (e) {
-        submittedSinceInput = true;
+        submittedForm = e.target;
         offer(pair(e.target));
       }, true);
       // A failed sign-in can leave the page in place. An edited field starts a new attempt.
       document.addEventListener('input', function (e) {
-        if (submittedSinceInput && pairFor(e.target)) { submittedSinceInput = false; }
+        if (submittedForm && e.target.form === submittedForm && pairFor(e.target)) {
+          submittedForm = null;
+        }
       }, true);
       // Plenty of logins never fire submit — a button posts via fetch and then navigates.
       // pagehide catches those. ponytail: best effort; a site that logs in without any
       // navigation at all still slips through.
       window.addEventListener('pagehide', function () {
-        if (!submittedSinceInput) { offer(targetPair()); }
+        if (!submittedForm) { offer(targetPair()); }
       });
       window.__vaneFill = function (account, password) {
         var p = targetPair();
@@ -1230,10 +1235,50 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                                         check("empty login submit cannot offer signup on pagehide",
                                               b.offered == nil)
-                                        print("window.open against a real page")
-                                        popupRows { rows in
-                                            for (name, ok) in rows { check(name, ok) }
-                                            finish("PASS")
+                                        // A single-page app may replace just the username
+                                        // node after focus, leaving the password node in place.
+                                        w.evaluateJavaScript("""
+                                            document.getElementById('u').focus();
+                                            var oldUser = document.getElementById('u');
+                                            var newUser = document.createElement('input');
+                                            newUser.id = 'u';
+                                            newUser.type = 'email';
+                                            oldUser.replaceWith(newUser);
+                                            """) { _, _ in
+                                            w.evaluateJavaScript(
+                                                Autofill.fillJS(account: "new@example.com", password: "new-secret"),
+                                                in: nil, in: Autofill.world) { _ in
+                                                w.evaluateJavaScript("""
+                                                    JSON.stringify([document.getElementById('u').value,
+                                                                    document.getElementById('p').value])
+                                                    """) { values, _ in
+                                                    check("fill uses the replacement username node",
+                                                          (values as? String) == "[\"new@example.com\",\"new-secret\"]")
+                                                    b.offered = nil
+                                                    w.evaluateJavaScript("""
+                                                        document.getElementById('u').value = 'login@example.com';
+                                                        document.getElementById('p').value = 'login-secret';
+                                                        document.getElementById('p').dispatchEvent(new Event('input', {bubbles:true}));
+                                                        document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}));
+                                                        document.getElementById('signupUser').value = 'signup@example.com';
+                                                        document.getElementById('signupPass').value = 'signup-secret';
+                                                        document.getElementById('signupUser').dispatchEvent(new Event('input', {bubbles:true}));
+                                                        document.getElementById('signupUser').focus();
+                                                        window.dispatchEvent(new Event('pagehide'));
+                                                        """) { _, _ in
+                                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                                            check("editing another form cannot replace a submitted login offer",
+                                                                  b.offered?.0 == "login@example.com"
+                                                                    && b.offered?.1 == "login-secret")
+                                                            print("window.open against a real page")
+                                                            popupRows { rows in
+                                                                for (name, ok) in rows { check(name, ok) }
+                                                                finish("PASS")
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
