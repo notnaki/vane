@@ -125,14 +125,28 @@ def main():
         environment["VANE_DATA_DIR"] = data
         print(message + " Requires a graphical session.", flush=True)
         try:
-            result = subprocess.run([str(executable), "browsercheck"], env=environment, timeout=75)
-        except subprocess.TimeoutExpired:
-            print("FAIL: browser smoke process exceeded 75 seconds", file=sys.stderr)
-            return 1
+            try:
+                result = subprocess.run([str(executable), "browsercheck"],
+                                        env=environment, timeout=75)
+                browser_code = result.returncode
+            except subprocess.TimeoutExpired:
+                print("FAIL: browser smoke process exceeded 75 seconds", file=sys.stderr)
+                browser_code = 1
+
+            # WebKit's network process holds the named data store open throughout the
+            # browsercheck invocation. Re-enter the same signed app after it exits to
+            # unregister the isolated store and verify that WebKit no longer lists it.
+            try:
+                cleanup = subprocess.run([str(executable), "browsercheck-cleanup"],
+                                         env=environment, timeout=20)
+                cleanup_code = cleanup.returncode
+            except subprocess.TimeoutExpired:
+                print("FAIL: browser smoke cleanup exceeded 20 seconds", file=sys.stderr)
+                cleanup_code = 1
+            return browser_code or cleanup_code
         finally:
             if bundle_context is not None:
                 bundle_context.cleanup()
-    return result.returncode
 
 
 if __name__ == "__main__":

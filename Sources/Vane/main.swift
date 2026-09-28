@@ -15,6 +15,7 @@ app.delegate = AppLifecycle.shared
 if args.first == "drmcheck"  { DRMCheck.run(url: args.dropFirst().first) }
 if args.first == "selfcheck" { SelfCheck.run() }
 if args.first == "browsercheck" { BrowserChecks.run() }
+if args.first == "browsercheck-cleanup" { BrowserChecks.cleanupStore() }
 if args.first == "import" {
     guard let file = args.dropFirst().first else {
         FileHandle.standardError.write(Data("Usage: vane import <password-export.csv>\n".utf8))
