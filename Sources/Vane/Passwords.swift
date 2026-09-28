@@ -675,24 +675,24 @@ struct PasswordChoice: Equatable {
       }, true);
       // A single-page app changes the form under us without a navigation.
       window.addEventListener('popstate', function () { send({ dismiss: 'navigate' }); });
-      var offeredOnSubmit = false;
+      var submittedSinceInput = false;
       function offer(p) {
-        if (!p || !p.pass.value) { return false; }
+        if (!p || !p.pass.value) { return; }
         send({ account: p.user ? p.user.value : '', password: p.pass.value });
-        return true;
       }
       document.addEventListener('submit', function (e) {
-        offeredOnSubmit = offer(pair(e.target));
+        submittedSinceInput = true;
+        offer(pair(e.target));
       }, true);
       // A failed sign-in can leave the page in place. An edited field starts a new attempt.
       document.addEventListener('input', function (e) {
-        if (offeredOnSubmit && pairFor(e.target)) { offeredOnSubmit = false; }
+        if (submittedSinceInput && pairFor(e.target)) { submittedSinceInput = false; }
       }, true);
       // Plenty of logins never fire submit — a button posts via fetch and then navigates.
       // pagehide catches those. ponytail: best effort; a site that logs in without any
       // navigation at all still slips through.
       window.addEventListener('pagehide', function () {
-        if (!offeredOnSubmit) { offer(targetPair()); }
+        if (!submittedSinceInput) { offer(targetPair()); }
       });
       window.__vaneFill = function (account, password) {
         var p = targetPair();
@@ -1220,10 +1220,22 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                                 check("pagehide keeps the submitted login credential despite signup focus",
                                       b.offered?.0 == user && b.offered?.1 == pass)
-                                print("window.open against a real page")
-                                popupRows { rows in
-                                    for (name, ok) in rows { check(name, ok) }
-                                    finish("PASS")
+                                b.offered = nil
+                                w.evaluateJavaScript("""
+                                    document.getElementById('p').value = '';
+                                    document.getElementById('signupUser').focus();
+                                    document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}));
+                                    window.dispatchEvent(new Event('pagehide'));
+                                    """) { _, _ in
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                        check("empty login submit cannot offer signup on pagehide",
+                                              b.offered == nil)
+                                        print("window.open against a real page")
+                                        popupRows { rows in
+                                            for (name, ok) in rows { check(name, ok) }
+                                            finish("PASS")
+                                        }
+                                    }
                                 }
                             }
                         }
