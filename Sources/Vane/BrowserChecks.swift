@@ -155,6 +155,14 @@ import WebKit
                 try require(incoming.current == incoming.tabs.last?.id,
                             "a URL sent to a new window is selected ahead of existing Space tabs")
                 tabs += incoming.tabs
+                let pinnedURL = URL(string: "\(base)/pin-home")!
+                let pinnedSpace = Space(name: "Pinned", profileID: profile,
+                                        pinnedTabURLs: [pinnedURL])
+                let requestedPin = TabStore(urls: [pinnedURL], profileID: profile,
+                                            space: pinnedSpace)
+                try require(requestedPin.active?.homeURL == pinnedURL && requestedPin.palette == nil,
+                            "a requested pinned page is shown without opening the New Tab palette")
+                tabs += requestedPin.tabs
                 try await load(tab, "\(base)/a", title: "Fixture A")
                 try require(tab.history.history().contains { URL(string: $0.url)?.path == "/a" },
                             "normal navigation records a real history visit")

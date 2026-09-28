@@ -1728,16 +1728,16 @@ struct Stash {
             return (url: url, tab: t)
         }
         adoptTodayShape(tabs: restoredToday)
-        // Favourites and pinned rows come back parked and stay parked: focus lands on the
-        // first Today tab, and with none the column is bare and the search bar is up — the
-        // same thing an empty window does, because as far as pages go it is one.
+        // Favourites and pinned rows come back parked and stay parked. An explicit URL
+        // selects its matching tab; otherwise focus lands on the first Today tab.
         current = requestedURL.flatMap { requested in
             restoredToday.first { $0.url == requested }?.tab.id
                 ?? tabs.first { $0.currentURL == requested || $0.homeURL == requested }?.id
         } ?? tabs.first { $0.kind == .today }?.id
-        // `openPalette`, not `newTab(nil)`: they do the same thing, but `newTab` on a Little
-        // Arc opens another window, and a window opening itself does not end.
-        if rest.isEmpty { openPalette(.newTab) }
+        // With nothing selected the column is bare and the search bar is up. `openPalette`,
+        // not `newTab(nil)`: a Little Arc would open another window, and a window opening
+        // itself does not end. A requested favourite or pin still counts as a selection.
+        if current == nil { openPalette(.newTab) }
         rememberSpace()
     }
 
