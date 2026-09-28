@@ -126,11 +126,11 @@ extension TabStore {
     /// its page into it instead — which is the only reason the placement is separable from
     /// `openBeside` at all.
     @discardableResult
-    func newTabBeside(_ opener: Tab.ID?) -> Tab {
+    func newTabBeside(_ opener: Tab.ID?, focus: Bool = true) -> Tab {
         // One animation for the append and the move, so the row grows in beside its opener
         // rather than appearing at the bottom and flying up.
         Motion.list {
-            let tab = newBlankTab()          // appends, and takes focus
+            let tab = newBlankTab(focus: focus)
             if let from = tabs.firstIndex(where: { $0.id == tab.id }) {
                 let moved = tabs.remove(at: from)
                 let dest = TabStore.insertionIndexBeside(
@@ -148,9 +148,8 @@ extension TabStore {
     /// they were, which is the whole point of ⌘-click.
     func openBeside(_ url: URL, focus: Bool) {
         let opener = current
-        newTabBeside(opener).go(url)
+        newTabBeside(opener, focus: focus).go(url)
         if !focus {
-            current = opener
             axAnnounce("Opened in a background tab.")
         }
     }
