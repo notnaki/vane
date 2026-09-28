@@ -929,6 +929,23 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         do { _ = try PasswordImport.parse("a,b,c\n1,2,3\n") } catch { rejected = true }
         check("a file with no password column is rejected, not half-imported", rejected)
 
+        let importFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vane-import-check-\(UUID().uuidString).csv")
+        defer { try? FileManager.default.removeItem(at: importFile) }
+        do {
+            try ("url,username,password\n"
+                + "https://saved.example,ada,first\n"
+                + "https://blocked.example,ada,second\n")
+                .write(to: importFile, atomically: true, encoding: .utf8)
+            let result = try PasswordImport.importFile(importFile) { entry in
+                entry.host != "blocked.example"
+            }
+            check("password import counts only credentials actually stored",
+                  result.imported == 1 && result.failed == 1 && result.skipped == 0)
+        } catch {
+            check("password import counts only credentials actually stored", false)
+        }
+
         for (name, ok) in LinkContextWebView.check() { check(name, ok) }
 
         if pureOnly { finish("PASS (pure)") }
