@@ -80,11 +80,17 @@ enum PasswordImport {
     }
 
     @discardableResult
-    static func importFile(_ url: URL) throws -> (imported: Int, skipped: Int) {
+    static func importFile(_ url: URL,
+                           save: (Entry) -> Bool = {
+                               Passwords.save(host: $0.host, account: $0.account,
+                                              password: $0.password)
+                           }) throws -> (imported: Int, skipped: Int, failed: Int) {
         let text = try String(contentsOf: url, encoding: .utf8)
         let (entries, skipped) = try parse(text)
-        for e in entries { Passwords.save(host: e.host, account: e.account, password: e.password) }
-        return (entries.count, skipped)
+        let imported = entries.reduce(into: 0) { count, entry in
+            if save(entry) { count += 1 }
+        }
+        return (imported, skipped, entries.count - imported)
     }
 
     struct Failure: LocalizedError {
@@ -104,10 +110,16 @@ enum PasswordImport {
 
         let alert = NSAlert()
         do {
-            let (imported, skipped) = try importFile(file)
-            alert.messageText = "Imported \(imported) password\(imported == 1 ? "" : "s")."
-            alert.informativeText = (skipped > 0 ? "\(skipped) row(s) had no password and were skipped.\n\n" : "")
-                + "That export file is plain text. Delete it now that it has been imported."
+            let result = try importFile(file)
+            alert.messageText = result.failed == 0
+                ? "Imported \(result.imported) password\(result.imported == 1 ? "" : "s")."
+                : "Some passwords could not be imported."
+            if result.failed > 0 { alert.alertStyle = .warning }
+            alert.informativeText = (result.failed > 0
+                ? "\(result.imported) saved; \(result.failed) failed. Check Keychain access and try importing again.\n\n"
+                : "")
+                + (result.skipped > 0 ? "\(result.skipped) row(s) had no password or website and were skipped.\n\n" : "")
+                + "That export file is plain text. Delete it when you no longer need it."
         } catch {
             alert.alertStyle = .warning
             alert.messageText = "Could not import that file."

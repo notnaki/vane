@@ -21,6 +21,9 @@ jobs:
       - name: Checks
         run: ./.build/release/vane selfcheck --pure
 
+      - name: CLI password import errors
+        run: bash scripts/test-cli-import.sh .build/release/vane
+
       - name: Bundle
         run: ./make-app.sh
 

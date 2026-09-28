@@ -15,10 +15,24 @@ app.delegate = AppLifecycle.shared
 if args.first == "drmcheck"  { DRMCheck.run(url: args.dropFirst().first) }
 if args.first == "selfcheck" { SelfCheck.run() }
 if args.first == "browsercheck" { BrowserChecks.run() }
-if args.first == "import", let file = args.dropFirst().first {
-    let (n, skipped) = try! PasswordImport.importFile(URL(fileURLWithPath: file))
-    print("imported \(n), skipped \(skipped) — now delete \(file), it is plain text")
-    exit(0)
+if args.first == "import" {
+    guard let file = args.dropFirst().first else {
+        FileHandle.standardError.write(Data("Usage: vane import <password-export.csv>\n".utf8))
+        exit(2)
+    }
+    do {
+        let result = try PasswordImport.importFile(URL(fileURLWithPath: file))
+        let report = "imported \(result.imported), skipped \(result.skipped), failed \(result.failed)"
+        if result.failed > 0 {
+            FileHandle.standardError.write(Data("\(report) — check Keychain access and try again; \(file) is plain text\n".utf8))
+            exit(1)
+        }
+        print("\(report) — now delete \(file), it is plain text")
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("Could not import passwords: \(error.localizedDescription)\n".utf8))
+        exit(1)
+    }
 }
 
 // Before the first window, and so before the Dock tile is first drawn: the tile belongs to
