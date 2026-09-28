@@ -32,6 +32,61 @@ import WebKit
         fail("browsercheck run loop ended before completion", code: 1)
     }
 
+    /// The browser process cannot unregister a store that its WebKit network process still
+    /// has open. The smoke script invokes this command in a fresh process after `run` exits.
+    static func cleanupStore() -> Never {
+        guard let directory = Store.overrideDirectory,
+              FileManager.default.fileExists(atPath: directory),
+              let id = ProfileManager.dataStoreIdentifier(
+                  for: ProfileManager.defaultID, dataDirectory: directory) else {
+            fail("browsercheck cleanup requires an existing VANE_DATA_DIR", code: 2)
+        }
+        guard Bundle.main.bundleURL.pathExtension == "app", sandboxedSignature() else {
+            fail("browsercheck cleanup must run inside a signed sandboxed app", code: 2)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+            fail("browsercheck cleanup exceeded its 15-second deadline", code: 1)
+        }
+        Task {
+            // A cold fetchAllDataStoreIdentifiers call crashes WebKit on this macOS release.
+            _ = WKProcessPool()
+            for attempt in 0..<20 {
+                let registered = await registeredStoreIdentifiers()
+                if !registered.contains(id) {
+                    print("PASS browsercheck cleanup: temporary WebKit store unregistered")
+                    exit(0)
+                }
+                let error: Error? = await withCheckedContinuation { continuation in
+                    WKWebsiteDataStore.remove(forIdentifier: id) { error in
+                        continuation.resume(returning: error)
+                    }
+                }
+                if error == nil {
+                    let remaining = await registeredStoreIdentifiers()
+                    if !remaining.contains(id) {
+                        print("PASS browsercheck cleanup: temporary WebKit store unregistered")
+                        exit(0)
+                    }
+                }
+                if attempt == 19 {
+                    fail("temporary WebKit store \(id.uuidString) still registered: \(String(describing: error))",
+                         code: 1)
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+        NSApplication.shared.run()
+        fail("browsercheck cleanup run loop ended before completion", code: 1)
+    }
+
+    private static func registeredStoreIdentifiers() async -> [UUID] {
+        await withCheckedContinuation { continuation in
+            WKWebsiteDataStore.fetchAllDataStoreIdentifiers { ids in
+                continuation.resume(returning: ids)
+            }
+        }
+    }
+
     private static func sandboxedSignature() -> Bool {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(Bundle.main.bundleURL as CFURL, [], &code) == errSecSuccess,
@@ -228,12 +283,12 @@ import WebKit
                 try require(try files.allSatisfy { try Data(contentsOf: $0) == Data("Vane download fixture\n".utf8) },
                             "real WKDownload writes complete bytes without replacing the earlier file")
 
-                try await clean()
+                await clean()
                 print("PASS browsercheck: \(assertions) real-WebKit assertions")
                 print("Coverage excludes live permissions/devices, upload dialogs, printing, DRM, persisted session relaunch and TLS trust.")
                 exit(0)
             } catch {
-                try? await clean()
+                await clean()
                 fail(String(describing: error), code: 1)
             }
         }
@@ -300,19 +355,17 @@ import WebKit
             print("  ok  \(label)")
         }
 
-        private func clean() async throws {
+        private func clean() async {
             server?.stop()
             defer { UserDefaults.dropScratchSuite(UserDefaults.suiteName(forDataDir: directory)) }
             let profileID = tabs.first(where: { !$0.isPrivate })?.profileID
             var isolatedStore: WKWebsiteDataStore?
-            var isolatedID: UUID?
             // Defense in depth: clean only the exact named store derived from this empty
             // test directory. Never clean .default() or a profile's production identifier.
             if let regular = tabs.first(where: { !$0.isPrivate }),
                let expected = ProfileManager.dataStoreIdentifier(for: regular.profileID, dataDirectory: directory),
                regular.web.configuration.websiteDataStore.identifier == expected {
                 isolatedStore = regular.web.configuration.websiteDataStore
-                isolatedID = expected
                 await isolatedStore?.removeData(
                     ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
             }
@@ -325,22 +378,6 @@ import WebKit
                 ProfileManager.releaseDataStore(for: profileID)
             }
             isolatedStore = nil
-            if let isolatedID { try await unregister(isolatedID) }
-        }
-
-        /// WebKit may need a moment to release its network-process handle after the final
-        /// web view and controller disappear. Bound retries keep the command deterministic.
-        private func unregister(_ id: UUID) async throws {
-            for attempt in 0..<10 {
-                let removed: Bool = await withCheckedContinuation { continuation in
-                    WKWebsiteDataStore.remove(forIdentifier: id) { error in
-                        continuation.resume(returning: error == nil)
-                    }
-                }
-                if removed { return }
-                if attempt < 9 { try? await Task.sleep(for: .milliseconds(100)) }
-            }
-            throw Failure("temporary WebKit store \(id.uuidString) could not be unregistered")
         }
     }
 
