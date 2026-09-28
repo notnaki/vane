@@ -1,420 +1,191 @@
 # Vane
 
-A native macOS browser, written in Swift and SwiftUI on top of WebKit.
+A native macOS browser built with Swift, SwiftUI, AppKit, and WebKit. Pages run in
+Apple's `WKWebView`; Vane supplies the tabs, sidebar, profiles, settings, and other
+browser controls around it.
 
-Vane is a single executable target that links `AppKit`, `WebKit` and the system
-`libsqlite3` and nothing else. There is no Electron, no CEF, no vendored Chromium and no
-bundled rendering engine — the pages are rendered by the same `WKWebView` and the same
-Apple-signed WebKit content and network processes that Safari uses. The release binary is
-around 2.3 MB and `Vane.app` is that binary plus a generated `Info.plist`.
+> **Status:** Vane is in active development and requires **macOS 26 or later**. It
+> is useful for testing, but its release and real-site compatibility checks are
+> still in progress. See [known gaps](#known-gaps) before relying on it as your
+> only browser.
 
-Requires macOS 26 or later. `Package.swift` declares `.macOS("26.0")` and the bundle sets
-`LSMinimumSystemVersion 26.0`, because the WebKit APIs the app is built on (`WKWebExtension`,
-`isInspectable`, `pageZoom`) do not exist on older systems.
+## Get started
 
-This is a work in progress. It browses, but it is not finished — see
-[Limitations](#limitations) before you rely on it.
+Build a local app with Xcode 26 and the Swift toolchain it includes:
 
-## Why WebKit and not Chromium
-
-The usual reason to embed Chromium is that you want Chrome's web platform. The reason not
-to, on a Mac, is DRM.
-
-Netflix, Disney+, Prime Video, HBO Max and every other premium streaming service serve
-encrypted media through EME, and EME only decrypts if the browser can hand the stream to a
-Content Decryption Module the service will accept. On macOS there are two realistic
-candidates. FairPlay Streaming (`com.apple.fps`) is Apple's own CDM: it is part of the
-operating system, WebKit exposes it to any host that embeds `WKWebView`, and there is no
-per-application licence to obtain, no key to be issued and no contract to sign in order to
-get a decrypt path. Widevine (`com.widevine.alpha`) is Google's, and it is not part of
-macOS — it ships inside Chrome and inside Electron-adjacent hosts that have gone and got
-it. Getting Widevine into a browser that is not Chrome means obtaining the CDM binary from
-Google under licence and, for anything above the software-only security level, having your
-host application VMP-signed (Verified Media Path) by Google so the CDM will trust the
-process it has been loaded into. That signing is granted per vendor, on Google's schedule
-and at Google's discretion. It is the entire reason castLabs maintains a separately signed
-fork of Electron: an unmodified Electron build cannot play protected content, and getting
-it to is a business relationship, not a build flag. Without VMP the fallback is Widevine's
-software security level, which the major services deliberately treat as the untrusted tier
-and cap at SD or 720p — so even the version you can get working streams worse than Safari
-does on the same machine.
-
-Building on WebKit skips all of that. FairPlay is already there, and the tiers the
-services gate behind hardware-backed DRM are the ones Safari already gets on the same Mac.
-
-There is a runnable check for the claim rather than an assertion of it:
-
-```
-$ vane drmcheck
-engine:     WKWebView (WebKit) — macOS system engine
-user agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15
-
-FairPlay (modern)                 YES (com.apple.fps, CDM loads)
-FairPlay (legacy)                 YES (com.apple.fps.1_0, CDM loads)
-Widevine                          no  (NotSupportedError)
-PlayReady                         no  (NotSupportedError)
-Clear Key (no premium content)    YES (org.w3.clearkey, CDM loads)
-
-=> FairPlay available: premium streaming has a decrypt path.
+```sh
+./make-app.sh
+open Vane.app
 ```
 
-Two details in `Sources/Vane/DRMCheck.swift` make that output mean something. The probe
-runs inside a real `https` origin — a simulated response for `https://vane.test/drmcheck`,
-not `about:blank` — because EME refuses to answer in a non-secure context and would give a
-false negative. And it does not stop at `navigator.requestMediaKeySystemAccess()`, which
-only tells you the engine recognises the key-system name; it goes on to call
-`access.createMediaKeys()`, so a `YES` line means the CDM actually instantiated. The exit
-code is 0 only if a FairPlay line came back `YES`.
+`make-app.sh` builds the release executable, assembles `Vane.app`, adds the icon,
+and signs the bundle ad hoc. You can also build just the command-line executable:
 
-`vane drmcheck <url>` is the end-to-end version: it opens a real window, loads the page,
-and polls the largest `<video>` every three seconds for up to 45 seconds, reporting
-`currentTime`, `readyState` and whether media keys were attached. It exits 0 once the video
-passes one second of playback, which is proof that a licence was fetched and frames are
-decrypting — not just that the CDM exists.
-
-The catch, stated plainly: Vane sends Safari's user-agent string by default
-(`Sources/Vane/Engine.swift`). WKWebView's own UA gets bounced by the streaming services on
-sight, and FairPlay is in practice only offered to clients that present as Safari. That is
-a deliberate compatibility lie, and it is the sort of thing a service can change its mind
-about at any time.
-
-## Build and run
-
-```
-./make-app.sh && open Vane.app
+```sh
+swift build -c release
+./.build/release/vane selfcheck --pure
 ```
 
-`make-app.sh` runs `swift build -c release`, then assembles `Vane.app` by copying the
-binary in and generating an `Info.plist` beside it. It takes an optional configuration
-argument (`./make-app.sh debug`). `VANE_VERSION` and `VANE_BUILD` override the version
-strings, which otherwise come from `git describe` and the commit count.
+An ad hoc signed local build is for development on your Mac. Distribution requires
+a Developer ID signature and notarization; see [releasing](#releasing).
 
-Signing is controlled by one environment variable:
+## What Vane can do
 
-```
-SIGN_ID="Developer ID Application: Your Name (TEAMID)" ./make-app.sh
-```
-
-With `SIGN_ID` set the bundle is signed with the hardened runtime, a secure timestamp and
-`Vane.entitlements`. With it unset the bundle is ad-hoc signed instead — enough to run on
-the machine that built it, not enough for anyone else.
-
-`Vane.entitlements` is short on purpose. WebKit runs JavaScript and the CDM inside
-Apple-signed XPC services, so the app itself needs only `allow-jit`, `network.client`, and
-the camera and microphone device entitlements — a hardened-runtime app is denied capture
-by the OS before a site's own permission prompt is ever reached. The app is not sandboxed.
-
-### Releasing
-
-Merging to `main` does not ship anything. A release is something someone asks for, and
-there are two ways to ask:
-
-```
-gh workflow run release.yml                # next patch after the highest v* tag
-gh workflow run release.yml -f bump=minor  # or bump=major
-git tag v1.2.3 && git push origin v1.2.3   # exactly that version, no bump
-```
-
-The first form works out the next tag, pushes it and builds it in the same run; the second
-builds the tag you pushed. Either way `.github/workflows/release.yml` signs the app with
-Developer ID, notarizes and staples it, and attaches `Vane.dmg` and `Vane.zip` to a GitHub
-Release. A tag with a hyphen in it (`v1.2.3-rc1`) is published as a pre-release, which
-`releases/latest` skips — so the in-app updater never offers one.
-
-Signing and notarizing need five repository secrets: `DEVELOPER_ID_CERT_P12_BASE64`,
-`DEVELOPER_ID_CERT_PASSWORD`, `AC_API_KEY_ID`, `AC_API_ISSUER_ID` and
-`AC_API_KEY_P8_BASE64`. Without them the workflow says so in the log and publishes an
-ad-hoc build rather than failing.
-
-### CLI
-
-The executable is `vane`, and everything below is what `Sources/Vane/main.swift` actually
-dispatches on:
-
-| Command | What it does |
+| Area | Available now |
 | --- | --- |
-| `vane` | Launch the browser. Restores the last session unless that is turned off. |
-| `vane <url>` | Launch and open that URL, beating a restored session. Matched on the `http` prefix. |
-| `vane drmcheck` | Probe the available EME key systems and exit. See above. |
-| `vane drmcheck <url>` | Load a real page and report whether a protected `<video>` actually advances. |
-| `vane selfcheck` | Run every assertion, including the ones that need the keychain and a window server. |
-| `vane selfcheck --pure` | Run only the assertions that need neither. This is what CI runs. |
-| `vane import <file>` | Import passwords from a browser's CSV export, print the counts, exit. |
+| Browsing | Tabs, pinned tabs, multiple windows, private windows, session restore, find on page, reader mode, picture in picture, and Web Inspector. |
+| Organization | Spaces, sidebar folders, bookmarks, a searchable history window, Library, and a command palette. |
+| Data | Separate profiles, downloads, saved passwords, and import of bookmarks, history, and password CSV exports. |
+| Controls | Custom search engines and `!bang` shortcuts, per-site controls, keyboard shortcut settings, and appearance settings. |
+| Protection | WebKit content blocking, HTTPS-only mode, certificate warnings, and site permission prompts. |
+| Extras | Unpacked WebExtensions, GitHub-backed live folders, and an in-app update check for published releases. |
 
-`vane import` writes straight into the login keychain and then tells you to delete the
-file, because a password CSV export is plain text. The same importer is reachable from the
-Passwords menu with a file panel.
+Some features depend on macOS services, site behavior, or a signed distribution
+build. The [known gaps](#known-gaps) section gives the practical limits.
 
-## Testing
+### A few shortcuts
 
-There is no XCTest target. The checks live next to the code they cover, as `check()`
-functions returning `[(String, Bool)]`, and `SelfCheck` in `Sources/Vane/Passwords.swift`
-runs them all.
+| Action | Default shortcut |
+| --- | --- |
+| New tab | `⌘T` |
+| Reopen closed tab | `⇧⌘T` |
+| Find on page | `⌘F` |
+| Search tabs | `⇧⌘A` |
+| Search commands | `⇧⌘P` |
+| Open Library | `⇧⌘L` |
 
+Shortcuts can be changed in Settings. The menu bar shows the current bindings.
+
+## Command line
+
+The executable is `.build/release/vane` after `swift build -c release`. These
+examples use `vane` as shorthand for that path.
+
+| Command | Result |
+| --- | --- |
+| `vane` | Open the browser, restoring the last session when enabled. |
+| `vane https://example.com` | Open a URL in the browser. |
+| `vane selfcheck --pure` | Run checks that need neither a keychain nor a window server. |
+| `vane selfcheck` | Run the full local checks, including keychain and WebKit checks. |
+| `vane browsercheck` | Run real WebKit checks inside a signed, isolated app bundle; use the smoke-test script below. |
+| `vane import passwords.csv` | Import a browser password CSV into the login keychain. |
+| `vane drmcheck` | Probe which encrypted-media key systems WebKit can initialize. |
+| `vane drmcheck <url>` | Check whether a protected video advances on a page. |
+
+Password exports contain plain text credentials. Delete a CSV export when you no
+longer need it. The same importer is available from Vane's Passwords UI.
+
+### WebKit and protected media
+
+Vane uses the system WebKit engine rather than bundling Chromium. `drmcheck`
+tests the encrypted-media path available to the current macOS WebKit build. A
+successful key-system probe does **not** guarantee that a particular streaming
+service will play: the service, account, license exchange, and playback still
+need a real-site test. `drmcheck <url>` checks playback progress on a page you
+provide.
+
+## Test a change
+
+The project has one Swift executable target and no XCTest target. Its checks are
+run through `selfcheck`; CI builds the release configuration, runs the pure
+checks, assembles the app, and tests the DMG packager.
+
+```sh
+swift build -c release
+./.build/release/vane selfcheck --pure
+./make-app.sh
+./scripts/test-build-dmg.sh
 ```
-$ swift run -c release vane selfcheck
-...
-PASS
-```
 
-As of this commit that is **313 assertions**, in these groups: store, content blocker,
-browser import, favicons + tabs, url handling, error pages, site permissions, extensions,
-profiles + spaces, search engines, certificate trust, crash recovery, reader, command
-palette, csv import, keychain round-trip, autofill script.
-
-```
-$ swift run -c release vane selfcheck --pure
-...
-PASS (pure)
-```
-
-`--pure` is the same run stopped before the last two groups — **304 assertions**. It is
-checked before AppKit is touched at all, so it needs no window server, and it never reaches
-the keychain, so it needs no keychain ACL and cannot prompt. That subset is what
-`.github/workflows/checks.yml` runs on a `macos-26` runner, alongside `swift build -c
-release` and `./make-app.sh`. The remaining nine assertions — the keychain round-trip and
-the autofill script driven against a real form in a real `https` origin — stay a local
-`vane selfcheck`, where a real signed bundle is what makes them meaningful.
-
-Several modules take an injected `UserDefaults` or directory so their assertions never
-touch your real preferences, keychain items or Application Support folder.
-
-On a logged-in macOS 26 desktop, run a sandboxed WebKit smoke check without touching a
-normal Vane profile:
+For a logged-in macOS 26 desktop, the smoke script creates a temporary signed
+app and isolated test profile, then runs real WebKit assertions:
 
 ```sh
 swift build
 python3 scripts/check-browser-smoke.py
 ```
 
-To validate the exact signed and notarized release archive without rebuilding or
-re-signing it, run:
+The full `selfcheck` uses a keychain and a window server. Run it locally when
+those services are available:
 
 ```sh
-scripts/check-release-candidate.sh Vane.zip /path/to/evidence
+./Vane.app/Contents/MacOS/Vane selfcheck
 ```
 
-The release-candidate check verifies the archive hash, every bundle path, file hash,
-symlink target, permission mode and extended attribute, code signature, expected Team ID,
-stapled notarization and Gatekeeper assessment before running the same WebKit smoke checks.
-It verifies the strict code signature again afterward, records the results in the evidence
-directory and fails if the bundle changes during testing. A clean-Mac claim still requires
-running it on a reset macOS test machine.
+To verify an *unchanged, notarized* release ZIP on a graphical test machine:
 
-## Features
+```sh
+scripts/check-release-candidate.sh Vane.zip /path/to/empty-evidence-directory
+```
 
-Everything here is implemented and reachable from the UI.
+That script checks the archive and bundle contents, signature, stapled ticket,
+Gatekeeper assessment, and WebKit smoke test, and saves evidence. A clean Mac
+installation and upgrade still need to be exercised separately.
 
-**Browsing**
+## Releasing
 
-- Tabs with favicons, drag-to-reorder, and pinning. Pinned tabs sit ahead of the rest,
-  survive a relaunch, and are stored per profile.
-- Folders in the sidebar, in Pinned and in Today: nest them, fold them, rename them, and
-  drag rows in and out. A whole folder crosses the divider too: dragged up into Pinned it
-  takes its tabs with it and they stop auto-archiving, dragged down into Today they start
-  again, and the toast's Undo puts the lot back. Tidy Tabs (the on-device model, with a
-  deterministic domain-and-title fallback when Apple Intelligence is off or unavailable)
-  groups Today's pile into named folders in one press, and one Undo takes the whole thing
-  back. The folders it makes are Today's, so the tabs in them keep auto-archiving on the
-  usual clock and Clear still clears them; a Today folder disappears when the last tab
-  leaves it.
-- Spaces stay loaded across a switch: a window keeps every Space it has been in alive behind
-  the one it is showing, so swiping back puts the same pages in front of you rather than
-  reloading them. The idle-suspension and auto-archive sweeps still reach them: a Space you
-  are not looking at unloads on the ordinary idle clock — pinned rows included, because the
-  exemption that keeps a pin resident is about the row you can click and a Space put away has
-  no rows — and gives its pages back under memory pressure. The page you were reading starts
-  its idle clock as you swipe off it, not when you first selected it. A Space something else
-  has edited while it was away is rebuilt from disk instead.
-- Multiple windows; private windows, which get a non-persistent website data store and are
-  never written to disk.
-- Address bar that decides between navigation and search: bare hosts, `localhost:3000`,
-  IPs, file paths and `~/` paths all navigate. A leading `!bang` picks one of the configured
-  engines by id prefix (`!g swift` → Google, `!g` alone → its front page); an unrecognised
-  bang is handed to the current engine intact, which is the right answer on DuckDuckGo and
-  harmless anywhere else. Suggestions come from history and bookmarks, keyboard-navigable.
-- Six built-in search engines (DuckDuckGo, Google, Bing, Brave, Kagi, Ecosia) plus custom
-  engines defined with a `%s` template.
-- Find on page (`⌘F`) using WebKit's own find, with wrap.
-- Reader mode (`⌥⌘R`): the DOM walk runs in JavaScript and returns a node tree as JSON, and
-  everything after that — escaping, URL resolution, the tag whitelist, the 140-word "is
-  there enough article here" threshold — is Swift, so it is asserted offline. Adjustable
-  font size and a serif/sans toggle.
-- Picture in picture (`⌥⌘P`). WebKit's own media controls already offer it; this puts it on
-  a rebindable key and, more usefully, tells the rest of the app about it — a tab playing in
-  a detached window is never suspended, which is otherwise exactly the tab that looks idle.
-  macOS has no API for this (`allowsPictureInPictureMediaPlayback` is iOS-only), so it drives
-  `webkitSetPresentationMode` from an injected script.
-- Downloads to `~/Downloads` without overwriting, with progress and Show in Finder.
-- Session restore, plus crash recovery: a marker file that exists while Vane runs and a
-  30-second autosave, so a WebKit content-process take-down does not cost you the session.
-  Reopen closed tab (`⌘⇧T`) keeps a 32-deep URL stack.
-- Command palette (`⌘⇧P`) over tabs, history, bookmarks and commands, and the same overlay
-  restricted to open tabs (`⌘⇧A`), with a subsequence matcher scored for prefix, word-start
-  and contiguity.
-- Every shortcut a Mac app is expected to honour, in one table (`Standard.swift`) that the
-  menu bar is built from and asserted against: ⌘M, ⌘H, ⌥⌘H, Show All, ⌘Q, ⌘`, a Services
-  submenu, and the editing chords — ⌘Z, ⇧⌘Z, ⌘X, ⌘C, ⌘V, ⌥⇧⌘V, ⌘A — on the
-  standard selectors with no target, so they go down the responder chain into the address
-  bar, a rename field and the page alike. Rebinding one of AppKit's own chords is refused
-  rather than allowed to take ⌘C off every text field in the app.
-- Explicit VoiceOver work throughout the chrome: labels, values, custom actions, sort
-  priorities, spoken announcements for things that only change colour, and Reduce Motion
-  handling on the loading bar.
+Merging a PR to `main` does not publish a release. Start the release workflow
+for a patch bump (or choose `minor` or `major`):
 
-**Data**
+```sh
+gh workflow run release.yml
+gh workflow run release.yml -f bump=minor
+```
 
-- History and bookmarks in one SQLite file per profile, with a bulk-insert path that puts
-  20,000 visits in one transaction.
-- Profiles: separate data store, database, keychain items, favicons, pins, session,
-  extensions and spaces. Spaces are named tab groups inside a profile.
-- Passwords saved as ordinary Internet keychain items, stamped with a creator code so Vane
-  can only ever read credentials Vane created. Autofill only over `https`, never
-  auto-submitting, and the injected script goes through the native value setter so
-  React-style controlled inputs actually update.
-- Import passwords from a CSV export (Chrome, Edge, Brave, Opera, Vivaldi, Arc, Firefox,
-  Safari, macOS Passwords, 1Password, Bitwarden), with an RFC 4180 parser.
-- Import history and bookmarks directly from Chrome, Chromium, Edge, Brave, Vivaldi, Opera,
-  Arc, Firefox and Safari, read-only and without touching any encrypted store.
+Alternatively, push a specific `v*` tag:
 
-**Privacy and security**
+```sh
+git tag v1.2.3
+git push origin v1.2.3
+```
 
-- Ad and tracker blocking through `WKContentRuleListStore` — WebKit's declarative blocker.
-  Rules compile to bytecode and are evaluated in the network process, so nothing is
-  injected into the page and a blocked request never leaves the machine. Ships a small
-  built-in list and converts a documented subset of EasyList syntax, so uBlock/AdGuard
-  subscription files can be added from disk. On by default, per profile.
-- Per-site camera and microphone prompts, remembered per host, with a reset command.
-- Certificate errors surface a two-step alert with the leaf's SHA-256 fingerprint;
-  exceptions are keyed on host *and* certificate, so a swapped certificate asks again.
-  HTTP Basic auth lives in the same delegate and stores its credential `.forSession` only.
-- Error pages written in plain language for the common `NSURLError` cases, loaded as a
-  simulated response so the failed URL stays in the address bar and Try Again retries the
-  right thing.
+The workflow builds `Vane.app`, packages `Vane.dmg` and `Vane.zip`, and publishes
+them to a GitHub Release. To produce a Developer ID signed and notarized build,
+the repository needs `DEVELOPER_ID_CERT_P12_BASE64`,
+`DEVELOPER_ID_CERT_PASSWORD`, `AC_API_KEY_ID`, `AC_API_ISSUER_ID`, and
+`AC_API_KEY_P8_BASE64` as Actions secrets. With none configured, the workflow
+publishes an ad hoc signed, unnotarized build that the in-app updater will
+reject. A partially configured signing setup fails the workflow.
 
-**Developer**
+Local Developer ID builds can use:
 
-- `WKWebExtension` support: install an unpacked MV2/MV3 extension by pointing a file panel
-  at the folder containing `manifest.json`. One controller per profile, with adapters that
-  expose Vane's tabs and windows to the extension APIs.
-- Web Inspector (`⌥⌘I`), JavaScript console (`⌥⌘C`), View Source (`⌥⌘U`), a user-agent
-  picker, and a toggle for `isInspectable`.
-- Registers as a browser via `CFBundleURLTypes`, handles the GetURL Apple Event so links
-  from Mail, Slack and `open -a Vane <url>` land in a tab, and offers once to become the
-  default browser.
+```sh
+SIGN_ID="Developer ID Application: Your Name (TEAMID)" ./make-app.sh
+```
 
-## Limitations
+This signs the bundle but does not notarize it. Check the exact release archive
+with `check-release-candidate.sh` before treating it as a distribution build.
 
-Honest list. Most of these are deliberate shortcuts marked in the source with a
-`// ponytail:` comment naming the ceiling and the upgrade path — `grep -rn "ponytail:"
-Sources/` is the full ledger.
+## Known gaps
 
-**Distribution**
+- Real-site coverage is still needed for sign-in providers, passkeys, uploads,
+  printing, protected media, device permissions, and complex web apps.
+- Password autofill is heuristic. Sites with unusual forms or login flows may
+  need manual entry; multiple saved accounts for one host are not fully handled.
+- Content blocking supports a documented subset of EasyList syntax. Filter
+  lists added from disk do not update on a schedule.
+- Data does not sync between Macs. Imports do not bring over browser cookies or
+  signed-in sessions.
+- Some system dialogs are app-modal, and some browser features depend on WebKit
+  behavior that can change with macOS releases.
+- Distribution readiness requires a real signed and notarized candidate,
+  clean-Mac install and upgrade checks, and broader compatibility testing.
 
-- The app is ad-hoc signed unless you supply `SIGN_ID`. An ad-hoc bundle will not pass
-  Gatekeeper on any machine other than the one that built it. There are no notarized
-  releases.
-- There is no auto-updater. No update check, no server, nothing.
+The tracked engineering work is in
+[browser readiness](docs/BROWSER-READINESS-TODO.md).
 
-**UI**
+## Project map
 
-- The interface is provisional and is being redesigned. The settings window is explicitly a
-  plain `TabView` of grouped `Form`s borrowing System Settings' shape with no design work
-  done on it.
-- There is no history window, no bookmarks manager, no downloads window and no saved-password
-  UI — history and bookmarks are menus capped at 25 and 40 entries, downloads are a popover,
-  and password management hands you off to Keychain Access.
-- Several prompts are app-modal `NSAlert`s rather than sheets: certificate errors, HTTP
-  auth, camera/microphone. A background tab hitting a bad certificate steals focus.
-- A live folder stays in Pinned: dragging one down into Today is refused, because its source
-  would keep refilling rows that Today keeps archiving. A Today folder also cannot be empty —
-  one made with nothing in it is removed at once, and an empty folder dragged down from
-  Pinned goes the same way — so there is no "make a folder now and fill it later" in Today.
-
-**Content blocking**
-
-- The EasyList converter handles a documented subset only. `$important`, `$redirect`,
-  `$csp`, `$removeparam`, `/regex/` rules, negated resource types, procedural selectors and
-  scriptlets are counted and dropped rather than half-translated. A mixed
-  `$domain=a.com|~b.a.com` keeps the positives and drops the exclusions, because WebKit
-  rejects a trigger carrying both.
-- The built-in list is a static constant with no updater and no subscription schedule. New
-  rules mean adding a filter list by hand.
-- Added filter lists are remembered by path. Move or delete the file and it silently stops
-  applying.
-
-**Data and sync**
-
-- Nothing syncs. Keychain items are local-only (no `kSecAttrSynchronizable`), and there is
-  no iCloud or account layer of any kind.
-- Only one credential per host is offered — with several accounts saved, the first one
-  wins. There is no picker.
-- The password autofill heuristic is best-effort: it takes the last text-ish input before
-  the password field, only in the main frame, and a site that logs in with no navigation at
-  all never triggers a save offer.
-- Browser import takes the newest N URLs, not the whole table. Cookies and sessions do not
-  come across.
-- A Space kept alive holds its pages for the life of the window, so a window that has been
-  in six Spaces is holding six Spaces' tabs until the idle sweep — which reaches every one of
-  them, pinned rows included — unloads them; only the tabs on the strip in front of you are
-  exempt. A Space that has to be rebuilt from disk — one edited from another window or the
-  Library while it was away — comes back from URLs plus a saved `interactionState`, and
-  session restore and reopen-closed-tab have that same ceiling.
-- A live folder in a Space that is merely kept alive stops refreshing until the window is
-  showing that Space again, and then refreshes at once. A pinned page that navigates while
-  its Space is put away comes back on the page it reached, but the Space's URL list on disk
-  is not rewritten until that Space is on screen again.
-- Pins are one shared set per profile; pinning in two windows at once is last-writer-wins.
-
-**Platform**
-
-- The in-app inspector is opened through WebKit SPI (`_inspector` / `_WKInspector`). Every
-  hop is `respondsToSelector`-guarded, so if Apple drops it the menu item goes inert and
-  right-click → Inspect Element still works — but it is SPI.
-- Extensions are granted everything their manifest requests at install time, with no
-  permissions sheet listing what is about to be granted. Runtime prompts for anything
-  requested *later* are wired up.
-- Crash detection cannot tell a crash from a force-quit or a logout, so either produces a
-  "reopen tabs?" prompt.
-- The SQLite connection is one connection used from the main thread, and favicon reads are
-  synchronous file IO on the main thread.
-- Only the leaf certificate is inspected in the trust dialog, not the chain.
-- No translation. Every string is inlined English; the error pages are one interpolated
-  HTML string with no template file.
-
-## Architecture
-
-One executable target, `Sources/Vane`, no internal modules — 26 files, about 7,300 lines
-including the comments, which carry most of the reasoning.
-
-| File | Owns |
+| Path | Purpose |
 | --- | --- |
-| `main.swift` | Top-level bootstrap: argument dispatch, crash marker, first window, menu, run loop. No `AppDelegate`, no `@main`. |
-| `Engine.swift` | `Tab` and `TabStore` — the `WKWebView` per tab, the KVO that republishes its state, the delegates, and the tab strip's model including pins and spaces. Also the Safari UA string. |
-| `Window.swift` | `Windows` (live window bookkeeping), `Session` (per-profile restore file), `ClosedTabs` (the reopen stack). |
-| `UI.swift` | The whole SwiftUI chrome: tab strip, toolbar, address field, suggestions, find bar, save-password prompt, downloads popover, loading bar, and the accessibility layer. |
-| `Menu.swift` | The AppKit main menu, rebuilt rather than mutated because its items carry live state. |
-| `Palette.swift` | The command palette: the subsequence matcher (pure, and asserted offline), the command list, and the overlay view. |
-| `SettingsWindow.swift` | `Prefs` (homepage, session restore) and the settings window's three panes. |
-| `Store.swift` | History and bookmarks in SQLite — one connection per profile, plus the ranking behind address-bar suggestions. |
-| `Profiles.swift` | `Profile`, `Space`, and `ProfileManager`: the profile list, the active selection, and every per-profile path and defaults key. |
-| `Passwords.swift` | Keychain storage, the autofill script and its message bridge, and `SelfCheck` — the `vane selfcheck` driver. |
-| `Import.swift` | An RFC 4180 CSV reader and the password-export importer built on it. |
-| `BrowserImport.swift` | Reading history and bookmarks out of other browsers' unencrypted files: Chromium SQLite/JSON, Firefox `places.sqlite`, Safari's plist. |
-| `Blocker.swift` | EasyList → `WKContentRuleList` JSON conversion, the compile cache keyed on a hash of that JSON, and the built-in starter list. |
-| `PictureInPicture.swift` | The injected `webkitSetPresentationMode` toggle, the presentation-mode message contract, and the per-tab detached flag. |
-| `Reader.swift` | Reader mode: the in-page extraction contract, the Swift-side sanitiser and document builder, and the per-tab on/off state. |
-| `SearchEngines.swift` | `SearchEngine`, the built-in list, custom engines, and the decision procedure that turns address-bar input into a URL or a search. |
-| `Favicons.swift` | Per-profile favicon fetch, memory + disk cache, sweep by modification date at 300 files. No third-party proxy. |
-| `Downloads.swift` | `WKDownloadDelegate`: destination policy, de-duplicated filenames, and the list the popover shows. |
-| `Permissions.swift` | Per-site camera and microphone decisions, remembered in `UserDefaults`. |
-| `CertificateTrust.swift` | The bad-certificate flow, the fingerprint-keyed exception store, and HTTP Basic auth. |
-| `ErrorPage.swift` | Turning an `NSError` into plain language and an HTML page, and deciding which failures are worth showing at all. |
-| `Extensions.swift` | `WKWebExtension` hosting: one controller per profile, manifest validation, install/remove, and the tab and window adapters WebKit asks for. |
-| `URLHandling.swift` | Being the system's browser: the GetURL Apple Event handler and the default-browser prompt. |
-| `Crash.swift` | The running-marker file and the periodic session autosave that make crash recovery possible. |
-| `Develop.swift` | `Inspector` (the SPI hop that opens the Web Inspector) and `Settings` (user agent, inspector toggle). |
-| `DRMCheck.swift` | `vane drmcheck` — the EME key-system probe and the real-page playback test. |
+| [`Sources/Vane/main.swift`](Sources/Vane/main.swift) | CLI dispatch and application startup. |
+| [`Sources/Vane/Engine.swift`](Sources/Vane/Engine.swift) | Tabs, WebViews, navigation, and WebKit delegates. |
+| [`Sources/Vane/UI.swift`](Sources/Vane/UI.swift) | Main browser window and SwiftUI controls. |
+| [`Sources/Vane/Profiles.swift`](Sources/Vane/Profiles.swift) | Profile and Space state, paths, and isolation. |
+| [`Sources/Vane/Store.swift`](Sources/Vane/Store.swift) | SQLite history and bookmarks. |
+| [`Sources/Vane/Passwords.swift`](Sources/Vane/Passwords.swift) | Keychain integration, autofill, and the selfcheck runner. |
+| [`Sources/Vane/Updater.swift`](Sources/Vane/Updater.swift) | Release checks and installation. |
+| [`scripts/`](scripts/) | Browser smoke, release-candidate, and packaging checks. |
 
 ## License
 
