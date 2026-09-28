@@ -51,6 +51,17 @@ import WebKit
         return url
     }
 
+    /// A download row keeps its own folder grant after the profile changes its current
+    /// destination. The row owns this data in downloads.json rather than UserDefaults.
+    static func bookmarkForLater(_ url: URL) -> Data? {
+        bookmark(url, requireScope: AppIcon.isSandboxed)
+    }
+
+    static func accessBookmark(_ data: Data) -> URL? {
+        guard let url = resolve(data), start(url) else { return nil }
+        return url
+    }
+
     /// Bookmark `url` and append it. False means the sandbox will not let this folder be
     /// remembered — the honest answer to "can this be reopened next launch", and a caller
     /// must not write down a path it cannot reopen.
@@ -473,6 +484,8 @@ struct Space: Identifiable, Codable, Equatable {
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
+            UserDefaults.vane.removeObject(forKey: DownloadLocation.directoryKey(id))
+            UserDefaults.vane.removeObject(forKey: DownloadLocation.askKey(id))
             Self.eraseWebsiteData(for: id)
         }
 
@@ -1071,9 +1084,12 @@ struct Space: Identifiable, Codable, Equatable {
         pm.createSpace(name: "Scratch", in: victim)
         let victimKeys = ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey]
             .map { defaultsKey($0, victim) }
+            + [DownloadLocation.directoryKey(victim), DownloadLocation.askKey(victim)]
         UserDefaults.vane.set(["https://pinned.example"], forKey: victimKeys[0])
         UserDefaults.vane.set(false, forKey: victimKeys[1])
         UserDefaults.vane.set([Data("bookmark".utf8)], forKey: victimKeys[2])
+        UserDefaults.vane.set([Data("download bookmark".utf8)], forKey: victimKeys[3])
+        UserDefaults.vane.set(true, forKey: victimKeys[4])
 
         // A website data store only exists on disk once something is written into it.
         // Scoped so the only strong reference left is the manager's own cache — which is
