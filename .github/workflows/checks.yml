@@ -24,6 +24,9 @@ jobs:
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/release/vane
 
+      - name: Release workflow fixture
+        run: python3 scripts/test-release-workflow.py
+
       - name: Bundle
         run: ./make-app.sh
 

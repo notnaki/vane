@@ -11,14 +11,12 @@ name: release
 #   gh workflow run release.yml -f bump=minor
 #   git tag v1.2.3 && git push origin v1.2.3 # exactly that version, no bump
 #
-# The dispatch path computes the tag, pushes it, and builds it in the same run. Pushing it
-# with the automatic GITHUB_TOKEN does not start a second run — GitHub does not trigger
-# workflows from events its own token creates — so one invocation is one release.
+# The dispatch path prepares a tag locally and pushes it only after packaging succeeds.
+# Pushing it with GITHUB_TOKEN does not start another workflow run.
 #
-# SECRETS (Settings ▸ Secrets and variables ▸ Actions). All six are optional: with none of
-# them the release is ad-hoc signed, unnotarized and signs in to GitHub with a pasted token,
-# and everything still publishes — the automatic GITHUB_TOKEN is the only thing that path
-# needs.
+# SECRETS (Settings ▸ Secrets and variables ▸ Actions). The five signing and
+# notarization secrets are required for public releases, including prereleases.
+# GH_OAUTH_CLIENT_SECRET is optional; without it GitHub sign-in uses a pasted token.
 #   DEVELOPER_ID_CERT_P12_BASE64   base64 of the "Developer ID Application" .p12
 #   DEVELOPER_ID_CERT_PASSWORD     the password the .p12 was exported with
 #   AC_API_KEY_ID                  App Store Connect API key id       (notarytool)
@@ -44,8 +42,10 @@ on:
 permissions:
   contents: write   # push the tag, create the release
 
-# Two releases cut in a row queue rather than race over the same tag sequence.
-concurrency: release
+# Serialize release runs without canceling an older pending tag event.
+concurrency:
+  group: release
+  queue: max
 
 jobs:
   release:
@@ -57,6 +57,22 @@ jobs:
         with:
           fetch-depth: 0   # every tag, and the commit count make-app.sh stamps as the build
 
+      - name: Require public release credentials
+        env:
+          CERT_B64: ${{ secrets.DEVELOPER_ID_CERT_P12_BASE64 }}
+          CERT_PW: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+          KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          KEY_B64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          for name in CERT_B64 CERT_PW KEY_ID ISSUER_ID KEY_B64; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Required signing/notarization credential $name is missing"
+              exit 1
+            fi
+          done
+
       - name: Pick the tag
         env:
           BUMP: ${{ inputs.bump }}
@@ -66,23 +82,37 @@ jobs:
             TAG="$GITHUB_REF_NAME"
             echo "building the tag that was pushed: $TAG"
           else
-            # Release tags only. A pre-release (v0.0.1-rc1) is a real tag but not a place to
-            # count from — "0.0.1-rc1 + 1" is not a version.
-            LAST=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
-            LAST=${LAST:-v0.0.0}
-            V=${LAST#v}; REST=${V#*.}
-            MAJOR=${V%%.*}; MINOR=${REST%%.*}; PATCH=${REST#*.}
-            case "${BUMP:-patch}" in
-              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-              *)     PATCH=$((PATCH + 1)) ;;
-            esac
-            TAG="v$MAJOR.$MINOR.$PATCH"
-            echo "highest release tag: $LAST → ${BUMP:-patch} → $TAG"
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag "$TAG"
-            git push origin "$TAG"
+            # A rerun after publication failed must retry the same version. The annotated
+            # tag records the workflow run that created it; an earlier failure before the
+            # push leaves no marker and simply recomputes the next available version.
+            MARKER="vane-release-run:${GITHUB_RUN_ID}"
+            REUSED=$(git for-each-ref --format='%(refname:short)%09%(contents:subject)' refs/tags \
+              | awk -F '\t' -v marker="$MARKER" '$1 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ && $2 == marker {print $1}')
+            if [ -n "$REUSED" ]; then
+              [ "$(printf '%s\n' "$REUSED" | wc -l | tr -d ' ')" = 1 ] \
+                || { echo "::error::Multiple tags match workflow run $GITHUB_RUN_ID"; exit 1; }
+              [ "$(git rev-list -n 1 "$REUSED")" = "$GITHUB_SHA" ] \
+                || { echo "::error::Run tag $REUSED points to a different commit"; exit 1; }
+              TAG="$REUSED"
+              echo "retrying release tag: $TAG"
+            else
+              # Release tags only. A pre-release (v0.0.1-rc1) is a real tag but not a
+              # place to count from — "0.0.1-rc1 + 1" is not a version.
+              LAST=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+              LAST=${LAST:-v0.0.0}
+              V=${LAST#v}; REST=${V#*.}
+              MAJOR=${V%%.*}; MINOR=${REST%%.*}; PATCH=${REST#*.}
+              case "${BUMP:-patch}" in
+                major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+                minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+                *)     PATCH=$((PATCH + 1)) ;;
+              esac
+              TAG="v$MAJOR.$MINOR.$PATCH"
+              echo "highest release tag: $LAST → ${BUMP:-patch} → $TAG"
+              git config user.name  "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git tag -a "$TAG" -m "$MARKER"
+            fi
           fi
           echo "TAG=$TAG" >> "$GITHUB_ENV"
 
@@ -93,8 +123,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${CERT_B64:-}" ] || [ -z "${CERT_PW:-}" ]; then
-            echo "no DEVELOPER_ID_CERT_P12_BASE64 / DEVELOPER_ID_CERT_PASSWORD — ad-hoc signing"
-            exit 0
+            echo "::error::Developer ID credentials are required for public releases"
+            exit 1
           fi
           KEYCHAIN=$RUNNER_TEMP/vane-signing.keychain-db
           KCPW=$(openssl rand -hex 16)
@@ -200,7 +230,7 @@ jobs:
           ./Vane.app/Contents/MacOS/Vane selfcheck --pure
           codesign -dvv Vane.app 2>&1 | grep -E "Authority|flags|Identifier|TeamIdentifier" || true
           # The updater pins this team, so a release signed by anyone else is a release no
-          # running Vane will install. Only checked when signing was configured at all.
+          # running Vane will install. The credential gate requires a signed build.
           if [ -n "${SIGN_ID:-}" ]; then
             TEAM=$(codesign -dvv Vane.app 2>&1 | sed -n 's/^TeamIdentifier=//p')
             [ "$TEAM" = "T7X84HN3W3" ] \
@@ -215,22 +245,14 @@ jobs:
           KEY_B64:   ${{ secrets.AC_API_KEY_P8_BASE64 }}
         run: |
           set -euo pipefail
-          if [ -z "${SIGN_ID:-}" ] && [ -z "${KEY_ID:-}${ISSUER_ID:-}${KEY_B64:-}" ]; then
-            echo "no signing or notarization secrets at all — publishing an ad-hoc build"
-            echo "  (the in-app updater will refuse it: it pins team T7X84HN3W3. Browser"
-            echo "   downloads still work, with the usual Gatekeeper right-click ▸ Open.)"
-            exit 0
-          fi
-          # Signed but not notarized is the one combination that must never ship: it looks
-          # like a real release, and Gatekeeper stops the copy the updater swaps in — after
-          # the swap. Half-configured secrets fail the release instead of producing that.
+          # Defense in depth: neither signing nor notarization may be bypassed.
           if [ -z "${SIGN_ID:-}" ] || [ -z "${KEY_ID:-}" ] || [ -z "${ISSUER_ID:-}" ] || [ -z "${KEY_B64:-}" ]; then
             echo "::error::signing and notarization secrets are half-configured."
             echo "  DEVELOPER_ID_CERT_* -> $([ -n "${SIGN_ID:-}" ] && echo present || echo missing)"
             echo "  AC_API_KEY_ID       -> $([ -n "${KEY_ID:-}" ] && echo present || echo missing)"
             echo "  AC_API_ISSUER_ID    -> $([ -n "${ISSUER_ID:-}" ] && echo present || echo missing)"
             echo "  AC_API_KEY_P8_BASE64-> $([ -n "${KEY_B64:-}" ] && echo present || echo missing)"
-            echo "Set all five, or none of them."
+            echo "Set all five signing and notarization secrets."
             exit 1
           fi
           echo "$KEY_B64" | base64 --decode > "$RUNNER_TEMP/ac_key.p8"
@@ -252,8 +274,7 @@ jobs:
           ditto -c -k --keepParent Vane.app Vane.zip
           ./scripts/build-dmg.sh Vane.app Vane.dmg
           # The image gets a signature and a notarization of its own so that a browser
-          # download is not stopped by Gatekeeper either. Skipped, like everything else,
-          # without the secrets.
+          # download is not stopped by Gatekeeper either.
           if [ -n "${SIGN_ID:-}" ]; then
             codesign --force --timestamp --sign "$SIGN_ID" Vane.dmg
             if [ -n "${KEY_ID:-}" ] && [ -n "${ISSUER_ID:-}" ] && [ -n "${KEY_B64:-}" ]; then
@@ -277,6 +298,12 @@ jobs:
           security list-keychains -d user -s login.keychain-db || true
           security delete-keychain "$KEYCHAIN" || true
           echo "signing keychain removed"
+
+      - name: Publish validated tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          git push origin "$TAG"
 
       - name: Publish
         env:
