@@ -148,6 +148,13 @@ import WebKit
                             && background.active?.passwordChoice != nil,
                             "a background link does not interrupt the active tab's password chooser")
                 tabs += background.tabs
+                let incomingSpace = Space(name: "Incoming", profileID: profile,
+                                          tabURLs: [URL(string: "\(base)/a")!])
+                let incoming = TabStore(urls: [URL(string: "\(base)/b")!],
+                                        profileID: profile, space: incomingSpace)
+                try require(incoming.current == incoming.tabs.last?.id,
+                            "a URL sent to a new window is selected ahead of existing Space tabs")
+                tabs += incoming.tabs
                 try await load(tab, "\(base)/a", title: "Fixture A")
                 try require(tab.history.history().contains { URL(string: $0.url)?.path == "/a" },
                             "normal navigation records a real history visit")
