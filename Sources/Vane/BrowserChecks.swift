@@ -36,44 +36,48 @@ import WebKit
     /// has open. The smoke script invokes this command in a fresh process after `run` exits.
     static func cleanupStore() -> Never {
         guard let directory = Store.overrideDirectory,
-              FileManager.default.fileExists(atPath: directory),
-              let id = ProfileManager.dataStoreIdentifier(
-                  for: ProfileManager.defaultID, dataDirectory: directory) else {
+              FileManager.default.fileExists(atPath: directory) else {
             fail("browsercheck cleanup requires an existing VANE_DATA_DIR", code: 2)
         }
         guard Bundle.main.bundleURL.pathExtension == "app", sandboxedSignature() else {
             fail("browsercheck cleanup must run inside a signed sandboxed app", code: 2)
         }
+        // The profile-hop checks open a second isolated profile. Compute only identifiers
+        // belonging to this test directory; never touch a production/default WebKit store.
+        let profileIDs = Set([ProfileManager.defaultID] + ProfileManager.shared.profiles.map(\.id))
+        let ids = profileIDs.compactMap {
+            ProfileManager.dataStoreIdentifier(for: $0, dataDirectory: directory)
+        }.sorted { $0.uuidString < $1.uuidString }
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
             fail("browsercheck cleanup exceeded its 15-second deadline", code: 1)
         }
         Task {
             // A cold fetchAllDataStoreIdentifiers call crashes WebKit on this macOS release.
             _ = WKProcessPool()
-            for attempt in 0..<20 {
-                let registered = await registeredStoreIdentifiers()
-                if !registered.contains(id) {
-                    print("PASS browsercheck cleanup: temporary WebKit store unregistered")
-                    exit(0)
-                }
-                let error: Error? = await withCheckedContinuation { continuation in
-                    WKWebsiteDataStore.remove(forIdentifier: id) { error in
-                        continuation.resume(returning: error)
+            for id in ids {
+                var removed = false
+                var lastError: Error?
+                for attempt in 0..<20 {
+                    let registered = await registeredStoreIdentifiers()
+                    if !registered.contains(id) { removed = true; break }
+                    lastError = await withCheckedContinuation { continuation in
+                        WKWebsiteDataStore.remove(forIdentifier: id) { error in
+                            continuation.resume(returning: error)
+                        }
                     }
-                }
-                if error == nil {
-                    let remaining = await registeredStoreIdentifiers()
-                    if !remaining.contains(id) {
-                        print("PASS browsercheck cleanup: temporary WebKit store unregistered")
-                        exit(0)
+                    if lastError == nil {
+                        let remaining = await registeredStoreIdentifiers()
+                        if !remaining.contains(id) { removed = true; break }
                     }
+                    if attempt < 19 { try? await Task.sleep(for: .milliseconds(250)) }
                 }
-                if attempt == 19 {
-                    fail("temporary WebKit store \(id.uuidString) still registered: \(String(describing: error))",
+                if !removed {
+                    fail("temporary WebKit store \(id.uuidString) still registered: \(String(describing: lastError))",
                          code: 1)
                 }
-                try? await Task.sleep(for: .milliseconds(250))
             }
+            print("PASS browsercheck cleanup: \(ids.count) temporary WebKit stores unregistered")
+            exit(0)
         }
         NSApplication.shared.run()
         fail("browsercheck cleanup run loop ended before completion", code: 1)
@@ -163,6 +167,9 @@ import WebKit
                 try require(requestedPin.active?.homeURL == pinnedURL && requestedPin.palette == nil,
                             "a requested pinned page is shown without opening the New Tab palette")
                 tabs += requestedPin.tabs
+                TabStore.all.removeAll {
+                    $0 === background || $0 === incoming || $0 === requestedPin
+                }
                 try await load(tab, "\(base)/a", title: "Fixture A")
                 try require(tab.history.history().contains { URL(string: $0.url)?.path == "/a" },
                             "normal navigation records a real history visit")

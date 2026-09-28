@@ -449,7 +449,7 @@ extension VaneWindow {
     /// Never a parked store: it is a profile a window *has been* in, with no window of its
     /// own to raise and no chrome on screen to act on. See `Windows.hop`.
     static var main: TabStore? {
-        let ordinary = TabStore.all.filter { !$0.isLittle && !$0.isParked }
+        let ordinary = TabStore.all.filter { !$0.isLittle && !$0.isParked && $0.window != nil }
         return ordinary.first { $0.window?.isKeyWindow == true } ?? ordinary.last
     }
 
@@ -469,7 +469,8 @@ extension VaneWindow {
     /// put it somewhere nobody is looking. `switchTo(profile:)` is what brings one back.
     static func current(in profileID: UUID, isPrivate: Bool = false) -> TabStore? {
         let mine = TabStore.all.filter {
-            $0.profileID == profileID && !$0.isLittle && !$0.isParked && $0.isPrivate == isPrivate
+            $0.profileID == profileID && !$0.isLittle && !$0.isParked
+                && $0.window != nil && $0.isPrivate == isPrivate
         }
         return mine.first { $0.window?.isKeyWindow == true } ?? mine.last
     }
