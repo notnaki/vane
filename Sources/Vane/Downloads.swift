@@ -105,9 +105,11 @@ import WebKit
 
         /// Basename of the resume blob, or nil when there is nothing to resume from.
         fileprivate var resumeFile: String?
-        /// Grant for the destination folder at the time this download started. The
-        /// profile may choose a different folder before this row is opened or resumed.
+        /// Grant for the destination folder, or for the file chosen in a Save panel.
+        /// The profile may choose a different folder before this row is opened or resumed.
         fileprivate var destinationBookmark: Data?
+        /// Save panels grant the selected file, not its containing directory.
+        fileprivate var destinationBookmarkIsFile: Bool?
         /// Distinguishes "the user pressed pause" from "the network fell over" — the two
         /// need different words when the resume data turns out not to exist.
         fileprivate var pausedByUser = false
@@ -137,6 +139,7 @@ import WebKit
             completed = record.completed
             resumeFile = record.resumeFile
             destinationBookmark = record.destinationBookmark
+            destinationBookmarkIsFile = record.destinationBookmarkIsFile
             fraction = record.total > 0 ? min(1, Double(record.received) / Double(record.total)) : 0
             switch record.state {
             case "running": status = .running; state = .running
@@ -161,7 +164,8 @@ import WebKit
             return Record(id: id, name: self.name, destination: url, source: source,
                           total: total, received: received, state: name, reason: reason,
                           completed: completed, resumeFile: resumeFile,
-                          destinationBookmark: destinationBookmark)
+                          destinationBookmark: destinationBookmark,
+                          destinationBookmarkIsFile: destinationBookmarkIsFile)
         }
 
         fileprivate func watch(_ d: WKDownload) {
@@ -220,6 +224,7 @@ import WebKit
         var completed: Date?
         var resumeFile: String?
         var destinationBookmark: Data?
+        var destinationBookmarkIsFile: Bool?
     }
 
     static let missingText = "The file was moved or deleted."
@@ -259,7 +264,8 @@ import WebKit
             let item = Item(record: r)
             // Older indexes have no row bookmark. While the current folder's grant is
             // still available, give those rows their own copy before the user changes it.
-            if item.destinationBookmark == nil, let target = item.url,
+            if item.destinationBookmark == nil, item.destinationBookmarkIsFile != true,
+               let target = item.url,
                let locationDefaults,
                let grant = DownloadLocation.bookmark(for: target, profileID: profileID,
                                                      defaults: locationDefaults) {
@@ -277,6 +283,26 @@ import WebKit
         }
         for i in items { i.onProgress = { [weak self] in self?.throttledSave() } }
         if upgraded { save() }
+    }
+
+    /// A folder may have been inaccessible when this manager loaded. Once the user
+    /// chooses it again, repair the rows already in memory and persist their grants.
+    fileprivate static func backfillCachedRows(for id: UUID, folder: URL, grant: Data) {
+        guard let manager = cache[id] else { return }
+        var changed = false
+        let selected = folder.resolvingSymlinksInPath().path
+        for item in manager.items where item.destinationBookmark == nil
+            && item.destinationBookmarkIsFile != true {
+            guard item.url?.deletingLastPathComponent().resolvingSymlinksInPath().path == selected else {
+                continue
+            }
+            item.destinationBookmark = grant
+            changed = true
+        }
+        if changed {
+            manager.refreshMissing()
+            manager.save()
+        }
     }
 
     /// Trims to the cap and writes the index. Called on every state change and, throttled,
@@ -351,12 +377,18 @@ import WebKit
     /// moved. A temporarily disconnected volume returns nil without discarding the grant.
     private func restoredDestination(_ item: Item) -> URL? {
         guard let saved = item.url else { return nil }
-        guard let bookmark = item.destinationBookmark else { return saved }
-        guard let folder = ScopedPaths.accessBookmark(bookmark) else { return nil }
+        guard let bookmark = item.destinationBookmark else {
+            return item.destinationBookmarkIsFile == true ? nil : saved
+        }
+        guard let granted = ScopedPaths.accessBookmark(bookmark) else { return nil }
+        if item.destinationBookmarkIsFile == true {
+            if item.url != granted { item.url = granted }
+            return granted
+        }
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory),
+        guard FileManager.default.fileExists(atPath: granted.path, isDirectory: &isDirectory),
               isDirectory.boolValue else { return nil }
-        let resolved = folder.appendingPathComponent(saved.lastPathComponent)
+        let resolved = granted.appendingPathComponent(saved.lastPathComponent)
         if item.url != resolved { item.url = resolved }
         return resolved
     }
@@ -397,7 +429,8 @@ import WebKit
             return
         }
         var target = Self.uniqueDestination(in: destinationDirectory, suggested: suggestedFilename)
-        if DownloadLocation.askEveryTime(for: profileID) {
+        let chosenByPanel = DownloadLocation.askEveryTime(for: profileID)
+        if chosenByPanel {
             guard let chosen = askWhereToSave(suggested: suggestedFilename,
                                               in: destinationDirectory) else {
                 completionHandler(nil)      // cancelled: no file, and no row either
@@ -407,10 +440,15 @@ import WebKit
         }
         let entry = Item(download, name: target.lastPathComponent)
         entry.url = target
-        entry.destinationBookmark = DownloadLocation.bookmark(for: target, profileID: profileID)
+        entry.destinationBookmarkIsFile = chosenByPanel ? true : nil
+        entry.destinationBookmark = DownloadLocation.bookmark(for: target, profileID: profileID,
+                                                             selectedFile: chosenByPanel)
         entry.source = download.originalRequest?.url ?? response.url
         entry.total = response.expectedContentLength > 0 ? response.expectedContentLength : 0
-        entry.onProgress = { [weak self] in self?.throttledSave() }
+        entry.onProgress = { [weak self, weak entry] in
+            if let entry { self?.captureFileGrant(entry) }
+            self?.throttledSave()
+        }
         items.insert(entry, at: 0)
         save()
         completionHandler(target)
@@ -430,6 +468,7 @@ import WebKit
 
     func downloadDidFinish(_ download: WKDownload) {
         guard let i = item(for: download) else { return }
+        captureFileGrant(i)
         TidyDownloads.tidy(download, in: self)      // before unwatch() nils out item.download
         i.unwatch()
         i.state = .done
@@ -455,6 +494,7 @@ import WebKit
     /// One place decides what an interrupted transfer becomes: resumable if WebKit handed
     /// back resume data, dead otherwise.
     private func finish(_ i: Item, error: String, resumeData: Data?) {
+        captureFileGrant(i)
         if let data = resumeData, !data.isEmpty {
             writeResume(data, for: i)
             i.status = .paused
@@ -468,6 +508,14 @@ import WebKit
         }
         i.pausedByUser = false
         save()
+    }
+
+    /// A Save panel may authorize a new path before the file exists. Capture its file
+    /// bookmark as soon as WebKit creates it, including before a paused transfer is saved.
+    private func captureFileGrant(_ item: Item) {
+        guard item.destinationBookmarkIsFile == true, item.destinationBookmark == nil,
+              let url = item.url, FileManager.default.fileExists(atPath: url.path) else { return }
+        item.destinationBookmark = ScopedPaths.bookmarkForLater(url)
     }
 
     // MARK: Pause and resume
@@ -831,6 +879,20 @@ import WebKit
                    == oldPartial.resolvingSymlinksInPath().path)
         assert("a prior folder bookmark keeps a partial download resumable",
                resumableHistory.map { oldHistory.canResume($0) } == true)
+        var savePanelRecord = Record(name: "finished.zip", destination: oldFinished, state: "done")
+        savePanelRecord.destinationBookmarkIsFile = true
+        let savePanelItem = oldHistory.add(savePanelRecord)
+        oldHistory.captureFileGrant(savePanelItem)
+        oldHistory.save()
+        let fileGrantRecord = (try? Data(contentsOf: listURL(for: defaultProfile, in: scopedRoot)))
+            .flatMap { try? JSONDecoder().decode([Record].self, from: $0) }?
+            .first { $0.id == savePanelItem.id }
+        assert("a new Save panel file gains a bookmark once WebKit creates it",
+               fileGrantRecord?.destinationBookmark != nil
+                   && fileGrantRecord?.destinationBookmarkIsFile == true)
+        assert("a saved file grant restores the file itself after reload",
+               Downloads(profileID: defaultProfile, directory: scopedRoot, sandboxed: true)
+                   .items.first { $0.id == savePanelItem.id }?.status == .done)
         let migrationSuite = "vane.download-history-migration.\(UUID().uuidString)"
         if let choices = UserDefaults(suiteName: migrationSuite) {
             defer { UserDefaults.dropScratchSuite(migrationSuite) }
@@ -845,6 +907,35 @@ import WebKit
                 .flatMap { try? JSONDecoder().decode([Record].self, from: $0) }
             assert("older rows in the selected folder gain a bookmark before the choice changes",
                    updated?.first?.destinationBookmark != nil)
+
+            // A manager can have loaded while its old choice was unavailable. Selecting
+            // that folder again must repair its already-loaded rows as well as the index.
+            let laterID = UUID()
+            let laterRoot = root.appendingPathComponent("late-migration", isDirectory: true)
+            let laterFolder = root.appendingPathComponent("late-selected", isDirectory: true)
+            try? fm.createDirectory(at: laterRoot, withIntermediateDirectories: true)
+            let later = laterFolder.appendingPathComponent("late.zip")
+            try? fm.createDirectory(at: laterFolder, withIntermediateDirectories: true)
+            try? Data("late".utf8).write(to: later)
+            try? JSONEncoder().encode([Record(name: "late.zip", destination: later, state: "done")])
+                .write(to: listURL(for: laterID, in: laterRoot))
+            try? fm.removeItem(at: laterFolder)
+            let loaded = Downloads(profileID: laterID, directory: laterRoot, sandboxed: true,
+                                   locationDefaults: choices)
+            Downloads.cache[laterID] = loaded
+            defer { Downloads.cache[laterID] = nil }
+            let beforeChoice = loaded.items.first?.destinationBookmark == nil
+            try? fm.createDirectory(at: laterFolder, withIntermediateDirectories: true)
+            try? Data("late".utf8).write(to: later)
+            let selectedAgain = DownloadLocation.setDirectory(laterFolder, for: laterID, defaults: choices)
+            let repaired = (try? Data(contentsOf: listURL(for: laterID, in: laterRoot)))
+                .flatMap { try? JSONDecoder().decode([Record].self, from: $0) }
+            assert("reselecting a folder stores its grant", selectedAgain)
+            assert("reselecting a folder starts with an ungranted loaded row", beforeChoice)
+            assert("reselecting a folder backfills the loaded row",
+                   loaded.items.first?.destinationBookmark != nil)
+            assert("reselecting a folder persists the repaired row",
+                   repaired?.first?.destinationBookmark != nil)
         } else {
             assert("a throwaway migration defaults suite is available", false)
         }
@@ -1001,6 +1092,18 @@ import WebKit
                    DownloadLocation.bookmark(for: picked.appendingPathComponent("report.pdf"),
                                              profileID: id, defaults: scratch)
                        == (scratch.array(forKey: DownloadLocation.directoryKey(id)) as? [Data])?.first)
+            let panelFolder = root.appendingPathComponent("panel-selected-folder", isDirectory: true)
+            try? fm.createDirectory(at: panelFolder, withIntermediateDirectories: true)
+            let selectedFile = panelFolder.appendingPathComponent("picked-by-save-panel.pdf")
+            assert("a not-yet-created Save panel file does not borrow its parent grant",
+                   DownloadLocation.bookmark(for: selectedFile, profileID: id,
+                                             defaults: scratch, selectedFile: true) == nil)
+            try? Data("saved".utf8).write(to: selectedFile)
+            let selectedGrant = DownloadLocation.bookmark(for: selectedFile, profileID: id,
+                                                          defaults: scratch, selectedFile: true)
+            assert("a Save panel file gets its own grant, not a parent folder grant",
+                   selectedGrant.flatMap { ScopedPaths.accessBookmark($0) }?
+                       .resolvingSymlinksInPath().path == selectedFile.resolvingSymlinksInPath().path)
             assert("a chosen folder is where downloads go",
                    DownloadLocation.directory(for: id, defaults: scratch)
                        .resolvingSymlinksInPath().path == picked.resolvingSymlinksInPath().path)
@@ -1164,13 +1267,21 @@ import WebKit
               isDirectory.boolValue, FileManager.default.isWritableFile(atPath: url.path) else {
             return false
         }
-        return ScopedPaths.replace(url, at: directoryKey(id), in: defaults)
+        guard ScopedPaths.replace(url, at: directoryKey(id), in: defaults) else { return false }
+        if let grant = (defaults.array(forKey: directoryKey(id)) as? [Data])?.first {
+            Downloads.backfillCachedRows(for: id, folder: url, grant: grant)
+        }
+        return true
     }
 
     /// Copy the current folder's grant into a download row when it matches. A Save panel
-    /// may choose another folder, so create a bookmark for that folder when possible.
+    /// grants only its selected file, which may not exist until WebKit starts writing.
     static func bookmark(for destination: URL, profileID: UUID,
-                         defaults: UserDefaults = .vane) -> Data? {
+                         defaults: UserDefaults = .vane, selectedFile: Bool = false) -> Data? {
+        if selectedFile {
+            guard FileManager.default.fileExists(atPath: destination.path) else { return nil }
+            return ScopedPaths.bookmarkForLater(destination)
+        }
         let folder = destination.deletingLastPathComponent()
         let key = directoryKey(profileID)
         if let data = (defaults.array(forKey: key) as? [Data])?.first,

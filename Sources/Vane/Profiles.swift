@@ -14,13 +14,11 @@ import WebKit
 /// sandboxed — produces a list of strings the app can no longer open.
 ///
 /// ponytail: one `[Data]` list per UserDefaults key, so a caller that was storing `[String]`
-/// paths swaps three call sites and keeps its own shape. Access, once started, is never
-/// stopped: these are folders the app reads for its whole life, and the kernel drops the
-/// extension at exit. Ceiling: no `stopAccessing`, so a removed extension keeps its
-/// extension alive until quit. Harmless, and the alternative is refcounting by path.
+/// paths swaps three call sites and keeps its own shape. Keep the URL that actually
+/// started each extension so replacing or deleting a choice can close it.
 @MainActor enum ScopedPaths {
     /// Paths whose extension is already started, so resolving twice does not nest.
-    private static var accessing: Set<String> = []
+    private static var accessing: [String: URL] = [:]
 
     /// Every folder still reachable under `key`, access already started. Anything that no
     /// longer resolves — folder deleted, volume gone, or a pre-sandbox plain path that the
@@ -31,7 +29,10 @@ import WebKit
         var kept: [Data] = []
         var out: [URL] = []
         for data in stored {
-            guard let url = resolve(data), start(url) else { continue }
+            guard let url = resolve(data), start(url) else {
+                if let url = resolve(data) { stop(url) }
+                continue
+            }
             kept.append(data)
             out.append(url)
         }
@@ -81,21 +82,26 @@ import WebKit
     /// bookmark: it would appear to work until the panel's grant expires at relaunch.
     @discardableResult
     static func replace(_ url: URL?, at key: String, in defaults: UserDefaults = .vane) -> Bool {
+        let previous = raw(key, in: defaults)
         guard let url else {
             defaults.removeObject(forKey: key)
+            previous.compactMap(resolve).forEach(stop)
             return true
         }
         guard let data = bookmark(url, requireScope: AppIcon.isSandboxed), start(url) else {
             return false
         }
         defaults.set([data], forKey: key)
+        for old in previous where !same(old, url) {
+            if let oldURL = resolve(old) { stop(oldURL) }
+        }
         return true
     }
 
     static func remove(path: String, from key: String, in defaults: UserDefaults = .vane) {
         let url = URL(fileURLWithPath: path)
         defaults.set(raw(key, in: defaults).filter { !same($0, url) }, forKey: key)
-        accessing.remove(url.resolvingSymlinksInPath().path)
+        stop(url)
     }
 
     /// A resolved bookmark comes back through the data volume's firmlink — under the
@@ -145,12 +151,23 @@ import WebKit
     /// bookmark and the path is readable anyway, so a readability check is the real answer.
     private static func start(_ url: URL) -> Bool {
         let real = url.resolvingSymlinksInPath().path
-        if accessing.contains(real) { return true }
+        if accessing[real] != nil { return true }
         if url.startAccessingSecurityScopedResource() {
-            accessing.insert(real)
+            accessing[real] = url
             return true
         }
         return FileManager.default.isReadableFile(atPath: url.path)
+    }
+
+    private static func stop(_ url: URL) {
+        if let started = accessing.removeValue(forKey: url.resolvingSymlinksInPath().path) {
+            started.stopAccessingSecurityScopedResource()
+        }
+    }
+
+    private static func stopAll() {
+        for url in accessing.values { url.stopAccessingSecurityScopedResource() }
+        accessing.removeAll()
     }
 
     // MARK: check
@@ -198,7 +215,7 @@ import WebKit
 
         // The relaunch. Forgetting `accessing` is what a new process starts with, so this
         // resolve has to take the extension again from the stored Data alone.
-        accessing.removeAll()
+        stopAll()
         let resolved = urls(key, in: defaults)
         assert("a stored bookmark resolves back to the same folder",
                resolved.first?.resolvingSymlinksInPath().path == folder.resolvingSymlinksInPath().path)
@@ -210,10 +227,25 @@ import WebKit
         remove(path: folder.path, from: key, in: defaults)
         assert("removing a folder empties the stored list", raw(key, in: defaults).isEmpty)
 
+        // A new choice must release the old extension; removing the choice must close
+        // the remaining one. The check observes tracked scopes when macOS starts one.
+        let replacement = folder.deletingLastPathComponent()
+            .appendingPathComponent(name + "-replacement", isDirectory: true)
+        try? fm.createDirectory(at: replacement, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: replacement) }
+        _ = replace(folder, at: key, in: defaults)
+        let oldPath = folder.resolvingSymlinksInPath().path
+        _ = replace(replacement, at: key, in: defaults)
+        assert("replacing a selected folder releases its old scope",
+               accessing[oldPath] == nil)
+        _ = replace(nil, at: key, in: defaults)
+        assert("clearing a selected folder releases its scope",
+               accessing[replacement.resolvingSymlinksInPath().path] == nil)
+
         // A folder that has gone away must fall out of the list instead of being retried.
         _ = add(folder, to: key, in: defaults)
         try? fm.removeItem(at: folder)
-        accessing.removeAll()
+        stopAll()
         assert("a bookmark to a deleted folder is dropped, not retried forever",
                urls(key, in: defaults).isEmpty && raw(key, in: defaults).isEmpty)
 
