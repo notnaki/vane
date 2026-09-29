@@ -689,7 +689,10 @@ struct PasswordChoice: Equatable {
       }, true);
       // A failed sign-in can leave the page in place. An edited field starts a new attempt.
       document.addEventListener('input', function (e) {
-        if (submittedForm && e.target.form === submittedForm && pairFor(e.target)) {
+        // A SPA may replace the submitted form before the retry. Its new fields count as
+        // a new attempt once the old form is detached; edits in another live form do not.
+        if (submittedForm && pairFor(e.target)
+            && (e.target.form === submittedForm || !submittedForm.isConnected)) {
           submittedForm = null;
         }
       }, true);
@@ -1270,10 +1273,28 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                                             check("editing another form cannot replace a submitted login offer",
                                                                   b.offered?.0 == "login@example.com"
                                                                     && b.offered?.1 == "login-secret")
-                                                            print("window.open against a real page")
-                                                            popupRows { rows in
-                                                                for (name, ok) in rows { check(name, ok) }
-                                                                finish("PASS")
+                                                            b.offered = nil
+                                                            w.evaluateJavaScript("""
+                                                                var replacement = document.createElement('form');
+                                                                replacement.id = 'retry';
+                                                                replacement.innerHTML = '<input id="retryUser" type="email"><input id="retryPass" type="password">';
+                                                                document.getElementById('f').replaceWith(replacement);
+                                                                document.getElementById('retryUser').value = 'retry@example.com';
+                                                                document.getElementById('retryPass').value = 'retry-secret';
+                                                                document.getElementById('retryPass').dispatchEvent(new Event('input', {bubbles:true}));
+                                                                document.getElementById('retryUser').focus();
+                                                                window.dispatchEvent(new Event('pagehide'));
+                                                                """) { _, _ in
+                                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                                                    check("edited replacement form offers its fetch login on pagehide",
+                                                                          b.offered?.0 == "retry@example.com"
+                                                                            && b.offered?.1 == "retry-secret")
+                                                                    print("window.open against a real page")
+                                                                    popupRows { rows in
+                                                                        for (name, ok) in rows { check(name, ok) }
+                                                                        finish("PASS")
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
