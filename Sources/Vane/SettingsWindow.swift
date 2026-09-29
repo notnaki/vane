@@ -1225,15 +1225,15 @@ private struct PrivacyPane: View {
                                  + "site has been allowed to load without encryption.")
                     }
                     ForEach(grants) { grant in
-                        SettingsRow(grant.host) {
+                        SettingsRow(grant.scope.origin) {
                             Text("\(grant.what): \(grant.allowed ? "Allowed" : "Blocked")")
                                 .font(Look.caption).foregroundStyle(Look.inkSecondary)
                             Button {
-                                SitePermissions.reset(host: grant.host)
+                                SitePermissions.reset(scope: grant.scope)
                                 reload()
                             } label: { Image(systemName: "minus.circle") }
                                 .buttonStyle(.plain).foregroundStyle(.secondary)
-                                .accessibilityLabel("Forget \(grant.what.lowercased()) for \(grant.host)")
+                                .accessibilityLabel("Forget \(grant.what.lowercased()) for \(grant.scope.origin)")
                         }
                     }
                     ForEach(httpExceptions, id: \.self) { host in
@@ -1250,9 +1250,9 @@ private struct PrivacyPane: View {
                     }
                     SettingsRow("Camera and microphone") {
                         Button("Reset Permissions…") {
-                            if confirm("Forget camera and microphone permissions for every site?",
+                            if confirm("Forget camera and microphone permissions for every site in this profile?",
                                        "Reset") {
-                                SitePermissions.resetAll()
+                                SitePermissions.resetAll(profileID: profile.id)
                                 reload()
                             }
                         }
@@ -1285,13 +1285,14 @@ private struct PrivacyPane: View {
             }
         }
         .onAppear { reload() }
+        .onChange(of: profile.id) { reload() }
         .sheet(isPresented: $clearing) {
             ClearDataSheet(profileID: profile.id, profileName: profile.name)
         }
     }
 
     private func reload() {
-        grants = SitePermissions.all()
+        grants = SitePermissions.all(profileID: profile.id)
         httpExceptions = HTTPSOnly.exceptions(profileID: profile.id)
     }
 }

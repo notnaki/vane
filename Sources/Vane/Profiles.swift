@@ -443,6 +443,7 @@ struct Space: Identifiable, Codable, Equatable {
             Favicons.forget(id)
             ExtensionHost.forget(id)
             Passwords.deleteAll(profileID: id)
+            SitePermissions.resetAll(profileID: id)
             for key in ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey,
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
@@ -1048,6 +1049,12 @@ struct Space: Identifiable, Codable, Equatable {
         UserDefaults.vane.set(["https://pinned.example"], forKey: victimKeys[0])
         UserDefaults.vane.set(false, forKey: victimKeys[1])
         UserDefaults.vane.set([Data("bookmark".utf8)], forKey: victimKeys[2])
+        let victimPermission = SitePermissions.Scope(
+            url: URL(string: "https://vane-delete-check.invalid"), profileID: victim)!
+        let neighbourPermission = SitePermissions.Scope(
+            url: URL(string: "https://vane-delete-check.invalid"), profileID: neighbour)!
+        SitePermissions.remember(scope: victimPermission, type: .camera, allow: true)
+        SitePermissions.remember(scope: neighbourPermission, type: .camera, allow: false)
 
         // A website data store only exists on disk once something is written into it.
         // Scoped so the only strong reference left is the manager's own cache — which is
@@ -1075,6 +1082,10 @@ struct Space: Identifiable, Codable, Equatable {
 
         // MARK: the thing under test
         assert("deleting a populated profile succeeds", pm.delete(victim))
+        assert("deleting a profile forgets its camera grants",
+               SitePermissions.remembered(scope: victimPermission, type: .camera) == nil)
+        assert("deleting a profile leaves another profile's camera grants",
+               SitePermissions.remembered(scope: neighbourPermission, type: .camera) == false)
 
         assert("deleting a profile deletes its keychain items",
                Passwords.lookup(host: goneHost, profileID: victim) == nil)

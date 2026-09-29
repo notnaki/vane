@@ -805,6 +805,7 @@ struct TitleReveal: Equatable, Sendable {
     /// `windowWillClose` → here, and a `suspend()` that decided there was nothing to do left
     /// that popup's WebContent process running for the life of the app.
     func tearDown() {
+        if isPrivate { SitePermissions.forgetPrivate(tabID: id) }
         release()
         TabAudio.forget(id)
         MediaState.shared.forget(id)
@@ -1112,7 +1113,8 @@ struct TitleReveal: Equatable, Sendable {
 
     func webView(_ w: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,
                  initiatedBy frame: WKFrameInfo, type: WKMediaCaptureType) async -> WKPermissionDecision {
-        await SitePermissions.decide(origin: origin, type: type)
+        await SitePermissions.decide(origin: origin, type: type, profileID: profileID,
+                                     privateTabID: isPrivate ? id : nil)
     }
 
     /// The destination is final here — redirects are done — and the new document has not
@@ -2143,6 +2145,7 @@ struct Stash {
         // it leaves it exactly as it is, and only Unfavourite/Unpin ever takes it out.
         // Nothing is "closed", so nothing is pushed for Reopen Closed Tab either.
         if !outcome.keep {
+            if isPrivate { SitePermissions.forgetPrivate(tabID: id) }
             if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
                                         isPrivate: isPrivate) { ClosedTabs.push(tab.currentURL) }
             Motion.list { _ = tabs.remove(at: i) }
