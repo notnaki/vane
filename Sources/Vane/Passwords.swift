@@ -1074,12 +1074,12 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                           saved.pinnedTabURLs == [home])
                     let relaunched = TabStore(profileID: profileID, space: saved)
                     let back = relaunched.tabs.first { $0.kind == .pinned }
-                    check("the next launch comes up on the page it was pinned at",
-                          back?.currentURL == home)
-                    check("…parked, and with none of the wander's state to come back to",
-                          back?.suspended == true && back?.snapshot.state != wander)
-                    check("…under the name of the page it stands for, not \"New Tab\"",
-                          back?.title == "home.example")
+                    check("the next launch keeps the page the pinned row wandered to",
+                          back?.homeURL == home && back?.currentURL == away)
+                    check("…parked, with the wander's back/forward state",
+                          back?.suspended == true && back?.snapshot.state == wander)
+                    check("…and keeps the page's title until it is sent home",
+                          back?.title == "Away")
                     relaunched.tabs.forEach { $0.tearDown() }
                     TabStore.all.removeAll { $0 === relaunched }
                 }
@@ -1102,8 +1102,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                 check("a favourite browsed elsewhere is put back on its own page too",
                       tile.currentURL == home && tile.kind == .favourite)
                 // Last, because making it current wakes it: the row is wandered again and
-                // looked at, and the Space is left. What it remembers has to be the home,
-                // which is the row a Space rebuilt from disk comes up with.
+                // looked at, and the Space is left. It identifies the row by its home even
+                // though the sidecar restores the page it wandered to.
                 row.park(url: away, Parked(title: "Away", state: wander))
                 store.current = row.id
                 store.saveCurrentSpace()
