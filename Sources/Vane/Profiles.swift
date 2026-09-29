@@ -386,11 +386,15 @@ struct Space: Identifiable, Codable, Equatable {
         } else {
             profiles = [Profile(id: Self.defaultID, name: "Personal", colorHex: Self.palette[0])]
             activeID = Self.defaultID
-            if FileManager.default.fileExists(atPath: file.path) {
+            // An absent or unreadable directory is not evidence that the profile list
+            // never existed. It may return during this process's lifetime; only an
+            // accessible directory with no such entry permits first-launch creation.
+            if let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path),
+               !names.contains(file.lastPathComponent) {
+                persist()
+            } else {
                 profileListReadable = false
                 NSLog("Vane: could not read profiles.json; preserving it for recovery")
-            } else {
-                persist()
             }
         }
         // Deliberately not called inline: `ProfileManager.shared` is first touched from
@@ -860,6 +864,20 @@ struct Space: Identifiable, Codable, Equatable {
         _ = ProfileManager(directory: damagedRoot, sandboxed: true)
         assert("opening a damaged profile list preserves the original bytes",
                (try? Data(contentsOf: damagedList)) == damagedBytes)
+
+        let unavailableRoot = root.appendingPathComponent("unavailable-list", isDirectory: true)
+        let parkedRoot = root.appendingPathComponent("parked-list", isDirectory: true)
+        try? fm.createDirectory(at: unavailableRoot, withIntermediateDirectories: true)
+        let durable = ProfileManager(directory: unavailableRoot, sandboxed: true)
+        _ = durable.create(name: "Existing Work")
+        let originalList = try? Data(contentsOf: unavailableRoot.appendingPathComponent("profiles.json"))
+        try? fm.moveItem(at: unavailableRoot, to: parkedRoot)
+        let stranded = ProfileManager(directory: unavailableRoot, sandboxed: true)
+        try? fm.moveItem(at: parkedRoot, to: unavailableRoot)
+        _ = stranded.create(name: "Accidental Replacement")
+        assert("a temporarily unavailable directory cannot overwrite its restored profile list",
+               originalList != nil
+               && (try? Data(contentsOf: unavailableRoot.appendingPathComponent("profiles.json"))) == originalList)
 
         // Spaces belong to exactly one profile.
         let reading = pm.createSpace(name: "Reading", in: work.id)
