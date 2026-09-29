@@ -457,17 +457,31 @@ import WebKit
                         "New Live Folder on a foreign dot belongs to that Space")
             _ = Windows.switchTo(profile: first)
             let spare = manager.createSpace(name: "Browsercheck Spare", in: second.id)
-            guard let formURL = URL(string: "\(base)/form") else {
-                throw Failure("profile hop fixture has no form URL")
-            }
-            // This navigation happens in the live parked store after its last disk save.
-            // Moving from the foreign dot must read that live URL, not the stale /b snapshot.
-            secondTab.web.load(URLRequest(url: formURL))
-            try await loaded(secondTab, path: "/form", title: "Fixture Form")
+            _ = Windows.switchTo(profile: second)
             guard let todayFolder = secondStore.newFolder(from: secondTab.id, in: \.todayShape) else {
                 throw Failure("moving Space could not make its Today folder fixture")
             }
+            try require(Session.save(), "the source session records the Space before it moves")
+            let sourceSession = ProfileManager.sessionURL(for: second.id, in: Store.directory)
+            try require((try? Data(contentsOf: sourceSession)).map {
+                Session.decodeSpaces($0).contains(secondSpace.id)
+            } == true, "the source session has a row for the Space before it moves")
+            secondStore.switchTo(space: spare)
+            _ = Windows.switchTo(profile: first)
+            guard let formURL = URL(string: "\(base)/form") else {
+                throw Failure("profile hop fixture has no form URL")
+            }
+            // This navigation happens in a live stash behind the source profile's current
+            // Space after its last disk save. The target has no store currently showing it.
+            secondTab.web.load(URLRequest(url: formURL))
+            try await loaded(secondTab, path: "/form", title: "Fixture Form")
             moveSpace(secondSpace, to: first, from: firstStore)
+            try require((try? Data(contentsOf: sourceSession)).map {
+                !Session.decodeSpaces($0).contains(secondSpace.id)
+                    && Session.decode($0).flatMap { $0 }.allSatisfy {
+                        $0.url != formURL.absoluteString && $0.url != secondURL.absoluteString
+                    }
+            } == true, "moving a Space clears its stale source session before autosave")
             try require(manager.spaces(for: first.id).first(where: { $0.id == secondSpace.id })?
                             .tabURLs.contains(formURL) == true,
                         "moving a foreign Space preserves navigation in its parked profile")
@@ -511,6 +525,49 @@ import WebKit
                         }, "deleting a foreign Space archives its live parked URL")
             try require(secondStore.currentSpaceID == keep.id,
                         "deleting a foreign Space resolves its parked owner to a surviving Space")
+
+            // This profile has no open store at all. Session.save() skips such profiles, so
+            // the move must remove an old row naming its Space from that profile's file.
+            let closedProfile = manager.create(name: "Browsercheck Closed")
+            let closedSpace = manager.createSpace(name: "From closed profile", in: closedProfile.id)
+            let closedSpare = manager.createSpace(name: "Closed spare", in: closedProfile.id)
+            let closedSession = ProfileManager.sessionURL(for: closedProfile.id, in: Store.directory)
+            let staleEntry = Session.Entry(url: secondURL.absoluteString, kind: .today)
+            let keptEntry = Session.Entry(url: firstURL.absoluteString, kind: .today)
+            let selectedAfter = UUID()
+            guard let staleData = Session.encode([[staleEntry], [keptEntry]],
+                                                 spaces: [closedSpace.id.uuidString,
+                                                          closedSpare.id.uuidString],
+                                                 selected: [UUID().uuidString,
+                                                            selectedAfter.uuidString])
+            else { throw Failure("closed profile session fixture could not encode") }
+            try staleData.write(to: closedSession)
+            moveSpace(closedSpace, to: first, from: firstStore)
+            try require((try? Data(contentsOf: closedSession)).map {
+                Session.decodeSpaces($0) == [closedSpare.id]
+                    && Session.decode($0).map { $0.map(\.url) } == [[firstURL.absoluteString]]
+                    && Session.decodeSelected($0) == [selectedAfter]
+            } == true, "moving from a closed profile clears only its Space's session row")
+
+            // The other move path starts on the Space being moved and hops the window into
+            // its new profile. Its immediate session write must keep the rebuilt Today tab.
+            guard let returning = manager.spaces(for: first.id).first(where: { $0.id == secondSpace.id })
+            else { throw Failure("the moved Space is absent before its return move") }
+            moveSpace(returning, to: second, from: firstStore)
+            let destinationSession = ProfileManager.sessionURL(for: second.id, in: Store.directory)
+            try require(manager.spaces(for: second.id).first(where: { $0.id == returning.id })?
+                            .tabURLs.contains(formURL) == true
+                        && secondStore.window === window && secondStore.currentSpaceID == returning.id,
+                        "moving the shown Space keeps its pages through the profile hop")
+            try require((try? Data(contentsOf: destinationSession)).map {
+                Session.decodeSpaces($0).contains(returning.id)
+                    && Session.decode($0).flatMap { $0 }.contains { $0.url == formURL.absoluteString }
+            } == true, "moving the shown Space saves its destination session immediately")
+            let oldSession = ProfileManager.sessionURL(for: first.id, in: Store.directory)
+            try require((try? Data(contentsOf: oldSession)).map {
+                !Session.decodeSpaces($0).contains(returning.id)
+                    && !Session.decode($0).flatMap { $0 }.contains { $0.url == formURL.absoluteString }
+            } == true, "moving the shown Space clears its former profile's session")
 
             window.performClose(nil)
             try require(!TabStore.all.contains(where: { $0 === firstStore || $0 === secondStore }),

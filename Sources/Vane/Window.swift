@@ -1016,6 +1016,27 @@ extension TabStore {
         return out
     }
 
+    /// Remove a moved Space's old window row even if its source profile has no open store.
+    /// `save()` only rewrites profiles with live stores, so it cannot clear a closed
+    /// profile's prior crash snapshot. Keep every other window and its aligned metadata.
+    @discardableResult
+    static func forget(space id: UUID, in profileID: UUID) -> Bool {
+        guard let data = try? Data(contentsOf: file(profileID)) else { return true }
+        guard var snapshot = try? JSONDecoder().decode(Disk.self, from: data) else { return false }
+        guard let spaces = snapshot.spaces else { return snapshot.windows.isEmpty }
+        guard spaces.count >= snapshot.windows.count else { return false }
+        let kept = snapshot.windows.indices.filter {
+            !spaces.indices.contains($0) || spaces[$0] != id.uuidString
+        }
+        guard kept.count != snapshot.windows.count else { return true }
+        snapshot.windows = kept.map { snapshot.windows[$0] }
+        snapshot.splits = snapshot.splits.map { list in kept.map { list.indices.contains($0) ? list[$0] : [] } }
+        snapshot.spaces = kept.map { spaces.indices.contains($0) ? spaces[$0] : "" }
+        snapshot.selected = snapshot.selected.map { list in kept.map { list.indices.contains($0) ? list[$0] : nil } }
+        guard let updated = try? JSONEncoder().encode(snapshot) else { return false }
+        return SnapshotPersistence.write(updated, to: file(profileID))
+    }
+
     /// Every profile's open windows, each into its own file. A profile whose windows are all
     /// closed keeps the session it already had — only profiles with a live window are
     /// rewritten, so quitting from profile B does not erase profile A's session.

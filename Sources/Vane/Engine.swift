@@ -2782,6 +2782,40 @@ struct Stash {
     /// user, and a Space that is not being shown has no rows in it.
     var everyTab: [Tab] { tabs + stashes.values.flatMap(\.tabs) }
 
+    /// A Space can keep loading and navigating after it leaves the visible strip. Before a
+    /// cross-profile move releases that stash, write its live tabs and folder shapes to the
+    /// old profile, where the transfer reads them. A stash whose fingerprint changed under
+    /// another window is already superseded by disk and must not overwrite that edit.
+    func saveStashedSpace(_ id: UUID) -> Bool {
+        guard let stash = stashes[id] else { return true }
+        guard stash.fingerprint == fingerprint(of: id) else { return true }
+        guard var space = spaces.first(where: { $0.id == id }) else { return false }
+        func urls(_ kind: TabKind) -> [URL] {
+            stash.tabs.filter { $0.kind == kind }.compactMap(\.pinnedURL)
+                .filter { $0.scheme?.hasPrefix("http") == true }
+        }
+        space.tabURLs = urls(.today)
+        space.pinnedTabURLs = urls(.pinned)
+        var parked: [String: Parked] = [:]
+        for tab in stash.tabs {
+            guard let entry = TabStore.sidecarEntry(page: tab.currentURL, home: tab.homeURL,
+                                                    snapshot: tab.snapshot) else { continue }
+            parked[entry.key] = entry.parked
+        }
+        guard Suspension.SpaceState.save(parked, space: id, profileID: profileID,
+                                         in: Store.directory),
+              ProfileManager.shared.updateSpace(space) else { return false }
+        TabStore.saveShape(stash.pins, from: stash.tabs, kind: .pinned,
+                           space: id, profileID: profileID, ownsSection: true)
+        TabStore.saveShape(stash.todayShape, from: stash.tabs, kind: .today,
+                           space: id, profileID: profileID, ownsSection: true)
+        let selected = stash.tabs.first { $0.id == stash.current }?.pinnedURL
+        Spaces.rememberTab(selected.flatMap {
+            $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
+        }, in: id)
+        return true
+    }
+
     /// Which Space this window is keeping `id` alive for, if it is not on the strip.
     func space(stashing id: Tab.ID) -> UUID? {
         stashes.first { $0.value.tabs.contains { $0.id == id } }?.key

@@ -2338,6 +2338,22 @@ private struct SpaceMenu: View {
     let showing = space.id == store.currentSpaceID
     let owners = storesShowing(space)
     guard saveSpaces(in: owners, reportingIn: store) else { return }
+    // A Space no window is showing may still be alive behind one. Its tabs can navigate
+    // there, after the disk snapshot made on the way out; save that live stash before the
+    // profile transfer drops it. A visible owner remains authoritative when both exist.
+    if owners.isEmpty {
+        for owner in TabStore.all where owner.profileID == space.profileID
+            && !owner.saveStashedSpace(space.id) {
+            Toasts.show("Could not save Space", in: store)
+            return
+        }
+    }
+    // Prune a prior crash snapshot before the source Space disappears. This also handles a
+    // profile with no open store, which Session.save() below deliberately does not rewrite.
+    guard Session.forget(space: space.id, in: space.profileID) else {
+        Toasts.show("Could not save session", in: store)
+        return
+    }
     guard let moved = ProfileManager.shared.moveSpace(space.id, from: space.profileID,
                                                       to: profile.id) else {
         Toasts.show("Could not move Space", in: store)
@@ -2350,6 +2366,10 @@ private struct SpaceMenu: View {
     store.spacesChanged()
     if showing { store.switchTo(space: moved) }       // which hops the window to `profile`
     rebuild()
+    // The crash snapshot may still name the moved Space and carry its tabs under the source
+    // profile. Rewrite both profiles now; waiting for the 30-second timer can resurrect a
+    // duplicate in the source if Vane exits before then.
+    if !Session.save() { Toasts.show("Could not save session", in: store) }
 }
 
 /// A grid of SF Symbols. ponytail: a fixed list, not a symbol browser — 24 covers what a
