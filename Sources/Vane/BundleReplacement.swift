@@ -5,7 +5,10 @@ import Darwin
 /// siblings of its target, so staging and the final rename stay on the same volume.
 enum BundleReplacement {
     enum Fault: Error { case injected, busy, invalidStage, unsupportedSwap, filesystem }
-    enum Step { case beforeCopy, afterCopy, beforeJournal, beforeSwap, afterSwap }
+    enum Step {
+        case beforeCopy, afterCopy, beforeStageSync, beforeJournal,
+             beforeJournalSync, beforeSwap, afterSwap
+    }
     enum Launch { case unchanged, waitingForHealth, rolledBack, needsAttention }
 
     private enum State: String, Codable { case prepared, launching, healthy }
@@ -16,6 +19,7 @@ enum BundleReplacement {
         let keepPrevious: Bool
         var state: State
         var launchPID: Int32?
+        var launchStart: UInt64?
     }
 
     private static func journalURL(_ target: URL) -> URL {
@@ -38,6 +42,72 @@ enum BundleReplacement {
         return target.deletingLastPathComponent().appendingPathComponent(journal.stageName)
     }
 
+    private static func orphanStages(_ target: URL) -> [URL] {
+        let prefix = ".\(target.lastPathComponent).vane-stage-"
+        let parent = target.deletingLastPathComponent()
+        return ((try? FileManager.default.contentsOfDirectory(at: parent,
+                    includingPropertiesForKeys: nil)) ?? []).filter { url in
+            let name = url.lastPathComponent
+            return name.hasPrefix(prefix)
+                && UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
+        }
+    }
+
+    private static func removeOrphanStages(_ target: URL) throws {
+        // A live transaction owns its stage. Only unjournaled, generated names are ours
+        // to discard; the lock also excludes another process while it is copying.
+        guard !FileManager.default.fileExists(atPath: journalURL(target).path) else { return }
+        for stage in orphanStages(target) { try FileManager.default.removeItem(at: stage) }
+    }
+
+    private static func backupURL(_ stage: URL) -> URL {
+        stage.deletingLastPathComponent().appendingPathComponent(
+            stage.lastPathComponent.replacingOccurrences(of: ".vane-stage-",
+                                                          with: ".vane-backup-"))
+    }
+
+    private static func sync(_ url: URL, directory: Bool) throws {
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | (directory ? O_DIRECTORY : 0))
+        guard descriptor >= 0 else { throw Fault.filesystem }
+        defer { close(descriptor) }
+        // F_FULLFSYNC requests that macOS flush the device cache as well as the file.
+        guard fcntl(descriptor, F_FULLFSYNC) == 0 else { throw Fault.filesystem }
+    }
+
+    private static func syncTree(_ url: URL) throws {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else { throw Fault.filesystem }
+        switch metadata.st_mode & mode_t(S_IFMT) {
+        case mode_t(S_IFDIR):
+            for child in try FileManager.default.contentsOfDirectory(at: url,
+                    includingPropertiesForKeys: nil) {
+                try syncTree(child)
+            }
+            try sync(url, directory: true)
+        case mode_t(S_IFREG):
+            try sync(url, directory: false)
+        case mode_t(S_IFLNK):
+            // The parent directory sync persists the symlink itself.
+            break
+        default:
+            throw Fault.filesystem
+        }
+    }
+
+    private static func processStart(_ pid: Int32) -> UInt64? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec)
+    }
+
+    private static func sameProcess(_ pid: Int32, _ start: UInt64?) -> Bool {
+        if let start, let observed = processStart(pid) { return observed == start }
+        // If process metadata is unavailable, keep the old bundle until a later launch
+        // can establish that the first process is gone.
+        return kill(pid, 0) == 0 || errno == EPERM
+    }
+
     private static func fileID(_ url: URL) -> UInt64? {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber]
             as? NSNumber)?.uint64Value
@@ -48,8 +118,15 @@ enum BundleReplacement {
         return try? JSONDecoder().decode(Journal.self, from: data)
     }
 
-    private static func write(_ journal: Journal, for target: URL) throws {
+    private static func write(_ journal: Journal, for target: URL,
+                              durable: Bool = true) throws {
         try JSONEncoder().encode(journal).write(to: journalURL(target), options: .atomic)
+        if durable { try syncJournal(target) }
+    }
+
+    private static func syncJournal(_ target: URL) throws {
+        try sync(journalURL(target), directory: false)
+        try sync(target.deletingLastPathComponent(), directory: true)
     }
 
     private static func withLock<T>(_ target: URL, _ body: () throws -> T) throws -> T {
@@ -107,6 +184,7 @@ enum BundleReplacement {
                 try fm.removeItem(at: journalURL(target))
             }
             guard !fm.fileExists(atPath: journalURL(target).path) else { throw Fault.busy }
+            try removeOrphanStages(target)
             let stage = target.deletingLastPathComponent().appendingPathComponent(
                 ".\(target.lastPathComponent).vane-stage-\(UUID().uuidString)")
             var committed = false
@@ -121,17 +199,23 @@ enum BundleReplacement {
             try fm.copyItem(at: source, to: stage)
             if fault?(.afterCopy) == true { throw Fault.injected }
             guard verify(stage), let newID = fileID(stage) else { throw Fault.invalidStage }
+            if fault?(.beforeStageSync) == true { throw Fault.injected }
+            try syncTree(stage)
+            try sync(target.deletingLastPathComponent(), directory: true)
             let oldID = fileID(target)
             let journal = Journal(stageName: stage.lastPathComponent, newID: newID,
                                   oldID: oldID, keepPrevious: keepPrevious, state: .prepared,
-                                  launchPID: nil)
+                                  launchPID: nil, launchStart: nil)
             if fault?(.beforeJournal) == true { throw Fault.injected }
-            try write(journal, for: target)
             journalWritten = true
+            try write(journal, for: target, durable: false)
+            if fault?(.beforeJournalSync) == true { throw Fault.injected }
+            try syncJournal(target)
             if fault?(.beforeSwap) == true { throw Fault.injected }
             if oldID != nil { try swapOperation(target, stage) }
             else { try moveIntoEmptyTarget(stage, target) }
             committed = true
+            try sync(target.deletingLastPathComponent(), directory: true)
             if fault?(.afterSwap) == true { throw Fault.injected }
         }
     }
@@ -140,10 +224,11 @@ enum BundleReplacement {
     /// A second attempt to start a replacement that never reached a healthy launch swaps
     /// the old bundle back, then asks the caller to relaunch that restored bundle.
     static func beginLaunch(at target: URL,
-                            processAlive: (Int32) -> Bool = { pid in
-                                kill(pid, 0) == 0 || errno == EPERM
-                            }) -> Launch {
+                            processAlive: (Int32, UInt64?) -> Bool = sameProcess) -> Launch {
         guard FileManager.default.fileExists(atPath: journalURL(target).path) else {
+            if !orphanStages(target).isEmpty {
+                _ = try? withLock(target) { try removeOrphanStages(target) }
+            }
             return .unchanged
         }
         return (try? withLock(target) {
@@ -152,9 +237,10 @@ enum BundleReplacement {
                 return Launch.needsAttention
             }
             let targetID = fileID(target), stageID = fileID(stage)
-            if targetID == journal.oldID, stageID == journal.newID {
+            if targetID == journal.oldID,
+               stageID == journal.newID || stageID == nil {
                 // The app crashed before the rename; the original installation is intact.
-                try? fm.removeItem(at: stage)
+                if stageID != nil { try? fm.removeItem(at: stage) }
                 try? fm.removeItem(at: journalURL(target))
                 return .unchanged
             }
@@ -170,12 +256,14 @@ enum BundleReplacement {
                 return .needsAttention
             }
             if journal.state == .launching, journal.oldID != nil {
-                if let pid = journal.launchPID, processAlive(pid) {
+                if let pid = journal.launchPID, processAlive(pid, journal.launchStart) {
                     // Another copy is still starting. Its health decision owns this
                     // transaction; a second launch must not roll it back underneath it.
                     return .needsAttention
                 }
                 do { try swap(target, stage) } catch { return .needsAttention }
+                guard (try? sync(target.deletingLastPathComponent(), directory: true)) != nil
+                else { return .needsAttention }
                 // Only the staged failed version is removed. The restored old app is now
                 // at the original target path and can be opened by the caller.
                 try? fm.removeItem(at: stage)
@@ -184,6 +272,7 @@ enum BundleReplacement {
             }
             journal.state = .launching
             journal.launchPID = getpid()
+            journal.launchStart = processStart(getpid())
             guard (try? write(journal, for: target)) != nil else { return .needsAttention }
             return .waitingForHealth
         }) ?? .needsAttention
@@ -196,6 +285,7 @@ enum BundleReplacement {
         _ = try? withLock(target) {
             guard var journal = read(target), let stage = stageURL(target, journal),
                   journal.state == .launching, journal.launchPID == getpid(),
+                  journal.launchStart == processStart(getpid()),
                   fileID(target) == journal.newID,
                   journal.oldID == nil || fileID(stage) == journal.oldID else { return }
             journal.state = .healthy
@@ -206,10 +296,21 @@ enum BundleReplacement {
 
     private static func finish(_ journal: Journal, stage: URL, target: URL) {
         let fm = FileManager.default
+        let parent = target.deletingLastPathComponent()
+        if journal.keepPrevious, let oldID = journal.oldID {
+            let backup = backupURL(stage)
+            if fileID(stage) == oldID {
+                do { try moveIntoEmptyTarget(stage, backup) } catch { return }
+            } else if fileID(backup) != oldID {
+                return
+            }
+        }
         if !journal.keepPrevious, let oldID = journal.oldID, fileID(stage) == oldID {
             do { try fm.removeItem(at: stage) } catch { return }
         }
+        guard (try? sync(parent, directory: true)) != nil else { return }
         try? fm.removeItem(at: journalURL(target))
+        try? sync(parent, directory: true)
     }
 
     /// Disposable directory fixtures exercise each failure boundary without touching an
@@ -244,6 +345,12 @@ enum BundleReplacement {
                                                  includingPropertiesForKeys: nil)) ?? [])
                 .filter { $0.lastPathComponent.hasPrefix(prefix) }
         }
+        func backups(_ target: URL) -> [URL] {
+            let prefix = ".\(target.lastPathComponent).vane-backup-"
+            return ((try? fm.contentsOfDirectory(at: target.deletingLastPathComponent(),
+                                                 includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.lastPathComponent.hasPrefix(prefix) }
+        }
         let verify: (URL) -> Bool = { label($0) == "new" }
 
         do {
@@ -267,7 +374,9 @@ enum BundleReplacement {
 
         for (name, step) in [("before-copy", Step.beforeCopy),
                              ("after-copy", .afterCopy),
+                             ("before-stage-sync", .beforeStageSync),
                              ("before-journal", .beforeJournal),
+                             ("before-journal-sync", .beforeJournalSync),
                              ("before-swap", .beforeSwap)] {
             do {
                 let (source, target) = try scene(name)
@@ -304,6 +413,27 @@ enum BundleReplacement {
         } catch { results.append(("invalid-copied-bundle fixture", false)) }
 
         do {
+            let (_, target) = try scene("orphan-copy")
+            let partial = target.deletingLastPathComponent().appendingPathComponent(
+                ".\(target.lastPathComponent).vane-stage-\(UUID().uuidString)")
+            try bundle(partial, "partial")
+            results.append(("startup removes an unjournaled stage left by process death",
+                            beginLaunch(at: target) == .unchanged && label(target) == "old"
+                                && stages(target).isEmpty))
+        } catch { results.append(("orphan-copy fixture", false)) }
+
+        do {
+            let (source, target) = try scene("orphan-retry")
+            let partial = target.deletingLastPathComponent().appendingPathComponent(
+                ".\(target.lastPathComponent).vane-stage-\(UUID().uuidString)")
+            try bundle(partial, "partial")
+            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            results.append(("retry cleans a dead copy before making a fresh stage",
+                            label(target) == "new" && stages(target).count == 1
+                                && label(stages(target)[0]) == "old"))
+        } catch { results.append(("orphan-retry fixture", false)) }
+
+        do {
             let (source, target) = try scene("interrupted-before-swap")
             let stage = target.deletingLastPathComponent().appendingPathComponent(
                 ".\(target.lastPathComponent).vane-stage-\(UUID().uuidString)")
@@ -311,7 +441,7 @@ enum BundleReplacement {
             guard let stagedID = fileID(stage) else { throw Fault.filesystem }
             let journal = Journal(stageName: stage.lastPathComponent, newID: stagedID,
                                   oldID: fileID(target), keepPrevious: false, state: .prepared,
-                                  launchPID: nil)
+                                  launchPID: nil, launchStart: nil)
             try write(journal, for: target)
             results.append(("startup cleans an interrupted pre-swap transaction",
                             beginLaunch(at: target) == .unchanged && label(target) == "old"
@@ -327,7 +457,7 @@ enum BundleReplacement {
             guard let stagedID = fileID(stage) else { throw Fault.filesystem }
             try write(Journal(stageName: stage.lastPathComponent, newID: stagedID,
                               oldID: fileID(target), keepPrevious: false,
-                              state: .prepared, launchPID: nil), for: target)
+                              state: .prepared, launchPID: nil, launchStart: nil), for: target)
             try install(source: source, at: target, keepPrevious: false, verify: verify)
             results.append(("a reopened source retries after an interrupted pre-swap copy",
                             label(target) == "new" && stages(target).count == 1
@@ -343,13 +473,26 @@ enum BundleReplacement {
             let first = beginLaunch(at: target)
             let concurrent = beginLaunch(at: target)
             let concurrentKeptNew = label(target) == "new"
-            let second = beginLaunch(at: target, processAlive: { _ in false })
+            let second = beginLaunch(at: target, processAlive: { _, _ in false })
             results.append(("a concurrent launch cannot roll back a live replacement",
                             concurrent == .needsAttention && concurrentKeptNew))
             results.append(("an interrupted first launch rolls back on the next attempt",
                             first == .waitingForHealth && second == .rolledBack
                                 && label(target) == "old" && stages(target).isEmpty))
         } catch { results.append(("rollback fixture", false)) }
+
+        do {
+            let (source, target) = try scene("reused-pid")
+            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            guard beginLaunch(at: target) == .waitingForHealth,
+                  var journal = read(target), let start = journal.launchStart else {
+                throw Fault.filesystem
+            }
+            journal.launchStart = start &+ 1
+            try write(journal, for: target)
+            results.append(("reused PID cannot indefinitely block rollback",
+                            beginLaunch(at: target) == .rolledBack && label(target) == "old"))
+        } catch { results.append(("reused-pid fixture", false)) }
 
         do {
             let (source, target) = try scene("interrupted-cleanup")
@@ -373,9 +516,26 @@ enum BundleReplacement {
             markHealthy(at: target)
             results.append(("relocation keeps the displaced installed bundle",
                             first == .waitingForHealth && label(target) == "new"
-                                && stages(target).count == 1
-                                && label(stages(target)[0]) == "old"))
+                                && stages(target).isEmpty && backups(target).count == 1
+                                && label(backups(target)[0]) == "old"))
         } catch { results.append(("relocation fixture", false)) }
+
+        do {
+            let (source, target) = try scene("relocation-cleanup")
+            try install(source: source, at: target, keepPrevious: true, verify: verify)
+            _ = beginLaunch(at: target)
+            guard var journal = read(target), let stage = stageURL(target, journal) else {
+                throw Fault.filesystem
+            }
+            journal.state = .healthy
+            try write(journal, for: target)
+            try moveIntoEmptyTarget(stage, backupURL(stage))
+            results.append(("startup finishes a relocation interrupted after backup rename",
+                            beginLaunch(at: target) == .unchanged && label(target) == "new"
+                                && stages(target).isEmpty && backups(target).count == 1
+                                && label(backups(target)[0]) == "old"
+                                && !fm.fileExists(atPath: journalURL(target).path)))
+        } catch { results.append(("relocation-cleanup fixture", false)) }
 
         do {
             let (source, target) = try scene("empty-destination", old: false)
