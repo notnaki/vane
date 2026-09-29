@@ -437,6 +437,25 @@ import WebKit
             secondStore.renamingSpace = nil
 
             _ = Windows.switchTo(profile: first)
+            guard let folderOwner = spaceMenuTarget(secondSpace, from: firstStore),
+                  let foreignFolder = folderOwner.newFolder() else {
+                throw Failure("foreign Space dot did not make its folder in the target Space")
+            }
+            try require(folderOwner === secondStore && secondStore.currentSpaceID == secondSpace.id
+                        && secondStore.pins.folder(foreignFolder.id) != nil
+                        && firstStore.pins.folder(foreignFolder.id) == nil,
+                        "New Folder on a foreign dot belongs to that Space")
+            _ = Windows.switchTo(profile: first)
+            guard let liveOwner = spaceMenuTarget(secondSpace, from: firstStore),
+                  let foreignLive = liveOwner.newLiveFolder(named: "Smoke live folder",
+                                                              source: .github(LiveFolders.defaultQuery)) else {
+                throw Failure("foreign Space dot did not make its live folder in the target Space")
+            }
+            try require(liveOwner === secondStore && secondStore.currentSpaceID == secondSpace.id
+                        && secondStore.pins.folder(foreignLive.id)?.live != nil
+                        && firstStore.pins.folder(foreignLive.id) == nil,
+                        "New Live Folder on a foreign dot belongs to that Space")
+            _ = Windows.switchTo(profile: first)
             let spare = manager.createSpace(name: "Browsercheck Spare", in: second.id)
             guard let formURL = URL(string: "\(base)/form") else {
                 throw Failure("profile hop fixture has no form URL")
@@ -445,12 +464,32 @@ import WebKit
             // Moving from the foreign dot must read that live URL, not the stale /b snapshot.
             secondTab.web.load(URLRequest(url: formURL))
             try await loaded(secondTab, path: "/form", title: "Fixture Form")
+            guard let todayFolder = secondStore.newFolder(from: secondTab.id, in: \.todayShape) else {
+                throw Failure("moving Space could not make its Today folder fixture")
+            }
             moveSpace(secondSpace, to: first, from: firstStore)
             try require(manager.spaces(for: first.id).first(where: { $0.id == secondSpace.id })?
                             .tabURLs.contains(formURL) == true,
                         "moving a foreign Space preserves navigation in its parked profile")
             try require(secondStore.currentSpaceID == spare.id,
                         "moving a foreign Space resolves its parked owner to a surviving Space")
+            let movedState = Suspension.SpaceState.load(space: secondSpace.id, profileID: first.id,
+                                                         in: Store.directory)
+            try require(movedState[formURL.absoluteString] != nil,
+                        "moving a foreign Space carries its saved page state")
+            let movedPinned = TabStore.savedShape(space: secondSpace.id, profileID: first.id)
+            let movedToday = TabStore.savedShape(.today, space: secondSpace.id, profileID: first.id)
+            try require(movedPinned?.folder(foreignFolder.id) != nil
+                        && movedPinned?.folder(foreignLive.id)?.live != nil
+                        && movedToday?.folder(todayFolder.id) != nil,
+                        "moving a foreign Space carries Pinned and Today folders")
+            guard let movedSpace = manager.spaces(for: first.id).first(where: { $0.id == secondSpace.id })
+            else { throw Failure("the moved Space is absent from its destination profile") }
+            firstStore.switchTo(space: movedSpace)
+            try require(firstStore.pins.folder(foreignFolder.id) != nil
+                        && firstStore.pins.folder(foreignLive.id)?.live != nil
+                        && firstStore.todayShape.folder(todayFolder.id) != nil,
+                        "the moved Space rebuilds both folder sections in its new profile")
 
             let keep = manager.createSpace(name: "Browsercheck Keep", in: second.id)
             guard let submittedURL = URL(string: "\(base)/submitted") else {

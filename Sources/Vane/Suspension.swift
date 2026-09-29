@@ -342,6 +342,15 @@ extension Prefs {
             guard let data = try? JSONEncoder().encode(all) else { return false }
             return SnapshotPersistence.write(data, to: url(for: profileID, in: dir))
         }
+
+        /// Remove one Space without disturbing the other Spaces in the profile's sidecar.
+        @discardableResult
+        static func remove(space: UUID, profileID: UUID, in dir: URL) -> Bool {
+            var all = read(profileID, in: dir)
+            all.removeValue(forKey: space.uuidString)
+            guard let data = try? JSONEncoder().encode(all) else { return false }
+            return SnapshotPersistence.write(data, to: url(for: profileID, in: dir))
+        }
     }
 
     // MARK: Offline check

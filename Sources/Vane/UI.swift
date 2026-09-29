@@ -308,6 +308,9 @@ struct BrowserWindow: View {
         .ignoresSafeArea()
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
+        .sheet(isPresented: $store.liveFolderSheet) {
+            LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
+        }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
         // The one place the Space list is counted: when it changes, and when the Library
         // opens onto it. `spaceRevision` is bumped by everything that adds or removes one.
@@ -2223,11 +2226,17 @@ private struct SpaceMenu: View {
         // it is un-deletable: a profile always has a Space.
         .disabled(siblings < 2)
         Divider()
-        Button("New Folder") { store.newFolder() }
+        Button("New Folder") { spaceMenuTarget(space, from: store)?.newFolder() }
         // Arc asks nothing: signed in, the folder is there on the click. Signed out, the
         // click is the sign-in, and the folder follows it. The sheet is the fallback for a
         // build that cannot do the web flow — see `TabStore.askForLiveFolder`.
-        Button("New Live Folder…") { store.askForLiveFolder { open($live) } }
+        Button("New Live Folder…") {
+            guard let target = spaceMenuTarget(space, from: store) else { return }
+            target.askForLiveFolder {
+                if target === store { open($live) }
+                else { DispatchQueue.main.async { target.liveFolderSheet = true } }
+            }
+        }
         Divider()
         // Arc's "Manage Spaces…" opens the Library's Spaces view — every Space's pages side
         // by side, draggable between columns — rather than a settings pane.
@@ -2260,6 +2269,15 @@ private struct SpaceMenu: View {
     guard let showing = TabStore.all.first(where: { $0.window === window }),
           showing.currentSpaceID == space.id else { return }
     showing.renamingSpace = space.id
+}
+
+/// Context menus are built around the clicked dot, which can belong to a different Space
+/// or profile than the store that drew the menu. Bring that Space into this very window,
+/// then return the store that now owns the visible Pinned section.
+@MainActor func spaceMenuTarget(_ space: Space, from store: TabStore) -> TabStore? {
+    guard let window = store.window else { return nil }
+    store.switchTo(space: space)
+    return TabStore.all.first { $0.window === window && $0.currentSpaceID == space.id }
 }
 
 @MainActor private func deleteSpace(_ space: Space, in store: TabStore) {
@@ -2319,17 +2337,16 @@ private struct SpaceMenu: View {
           ProfileManager.shared.spaces(for: space.profileID).count > 1 else { return }
     let showing = space.id == store.currentSpaceID
     let owners = storesShowing(space)
-    guard saveSpaces(in: owners, reportingIn: store),
-          let fresh = ProfileManager.shared.spaces(for: space.profileID).first(where: { $0.id == space.id })
-    else { return }
-    ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
+    guard saveSpaces(in: owners, reportingIn: store) else { return }
+    guard let moved = ProfileManager.shared.moveSpace(space.id, from: space.profileID,
+                                                      to: profile.id) else {
+        Toasts.show("Could not move Space", in: store)
+        return
+    }
     // Out of the Space *before* it changes profile, so this store leaves it the way it leaves
     // any Space that has gone from under it — pages down, nothing stashed — rather than being
     // parked still claiming to be in one its own profile no longer owns.
     for owner in owners { owner.resolveStaleSpace(); owner.spacesChanged() }
-    var moved = fresh
-    moved.profileID = profile.id
-    ProfileManager.shared.updateSpace(moved)
     store.spacesChanged()
     if showing { store.switchTo(space: moved) }       // which hops the window to `profile`
     rebuild()

@@ -734,6 +734,44 @@ struct Space: Identifiable, Codable, Equatable {
         TabStore.forgetStashes(space: id, profileID: profileID)
     }
 
+    /// Re-home a Space with the state stored outside spaces.json. The destination is written
+    /// first; a failed write leaves the source intact, where its windows can still find it.
+    @discardableResult
+    func moveSpace(_ id: UUID, from source: UUID, to destination: UUID,
+                   defaults: UserDefaults = .vane) -> Space? {
+        let sourceSpaces = spaces(for: source)
+        guard source != destination, sourceSpaces.count > 1,
+              profiles.contains(where: { $0.id == destination }),
+              let original = sourceSpaces.first(where: { $0.id == id }) else { return nil }
+        let destinationSpaces = spaces(for: destination)
+        guard !destinationSpaces.contains(where: { $0.id == id }) else { return nil }
+
+        let state = Suspension.SpaceState.load(space: id, profileID: source, in: directory)
+        guard Suspension.SpaceState.save(state, space: id, profileID: destination,
+                                         in: directory) else { return nil }
+        var moved = original
+        moved.profileID = destination
+        guard saveSpaces(destinationSpaces + [moved], for: destination) else {
+            Suspension.SpaceState.remove(space: id, profileID: destination, in: directory)
+            return nil
+        }
+        guard saveSpaces(sourceSpaces.filter { $0.id != id }, for: source) else {
+            _ = saveSpaces(destinationSpaces, for: destination)
+            Suspension.SpaceState.remove(space: id, profileID: destination, in: directory)
+            return nil
+        }
+        for kind in [TabKind.pinned, .today] {
+            let old = TabStore.shapeKey(kind, space: id, profileID: source)
+            let new = TabStore.shapeKey(kind, space: id, profileID: destination)
+            if let shape = defaults.data(forKey: old) { defaults.set(shape, forKey: new) }
+            else { defaults.removeObject(forKey: new) }
+            defaults.removeObject(forKey: old)
+        }
+        _ = Suspension.SpaceState.remove(space: id, profileID: source, in: directory)
+        TabStore.forgetStashes(space: id, profileID: source)
+        return moved
+    }
+
     // MARK: Offline check
 
     /// Everything here runs against a throwaway temp directory with a sandboxed manager, so
@@ -825,6 +863,62 @@ struct Space: Identifiable, Codable, Equatable {
                && pm.spaces(for: work.id).first?.pinnedURLs.count == 1)
         assert("updating a space replaces it instead of duplicating it",
                pm.spaces(for: work.id).count == 1)
+        // A Space's tabs are not its whole saved state. Its scroll and navigation snapshot
+        // lives in a profile file, while each section's folders live in profile-keyed defaults.
+        let transferSuite = "vane.check.space-transfer.\(UUID().uuidString)"
+        if let defaults = UserDefaults(suiteName: transferSuite) {
+            defer { UserDefaults.dropScratchSuite(transferSuite) }
+            let transferRoot = root.appendingPathComponent("transfer", isDirectory: true)
+            try? fm.createDirectory(at: transferRoot, withIntermediateDirectories: true)
+            let transferManager = ProfileManager(directory: transferRoot, sandboxed: true)
+            let transferProfile = transferManager.create(name: "Transfer source")
+            let transferring = transferManager.createSpace(name: "Moving", in: transferProfile.id)
+            _ = transferManager.createSpace(name: "Spare", in: transferProfile.id)
+            _ = transferManager.createSpace(name: "Destination", in: defaultID)
+            var transferSpace = transferring
+            transferSpace.tabURLs = edited.tabURLs
+            transferManager.updateSpace(transferSpace)
+            let home = "https://example.com/a"
+            let state = Parked(title: "Kept page", state: Data([1, 2, 3]))
+            _ = Suspension.SpaceState.save([home: state], space: transferring.id,
+                                           profileID: transferProfile.id, in: transferRoot)
+            var pinShape = Pins()
+            _ = pinShape.newFolder(named: "Pinned group")
+            var todayShape = Pins()
+            _ = todayShape.newFolder(named: "Today group")
+            let pinData = try? JSONEncoder().encode(pinShape)
+            let todayData = try? JSONEncoder().encode(todayShape)
+            defaults.set(pinData, forKey: TabStore.shapeKey(.pinned, space: transferring.id,
+                                                            profileID: transferProfile.id))
+            defaults.set(todayData, forKey: TabStore.shapeKey(.today, space: transferring.id,
+                                                              profileID: transferProfile.id))
+            let moved = transferManager.moveSpace(transferring.id, from: transferProfile.id,
+                                                  to: defaultID, defaults: defaults)
+            assert("a moved Space keeps its id, urls and new profile",
+                   moved?.id == transferring.id && moved?.profileID == defaultID
+                   && moved?.tabURLs == edited.tabURLs)
+            assert("a moved Space leaves its source profile and enters its destination once",
+                   !transferManager.spaces(for: transferProfile.id).contains { $0.id == transferring.id }
+                   && transferManager.spaces(for: defaultID).filter { $0.id == transferring.id }.count == 1)
+            let transferredState = Suspension.SpaceState.load(space: transferring.id,
+                                                               profileID: defaultID, in: transferRoot)[home]
+            assert("a moved Space keeps its saved page state under the new profile",
+                   transferredState?.title == state.title && transferredState?.state == state.state)
+            assert("a moved Space keeps both folder shapes under the new profile",
+                   defaults.data(forKey: TabStore.shapeKey(.pinned, space: transferring.id,
+                                                            profileID: defaultID)) == pinData
+                   && defaults.data(forKey: TabStore.shapeKey(.today, space: transferring.id,
+                                                               profileID: defaultID)) == todayData)
+            assert("moving a Space removes its old saved state and folder keys",
+                   Suspension.SpaceState.load(space: transferring.id, profileID: transferProfile.id,
+                                              in: transferRoot).isEmpty
+                   && defaults.data(forKey: TabStore.shapeKey(.pinned, space: transferring.id,
+                                                                profileID: transferProfile.id)) == nil
+                   && defaults.data(forKey: TabStore.shapeKey(.today, space: transferring.id,
+                                                               profileID: transferProfile.id)) == nil)
+        } else {
+            assert("scratch defaults for Space transfer are available", false)
+        }
         // A spaces.json from before spaces had a look must still load, or upgrading throws
         // away every space the user had.
         let legacySpace = #"[{"id":"\#(UUID().uuidString)","name":"Old","profileID":"\#(work.id.uuidString)","tabURLs":[],"pinnedURLs":[]}]"#

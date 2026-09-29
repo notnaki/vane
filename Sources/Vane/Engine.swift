@@ -1567,6 +1567,8 @@ struct Stash {
     /// command bar: the folder was made by a click in this one, and a second window showing
     /// the same Space is not where anybody is looking. See `LiveFolderCallout`.
     @Published var announcing: UUID?
+    /// Fallback token sheet requested from a foreign Space dot after its window has hopped.
+    @Published var liveFolderSheet = false
     /// The window's split views: 2–4 of the tabs above shown side by side in one page card
     /// and as one sidebar row. Ids, not tabs, so a split survives its panes moving section,
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.
