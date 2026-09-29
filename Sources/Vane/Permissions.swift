@@ -64,9 +64,10 @@ import WebKit
         guard type == .cameraAndMicrophone else {
             return remembered(host: host, type: .cameraAndMicrophone)
         }
-        guard let camera = remembered(host: host, type: .camera),
-              let microphone = remembered(host: host, type: .microphone) else { return nil }
-        return camera && microphone
+        let camera = remembered(host: host, type: .camera)
+        let microphone = remembered(host: host, type: .microphone)
+        if camera == false || microphone == false { return false }
+        return camera == true && microphone == true ? true : nil
     }
 
     /// The Site Control Center's three answers: Allow, Block, or nil for "ask me again".
@@ -287,6 +288,13 @@ import WebKit
         set(host: "both.example", type: .microphone, answer: nil)
         results.append(("…while one unanswered device leaves the pair unanswered",
                         effective(host: "both.example", type: .cameraAndMicrophone) == nil))
+        set(host: "both.example", type: .camera, answer: false)
+        results.append(("a blocked camera refuses a pair even when microphone is unanswered",
+                        effective(host: "both.example", type: .cameraAndMicrophone) == false))
+        set(host: "both.example", type: .camera, answer: nil)
+        set(host: "both.example", type: .microphone, answer: false)
+        results.append(("a blocked microphone refuses a pair even when camera is unanswered",
+                        effective(host: "both.example", type: .cameraAndMicrophone) == false))
         results.append(("an explicit pair answer still beats what the singles add up to",
                         { remember(host: "both.example", type: .microphone, allow: true)
                           remember(host: "both.example", type: .cameraAndMicrophone, allow: false)
