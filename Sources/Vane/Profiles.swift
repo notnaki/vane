@@ -17,8 +17,24 @@ import WebKit
 /// paths swaps three call sites and keeps its own shape. Keep the URL that actually
 /// started each extension so replacing or deleting a choice can close it.
 @MainActor enum ScopedPaths {
-    /// Paths whose extension is already started, so resolving twice does not nest.
-    private static var accessing: [String: URL] = [:]
+    private enum Owner: Hashable {
+        case preference(ObjectIdentifier, String)
+        case download(UUID)
+    }
+
+    private struct Scope {
+        var url: URL
+        var started: Bool
+        var owners: Set<Owner>
+    }
+
+    /// One kernel start per path. Each preference or download row holds a lease; the last
+    /// lease closes the exact URL that started the extension.
+    private static var accessing: [String: Scope] = [:]
+
+    private static func owner(_ key: String, _ defaults: UserDefaults) -> Owner {
+        .preference(ObjectIdentifier(defaults), key)
+    }
 
     /// Every folder still reachable under `key`, access already started. Anything that no
     /// longer resolves — folder deleted, volume gone, or a pre-sandbox plain path that the
@@ -26,16 +42,16 @@ import WebKit
     @discardableResult
     static func urls(_ key: String, in defaults: UserDefaults = .vane) -> [URL] {
         let stored = raw(key, in: defaults)
+        let holder = owner(key, defaults)
         var kept: [Data] = []
         var out: [URL] = []
         for data in stored {
-            guard let url = resolve(data), start(url) else {
-                if let url = resolve(data) { stop(url) }
-                continue
-            }
+            guard let url = resolve(data), start(url, for: holder) else { continue }
             kept.append(data)
             out.append(url)
         }
+        let keptPaths = Set(out.map { $0.resolvingSymlinksInPath().path })
+        release(holder, except: keptPaths)
         if kept.count != stored.count { defaults.set(kept, forKey: key) }
         return out
     }
@@ -48,7 +64,7 @@ import WebKit
     /// unavailable. Callers can fall back now and regain the choice on a later launch.
     static func availableURL(_ key: String, in defaults: UserDefaults = .vane) -> URL? {
         guard let data = raw(key, in: defaults).first,
-              let url = resolve(data), start(url) else { return nil }
+              let url = resolve(data), start(url, for: owner(key, defaults)) else { return nil }
         return url
     }
 
@@ -58,9 +74,18 @@ import WebKit
         bookmark(url, requireScope: AppIcon.isSandboxed)
     }
 
-    static func accessBookmark(_ data: Data) -> URL? {
-        guard let url = resolve(data), start(url) else { return nil }
+    static func accessBookmark(_ data: Data, owner: UUID) -> URL? {
+        guard let url = resolve(data), start(url, for: .download(owner)) else { return nil }
         return url
+    }
+
+    static func releaseBookmark(owner: UUID) {
+        release(.download(owner))
+    }
+
+    /// Focused selfcheck seam: counts leases, including readable unsandboxed paths.
+    static func activeOwnerCount(for url: URL) -> Int {
+        accessing[url.resolvingSymlinksInPath().path]?.owners.count ?? 0
     }
 
     /// Bookmark `url` and append it. False means the sandbox will not let this folder be
@@ -73,7 +98,7 @@ import WebKit
         guard !all.contains(where: { same($0, url) }) else { return true }
         all.append(data)
         defaults.set(all, forKey: key)
-        _ = start(url)
+        _ = start(url, for: owner(key, defaults))
         return true
     }
 
@@ -82,26 +107,25 @@ import WebKit
     /// bookmark: it would appear to work until the panel's grant expires at relaunch.
     @discardableResult
     static func replace(_ url: URL?, at key: String, in defaults: UserDefaults = .vane) -> Bool {
-        let previous = raw(key, in: defaults)
+        let holder = owner(key, defaults)
         guard let url else {
             defaults.removeObject(forKey: key)
-            previous.compactMap(resolve).forEach(stop)
+            release(holder)
             return true
         }
-        guard let data = bookmark(url, requireScope: AppIcon.isSandboxed), start(url) else {
+        guard let data = bookmark(url, requireScope: AppIcon.isSandboxed),
+              start(url, for: holder) else {
             return false
         }
         defaults.set([data], forKey: key)
-        for old in previous where !same(old, url) {
-            if let oldURL = resolve(old) { stop(oldURL) }
-        }
+        release(holder, except: [url.resolvingSymlinksInPath().path])
         return true
     }
 
     static func remove(path: String, from key: String, in defaults: UserDefaults = .vane) {
         let url = URL(fileURLWithPath: path)
         defaults.set(raw(key, in: defaults).filter { !same($0, url) }, forKey: key)
-        stop(url)
+        release(owner(key, defaults), at: url.resolvingSymlinksInPath().path)
     }
 
     /// A resolved bookmark comes back through the data volume's firmlink — under the
@@ -149,24 +173,49 @@ import WebKit
 
     /// True when the path is usable. Unsandboxed `startAccessing` returns false for a plain
     /// bookmark and the path is readable anyway, so a readability check is the real answer.
-    private static func start(_ url: URL) -> Bool {
+    private static func start(_ url: URL, for owner: Owner) -> Bool {
         let real = url.resolvingSymlinksInPath().path
-        if accessing[real] != nil { return true }
-        if url.startAccessingSecurityScopedResource() {
-            accessing[real] = url
+        if var scope = accessing[real] {
+            if !scope.started && url.startAccessingSecurityScopedResource() {
+                scope.url = url
+                scope.started = true
+            }
+            guard scope.started || FileManager.default.isReadableFile(atPath: url.path) else {
+                return false
+            }
+            scope.owners.insert(owner)
+            accessing[real] = scope
+            if case .download = owner { release(owner, except: [real]) }
             return true
         }
-        return FileManager.default.isReadableFile(atPath: url.path)
+        let started = url.startAccessingSecurityScopedResource()
+        guard started || FileManager.default.isReadableFile(atPath: url.path) else { return false }
+        accessing[real] = Scope(url: url, started: started, owners: [owner])
+        if case .download = owner { release(owner, except: [real]) }
+        return true
     }
 
-    private static func stop(_ url: URL) {
-        if let started = accessing.removeValue(forKey: url.resolvingSymlinksInPath().path) {
-            started.stopAccessingSecurityScopedResource()
+    private static func release(_ owner: Owner, at path: String) {
+        guard var scope = accessing[path] else { return }
+        scope.owners.remove(owner)
+        if scope.owners.isEmpty {
+            accessing.removeValue(forKey: path)
+            if scope.started { scope.url.stopAccessingSecurityScopedResource() }
+        } else {
+            accessing[path] = scope
+        }
+    }
+
+    private static func release(_ owner: Owner, except retained: Set<String> = []) {
+        for path in Array(accessing.keys) where !retained.contains(path) {
+            release(owner, at: path)
         }
     }
 
     private static func stopAll() {
-        for url in accessing.values { url.stopAccessingSecurityScopedResource() }
+        for scope in accessing.values where scope.started {
+            scope.url.stopAccessingSecurityScopedResource()
+        }
         accessing.removeAll()
     }
 
@@ -516,7 +565,7 @@ struct Space: Identifiable, Codable, Equatable {
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
-            UserDefaults.vane.removeObject(forKey: DownloadLocation.directoryKey(id))
+            _ = ScopedPaths.replace(nil, at: DownloadLocation.directoryKey(id))
             UserDefaults.vane.removeObject(forKey: DownloadLocation.askKey(id))
             Self.eraseWebsiteData(for: id)
         }

@@ -10,7 +10,7 @@ import WebKit
     /// default profile's file is plain `downloads.json`.
     static var shared: Downloads { manager(for: ProfileManager.shared.active.id) }
 
-    private static var cache: [UUID: Downloads] = [:]
+    fileprivate static var cache: [UUID: Downloads] = [:]
 
     static func manager(for id: UUID) -> Downloads {
         if let hit = cache[id] { return hit }
@@ -21,6 +21,7 @@ import WebKit
 
     /// Drop the list and both on-disk files. Call this when a profile is deleted.
     static func forget(_ id: UUID, in dir: URL = Store.directory) {
+        cache[id]?.items.forEach { ScopedPaths.releaseBookmark(owner: $0.scopeOwner) }
         cache[id] = nil
         try? FileManager.default.removeItem(at: listURL(for: id, in: dir))
         try? FileManager.default.removeItem(at: resumeDir(for: id, in: dir))
@@ -82,6 +83,9 @@ import WebKit
     /// edit that file; `status` is the honest one. ponytail: two fields beat forking the UI.
     @MainActor final class Item: ObservableObject, Identifiable {
         let id: UUID
+        /// Distinct per loaded instance, since a check or another manager can open the
+        /// same record ID while this manager still holds its grant.
+        fileprivate let scopeOwner = UUID()
         /// nil for a restored row and for anything interrupted — the WKDownload died with
         /// the process, or with the connection, that owned it.
         private(set) var download: WKDownload?
@@ -305,6 +309,27 @@ import WebKit
         }
     }
 
+    /// Settings can be opened before the downloads manager. Upgrade old JSON rows while
+    /// the previous folder's extension is still active, before replacing that choice.
+    fileprivate static func backfillPersistedRows(for id: UUID, in directory: URL,
+                                                  folder: URL, grant: Data) {
+        let list = listURL(for: id, in: directory)
+        guard let data = try? Data(contentsOf: list),
+              var records = try? JSONDecoder().decode([Record].self, from: data) else { return }
+        let selected = folder.resolvingSymlinksInPath().path
+        var changed = false
+        for index in records.indices where records[index].destinationBookmark == nil
+            && records[index].destinationBookmarkIsFile != true {
+            guard records[index].destination?.deletingLastPathComponent()
+                .resolvingSymlinksInPath().path == selected else { continue }
+            records[index].destinationBookmark = grant
+            changed = true
+        }
+        if changed, let encoded = try? JSONEncoder().encode(records) {
+            try? encoded.write(to: list, options: .atomic)
+        }
+    }
+
     /// Trims to the cap and writes the index. Called on every state change and, throttled,
     /// while bytes are arriving.
     func save() {
@@ -317,7 +342,10 @@ import WebKit
             finished += 1
             if finished <= Self.historyLimit { keep.append(i) } else { evicted.append(i) }
         }
-        for e in evicted { deleteResume(e) }
+        for e in evicted {
+            deleteResume(e)
+            ScopedPaths.releaseBookmark(owner: e.scopeOwner)
+        }
         if !evicted.isEmpty { items = keep }
         guard let data = try? JSONEncoder().encode(keep.map(\.record)) else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -347,7 +375,10 @@ import WebKit
     /// Clears the history. Running and paused rows stay: the list is the only handle on
     /// them, and "clear" should not silently throw away a resumable transfer.
     func clear() {
-        for i in items where !i.status.isLive { deleteResume(i) }
+        for i in items where !i.status.isLive {
+            deleteResume(i)
+            ScopedPaths.releaseBookmark(owner: i.scopeOwner)
+        }
         items = items.filter(\.status.isLive)
         save()
     }
@@ -380,7 +411,7 @@ import WebKit
         guard let bookmark = item.destinationBookmark else {
             return item.destinationBookmarkIsFile == true ? nil : saved
         }
-        guard let granted = ScopedPaths.accessBookmark(bookmark) else { return nil }
+        guard let granted = ScopedPaths.accessBookmark(bookmark, owner: item.scopeOwner) else { return nil }
         if item.destinationBookmarkIsFile == true {
             if item.url != granted { item.url = granted }
             return granted
@@ -662,6 +693,7 @@ import WebKit
     /// of what happened, and forgetting an entry is not the same as deleting a download.
     func forget(_ item: Item) {
         deleteResume(item)
+        ScopedPaths.releaseBookmark(owner: item.scopeOwner)
         items.removeAll { $0 === item }
         save()
     }
@@ -936,6 +968,32 @@ import WebKit
                    loaded.items.first?.destinationBookmark != nil)
             assert("reselecting a folder persists the repaired row",
                    repaired?.first?.destinationBookmark != nil)
+
+            let uncachedID = UUID()
+            let uncachedRoot = root.appendingPathComponent("uncached-migration", isDirectory: true)
+            let oldFolder = root.appendingPathComponent("uncached-old", isDirectory: true)
+            let newFolder = root.appendingPathComponent("uncached-new", isDirectory: true)
+            try? fm.createDirectory(at: uncachedRoot, withIntermediateDirectories: true)
+            try? fm.createDirectory(at: oldFolder, withIntermediateDirectories: true)
+            try? fm.createDirectory(at: newFolder, withIntermediateDirectories: true)
+            let oldFile = oldFolder.appendingPathComponent("legacy.zip")
+            try? Data("old".utf8).write(to: oldFile)
+            _ = DownloadLocation.setDirectory(oldFolder, for: uncachedID, defaults: choices,
+                                              historyDirectory: uncachedRoot)
+            try? JSONEncoder().encode([Record(name: "legacy.zip", destination: oldFile,
+                                               state: "done")])
+                .write(to: listURL(for: uncachedID, in: uncachedRoot))
+            assert("settings-first change starts without a cached download manager",
+                   Downloads.cache[uncachedID] == nil)
+            _ = DownloadLocation.setDirectory(newFolder, for: uncachedID, defaults: choices,
+                                              historyDirectory: uncachedRoot)
+            let uncachedRows = (try? Data(contentsOf: listURL(for: uncachedID, in: uncachedRoot)))
+                .flatMap { try? JSONDecoder().decode([Record].self, from: $0) }
+            assert("settings-first change preserves old legacy row grant before replacing it",
+                   uncachedRows?.first?.destinationBookmark != nil)
+            assert("settings-first migrated row reopens after the old choice is gone",
+                   Downloads(profileID: uncachedID, directory: uncachedRoot, sandboxed: true,
+                             locationDefaults: choices).items.first?.status == .done)
         } else {
             assert("a throwaway migration defaults suite is available", false)
         }
@@ -1048,6 +1106,74 @@ import WebKit
                Downloads(profileID: ProfileManager.defaultID, directory: capRoot, sandboxed: true)
                    .items.map(\.name) == ["half.iso"])
 
+        let scopeRoot = root.appendingPathComponent("row-scopes", isDirectory: true)
+        let scopedFiles = scopeRoot.appendingPathComponent("files", isDirectory: true)
+        try? fm.createDirectory(at: scopedFiles, withIntermediateDirectories: true)
+        let sharedGrant = ScopedPaths.bookmarkForLater(scopedFiles)
+        if let sharedGrant {
+            let firstFile = scopedFiles.appendingPathComponent("first.txt")
+            let secondFile = scopedFiles.appendingPathComponent("second.txt")
+            try? Data("one".utf8).write(to: firstFile)
+            try? Data("two".utf8).write(to: secondFile)
+            let first = Record(name: "first.txt", destination: firstFile, state: "done",
+                               destinationBookmark: sharedGrant)
+            let second = Record(name: "second.txt", destination: secondFile, state: "done",
+                                destinationBookmark: sharedGrant)
+            try? fm.createDirectory(at: scopeRoot, withIntermediateDirectories: true)
+            try? JSONEncoder().encode([first, second])
+                .write(to: listURL(for: defaultProfile, in: scopeRoot))
+            let scoped = Downloads(profileID: defaultProfile, directory: scopeRoot, sandboxed: true)
+            assert("two history rows share a started folder scope",
+                   ScopedPaths.activeOwnerCount(for: scopedFiles) == 2)
+            let scopeSuite = "vane.download-scope-owners.\(UUID().uuidString)"
+            if let scopeChoices = UserDefaults(suiteName: scopeSuite) {
+                defer { UserDefaults.dropScratchSuite(scopeSuite) }
+                _ = ScopedPaths.replace(scopedFiles, at: "chosen", in: scopeChoices)
+                assert("a preference and two rows share one folder scope",
+                       ScopedPaths.activeOwnerCount(for: scopedFiles) == 3)
+                _ = ScopedPaths.replace(nil, at: "chosen", in: scopeChoices)
+                assert("replacing the preference keeps both row leases alive",
+                       ScopedPaths.activeOwnerCount(for: scopedFiles) == 2)
+            } else {
+                assert("a scope-owner defaults suite is available", false)
+            }
+            if let firstItem = scoped.items.first { $0.id == first.id } { scoped.forget(firstItem) }
+            assert("forgetting one row leaves its sibling's scope active",
+                   ScopedPaths.activeOwnerCount(for: scopedFiles) == 1)
+            scoped.clear()
+            assert("clearing history releases the final row scope",
+                   ScopedPaths.activeOwnerCount(for: scopedFiles) == 0)
+
+            let cappedRecords = (0...historyLimit).map { number in
+                Record(name: "old-\(number).txt",
+                       destination: scopedFiles.appendingPathComponent("old-\(number).txt"),
+                       state: "done", destinationBookmark: sharedGrant)
+            }
+            try? JSONEncoder().encode(cappedRecords)
+                .write(to: listURL(for: defaultProfile, in: scopeRoot))
+            let cappedScopes = Downloads(profileID: defaultProfile, directory: scopeRoot,
+                                         sandboxed: true)
+            assert("loaded rows each hold a scope lease before history trimming",
+                   ScopedPaths.activeOwnerCount(for: scopedFiles) == historyLimit + 1)
+            cappedScopes.save()
+            assert("history eviction releases only the removed row lease",
+                   ScopedPaths.activeOwnerCount(for: scopedFiles) == historyLimit)
+            cappedScopes.clear()
+            let removedProfile = UUID()
+            try? JSONEncoder().encode([first])
+                .write(to: listURL(for: removedProfile, in: scopeRoot))
+            let profileScopes = Downloads(profileID: removedProfile, directory: scopeRoot,
+                                          sandboxed: true)
+            Downloads.cache[removedProfile] = profileScopes
+            assert("a cached profile download holds its row scope",
+                   ScopedPaths.activeOwnerCount(for: scopedFiles) == 1)
+            Downloads.forget(removedProfile, in: scopeRoot)
+            assert("deleting a profile releases its row scope",
+                   ScopedPaths.activeOwnerCount(for: scopedFiles) == 0)
+        } else {
+            assert("a shared row grant can be made for lifecycle checks", false)
+        }
+
         // --- Cancelling ---
         let cancelRoot = root.appendingPathComponent("cancel", isDirectory: true)
         try? fm.createDirectory(at: cancelRoot, withIntermediateDirectories: true)
@@ -1101,9 +1227,11 @@ import WebKit
             try? Data("saved".utf8).write(to: selectedFile)
             let selectedGrant = DownloadLocation.bookmark(for: selectedFile, profileID: id,
                                                           defaults: scratch, selectedFile: true)
+            let checkOwner = UUID()
             assert("a Save panel file gets its own grant, not a parent folder grant",
-                   selectedGrant.flatMap { ScopedPaths.accessBookmark($0) }?
+                   selectedGrant.flatMap { ScopedPaths.accessBookmark($0, owner: checkOwner) }?
                        .resolvingSymlinksInPath().path == selectedFile.resolvingSymlinksInPath().path)
+            ScopedPaths.releaseBookmark(owner: checkOwner)
             assert("a chosen folder is where downloads go",
                    DownloadLocation.directory(for: id, defaults: scratch)
                        .resolvingSymlinksInPath().path == picked.resolvingSymlinksInPath().path)
@@ -1259,16 +1387,30 @@ import WebKit
 
     /// Nil resets to the system folder. A failed choice leaves the previous one intact.
     @discardableResult
-    static func setDirectory(_ url: URL?, for id: UUID, defaults: UserDefaults = .vane) -> Bool {
-        guard let url else { return ScopedPaths.replace(nil, at: directoryKey(id), in: defaults) }
+    static func setDirectory(_ url: URL?, for id: UUID, defaults: UserDefaults = .vane,
+                             historyDirectory: URL = Store.directory) -> Bool {
+        let key = directoryKey(id)
+        // Keep legacy rows in the old folder reachable even when Settings changes before
+        // the downloads manager has ever been constructed this launch.
+        if let oldGrant = (defaults.array(forKey: key) as? [Data])?.first,
+           let oldFolder = ScopedPaths.availableURL(key, in: defaults),
+           oldFolder.resolvingSymlinksInPath().path != url?.resolvingSymlinksInPath().path {
+            if Downloads.cache[id] != nil {
+                Downloads.backfillCachedRows(for: id, folder: oldFolder, grant: oldGrant)
+            } else {
+                Downloads.backfillPersistedRows(for: id, in: historyDirectory,
+                                                folder: oldFolder, grant: oldGrant)
+            }
+        }
+        guard let url else { return ScopedPaths.replace(nil, at: key, in: defaults) }
         var isDirectory: ObjCBool = false
         guard url.isFileURL,
               FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
               isDirectory.boolValue, FileManager.default.isWritableFile(atPath: url.path) else {
             return false
         }
-        guard ScopedPaths.replace(url, at: directoryKey(id), in: defaults) else { return false }
-        if let grant = (defaults.array(forKey: directoryKey(id)) as? [Data])?.first {
+        guard ScopedPaths.replace(url, at: key, in: defaults) else { return false }
+        if let grant = (defaults.array(forKey: key) as? [Data])?.first {
             Downloads.backfillCachedRows(for: id, folder: url, grant: grant)
         }
         return true
@@ -1285,7 +1427,7 @@ import WebKit
         let folder = destination.deletingLastPathComponent()
         let key = directoryKey(profileID)
         if let data = (defaults.array(forKey: key) as? [Data])?.first,
-           let selected = ScopedPaths.accessBookmark(data),
+           let selected = ScopedPaths.availableURL(key, in: defaults),
            selected.resolvingSymlinksInPath().path == folder.resolvingSymlinksInPath().path {
             return data
         }
