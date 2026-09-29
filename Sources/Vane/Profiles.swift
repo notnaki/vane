@@ -74,6 +74,10 @@ import WebKit
         bookmark(url, requireScope: AppIcon.isSandboxed)
     }
 
+    /// Path identity for migration only. Resolving a bookmark does not mean the
+    /// disconnected volume is accessible; callers must still start its scope to use it.
+    static func bookmarkedURL(_ data: Data) -> URL? { resolve(data) }
+
     static func accessBookmark(_ data: Data, owner: UUID) -> URL? {
         guard let url = resolve(data), start(url, for: .download(owner)) else { return nil }
         return url
@@ -566,6 +570,7 @@ struct Space: Identifiable, Codable, Equatable {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
             _ = ScopedPaths.replace(nil, at: DownloadLocation.directoryKey(id))
+            UserDefaults.vane.removeObject(forKey: DownloadLocation.pendingDirectoryKey(id))
             UserDefaults.vane.removeObject(forKey: DownloadLocation.askKey(id))
             Self.eraseWebsiteData(for: id)
         }

@@ -286,7 +286,50 @@ import WebKit
             return item
         }
         for i in items { i.onProgress = { [weak self] in self?.throttledSave() } }
+        if backfillPendingRows() {
+            upgraded = true
+            for item in items where item.status == .missing {
+                if let destination = restoredDestination(item),
+                   FileManager.default.fileExists(atPath: destination.path) {
+                    item.status = .done
+                    item.state = .done
+                }
+            }
+        }
         if upgraded { save() }
+    }
+
+    /// A previous preference bookmark can be kept here when its volume is absent and
+    /// even its path cannot be resolved during a Settings change. Try again on load and
+    /// whenever the downloads list refreshes after a volume returns.
+    private func backfillPendingRows() -> Bool {
+        guard let defaults = locationDefaults else { return false }
+        let key = DownloadLocation.pendingDirectoryKey(profileID)
+        let pending = (defaults.array(forKey: key) as? [Data]) ?? []
+        var unresolved: [Data] = []
+        var changed = false
+        for grant in pending {
+            guard let folder = ScopedPaths.bookmarkedURL(grant) else {
+                unresolved.append(grant)
+                continue
+            }
+            let selected = folder.resolvingSymlinksInPath().path
+            var attached = items.contains { $0.destinationBookmark == grant }
+            for item in items where item.destinationBookmark == nil
+                && item.destinationBookmarkIsFile != true {
+                guard item.url?.deletingLastPathComponent().resolvingSymlinksInPath().path
+                    == selected else { continue }
+                item.destinationBookmark = grant
+                changed = true
+                attached = true
+            }
+            if !attached { unresolved.append(grant) }
+        }
+        if unresolved.count != pending.count {
+            if unresolved.isEmpty { defaults.removeObject(forKey: key) }
+            else { defaults.set(unresolved, forKey: key) }
+        }
+        return changed
     }
 
     /// A folder may have been inaccessible when this manager loaded. Once the user
@@ -386,7 +429,7 @@ import WebKit
     /// Re-checks every finished row against the filesystem. Cheap enough to call whenever
     /// the downloads popover opens.
     func refreshMissing() {
-        var changed = false
+        var changed = backfillPendingRows()
         for i in items where i.status == .done || i.status == .missing {
             let there = restoredDestination(i)
                 .map { FileManager.default.fileExists(atPath: $0.path) } ?? false
@@ -994,6 +1037,68 @@ import WebKit
             assert("settings-first migrated row reopens after the old choice is gone",
                    Downloads(profileID: uncachedID, directory: uncachedRoot, sandboxed: true,
                              locationDefaults: choices).items.first?.status == .done)
+
+            let disconnectedID = UUID()
+            let disconnectedRoot = root.appendingPathComponent("disconnected-migration", isDirectory: true)
+            let disconnectedOld = root.appendingPathComponent("disconnected-old", isDirectory: true)
+            let disconnectedNew = root.appendingPathComponent("disconnected-new", isDirectory: true)
+            try? fm.createDirectory(at: disconnectedRoot, withIntermediateDirectories: true)
+            try? fm.createDirectory(at: disconnectedOld, withIntermediateDirectories: true)
+            try? fm.createDirectory(at: disconnectedNew, withIntermediateDirectories: true)
+            let disconnectedFile = disconnectedOld.appendingPathComponent("return.zip")
+            try? Data("return".utf8).write(to: disconnectedFile)
+            _ = DownloadLocation.setDirectory(disconnectedOld, for: disconnectedID,
+                                              defaults: choices, historyDirectory: disconnectedRoot)
+            let oldGrant = (choices.array(forKey: DownloadLocation.directoryKey(disconnectedID))
+                            as? [Data])?.first
+            try? JSONEncoder().encode([Record(name: "return.zip", destination: disconnectedFile,
+                                               state: "done")])
+                .write(to: listURL(for: disconnectedID, in: disconnectedRoot))
+            try? fm.removeItem(at: disconnectedOld)
+            _ = DownloadLocation.setDirectory(disconnectedNew, for: disconnectedID,
+                                              defaults: choices, historyDirectory: disconnectedRoot)
+            let disconnectedRows = (try? Data(contentsOf: listURL(for: disconnectedID,
+                                                                    in: disconnectedRoot)))
+                .flatMap { try? JSONDecoder().decode([Record].self, from: $0) }
+            let pendingOld = (choices.array(forKey: DownloadLocation.pendingDirectoryKey(disconnectedID))
+                              as? [Data]) ?? []
+            assert("changing folders while the old volume is absent retains its raw grant",
+                   oldGrant != nil && (disconnectedRows?.first?.destinationBookmark == oldGrant
+                                       || pendingOld.contains(oldGrant!)))
+            assert("absent-folder grant attaches immediately when its path still resolves",
+                   oldGrant.flatMap(ScopedPaths.bookmarkedURL) == nil
+                       || disconnectedRows?.first?.destinationBookmark == oldGrant)
+            try? fm.createDirectory(at: disconnectedOld, withIntermediateDirectories: true)
+            try? Data("return".utf8).write(to: disconnectedFile)
+            let reconnected = Downloads(profileID: disconnectedID, directory: disconnectedRoot,
+                                        sandboxed: true, locationDefaults: choices)
+            let stillPending = (choices.array(forKey: DownloadLocation.pendingDirectoryKey(disconnectedID))
+                                as? [Data]) ?? []
+            assert("old grant remains recoverable if a recreated folder has a new identity",
+                   reconnected.items.first?.destinationBookmark == oldGrant
+                       || (oldGrant != nil && stillPending.contains(oldGrant!)))
+
+            // A restored volume retains its file identity. Seed a resolvable pending
+            // bookmark directly so the later-load migration can be checked without a mount.
+            let pendingID = UUID()
+            let pendingRoot = root.appendingPathComponent("pending-migration", isDirectory: true)
+            let pendingFolder = root.appendingPathComponent("pending-restored", isDirectory: true)
+            try? fm.createDirectory(at: pendingRoot, withIntermediateDirectories: true)
+            try? fm.createDirectory(at: pendingFolder, withIntermediateDirectories: true)
+            let pendingFile = pendingFolder.appendingPathComponent("restored.zip")
+            try? Data("ready".utf8).write(to: pendingFile)
+            let pendingGrant = ScopedPaths.bookmarkForLater(pendingFolder)
+            choices.set(pendingGrant.map { [$0] }, forKey: DownloadLocation.pendingDirectoryKey(pendingID))
+            try? JSONEncoder().encode([Record(name: "restored.zip", destination: pendingFile,
+                                               state: "done")])
+                .write(to: listURL(for: pendingID, in: pendingRoot))
+            let pendingRecovered = Downloads(profileID: pendingID, directory: pendingRoot,
+                                             sandboxed: true, locationDefaults: choices)
+            assert("a pending old grant attaches to its legacy row after resolution",
+                   pendingGrant != nil && pendingRecovered.items.first?.destinationBookmark == pendingGrant
+                       && pendingRecovered.items.first?.status == .done)
+            assert("resolved pending grant is removed from preferences after migration",
+                   choices.object(forKey: DownloadLocation.pendingDirectoryKey(pendingID)) == nil)
         } else {
             assert("a throwaway migration defaults suite is available", false)
         }
@@ -1353,6 +1458,9 @@ import WebKit
     nonisolated static func directoryKey(_ id: UUID) -> String {
         ProfileManager.defaultsKey("downloadDirectory", id)
     }
+    nonisolated static func pendingDirectoryKey(_ id: UUID) -> String {
+        ProfileManager.defaultsKey("downloadDirectoryPendingHistory", id)
+    }
     nonisolated static func askKey(_ id: UUID) -> String {
         ProfileManager.defaultsKey("downloadAskEveryTime", id)
     }
@@ -1390,11 +1498,21 @@ import WebKit
     static func setDirectory(_ url: URL?, for id: UUID, defaults: UserDefaults = .vane,
                              historyDirectory: URL = Store.directory) -> Bool {
         let key = directoryKey(id)
+        if let url {
+            var isDirectory: ObjCBool = false
+            guard url.isFileURL,
+                  FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue, FileManager.default.isWritableFile(atPath: url.path) else {
+                return false
+            }
+        }
         // Keep legacy rows in the old folder reachable even when Settings changes before
         // the downloads manager has ever been constructed this launch.
-        if let oldGrant = (defaults.array(forKey: key) as? [Data])?.first,
-           let oldFolder = ScopedPaths.availableURL(key, in: defaults),
-           oldFolder.resolvingSymlinksInPath().path != url?.resolvingSymlinksInPath().path {
+        let oldGrant = (defaults.array(forKey: key) as? [Data])?.first
+        let oldFolder = oldGrant.flatMap(ScopedPaths.bookmarkedURL)
+        let changedFolder = oldGrant != nil && (oldFolder == nil ||
+            oldFolder?.resolvingSymlinksInPath().path != url?.resolvingSymlinksInPath().path)
+        if changedFolder, let oldGrant, let oldFolder {
             if Downloads.cache[id] != nil {
                 Downloads.backfillCachedRows(for: id, folder: oldFolder, grant: oldGrant)
             } else {
@@ -1402,14 +1520,14 @@ import WebKit
                                                 folder: oldFolder, grant: oldGrant)
             }
         }
-        guard let url else { return ScopedPaths.replace(nil, at: key, in: defaults) }
-        var isDirectory: ObjCBool = false
-        guard url.isFileURL,
-              FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-              isDirectory.boolValue, FileManager.default.isWritableFile(atPath: url.path) else {
-            return false
-        }
         guard ScopedPaths.replace(url, at: key, in: defaults) else { return false }
+        if changedFolder, oldFolder == nil, let oldGrant {
+            let pendingKey = pendingDirectoryKey(id)
+            var pending = (defaults.array(forKey: pendingKey) as? [Data]) ?? []
+            if !pending.contains(oldGrant) { pending.append(oldGrant) }
+            defaults.set(pending, forKey: pendingKey)
+        }
+        guard let url else { return true }
         if let grant = (defaults.array(forKey: key) as? [Data])?.first {
             Downloads.backfillCachedRows(for: id, folder: url, grant: grant)
         }
@@ -1418,6 +1536,7 @@ import WebKit
 
     /// Copy the current folder's grant into a download row when it matches. A Save panel
     /// grants only its selected file, which may not exist until WebKit starts writing.
+    /// An unrelated parent folder cannot mint its own sandbox grant from a bare path.
     static func bookmark(for destination: URL, profileID: UUID,
                          defaults: UserDefaults = .vane, selectedFile: Bool = false) -> Data? {
         if selectedFile {
@@ -1431,7 +1550,7 @@ import WebKit
            selected.resolvingSymlinksInPath().path == folder.resolvingSymlinksInPath().path {
             return data
         }
-        return ScopedPaths.bookmarkForLater(folder)
+        return nil
     }
 
     static func askEveryTime(for id: UUID, defaults: UserDefaults = .vane) -> Bool {
