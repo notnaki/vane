@@ -678,29 +678,43 @@ struct PasswordChoice: Equatable {
       }, true);
       // A single-page app changes the form under us without a navigation.
       window.addEventListener('popstate', function () { send({ dismiss: 'navigate' }); });
-      var submittedForm = null;
+      var submittedAttempt = null;
+      function replacesSubmitted(form) {
+        var a = submittedAttempt;
+        return a && form && !a.form.isConnected && a.formsAtSubmit.indexOf(form) < 0
+          && form.parentNode === a.parent && form.previousSibling === a.before
+          && form.nextSibling === a.after;
+      }
       function offer(p) {
         if (!p || !p.pass.value) { return; }
         send({ account: p.user ? p.user.value : '', password: p.pass.value });
       }
       document.addEventListener('submit', function (e) {
-        submittedForm = e.target;
+        var form = e.target;
+        submittedAttempt = {
+          form: form, parent: form.parentNode,
+          before: form.previousSibling, after: form.nextSibling,
+          formsAtSubmit: Array.prototype.slice.call(document.forms), retry: null
+        };
         offer(pair(e.target));
       }, true);
       // A failed sign-in can leave the page in place. An edited field starts a new attempt.
       document.addEventListener('input', function (e) {
-        // A SPA may replace the submitted form before the retry. Its new fields count as
-        // a new attempt once the old form is detached; edits in another live form do not.
-        if (submittedForm && pairFor(e.target)
-            && (e.target.form === submittedForm || !submittedForm.isConnected)) {
-          submittedForm = null;
-        }
+        if (!submittedAttempt || !pairFor(e.target)) { return; }
+        var form = e.target.form;
+        if (form === submittedAttempt.form) { submittedAttempt = null; return; }
+        // Only a newly created form in the submitted form's old slot is its retry.
+        // Editing any other login form leaves the submitted offer in charge.
+        submittedAttempt.retry = replacesSubmitted(form) ? form : null;
       }, true);
       // Plenty of logins never fire submit — a button posts via fetch and then navigates.
       // pagehide catches those. ponytail: best effort; a site that logs in without any
       // navigation at all still slips through.
       window.addEventListener('pagehide', function () {
-        if (!submittedForm) { offer(targetPair()); }
+        if (!submittedAttempt) { offer(targetPair()); }
+        else if (replacesSubmitted(submittedAttempt.retry)) {
+          offer(pair(submittedAttempt.retry));
+        }
       });
       window.__vaneFill = function (account, password) {
         var p = targetPair();
@@ -1275,24 +1289,39 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                                                     && b.offered?.1 == "login-secret")
                                                             b.offered = nil
                                                             w.evaluateJavaScript("""
-                                                                var replacement = document.createElement('form');
-                                                                replacement.id = 'retry';
-                                                                replacement.innerHTML = '<input id="retryUser" type="email"><input id="retryPass" type="password">';
-                                                                document.getElementById('f').replaceWith(replacement);
-                                                                document.getElementById('retryUser').value = 'retry@example.com';
-                                                                document.getElementById('retryPass').value = 'retry-secret';
-                                                                document.getElementById('retryPass').dispatchEvent(new Event('input', {bubbles:true}));
-                                                                document.getElementById('retryUser').focus();
+                                                                var oldLogin = document.getElementById('f');
+                                                                var loginParent = oldLogin.parentNode;
+                                                                var loginNext = oldLogin.nextSibling;
+                                                                oldLogin.remove();
+                                                                document.getElementById('signupUser').dispatchEvent(new Event('input', {bubbles:true}));
+                                                                document.getElementById('signupUser').focus();
                                                                 window.dispatchEvent(new Event('pagehide'));
                                                                 """) { _, _ in
                                                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                                                    check("edited replacement form offers its fetch login on pagehide",
-                                                                          b.offered?.0 == "retry@example.com"
-                                                                            && b.offered?.1 == "retry-secret")
-                                                                    print("window.open against a real page")
-                                                                    popupRows { rows in
-                                                                        for (name, ok) in rows { check(name, ok) }
-                                                                        finish("PASS")
+                                                                    check("editing preexisting signup after login removal keeps its offer",
+                                                                          b.offered == nil)
+                                                                    b.offered = nil
+                                                                    w.evaluateJavaScript("""
+                                                                        var replacement = document.createElement('form');
+                                                                        replacement.id = 'retry';
+                                                                        replacement.innerHTML = '<input id="retryUser" type="email"><input id="retryPass" type="password">';
+                                                                        loginParent.insertBefore(replacement, loginNext);
+                                                                        document.getElementById('retryUser').value = 'retry@example.com';
+                                                                        document.getElementById('retryPass').value = 'retry-secret';
+                                                                        document.getElementById('retryPass').dispatchEvent(new Event('input', {bubbles:true}));
+                                                                        document.getElementById('retryUser').focus();
+                                                                        window.dispatchEvent(new Event('pagehide'));
+                                                                        """) { _, _ in
+                                                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                                                            check("edited replacement form offers its fetch login on pagehide",
+                                                                                  b.offered?.0 == "retry@example.com"
+                                                                                    && b.offered?.1 == "retry-secret")
+                                                                            print("window.open against a real page")
+                                                                            popupRows { rows in
+                                                                                for (name, ok) in rows { check(name, ok) }
+                                                                                finish("PASS")
+                                                                            }
+                                                                        }
                                                                     }
                                                                 }
                                                             }
