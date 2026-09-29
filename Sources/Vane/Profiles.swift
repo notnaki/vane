@@ -341,6 +341,9 @@ struct Space: Identifiable, Codable, Equatable {
 
     @Published private(set) var profiles: [Profile] = []
     @Published private var activeID: UUID = ProfileManager.defaultID
+    /// A damaged existing list is kept for recovery; no mutation may replace it with a
+    /// newly invented default profile.
+    private var profileListReadable = true
 
     /// The profile everything unqualified resolves to. Falls back to the first profile, so
     /// a stale or deleted selection can never leave the app with no profile at all.
@@ -383,7 +386,12 @@ struct Space: Identifiable, Codable, Equatable {
         } else {
             profiles = [Profile(id: Self.defaultID, name: "Personal", colorHex: Self.palette[0])]
             activeID = Self.defaultID
-            persist()
+            if FileManager.default.fileExists(atPath: file.path) {
+                profileListReadable = false
+                NSLog("Vane: could not read profiles.json; preserving it for recovery")
+            } else {
+                persist()
+            }
         }
         // Deliberately not called inline: `ProfileManager.shared` is first touched from
         // `Session.restore()`, which runs before `NSApplication.run()`, and WebKit's main
@@ -397,9 +405,19 @@ struct Space: Identifiable, Codable, Equatable {
         }
     }
 
-    private func persist() {
-        guard let data = try? JSONEncoder().encode(Disk(profiles: profiles, activeID: activeID)) else { return }
-        try? data.write(to: directory.appendingPathComponent("profiles.json"))
+    @discardableResult
+    private func persist(_ disk: Disk) -> Bool {
+        guard profileListReadable else {
+            NSLog("Vane: could not save profiles.json because the existing list is unreadable")
+            return false
+        }
+        guard let data = try? JSONEncoder().encode(disk) else { return false }
+        return SnapshotPersistence.write(data, to: directory.appendingPathComponent("profiles.json"))
+    }
+
+    @discardableResult
+    private func persist() -> Bool {
+        persist(Disk(profiles: profiles, activeID: activeID))
     }
 
     // MARK: CRUD
@@ -433,9 +451,12 @@ struct Space: Identifiable, Codable, Equatable {
     @discardableResult
     func delete(_ id: UUID) -> Bool {
         guard profiles.count > 1, let i = profiles.firstIndex(where: { $0.id == id }) else { return false }
-        profiles.remove(at: i)
-        if activeID == id { activeID = profiles[0].id }
-        persist()
+        var remaining = profiles
+        remaining.remove(at: i)
+        let nextActiveID = activeID == id ? remaining[0].id : activeID
+        guard persist(Disk(profiles: remaining, activeID: nextActiveID)) else { return false }
+        profiles = remaining
+        activeID = nextActiveID
 
         if !sandboxed {
             // Close the sqlite connection and drop the cached objects before the files go.
@@ -805,6 +826,40 @@ struct Space: Identifiable, Codable, Equatable {
         assert("profiles round-trip through disk",
                reloaded.profiles.count == 2 && reloaded.profiles.contains { $0.name == "School" })
         assert("the active selection round-trips", reloaded.active.id == work.id)
+
+        // Make the profile-list destination unwritable while the victim's files remain
+        // available. A failed list update must not authorize erasing the only data for it.
+        let blockedRoot = root.appendingPathComponent("blocked-delete", isDirectory: true)
+        try? fm.createDirectory(at: blockedRoot, withIntermediateDirectories: true)
+        let blocked = ProfileManager(directory: blockedRoot, sandboxed: true)
+        let victim = blocked.create(name: "Keep Me")
+        let victimDB = dbURL(for: victim.id, in: blockedRoot)
+        let victimSession = sessionURL(for: victim.id, in: blockedRoot)
+        try? Data("database".utf8).write(to: victimDB)
+        try? Data("session".utf8).write(to: victimSession)
+        let list = blockedRoot.appendingPathComponent("profiles.json")
+        let savedList = blockedRoot.appendingPathComponent("profiles.backup.json")
+        try? fm.moveItem(at: list, to: savedList)
+        try? fm.createDirectory(at: list, withIntermediateDirectories: true)
+        let rejectedDelete = blocked.delete(victim.id)
+        assert("failed profile-list write refuses profile deletion", !rejectedDelete)
+        assert("failed profile deletion retains its in-memory entry", blocked.profiles.contains { $0.id == victim.id })
+        assert("failed profile deletion preserves database and session",
+               (try? Data(contentsOf: victimDB)) == Data("database".utf8)
+               && (try? Data(contentsOf: victimSession)) == Data("session".utf8))
+        assert("failed profile deletion leaves the last complete list readable",
+               (try? Data(contentsOf: savedList))
+                   .flatMap { try? JSONDecoder().decode(Disk.self, from: $0) }?
+                   .profiles.contains { $0.id == victim.id } == true)
+
+        let damagedRoot = root.appendingPathComponent("damaged-list", isDirectory: true)
+        try? fm.createDirectory(at: damagedRoot, withIntermediateDirectories: true)
+        let damagedList = damagedRoot.appendingPathComponent("profiles.json")
+        let damagedBytes = Data("incomplete profile JSON".utf8)
+        try? damagedBytes.write(to: damagedList)
+        _ = ProfileManager(directory: damagedRoot, sandboxed: true)
+        assert("opening a damaged profile list preserves the original bytes",
+               (try? Data(contentsOf: damagedList)) == damagedBytes)
 
         // Spaces belong to exactly one profile.
         let reading = pm.createSpace(name: "Reading", in: work.id)

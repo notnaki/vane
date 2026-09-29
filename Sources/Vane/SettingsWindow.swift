@@ -728,6 +728,8 @@ private struct ProfilesPane: View {
             selected = manager.active.id
             _ = Windows.switchTo(profile: manager.active)
             rebuild()
+        } else {
+            Toasts.show("Couldn’t delete profile. Its data was kept.")
         }
     }
 
