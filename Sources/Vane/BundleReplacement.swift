@@ -20,6 +20,7 @@ enum BundleReplacement {
         var state: State
         var launchPID: Int32?
         var launchStart: UInt64?
+        var launchDeadline: TimeInterval? = nil
     }
 
     private static func journalURL(_ target: URL) -> URL {
@@ -101,11 +102,25 @@ enum BundleReplacement {
         return UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec)
     }
 
-    private static func sameProcess(_ pid: Int32, _ start: UInt64?) -> Bool {
-        if let start, let observed = processStart(pid) { return observed == start }
-        // If process metadata is unavailable, keep the old bundle until a later launch
-        // can establish that the first process is gone.
-        return kill(pid, 0) == 0 || errno == EPERM
+    private static let fallbackLease: TimeInterval = 120
+
+    private static func sameProcess(_ pid: Int32, _ start: UInt64?,
+                                    _ deadline: TimeInterval?) -> Bool {
+        sameProcess(start: start, deadline: deadline, observedStart: processStart(pid),
+                    pidExists: { kill(pid, 0) == 0 || errno == EPERM },
+                    now: Date().timeIntervalSince1970)
+    }
+
+    private static func sameProcess(start: UInt64?, deadline: TimeInterval?,
+                                    observedStart: UInt64?, pidExists: () -> Bool,
+                                    now: TimeInterval) -> Bool {
+        if let start, let observedStart { return observedStart == start }
+        // proc_pidinfo can be denied for a protected PID while kill(pid, 0) still
+        // reports EPERM. Trust that weaker check only during the startup lease.
+        guard let deadline, deadline > now, deadline - now <= fallbackLease else {
+            return false
+        }
+        return pidExists()
     }
 
     private static func fileID(_ url: URL) -> UInt64? {
@@ -224,7 +239,7 @@ enum BundleReplacement {
     /// A second attempt to start a replacement that never reached a healthy launch swaps
     /// the old bundle back, then asks the caller to relaunch that restored bundle.
     static func beginLaunch(at target: URL,
-                            processAlive: (Int32, UInt64?) -> Bool = sameProcess) -> Launch {
+                            processAlive: (Int32, UInt64?, TimeInterval?) -> Bool = sameProcess) -> Launch {
         guard FileManager.default.fileExists(atPath: journalURL(target).path) else {
             if !orphanStages(target).isEmpty {
                 _ = try? withLock(target) { try removeOrphanStages(target) }
@@ -256,7 +271,8 @@ enum BundleReplacement {
                 return .needsAttention
             }
             if journal.state == .launching, journal.oldID != nil {
-                if let pid = journal.launchPID, processAlive(pid, journal.launchStart) {
+                if let pid = journal.launchPID,
+                   processAlive(pid, journal.launchStart, journal.launchDeadline) {
                     // Another copy is still starting. Its health decision owns this
                     // transaction; a second launch must not roll it back underneath it.
                     return .needsAttention
@@ -273,6 +289,7 @@ enum BundleReplacement {
             journal.state = .launching
             journal.launchPID = getpid()
             journal.launchStart = processStart(getpid())
+            journal.launchDeadline = Date().timeIntervalSince1970 + fallbackLease
             guard (try? write(journal, for: target)) != nil else { return .needsAttention }
             return .waitingForHealth
         }) ?? .needsAttention
@@ -473,7 +490,7 @@ enum BundleReplacement {
             let first = beginLaunch(at: target)
             let concurrent = beginLaunch(at: target)
             let concurrentKeptNew = label(target) == "new"
-            let second = beginLaunch(at: target, processAlive: { _, _ in false })
+            let second = beginLaunch(at: target, processAlive: { _, _, _ in false })
             results.append(("a concurrent launch cannot roll back a live replacement",
                             concurrent == .needsAttention && concurrentKeptNew))
             results.append(("an interrupted first launch rolls back on the next attempt",
@@ -493,6 +510,33 @@ enum BundleReplacement {
             results.append(("reused PID cannot indefinitely block rollback",
                             beginLaunch(at: target) == .rolledBack && label(target) == "old"))
         } catch { results.append(("reused-pid fixture", false)) }
+
+        do {
+            let (source, target) = try scene("protected-reused-pid")
+            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            guard beginLaunch(at: target) == .waitingForHealth,
+                  var journal = read(target), let start = journal.launchStart,
+                  let deadline = journal.launchDeadline else { throw Fault.filesystem }
+            let protectedPIDExists = { true } // kill(pid, 0) returned EPERM.
+            let duringLease = sameProcess(start: start, deadline: deadline,
+                                          observedStart: nil, pidExists: protectedPIDExists,
+                                          now: deadline - 1)
+            let missingLease = sameProcess(start: start, deadline: nil,
+                                           observedStart: nil, pidExists: protectedPIDExists,
+                                           now: deadline - 1)
+            let clockMovedBack = sameProcess(start: start, deadline: deadline,
+                                             observedStart: nil, pidExists: protectedPIDExists,
+                                             now: deadline - fallbackLease - 1)
+            journal.launchDeadline = Date().timeIntervalSince1970 - 1
+            try write(journal, for: target)
+            let afterLease = beginLaunch(at: target, processAlive: { _, start, deadline in
+                sameProcess(start: start, deadline: deadline, observedStart: nil,
+                            pidExists: protectedPIDExists, now: Date().timeIntervalSince1970)
+            })
+            results.append(("protected reused PID blocks rollback only during startup lease",
+                            duringLease && !missingLease && !clockMovedBack
+                                && afterLease == .rolledBack && label(target) == "old"))
+        } catch { results.append(("protected-reused-pid fixture", false)) }
 
         do {
             let (source, target) = try scene("interrupted-cleanup")
