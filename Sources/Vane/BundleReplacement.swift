@@ -4,7 +4,9 @@ import Darwin
 /// A crash-recoverable app-bundle replacement. All paths written by a transaction are
 /// siblings of its target, so staging and the final rename stay on the same volume.
 enum BundleReplacement {
-    enum Fault: Error { case injected, busy, invalidStage, unsupportedSwap, filesystem }
+    enum Fault: Error {
+        case injected, busy, invalidStage, staleTarget, unsupportedSwap, filesystem
+    }
     enum Step {
         case beforeCopy, afterCopy, beforeStageSync, beforeJournal,
              beforeJournalSync, beforeSwap, afterSwap
@@ -179,9 +181,11 @@ enum BundleReplacement {
     }
 
     /// The caller supplies the same signature check it used on the unpacked source. It is
-    /// run again on the *copied* bundle before any installed bundle can move.
+    /// run again on the *copied* bundle before any installed bundle can move. The target
+    /// policy is mandatory and runs under the transaction lock at both decision points.
     static func install(source: URL, at target: URL, keepPrevious: Bool,
                         verify: (URL) -> Bool,
+                        mayReplaceTarget: (URL) -> Bool,
                         fault: ((Step) -> Bool)? = nil,
                         swapOperation: (URL, URL) throws -> Void = swap) throws {
         let fm = FileManager.default
@@ -200,6 +204,7 @@ enum BundleReplacement {
             }
             guard !fm.fileExists(atPath: journalURL(target).path) else { throw Fault.busy }
             try removeOrphanStages(target)
+            guard mayReplaceTarget(target) else { throw Fault.staleTarget }
             let stage = target.deletingLastPathComponent().appendingPathComponent(
                 ".\(target.lastPathComponent).vane-stage-\(UUID().uuidString)")
             var committed = false
@@ -227,6 +232,11 @@ enum BundleReplacement {
             if fault?(.beforeJournalSync) == true { throw Fault.injected }
             try syncJournal(target)
             if fault?(.beforeSwap) == true { throw Fault.injected }
+            // Another Vane installer cannot mutate this target while we hold the lock.
+            // Also refuse an external change that happened while staging the copy.
+            guard fileID(target) == oldID, mayReplaceTarget(target) else {
+                throw Fault.staleTarget
+            }
             if oldID != nil { try swapOperation(target, stage) }
             else { try moveIntoEmptyTarget(stage, target) }
             committed = true
@@ -369,10 +379,18 @@ enum BundleReplacement {
                 .filter { $0.lastPathComponent.hasPrefix(prefix) }
         }
         let verify: (URL) -> Bool = { label($0) == "new" }
+        func fixtureInstall(source: URL, at target: URL, keepPrevious: Bool,
+                            verify: (URL) -> Bool,
+                            fault: ((Step) -> Bool)? = nil,
+                            swapOperation: ((URL, URL) throws -> Void)? = nil) throws {
+            try install(source: source, at: target, keepPrevious: keepPrevious,
+                        verify: verify, mayReplaceTarget: { _ in true },
+                        fault: fault, swapOperation: swapOperation ?? BundleReplacement.swap)
+        }
 
         do {
             let (source, target) = try scene("normal")
-            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify)
             results.append(("replacement is atomic and retains the old bundle before launch",
                             label(target) == "new" && stages(target).count == 1
                                 && label(stages(target)[0]) == "old"))
@@ -398,7 +416,7 @@ enum BundleReplacement {
             do {
                 let (source, target) = try scene(name)
                 do {
-                    try install(source: source, at: target, keepPrevious: false,
+                    try fixtureInstall(source: source, at: target, keepPrevious: false,
                                 verify: verify, fault: { $0 == step })
                 } catch { /* expected */ }
                 results.append(("\(name) failure preserves the installed app and cleans staging",
@@ -410,7 +428,7 @@ enum BundleReplacement {
         do {
             let (source, target) = try scene("unsupported-volume")
             do {
-                try install(source: source, at: target, keepPrevious: false, verify: verify,
+                try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify,
                             swapOperation: { _, _ in throw Fault.unsupportedSwap })
             } catch { /* expected */ }
             results.append(("unsupported atomic swap refuses the update safely",
@@ -421,13 +439,59 @@ enum BundleReplacement {
         do {
             let (source, target) = try scene("invalid-copied-bundle")
             do {
-                try install(source: source, at: target, keepPrevious: false,
+                try fixtureInstall(source: source, at: target, keepPrevious: false,
                             verify: { _ in false })
             } catch { /* expected verification failure */ }
             results.append(("a failed check of the copied bundle leaves the old app in place",
                             label(target) == "old" && stages(target).isEmpty
                                 && !fm.fileExists(atPath: journalURL(target).path)))
         } catch { results.append(("invalid-copied-bundle fixture", false)) }
+
+        do {
+            let (source, target) = try scene("newer-installer-won")
+            try Data("2".utf8).write(to: source.appendingPathComponent("fixture"))
+            try Data("1".utf8).write(to: target.appendingPathComponent("fixture"))
+            let preflightAllowed = label(target) == "1"
+            // A second installer commits version 3 before this version 2 installer
+            // acquires the transaction lock. Its old preflight result is stale.
+            try Data("3".utf8).write(to: target.appendingPathComponent("fixture"))
+            var rejected = false
+            do {
+                try install(source: source, at: target, keepPrevious: false,
+                            verify: { label($0) == "2" },
+                            mayReplaceTarget: { label($0) == "1" })
+            } catch Fault.staleTarget { rejected = true }
+            results.append(("older installer rejects a newer target under the lock",
+                            preflightAllowed && rejected && label(target) == "3"
+                                && stages(target).isEmpty
+                                && !fm.fileExists(atPath: journalURL(target).path)))
+        } catch { results.append(("newer-installer-won fixture", false)) }
+
+        do {
+            let (source, target) = try scene("target-changed-during-stage")
+            try Data("2".utf8).write(to: source.appendingPathComponent("fixture"))
+            try Data("1".utf8).write(to: target.appendingPathComponent("fixture"))
+            var checks = 0
+            var rejected = false
+            do {
+                try install(source: source, at: target, keepPrevious: false,
+                            verify: { label($0) == "2" },
+                            mayReplaceTarget: { url in
+                                checks += 1
+                                return label(url) == "1"
+                            },
+                            fault: { step in
+                                if step == .beforeSwap {
+                                    try? Data("3".utf8).write(to: target.appendingPathComponent("fixture"))
+                                }
+                                return false
+                            })
+            } catch Fault.staleTarget { rejected = true }
+            results.append(("target version is rechecked immediately before swap",
+                            checks == 2 && rejected && label(target) == "3"
+                                && stages(target).isEmpty
+                                && !fm.fileExists(atPath: journalURL(target).path)))
+        } catch { results.append(("target-changed-during-stage fixture", false)) }
 
         do {
             let (_, target) = try scene("orphan-copy")
@@ -444,7 +508,7 @@ enum BundleReplacement {
             let partial = target.deletingLastPathComponent().appendingPathComponent(
                 ".\(target.lastPathComponent).vane-stage-\(UUID().uuidString)")
             try bundle(partial, "partial")
-            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify)
             results.append(("retry cleans a dead copy before making a fresh stage",
                             label(target) == "new" && stages(target).count == 1
                                 && label(stages(target)[0]) == "old"))
@@ -475,7 +539,7 @@ enum BundleReplacement {
             try write(Journal(stageName: stage.lastPathComponent, newID: stagedID,
                               oldID: fileID(target), keepPrevious: false,
                               state: .prepared, launchPID: nil, launchStart: nil), for: target)
-            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify)
             results.append(("a reopened source retries after an interrupted pre-swap copy",
                             label(target) == "new" && stages(target).count == 1
                                 && label(stages(target)[0]) == "old"))
@@ -484,7 +548,7 @@ enum BundleReplacement {
         do {
             let (source, target) = try scene("crash-after-swap")
             do {
-                try install(source: source, at: target, keepPrevious: false, verify: verify,
+                try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify,
                             fault: { $0 == .afterSwap })
             } catch { /* simulates process loss after the atomic rename */ }
             let first = beginLaunch(at: target)
@@ -500,7 +564,7 @@ enum BundleReplacement {
 
         do {
             let (source, target) = try scene("reused-pid")
-            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify)
             guard beginLaunch(at: target) == .waitingForHealth,
                   var journal = read(target), let start = journal.launchStart else {
                 throw Fault.filesystem
@@ -513,7 +577,7 @@ enum BundleReplacement {
 
         do {
             let (source, target) = try scene("protected-reused-pid")
-            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify)
             guard beginLaunch(at: target) == .waitingForHealth,
                   var journal = read(target), let start = journal.launchStart,
                   let deadline = journal.launchDeadline else { throw Fault.filesystem }
@@ -540,7 +604,7 @@ enum BundleReplacement {
 
         do {
             let (source, target) = try scene("interrupted-cleanup")
-            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify)
             _ = beginLaunch(at: target)
             guard var journal = read(target), let stage = stageURL(target, journal) else {
                 throw Fault.filesystem
@@ -555,7 +619,7 @@ enum BundleReplacement {
 
         do {
             let (source, target) = try scene("relocation")
-            try install(source: source, at: target, keepPrevious: true, verify: verify)
+            try fixtureInstall(source: source, at: target, keepPrevious: true, verify: verify)
             let first = beginLaunch(at: target)
             markHealthy(at: target)
             results.append(("relocation keeps the displaced installed bundle",
@@ -566,7 +630,7 @@ enum BundleReplacement {
 
         do {
             let (source, target) = try scene("relocation-cleanup")
-            try install(source: source, at: target, keepPrevious: true, verify: verify)
+            try fixtureInstall(source: source, at: target, keepPrevious: true, verify: verify)
             _ = beginLaunch(at: target)
             guard var journal = read(target), let stage = stageURL(target, journal) else {
                 throw Fault.filesystem
@@ -583,7 +647,7 @@ enum BundleReplacement {
 
         do {
             let (source, target) = try scene("empty-destination", old: false)
-            try install(source: source, at: target, keepPrevious: false, verify: verify)
+            try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify)
             let first = beginLaunch(at: target)
             markHealthy(at: target)
             results.append(("first install uses an exclusive rename and completes cleanly",
