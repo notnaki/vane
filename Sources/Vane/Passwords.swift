@@ -880,6 +880,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("recent tab switcher", TabSwitcher.check),
                                ("toasts", Toasts.check),
                                ("self-update", Release.check),
+                               ("bundle replacement", BundleReplacement.check),
                                ("pinned folders", Pins.check),
                                ("the pages the card holds", WebHost.check),
                                ("split view", Split.check),

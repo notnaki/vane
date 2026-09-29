@@ -36,6 +36,10 @@ if args.first == "import" {
     }
 }
 
+// A replacement that failed before its first healthy launch restores the prior app and
+// relaunches it. This must happen before any browser window or storage migration begins.
+Updater.recoverAtLaunch()
+
 // Before the first window, and so before the Dock tile is first drawn: the tile belongs to
 // the running process, so a chosen icon has to be put back on every launch. See AppIcon.
 AppIcon.restoreAtLaunch()
@@ -58,12 +62,23 @@ if let first = args.first, first.hasPrefix("http"), let u = URL(string: first) {
 
 NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
                                        object: nil, queue: .main) { _ in
-    MainActor.assumeIsolated { Crash.markClean() }
+    MainActor.assumeIsolated {
+        Updater.markHealthyLaunch() // a clean early quit also proves the new copy could run
+        Crash.markClean()
+    }
 }
 
 Inspector.configure()
 AppleAI.prewarm()      // first request otherwise pays model load on top of its own latency
-Updater.sweep()        // the version this one replaced, if there is one beside it
+NotificationCenter.default.addObserver(forName: NSApplication.didFinishLaunchingNotification,
+                                       object: nil, queue: .main) { _ in
+    // Keep the previous bundle through startup and the first few seconds of WebKit work.
+    // If this copy crashes first, its next launch restores the previous version.
+    Task { @MainActor in
+        try? await Task.sleep(for: .seconds(5))
+        Updater.markHealthyLaunch()
+    }
+}
 Updater.shared.begin() // a first look five seconds in, then a conditional one on a tick
 URLHandling.registerAppleEventHandler()
 app.mainMenu = buildMenu()
