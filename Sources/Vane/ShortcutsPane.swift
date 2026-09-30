@@ -16,6 +16,8 @@ import SwiftUI
     /// Held only while recording: the window closing is the other way out — see `startRecording`.
     @State private var closing: Any?
     @State private var hovered: Command?
+    /// Reveal the result when customization moves a row between sections.
+    @State private var edited: Command?
     /// One line of feedback under a row: a refusal (red) or a conflict warning (amber).
     @State private var notes: [Command: Note] = [:]
     /// Keybindings is a plain store, not an ObservableObject, so a write has to say so:
@@ -59,42 +61,47 @@ import SwiftUI
         VStack(spacing: 0) {
             searchField
             Hairline()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    let groups = cards
-                    if groups.isEmpty {
-                        VStack(alignment: .leading, spacing: Look.inset) {
-                            Text("No shortcuts found").font(Look.heading)
-                            Text("Try a feature name or a key combination, like “Command T”.")
-                                .font(Look.text).foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(Look.cardInset * 2)
-                    }
-                    ForEach(groups, id: \.0) { title, commands in
-                        Section {
-                            ForEach(commands, id: \.self) { command in
-                                row(command)
-                                if command != commands.last {
-                                    Hairline().padding(.horizontal, Look.cardInset * 1.5)
-                                }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        let groups = cards
+                        if groups.isEmpty {
+                            VStack(alignment: .leading, spacing: Look.inset) {
+                                Text("No shortcuts found").font(Look.heading)
+                                Text("Try a feature name or a key combination, like “Command T”.")
+                                    .font(Look.text).foregroundStyle(.secondary)
                             }
-                        } header: {
-                            if !title.isEmpty {
-                                Text(title)
-                                    .font(Look.heading)
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, Look.cardInset)
-                                    .padding(.vertical, Look.inset + 2)
-                                    .background(.windowBackground)
-                                    .overlay(alignment: .bottom) { Hairline() }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(Look.cardInset * 2)
+                        }
+                        ForEach(groups, id: \.0) { title, commands in
+                            Section {
+                                ForEach(commands, id: \.self) { command in
+                                    row(command).id(command)
+                                    if command != commands.last {
+                                        Hairline().padding(.horizontal, Look.cardInset * 1.5)
+                                    }
+                                }
+                            } header: {
+                                if !title.isEmpty {
+                                    Text(title)
+                                        .font(Look.heading)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, Look.cardInset)
+                                        .padding(.vertical, Look.inset + 2)
+                                        .background(.windowBackground)
+                                        .overlay(alignment: .bottom) { Hairline() }
+                                }
                             }
                         }
                     }
                 }
+                .scrollContentBackground(.hidden)
+                .onChange(of: revision) {
+                    if let edited { proxy.scrollTo(edited, anchor: .center) }
+                }
             }
-            .scrollContentBackground(.hidden)
         }
         .background(Look.cardFill)
         .clipShape(.rect(cornerRadius: Look.pillRadius))
@@ -202,6 +209,7 @@ import SwiftUI
         guard confirm("Reset every shortcut to its default?", "Reset All",
                       "Any keys and website priorities you have changed go back to their defaults.")
         else { return }
+        edited = nil
         Keybindings.resetAll()
         rebuild()
         notes = [:]
@@ -224,8 +232,12 @@ import SwiftUI
                     .foregroundStyle(Look.inkPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: Look.inset)
-                priorityMenu(command, priority)
-                    .opacity(isHovered || live || priority == .page ? 1 : 0)
+                if isHovered || live || priority == .page {
+                    priorityMenu(command, priority)
+                } else {
+                    Color.clear.frame(width: Look.control, height: Look.control)
+                        .accessibilityHidden(true)
+                }
                 chip(command, binding)
             }
             .padding(.horizontal, Look.cardInset * 1.5)
@@ -391,6 +403,7 @@ import SwiftUI
         let others = Keybindings.conflicts(binding).filter { $0 != command }
         Keybindings.set(binding, for: command)
         rebuild()               // menu key equivalents are built from these
+        edited = command
         revision += 1
         notes[command] = Self.alsoUsedBy(others).map { Note(text: $0, bad: false) }
         stopRecording()
@@ -403,6 +416,7 @@ import SwiftUI
         stopRecording()
         Keybindings.reset(command)
         rebuild()
+        edited = command
         revision += 1
         notes[command] = nil
         axAnnounce("Shortcut for \(command.title) reset to "
@@ -411,6 +425,7 @@ import SwiftUI
 
     private func setPriority(_ priority: Keybindings.Priority, for command: Command) {
         Keybindings.setPriority(priority, for: command)
+        edited = command
         revision += 1
         axAnnounce(priority == .page
                    ? "\(command.title) now lets the page win."
