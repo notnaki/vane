@@ -477,7 +477,9 @@ import WebKit
     /// Tell the controller about anything that changed since last time. Safe to call as
     /// often as you like; it does nothing when nothing moved.
     /// Only this profile's windows exist as far as this host is concerned.
-    private var myStores: [TabStore] { TabStore.all.filter { $0.profileID == profileID } }
+    private var myStores: [TabStore] {
+        TabStore.all.filter { $0.profileID == profileID && !$0.isParked && $0.window != nil }
+    }
 
     private var myFocusedStore: TabStore? {
         // An extension's idea of "the active tab" is a tab in the browser window; a Little
@@ -563,6 +565,12 @@ import WebKit
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
+        if let requested = configuration.window {
+            guard let store = (requested as? ExtWindow)?.store,
+                  myStores.contains(where: { $0 === store }) else {
+                throw Failure("The requested extension window is no longer open.")
+            }
+        }
         let store = (configuration.window as? ExtWindow)?.store ?? myFocusedStore ?? myStores.last
             ?? Windows.open(profile: ProfileManager.shared.profiles.first { $0.id == profileID })
         let tab = store.newBlankTab()
