@@ -240,18 +240,28 @@ private struct SettingsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            current.pane($selection.id)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, Look.paneMargin)
-                .padding(.bottom, Look.paneMargin)
+        Group {
+            if current.id == "shortcuts" {
+                // This pane owns a bounded scrolling list, so its search and guidance
+                // stay in place while the shortcuts scroll.
+                pane
+            } else {
+                ScrollView { pane }
+            }
         }
         .background(.windowBackground)
-        // Once, here: a preference is a switch in this window, never a checkbox.
         .toggleStyle(.switch)
         .onAppear { SettingsWindow.retitle(current.title) }
         .onChange(of: selection.id) { SettingsWindow.retitle(current.title) }
     }
+
+    private var pane: some View {
+        current.pane($selection.id)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Look.paneMargin)
+            .padding(.bottom, Look.paneMargin)
+    }
+
 }
 
 // MARK: - Card and row
