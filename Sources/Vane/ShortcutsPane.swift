@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The Shortcuts tab of Settings: every rebindable command, searchable, with its key cap
-/// shown on the right the way Arc does it.
+/// The Shortcuts tab of Settings: an Arc-style searchable list beside shortcut guidance.
+/// Customized commands stay above the alphabetical default list.
 ///
 /// Everything it knows lives in Keybindings.swift — this file only draws it and records the
 /// next keystroke. The pure parts (what a keystroke means, how the list is grouped, how a
@@ -16,6 +16,8 @@ import SwiftUI
     /// Held only while recording: the window closing is the other way out — see `startRecording`.
     @State private var closing: Any?
     @State private var hovered: Command?
+    /// Reveal the result when customization moves a row between sections.
+    @State private var edited: Command?
     /// One line of feedback under a row: a refusal (red) or a conflict warning (amber).
     @State private var notes: [Command: Note] = [:]
     /// Keybindings is a plain store, not an ObservableObject, so a write has to say so:
@@ -30,85 +32,189 @@ import SwiftUI
     }
 
     var body: some View {
-        // The same rhythm as the other panes' `Pane`: cards a gap and a half apart.
-        VStack(alignment: .leading, spacing: Look.inset * 1.5) {
-            header
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: Look.inset * 1.5) {
-                    let groups = cards
-                    if groups.isEmpty {
-                        Text("No shortcuts match \u{201C}\(query)\u{201D}")
-                            .font(Look.text).foregroundStyle(.secondary)
-                            .padding(.horizontal, Look.cardInset)
-                    }
-                    ForEach(groups, id: \.0) { title, commands in
-                        if title.isEmpty {
-                            card(commands)
-                        } else {
-                            SettingsSection(title) { card(commands) }
-                        }
-                    }
-                }
+        GeometryReader { geometry in
+            HStack(alignment: .top, spacing: Look.inset * 2) {
+                shortcutList
+                guidance
+                    .frame(width: min(280, geometry.size.width * 0.36))
             }
-            .scrollContentBackground(.hidden)
-            Text("Click a shortcut to change it. \u{201C}Page\u{201D} lets a website\u{2019}s own "
-                 + "shortcut win — Vane keeps out of the way while the page has focus.")
-                .font(Look.text).foregroundStyle(.secondary)
-                .padding(.horizontal, Look.cardInset)
         }
-        .padding(.top, Look.inset * 2)
+        .padding(.top, Look.inset * 3)
         .onDisappear { stopRecording() }
     }
 
-    /// SwiftUI only redraws for the state a body actually reads, and the rows read the
-    /// store rather than any state — so touching `revision` here is what turns a write to
-    /// Keybindings into a redraw.
-    private var cards: [(String, [Command])] {
+    private var customized: Set<Command> {
         _ = revision
-        return Self.groups(query, Keybindings.search(query))
+        return Set(Command.allCases.filter {
+            Keybindings.binding(for: $0) != $0.defaultBinding
+                || Keybindings.priority(for: $0) != .browser
+        })
     }
 
-    /// One settings card of rows; the card draws the hairlines between them.
-    private func card(_ commands: [Command]) -> some View {
-        SettingsCard {
-            ForEach(commands, id: \.self) { row($0) }
+    private var cards: [(String, [Command])] {
+        Self.groups(query, Keybindings.search(query), customized: customized)
+    }
+
+    // MARK: - Searchable list
+
+    private var shortcutList: some View {
+        VStack(spacing: 0) {
+            searchField
+            Hairline()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        let groups = cards
+                        if groups.isEmpty {
+                            VStack(alignment: .leading, spacing: Look.inset) {
+                                Text("No shortcuts found").font(Look.heading)
+                                Text("Try a feature name or a key combination, like “Command T”.")
+                                    .font(Look.text).foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(Look.cardInset * 2)
+                        }
+                        ForEach(groups, id: \.0) { title, commands in
+                            Section {
+                                ForEach(commands, id: \.self) { command in
+                                    row(command).id(command)
+                                    if command != commands.last {
+                                        Hairline().padding(.horizontal, Look.cardInset * 1.5)
+                                    }
+                                }
+                            } header: {
+                                if !title.isEmpty {
+                                    Text(title)
+                                        .font(Look.heading)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, Look.cardInset)
+                                        .padding(.vertical, Look.inset + 2)
+                                        .background(.windowBackground)
+                                        .overlay(alignment: .bottom) { Hairline() }
+                                }
+                            }
+                        }
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .onChange(of: revision) {
+                    if let edited { proxy.scrollTo(edited, anchor: .center) }
+                }
+            }
         }
+        .background(Look.cardFill)
+        .clipShape(.rect(cornerRadius: Look.pillRadius))
+        .hairline(radius: Look.pillRadius, Look.cardStroke)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - Header
-
-    private var header: some View {
+    private var searchField: some View {
         HStack(spacing: Look.inset) {
-            HStack(spacing: Look.inset - 2) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search shortcuts", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(Look.text)
-                    .onChange(of: query) { stopRecording() }
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField("Feature name or shortcut (like “Command T”)", text: $query)
+                .textFieldStyle(.plain)
+                .font(Look.text)
+                .onChange(of: query) { stopRecording() }
+                .accessibilityLabel("Search Shortcuts")
+                .accessibilityHint("Search by feature name or keys, such as new tab or cmd t.")
+            if !query.isEmpty {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
             }
-            .padding(.horizontal, Look.inset)
-            .frame(height: Look.control)
-            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
-            .accessibilityLabel("Search Shortcuts")
-            .accessibilityHint("Matches a command by name or by its keys — \u{201C}new tab\u{201D} "
-                               + "or \u{201C}cmd t\u{201D}.")
-
-            Button("Reset All…") {
-                guard confirm("Reset every shortcut to its default?", "Reset All",
-                              "Any keys you have changed go back to what Vane ships with.")
-                else { return }
-                Keybindings.resetAll()
-                rebuild()
-                notes = [:]
-                revision += 1
-                axAnnounce("All shortcuts reset to their defaults.")
-            }
-            .buttonStyle(.plain)
-            .font(Look.text)
-            .padding(.horizontal, Look.inset + 2)
-            .frame(height: Look.control)
-            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
         }
+        .padding(.horizontal, Look.cardInset)
+        .frame(height: Look.settingsRow)
+        .background(Look.controlFill)
+    }
+
+    // MARK: - Guidance
+
+    private var guidance: some View {
+        VStack(alignment: .leading, spacing: Look.inset * 2) {
+            HStack(spacing: Look.inset) {
+                illustratedKey("command")
+                illustratedKey("face.smiling")
+            }
+            .accessibilityHidden(true)
+            .padding(.bottom, Look.inset)
+
+            VStack(alignment: .leading, spacing: Look.inset) {
+                Text("Custom Shortcuts")
+                    .font(.system(size: 16, weight: .semibold))
+                Text("Change shortcuts for your favorite actions, and choose whether Vane or a website takes priority.")
+                    .font(Look.rowTitle)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineSpacing(3)
+            }
+
+            Text(recording == nil
+                 ? "Click a shortcut, then press the keys you want to use."
+                 : "Press your new shortcut. Escape cancels; Delete removes it.")
+                .font(Look.footnote)
+                .foregroundStyle(recording == nil ? Color.secondary : Color.accentColor)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(2)
+
+            Spacer(minLength: Look.inset * 3)
+
+            HStack(spacing: Look.inset) {
+                Button("Reset All Shortcuts", action: resetAll)
+                    .buttonStyle(.plain)
+                    .font(Look.text)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: Look.control + Look.inset)
+                    .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+                    .disabled(customized.isEmpty)
+                Menu {
+                    Button("Reset All Shortcuts…", action: resetAll)
+                        .disabled(customized.isEmpty)
+                    if recording != nil {
+                        Button("Cancel Recording") { stopRecording() }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: Look.control + Look.inset, height: Look.control + Look.inset)
+                        .background(Look.controlFill, in: .circle)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("Shortcut options")
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func illustratedKey(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 30, weight: .semibold))
+            .foregroundStyle(Color.accentColor)
+            .frame(width: 60, height: 60)
+            .background(.white.opacity(0.65), in: .rect(cornerRadius: Look.pillRadius))
+            .hairline(radius: Look.pillRadius, .white.opacity(0.7))
+            .padding(5)
+            .background(Color.accentColor, in: .rect(cornerRadius: Look.pillRadius + 4))
+            .hairline(radius: Look.pillRadius + 4, Color.accentColor.opacity(0.5))
+    }
+
+    private func resetAll() {
+        stopRecording()
+        guard confirm("Reset every shortcut to its default?", "Reset All",
+                      "Any keys and website priorities you have changed go back to their defaults.")
+        else { return }
+        edited = nil
+        Keybindings.resetAll()
+        rebuild()
+        notes = [:]
+        revision += 1
+        axAnnounce("All shortcuts reset to their defaults.")
     }
 
     // MARK: - Row
@@ -117,84 +223,106 @@ import SwiftUI
         let binding = Keybindings.binding(for: command)
         let note = notes[command]
         let isHovered = hovered == command
+        let live = recording == command
         let priority = Keybindings.priority(for: command)
-        // The same row every other pane is built from; only what trails the title is
-        // this pane's own, and it comes and goes with the pointer.
         return VStack(alignment: .leading, spacing: 0) {
-            SettingsRow(command.title) {
-                if isHovered || priority == .page { priorityMenu(command, priority) }
-                if isHovered && binding != command.defaultBinding {
-                    Button { reset(command) } label: {
-                        Image(systemName: "arrow.counterclockwise")
-                    }
-                    .buttonStyle(.plain)
-                    .font(Look.caption)
-                    .foregroundStyle(.secondary)
-                    .help("Reset to \(command.defaultBinding.display)")
+            HStack(spacing: Look.inset) {
+                Text(command.title)
+                    .font(Look.rowTitle)
+                    .foregroundStyle(Look.inkPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: Look.inset)
+                if isHovered || live || priority == .page {
+                    priorityMenu(command, priority)
+                } else {
+                    Color.clear.frame(width: Look.control, height: Look.control)
+                        .accessibilityHidden(true)
                 }
                 chip(command, binding)
             }
+            .padding(.horizontal, Look.cardInset * 1.5)
+            .padding(.vertical, Look.inset)
+            .frame(minHeight: Look.settingsRow + Look.inset)
             if let note {
-                Text(note.text)
+                Label(note.text, systemImage: note.bad ? "exclamationmark.circle" : "exclamationmark.triangle")
                     .font(Look.caption)
                     .foregroundStyle(note.bad ? Color.red : Color.orange)
-                    .padding(.horizontal, Look.cardInset)
+                    .padding(.horizontal, Look.cardInset * 1.5)
                     .padding(.bottom, Look.inset)
             }
         }
         .contentShape(.rect)
-        .background(isHovered ? Look.hovered : .clear)
+        .background(live ? Look.accentSelected : isHovered ? Look.hovered : .clear)
         .animation(reduceMotion ? nil : Look.quick, value: isHovered)
         .onHover { inside in
             if inside { hovered = command } else if hovered == command { hovered = nil }
         }
-        // One element per row: the chip, the reset button and the priority menu are all
-        // reachable as named actions instead, which is fewer stops for the same reach.
+        .contextMenu {
+            Button("Change Shortcut") { startRecording(command) }
+            Button("Reset Shortcut to Default") { reset(command) }
+                .disabled(!customized.contains(command))
+            Button("Remove Shortcut") {
+                stopRecording()
+                save(.unassigned, for: command)
+            }
+            .disabled(!binding.isAssigned)
+            Divider()
+            Button(priority == .page ? "Prefer Vane" : "Prefer Website") {
+                setPriority(priority == .page ? .browser : .page, for: command)
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(command.title)
-        .accessibilityValue(recording == command ? "recording a shortcut"
+        .accessibilityValue(live ? "recording a shortcut"
                             : binding.isAssigned ? "shortcut \(binding.display)" : "no shortcut")
-        .accessibilityHint(note?.text ?? "")
+        .accessibilityHint(note?.text ?? "Activate to change this shortcut.")
         .accessibilityAddTraits(.isButton)
+        .accessibilityAction { startRecording(command) }
         .accessibilityAction(named: "Change Shortcut") { startRecording(command) }
         .accessibilityAction(named: "Reset") { reset(command) }
-        .accessibilityAction(named: priority == .page ? "Let Vane Win" : "Let the Page Win") {
+        .accessibilityAction(named: "Remove Shortcut") {
+            stopRecording()
+            save(.unassigned, for: command)
+        }
+        .accessibilityAction(named: priority == .page ? "Prefer Vane" : "Prefer Website") {
             setPriority(priority == .page ? .browser : .page, for: command)
         }
     }
 
-    /// The key cap. Clicking it is how you rebind — there is no separate edit affordance,
-    /// which is the whole of Arc's shortcuts UI.
     private func chip(_ command: Command, _ binding: Keybinding) -> some View {
         let live = recording == command
         return Button {
             live ? stopRecording() : startRecording(command)
         } label: {
-            Text(live ? "Type shortcut…" : binding.isAssigned ? binding.display : "—")
-                .font(Look.text.monospacedDigit())
-                .foregroundStyle(live ? Color.accentColor
+            Text(live ? "Type keys…" : binding.display)
+                .font(Look.heading.monospacedDigit())
+                .foregroundStyle(live ? Color.white
                                  : binding.isAssigned ? Color.primary : Color.secondary)
                 .padding(.horizontal, Look.inset)
-                .frame(height: Look.chip)
-                .frame(minWidth: Look.chip * 2)
-                .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
+                .frame(minWidth: Look.chip * 2.5)
+                .frame(height: Look.chip + 2)
+                .background(live ? Color.accentColor : Look.controlFill,
+                            in: .rect(cornerRadius: Look.chipRadius))
                 .hairline(radius: Look.chipRadius, live ? Color.accentColor : Look.hairline)
         }
         .buttonStyle(.plain)
-        .help(live ? "Press the keys, or Escape to cancel" : "Click to change")
+        .help(live ? "Press the keys, or Escape to cancel" : "Click to change; right-click for options")
     }
 
     private func priorityMenu(_ command: Command, _ priority: Keybindings.Priority) -> some View {
         Menu {
-            Button("Browser") { setPriority(.browser, for: command) }
-            Button("Page") { setPriority(.page, for: command) }
+            Button("Prefer Vane") { setPriority(.browser, for: command) }
+            Button("Prefer Website") { setPriority(.page, for: command) }
         } label: {
-            Text(priority == .page ? "Page" : "Browser")
+            Image(systemName: priority == .page ? "globe" : "ellipsis")
                 .font(Look.caption).foregroundStyle(.secondary)
+                .frame(width: Look.control)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
-        .help("Who gets this key first: Vane, or the website.")
+        .accessibilityLabel("Shortcut priority for \(command.title)")
+        .help(priority == .page ? "Prefer Website" : "Prefer Vane")
     }
 
     // MARK: - Recording
@@ -275,6 +403,7 @@ import SwiftUI
         let others = Keybindings.conflicts(binding).filter { $0 != command }
         Keybindings.set(binding, for: command)
         rebuild()               // menu key equivalents are built from these
+        edited = command
         revision += 1
         notes[command] = Self.alsoUsedBy(others).map { Note(text: $0, bad: false) }
         stopRecording()
@@ -287,6 +416,7 @@ import SwiftUI
         stopRecording()
         Keybindings.reset(command)
         rebuild()
+        edited = command
         revision += 1
         notes[command] = nil
         axAnnounce("Shortcut for \(command.title) reset to "
@@ -295,6 +425,7 @@ import SwiftUI
 
     private func setPriority(_ priority: Keybindings.Priority, for command: Command) {
         Keybindings.setPriority(priority, for: command)
+        edited = command
         revision += 1
         axAnnounce(priority == .page
                    ? "\(command.title) now lets the page win."
@@ -349,18 +480,20 @@ extension ShortcutsPane {
         return "Also used by " + others.map(\.title).joined(separator: ", ")
     }
 
-    /// The cards to draw. An empty query is the whole list in menu order, one card per
-    /// category; a query is a single card that keeps the search's ranking, because the top
-    /// hit is the answer and burying it under a header would hide it.
-    static func groups(_ query: String, _ results: [Command]) -> [(String, [Command])] {
+    /// Customizations stay at the top; the default list is alphabetical like Arc's.
+    /// Search keeps the store's ranking rather than regrouping its best matches.
+    static func groups(_ query: String, _ results: [Command],
+                       customized: Set<Command> = []) -> [(String, [Command])] {
         guard query.trimmingCharacters(in: .whitespaces).isEmpty else {
             return results.isEmpty ? [] : [("", results)]
         }
-        return Command.Category.allCases.compactMap { category in
-            let commands = results.filter { $0.category == category }
-            return commands.isEmpty ? nil : (category.rawValue, commands)
-        }
+        let sorted = results.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        let custom = sorted.filter { customized.contains($0) }
+        let defaults = sorted.filter { !customized.contains($0) }
+        return [("Custom Shortcuts", custom), ("Default Shortcuts", defaults)]
+            .filter { !$0.1.isEmpty }
     }
+
 }
 
 // MARK: - check
@@ -373,7 +506,9 @@ extension ShortcutsPane {
         let delete = Keybinding("\u{7f}")
         let all = Command.allCases
         let grouped = groups("", all)
-        let ranked = groups("new tab", [.newTab, .newWindow])
+        let ranked = groups("new tab", [.newTab, .newWindow], customized: [.newWindow])
+        let custom = groups("", all, customized: [.newTab, .find])
+        let onlyCustom = groups("", [.newTab], customized: [.newTab])
         return [
             ("a keystroke in the Settings window is the shortcut being recorded",
              reach(inSettingsWindow: true) == .record),
@@ -397,10 +532,20 @@ extension ShortcutsPane {
              alsoUsedBy([.newTab]) == "Also used by New Tab"),
             ("two clashes are listed",
              alsoUsedBy([.newTab, .newWindow]) == "Also used by New Tab, New Window"),
-            ("an empty query groups by category", grouped.count == Command.Category.allCases.count),
-            ("…in menu order", grouped.first?.0 == "File" && grouped.last?.0 == "Help"),
+            ("an empty query shows one default shortcuts list",
+             grouped.count == 1 && grouped.first?.0 == "Default Shortcuts"),
+            ("default shortcuts are alphabetical",
+             grouped.flatMap(\.1) == all.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }),
             ("…and lists every command once",
              grouped.flatMap(\.1).count == all.count && Set(grouped.flatMap(\.1)).count == all.count),
+            ("customized commands appear first and stay alphabetical",
+             custom.first?.0 == "Custom Shortcuts" && custom.first?.1 == [.find, .newTab]),
+            ("customizations do not also appear in the defaults",
+             custom.count == 2 && !custom[1].1.contains(.newTab) && !custom[1].1.contains(.find)
+                && custom.flatMap(\.1).count == all.count),
+            ("an entirely customized list omits the empty default section",
+             onlyCustom.count == 1 && onlyCustom.first?.0 == "Custom Shortcuts"),
+            ("an empty list omits both section headers", groups("", []).isEmpty),
             ("a query is one ranked card, headerless",
              ranked.count == 1 && ranked[0].0 == "" && ranked[0].1 == [.newTab, .newWindow]),
             ("a query matching nothing draws nothing", groups("zzzz", []).isEmpty),

@@ -1010,8 +1010,7 @@ struct CommandField: NSViewRepresentable {
         return PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
                           image: tab.favicon, title: tab.title, detail: detail, subtitle: place,
                           trailing: "Switch to Tab", kind: "Open tab") { _ in
-            owner.current = tab.id
-            owner.window?.makeKeyAndOrderFront(nil)
+            Windows.reveal(tab, in: owner)
         }
     }
 
@@ -1059,12 +1058,13 @@ struct CommandField: NSViewRepresentable {
         }
     }
 
-    /// The profile's Spaces, by name. Arc switches Space from the bar, and typing the name
-    /// of the Space you want is faster than counting ⌃1…⌃9. Not offered in a Little Arc,
-    /// which has no Space to leave and no strip to switch.
+    /// Every Space on the strip, by name — every profile's, because that is what the strip
+    /// is. Arc switches Space from the bar, and typing the name of the Space you want is
+    /// faster than counting ⌃1…⌃9. Not offered in a Little Arc, which has no Space to
+    /// leave and no strip to switch.
     private func spaceRows() -> [PaletteRow] {
         guard !store.isPrivate, !store.isLittle else { return [] }
-        return store.spaces.filter { $0.id != store.currentSpaceID }.map { space in
+        return store.strip.filter { $0.id != store.currentSpaceID }.map { space in
             PaletteRow(id: "space:" + space.id.uuidString, icon: space.icon ?? "square.stack",
                        title: space.name, detail: "Space",
                        trailing: "Switch to Space", kind: "Space") { _ in
