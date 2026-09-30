@@ -49,6 +49,20 @@ try fm.createDirectory(at: links, withIntermediateDirectories: true)
 try fm.createSymbolicLink(at: links.appendingPathComponent("outside"), withDestinationURL: external)
 try UpdateInstallation.removeQuarantine(links)
 check("cleanup does not follow external symlinks", quarantined(external))
+let linkedSource = root.appendingPathComponent("linked-source.app")
+try fm.createSymbolicLink(at: linkedSource, withDestinationURL: source)
+let linkDestination = root.appendingPathComponent("link-destination")
+try fm.createDirectory(at: linkDestination, withIntermediateDirectories: true)
+do {
+    try UpdateInstallation.install(source: linkedSource, target: linkDestination.appendingPathComponent("Vane.app"),
+                                   tag: sourceTag, keepPrevious: false, applicationsDirectories: [linkDestination])
+    check("symlink source root is rejected", false)
+} catch { check("symlink source root is rejected", error.localizedDescription == "Invalid update source") }
+do {
+    try UpdateInstallation.removeQuarantine(linkedSource)
+    check("cleanup rejects symlink root", false)
+} catch { check("cleanup rejects symlink root", error.localizedDescription == "Invalid update source") }
+check("symlink source rejection preserves source quarantine", quarantined(source) && quarantined(executable))
 let target = try oldTarget(root)
 let nestedTarget = root.appendingPathComponent("Browsers/Vane.app")
 do {

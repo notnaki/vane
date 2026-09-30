@@ -17,10 +17,11 @@ enum UpdateInstallation {
         guard source.isFileURL, allowed(target, within: applicationsDirectories) else {
             throw failure("Invalid update destination")
         }
+        guard realDirectory(source) else { throw failure("Invalid update source") }
         guard let incomingVersion = UpdateVersion(tag) else { throw failure("Invalid update version") }
         try BundleReplacement.install(source: source, at: target, keepPrevious: keepPrevious,
             verify: { staged in
-                guard verified(staged), let actual = version(staged) else { return false }
+                guard realDirectory(staged), verified(staged), let actual = version(staged) else { return false }
                 // The advertised tag must match the signed payload, with semver's padded
                 // numeric core and ignored build metadata rather than string equality.
                 return !(actual < incomingVersion) && !(incomingVersion < actual)
@@ -30,6 +31,11 @@ enum UpdateInstallation {
                 guard let installed = version(destination) else { return false }
                 return installed < incomingVersion
             }, prepare: prepare)
+    }
+
+    private static func realDirectory(_ url: URL) -> Bool {
+        var metadata = stat()
+        return lstat(url.path, &metadata) == 0 && metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR)
     }
 
     private static func allowed(_ target: URL, within roots: [URL]) -> Bool {
@@ -81,6 +87,9 @@ enum UpdateInstallation {
     }
 
     static func removeQuarantine(_ bundle: URL) throws {
+        // Foundation enumerates through a symlink at its root even though it does not
+        // descend through symlink children. Require a private directory before walking.
+        guard realDirectory(bundle) else { throw failure("Invalid update source") }
         func remove(_ url: URL) throws {
             // Never follow a symlink out of the bundle or erase unrelated attributes.
             let result = removexattr(url.path, "com.apple.quarantine", XATTR_NOFOLLOW)
