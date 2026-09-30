@@ -186,6 +186,7 @@ enum BundleReplacement {
     static func install(source: URL, at target: URL, keepPrevious: Bool,
                         verify: (URL) -> Bool,
                         mayReplaceTarget: (URL) -> Bool,
+                        prepare: (URL) throws -> Void = { _ in },
                         fault: ((Step) -> Bool)? = nil,
                         swapOperation: (URL, URL) throws -> Void = swap) throws {
         let fm = FileManager.default
@@ -219,6 +220,9 @@ enum BundleReplacement {
             try fm.copyItem(at: source, to: stage)
             if fault?(.afterCopy) == true { throw Fault.injected }
             guard verify(stage), let newID = fileID(stage) else { throw Fault.invalidStage }
+            // Installer preparation happens on the final, verified copy while the
+            // transaction lock is held and before any journal or swap is committed.
+            try prepare(stage)
             if fault?(.beforeStageSync) == true { throw Fault.injected }
             try syncTree(stage)
             try sync(target.deletingLastPathComponent(), directory: true)

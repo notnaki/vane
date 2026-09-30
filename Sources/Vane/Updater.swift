@@ -11,52 +11,7 @@ enum Release {
     /// A semver-ish tag: `1.2.3`, `v1.2.3`, `1.2.3-beta.2`, `1.2.3+7`. The numeric core is
     /// the whole of the parse; anything else is `nil`, and a `nil` version is never newer
     /// than anything. A tag nobody can read must not push an upgrade *or* a downgrade.
-    struct Version: Comparable {
-        let core: [Int]
-        /// The `-beta.2` part, split on dots. Empty means a real release, which by semver
-        /// outranks every pre-release of the same core.
-        let pre: [String]
-
-        init?(_ raw: String) {
-            var s = Substring(raw.trimmingCharacters(in: .whitespacesAndNewlines))
-            while let f = s.first, f == "v" || f == "V" { s = s.dropFirst() }
-            // Build metadata (`+7`) is not part of precedence, so it is dropped unparsed.
-            s = s.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)[0]
-            let halves = s.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
-            var numbers: [Int] = []
-            for part in halves[0].split(separator: ".") {
-                guard let n = Int(part), n >= 0 else { return nil }
-                numbers.append(n)
-            }
-            guard !numbers.isEmpty else { return nil }
-            core = numbers
-            pre = halves.count > 1 ? halves[1].split(separator: ".").map(String.init) : []
-        }
-
-        static func < (l: Version, r: Version) -> Bool {
-            for i in 0..<max(l.core.count, r.core.count) {
-                // `1.2` and `1.2.0` are the same version, so a missing component is a zero.
-                let a = i < l.core.count ? l.core[i] : 0, b = i < r.core.count ? r.core[i] : 0
-                if a != b { return a < b }
-            }
-            // 1.0.0-beta < 1.0.0. Without this the release *after* a pre-release looks equal
-            // to it and nobody on a beta is ever offered the real thing.
-            if l.pre.isEmpty != r.pre.isEmpty { return !l.pre.isEmpty }
-            for i in 0..<max(l.pre.count, r.pre.count) {
-                guard i < l.pre.count else { return true }
-                guard i < r.pre.count else { return false }
-                let a = l.pre[i], b = r.pre[i]
-                if a == b { continue }
-                switch (Int(a), Int(b)) {
-                case let (x?, y?): return x < y      // beta.2 < beta.10, not "10" < "2"
-                case (_?, nil):    return true       // numeric identifiers rank below alphanumeric
-                case (nil, _?):    return false
-                default:           return a < b
-                }
-            }
-            return false
-        }
-    }
+    typealias Version = UpdateVersion
 
     /// The only version question the app ever asks. Never true for equal versions, never
     /// true downhill, never true for a tag that does not parse.
@@ -502,37 +457,13 @@ extension Release {
 /// Vesta's `Updater.swift`, and it ends the same way — a bundle swapped in place and a
 /// relaunch — but it gets there differently, because Vane is sandboxed.
 ///
-/// What a sandboxed Vane can and cannot do, measured with a probe app signed with
-/// `Vane.entitlements` rather than assumed:
-///
-///   * the bundle's parent directory is **not** writable by default — not in
-///     `~/Applications`, not anywhere; `isWritableFile` says false and the write fails
-///   * `hdiutil attach` fails outright ("Device not configured"): DiskArbitration is not
-///     reachable from a sandboxed process, so the release's **dmg can never be mounted**
-///     in-process. The zip is the asset this file downloads, and `ditto -x -k` unpacks it
-///     inside the container, which *is* allowed.
-///   * everything a sandboxed app writes is stamped `com.apple.quarantine`, and
-///     `removexattr` on it is denied. The downloaded zip carries it, `ditto` propagates it
-///     to the unpacked bundle and its executable, and the copy into /Applications keeps it.
-///     **This turned out not to matter.** Measured on the real notarized release: the
-///     installed copy assesses as `accepted, source=Notarized Developer ID` and
-///     `stapler validate` passes on it, because the ticket is stapled into the bundle and
-///     Gatekeeper never needs the xattr gone. The quarantine flags come back `0282` — the
-///     "already assessed" bit is not set — so macOS assesses it on first launch and may show
-///     the standard "downloaded from the Internet, are you sure?" confirmation once. One
-///     click, not a refusal. An *unnotarized* release would be refused there instead, which
-///     is why the workflow fails rather than publishing one.
-///   * the two `Applications` directories are writable with the temporary-exception
-///     entitlements — create, copy, rename and delete all succeed in `/Applications` and in
-///     `~/Applications`, and the copy/rename/rename/sweep sequence below was rehearsed there
-///     on a scratch bundle of its own
-///
-/// So the swap is Vane's to do, and the user's only step is pressing Update.
-/// ponytail: no folder picker and no security-scoped bookmark. Those were built and then
-/// deleted: two entitlements cover every directory an app is actually kept in, and for a
-/// copy living anywhere else the honest answer is to *install* it into /Applications rather
-/// than to ask permission to update it where it sits. Ceiling: a privileged helper, which
-/// would buy the one case nobody has — an app installed somewhere neither of those two.
+/// Downloads and ZIP extraction stay inside the browser sandbox. Sandboxed writes carry
+/// quarantine, and the sandbox cannot remove it: installing from this process caused a
+/// fresh "downloaded from the Internet" confirmation after every update, even though the
+/// release was notarized. A bundled, signed XPC service now copies the release, verifies
+/// the final copy and its Gatekeeper assessment, removes quarantine, and atomically
+/// publishes it. The service runs as the same user, without the browser's sandbox.
+/// Vane and the service authenticate each other by Developer ID team and bundle ID.
 @MainActor final class Updater {
     static let shared = Updater()
     static let repo = "notnaki/vane"
@@ -895,8 +826,8 @@ extension Release {
 
     /// Unpack the release and put it at `target`, replacing whatever is there.
     ///
-    /// The zip is expanded inside the sandbox, then BundleReplacement copies and verifies
-    /// a sibling of the destination before atomically swapping the directory names.
+    /// The ZIP is expanded inside the sandbox. The signed installer service prepares the
+    /// final copy outside the sandbox, then uses the same locked, crash-recoverable swap.
     ///
     /// `permanent` says which kind of failure it was: true when this *release* is the problem
     /// — no Vane.app in the zip, or one signed by somebody who is not us — so the caller can
@@ -921,12 +852,7 @@ extension Release {
         }
 
         do {
-            try BundleReplacement.install(source: incoming, at: target, keepPrevious: false,
-                                          verify: verified,
-                                          mayReplaceTarget: { url in
-                Release.shouldInstall(tag: tag,
-                                      installedVersion: Release.installedVersion(at: url))
-            })
+            try UpdateInstaller.install(source: incoming, target: target, tag: tag, keepPrevious: false)
             return (true, false)
         } catch {
             NSLog("[vane] update: bundle replacement failed: %@", String(describing: error))
@@ -1118,12 +1044,8 @@ extension Release {
     nonisolated private static func place(_ source: URL, at target: URL) -> Bool {
         do {
             let sourceVersion = Release.version(ofBundleAt: source) ?? ""
-            try BundleReplacement.install(source: source, at: target, keepPrevious: true,
-                                          verify: verified,
-                                          mayReplaceTarget: { url in
-                Release.shouldInstall(tag: sourceVersion,
-                                      installedVersion: Release.installedVersion(at: url))
-            })
+            try UpdateInstaller.install(source: source, target: target,
+                                        tag: sourceVersion, keepPrevious: true)
             return true
         } catch {
             NSLog("[vane] install: bundle replacement failed: %@", String(describing: error))

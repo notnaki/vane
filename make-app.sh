@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build Vane.app — a double-clickable bundle. The binary links only system frameworks
-# (AppKit + WebKit), so the bundle is just: executable + Info.plist + the app icon.
+# (AppKit + WebKit), with a signed XPC service for installing updates outside the sandbox.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -16,6 +16,12 @@ BUILD="${VANE_BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 echo ">> building ($CONF)..."
 swift build -c "$CONF" >/dev/null
 [ -x "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
+
+echo ">> building update installer..."
+INSTALLER_BIN=".build/$CONF/VaneUpdateInstaller"
+xcrun swiftc -O Sources/Vane/BundleReplacement.swift Sources/Vane/UpdateVersion.swift Sources/Vane/UpdateInstaller.swift \
+  Sources/UpdateInstaller/UpdateInstallation.swift Sources/UpdateInstaller/InstallerService.swift \
+  Sources/UpdateInstaller/main.swift -o "$INSTALLER_BIN"
 
 echo ">> compiling app icon..."
 ICONOUT="$(mktemp -d)"
@@ -40,6 +46,10 @@ echo ">> assembling ${APP}..."
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Vane"
+INSTALLER="$APP/Contents/XPCServices/io.github.notnaki.vane.UpdateInstaller.xpc"
+mkdir -p "$INSTALLER/Contents/MacOS"
+cp installer/UpdateInstaller-Info.plist "$INSTALLER/Contents/Info.plist"
+cp "$INSTALLER_BIN" "$INSTALLER/Contents/MacOS/VaneUpdateInstaller"
 # The Icon Composer output. Assets.car carries the Tahoe icon the system shapes itself
 # (read via CFBundleIconName); the .icns is the compatibility plate. The .icns alone would
 # make Tahoe draw a second squircle under an already-rounded bitmap, so both ship.
@@ -120,10 +130,14 @@ ENT="$(dirname "$0")/Vane.entitlements"
 # an unsigned bundle is an *unsandboxed* bundle, and it would write to a different data
 # directory than the sandboxed one. Fail loudly rather than shipping the wrong app.
 if [ -n "${SIGN_ID:-}" ]; then
+  # Sign inside out. The installer intentionally has no App Sandbox entitlement;
+  # signing it with the browser's entitlements would reproduce update quarantine.
+  codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$INSTALLER"
   codesign --force --options runtime --timestamp --entitlements "$ENT" \
     --sign "$SIGN_ID" "$APP"
   echo "OK: signed with Developer ID ($SIGN_ID)"
 else
+  codesign --force --sign - "$INSTALLER"
   codesign --force --entitlements "$ENT" --sign - "$APP"
   echo "OK: signed (ad-hoc)"
 fi
@@ -133,11 +147,16 @@ fi
 ENTS="$(codesign -d --entitlements - --xml "$APP" 2>&1)"
 echo "$ENTS" | grep -q "com.apple.security.app-sandbox" \
   || { echo "FAIL: com.apple.security.app-sandbox is not in the signature"; exit 1; }
-# ...and the one exception the self-updater is built on. Without it in the signature the app
-# still runs, still sandboxed, and silently cannot replace itself: every update would get as
-# far as "Installing…" and stop. Fail here instead of shipping that.
+# Applications access is still required to inspect the installed version and sweep the
+# displaced bundle on the next launch; publication belongs to the signed XPC installer.
 echo "$ENTS" | grep -q "temporary-exception.files.absolute-path.read-write" \
   || { echo "FAIL: the /Applications exception the updater needs is not in the signature"; exit 1; }
+
+codesign --verify --deep --strict "$APP"
+INSTALLER_ENTS="$(codesign -d --entitlements - --xml "$INSTALLER" 2>&1)"
+if echo "$INSTALLER_ENTS" | grep -q "com.apple.security.app-sandbox"; then
+  echo "FAIL: update installer must run outside the browser sandbox"; exit 1
+fi
 
 # Deliberately no `lsregister -f`: it force-registers whatever bundle was just built under
 # the shared bundle id, so a build in a worktree would take over the user's http/https
