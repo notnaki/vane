@@ -235,8 +235,10 @@ extension SiteControlModel {
         scheme = url.scheme
         secureContent = tab.secureContent
         certificateTrusted = tab.certificateTrusted
-        camera = SitePermissions.effective(host: h, type: .camera)
-        microphone = SitePermissions.effective(host: h, type: .microphone)
+        if let permissionScope = SitePermissions.scope(for: tab) {
+            camera = SitePermissions.effective(scope: permissionScope, type: .camera)
+            microphone = SitePermissions.effective(scope: permissionScope, type: .microphone)
+        }
         pictureInPicture = tab.pictureInPicture
         zoom = tab.zoom
         blocking = Blocker.enabled(for: tab.profileID)
@@ -263,12 +265,9 @@ extension SiteControlModel {
 
 /// What makes the pill and the popover redraw when a *setting* changes rather than the tab.
 ///
-/// ponytail: one bump off `UserDefaults.didChangeNotification` instead of a publisher in
-/// each of the five files that own a setting. Every per-site answer in Vane is a
-/// UserDefaults write, so this catches the modal camera prompt granting a permission from
-/// under the sidebar as well as the popover's own switches. Upgrade path if the notification
-/// ever becomes hot: an explicit `bump()` from each writer, which is already wired here for
-/// the extension toggles (they are not defaults-backed).
+/// One bump off `UserDefaults.didChangeNotification` catches persistent settings. Private
+/// media answers live in memory, so their modal prompt calls `bump()` explicitly. The
+/// popover's own actions also bump directly so their feedback is immediate.
 @MainActor final class SiteChanges: ObservableObject {
     static let shared = SiteChanges()
     @Published private(set) var revision = 0
@@ -298,8 +297,8 @@ extension SiteControlModel {
     static func act(_ id: SiteControlModel.RowID, on tab: Tab) {
         let host = host(of: tab)
         switch id {
-        case .camera:     cycle(.camera, host: host)
-        case .microphone: cycle(.microphone, host: host)
+        case .camera:     cycle(.camera, on: tab)
+        case .microphone: cycle(.microphone, on: tab)
         case .pictureInPicture: PictureInPicture.toggle(tab)
         case .zoom: Zoom.reset(tab)
         case .blocker: Blocker.setEnabled(!Blocker.enabled(for: tab.profileID), for: tab.profileID)
@@ -316,14 +315,15 @@ extension SiteControlModel {
 
     /// The permission row's own control is a picker; this is what a click on the row body
     /// does, so the keyboard and VoiceOver have a route that is not a menu.
-    private static func cycle(_ type: WKMediaCaptureType, host: String) {
-        let current = SitePermissions.effective(host: host, type: type)
-        set(type, to: current == nil ? true : (current == true ? false : nil), host: host)
+    private static func cycle(_ type: WKMediaCaptureType, on tab: Tab) {
+        guard let scope = SitePermissions.scope(for: tab) else { return }
+        let current = SitePermissions.effective(scope: scope, type: type)
+        set(type, to: current == nil ? true : (current == true ? false : nil), on: tab)
     }
 
-    static func set(_ type: WKMediaCaptureType, to answer: Bool?, host: String) {
-        guard !host.isEmpty else { return }
-        SitePermissions.set(host: host, type: type, answer: answer)
+    static func set(_ type: WKMediaCaptureType, to answer: Bool?, on tab: Tab) {
+        guard let scope = SitePermissions.scope(for: tab) else { return }
+        SitePermissions.set(scope: scope, type: type, answer: answer)
         SiteChanges.shared.bump()
     }
 
@@ -368,6 +368,7 @@ extension SiteControlModel {
     /// `example.com`. The alert says so; it is not something to do quietly.
     static func clearSiteData(host: String, tab: Tab) {
         guard !host.isEmpty else { return }
+        let permissionScope = SitePermissions.scope(for: tab)
         let alert = NSAlert()
         alert.messageText = "Clear the data “\(host)” has stored?"
         alert.informativeText = "Cookies, local storage and cached files for this site and its "
@@ -379,7 +380,7 @@ extension SiteControlModel {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        SitePermissions.reset(host: host)
+        if let permissionScope { SitePermissions.reset(scope: permissionScope) }
         Zoom.forget(host: host, profile: tab.profileID)
         // The header advertises both of these — "a certificate problem was accepted here",
         // and http that HTTPS-only was told to allow. Clearing a site cannot leave standing
@@ -639,7 +640,7 @@ struct SiteControlPopover: View {
                     .padding(.bottom, Look.inset)
             } else {
                 ForEach(model.rows) { row in
-                    SiteControlRow(row: row, tab: tab, host: model.host, contexts: contexts)
+                    SiteControlRow(row: row, tab: tab, contexts: contexts)
                 }
             }
         }
@@ -683,9 +684,6 @@ struct SiteControlPopover: View {
 private struct SiteControlRow: View {
     let row: SiteControlModel.Row
     let tab: Tab
-    /// Only for the permission picker, which names the site it is answering for. Every
-    /// other action reads the state it is flipping at click time — see `SiteControl.act`.
-    let host: String
     /// The extensions the popover indexed its rows against, taken once where the model was
     /// built. `.ext(i)` means `contexts[i]` and nothing else.
     let contexts: [WKWebExtensionContext]
@@ -827,7 +825,7 @@ private struct SiteControlRow: View {
             Picker("", selection: Binding(
                 get: { PermissionAnswer(answer) },
                 set: { SiteControl.set(row.id == .camera ? .camera : .microphone,
-                                       to: $0.value, host: host) })) {
+                                       to: $0.value, on: tab) })) {
                 ForEach(PermissionAnswer.allCases) { Text($0.title).tag($0) }
             }
             .labelsHidden().fixedSize().controlSize(.small)

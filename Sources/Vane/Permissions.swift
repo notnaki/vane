@@ -1,304 +1,315 @@
 import AppKit
 import WebKit
 
-/// Per-site camera and microphone permission. WebKit will not hand a page a media stream
-/// unless the app answers this; with no WKUIDelegate implementation the default is
-/// `.prompt`, which WebKit resolves as "ask nobody, deny".
-///
-/// ponytail: a UserDefaults bool per (host, kind) and a modal NSAlert. No permission
-/// manager UI, no expiry, no per-tab "allow once" — the answer is remembered forever until
-/// `reset` is called. Upgrade path: a Site Settings sheet reading the same keys.
+/// Camera and microphone answers are scoped to a Web origin and profile. Private tab
+/// answers live in memory only and disappear when the tab closes.
 @MainActor enum SitePermissions {
-
-    /// Swapped out under `check()` so assertions never touch the user's real preferences.
     private static var defaults: UserDefaults = .vane
+    private static var privateAnswers: [UUID: [String: Bool]] = [:]
+    private static let prefix = "sitePermission.v2."
 
-    /// nonisolated so `parse` can be, and `parse` is nonisolated so the key format can be
-    /// asserted anywhere. An immutable string is safe from any thread.
-    nonisolated private static let prefix = "sitePermission."
+    struct Scope: Hashable, Sendable {
+        let scheme: String
+        let host: String
+        let port: Int
+        let profileID: UUID
+        let privateTabID: UUID?
+
+        init?(scheme: String, host: String, port: Int, profileID: UUID,
+              privateTabID: UUID? = nil) {
+            let scheme = scheme.lowercased(), host = host.lowercased()
+            guard (scheme == "https" || scheme == "http"), !host.isEmpty,
+                  (0...65535).contains(port) else { return nil }
+            self.scheme = scheme
+            self.host = host
+            self.port = port == 0 ? (scheme == "https" ? 443 : 80) : port
+            self.profileID = profileID
+            self.privateTabID = privateTabID
+        }
+
+        init?(url: URL?, profileID: UUID, privateTabID: UUID? = nil) {
+            guard let url, let scheme = url.scheme, let host = url.host else { return nil }
+            self.init(scheme: scheme, host: host, port: url.port ?? 0,
+                      profileID: profileID, privateTabID: privateTabID)
+        }
+
+        var origin: String {
+            let hostname = host.contains(":") ? "[\(host)]" : host
+            let defaultPort = scheme == "https" ? 443 : 80
+            return "\(scheme)://\(hostname)" + (port == defaultPort ? "" : ":\(port)")
+        }
+    }
+
+    static func scope(for tab: Tab) -> Scope? {
+        Scope(url: tab.currentURL, profileID: tab.profileID,
+              privateTabID: tab.isPrivate ? tab.id : nil)
+    }
 
     private static func label(_ type: WKMediaCaptureType) -> String {
         switch type {
-        case .camera: return "camera"
-        case .microphone: return "microphone"
-        case .cameraAndMicrophone: return "cameraAndMicrophone"
-        @unknown default: return "unknown"
+        case .camera: "camera"
+        case .microphone: "microphone"
+        case .cameraAndMicrophone: "cameraAndMicrophone"
+        @unknown default: "unknown"
         }
     }
 
     private static func phrase(_ type: WKMediaCaptureType) -> String {
         switch type {
-        case .camera: return "use your camera"
-        case .microphone: return "use your microphone"
-        case .cameraAndMicrophone: return "use your camera and microphone"
-        @unknown default: return "use a device"
+        case .camera: "use your camera"
+        case .microphone: "use your microphone"
+        case .cameraAndMicrophone: "use your camera and microphone"
+        @unknown default: "use a device"
         }
     }
 
-    /// ponytail: `cameraAndMicrophone` is its own key rather than the intersection of the
-    /// two single grants, so a site that asked for both separately still gets asked once
-    /// for the pair. Rare enough not to pay for.
-    private static func key(host: String, type: WKMediaCaptureType) -> String {
-        prefix + label(type) + "." + host.lowercased()
+    private static func key(scope: Scope, type: WKMediaCaptureType) -> String {
+        prefix + scope.profileID.uuidString.lowercased() + "." + label(type) + "."
+            + scope.scheme + "." + String(scope.port) + "." + scope.host
     }
 
-    /// Remembered answer, or nil if this pair has never been decided.
-    static func remembered(host: String, type: WKMediaCaptureType) -> Bool? {
-        defaults.object(forKey: key(host: host, type: type)) as? Bool
+    static func remembered(scope: Scope, type: WKMediaCaptureType) -> Bool? {
+        let name = key(scope: scope, type: type)
+        if let tabID = scope.privateTabID { return privateAnswers[tabID]?[name] }
+        return defaults.object(forKey: name) as? Bool
     }
 
-    static func remember(host: String, type: WKMediaCaptureType, allow: Bool) {
-        defaults.set(allow, forKey: key(host: host, type: type))
+    static func remember(scope: Scope, type: WKMediaCaptureType, allow: Bool) {
+        let name = key(scope: scope, type: type)
+        if let tabID = scope.privateTabID { privateAnswers[tabID, default: [:]][name] = allow }
+        else { defaults.set(allow, forKey: name) }
     }
 
-    /// What this site may do with one device, counting the answers that cover it.
-    ///
-    /// It reads both ways, because a page asks whichever way it likes. A site that once
-    /// said yes to "camera and microphone" *has* said yes to the camera, and the Site
-    /// Control Center would be lying if it showed that row as unanswered. And a site
-    /// answered device by device — which is the only way the panel can answer it — has
-    /// been answered about the pair too: allowed only if both halves are, so one Block is
-    /// enough to refuse `getUserMedia({ video, audio })` without asking again.
-    static func effective(host: String, type: WKMediaCaptureType) -> Bool? {
-        if let own = remembered(host: host, type: type) { return own }
-        guard type == .cameraAndMicrophone else {
-            return remembered(host: host, type: .cameraAndMicrophone)
+    private static func forget(scope: Scope, type: WKMediaCaptureType) {
+        let name = key(scope: scope, type: type)
+        if let tabID = scope.privateTabID { privateAnswers[tabID]?.removeValue(forKey: name) }
+        else { defaults.removeObject(forKey: name) }
+    }
+
+    /// A Block covering a requested device wins even against an older pair Allow.
+    static func effective(scope: Scope, type: WKMediaCaptureType) -> Bool? {
+        let pair = remembered(scope: scope, type: .cameraAndMicrophone)
+        let camera = remembered(scope: scope, type: .camera)
+        let microphone = remembered(scope: scope, type: .microphone)
+        switch type {
+        case .camera:
+            if camera == false || pair == false { return false }
+            return camera ?? pair
+        case .microphone:
+            if microphone == false || pair == false { return false }
+            return microphone ?? pair
+        case .cameraAndMicrophone:
+            if pair == false || camera == false || microphone == false { return false }
+            if pair == true { return true }
+            return camera == true && microphone == true ? true : nil
+        @unknown default: return nil
         }
-        guard let camera = remembered(host: host, type: .camera),
-              let microphone = remembered(host: host, type: .microphone) else { return nil }
-        return camera && microphone
     }
 
-    /// The Site Control Center's three answers: Allow, Block, or nil for "ask me again".
-    ///
-    /// The pair grant is split into two single answers on the way through. It is its own
-    /// key, so leaving it in place would let a long-forgotten yes-to-both quietly outvote a
-    /// Block chosen here the next time the page asked for both at once — and simply
-    /// deleting it would silently revoke the *other* device's answer, which the user did
-    /// not touch.
-    static func set(host: String, type: WKMediaCaptureType, answer: Bool?) {
-        guard !host.isEmpty else { return }
-        if let pair = remembered(host: host, type: .cameraAndMicrophone) {
+    /// Preserve the untouched device's pair answer when the panel changes one device.
+    static func set(scope: Scope, type: WKMediaCaptureType, answer: Bool?) {
+        if let pair = remembered(scope: scope, type: .cameraAndMicrophone) {
             for kind in [WKMediaCaptureType.camera, .microphone]
-            where remembered(host: host, type: kind) == nil {
-                remember(host: host, type: kind, allow: pair)
+            where remembered(scope: scope, type: kind) == nil {
+                remember(scope: scope, type: kind, allow: pair)
             }
-            defaults.removeObject(forKey: key(host: host, type: .cameraAndMicrophone))
+            forget(scope: scope, type: .cameraAndMicrophone)
         }
-        if let answer { remember(host: host, type: type, allow: answer) }
-        else { defaults.removeObject(forKey: key(host: host, type: type)) }
+        if let answer { remember(scope: scope, type: type, allow: answer) }
+        else { forget(scope: scope, type: type) }
     }
 
-    /// The whole decision for `WKUIDelegate`. Returns `.grant`/`.deny` only — never
-    /// `.prompt`, which would hand the question back to WebKit, which has nowhere to put it.
-    static func decide(origin: WKSecurityOrigin, type: WKMediaCaptureType) async -> WKPermissionDecision {
-        let host = origin.host
-        // A blank host means a file:// or opaque origin — there is nothing to remember an
-        // answer against and nothing to name in the prompt, so refuse rather than mislead.
-        guard !host.isEmpty else { return .deny }
-        if let known = effective(host: host, type: type) { return known ? .grant : .deny }
-
+    static func decide(origin: WKSecurityOrigin, type: WKMediaCaptureType,
+                       profileID: UUID, privateTabID: UUID?) async -> WKPermissionDecision {
+        guard let scope = Scope(scheme: origin.protocol, host: origin.host, port: origin.port,
+                                profileID: profileID, privateTabID: privateTabID) else { return .deny }
+        if let known = effective(scope: scope, type: type) { return known ? .grant : .deny }
         let alert = NSAlert()
-        alert.messageText = "Allow “\(host)” to \(phrase(type))?"
-        alert.informativeText = "Vane will remember your answer for this site."
+        alert.messageText = "Allow “\(scope.origin)” to \(phrase(type))?"
+        alert.informativeText = privateTabID == nil
+            ? "Vane will remember your answer for this site."
+            : "Vane will remember your answer until this private tab closes."
         alert.addButton(withTitle: "Allow")
         alert.addButton(withTitle: "Don’t Allow")
-        // ponytail: app-modal, not a sheet — the delegate callback doesn't carry the tab,
-        // so there is no window to attach to without threading one through.
         let allowed = alert.runModal() == .alertFirstButtonReturn
-        remember(host: host, type: type, allow: allowed)
+        remember(scope: scope, type: type, allow: allowed)
+        SiteChanges.shared.bump()
         return allowed ? .grant : .deny
     }
 
-    /// Exact keys rather than a prefix sweep: a suffix match would take `sub.example.com`
-    /// down with `example.com`, and permission is per-origin, not per-domain.
-    static func reset(host: String) {
+    static func reset(scope: Scope) {
         for type in [WKMediaCaptureType.camera, .microphone, .cameraAndMicrophone] {
-            defaults.removeObject(forKey: key(host: host, type: type))
+            forget(scope: scope, type: type)
         }
     }
 
-    /// One remembered answer, for the Privacy pane's summary.
+    static func forgetPrivate(tabID: UUID) { privateAnswers.removeValue(forKey: tabID) }
+
     struct Grant: Identifiable, Equatable, Sendable {
-        let host: String
-        /// "Camera", "Microphone", "Camera and microphone" — the words, not the enum.
+        let scope: Scope
         let what: String
         let allowed: Bool
-        var id: String { what + "." + host }
+        var id: String { scope.origin + "." + what }
     }
 
-    /// Which key names which grant, or nil when the key is not one of ours. Pure, so the
-    /// summary's parsing is provable — and it is parsing, since the answers are stored one
-    /// key per (site, device) rather than as a list.
-    nonisolated static func parse(key: String) -> (what: String, host: String)? {
+    /// Old host-only keys cannot safely map to one origin or profile, so they are ignored.
+    private static func parse(key: String) -> (scope: Scope, what: String)? {
         guard key.hasPrefix(prefix) else { return nil }
-        let rest = key.dropFirst(prefix.count)
-        guard let dot = rest.firstIndex(of: "."), dot != rest.startIndex else { return nil }
-        let kind = String(rest[..<dot]), host = String(rest[rest.index(after: dot)...])
-        guard !host.isEmpty else { return nil }
-        switch kind {
-        case "camera":              return ("Camera", host)
-        case "microphone":          return ("Microphone", host)
-        case "cameraAndMicrophone": return ("Camera and microphone", host)
-        default:                    return nil
+        let fields = key.dropFirst(prefix.count)
+            .split(separator: ".", maxSplits: 4, omittingEmptySubsequences: false)
+        guard fields.count == 5, let profileID = UUID(uuidString: String(fields[0])),
+              let port = Int(fields[3]),
+              let scope = Scope(scheme: String(fields[2]), host: String(fields[4]),
+                                port: port, profileID: profileID) else { return nil }
+        let what: String
+        switch fields[1] {
+        case "camera": what = "Camera"
+        case "microphone": what = "Microphone"
+        case "cameraAndMicrophone": what = "Camera and microphone"
+        default: return nil
         }
+        return (scope, what)
     }
 
-    /// Every site that has been answered, host order, for the Privacy pane.
-    static func all() -> [Grant] {
-        defaults.dictionaryRepresentation().compactMap { key, value in
-            guard let (what, host) = parse(key: key), let allowed = value as? Bool else { return nil }
-            return Grant(host: host, what: what, allowed: allowed)
+    static func all(profileID: UUID) -> [Grant] {
+        defaults.dictionaryRepresentation().compactMap { name, value in
+            guard let parsed = parse(key: name), parsed.scope.profileID == profileID,
+                  let allowed = value as? Bool else { return nil }
+            return Grant(scope: parsed.scope, what: parsed.what, allowed: allowed)
         }
         .sorted { $0.id < $1.id }
     }
 
-    static func resetAll() {
-        for k in defaults.dictionaryRepresentation().keys where k.hasPrefix(prefix) {
-            defaults.removeObject(forKey: k)
+    /// A global reset also removes old host-only keys. Private answers are never persisted.
+    static func resetAll(profileID: UUID? = nil) {
+        for name in defaults.dictionaryRepresentation().keys where name.hasPrefix("sitePermission.") {
+            if let profileID, parse(key: name)?.scope.profileID != profileID { continue }
+            defaults.removeObject(forKey: name)
         }
+        if let profileID {
+            for tabID in Array(privateAnswers.keys) {
+                privateAnswers[tabID] = privateAnswers[tabID]?.filter {
+                    parse(key: $0.key)?.scope.profileID != profileID
+                }
+            }
+        } else { privateAnswers.removeAll() }
     }
 
     // MARK: - check
-
-    /// Runs against a throwaway defaults suite that is deleted afterwards; the user's real
-    /// preferences are never read or written.
     static func check() -> [(String, Bool)] {
         let suite = "vane.check.\(ProcessInfo.processInfo.processIdentifier)"
         guard let scratch = UserDefaults(suiteName: suite) else {
             return [("scratch defaults suite is available", false)]
         }
-        let real = defaults
+        let real = defaults, oldPrivate = privateAnswers
         defaults = scratch
+        privateAnswers = [:]
         defer {
             defaults = real
+            privateAnswers = oldPrivate
             UserDefaults.dropScratchSuite(suite)
         }
-
+        let profile = UUID(), otherProfile = UUID(), privateTab = UUID()
+        let secure = Scope(url: URL(string: "https://scoped.example/"), profileID: profile)!
+        let insecure = Scope(url: URL(string: "http://scoped.example/"), profileID: profile)!
+        let alternatePort = Scope(url: URL(string: "https://scoped.example:8443/"), profileID: profile)!
+        let other = Scope(url: URL(string: "https://scoped.example/"), profileID: otherProfile)!
+        let privateScope = Scope(url: URL(string: "https://scoped.example/"),
+                                 profileID: profile, privateTabID: privateTab)!
         var results: [(String, Bool)] = []
-        results.append(("an undecided site is not remembered",
-                        remembered(host: "example.com", type: .camera) == nil))
+        results.append(("an undecided origin is Ask", effective(scope: secure, type: .camera) == nil))
+        remember(scope: secure, type: .camera, allow: true)
+        results.append(("an Allow round-trips", remembered(scope: secure, type: .camera) == true))
+        results.append(("host matching ignores case",
+                        remembered(scope: Scope(url: URL(string: "https://SCOPED.example/"),
+                                                profileID: profile)!, type: .camera) == true))
+        results.append(("a grant stays on its URL scheme",
+                        remembered(scope: insecure, type: .camera) == nil))
+        results.append(("a grant stays on its URL port",
+                        remembered(scope: alternatePort, type: .camera) == nil))
+        results.append(("a grant stays in its profile",
+                        remembered(scope: other, type: .camera) == nil))
+        results.append(("an ordinary grant is not reused in a private tab",
+                        remembered(scope: privateScope, type: .camera) == nil))
+        remember(scope: privateScope, type: .microphone, allow: true)
+        results.append(("a private grant stays in memory and in its tab",
+                        remembered(scope: privateScope, type: .microphone) == true
+                        && remembered(scope: secure, type: .microphone) == nil
+                        && remembered(scope: Scope(url: URL(string: "https://scoped.example/"),
+                                                   profileID: profile, privateTabID: UUID())!,
+                                      type: .microphone) == nil
+                        && !all(profileID: profile).contains { $0.what == "Microphone" }))
+        forgetPrivate(tabID: privateTab)
+        results.append(("closing a private tab forgets its grants",
+                        remembered(scope: privateScope, type: .microphone) == nil))
+        results.append(("default and explicit HTTPS ports are the same origin",
+                        Scope(url: URL(string: "https://scoped.example:443"), profileID: profile) == secure))
+        results.append(("opaque and file origins cannot be remembered",
+                        Scope(url: URL(string: "file:///tmp/x"), profileID: profile) == nil))
+        scratch.set(true, forKey: "sitePermission.camera.legacy.example")
+        let legacy = Scope(url: URL(string: "https://legacy.example"), profileID: profile)!
+        results.append(("legacy host-only Allows do not authorize an origin",
+                        effective(scope: legacy, type: .camera) == nil))
 
-        remember(host: "example.com", type: .camera, allow: true)
-        results.append(("an allow round-trips",
-                        remembered(host: "example.com", type: .camera) == true))
-        results.append(("host matching is case-insensitive",
-                        remembered(host: "EXAMPLE.com", type: .camera) == true))
-        results.append(("camera and microphone are remembered separately",
-                        remembered(host: "example.com", type: .microphone) == nil))
-        results.append(("the pair is its own permission",
-                        remembered(host: "example.com", type: .cameraAndMicrophone) == nil))
-        results.append(("one site's answer does not leak to another",
-                        remembered(host: "evil.example", type: .camera) == nil))
-
-        remember(host: "example.com", type: .microphone, allow: false)
-        results.append(("a deny round-trips as false, not as unset",
-                        remembered(host: "example.com", type: .microphone) == false))
-
-        remember(host: "other.example", type: .camera, allow: true)
-        reset(host: "example.com")
-        results.append(("reset(host:) forgets every kind for that host",
-                        remembered(host: "example.com", type: .camera) == nil
-                        && remembered(host: "example.com", type: .microphone) == nil))
-        results.append(("reset(host:) leaves other hosts alone",
-                        remembered(host: "other.example", type: .camera) == true))
-        // A prefix/suffix wipe would take neighbouring hosts with it.
-        remember(host: "not-other.example", type: .camera, allow: true)
-        remember(host: "sub.other.example", type: .camera, allow: true)
-        reset(host: "other.example")
-        results.append(("reset(host:) does not eat a host that merely ends the same way",
-                        remembered(host: "not-other.example", type: .camera) == true))
-        results.append(("reset(host:) does not eat a subdomain",
-                        remembered(host: "sub.other.example", type: .camera) == true))
-
-        // The Privacy pane reads the answers back out of the keys, so the keys have to
-        // parse — and nothing that is not one of ours may ever parse.
-        results.append(("a camera key names its site",
-                        parse(key: "sitePermission.camera.example.com").map { $0 == ("Camera", "example.com") } == true))
-        results.append(("a microphone key names its site",
-                        parse(key: "sitePermission.microphone.example.com")?.what == "Microphone"))
-        results.append(("the pair reads as the pair",
-                        parse(key: "sitePermission.cameraAndMicrophone.example.com")?.what
-                            == "Camera and microphone"))
-        results.append(("a host with dots survives the parse",
-                        parse(key: "sitePermission.camera.sub.example.co.uk")?.host
-                            == "sub.example.co.uk"))
-        results.append(("somebody else's preference is not a permission",
-                        parse(key: "homepage") == nil && parse(key: "httpsOnly") == nil))
-        results.append(("a key with no host is not a permission",
-                        parse(key: "sitePermission.camera.") == nil))
-        results.append(("a key with a kind we do not know is not a permission",
-                        parse(key: "sitePermission.location.example.com") == nil))
-
-        remember(host: "listed.example", type: .camera, allow: true)
-        remember(host: "denied.example", type: .microphone, allow: false)
-        let listed = all()
-        results.append(("every answered site is listed",
-                        listed.contains { $0.host == "listed.example" }
-                        && listed.contains { $0.host == "denied.example" }))
-        results.append(("...in a stable order, so the pane does not shuffle",
-                        listed.map(\.id) == listed.map(\.id).sorted()))
-        results.append(("...with what it was answered about, and what the answer was",
-                        listed.contains { $0.host == "denied.example" && $0.what == "Microphone"
-                                          && $0.allowed == false }))
-
-        // The Site Control Center's three-way answer, and the pair grant it has to unpick.
+        reset(scope: secure)
+        remember(scope: secure, type: .cameraAndMicrophone, allow: true)
+        results.append(("a pair Allow covers either device alone",
+                        effective(scope: secure, type: .camera) == true
+                        && effective(scope: secure, type: .microphone) == true))
+        remember(scope: secure, type: .cameraAndMicrophone, allow: false)
+        results.append(("a pair Block refuses either device alone",
+                        effective(scope: secure, type: .camera) == false
+                        && effective(scope: secure, type: .microphone) == false))
+        reset(scope: secure)
+        remember(scope: secure, type: .camera, allow: true)
+        remember(scope: secure, type: .cameraAndMicrophone, allow: true)
+        remember(scope: secure, type: .microphone, allow: false)
+        results.append(("a microphone Block beats an explicit pair Allow",
+                        effective(scope: secure, type: .cameraAndMicrophone) == false))
+        remember(scope: secure, type: .microphone, allow: true)
+        remember(scope: secure, type: .camera, allow: false)
+        results.append(("a camera Block beats an explicit pair Allow",
+                        effective(scope: secure, type: .cameraAndMicrophone) == false))
+        reset(scope: secure)
+        set(scope: secure, type: .camera, answer: true)
+        set(scope: secure, type: .microphone, answer: true)
+        results.append(("two single Allows grant the pair",
+                        effective(scope: secure, type: .cameraAndMicrophone) == true))
+        set(scope: secure, type: .camera, answer: false)
+        results.append(("a single Block refuses the pair",
+                        effective(scope: secure, type: .cameraAndMicrophone) == false))
+        set(scope: secure, type: .camera, answer: nil)
+        results.append(("Ask leaves a partially answered pair unanswered",
+                        effective(scope: secure, type: .cameraAndMicrophone) == nil))
+        remember(scope: secure, type: .cameraAndMicrophone, allow: true)
+        set(scope: secure, type: .camera, answer: false)
+        results.append(("panel Block splits and replaces a pair Allow",
+                        remembered(scope: secure, type: .cameraAndMicrophone) == nil
+                        && effective(scope: secure, type: .camera) == false
+                        && effective(scope: secure, type: .microphone) == true))
+        let listed = all(profileID: profile)
+        results.append(("Privacy lists only this profile and the full origin",
+                        listed.contains { $0.scope.origin == "https://scoped.example" && !$0.allowed }
+                        && all(profileID: otherProfile).isEmpty))
+        results.append(("Privacy grants have stable order and device labels",
+                        listed.map(\.id) == listed.map(\.id).sorted()
+                        && listed.contains { $0.what == "Microphone" }))
+        results.append(("malformed permission keys are ignored",
+                        parse(key: "sitePermission.v2.no-uuid.camera.https.443.example.com") == nil
+                        && parse(key: "sitePermission.v2.\(profile).location.https.443.example.com") == nil))
+        remember(scope: alternatePort, type: .camera, allow: true)
+        reset(scope: secure)
+        results.append(("reset leaves other origins alone",
+                        remembered(scope: alternatePort, type: .camera) == true))
+        remember(scope: other, type: .camera, allow: true)
+        resetAll(profileID: profile)
+        results.append(("profile reset leaves other profiles alone",
+                        remembered(scope: other, type: .camera) == true
+                        && all(profileID: profile).isEmpty))
         resetAll()
-        set(host: "panel.example", type: .camera, answer: true)
-        results.append(("Allow from the site panel round-trips",
-                        remembered(host: "panel.example", type: .camera) == true))
-        set(host: "panel.example", type: .camera, answer: false)
-        results.append(("Block overwrites an Allow rather than adding to it",
-                        remembered(host: "panel.example", type: .camera) == false))
-        set(host: "panel.example", type: .camera, answer: nil)
-        results.append(("Ask forgets the answer, so the site is asked again",
-                        remembered(host: "panel.example", type: .camera) == nil))
-        results.append(("…and only that one, not the whole site",
-                        { set(host: "panel.example", type: .microphone, answer: true)
-                          set(host: "panel.example", type: .camera, answer: nil)
-                          return remembered(host: "panel.example", type: .microphone) == true }()))
-
-        resetAll()
-        remember(host: "pair.example", type: .cameraAndMicrophone, allow: true)
-        results.append(("a pair grant answers for the camera on its own",
-                        effective(host: "pair.example", type: .camera) == true))
-        results.append(("…and for the microphone",
-                        effective(host: "pair.example", type: .microphone) == true))
-        results.append(("…but a single answer beats it",
-                        { remember(host: "pair.example", type: .camera, allow: false)
-                          return effective(host: "pair.example", type: .camera) == false }()))
-        resetAll()
-        remember(host: "pair.example", type: .cameraAndMicrophone, allow: true)
-        set(host: "pair.example", type: .camera, answer: false)
-        results.append(("blocking one device splits the pair instead of leaving it to outvote",
-                        remembered(host: "pair.example", type: .cameraAndMicrophone) == nil))
-        results.append(("…the blocked device is blocked",
-                        effective(host: "pair.example", type: .camera) == false))
-        results.append(("…and the untouched one keeps the yes it was given",
-                        effective(host: "pair.example", type: .microphone) == true))
-        resetAll()
-        set(host: "both.example", type: .camera, answer: true)
-        set(host: "both.example", type: .microphone, answer: true)
-        results.append(("two separate Allows answer for the pair, so it is not asked again",
-                        effective(host: "both.example", type: .cameraAndMicrophone) == true))
-        set(host: "both.example", type: .microphone, answer: false)
-        results.append(("…and one Block refuses the pair rather than granting half of it",
-                        effective(host: "both.example", type: .cameraAndMicrophone) == false))
-        set(host: "both.example", type: .microphone, answer: nil)
-        results.append(("…while one unanswered device leaves the pair unanswered",
-                        effective(host: "both.example", type: .cameraAndMicrophone) == nil))
-        results.append(("an explicit pair answer still beats what the singles add up to",
-                        { remember(host: "both.example", type: .microphone, allow: true)
-                          remember(host: "both.example", type: .cameraAndMicrophone, allow: false)
-                          return effective(host: "both.example", type: .cameraAndMicrophone) == false }()))
-
-        results.append(("a site with no host cannot be answered for",
-                        { set(host: "", type: .camera, answer: true); return all().allSatisfy { !$0.host.isEmpty } }()))
-
-        resetAll()
-        results.append(("resetAll forgets everything",
-                        remembered(host: "not-other.example", type: .camera) == nil))
-        results.append(("...and the summary empties with it", all().isEmpty))
+        results.append(("global reset removes current and legacy grants",
+                        all(profileID: otherProfile).isEmpty
+                        && scratch.object(forKey: "sitePermission.camera.legacy.example") == nil))
         return results
     }
 }
