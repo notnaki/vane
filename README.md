@@ -184,7 +184,7 @@ The tracked engineering work is in
 | [`Sources/Vane/Profiles.swift`](Sources/Vane/Profiles.swift) | Profile and Space state, paths, and isolation. |
 | [`Sources/Vane/Store.swift`](Sources/Vane/Store.swift) | SQLite history and bookmarks. |
 | [`Sources/Vane/Passwords.swift`](Sources/Vane/Passwords.swift) | Keychain integration, autofill, and the selfcheck runner. |
-| [`Sources/Vane/Updater.swift`](Sources/Vane/Updater.swift) | Release checks and installation. |
+| [`Sources/Vane/Updater.swift`](Sources/Vane/Updater.swift) | Release checks and authenticated XPC installation; the signed installer checks Gatekeeper and removes update quarantine before the locked, crash-recoverable swap. |
 | [`scripts/`](scripts/) | Browser smoke, release-candidate, and packaging checks. |
 
 ## License

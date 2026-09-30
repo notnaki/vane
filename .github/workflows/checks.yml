@@ -32,3 +32,6 @@ jobs:
 
       - name: DMG package
         run: ./scripts/test-build-dmg.sh
+
+      - name: Update installer rejection and quarantine cleanup
+        run: bash scripts/test-update-installer.sh Vane.app --unsigned
