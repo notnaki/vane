@@ -394,19 +394,49 @@ import WebKit
             }
             let firstStore = Windows.open(profile: first, space: firstSpace)
             guard let window = firstStore.window else { throw Failure("profile hop has no window") }
+            let revision = firstStore.spaceRevision
+            let imported = manager.createSpace(name: "Imported Work", in: second.id)
+            ArcImport.refreshSpaces(afterImporting: [second.id])
+            try require(firstStore.spaceRevision > revision
+                        && firstStore.strip.contains(where: { $0.id == imported.id }),
+                        "a foreign Arc import refreshes the open window's global selector")
+            let importedRevision = firstStore.spaceRevision
+            ArcImport.refreshSpaces(afterImporting: [])
+            try require(firstStore.spaceRevision == importedRevision,
+                        "an import with no new Spaces leaves selectors unchanged")
+            manager.deleteSpace(imported.id, in: second.id)
             firstStore.newTab(firstURL)
             firstStore.palette = nil
+            let extensionDirectory = Store.directory.appendingPathComponent("extension-window-fixture")
+            try FileManager.default.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)
+            try Data(#"{"manifest_version":3,"name":"Window fixture","version":"1"}"#.utf8)
+                .write(to: extensionDirectory.appendingPathComponent("manifest.json"))
+            let windowExtension = try await WKWebExtension(resourceBaseURL: extensionDirectory)
+            let windowContext = WKWebExtensionContext(for: windowExtension)
+            let firstHost = firstStore.extensions
+            func extensionWindows(_ host: ExtensionHost) -> [ExtWindow] {
+                host.webExtensionController(host.controller, openWindowsFor: windowContext)
+                    .compactMap { $0 as? ExtWindow }
+            }
+            try require(extensionWindows(firstHost).contains(where: { $0.store === firstStore }),
+                        "extensions list the profile's visible window")
             firstStore.switchTo(space: secondSpace)
             guard let secondStore = Windows.current(in: second.id),
                   secondStore.window === window else {
                 throw Failure("cross-profile Space switch did not keep the same window")
             }
+            try require(!extensionWindows(firstHost).contains(where: { $0.store === firstStore })
+                        && extensionWindows(secondStore.extensions).contains(where: { $0.store === secondStore }),
+                        "extensions exclude a profile parked behind another profile's window")
             secondStore.newTab(secondURL)
             secondStore.palette = nil
             guard let secondTab = secondStore.tabs.last else { throw Failure("second profile has no tab") }
             try await loaded(secondTab, path: "/b", title: "Fixture B")
 
             _ = Windows.switchTo(profile: first)
+            try require(extensionWindows(firstHost).contains(where: { $0.store === firstStore })
+                        && !extensionWindows(secondStore.extensions).contains(where: { $0.store === secondStore }),
+                        "extensions list the returning profile's window again")
             try require(firstStore.window === window && secondStore.isParked,
                         "Profiles menu returns to a parked profile in the same window")
             try require(manager.spaces(for: second.id).first?.tabURLs.contains(secondURL) == true,
@@ -526,6 +556,20 @@ import WebKit
             try require(secondStore.currentSpaceID == keep.id,
                         "deleting a foreign Space resolves its parked owner to a surviving Space")
 
+            let stashedDelete = manager.createSpace(name: "Delete hidden Space", in: second.id)
+            secondStore.switchTo(space: stashedDelete)
+            secondStore.newTab(firstURL)
+            guard let stashedTab = secondStore.tabs.last else { throw Failure("hidden deletion has no tab") }
+            try await loaded(stashedTab, path: "/a", title: "Fixture A")
+            try require(secondStore.saveCurrentSpace(), "the hidden deletion fixture is saved")
+            secondStore.switchTo(space: keep)
+            stashedTab.web.load(URLRequest(url: formURL))
+            try await loaded(stashedTab, path: "/form", title: "Fixture Form")
+            try require(deleteSpaceConfirmed(stashedDelete, in: firstStore)
+                        && Archive.shared(for: second.id).entries.contains {
+                            $0.url == formURL.absoluteString
+                        }, "deleting a foreign Space archives navigation in its live stash")
+
             // This profile has no open store at all. Session.save() skips such profiles, so
             // the move must remove an old row naming its Space from that profile's file.
             let closedProfile = manager.create(name: "Browsercheck Closed")
@@ -549,6 +593,41 @@ import WebKit
                     && Session.decodeSelected($0) == [selectedAfter]
             } == true, "moving from a closed profile clears only its Space's session row")
 
+            // Delete must prune a closed profile's snapshot too, or restoring it would
+            // reopen archived tabs in the surviving Space.
+            var closedDelete = manager.createSpace(name: "Delete from closed profile", in: closedProfile.id)
+            closedDelete.tabURLs = [secondURL]
+            try require(manager.updateSpace(closedDelete), "the closed deletion fixture is saved")
+            guard let deleteData = Session.encode([[staleEntry], [keptEntry]],
+                                                  spaces: [closedDelete.id.uuidString,
+                                                           closedSpare.id.uuidString],
+                                                  selected: [UUID().uuidString,
+                                                             selectedAfter.uuidString])
+            else { throw Failure("closed deletion session fixture could not encode") }
+            try deleteData.write(to: closedSession)
+            try require(deleteSpaceConfirmed(closedDelete, in: firstStore),
+                        "a foreign Space can be deleted while its profile has no open store")
+            try require((try? Data(contentsOf: closedSession)).map {
+                Session.decodeSpaces($0) == [closedSpare.id]
+                    && Session.decode($0).map { $0.map(\.url) } == [[firstURL.absoluteString]]
+                    && Session.decodeSelected($0) == [selectedAfter]
+            } == true, "deleting from a closed profile clears only its Space's session row")
+
+            let survivingSession = try Data(contentsOf: closedSession)
+            try require(!deleteSpaceConfirmed(closedSpare, in: firstStore)
+                        && (try? Data(contentsOf: closedSession)) == survivingSession,
+                        "refusing a profile's last Space preserves its saved session")
+            let blockedDelete = manager.createSpace(name: "Blocked deletion", in: closedProfile.id)
+            let malformedSession = Data("unreadable session fixture".utf8)
+            try malformedSession.write(to: closedSession)
+            let archiveCount = Archive.shared(for: closedProfile.id).entries.count
+            try require(!deleteSpaceConfirmed(blockedDelete, in: firstStore)
+                        && manager.spaces(for: closedProfile.id).contains(where: { $0.id == blockedDelete.id })
+                        && Archive.shared(for: closedProfile.id).entries.count == archiveCount
+                        && (try? Data(contentsOf: closedSession)) == malformedSession,
+                        "a session prune failure keeps the Space and archive unchanged")
+            try survivingSession.write(to: closedSession)
+
             // The other move path starts on the Space being moved and hops the window into
             // its new profile. Its immediate session write must keep the rebuilt Today tab.
             guard let returning = manager.spaces(for: first.id).first(where: { $0.id == secondSpace.id })
@@ -570,6 +649,9 @@ import WebKit
             } == true, "moving the shown Space clears its former profile's session")
 
             window.performClose(nil)
+            try require(!extensionWindows(firstHost).contains(where: { $0.store === firstStore })
+                        && !extensionWindows(secondStore.extensions).contains(where: { $0.store === secondStore }),
+                        "extensions no longer list either profile after the hopped window closes")
             try require(!TabStore.all.contains(where: { $0 === firstStore || $0 === secondStore }),
                         "closing a hopped window removes both of its profile stores")
             window.contentView = nil

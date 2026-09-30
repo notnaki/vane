@@ -556,6 +556,7 @@ extension VaneWindow {
         // A link opened from a floating page may need its first ordinary window, but
         // must leave the source window key just like a background tab does.
         if focus { window.makeKeyAndOrderFront(nil) } else { window.orderBack(nil) }
+        store.extensions.sync()
         return store
     }
 
@@ -650,6 +651,7 @@ extension VaneWindow {
         arriving.resolveStaleSpace()
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
         arriving.applySpaceAppearance()
+        store.extensions.sync()
         arriving.extensions.sync()
         // The profile is in the window's title because there is otherwise nothing on screen
         // that says which set of logins the page is using. See `open`.
@@ -715,6 +717,7 @@ extension VaneWindow {
                     one.tabs.forEach { $0.tearDown() }
                     one.dropStashes()
                     TabStore.all.removeAll { $0 === one }
+                    one.extensions.sync()
                     // After the removal, so it can see whether this was the profile's last
                     // window: the live folders' timer must not outlive the sidebar drawing
                     // them.

@@ -2301,8 +2301,24 @@ private struct SpaceMenu: View {
 /// prove that a parked profile's live navigation is archived before the Space disappears.
 @discardableResult
 @MainActor func deleteSpaceConfirmed(_ space: Space, in store: TabStore) -> Bool {
+    guard ProfileManager.shared.spaces(for: space.profileID).count > 1 else { return false }
     let owners = storesShowing(space)
     guard saveSpaces(in: owners, reportingIn: store) else { return false }
+    // A hidden Space can still navigate in a stash. Archive its live snapshot when no
+    // store is showing it, before deletion releases the stash.
+    if owners.isEmpty {
+        for owner in TabStore.all where owner.profileID == space.profileID
+            && !owner.saveStashedSpace(space.id) {
+            Toasts.show("Could not save Space", in: store)
+            return false
+        }
+    }
+    // Closed profiles are skipped by Session.save. Remove the old row before archiving
+    // its tabs, so a later restore cannot reopen them inside a surviving Space.
+    guard Session.forget(space: space.id, in: space.profileID) else {
+        Toasts.show("Could not save session", in: store)
+        return false
+    }
     guard Spaces.delete(space.id, in: space.profileID) else { return false }
     // A parked store is still showing this Space in memory. Walk every owner into a
     // survivor now, or a later hop would save pages back to a Space that no longer exists.
