@@ -143,6 +143,12 @@ enum Release {
         return dict["CFBundleShortVersionString"] as? String
     }
 
+    /// Keep an unreadable installed bundle distinct from an empty destination.
+    static func installedVersion(at url: URL) -> String? {
+        FileManager.default.fileExists(atPath: url.path)
+            ? (version(ofBundleAt: url) ?? "") : nil
+    }
+
     // MARK: - What a check is allowed to say
 
     /// The answer to a check. A *background* check may only ever put up the offer of a real
@@ -855,7 +861,7 @@ extension Release {
         progress = nil
         set(.installing)
         Task.detached(priority: .userInitiated) {
-            let (ok, permanent) = Self.unpackAndSwap(zip: zip, target: target)
+            let (ok, permanent) = Self.unpackAndSwap(zip: zip, target: target, tag: tag)
             await MainActor.run {
                 Updater.shared.working = false
                 // The tag goes with the failure only when the release itself is the problem.
@@ -883,8 +889,7 @@ extension Release {
         let path = Release.destination(forBundleAt: Bundle.main.bundleURL.path,
                                        home: realHome).path
         let url = URL(fileURLWithPath: path)
-        let version = FileManager.default.fileExists(atPath: path)
-            ? (Release.version(ofBundleAt: url) ?? "") : nil
+        let version = Release.installedVersion(at: url)
         return (url, version)
     }
 
@@ -897,7 +902,7 @@ extension Release {
     /// — no Vane.app in the zip, or one signed by somebody who is not us — so the caller can
     /// refuse the tag for good. Every other way out is a transient one (a dropped `ditto`, a
     /// rename the disk would not do), and the next check is welcome to try the same tag again.
-    nonisolated private static func unpackAndSwap(zip: URL, target: URL)
+    nonisolated private static func unpackAndSwap(zip: URL, target: URL, tag: String)
         -> (ok: Bool, permanent: Bool) {
         let fm = FileManager.default
         let staged = fm.temporaryDirectory.appendingPathComponent("Vane-new-\(UUID().uuidString)")
@@ -917,7 +922,11 @@ extension Release {
 
         do {
             try BundleReplacement.install(source: incoming, at: target, keepPrevious: false,
-                                          verify: verified)
+                                          verify: verified,
+                                          mayReplaceTarget: { url in
+                Release.shouldInstall(tag: tag,
+                                      installedVersion: Release.installedVersion(at: url))
+            })
             return (true, false)
         } catch {
             NSLog("[vane] update: bundle replacement failed: %@", String(describing: error))
@@ -1108,8 +1117,13 @@ extension Release {
     /// Its previous installed copy is retained after the new one reaches a healthy launch.
     nonisolated private static func place(_ source: URL, at target: URL) -> Bool {
         do {
+            let sourceVersion = Release.version(ofBundleAt: source) ?? ""
             try BundleReplacement.install(source: source, at: target, keepPrevious: true,
-                                          verify: verified)
+                                          verify: verified,
+                                          mayReplaceTarget: { url in
+                Release.shouldInstall(tag: sourceVersion,
+                                      installedVersion: Release.installedVersion(at: url))
+            })
             return true
         } catch {
             NSLog("[vane] install: bundle replacement failed: %@", String(describing: error))
