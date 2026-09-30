@@ -897,12 +897,16 @@ enum ArcImport {
                 counts.bookmarks += done.bookmarks
             }
         }
-        // `spaces.json` is a file read, and every open window of the profile holds the list it
-        // read at launch: without this the imported Spaces are on disk and invisible until the
-        // next one. Every other writer of that file does the same — see `Spaces.move` and
-        // `TabStore.reorderSpaces`.
-        for store in TabStore.all where gained.contains(store.profileID) { store.spacesChanged() }
+        // The selector reads every profile's spaces.json. Publish the import to every
+        // ordinary window, including windows whose own profile gained no Spaces.
+        refreshSpaces(afterImporting: gained)
         return counts
+    }
+
+    /// Publish the imported Space list to the windows that draw its selector.
+    @MainActor static func refreshSpaces(afterImporting profiles: Set<UUID>) {
+        guard !profiles.isEmpty else { return }
+        for store in TabStore.all where !store.isPrivate && !store.isLittle { store.spacesChanged() }
     }
 
     // MARK: UI

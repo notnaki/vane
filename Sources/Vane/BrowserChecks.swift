@@ -36,44 +36,48 @@ import WebKit
     /// has open. The smoke script invokes this command in a fresh process after `run` exits.
     static func cleanupStore() -> Never {
         guard let directory = Store.overrideDirectory,
-              FileManager.default.fileExists(atPath: directory),
-              let id = ProfileManager.dataStoreIdentifier(
-                  for: ProfileManager.defaultID, dataDirectory: directory) else {
+              FileManager.default.fileExists(atPath: directory) else {
             fail("browsercheck cleanup requires an existing VANE_DATA_DIR", code: 2)
         }
         guard Bundle.main.bundleURL.pathExtension == "app", sandboxedSignature() else {
             fail("browsercheck cleanup must run inside a signed sandboxed app", code: 2)
         }
+        // The profile-hop checks open a second isolated profile. Compute only identifiers
+        // belonging to this test directory; never touch a production/default WebKit store.
+        let profileIDs = Set([ProfileManager.defaultID] + ProfileManager.shared.profiles.map(\.id))
+        let ids = profileIDs.compactMap {
+            ProfileManager.dataStoreIdentifier(for: $0, dataDirectory: directory)
+        }.sorted { $0.uuidString < $1.uuidString }
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
             fail("browsercheck cleanup exceeded its 15-second deadline", code: 1)
         }
         Task {
             // A cold fetchAllDataStoreIdentifiers call crashes WebKit on this macOS release.
             _ = WKProcessPool()
-            for attempt in 0..<20 {
-                let registered = await registeredStoreIdentifiers()
-                if !registered.contains(id) {
-                    print("PASS browsercheck cleanup: temporary WebKit store unregistered")
-                    exit(0)
-                }
-                let error: Error? = await withCheckedContinuation { continuation in
-                    WKWebsiteDataStore.remove(forIdentifier: id) { error in
-                        continuation.resume(returning: error)
+            for id in ids {
+                var removed = false
+                var lastError: Error?
+                for attempt in 0..<20 {
+                    let registered = await registeredStoreIdentifiers()
+                    if !registered.contains(id) { removed = true; break }
+                    lastError = await withCheckedContinuation { continuation in
+                        WKWebsiteDataStore.remove(forIdentifier: id) { error in
+                            continuation.resume(returning: error)
+                        }
                     }
-                }
-                if error == nil {
-                    let remaining = await registeredStoreIdentifiers()
-                    if !remaining.contains(id) {
-                        print("PASS browsercheck cleanup: temporary WebKit store unregistered")
-                        exit(0)
+                    if lastError == nil {
+                        let remaining = await registeredStoreIdentifiers()
+                        if !remaining.contains(id) { removed = true; break }
                     }
+                    if attempt < 19 { try? await Task.sleep(for: .milliseconds(250)) }
                 }
-                if attempt == 19 {
-                    fail("temporary WebKit store \(id.uuidString) still registered: \(String(describing: error))",
+                if !removed {
+                    fail("temporary WebKit store \(id.uuidString) still registered: \(String(describing: lastError))",
                          code: 1)
                 }
-                try? await Task.sleep(for: .milliseconds(250))
             }
+            print("PASS browsercheck cleanup: \(ids.count) temporary WebKit stores unregistered")
+            exit(0)
         }
         NSApplication.shared.run()
         fail("browsercheck cleanup run loop ended before completion", code: 1)
@@ -163,6 +167,9 @@ import WebKit
                 try require(requestedPin.active?.homeURL == pinnedURL && requestedPin.palette == nil,
                             "a requested pinned page is shown without opening the New Tab palette")
                 tabs += requestedPin.tabs
+                TabStore.all.removeAll {
+                    $0 === background || $0 === incoming || $0 === requestedPin
+                }
                 try await load(tab, "\(base)/a", title: "Fixture A")
                 try require(tab.history.history().contains { URL(string: $0.url)?.path == "/a" },
                             "normal navigation records a real history visit")
@@ -298,6 +305,8 @@ import WebKit
                 try require(try files.allSatisfy { try Data(contentsOf: $0) == Data("Vane download fixture\n".utf8) },
                             "real WKDownload writes complete bytes without replacing the earlier file")
 
+                try await profileHopCheck(base: base)
+
                 await clean()
                 print("PASS browsercheck: \(assertions) real-WebKit assertions")
                 print("Coverage excludes live permissions/devices, upload dialogs, printing, DRM, persisted session relaunch and TLS trust.")
@@ -368,6 +377,291 @@ import WebKit
             guard condition else { throw Failure(label) }
             assertions += 1
             print("  ok  \(label)")
+        }
+
+        /// A parked profile still belongs to the same window. Exercise both routes back to
+        /// it: the Profiles menu and the command bar's open-tab row. The former must write
+        /// the outgoing Space before parking it; the latter must actually show the tab.
+        private func profileHopCheck(base: String) async throws {
+            let manager = ProfileManager.shared
+            let first = manager.active
+            let second = manager.create(name: "Browsercheck Other")
+            guard let firstSpace = manager.ensureSpaces(for: first).first,
+                  let secondSpace = manager.ensureSpaces(for: second).first,
+                  let firstURL = URL(string: "\(base)/a"),
+                  let secondURL = URL(string: "\(base)/b") else {
+                throw Failure("profile hop fixture could not create its Spaces")
+            }
+            let firstStore = Windows.open(profile: first, space: firstSpace)
+            guard let window = firstStore.window else { throw Failure("profile hop has no window") }
+            let revision = firstStore.spaceRevision
+            let imported = manager.createSpace(name: "Imported Work", in: second.id)
+            ArcImport.refreshSpaces(afterImporting: [second.id])
+            try require(firstStore.spaceRevision > revision
+                        && firstStore.strip.contains(where: { $0.id == imported.id }),
+                        "a foreign Arc import refreshes the open window's global selector")
+            let importedRevision = firstStore.spaceRevision
+            ArcImport.refreshSpaces(afterImporting: [])
+            try require(firstStore.spaceRevision == importedRevision,
+                        "an import with no new Spaces leaves selectors unchanged")
+            manager.deleteSpace(imported.id, in: second.id)
+            firstStore.newTab(firstURL)
+            firstStore.palette = nil
+            let extensionDirectory = Store.directory.appendingPathComponent("extension-window-fixture")
+            try FileManager.default.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)
+            try Data(#"{"manifest_version":3,"name":"Window fixture","version":"1"}"#.utf8)
+                .write(to: extensionDirectory.appendingPathComponent("manifest.json"))
+            let windowExtension = try await WKWebExtension(resourceBaseURL: extensionDirectory)
+            let windowContext = WKWebExtensionContext(for: windowExtension)
+            let firstHost = firstStore.extensions
+            func extensionWindows(_ host: ExtensionHost) -> [ExtWindow] {
+                host.webExtensionController(host.controller, openWindowsFor: windowContext)
+                    .compactMap { $0 as? ExtWindow }
+            }
+            try require(extensionWindows(firstHost).contains(where: { $0.store === firstStore }),
+                        "extensions list the profile's visible window")
+            firstStore.switchTo(space: secondSpace)
+            guard let secondStore = Windows.current(in: second.id),
+                  secondStore.window === window else {
+                throw Failure("cross-profile Space switch did not keep the same window")
+            }
+            try require(!extensionWindows(firstHost).contains(where: { $0.store === firstStore })
+                        && extensionWindows(secondStore.extensions).contains(where: { $0.store === secondStore }),
+                        "extensions exclude a profile parked behind another profile's window")
+            secondStore.newTab(secondURL)
+            secondStore.palette = nil
+            guard let secondTab = secondStore.tabs.last else { throw Failure("second profile has no tab") }
+            try await loaded(secondTab, path: "/b", title: "Fixture B")
+
+            _ = Windows.switchTo(profile: first)
+            try require(extensionWindows(firstHost).contains(where: { $0.store === firstStore })
+                        && !extensionWindows(secondStore.extensions).contains(where: { $0.store === secondStore }),
+                        "extensions list the returning profile's window again")
+            try require(firstStore.window === window && secondStore.isParked,
+                        "Profiles menu returns to a parked profile in the same window")
+            try require(manager.spaces(for: second.id).first?.tabURLs.contains(secondURL) == true,
+                        "Profiles menu saves the outgoing Space before parking it")
+
+            NSApp.activate(ignoringOtherApps: true)
+            try require(Windows.reveal(secondTab, in: secondStore),
+                        "an open-tab result can reveal a tab in a parked profile")
+            try require(secondStore.window === window && secondStore.current == secondTab.id,
+                        "revealing a parked tab shows its profile and selects it")
+            do {
+                try await wait("keyboard focus returns to the revealed page") {
+                    window.firstResponder === secondTab.web
+                }
+            } catch {
+                let responder = window.firstResponder
+                throw Failure("keyboard focus stayed on \(String(describing: responder)) "
+                              + "(key=\(window.isKeyWindow), pageWindow=\(secondTab.web.window === window), "
+                              + "palette=\(String(describing: secondStore.palette)))")
+            }
+            try require(window.firstResponder === secondTab.web,
+                        "revealing a parked tab leaves the page ready for typing")
+
+            _ = Windows.switchTo(profile: first)
+            renameSpace(secondSpace, in: firstStore)
+            try require(secondStore.window === window && secondStore.renamingSpace == secondSpace.id,
+                        "a foreign Space dot opens its inline rename field")
+            secondStore.renamingSpace = nil
+
+            _ = Windows.switchTo(profile: first)
+            guard let folderOwner = spaceMenuTarget(secondSpace, from: firstStore),
+                  let foreignFolder = folderOwner.newFolder() else {
+                throw Failure("foreign Space dot did not make its folder in the target Space")
+            }
+            try require(folderOwner === secondStore && secondStore.currentSpaceID == secondSpace.id
+                        && secondStore.pins.folder(foreignFolder.id) != nil
+                        && firstStore.pins.folder(foreignFolder.id) == nil,
+                        "New Folder on a foreign dot belongs to that Space")
+            _ = Windows.switchTo(profile: first)
+            guard let liveOwner = spaceMenuTarget(secondSpace, from: firstStore),
+                  let foreignLive = liveOwner.newLiveFolder(named: "Smoke live folder",
+                                                              source: .github(LiveFolders.defaultQuery)) else {
+                throw Failure("foreign Space dot did not make its live folder in the target Space")
+            }
+            try require(liveOwner === secondStore && secondStore.currentSpaceID == secondSpace.id
+                        && secondStore.pins.folder(foreignLive.id)?.live != nil
+                        && firstStore.pins.folder(foreignLive.id) == nil,
+                        "New Live Folder on a foreign dot belongs to that Space")
+            _ = Windows.switchTo(profile: first)
+            let spare = manager.createSpace(name: "Browsercheck Spare", in: second.id)
+            _ = Windows.switchTo(profile: second)
+            guard let todayFolder = secondStore.newFolder(from: secondTab.id, in: \.todayShape) else {
+                throw Failure("moving Space could not make its Today folder fixture")
+            }
+            try require(Session.save(), "the source session records the Space before it moves")
+            let sourceSession = ProfileManager.sessionURL(for: second.id, in: Store.directory)
+            try require((try? Data(contentsOf: sourceSession)).map {
+                Session.decodeSpaces($0).contains(secondSpace.id)
+            } == true, "the source session has a row for the Space before it moves")
+            secondStore.switchTo(space: spare)
+            _ = Windows.switchTo(profile: first)
+            guard let formURL = URL(string: "\(base)/form") else {
+                throw Failure("profile hop fixture has no form URL")
+            }
+            // This navigation happens in a live stash behind the source profile's current
+            // Space after its last disk save. The target has no store currently showing it.
+            secondTab.web.load(URLRequest(url: formURL))
+            try await loaded(secondTab, path: "/form", title: "Fixture Form")
+            moveSpace(secondSpace, to: first, from: firstStore)
+            try require((try? Data(contentsOf: sourceSession)).map {
+                !Session.decodeSpaces($0).contains(secondSpace.id)
+                    && Session.decode($0).flatMap { $0 }.allSatisfy {
+                        $0.url != formURL.absoluteString && $0.url != secondURL.absoluteString
+                    }
+            } == true, "moving a Space clears its stale source session before autosave")
+            try require(manager.spaces(for: first.id).first(where: { $0.id == secondSpace.id })?
+                            .tabURLs.contains(formURL) == true,
+                        "moving a foreign Space preserves navigation in its parked profile")
+            try require(secondStore.currentSpaceID == spare.id,
+                        "moving a foreign Space resolves its parked owner to a surviving Space")
+            let movedState = Suspension.SpaceState.load(space: secondSpace.id, profileID: first.id,
+                                                         in: Store.directory)
+            try require(movedState[formURL.absoluteString] != nil,
+                        "moving a foreign Space carries its saved page state")
+            let movedPinned = TabStore.savedShape(space: secondSpace.id, profileID: first.id)
+            let movedToday = TabStore.savedShape(.today, space: secondSpace.id, profileID: first.id)
+            try require(movedPinned?.folder(foreignFolder.id) != nil
+                        && movedPinned?.folder(foreignLive.id)?.live != nil
+                        && movedToday?.folder(todayFolder.id) != nil,
+                        "moving a foreign Space carries Pinned and Today folders")
+            guard let movedSpace = manager.spaces(for: first.id).first(where: { $0.id == secondSpace.id })
+            else { throw Failure("the moved Space is absent from its destination profile") }
+            firstStore.switchTo(space: movedSpace)
+            try require(firstStore.pins.folder(foreignFolder.id) != nil
+                        && firstStore.pins.folder(foreignLive.id)?.live != nil
+                        && firstStore.todayShape.folder(todayFolder.id) != nil,
+                        "the moved Space rebuilds both folder sections in its new profile")
+
+            let keep = manager.createSpace(name: "Browsercheck Keep", in: second.id)
+            guard let submittedURL = URL(string: "\(base)/submitted") else {
+                throw Failure("profile hop fixture has no submitted URL")
+            }
+            secondStore.newTab(firstURL)
+            guard let parkedTab = secondStore.tabs.last else {
+                throw Failure("parked profile has no deletion fixture tab")
+            }
+            try await loaded(parkedTab, path: "/a", title: "Fixture A")
+            try require(secondStore.saveCurrentSpace(),
+                        "the deletion fixture has a stale parked Space snapshot")
+            parkedTab.web.load(URLRequest(url: submittedURL))
+            try await loaded(parkedTab, path: "/submitted", title: "Fixture Submitted")
+            try require(deleteSpaceConfirmed(spare, in: firstStore),
+                        "a foreign Space dot can delete a parked profile's Space")
+            try require(Archive.shared(for: second.id).entries.contains {
+                            $0.url == submittedURL.absoluteString
+                        }, "deleting a foreign Space archives its live parked URL")
+            try require(secondStore.currentSpaceID == keep.id,
+                        "deleting a foreign Space resolves its parked owner to a surviving Space")
+
+            let stashedDelete = manager.createSpace(name: "Delete hidden Space", in: second.id)
+            secondStore.switchTo(space: stashedDelete)
+            secondStore.newTab(firstURL)
+            guard let stashedTab = secondStore.tabs.last else { throw Failure("hidden deletion has no tab") }
+            try await loaded(stashedTab, path: "/a", title: "Fixture A")
+            try require(secondStore.saveCurrentSpace(), "the hidden deletion fixture is saved")
+            secondStore.switchTo(space: keep)
+            stashedTab.web.load(URLRequest(url: formURL))
+            try await loaded(stashedTab, path: "/form", title: "Fixture Form")
+            try require(deleteSpaceConfirmed(stashedDelete, in: firstStore)
+                        && Archive.shared(for: second.id).entries.contains {
+                            $0.url == formURL.absoluteString
+                        }, "deleting a foreign Space archives navigation in its live stash")
+
+            // This profile has no open store at all. Session.save() skips such profiles, so
+            // the move must remove an old row naming its Space from that profile's file.
+            let closedProfile = manager.create(name: "Browsercheck Closed")
+            let closedSpace = manager.createSpace(name: "From closed profile", in: closedProfile.id)
+            let closedSpare = manager.createSpace(name: "Closed spare", in: closedProfile.id)
+            let closedSession = ProfileManager.sessionURL(for: closedProfile.id, in: Store.directory)
+            let staleEntry = Session.Entry(url: secondURL.absoluteString, kind: .today)
+            let keptEntry = Session.Entry(url: firstURL.absoluteString, kind: .today)
+            let selectedAfter = UUID()
+            guard let staleData = Session.encode([[staleEntry], [keptEntry]],
+                                                 spaces: [closedSpace.id.uuidString,
+                                                          closedSpare.id.uuidString],
+                                                 selected: [UUID().uuidString,
+                                                            selectedAfter.uuidString])
+            else { throw Failure("closed profile session fixture could not encode") }
+            try staleData.write(to: closedSession)
+            moveSpace(closedSpace, to: first, from: firstStore)
+            try require((try? Data(contentsOf: closedSession)).map {
+                Session.decodeSpaces($0) == [closedSpare.id]
+                    && Session.decode($0).map { $0.map(\.url) } == [[firstURL.absoluteString]]
+                    && Session.decodeSelected($0) == [selectedAfter]
+            } == true, "moving from a closed profile clears only its Space's session row")
+
+            // Delete must prune a closed profile's snapshot too, or restoring it would
+            // reopen archived tabs in the surviving Space.
+            var closedDelete = manager.createSpace(name: "Delete from closed profile", in: closedProfile.id)
+            closedDelete.tabURLs = [secondURL]
+            try require(manager.updateSpace(closedDelete), "the closed deletion fixture is saved")
+            guard let deleteData = Session.encode([[staleEntry], [keptEntry]],
+                                                  spaces: [closedDelete.id.uuidString,
+                                                           closedSpare.id.uuidString],
+                                                  selected: [UUID().uuidString,
+                                                             selectedAfter.uuidString])
+            else { throw Failure("closed deletion session fixture could not encode") }
+            try deleteData.write(to: closedSession)
+            try require(deleteSpaceConfirmed(closedDelete, in: firstStore),
+                        "a foreign Space can be deleted while its profile has no open store")
+            try require((try? Data(contentsOf: closedSession)).map {
+                Session.decodeSpaces($0) == [closedSpare.id]
+                    && Session.decode($0).map { $0.map(\.url) } == [[firstURL.absoluteString]]
+                    && Session.decodeSelected($0) == [selectedAfter]
+            } == true, "deleting from a closed profile clears only its Space's session row")
+
+            let survivingSession = try Data(contentsOf: closedSession)
+            try require(!deleteSpaceConfirmed(closedSpare, in: firstStore)
+                        && (try? Data(contentsOf: closedSession)) == survivingSession,
+                        "refusing a profile's last Space preserves its saved session")
+            let blockedDelete = manager.createSpace(name: "Blocked deletion", in: closedProfile.id)
+            let malformedSession = Data("unreadable session fixture".utf8)
+            try malformedSession.write(to: closedSession)
+            let archiveCount = Archive.shared(for: closedProfile.id).entries.count
+            try require(!deleteSpaceConfirmed(blockedDelete, in: firstStore)
+                        && manager.spaces(for: closedProfile.id).contains(where: { $0.id == blockedDelete.id })
+                        && Archive.shared(for: closedProfile.id).entries.count == archiveCount
+                        && (try? Data(contentsOf: closedSession)) == malformedSession,
+                        "a session prune failure keeps the Space and archive unchanged")
+            try survivingSession.write(to: closedSession)
+
+            // The other move path starts on the Space being moved and hops the window into
+            // its new profile. Its immediate session write must keep the rebuilt Today tab.
+            guard let returning = manager.spaces(for: first.id).first(where: { $0.id == secondSpace.id })
+            else { throw Failure("the moved Space is absent before its return move") }
+            moveSpace(returning, to: second, from: firstStore)
+            let destinationSession = ProfileManager.sessionURL(for: second.id, in: Store.directory)
+            try require(manager.spaces(for: second.id).first(where: { $0.id == returning.id })?
+                            .tabURLs.contains(formURL) == true
+                        && secondStore.window === window && secondStore.currentSpaceID == returning.id,
+                        "moving the shown Space keeps its pages through the profile hop")
+            try require((try? Data(contentsOf: destinationSession)).map {
+                Session.decodeSpaces($0).contains(returning.id)
+                    && Session.decode($0).flatMap { $0 }.contains { $0.url == formURL.absoluteString }
+            } == true, "moving the shown Space saves its destination session immediately")
+            let oldSession = ProfileManager.sessionURL(for: first.id, in: Store.directory)
+            try require((try? Data(contentsOf: oldSession)).map {
+                !Session.decodeSpaces($0).contains(returning.id)
+                    && !Session.decode($0).flatMap { $0 }.contains { $0.url == formURL.absoluteString }
+            } == true, "moving the shown Space clears its former profile's session")
+
+            window.performClose(nil)
+            try require(!extensionWindows(firstHost).contains(where: { $0.store === firstStore })
+                        && !extensionWindows(secondStore.extensions).contains(where: { $0.store === secondStore }),
+                        "extensions no longer list either profile after the hopped window closes")
+            try require(!TabStore.all.contains(where: { $0 === firstStore || $0 === secondStore }),
+                        "closing a hopped window removes both of its profile stores")
+            window.contentView = nil
+            window.delegate = nil
+            // tearDown() replaces each closed page with a fresh unloaded WKWebView. Release
+            // those fixture tabs before the separate cleanup process unregisters the stores.
+            firstStore.tabs.removeAll()
+            secondStore.tabs.removeAll()
+            ExtensionHost.forget(second.id)
+            ProfileManager.releaseDataStore(for: second.id)
         }
 
         private func clean() async {

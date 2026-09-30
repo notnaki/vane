@@ -1569,6 +1569,8 @@ struct Stash {
     /// command bar: the folder was made by a click in this one, and a second window showing
     /// the same Space is not where anybody is looking. See `LiveFolderCallout`.
     @Published var announcing: UUID?
+    /// Fallback token sheet requested from a foreign Space dot after its window has hopped.
+    @Published var liveFolderSheet = false
     /// The window's split views: 2–4 of the tabs above shown side by side in one page card
     /// and as one sidebar row. Ids, not tabs, so a split survives its panes moving section,
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.
@@ -1651,13 +1653,26 @@ struct Stash {
     /// the profile's furniture, so it restores no favourites and no pinned rows and is
     /// never written into the session. See LittleArc.swift.
     let isLittle: Bool
-    /// The profile this window belongs to. A window never changes profile — opening another
-    /// profile opens another window.
+    /// The profile this *store* belongs to. Fixed for its life: the data store, the cookie
+    /// jar, the history, the favicons and the extension host are all built from it, and none
+    /// of them can be re-homed under a live web view. A window can still change profile —
+    /// Arc's Spaces strip runs across every one of them — by parking this store and showing
+    /// another profile's in the same window. See `Windows.hop`.
     let profileID: UUID
     /// Which space this window is showing, if any. A window shows one space at a time.
     @Published private(set) var currentSpaceID: UUID?
     weak var window: NSWindow?
-    /// Every live window, oldest first.
+    /// The window this store is parked behind while that window shows another profile.
+    ///
+    /// A window keeps one store per profile it has been in: the one on screen owns `window`,
+    /// and the ones behind it name it here instead — still loaded, still holding their
+    /// Spaces' stashes, so hopping back costs nothing. Nothing that looks for "the window's
+    /// store" may find a parked one, which is why the two fields are exclusive rather than
+    /// one field and a flag. See `Windows.hop`.
+    weak var parkedIn: NSWindow?
+    /// True while this store is behind another profile's in the same window.
+    var isParked: Bool { parkedIn != nil }
+    /// Every live store, oldest first — the parked ones included.
     static var all: [TabStore] = []
 
     var profile: Profile {
@@ -2537,13 +2552,34 @@ struct Stash {
 
     // MARK: Spaces
 
-    /// Every space in this window's profile. A space belongs to exactly one profile, so this
-    /// is the complete list a window can ever switch between.
+    /// Every space in this store's profile. A space belongs to exactly one profile, so this
+    /// is the complete list *this store* can ever show — what a Space is saved into, what its
+    /// stash is checked against, and what "its last Space" means are all about this profile.
     var spaces: [Space] {
-        var all = ProfileManager.shared.spaces(for: profileID)
-        if let live = previewSpace, let i = all.firstIndex(where: { $0.id == live.id }) {
-            all[i] = live
-        }
+        fold(preview: ProfileManager.shared.spaces(for: profileID))
+    }
+
+    /// Every space of every profile, in one list: Arc's sidebar strip, which runs across
+    /// profiles rather than stopping at this window's own. See `Spaces.strip`.
+    ///
+    /// The strip is what the user can *walk to* — the swipe, ⌥⌘←/→, ⌃1…9, the footer dots,
+    /// the Spaces menu and the command bar's Space rows all read this — and it is not
+    /// interchangeable with `spaces` above: arriving at a Space another profile owns moves
+    /// the window to that profile in place rather than showing its tabs here. See
+    /// `switchTo(space:)` and `Windows.hop`.
+    var strip: [Space] {
+        fold(preview: Spaces.strip(profiles: ProfileManager.shared.profiles) {
+            ProfileManager.shared.spaces(for: $0.id)
+        })
+    }
+
+    /// A list off the disk with the theme editor's unsaved frame put back over it, so a drag
+    /// repaints without writing `spaces.json` sixty times a second. See `previewSpace`.
+    private func fold(preview list: [Space]) -> [Space] {
+        guard let live = previewSpace, let i = list.firstIndex(where: { $0.id == live.id })
+        else { return list }
+        var all = list
+        all[i] = live
         return all
     }
 
@@ -2605,8 +2641,10 @@ struct Stash {
         creatingSpace = false            // the sidebar animates the swap itself
     }
 
-    /// The form's Create button. A Space in this window's profile is switched into here; one
-    /// in another profile is made there and that profile's window brought forward with it.
+    /// The form's Create button. The Space is switched into here whichever profile it was
+    /// made in: the strip runs across profiles, so one made in another is simply somewhere
+    /// else along it and this window walks there in place. `switchTo` is what hops — see
+    /// `Windows.hop` — so no second window opens for that profile any more.
     func createSpace(named name: String, in profile: Profile, colorHex: String?) {
         guard !isPrivate, !isLittle else { return }
         creatingSpace = false
@@ -2615,33 +2653,30 @@ struct Stash {
             Spaces.setThemeColors([colorHex], on: &space)
             _ = ProfileManager.shared.updateSpace(space)
         }
-        if profile.id == profileID {
-            saveCurrentSpace()
-            spaceDirection = 1
-            switchTo(space: space)
-            rememberSpace()
-        } else {
-            Windows.switchTo(profile: profile).switchTo(space: space)
-        }
-        Toasts.show("New Space created", in: self)
+        switchTo(space: space)             // saves the outgoing Space itself
+        rememberSpace()
+        // After the switch, and not always in `self`: a hop parks this store and the toast
+        // belongs in the sidebar the user is now looking at.
+        Toasts.show("New Space created", in: Windows.current ?? self)
     }
 
     /// Same thing a `spaceRevision` bump does, for the code outside `update(space:)` that
     /// edits `spaces.json` directly — a move, a reorder, a delete.
     func spacesChanged() { spaceRevision += 1 }
 
-    /// Sign of the move from the current Space to `space` in the sidebar's own order, so a
-    /// wrap-around from the last Space to the first still slides forwards.
+    /// Sign of the move from the current Space to `space` along the sidebar's strip — which
+    /// runs across every profile, so a step into the next profile's first Space still slides
+    /// forwards rather than reading as a jump back.
     private func direction(to space: Space) -> Int {
-        let list = spaces
-        guard let from = list.firstIndex(where: { $0.id == currentSpaceID }),
-              let to = list.firstIndex(where: { $0.id == space.id }) else { return 1 }
-        return to > from ? 1 : -1
+        Spaces.direction(from: currentSpaceID, to: space.id, in: strip.map(\.id))
     }
 
-    /// Drag the footer dots: the profile's space order, rewritten.
-    func reorderSpaces(from: Int, to: Int) {
-        let list = Spaces.reordered(spaces, from: from, to: to)
+    /// Drag the footer dots: one profile's space order, rewritten. The dots are the whole
+    /// strip now, so which profile is being reordered is the dragged dot's, not necessarily
+    /// this window's. See `SpaceDrop`, which refuses a drag across the boundary.
+    func reorderSpaces(from: Int, to: Int, in owner: UUID? = nil) {
+        let profileID = owner ?? self.profileID
+        let list = Spaces.reordered(ProfileManager.shared.spaces(for: profileID), from: from, to: to)
         ProfileManager.shared.saveSpaces(list, for: profileID)
         spacesChanged()
     }
@@ -2750,6 +2785,40 @@ struct Stash {
     /// user, and a Space that is not being shown has no rows in it.
     var everyTab: [Tab] { tabs + stashes.values.flatMap(\.tabs) }
 
+    /// A Space can keep loading and navigating after it leaves the visible strip. Before a
+    /// cross-profile move releases that stash, write its live tabs and folder shapes to the
+    /// old profile, where the transfer reads them. A stash whose fingerprint changed under
+    /// another window is already superseded by disk and must not overwrite that edit.
+    func saveStashedSpace(_ id: UUID) -> Bool {
+        guard let stash = stashes[id] else { return true }
+        guard stash.fingerprint == fingerprint(of: id) else { return true }
+        guard var space = spaces.first(where: { $0.id == id }) else { return false }
+        func urls(_ kind: TabKind) -> [URL] {
+            stash.tabs.filter { $0.kind == kind }.compactMap(\.pinnedURL)
+                .filter { $0.scheme?.hasPrefix("http") == true }
+        }
+        space.tabURLs = urls(.today)
+        space.pinnedTabURLs = urls(.pinned)
+        var parked: [String: Parked] = [:]
+        for tab in stash.tabs {
+            guard let entry = TabStore.sidecarEntry(page: tab.currentURL, home: tab.homeURL,
+                                                    snapshot: tab.snapshot) else { continue }
+            parked[entry.key] = entry.parked
+        }
+        guard Suspension.SpaceState.save(parked, space: id, profileID: profileID,
+                                         in: Store.directory),
+              ProfileManager.shared.updateSpace(space) else { return false }
+        TabStore.saveShape(stash.pins, from: stash.tabs, kind: .pinned,
+                           space: id, profileID: profileID, ownsSection: true)
+        TabStore.saveShape(stash.todayShape, from: stash.tabs, kind: .today,
+                           space: id, profileID: profileID, ownsSection: true)
+        let selected = stash.tabs.first { $0.id == stash.current }?.pinnedURL
+        Spaces.rememberTab(selected.flatMap {
+            $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
+        }, in: id)
+        return true
+    }
+
     /// Which Space this window is keeping `id` alive for, if it is not on the strip.
     func space(stashing id: Tab.ID) -> UUID? {
         stashes.first { $0.value.tabs.contains { $0.id == id } }?.key
@@ -2833,17 +2902,23 @@ struct Stash {
     /// even a rebuild lands on the same page, scroll offset and back/forward list, and only
     /// the tab that becomes current actually loads.
     func switchTo(space: Space) {
-        // A space's profileID is the only link to its profile, so refusing here is what keeps
-        // a window from ever showing another profile's tabs. A Little Arc is in no Space and
-        // has no strip to rebuild — switching one would throw the page away and leave an
-        // empty window claiming to be in a Space. Every route into here is shared with the
-        // browser window (the palette's Space rows, ⌃1–9, ⌥⌘←/→, the Spaces menu), so the
-        // refusal belongs here rather than at each of them.
+        // A Little Arc is in no Space and has no strip to rebuild — switching one would throw
+        // the page away and leave an empty window claiming to be in a Space. Every route into
+        // here is shared with the browser window (the palette's Space rows, ⌃1–9, ⌥⌘←/→, the
+        // Spaces menu, the swipe), so the refusal belongs here rather than at each of them.
         // A private window is spaceless the way Arc's incognito is: letting one switch would
         // put a Space's tabs in a window that writes nothing back, and claim in the footer
         // to be showing a Space it can never save.
-        guard !isLittle, !isPrivate, space.profileID == profileID,
-              space.id != currentSpaceID else { return }
+        guard !isLittle, !isPrivate, space.id != currentSpaceID else { return }
+        // A Space's profileID is the only link to its profile, and a store still never shows
+        // another profile's tabs — everything it is built out of is that profile's. But the
+        // strip runs across profiles, so a Space over the boundary is somewhere this *window*
+        // can go: the hop parks this store and brings that profile's forward in the same
+        // window, and that store does the switch with its own stash. See `Windows.hop`.
+        guard space.profileID == profileID else {
+            Windows.hop(self, to: space)
+            return
+        }
         saveCurrentSpace()
         // Which way the strip slides. Set before the switch so the sidebar's transition and
         // the tint cross-fade are already pointing the right way when the list changes.
@@ -2936,19 +3011,22 @@ struct Stash {
         switchTo(space: first)
     }
 
-    /// ⌥⌘→ / ⌥⌘←: the next or previous space in this profile's list, wrapping round. A
-    /// window with one space (or none) has nowhere to go, and does nothing.
+    /// ⌥⌘→ / ⌥⌘←: the next or previous space along the strip, wrapping round. The strip runs
+    /// across profiles, so the step past this profile's last Space is the next profile's
+    /// first, and taking it moves the window there. One Space in the whole app (or none) has
+    /// nowhere to go, and does nothing.
     func cycleSpace(_ delta: Int) {
-        let list = spaces
+        let list = strip
         guard list.count > 1, let i = list.firstIndex(where: { $0.id == currentSpaceID })
         else { return }
         switchTo(space: list[(i + delta + list.count) % list.count])
     }
 
-    /// ⌃1…⌃9. Literally space N, unlike ⌘9 which means "the last tab": Arc numbers spaces
-    /// and there is no ninth space to be the last one.
+    /// ⌃1…⌃9. Literally space N *of the strip*, unlike ⌘9 which means "the last tab": Arc
+    /// numbers spaces and there is no ninth space to be the last one. Numbered across
+    /// profiles, because the strip is what the numbers are drawn on.
     func switchTo(spaceNumber n: Int) {
-        let list = spaces
+        let list = strip
         guard list.indices.contains(n - 1) else { return }
         switchTo(space: list[n - 1])
     }
@@ -2957,9 +3035,10 @@ struct Stash {
     /// a button, and AppKit has no way to press a SwiftUI button from a menu item.
     @Published var libraryOpen = false
 
-    /// Convenience for a menu that has an id rather than the struct.
+    /// Convenience for a menu that has an id rather than the struct. Off the strip, so a row
+    /// naming another profile's Space works the same way the dot for it does.
     func switchTo(spaceID: UUID) {
-        guard let space = spaces.first(where: { $0.id == spaceID }) else { return }
+        guard let space = strip.first(where: { $0.id == spaceID }) else { return }
         switchTo(space: space)
     }
 

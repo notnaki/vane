@@ -1400,16 +1400,26 @@ extension TabStore {
     /// The shape as it goes to disk: the same folders, with every tab named by the page it
     /// is on rather than by a `Tab.ID` that will not exist after a relaunch.
     private func saveShape(_ kind: TabKind, _ shape: ReferenceWritableKeyPath<TabStore, Pins>) {
-        let key = TabStore.shapeKey(kind, space: currentSpaceID, profileID: profileID)
+        guard let id = currentSpaceID else { return }
+        TabStore.saveShape(self[keyPath: shape], from: tabs, kind: kind, space: id,
+                           profileID: profileID)
+    }
+
+    /// The same writer serves the visible strip and a Space kept alive in a stash. The
+    /// latter may have navigated since it was put away, so its Today folder rows must be
+    /// renamed to the current URLs before a profile move tears the stash down.
+    static func saveShape(_ shape: Pins, from tabs: [Tab], kind: TabKind,
+                          space: UUID, profileID: UUID, ownsSection: Bool = false) {
+        let key = TabStore.shapeKey(kind, space: space, profileID: profileID)
         // A window whose Pinned section is empty may have nothing to say about the shape —
         // it can be one that was never handed the profile's rows — so it is asked whether
         // it is allowed to speak first. It used to be told to say nothing at all, and the
         // cost of that was the last pinned tab leaving a Space with the folders it was in
         // still written down: `adoptPins` rebuilt them, empty, at the next launch. Undoing a
         // tidy on a window that had no pins to begin with hit it every time.
-        if self[keyPath: shape].entries.isEmpty {
-            if TabStore.clearsShape(saved: TabStore.savedShape(kind, space: currentSpaceID,
-                                                              profileID: profileID)) {
+        if shape.entries.isEmpty {
+            if ownsSection || TabStore.clearsShape(saved: TabStore.savedShape(kind, space: space,
+                                                                              profileID: profileID)) {
                 UserDefaults.vane.removeObject(forKey: key)
             }
             return
@@ -1417,7 +1427,7 @@ extension TabStore {
         let byID = Dictionary(tabs.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { a, _ in a })
         // `pinnedURL`, like `savePins`: the shape and the list must name a row by the same url,
         // or `pinOrder` cannot put a wandered row back in its folder. See `Tab.homeURL`.
-        let named = self[keyPath: shape].mapped { byID[$0].flatMap { TabStore.pinURL($0.pinnedURL) } }
+        let named = shape.mapped { byID[$0].flatMap { TabStore.pinURL($0.pinnedURL) } }
         // Nothing but loose tabs is nothing worth writing: an empty shape is what a fresh
         // profile has, and leaving the key absent keeps `savedShape` honest about that.
         guard named.entries.contains(where: { $0.folder != nil }) else {

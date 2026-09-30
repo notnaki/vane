@@ -308,6 +308,9 @@ struct BrowserWindow: View {
         .ignoresSafeArea()
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
+        .sheet(isPresented: $store.liveFolderSheet) {
+            LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
+        }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
         // The one place the Space list is counted: when it changes, and when the Library
         // opens onto it. `spaceRevision` is bumped by everything that adds or removes one.
@@ -475,20 +478,30 @@ struct SpaceGround: View {
 
     /// A Space's colours, falling back to its profile's — Arc has no colourless space, and a
     /// grey slab was what the old fallback amounted to.
+    ///
+    /// Its *own* profile's, which need not be this window's: the strip crosses profiles, and
+    /// the wash a swipe pulls in has to be the neighbour's colour or the window would slide to
+    /// one ground and then cut to another on landing.
     private func colors(of space: Space?) -> [String] {
         let list = space.map(Spaces.themeColors(of:)) ?? []
-        return list.isEmpty ? [store.profile.colorHex] : list
+        guard list.isEmpty else { return list }
+        let owner = space.flatMap { s in profiles.profiles.first { $0.id == s.profileID } }
+        return [(owner ?? store.profile).colorHex]
     }
 
     /// The Space the fingers are pulling in, its grain, and how much of it is already
-    /// showing. `store.spaces` — the one thing here that reads the file — is only touched
+    /// showing. `store.strip` — the one thing here that reads the files — is only touched
     /// while a swipe is actually live; at rest, and at the ends where the strip only
     /// rubber-bands, this is the current Space at fraction 0.
+    ///
+    /// The strip, so the wash pulls the *neighbour's* colour whichever profile owns it: at a
+    /// profile boundary the ground has to arrive with the sections, or the window would cut
+    /// to the new profile's colour after having slid to it.
     private func pulled(from here: Space?) -> (colors: [String], grain: Double, fraction: Double) {
         let idle = (colors(of: here), here?.grain ?? 0, 0.0)
         let width = SidebarWidth.shared.width
         guard store.spaceDrag != 0, width > 0 else { return idle }
-        let list = store.spaces
+        let list = store.strip
         guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return idle }
         let f = Double(max(-1, min(1, store.spaceDrag / width)))
         let n = f < 0 ? i + 1 : i - 1
@@ -2189,6 +2202,11 @@ private struct SpaceMenu: View {
     /// is no Pinned context menu to right-click.
     @Binding var live: Bool
 
+    /// How many Spaces the profile that owns *this* Space has. The dots this menu hangs off
+    /// are the whole strip now, so the Space under the pointer need not be this window's
+    /// profile's — and "never its last one" is a question about its own profile, not ours.
+    private var siblings: Int { ProfileManager.shared.spaces(for: space.profileID).count }
+
     var body: some View {
         Button("Change Space Icon…") { open($icons) }
         Button("Rename Space…") { renameSpace(space, in: store) }
@@ -2206,20 +2224,26 @@ private struct SpaceMenu: View {
         }
         // Moving a Space out is a delete on this side, so the last one is as un-movable as
         // it is un-deletable: a profile always has a Space.
-        .disabled(store.spaces.count < 2)
+        .disabled(siblings < 2)
         Divider()
-        Button("New Folder") { store.newFolder() }
+        Button("New Folder") { spaceMenuTarget(space, from: store)?.newFolder() }
         // Arc asks nothing: signed in, the folder is there on the click. Signed out, the
         // click is the sign-in, and the folder follows it. The sheet is the fallback for a
         // build that cannot do the web flow — see `TabStore.askForLiveFolder`.
-        Button("New Live Folder…") { store.askForLiveFolder { open($live) } }
+        Button("New Live Folder…") {
+            guard let target = spaceMenuTarget(space, from: store) else { return }
+            target.askForLiveFolder {
+                if target === store { open($live) }
+                else { DispatchQueue.main.async { target.liveFolderSheet = true } }
+            }
+        }
         Divider()
         // Arc's "Manage Spaces…" opens the Library's Spaces view — every Space's pages side
         // by side, draggable between columns — rather than a settings pane.
         Button("Manage Spaces…") { Library.open(.spaces, in: store) }
         Divider()
         Button("Delete Space") { deleteSpace(space, in: store) }
-            .disabled(store.spaces.count < 2)
+            .disabled(siblings < 2)
     }
 }
 
@@ -2237,12 +2261,30 @@ private struct SpaceMenu: View {
 
 /// Arc renames a Space in the sidebar, not in a dialog: this only arms the field, and
 /// `SpaceName` is what commits it.
-@MainActor private func renameSpace(_ space: Space, in store: TabStore) {
-    store.renamingSpace = space.id
+@MainActor func renameSpace(_ space: Space, in store: TabStore) {
+    guard let window = store.window else { return }
+    // The header only edits the Space this window is showing. A dot can belong to another
+    // Space or profile, so go there before arming the editor on the store now in the window.
+    store.switchTo(space: space)
+    guard let showing = TabStore.all.first(where: { $0.window === window }),
+          showing.currentSpaceID == space.id else { return }
+    showing.renamingSpace = space.id
+}
+
+/// Context menus are built around the clicked dot, which can belong to a different Space
+/// or profile than the store that drew the menu. Bring that Space into this very window,
+/// then return the store that now owns the visible Pinned section.
+@MainActor func spaceMenuTarget(_ space: Space, from store: TabStore) -> TabStore? {
+    guard let window = store.window else { return nil }
+    store.switchTo(space: space)
+    return TabStore.all.first { $0.window === window && $0.currentSpaceID == space.id }
 }
 
 @MainActor private func deleteSpace(_ space: Space, in store: TabStore) {
-    guard store.spaces.count > 1 else { return }
+    // The owning profile's list, not this window's: the footer's dots are the whole strip, so
+    // the Space being deleted may belong to a profile this window is not showing.
+    let siblings = ProfileManager.shared.spaces(for: space.profileID)
+    guard siblings.count > 1 else { return }
     let a = NSAlert()
     a.messageText = "Delete the space “\(space.name)”?"
     a.informativeText = "Its tabs and pinned tabs go to the Archive, where the Library can "
@@ -2252,30 +2294,98 @@ private struct SpaceMenu: View {
     a.addButton(withTitle: "Delete")
     a.buttons.last?.hasDestructiveAction = true
     guard a.runModal() == .alertSecondButtonReturn else { return }
-    let survivor = store.spaces.first { $0.id != space.id }
-    guard Spaces.delete(space.id, in: space.profileID) else { return }
-    if let survivor { store.switchTo(space: survivor) }
-    rebuild()
+    _ = deleteSpaceConfirmed(space, in: store)
 }
 
-/// ponytail: a window's profile is fixed for its lifetime — the data store, the cookie jar
-/// and the extension host are all built from it in `TabStore.init`. So moving a space to
-/// another profile opens it in a window there and closes this one, rather than trying to
-/// re-home a live WKWebsiteDataStore. Ceiling: the window's position is not carried over.
-@MainActor private func moveSpace(_ space: Space, to profile: Profile, from store: TabStore) {
+/// The destructive half of Delete Space, separate from the alert so the browser smoke can
+/// prove that a parked profile's live navigation is archived before the Space disappears.
+@discardableResult
+@MainActor func deleteSpaceConfirmed(_ space: Space, in store: TabStore) -> Bool {
+    guard ProfileManager.shared.spaces(for: space.profileID).count > 1 else { return false }
+    let owners = storesShowing(space)
+    guard saveSpaces(in: owners, reportingIn: store) else { return false }
+    // A hidden Space can still navigate in a stash. Archive its live snapshot when no
+    // store is showing it, before deletion releases the stash.
+    if owners.isEmpty {
+        for owner in TabStore.all where owner.profileID == space.profileID
+            && !owner.saveStashedSpace(space.id) {
+            Toasts.show("Could not save Space", in: store)
+            return false
+        }
+    }
+    // Closed profiles are skipped by Session.save. Remove the old row before archiving
+    // its tabs, so a later restore cannot reopen them inside a surviving Space.
+    guard Session.forget(space: space.id, in: space.profileID) else {
+        Toasts.show("Could not save session", in: store)
+        return false
+    }
+    guard Spaces.delete(space.id, in: space.profileID) else { return false }
+    // A parked store is still showing this Space in memory. Walk every owner into a
+    // survivor now, or a later hop would save pages back to a Space that no longer exists.
+    for owner in owners { owner.resolveStaleSpace(); owner.spacesChanged() }
+    store.spacesChanged()                  // the strip is a dot shorter
+    rebuild()
+    return true
+}
+
+@MainActor private func storesShowing(_ space: Space) -> [TabStore] {
+    TabStore.all.filter { !$0.isPrivate && !$0.isLittle && $0.currentSpaceID == space.id }
+}
+
+@MainActor private func saveSpaces(in owners: [TabStore], reportingIn store: TabStore) -> Bool {
+    for owner in owners where !owner.saveCurrentSpace() {
+        Toasts.show("Could not save Space", in: store)
+        return false
+    }
+    return true
+}
+
+/// A *store's* profile is fixed for its lifetime — the data store, the cookie jar and the
+/// extension host are all built from it in `TabStore.init` — but a window's is not: the strip
+/// runs across profiles, so a Space that changes profile has only moved along it, and a window
+/// showing it follows in place. See `Windows.hop`.
+@MainActor func moveSpace(_ space: Space, to profile: Profile, from store: TabStore) {
     // The source profile is losing a Space, so the same rule as Delete applies: never its
     // last one. Without this the profile is left with none, this window's close writes its
     // tabs into that profile's session, and the next window there invents a Space holding a
     // second copy of every page that just moved out.
-    guard profile.id != space.profileID, store.spaces.count > 1 else { return }
-    store.saveCurrentSpace()
-    ProfileManager.shared.deleteSpace(space.id, in: space.profileID)
-    var moved = space
-    moved.profileID = profile.id
-    ProfileManager.shared.updateSpace(moved)
-    Windows.open(profile: profile, space: moved)
-    store.window?.performClose(nil)
+    guard profile.id != space.profileID,
+          ProfileManager.shared.spaces(for: space.profileID).count > 1 else { return }
+    let showing = space.id == store.currentSpaceID
+    let owners = storesShowing(space)
+    guard saveSpaces(in: owners, reportingIn: store) else { return }
+    // A Space no window is showing may still be alive behind one. Its tabs can navigate
+    // there, after the disk snapshot made on the way out; save that live stash before the
+    // profile transfer drops it. A visible owner remains authoritative when both exist.
+    if owners.isEmpty {
+        for owner in TabStore.all where owner.profileID == space.profileID
+            && !owner.saveStashedSpace(space.id) {
+            Toasts.show("Could not save Space", in: store)
+            return
+        }
+    }
+    // Prune a prior crash snapshot before the source Space disappears. This also handles a
+    // profile with no open store, which Session.save() below deliberately does not rewrite.
+    guard Session.forget(space: space.id, in: space.profileID) else {
+        Toasts.show("Could not save session", in: store)
+        return
+    }
+    guard let moved = ProfileManager.shared.moveSpace(space.id, from: space.profileID,
+                                                      to: profile.id) else {
+        Toasts.show("Could not move Space", in: store)
+        return
+    }
+    // Out of the Space *before* it changes profile, so this store leaves it the way it leaves
+    // any Space that has gone from under it — pages down, nothing stashed — rather than being
+    // parked still claiming to be in one its own profile no longer owns.
+    for owner in owners { owner.resolveStaleSpace(); owner.spacesChanged() }
+    store.spacesChanged()
+    if showing { store.switchTo(space: moved) }       // which hops the window to `profile`
     rebuild()
+    // The crash snapshot may still name the moved Space and carry its tabs under the source
+    // profile. Rewrite both profiles now; waiting for the 30-second timer can resurrect a
+    // duplicate in the source if Vane exits before then.
+    if !Session.save() { Toasts.show("Could not save session", in: store) }
 }
 
 /// A grid of SF Symbols. ponytail: a fixed list, not a symbol browser — 24 covers what a
@@ -2336,9 +2446,11 @@ private struct SpaceDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // Once per body, not once per dot: `store.spaces` re-reads and decodes `spaces.json`
-        // every time it is touched, and a live swipe redraws this row every frame.
-        let list = store.spaces
+        // Once per body, not once per dot: `store.strip` re-reads and decodes one
+        // `spaces.json` per profile every time it is touched, and a live swipe redraws this
+        // row every frame. The strip, because Arc's dots are every profile's Spaces side by
+        // side — tapping one of another profile's moves the window there.
+        let list = store.strip
         let lit = weights(list)
         HStack(spacing: 8) {
             ForEach(list) { dot($0, lit: lit[$0.id] ?? 0) }
