@@ -14,13 +14,27 @@ import WebKit
 /// sandboxed — produces a list of strings the app can no longer open.
 ///
 /// ponytail: one `[Data]` list per UserDefaults key, so a caller that was storing `[String]`
-/// paths swaps three call sites and keeps its own shape. Access, once started, is never
-/// stopped: these are folders the app reads for its whole life, and the kernel drops the
-/// extension at exit. Ceiling: no `stopAccessing`, so a removed extension keeps its
-/// extension alive until quit. Harmless, and the alternative is refcounting by path.
+/// paths swaps three call sites and keeps its own shape. Keep the URL that actually
+/// started each extension so replacing or deleting a choice can close it.
 @MainActor enum ScopedPaths {
-    /// Paths whose extension is already started, so resolving twice does not nest.
-    private static var accessing: Set<String> = []
+    private enum Owner: Hashable {
+        case preference(ObjectIdentifier, String)
+        case download(UUID)
+    }
+
+    private struct Scope {
+        var url: URL
+        var started: Bool
+        var owners: Set<Owner>
+    }
+
+    /// One kernel start per path. Each preference or download row holds a lease; the last
+    /// lease closes the exact URL that started the extension.
+    private static var accessing: [String: Scope] = [:]
+
+    private static func owner(_ key: String, _ defaults: UserDefaults) -> Owner {
+        .preference(ObjectIdentifier(defaults), key)
+    }
 
     /// Every folder still reachable under `key`, access already started. Anything that no
     /// longer resolves — folder deleted, volume gone, or a pre-sandbox plain path that the
@@ -28,19 +42,54 @@ import WebKit
     @discardableResult
     static func urls(_ key: String, in defaults: UserDefaults = .vane) -> [URL] {
         let stored = raw(key, in: defaults)
+        let holder = owner(key, defaults)
         var kept: [Data] = []
         var out: [URL] = []
         for data in stored {
-            guard let url = resolve(data), start(url) else { continue }
+            guard let url = resolve(data), start(url, for: holder) else { continue }
             kept.append(data)
             out.append(url)
         }
+        let keptPaths = Set(out.map { $0.resolvingSymlinksInPath().path })
+        release(holder, except: keptPaths)
         if kept.count != stored.count { defaults.set(kept, forKey: key) }
         return out
     }
 
     static func paths(_ key: String, in defaults: UserDefaults = .vane) -> [String] {
         urls(key, in: defaults).map(\.path)
+    }
+
+    /// Resolve a single saved choice without deleting it when a drive is temporarily
+    /// unavailable. Callers can fall back now and regain the choice on a later launch.
+    static func availableURL(_ key: String, in defaults: UserDefaults = .vane) -> URL? {
+        guard let data = raw(key, in: defaults).first,
+              let url = resolve(data), start(url, for: owner(key, defaults)) else { return nil }
+        return url
+    }
+
+    /// A download row keeps its own folder grant after the profile changes its current
+    /// destination. The row owns this data in downloads.json rather than UserDefaults.
+    static func bookmarkForLater(_ url: URL) -> Data? {
+        bookmark(url, requireScope: AppIcon.isSandboxed)
+    }
+
+    /// Path identity for migration only. Resolving a bookmark does not mean the
+    /// disconnected volume is accessible; callers must still start its scope to use it.
+    static func bookmarkedURL(_ data: Data) -> URL? { resolve(data) }
+
+    static func accessBookmark(_ data: Data, owner: UUID) -> URL? {
+        guard let url = resolve(data), start(url, for: .download(owner)) else { return nil }
+        return url
+    }
+
+    static func releaseBookmark(owner: UUID) {
+        release(.download(owner))
+    }
+
+    /// Focused selfcheck seam: counts leases, including readable unsandboxed paths.
+    static func activeOwnerCount(for url: URL) -> Int {
+        accessing[url.resolvingSymlinksInPath().path]?.owners.count ?? 0
     }
 
     /// Bookmark `url` and append it. False means the sandbox will not let this folder be
@@ -53,14 +102,34 @@ import WebKit
         guard !all.contains(where: { same($0, url) }) else { return true }
         all.append(data)
         defaults.set(all, forKey: key)
-        _ = start(url)
+        _ = start(url, for: owner(key, defaults))
+        return true
+    }
+
+    /// Store one selected folder, replacing the previous choice only after the new
+    /// bookmark and access are valid. A sandboxed caller must not fall back to a plain
+    /// bookmark: it would appear to work until the panel's grant expires at relaunch.
+    @discardableResult
+    static func replace(_ url: URL?, at key: String, in defaults: UserDefaults = .vane) -> Bool {
+        let holder = owner(key, defaults)
+        guard let url else {
+            defaults.removeObject(forKey: key)
+            release(holder)
+            return true
+        }
+        guard let data = bookmark(url, requireScope: AppIcon.isSandboxed),
+              start(url, for: holder) else {
+            return false
+        }
+        defaults.set([data], forKey: key)
+        release(holder, except: [url.resolvingSymlinksInPath().path])
         return true
     }
 
     static func remove(path: String, from key: String, in defaults: UserDefaults = .vane) {
         let url = URL(fileURLWithPath: path)
         defaults.set(raw(key, in: defaults).filter { !same($0, url) }, forKey: key)
-        accessing.remove(url.resolvingSymlinksInPath().path)
+        release(owner(key, defaults), at: url.resolvingSymlinksInPath().path)
     }
 
     /// A resolved bookmark comes back through the data volume's firmlink — under the
@@ -91,10 +160,12 @@ import WebKit
 
     /// Outside the sandbox `.withSecurityScope` is refused; a plain bookmark is all that is
     /// needed there, and resolving one grants access the process already had.
-    private static func bookmark(_ url: URL) -> Data? {
-        (try? url.bookmarkData(options: .withSecurityScope,
-                               includingResourceValuesForKeys: nil, relativeTo: nil))
-            ?? (try? url.bookmarkData())
+    private static func bookmark(_ url: URL, requireScope: Bool = false) -> Data? {
+        if let scoped = try? url.bookmarkData(options: .withSecurityScope,
+                                               includingResourceValuesForKeys: nil, relativeTo: nil) {
+            return scoped
+        }
+        return requireScope ? nil : (try? url.bookmarkData())
     }
 
     private static func resolve(_ data: Data) -> URL? {
@@ -106,14 +177,50 @@ import WebKit
 
     /// True when the path is usable. Unsandboxed `startAccessing` returns false for a plain
     /// bookmark and the path is readable anyway, so a readability check is the real answer.
-    private static func start(_ url: URL) -> Bool {
+    private static func start(_ url: URL, for owner: Owner) -> Bool {
         let real = url.resolvingSymlinksInPath().path
-        if accessing.contains(real) { return true }
-        if url.startAccessingSecurityScopedResource() {
-            accessing.insert(real)
+        if var scope = accessing[real] {
+            if !scope.started && url.startAccessingSecurityScopedResource() {
+                scope.url = url
+                scope.started = true
+            }
+            guard scope.started || FileManager.default.isReadableFile(atPath: url.path) else {
+                return false
+            }
+            scope.owners.insert(owner)
+            accessing[real] = scope
+            if case .download = owner { release(owner, except: [real]) }
             return true
         }
-        return FileManager.default.isReadableFile(atPath: url.path)
+        let started = url.startAccessingSecurityScopedResource()
+        guard started || FileManager.default.isReadableFile(atPath: url.path) else { return false }
+        accessing[real] = Scope(url: url, started: started, owners: [owner])
+        if case .download = owner { release(owner, except: [real]) }
+        return true
+    }
+
+    private static func release(_ owner: Owner, at path: String) {
+        guard var scope = accessing[path] else { return }
+        scope.owners.remove(owner)
+        if scope.owners.isEmpty {
+            accessing.removeValue(forKey: path)
+            if scope.started { scope.url.stopAccessingSecurityScopedResource() }
+        } else {
+            accessing[path] = scope
+        }
+    }
+
+    private static func release(_ owner: Owner, except retained: Set<String> = []) {
+        for path in Array(accessing.keys) where !retained.contains(path) {
+            release(owner, at: path)
+        }
+    }
+
+    private static func stopAll() {
+        for scope in accessing.values where scope.started {
+            scope.url.stopAccessingSecurityScopedResource()
+        }
+        accessing.removeAll()
     }
 
     // MARK: check
@@ -161,7 +268,7 @@ import WebKit
 
         // The relaunch. Forgetting `accessing` is what a new process starts with, so this
         // resolve has to take the extension again from the stored Data alone.
-        accessing.removeAll()
+        stopAll()
         let resolved = urls(key, in: defaults)
         assert("a stored bookmark resolves back to the same folder",
                resolved.first?.resolvingSymlinksInPath().path == folder.resolvingSymlinksInPath().path)
@@ -173,10 +280,25 @@ import WebKit
         remove(path: folder.path, from: key, in: defaults)
         assert("removing a folder empties the stored list", raw(key, in: defaults).isEmpty)
 
+        // A new choice must release the old extension; removing the choice must close
+        // the remaining one. The check observes tracked scopes when macOS starts one.
+        let replacement = folder.deletingLastPathComponent()
+            .appendingPathComponent(name + "-replacement", isDirectory: true)
+        try? fm.createDirectory(at: replacement, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: replacement) }
+        _ = replace(folder, at: key, in: defaults)
+        let oldPath = folder.resolvingSymlinksInPath().path
+        _ = replace(replacement, at: key, in: defaults)
+        assert("replacing a selected folder releases its old scope",
+               accessing[oldPath] == nil)
+        _ = replace(nil, at: key, in: defaults)
+        assert("clearing a selected folder releases its scope",
+               accessing[replacement.resolvingSymlinksInPath().path] == nil)
+
         // A folder that has gone away must fall out of the list instead of being retried.
         _ = add(folder, to: key, in: defaults)
         try? fm.removeItem(at: folder)
-        accessing.removeAll()
+        stopAll()
         assert("a bookmark to a deleted folder is dropped, not retried forever",
                urls(key, in: defaults).isEmpty && raw(key, in: defaults).isEmpty)
 
@@ -341,6 +463,9 @@ struct Space: Identifiable, Codable, Equatable {
 
     @Published private(set) var profiles: [Profile] = []
     @Published private var activeID: UUID = ProfileManager.defaultID
+    /// A damaged existing list is kept for recovery; no mutation may replace it with a
+    /// newly invented default profile.
+    private var profileListReadable = true
 
     /// The profile everything unqualified resolves to. Falls back to the first profile, so
     /// a stale or deleted selection can never leave the app with no profile at all.
@@ -383,7 +508,16 @@ struct Space: Identifiable, Codable, Equatable {
         } else {
             profiles = [Profile(id: Self.defaultID, name: "Personal", colorHex: Self.palette[0])]
             activeID = Self.defaultID
-            persist()
+            // An absent or unreadable directory is not evidence that the profile list
+            // never existed. It may return during this process's lifetime; only an
+            // accessible directory with no such entry permits first-launch creation.
+            if let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path),
+               !names.contains(file.lastPathComponent) {
+                persist()
+            } else {
+                profileListReadable = false
+                NSLog("Vane: could not read profiles.json; preserving it for recovery")
+            }
         }
         // Deliberately not called inline: `ProfileManager.shared` is first touched from
         // `Session.restore()`, which runs before `NSApplication.run()`, and WebKit's main
@@ -397,9 +531,19 @@ struct Space: Identifiable, Codable, Equatable {
         }
     }
 
-    private func persist() {
-        guard let data = try? JSONEncoder().encode(Disk(profiles: profiles, activeID: activeID)) else { return }
-        try? data.write(to: directory.appendingPathComponent("profiles.json"))
+    @discardableResult
+    private func persist(_ disk: Disk) -> Bool {
+        guard profileListReadable else {
+            NSLog("Vane: could not save profiles.json because the existing list is unreadable")
+            return false
+        }
+        guard let data = try? JSONEncoder().encode(disk) else { return false }
+        return SnapshotPersistence.write(data, to: directory.appendingPathComponent("profiles.json"))
+    }
+
+    @discardableResult
+    private func persist() -> Bool {
+        persist(Disk(profiles: profiles, activeID: activeID))
     }
 
     // MARK: CRUD
@@ -433,9 +577,12 @@ struct Space: Identifiable, Codable, Equatable {
     @discardableResult
     func delete(_ id: UUID) -> Bool {
         guard profiles.count > 1, let i = profiles.firstIndex(where: { $0.id == id }) else { return false }
-        profiles.remove(at: i)
-        if activeID == id { activeID = profiles[0].id }
-        persist()
+        var remaining = profiles
+        remaining.remove(at: i)
+        let nextActiveID = activeID == id ? remaining[0].id : activeID
+        guard persist(Disk(profiles: remaining, activeID: nextActiveID)) else { return false }
+        profiles = remaining
+        activeID = nextActiveID
 
         if !sandboxed {
             // Close the sqlite connection and drop the cached objects before the files go.
@@ -448,6 +595,9 @@ struct Space: Identifiable, Codable, Equatable {
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
+            _ = ScopedPaths.replace(nil, at: DownloadLocation.directoryKey(id))
+            UserDefaults.vane.removeObject(forKey: DownloadLocation.pendingDirectoryKey(id))
+            UserDefaults.vane.removeObject(forKey: DownloadLocation.askKey(id))
             Self.eraseWebsiteData(for: id)
         }
 
@@ -807,6 +957,54 @@ struct Space: Identifiable, Codable, Equatable {
                reloaded.profiles.count == 2 && reloaded.profiles.contains { $0.name == "School" })
         assert("the active selection round-trips", reloaded.active.id == work.id)
 
+        // Make the profile-list destination unwritable while the victim's files remain
+        // available. A failed list update must not authorize erasing the only data for it.
+        let blockedRoot = root.appendingPathComponent("blocked-delete", isDirectory: true)
+        try? fm.createDirectory(at: blockedRoot, withIntermediateDirectories: true)
+        let blocked = ProfileManager(directory: blockedRoot, sandboxed: true)
+        let victim = blocked.create(name: "Keep Me")
+        let victimDB = dbURL(for: victim.id, in: blockedRoot)
+        let victimSession = sessionURL(for: victim.id, in: blockedRoot)
+        try? Data("database".utf8).write(to: victimDB)
+        try? Data("session".utf8).write(to: victimSession)
+        let list = blockedRoot.appendingPathComponent("profiles.json")
+        let savedList = blockedRoot.appendingPathComponent("profiles.backup.json")
+        try? fm.moveItem(at: list, to: savedList)
+        try? fm.createDirectory(at: list, withIntermediateDirectories: true)
+        let rejectedDelete = blocked.delete(victim.id)
+        assert("failed profile-list write refuses profile deletion", !rejectedDelete)
+        assert("failed profile deletion retains its in-memory entry", blocked.profiles.contains { $0.id == victim.id })
+        assert("failed profile deletion preserves database and session",
+               (try? Data(contentsOf: victimDB)) == Data("database".utf8)
+               && (try? Data(contentsOf: victimSession)) == Data("session".utf8))
+        assert("failed profile deletion leaves the last complete list readable",
+               (try? Data(contentsOf: savedList))
+                   .flatMap { try? JSONDecoder().decode(Disk.self, from: $0) }?
+                   .profiles.contains { $0.id == victim.id } == true)
+
+        let damagedRoot = root.appendingPathComponent("damaged-list", isDirectory: true)
+        try? fm.createDirectory(at: damagedRoot, withIntermediateDirectories: true)
+        let damagedList = damagedRoot.appendingPathComponent("profiles.json")
+        let damagedBytes = Data("incomplete profile JSON".utf8)
+        try? damagedBytes.write(to: damagedList)
+        _ = ProfileManager(directory: damagedRoot, sandboxed: true)
+        assert("opening a damaged profile list preserves the original bytes",
+               (try? Data(contentsOf: damagedList)) == damagedBytes)
+
+        let unavailableRoot = root.appendingPathComponent("unavailable-list", isDirectory: true)
+        let parkedRoot = root.appendingPathComponent("parked-list", isDirectory: true)
+        try? fm.createDirectory(at: unavailableRoot, withIntermediateDirectories: true)
+        let durable = ProfileManager(directory: unavailableRoot, sandboxed: true)
+        _ = durable.create(name: "Existing Work")
+        let originalList = try? Data(contentsOf: unavailableRoot.appendingPathComponent("profiles.json"))
+        try? fm.moveItem(at: unavailableRoot, to: parkedRoot)
+        let stranded = ProfileManager(directory: unavailableRoot, sandboxed: true)
+        try? fm.moveItem(at: parkedRoot, to: unavailableRoot)
+        _ = stranded.create(name: "Accidental Replacement")
+        assert("a temporarily unavailable directory cannot overwrite its restored profile list",
+               originalList != nil
+               && (try? Data(contentsOf: unavailableRoot.appendingPathComponent("profiles.json"))) == originalList)
+
         // Spaces belong to exactly one profile.
         let reading = pm.createSpace(name: "Reading", in: work.id)
         pm.createSpace(name: "Inbox", in: defaultID)
@@ -1046,9 +1244,12 @@ struct Space: Identifiable, Codable, Equatable {
         pm.createSpace(name: "Scratch", in: victim)
         let victimKeys = ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey]
             .map { defaultsKey($0, victim) }
+            + [DownloadLocation.directoryKey(victim), DownloadLocation.askKey(victim)]
         UserDefaults.vane.set(["https://pinned.example"], forKey: victimKeys[0])
         UserDefaults.vane.set(false, forKey: victimKeys[1])
         UserDefaults.vane.set([Data("bookmark".utf8)], forKey: victimKeys[2])
+        UserDefaults.vane.set([Data("download bookmark".utf8)], forKey: victimKeys[3])
+        UserDefaults.vane.set(true, forKey: victimKeys[4])
         let victimPermission = SitePermissions.Scope(
             url: URL(string: "https://vane-delete-check.invalid"), profileID: victim)!
         let neighbourPermission = SitePermissions.Scope(

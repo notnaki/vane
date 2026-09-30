@@ -314,9 +314,13 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Delete")
         alert.buttons.last?.hasDestructiveAction = true
-        if alert.runModal() == .alertSecondButtonReturn, manager.delete(active.id) {
-            _ = Windows.switchTo(profile: manager.active)
-            rebuild()
+        if alert.runModal() == .alertSecondButtonReturn {
+            if manager.delete(active.id) {
+                _ = Windows.switchTo(profile: manager.active)
+                rebuild()
+            } else {
+                Toasts.show("Couldn’t delete profile. Its data was kept.")
+            }
         }
     }
     remove.isEnabled = manager.profiles.count > 1

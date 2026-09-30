@@ -614,10 +614,33 @@ struct PasswordChoice: Equatable {
         }
         return { user: user, pass: pw };
       }
+      var lastPair = null;
+      function pairFor(el) {
+        if (!el) { return null; }
+        var p = pair(el.form || document);
+        return p && (el === p.user || el === p.pass) ? p : null;
+      }
+      function visible(p) {
+        return p && p.pass.isConnected && p.pass.getClientRects().length > 0;
+      }
+      function targetPair() {
+        var focused = pairFor(document.activeElement);
+        if (visible(focused)) { return focused; }
+        // A SPA can replace the username alone. Re-pair from the cached password node
+        // so a connected password never carries a detached username into a fill.
+        var recent = lastPair && pairFor(lastPair.pass);
+        if (visible(recent)) { return recent; }
+        for (var i = 0; i < document.forms.length; i++) {
+          var candidate = pair(document.forms[i]);
+          if (visible(candidate)) { return candidate; }
+        }
+        var ungrouped = pair(document);
+        return visible(ungrouped) ? ungrouped : null;
+      }
       // Where a chooser should hang: under the username field, its width, in CSS pixels
       // relative to the viewport — which is exactly what the web view is showing.
       function anchor() {
-        var p = pair(document);
+        var p = targetPair();
         if (!p) { return null; }
         var r = (p.user || p.pass).getBoundingClientRect();
         return { x: r.left, y: r.bottom, w: r.width };
@@ -628,13 +651,15 @@ struct PasswordChoice: Equatable {
         listOpen = !!m.focus;
         webkit.messageHandlers.vanepw.postMessage(m);
       }
-      function ours(el) { var p = pair(document); return !!p && (el === p.user || el === p.pass); }
+      function ours(el) { return !!pairFor(el); }
       // Chromium drops its list of saved accounts under the username field the moment you
       // focus it, and Arc inherits that. Capture phase throughout: a site that stops these
       // events from bubbling must not also stop the browser's own chrome from appearing —
       // or, worse, from going away again.
       document.addEventListener('focusin', function (e) {
-        if (!ours(e.target)) { return; }
+        var p = pairFor(e.target);
+        if (!p) { return; }
+        lastPair = p;
         var a = anchor();
         if (a) { send({ focus: true, x: a.x, y: a.y, w: a.w }); }
       }, true);
@@ -653,18 +678,46 @@ struct PasswordChoice: Equatable {
       }, true);
       // A single-page app changes the form under us without a navigation.
       window.addEventListener('popstate', function () { send({ dismiss: 'navigate' }); });
-      function offer() {
-        var p = pair(document);
+      var submittedAttempt = null;
+      function replacesSubmitted(form) {
+        var a = submittedAttempt;
+        return a && form && !a.form.isConnected && a.formsAtSubmit.indexOf(form) < 0
+          && form.parentNode === a.parent && form.previousSibling === a.before
+          && form.nextSibling === a.after;
+      }
+      function offer(p) {
         if (!p || !p.pass.value) { return; }
         send({ account: p.user ? p.user.value : '', password: p.pass.value });
       }
-      document.addEventListener('submit', offer, true);
+      document.addEventListener('submit', function (e) {
+        var form = e.target;
+        submittedAttempt = {
+          form: form, parent: form.parentNode,
+          before: form.previousSibling, after: form.nextSibling,
+          formsAtSubmit: Array.prototype.slice.call(document.forms), retry: null
+        };
+        offer(pair(e.target));
+      }, true);
+      // A failed sign-in can leave the page in place. An edited field starts a new attempt.
+      document.addEventListener('input', function (e) {
+        if (!submittedAttempt || !pairFor(e.target)) { return; }
+        var form = e.target.form;
+        if (form === submittedAttempt.form) { submittedAttempt = null; return; }
+        // Only a newly created form in the submitted form's old slot is its retry.
+        // Editing any other login form leaves the submitted offer in charge.
+        submittedAttempt.retry = replacesSubmitted(form) ? form : null;
+      }, true);
       // Plenty of logins never fire submit — a button posts via fetch and then navigates.
       // pagehide catches those. ponytail: best effort; a site that logs in without any
       // navigation at all still slips through.
-      window.addEventListener('pagehide', offer);
+      window.addEventListener('pagehide', function () {
+        if (!submittedAttempt) { offer(targetPair()); }
+        else if (replacesSubmitted(submittedAttempt.retry)) {
+          offer(pair(submittedAttempt.retry));
+        }
+      });
       window.__vaneFill = function (account, password) {
-        var p = pair(document);
+        var p = targetPair();
         if (!p) { return false; }
         if (p.user && account) { setValue(p.user, account); }
         setValue(p.pass, password);
@@ -703,6 +756,10 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
 
     private static let page = """
     <!doctype html><meta charset=utf-8><body>
+    <form id=signup>
+      <input type=email id=signupUser value=signup@example.com>
+      <input type=password id=signupPass value=signup-secret>
+    </form>
     <form id=f>
       <input type=text name=other value=decoy>
       <input type=email id=u name=email>
@@ -880,6 +937,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("recent tab switcher", TabSwitcher.check),
                                ("toasts", Toasts.check),
                                ("self-update", Release.check),
+                               ("bundle replacement", BundleReplacement.check),
                                ("pinned folders", Pins.check),
                                ("the pages the card holds", WebHost.check),
                                ("split view", Split.check),
@@ -1074,12 +1132,12 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                           saved.pinnedTabURLs == [home])
                     let relaunched = TabStore(profileID: profileID, space: saved)
                     let back = relaunched.tabs.first { $0.kind == .pinned }
-                    check("the next launch comes up on the page it was pinned at",
-                          back?.currentURL == home)
-                    check("…parked, and with none of the wander's state to come back to",
-                          back?.suspended == true && back?.snapshot.state != wander)
-                    check("…under the name of the page it stands for, not \"New Tab\"",
-                          back?.title == "home.example")
+                    check("the next launch keeps the page the pinned row wandered to",
+                          back?.homeURL == home && back?.currentURL == away)
+                    check("…parked, with the wander's back/forward state",
+                          back?.suspended == true && back?.snapshot.state == wander)
+                    check("…and keeps the page's title until it is sent home",
+                          back?.title == "Away")
                     relaunched.tabs.forEach { $0.tearDown() }
                     TabStore.all.removeAll { $0 === relaunched }
                 }
@@ -1102,8 +1160,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                 check("a favourite browsed elsewhere is put back on its own page too",
                       tile.currentURL == home && tile.kind == .favourite)
                 // Last, because making it current wakes it: the row is wandered again and
-                // looked at, and the Space is left. What it remembers has to be the home,
-                // which is the row a Space rebuilt from disk comes up with.
+                // looked at, and the Space is left. It identifies the row by its home even
+                // though the sidecar restores the page it wandered to.
                 row.park(url: away, Parked(title: "Away", state: wander))
                 store.current = row.id
                 store.saveCurrentSpace()
@@ -1155,28 +1213,125 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         b.onLoaded = {
             // In the script's own world, like the app does it — the page world has no
             // `__vaneFill` at all any more, which is the point of the world.
-            w.evaluateJavaScript(Autofill.fillJS(account: user, password: pass),
-                                 in: nil, in: Autofill.world) { result in
-                let filled = try? result.get()
-                check("fill reports a form was found", (filled as? Bool) == true)
-                w.evaluateJavaScript("window.__state()") { state, _ in
-                    let s = (state as? String) ?? ""
-                    check("username reached component state", s.contains(user))
-                    check("password reached component state", s.contains(pass))
-                    check("decoy text field was not mistaken for the username", !s.contains("decoy"))
-                    // The whole point of the content world: a page cannot replace the fill
-                    // hook with one that keeps whatever the browser hands it.
-                    w.evaluateJavaScript("typeof window.__vaneFill + \" \" + typeof window.__vaneAnchor") { kinds, _ in
-                        check("the page's own world cannot see the autofill hooks",
-                              (kinds as? String) == "undefined undefined")
-                    }
-                    w.evaluateJavaScript("document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}))") { _, _ in
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-                            check("submit offered the credential back to the app", b.offered?.0 == user && b.offered?.1 == pass)
-                            print("window.open against a real page")
-                            popupRows { rows in
-                                for (name, ok) in rows { check(name, ok) }
-                                finish("PASS")
+            w.evaluateJavaScript("document.getElementById('u').focus()") { _, _ in
+                w.evaluateJavaScript(Autofill.fillJS(account: user, password: pass),
+                                     in: nil, in: Autofill.world) { result in
+                    let filled = try? result.get()
+                    check("fill reports a form was found", (filled as? Bool) == true)
+                    w.evaluateJavaScript("window.__state()") { state, _ in
+                        let s = (state as? String) ?? ""
+                        check("username reached component state", s.contains(user))
+                        check("password reached component state", s.contains(pass))
+                        check("decoy text field was not mistaken for the username", !s.contains("decoy"))
+                        w.evaluateJavaScript("document.getElementById('signupPass').value") { value, _ in
+                            check("fill leaves another form's password alone",
+                                  (value as? String) == "signup-secret")
+                        }
+                        // The page's own world cannot replace the isolated fill hook.
+                        w.evaluateJavaScript("typeof window.__vaneFill + \" \" + typeof window.__vaneAnchor") { kinds, _ in
+                            check("the page's own world cannot see the autofill hooks",
+                                  (kinds as? String) == "undefined undefined")
+                        }
+                        w.evaluateJavaScript("""
+                            document.getElementById('signupUser').value = 'signup@example.com';
+                            document.getElementById('signupPass').value = 'signup-secret';
+                            document.getElementById('signupUser').focus();
+                            document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}));
+                            window.dispatchEvent(new Event('pagehide'));
+                            """) { _, _ in
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                check("pagehide keeps the submitted login credential despite signup focus",
+                                      b.offered?.0 == user && b.offered?.1 == pass)
+                                b.offered = nil
+                                w.evaluateJavaScript("""
+                                    document.getElementById('p').value = '';
+                                    document.getElementById('signupUser').focus();
+                                    document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}));
+                                    window.dispatchEvent(new Event('pagehide'));
+                                    """) { _, _ in
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                        check("empty login submit cannot offer signup on pagehide",
+                                              b.offered == nil)
+                                        // A single-page app may replace just the username
+                                        // node after focus, leaving the password node in place.
+                                        w.evaluateJavaScript("""
+                                            document.getElementById('u').focus();
+                                            var oldUser = document.getElementById('u');
+                                            var newUser = document.createElement('input');
+                                            newUser.id = 'u';
+                                            newUser.type = 'email';
+                                            oldUser.replaceWith(newUser);
+                                            """) { _, _ in
+                                            w.evaluateJavaScript(
+                                                Autofill.fillJS(account: "new@example.com", password: "new-secret"),
+                                                in: nil, in: Autofill.world) { _ in
+                                                w.evaluateJavaScript("""
+                                                    JSON.stringify([document.getElementById('u').value,
+                                                                    document.getElementById('p').value])
+                                                    """) { values, _ in
+                                                    check("fill uses the replacement username node",
+                                                          (values as? String) == "[\"new@example.com\",\"new-secret\"]")
+                                                    b.offered = nil
+                                                    w.evaluateJavaScript("""
+                                                        document.getElementById('u').value = 'login@example.com';
+                                                        document.getElementById('p').value = 'login-secret';
+                                                        document.getElementById('p').dispatchEvent(new Event('input', {bubbles:true}));
+                                                        document.getElementById('f').dispatchEvent(new Event('submit', {bubbles:true}));
+                                                        document.getElementById('signupUser').value = 'signup@example.com';
+                                                        document.getElementById('signupPass').value = 'signup-secret';
+                                                        document.getElementById('signupUser').dispatchEvent(new Event('input', {bubbles:true}));
+                                                        document.getElementById('signupUser').focus();
+                                                        window.dispatchEvent(new Event('pagehide'));
+                                                        """) { _, _ in
+                                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                                            check("editing another form cannot replace a submitted login offer",
+                                                                  b.offered?.0 == "login@example.com"
+                                                                    && b.offered?.1 == "login-secret")
+                                                            b.offered = nil
+                                                            w.evaluateJavaScript("""
+                                                                var oldLogin = document.getElementById('f');
+                                                                var loginParent = oldLogin.parentNode;
+                                                                var loginNext = oldLogin.nextSibling;
+                                                                oldLogin.remove();
+                                                                document.getElementById('signupUser').dispatchEvent(new Event('input', {bubbles:true}));
+                                                                document.getElementById('signupUser').focus();
+                                                                window.dispatchEvent(new Event('pagehide'));
+                                                                """) { _, _ in
+                                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                                                    check("editing preexisting signup after login removal keeps its offer",
+                                                                          b.offered == nil)
+                                                                    b.offered = nil
+                                                                    w.evaluateJavaScript("""
+                                                                        var replacement = document.createElement('form');
+                                                                        replacement.id = 'retry';
+                                                                        replacement.innerHTML = '<input id="retryUser" type="email"><input id="retryPass" type="password">';
+                                                                        loginParent.insertBefore(replacement, loginNext);
+                                                                        document.getElementById('retryUser').value = 'retry@example.com';
+                                                                        document.getElementById('retryPass').value = 'retry-secret';
+                                                                        document.getElementById('retryPass').dispatchEvent(new Event('input', {bubbles:true}));
+                                                                        document.getElementById('retryUser').focus();
+                                                                        window.dispatchEvent(new Event('pagehide'));
+                                                                        """) { _, _ in
+                                                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                                                            check("edited replacement form offers its fetch login on pagehide",
+                                                                                  b.offered?.0 == "retry@example.com"
+                                                                                    && b.offered?.1 == "retry-secret")
+                                                                            print("window.open against a real page")
+                                                                            popupRows { rows in
+                                                                                for (name, ok) in rows { check(name, ok) }
+                                                                                finish("PASS")
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

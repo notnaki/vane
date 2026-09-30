@@ -143,9 +143,9 @@ The workflow builds `Vane.app`, packages `Vane.dmg` and `Vane.zip`, and publishe
 them to a GitHub Release. To produce a Developer ID signed and notarized build,
 the repository needs `DEVELOPER_ID_CERT_P12_BASE64`,
 `DEVELOPER_ID_CERT_PASSWORD`, `AC_API_KEY_ID`, `AC_API_ISSUER_ID`, and
-`AC_API_KEY_P8_BASE64` as Actions secrets. With none configured, the workflow
-publishes an ad hoc signed, unnotarized build that the in-app updater will
-reject. A partially configured signing setup fails the workflow.
+`AC_API_KEY_P8_BASE64` as Actions secrets. The workflow stops before publishing
+if any of these five credentials is missing. A tag containing a hyphen, such as
+`v1.2.3-rc1`, publishes a prerelease that the in-app updater does not offer.
 
 Local Developer ID builds can use:
 

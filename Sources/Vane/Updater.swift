@@ -143,6 +143,12 @@ enum Release {
         return dict["CFBundleShortVersionString"] as? String
     }
 
+    /// Keep an unreadable installed bundle distinct from an empty destination.
+    static func installedVersion(at url: URL) -> String? {
+        FileManager.default.fileExists(atPath: url.path)
+            ? (version(ofBundleAt: url) ?? "") : nil
+    }
+
     // MARK: - What a check is allowed to say
 
     /// The answer to a check. A *background* check may only ever put up the offer of a real
@@ -530,6 +536,7 @@ extension Release {
 @MainActor final class Updater {
     static let shared = Updater()
     static let repo = "notnaki/vane"
+    private static var launchedReplacement = false
 
     static var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.1.0"
@@ -854,7 +861,7 @@ extension Release {
         progress = nil
         set(.installing)
         Task.detached(priority: .userInitiated) {
-            let (ok, permanent) = Self.unpackAndSwap(zip: zip, target: target)
+            let (ok, permanent) = Self.unpackAndSwap(zip: zip, target: target, tag: tag)
             await MainActor.run {
                 Updater.shared.working = false
                 // The tag goes with the failure only when the release itself is the problem.
@@ -882,25 +889,20 @@ extension Release {
         let path = Release.destination(forBundleAt: Bundle.main.bundleURL.path,
                                        home: realHome).path
         let url = URL(fileURLWithPath: path)
-        let version = FileManager.default.fileExists(atPath: path)
-            ? (Release.version(ofBundleAt: url) ?? "") : nil
+        let version = Release.installedVersion(at: url)
         return (url, version)
     }
 
     /// Unpack the release and put it at `target`, replacing whatever is there.
     ///
-    /// Vesta mounts a dmg for this; Vane cannot — `hdiutil attach` is refused inside the
-    /// sandbox — so the zip is expanded with `ditto -x -k`, which is allowed. Everything
-    /// after that is Vesta's shape: check the new bundle, stage it beside the target, move
-    /// the old one aside, move the new one in, and put the old one back if any step fails.
-    /// macOS lets a running bundle be renamed, so the app can do this to itself while it is
-    /// running — which is the whole reason an update needs no installer.
+    /// The zip is expanded inside the sandbox, then BundleReplacement copies and verifies
+    /// a sibling of the destination before atomically swapping the directory names.
     ///
     /// `permanent` says which kind of failure it was: true when this *release* is the problem
     /// — no Vane.app in the zip, or one signed by somebody who is not us — so the caller can
     /// refuse the tag for good. Every other way out is a transient one (a dropped `ditto`, a
     /// rename the disk would not do), and the next check is welcome to try the same tag again.
-    nonisolated private static func unpackAndSwap(zip: URL, target: URL)
+    nonisolated private static func unpackAndSwap(zip: URL, target: URL, tag: String)
         -> (ok: Bool, permanent: Bool) {
         let fm = FileManager.default
         let staged = fm.temporaryDirectory.appendingPathComponent("Vane-new-\(UUID().uuidString)")
@@ -918,37 +920,18 @@ extension Release {
             return (false, true)
         }
 
-        let parent = target.deletingLastPathComponent()
-        try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
-        let new = parent.appendingPathComponent(target.lastPathComponent + ".new")
-        let old = parent.appendingPathComponent(target.lastPathComponent + ".old")
-        try? fm.removeItem(at: new)
-        try? fm.removeItem(at: old)
-        guard (try? fm.copyItem(at: incoming, to: new)) != nil else { return (false, false) }
-        let replacing = fm.fileExists(atPath: target.path)
-        if replacing, (try? fm.moveItem(at: target, to: old)) == nil {
-            try? fm.removeItem(at: new)
+        do {
+            try BundleReplacement.install(source: incoming, at: target, keepPrevious: false,
+                                          verify: verified,
+                                          mayReplaceTarget: { url in
+                Release.shouldInstall(tag: tag,
+                                      installedVersion: Release.installedVersion(at: url))
+            })
+            return (true, false)
+        } catch {
+            NSLog("[vane] update: bundle replacement failed: %@", String(describing: error))
             return (false, false)
         }
-        guard (try? fm.moveItem(at: new, to: target)) != nil else {
-            // Nothing is at the real path and the old copy is at `.old`: put it back, or the
-            // next launch has no app to launch.
-            if replacing { try? fm.moveItem(at: old, to: target) }
-            try? fm.removeItem(at: new)
-            return (false, false)
-        }
-        // `.old` is left for the new copy to sweep on its next launch — deleting it here
-        // would unlink the bundle this very process is running out of — and the path is
-        // written down so that sweep deletes *this*, not any `Vane.app.old` a user happens to
-        // keep beside their app.
-        //
-        // The window: between the two renames above there is a moment with no bundle at
-        // `target` and the running app at `.old`. A crash or a power cut inside it leaves the
-        // app installed under the wrong name; the fix is a rename in Finder, and it is the
-        // same window Vesta and every in-place updater has. Making it atomic needs
-        // `renameatx_np(RENAME_SWAP)`, which needs both paths to already exist — they do not.
-        UserDefaults.vane.set(old.path, forKey: "updateOldBundle")
-        return (true, false)
     }
 
     /// Run a tool and say what it said. A bare `Bool` here meant a failed unpack was
@@ -978,17 +961,35 @@ extension Release {
         return true
     }
 
-    /// The previous version, left beside the bundle by the swap that replaced it.
-    /// Called once at launch: by now the process that was running out of `.old` is gone.
-    static func sweep() {
-        // Only the exact path a swap of ours wrote down, and only once. `Vane.app.old`
-        // beside the app is otherwise just a folder with a name we happen to recognise —
-        // possibly a backup somebody made on purpose — and deleting it would be Vane
-        // throwing away a copy of itself nobody asked it to touch.
-        if let path = UserDefaults.vane.string(forKey: "updateOldBundle") {
-            UserDefaults.vane.removeObject(forKey: "updateOldBundle")
-            if path.hasSuffix(".app.old") { try? FileManager.default.removeItem(atPath: path) }
+    /// Reconcile a transaction before any window opens. A replacement that crashed during
+    /// its previous launch is rolled back while its old bundle is still retained.
+    static func recoverAtLaunch() {
+        guard isBundled else { return }
+        switch BundleReplacement.beginLaunch(at: Bundle.main.bundleURL) {
+        case .unchanged:
+            break
+        case .waitingForHealth:
+            launchedReplacement = true
+        case .needsAttention:
+            NSLog("[vane] update: pending bundle transaction needs manual attention")
+        case .rolledBack:
+            do {
+                try launchAfterExit(Bundle.main.bundleURL)
+                exit(0)
+            } catch {
+                NSLog("[vane] update: old bundle restored, but relaunch failed: %@",
+                      error.localizedDescription)
+                exit(1)
+            }
         }
+    }
+
+    /// Called only by the process that observed a pending replacement at its own startup.
+    /// The old process may still be running from the same bundle path after the swap; it
+    /// must never mark the new copy healthy or delete its own backup on termination.
+    static func markHealthyLaunch() {
+        guard isBundled, launchedReplacement else { return }
+        BundleReplacement.markHealthy(at: Bundle.main.bundleURL)
     }
 
     /// `refused` is the tag this copy has decided against and must never be offered again;
@@ -1014,8 +1015,7 @@ extension Release {
     /// rather than leaving the user with no app if the first `open` loses a race with quit.
     /// `Process` is reachable from inside the sandbox — `ditto` in `unpackAndSwap` is the
     /// same mechanism — and the child inherits the sandbox, which `open` does not mind.
-    func restart() {
-        let target = installed ?? Bundle.main.bundleURL
+    private static func launchAfterExit(_ target: URL) throws {
         func quoted(_ s: String) -> String {
             "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
         }
@@ -1024,8 +1024,13 @@ extension Release {
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
         helper.arguments = ["-c", script]
+        try helper.run()
+    }
+
+    func restart() {
+        let target = installed ?? Bundle.main.bundleURL
         do {
-            try helper.run()
+            try Self.launchAfterExit(target)
         } catch {
             // Could not even start the helper: stay alive and usable rather than quitting
             // into nothing. The update is installed — it just needs a manual relaunch.
@@ -1108,23 +1113,22 @@ extension Release {
         return true
     }
 
-    /// Copy a bundle to `target`, moving anything already there aside first and putting it
-    /// back if the copy fails. The one move that must not lose the app that is there.
-    ///
-    /// Deliberately does *not* write `updateOldBundle`: the displaced copy is somebody's
-    /// installed Vane, not a version this updater downloaded, so `sweep` must never delete
-    /// it on the next launch. It stays as `Vane.app.old` until a person decides otherwise.
+    /// Relocation uses the same staged verification and atomic swap as downloaded updates.
+    /// Its previous installed copy is retained after the new one reaches a healthy launch.
     nonisolated private static func place(_ source: URL, at target: URL) -> Bool {
-        let fm = FileManager.default
-        let old = URL(fileURLWithPath: target.path + ".old")
-        try? fm.removeItem(at: old)
-        let replacing = fm.fileExists(atPath: target.path)
-        if replacing, (try? fm.moveItem(at: target, to: old)) == nil { return false }
-        guard (try? fm.copyItem(at: source, to: target)) != nil else {
-            if replacing { try? fm.moveItem(at: old, to: target) }
+        do {
+            let sourceVersion = Release.version(ofBundleAt: source) ?? ""
+            try BundleReplacement.install(source: source, at: target, keepPrevious: true,
+                                          verify: verified,
+                                          mayReplaceTarget: { url in
+                Release.shouldInstall(tag: sourceVersion,
+                                      installedVersion: Release.installedVersion(at: url))
+            })
+            return true
+        } catch {
+            NSLog("[vane] install: bundle replacement failed: %@", String(describing: error))
             return false
         }
-        return true
     }
 
     /// The downloaded bundle must be signed by Vane's Developer ID team — `Release.teamID`,
