@@ -601,26 +601,25 @@ private struct SpaceSwipe: ViewModifier {
             rebuild()
             return
         }
-        // The Space changes *now*, at fingers-up, not at the end of the spring: the page
-        // is what the user is waiting for, and a third of a second after the strip has
-        // visibly landed reads as lag. The incoming sections are put down, without
-        // animation, exactly where the ghost was standing — one Space-width further along
-        // than the strip — so the spring that carries them home is the same slide the ghost
-        // was making, with the real rows under it. `spaceSwiping` stays true across the
-        // switch, which is what keeps `SpaceSlide`'s own transition off this update.
+        let from = store.currentSpaceID
         landing = true
-        var still = Transaction()
-        still.disablesAnimations = true
-        withTransaction(still) {
-            store.spaceDrag += CGFloat(direction) * width
-            store.switchTo(space: target)
-        }
-        rebuild()
         withAnimation(Look.spaceSpring) {
-            store.spaceDrag = 0
+            store.spaceDrag = -CGFloat(direction) * width
         } completion: { [weak store] in
             self.landing = false
-            store?.spaceSwiping = false
+            guard let store, store.window != nil, store.currentSpaceID == from else {
+                // Somebody else got there first, or the window is gone: drop the offset and
+                // leave the Space alone.
+                store?.spaceDrag = 0
+                store?.spaceSwiping = false
+                return
+            }
+            // Keep the old Space in place until the preview has finished sliding in.
+            // The incoming rows replace it at rest, without a second slide transition.
+            store.switchTo(space: target)
+            store.spaceDrag = 0
+            rebuild()
+            DispatchQueue.main.async { store.spaceSwiping = false }
         }
     }
 
