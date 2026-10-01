@@ -590,6 +590,7 @@ struct LittleArcView: View {
         .ignoresSafeArea()
         .animation(reduceMotion ? nil : Look.appear, value: store.palette == nil)
         .onAppear { store.applySpaceAppearance() }
+        .environmentObject(store.spaceGesture)
         // Costs no layout, and is the only thing that hears a title arrive.
         .background { if let tab = store.active { TitleSync(tab: tab) } }
     }

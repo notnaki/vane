@@ -2696,18 +2696,39 @@ struct Stash {
     /// 0 when nothing is happening. A two-finger swipe writes the fingers' travel here and the
     /// sidebar reads it, which is what makes the strip follow the fingers instead of waiting
     /// for them to finish. See `Spaces.Swipe`.
-    @Published var spaceDrag: CGFloat = 0
+    let spaceGesture = SpaceGesture()
+    var spaceDrag: CGFloat {
+        get { spaceGesture.drag }
+        set { if newValue != spaceGesture.drag { spaceGesture.drag = newValue } }
+    }
 
     /// True from the moment a Space swipe claims the strip until its spring has settled.
     ///
-    /// Not simply `spaceDrag != 0`: the commit hands the incoming Space's sections the offset
-    /// its preview was already sitting at and springs *that* to zero, so the one update in
-    /// which `currentSpaceID` changes must still know a swipe is what changed it — otherwise
-    /// the sidebar's own slide transition plays on top of a slide that has already happened.
-    @Published var spaceSwiping = false
+    /// Remains true across the landing's Space change, so the sidebar cannot play a second
+    /// transition after the preview has already slid into place.
+    var spaceSwiping: Bool {
+        get { spaceGesture.swiping }
+        set {
+            guard newValue != spaceGesture.swiping else { return }
+            if newValue { spaceGesture.strip = strip }
+            spaceGesture.swiping = newValue
+            if !newValue { spaceGesture.strip = nil }
+        }
+    }
+
+    /// Presentation uses one consistent strip throughout a swipe, without disk reads
+    /// on each frame. Switching still revalidates the destination against disk.
+    var swipeStrip: [Space] { spaceGesture.strip ?? strip }
+    var swipeSpace: Space? {
+        if let live = previewSpace, live.id == currentSpaceID { return live }
+        return swipeStrip.first { $0.id == currentSpaceID }
+    }
     /// How far a pull past the last Space has got, 0…1: the plus at the sidebar's edge fills
     /// with it, and 1 is the moment the Create a Space form takes the sidebar.
-    @Published var spacePull: CGFloat = 0
+    var spacePull: CGFloat {
+        get { spaceGesture.pull }
+        set { if newValue != spaceGesture.pull { spaceGesture.pull = newValue } }
+    }
     /// The Create a Space form is standing in for the sidebar's sections.
     @Published var creatingSpace = false
 

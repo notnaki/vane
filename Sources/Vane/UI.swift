@@ -387,6 +387,7 @@ struct BrowserWindow: View {
             showTrafficLights(chrome)
         }
         .onAppear { store.applySpaceAppearance() }
+        .environmentObject(store.spaceGesture)
         // In .background so it costs no layout: the buttons are still in the view tree and
         // in the responder chain, which is all .keyboardShortcut needs.
         .background { Shortcuts() }
@@ -463,17 +464,16 @@ struct BrowserWindow: View {
 /// no colourless space, and a grey slab was what the old fallback amounted to.
 struct SpaceGround: View {
     @EnvironmentObject var store: TabStore
+    @EnvironmentObject private var gesture: SpaceGesture
     @EnvironmentObject var profiles: ProfileManager
     @Environment(\.colorScheme) private var scheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let dark = scheme == .dark
-        // One read of the Space per render, not one per thing asked of it: `store.spaces`
-        // decodes spaces.json every time it is touched, and this redraws on every frame of a
-        // swipe. `currentSpace` answers from the theme editor's preview without a read at all
-        // while a colour is being dragged.
-        let here = store.currentSpace
+        // The gesture's snapshot avoids rereading Space files on each tint frame. The
+        // theme editor's unsaved colour preview still takes precedence.
+        let here = store.swipeSpace
         let mine = colors(of: here)
         let pull = pulled(from: here)
         let stops = Look.groundStops(mine, towards: pull.colors,
@@ -539,7 +539,7 @@ struct SpaceGround: View {
     }
 
     /// The Space the fingers are pulling in, its grain, and how much of it is already
-    /// showing. `store.strip` — the one thing here that reads the files — is only touched
+    /// showing. The gesture's captured strip is only touched
     /// while a swipe is actually live; at rest, and at the ends where the strip only
     /// rubber-bands, this is the current Space at fraction 0.
     ///
@@ -549,10 +549,10 @@ struct SpaceGround: View {
     private func pulled(from here: Space?) -> (colors: [String], grain: Double, fraction: Double) {
         let idle = (colors(of: here), here?.grain ?? 0, 0.0)
         let width = SidebarWidth.shared.width
-        guard store.spaceDrag != 0, width > 0 else { return idle }
-        let list = store.strip
+        guard gesture.drag != 0, width > 0 else { return idle }
+        let list = store.swipeStrip
         guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return idle }
-        let f = Double(max(-1, min(1, store.spaceDrag / width)))
+        let f = Double(max(-1, min(1, gesture.drag / width)))
         let n = f < 0 ? i + 1 : i - 1
         guard list.indices.contains(n) else { return idle }
         return (colors(of: list[n]), list[n].grain ?? 0, abs(f))
@@ -2518,6 +2518,7 @@ private struct SpaceIcons: View {
 /// current one. Only a private window has none, and it does not draw this at all.
 private struct SpaceDots: View {
     @EnvironmentObject var store: TabStore
+    @EnvironmentObject private var gesture: SpaceGesture
     /// *Which* dot's panel is open, not merely whether one is. Every dot draws its own
     /// `.popover`, so on one shared flag all of them asked to present at once and SwiftUI
     /// gave the panel to the last dot in the row: right-clicking any other dot opened the
@@ -2530,18 +2531,16 @@ private struct SpaceDots: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // Once per body, not once per dot: `store.strip` re-reads and decodes one
-        // `spaces.json` per profile every time it is touched, and a live swipe redraws this
-        // row every frame. The strip, because Arc's dots are every profile's Spaces side by
-        // side — tapping one of another profile's moves the window there.
-        let list = store.strip
+        // Share the gesture's captured strip with the tint and preview. Reading the
+        // profile files here would decode them again on every icon-blend frame.
+        let list = store.swipeStrip
         let lit = weights(list)
         HStack(spacing: 8) {
             ForEach(list) { dot($0, lit: lit[$0.id] ?? 0) }
             // The Space a pull is making gets a dot of its own before it exists: it fills
             // with the pull, and on the form it is simply the one you are on.
-            if store.creatingSpace || store.spacePull > 0 {
-                newDot(lit: store.creatingSpace ? 1 : Double(min(1, store.spacePull / Spaces.Swipe.pullFull)))
+            if store.creatingSpace || gesture.pull > 0 {
+                newDot(lit: store.creatingSpace ? 1 : Double(min(1, gesture.pull / Spaces.Swipe.pullFull)))
             }
         }
         .animation(reduceMotion ? nil : Look.quick, value: store.creatingSpace)
@@ -2615,8 +2614,8 @@ private struct SpaceDots: View {
     private func weights(_ list: [Space]) -> [UUID: Double] {
         guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return [:] }
         let width = SidebarWidth.shared.width
-        guard store.spaceDrag != 0, width > 0 else { return [list[i].id: 1] }
-        let f = Double(max(-1, min(1, store.spaceDrag / width)))
+        guard gesture.drag != 0, width > 0 else { return [list[i].id: 1] }
+        let f = Double(max(-1, min(1, gesture.drag / width)))
         let towards = f < 0 ? i + 1 : i - 1
         guard list.indices.contains(towards) else { return [list[i].id: 1] }
         return [list[i].id: 1 - abs(f), list[towards].id: abs(f)]
