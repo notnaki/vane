@@ -516,9 +516,10 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 
 /// ⇧⌘C. Arc's, and the one browser shortcut everybody misses when it is missing.
 @MainActor private func copyPageURL() {
-    guard let u = Windows.current?.active?.currentURL else { return }
+    guard let store = Windows.current, let u = store.active?.currentURL else { return }
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(u.absoluteString, forType: .string)
+    store.feedback.copied(u)
     axAnnounce("Link copied.")
     Toasts.show("Copied URL")
 }

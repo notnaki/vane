@@ -1555,6 +1555,7 @@ struct Stash {
 
 @MainActor final class TabStore: ObservableObject {
     let windowID = UUID()
+    let feedback = InteractionFeedback()
     var sharingReady = false
     var sharedUpdateQueued = false
     @Published var tabs: [Tab] = [] { didSet { SharedTabs.schedule(from: self) } }
@@ -2349,6 +2350,7 @@ struct Stash {
         // is where an un-pinned tab and one moved in from another Space both belong.
         if kind == .today { todayShape.put(id.uuidString, at: Pins.Spot(parent: nil, index: 0)) }
         savePins()
+        if kind != .today { feedback.arrived(id) }
     }
 
     /// ⌘D / the Favourite Tab menu item: into the grid, or back down to Today.

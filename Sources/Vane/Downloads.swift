@@ -557,6 +557,7 @@ import WebKit
         i.completed = .now
         deleteResume(i)
         save()
+        InteractionSounds.play(.complete)
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {

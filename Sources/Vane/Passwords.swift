@@ -883,7 +883,8 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
         check("clearHistory empties visits", { store.clearHistory(); return store.recent().isEmpty }())
         try? FileManager.default.removeItem(at: dir)
 
-        for (label, block) in [("window chrome", Look.check), ("sidebar motion", Motion.check), ("tab archive", Archive.check),
+        for (label, block) in [("window chrome", Look.check), ("sidebar motion", Motion.check),
+                               ("interaction sounds", InteractionSounds.check), ("tab archive", Archive.check),
                                ("content blocker", Blocker.check), ("browser import", BrowserImport.check),
                                ("import from arc", ArcImport.check),
                                ("bookmark manager", BookmarkManager.check),

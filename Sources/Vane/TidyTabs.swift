@@ -525,12 +525,17 @@ import Foundation
         // opens the name field on the folder it just made and announces it — which is right
         // for one folder the user asked for and wrong for eight arriving at once, already
         // named by the plan.
-        for group in plan {
-            guard let folder = store.todayShape.newFolder(named: group.name) else { continue }
-            done.folders.append(folder.id)
-            for id in group.tabIDs { store.todayShape.move(id.uuidString, into: folder.id) }
-        }
         Motion.list {
+            var arrival: [String] = []
+            for group in plan {
+                guard let folder = store.todayShape.newFolder(named: group.name) else { continue }
+                done.folders.append(folder.id)
+                arrival.append(folder.id.uuidString)
+                for id in group.tabIDs {
+                    store.todayShape.move(id.uuidString, into: folder.id)
+                    arrival.append(id.uuidString)
+                }
+            }
             // The order `order(_:pinned:groups:filed:)` decided, said to the shape: whatever
             // the user had already filed left where it was — the folder they made by hand
             // included, since `relay` writes a folder down at its first tab — then each new
@@ -538,6 +543,7 @@ import Foundation
             // is put in the order the sidebar now draws.
             store.todayShape.relay(placement.map(\.uuidString))
             store.applyOrder(.today)
+            store.feedback.tidied(arrival)
         }
         store.savePins()
         // And the rows' names, once each and only for the tabs that have not got one — being
@@ -608,6 +614,7 @@ import Foundation
     static func undo(_ store: TabStore) {
         let key = ObjectIdentifier(store)
         guard let done = saved[key]?.popLast() else { return }
+        store.feedback.cancelTidy()
         if saved[key]?.isEmpty == true { saved[key] = nil }
         for folder in done.folders {
             // Not `TabStore.deleteFolder`: that announces a deletion and mirrors it into
