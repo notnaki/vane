@@ -838,15 +838,10 @@ private struct TopRow: View {
                 .help("Toggle Sidebar (\(Keybindings.binding(for: .toggleSidebar).display))")
                 .accessibilityLabel("Toggle Sidebar")
                 .accessibilityValue(store.sidebarShown ? "Shown" : "Hidden")
-            if store.isPrivate {
-                Image(systemName: "eyeglasses")
-                    .help("This window keeps no history, cookies or cache.")
-                    .accessibilityLabel("Private window")
-            }
             Spacer(minLength: 0)
             NavButtons(tab: store.active)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
         .frame(height: Look.topRow)
@@ -886,6 +881,9 @@ private struct NavGlyphs: View {
     /// reached through it, and a new holder every frame would lose that view.
     @StateObject private var backMenu = HoldMenu()
     @StateObject private var forwardMenu = HoldMenu()
+    @State private var reloadTurn = 0
+    @State private var reloadSpinning = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         // Icon-only, so each one carries its own label and tooltip — without them
@@ -906,14 +904,25 @@ private struct NavGlyphs: View {
                 .holdMenu(forwardMenu, enabled: forward, named: "Show History") {
                     tab.flatMap { NavHistory.menu(for: $0, back: false) }
                 }
-            Button { loading ? tab?.stop() : tab?.reload() } label: {
-                Image(systemName: loading ? "xmark" : "arrow.clockwise")
+            Button {
+                if loading { tab?.stop() }
+                else { reloadSpinning = true; reloadTurn += 1; tab?.reload() }
+            } label: {
+                Image(systemName: loading && !reloadSpinning ? "xmark" : "arrow.clockwise")
+                    .rotationEffect(.degrees(reduceMotion ? 0 : Double(reloadTurn) * 360))
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: reloadTurn)
+                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
             }
             .disabled(tab == nil)
             .help(loading ? "Stop Loading" : "Reload Page (⌘R)")
             .accessibilityLabel(loading ? "Stop Loading" : "Reload Page")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
+        .task(id: reloadTurn) {
+            guard reloadTurn > 0 else { return }
+            do { try await Task.sleep(for: .seconds(0.26)) } catch { return }
+            reloadSpinning = false
+        }
     }
 }
 
@@ -977,7 +986,7 @@ private struct PillBody: View {
 
     var body: some View {
         content
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
         .font(Look.pillGlyph)
         .foregroundStyle(Look.inkSecondary)
         .padding(.horizontal, Look.pillInset)
@@ -1021,7 +1030,10 @@ private struct PillBody: View {
             // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
             // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
             // They sit past a Spacer, so arriving and leaving never moves the host.
-            if hovering { PillHoverGlyphs(enabled: tab != nil, copyLink: copyLink) }
+            if hovering {
+                PillHoverGlyphs(enabled: tab != nil, feedback: store.feedback,
+                                address: address, copyLink: copyLink)
+            }
             // Pinned extension actions, last: everything after the Spacer is flush right, so
             // the *last* item is the one the hover glyphs appearing beside it cannot move —
             // and a button that slides out from under the pointer as you reach for it is not
@@ -1047,6 +1059,7 @@ private struct PillBody: View {
         guard let u = tab?.currentURL else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(u.absoluteString, forType: .string)
+        store.feedback.copied(u)
         axAnnounce("Link copied.")
         Toasts.show("Copied URL", in: store)
     }
@@ -1060,7 +1073,7 @@ private struct ReaderGlyph: View {
         Button { Reader.toggle(tab) } label: {
             Image(systemName: on ? "doc.plaintext.fill" : "doc.plaintext")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
         .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
         .help("Reader (⌥⌘R)")
         .accessibilityLabel("Reader")
@@ -1070,13 +1083,23 @@ private struct ReaderGlyph: View {
 
 /// Copy Link and Site Settings, the two glyphs Arc's pill grows on hover.
 private struct PillHoverGlyphs: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let enabled: Bool
+    @ObservedObject var feedback: InteractionFeedback
+    let address: String
     let copyLink: () -> Void
+    private var copied: Bool { feedback.copiedURL == address }
     var body: some View {
-        Button { copyLink() } label: { Image(systemName: "link") }
+        Button { copyLink() } label: {
+            Image(systemName: copied ? "checkmark" : "link")
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .foregroundStyle(copied ? Color.accentColor : Look.inkSecondary)
+                .animation(reduceMotion ? nil : Look.quick, value: copied)
+        }
             .disabled(!enabled)
             .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
             .accessibilityLabel("Copy Link")
+            .accessibilityValue(copied ? "Copied" : "")
         Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
             // Browser-wide, not per-site: per-site lives in the Site Control Center on the
             // pill's leading glyph (SiteControl.swift), which is where Arc keeps it.
@@ -1111,7 +1134,7 @@ private struct SiteGlyph: View {
                     }
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
         // A broken lock drawn in the same grey as the host beside it is not a warning. Only
         // a live insecure page tints: with no tab there is nothing to warn about, and the
         // glyph keeps the ink `PillBody` hands down, dimmed with the rest of the pill.
@@ -1192,7 +1215,7 @@ private struct ExtensionGlyph: View {
         Button(action: press) {
             ActionIcon(host: host, context: context, tab: tab, badge: badge).contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
         .opacity(live ? 1 : Look.dimmed)
     }
 
@@ -1308,9 +1331,10 @@ private struct FavoriteTile: View {
             }
             .animation(reduceMotion ? nil : Look.quick, value: hovering)
             .inStrip(tab.id, strip)
+            .modifier(TabArrivalFeedback(feedback: store.feedback, id: tab.id))
             .contentShape(.rect)
             .onHover { hovering = $0 }
-            .onTapGesture { store.current = tab.id }
+            .onTapGesture { InteractionSounds.play(.press); store.current = tab.id }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             .help(tab.title)
             .onDrag { dragPayload(tab) } preview: { TabIcon(tab: tab, size: Look.tileIcon).padding(6) }
@@ -1729,6 +1753,7 @@ private struct HeldRow: View {
     /// Which section's overlay this is: the row is only drawn over the list it is in.
     let kind: TabKind
     @ObservedObject private var held = Held.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if let air = held.air, air.kind == kind,
@@ -1756,6 +1781,7 @@ private struct HeldRow: View {
                 // on the grab point would mean publishing it on every reported move, which
                 // is the one thing `Held` exists to avoid.
                 .scaleEffect(held.compact ? Look.heldCompact : 1)
+                .rotationEffect(.degrees(held.compact || reduceMotion ? 0 : -1.4))
                 // Nothing in the air is a target. The slot it left is one, and the live
                 // reorder keeps that slot under the pointer wherever the row has got to.
                 .allowsHitTesting(false)
@@ -1895,7 +1921,7 @@ extension View {
     /// The drag preview: the row held a shade above the sidebar. AppKit renders this into
     /// the image that follows the pointer, so the shadow has to be inside it.
     func liftedPreview() -> some View {
-        scaleEffect(Look.liftScale)
+        scaleEffect(Motion.reduced ? 1 : Look.liftScale)
             .shadow(color: Look.liftShadow, radius: Look.liftShadowRadius, y: Look.liftShadowY)
     }
 }
@@ -1991,6 +2017,16 @@ private struct TabDrop: DropDelegate {
             return true
         }
         guard !dragged.isEmpty else { return false }
+        defer {
+            // The live reorder may already have moved it into Pinned. Feedback belongs
+            // to the committed drop, not every row the pointer passes on its way there.
+            if let id = dragged.first,
+               let landed = store.tabs.first(where: { $0.id == id }), landed.kind != .today {
+                store.feedback.arrived(id)
+            } else {
+                InteractionSounds.play(.snap)
+            }
+        }
         // Whatever the drop turns out to mean, these tabs have landed in this section — the
         // live reorder may have carried them here rows ago — and the selection has to be
         // told, or every bulk action on it becomes a silent no-op. See `selectionLanded`. A
@@ -2449,7 +2485,7 @@ private struct SpaceIcons: View {
                   spacing: 6) {
             ForEach(Spaces.icons, id: \.self) { name in
                 Button { pick(name) } label: { tile(name) }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileButtonStyle())
                     .accessibilityLabel(name)
                     .accessibilityAddTraits(current == name ? [.isButton, .isSelected] : .isButton)
             }
@@ -2688,13 +2724,14 @@ private struct ShapeRow: View {
             }
         }
         .padding(.leading, CGFloat(row.depth) * Look.folderIndent)
+        .modifier(TidyRowFeedback(feedback: store.feedback, id: row.id))
         .environment(\.livePR, pr)
     }
 }
 
 /// Which part of a folder row a drop is over: its edges reorder, its middle puts the thing
 /// inside. A tab row has the same three (`Landing.Band`): its middle is the tab itself.
-private enum FolderZone { case before, inside, after }
+private enum FolderZone: Equatable { case before, inside, after }
 
 /// A folder in the Pinned section: its glyph, its name and a chevron that says whether it is
 /// folded. Clicking anywhere on it folds or unfolds; everything else it can be is in its
@@ -2712,6 +2749,9 @@ private struct FolderRow: View {
     var body: some View {
         SidebarRow(selected: false, action: { store.toggleFolder(folder.id, in: shape) }) {
             FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID))
+                .scaleEffect(zone == .inside && !reduceMotion ? 1.18 : 1)
+                .rotationEffect(.degrees(zone == .inside && !reduceMotion ? -8 : 0))
+                .animation(reduceMotion ? nil : .spring(duration: 0.22, bounce: 0.2), value: zone)
         } label: {
             if store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
@@ -2730,6 +2770,12 @@ private struct FolderRow: View {
         // edge it will land on. Behind `SidebarRow`, whose own fill is clear at rest.
         .background(zone == .inside ? Look.selected : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
+        .overlay {
+            RoundedRectangle(cornerRadius: Look.pillRadius)
+                .strokeBorder(.tint.opacity(zone == .inside ? 0.6 : 0), lineWidth: 1.5)
+                .allowsHitTesting(false)
+        }
+        .animation(reduceMotion ? nil : Look.quick, value: zone)
         .overlay(alignment: zone == .after ? .bottom : .top) {
             DropLine(on: zone == .before || zone == .after, axis: .vertical)
         }
@@ -2902,6 +2948,7 @@ private struct FolderDrop: DropDelegate {
         if let dragged {
             guard dragged != folder.id, store.canDrag(folder: dragged, into: shape)
             else { return false }
+            InteractionSounds.play(.snap)
             switch where_ {
             case .inside: store.move(folder: dragged, into: folder.id, in: shape)
             default: store.move(folder: dragged, next: folder.id.uuidString,
@@ -2910,6 +2957,7 @@ private struct FolderDrop: DropDelegate {
             return true
         }
         guard !tabs.isEmpty else { return false }
+        InteractionSounds.play(.snap)
         // Every row lands next to the *folder*, not next to the one before it, so a run
         // dropped below one has to be laid down bottom-first to come out in the order it
         // was drawn. Into the folder, and above it, in-order is already right.
@@ -2972,7 +3020,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
-        .onTapGesture(perform: action)
+        .onTapGesture { InteractionSounds.play(.press); action() }
         .environment(\.rowHovering, hovering)
     }
 
@@ -3097,7 +3145,7 @@ private struct TidyRow: View {
         }
         .animation(reduceMotion ? nil : Look.list, value: offering)
         .animation(reduceMotion ? nil : Look.list, value: tidy)
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
         .font(Look.sectionCaption)
         .foregroundStyle(Look.inkTertiary)
         .padding(.horizontal, Look.rowInset)
@@ -3220,6 +3268,7 @@ private struct StripRow: View {
             }
         }
         .lifted(tab.id)
+        .modifier(TabArrivalFeedback(feedback: store.feedback, id: tab.id))
         // One drop target for the row, whichever of the two draws it: a split is one item in
         // the strip, so it reorders and takes drops exactly as a tab does.
         //
@@ -4069,7 +4118,7 @@ private struct TabRowTrailing: View {
                 .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
         .foregroundStyle(Look.inkSecondary)
     }
 }
@@ -4116,7 +4165,7 @@ private struct GoHomeGlyph: View {
                 .foregroundStyle(Look.inkSecondary)
                 .rowTarget()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
         .help("Go back to pinned page")
         .accessibilityLabel("Go back to pinned page")
     }
@@ -4238,7 +4287,7 @@ private struct LibraryButton: View {
             // A ring around the glyph while anything is downloading, so progress is visible
             // without opening the Library to look for it.
             .overlay { DownloadRing(downloads: downloads) }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileButtonStyle())
             // Always the footer's own ink: the Library stands where this whole row is, so
             // there is no state in which the glyph is on screen *and* the Library is open.
             .foregroundStyle(Look.inkSecondary)

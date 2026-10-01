@@ -442,6 +442,7 @@ private struct GeneralPane: View {
     @ObservedObject var selection: SettingsSelection
     @AppStorage("warnBeforeQuit") private var warnQuit = true
     @AppStorage("checkForUpdates") private var autoUpdate = true
+    @AppStorage(InteractionSounds.preferenceKey) private var interactionSounds = false
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
@@ -452,6 +453,12 @@ private struct GeneralPane: View {
                 }
                 SettingsRow("Warn before quitting") {
                     Toggle("Warn before quitting", isOn: $warnQuit).labelsHidden()
+                }
+                SettingsRow("Play subtle interaction sounds") {
+                    Toggle("Play subtle interaction sounds", isOn: $interactionSounds).labelsHidden()
+                        .onChange(of: interactionSounds) { _, enabled in
+                            if enabled { InteractionSounds.play(.copy) }
+                        }
                 }
             }
 
