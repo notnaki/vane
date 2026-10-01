@@ -54,10 +54,12 @@ import AppKit
     /// A dev build is the bare binary out of `.build`: no bundle, so no catalogue and no
     /// choice. Default alone then, and nothing crashes.
     static var variants: [(name: String, image: NSImage)] {
-        catalogue.compactMap { row in
+        let bundled: [(name: String, image: NSImage)] = catalogue.compactMap { row in
             guard let asset = row.asset else { return (row.name, composed) }
             return NSImage(named: asset).map { (row.name, $0) }
         }
+        if let custom = CustomAppIcon.custom { return bundled + [(CustomAppIcon.name, custom)] }
+        return bundled
     }
 
     /// The chosen icon's name — the default whenever nothing is chosen, or the chosen one is
@@ -77,7 +79,8 @@ import AppKit
         // same thing as assigning the catalogue render, which is why Default exists.
         NSApp.applicationIconImage = overrides(name) ? v.image : nil
         UserDefaults.vane.set(name, forKey: key)
-        guard stamps else { return false }
+        // User images are Dock overrides only; never stamp them onto the signed bundle.
+        guard name != CustomAppIcon.name, stamps else { return false }
         // Default *clears* the custom icon rather than writing one, so the bundle goes back
         // to drawing the icon it ships with.
         return NSWorkspace.shared.setIcon(overrides(name) ? v.image : nil,

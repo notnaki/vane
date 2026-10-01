@@ -16,6 +16,7 @@ import SwiftUI
 /// The pure parts (grouping, search, what a keystroke means, what VoiceOver is allowed to
 /// hear) are static functions with a `check()`, so they can be proved headless.
 @MainActor struct PasswordsPane: View {
+    var settingsProfileID: UUID? = nil
     @ObservedObject private var manager = ProfileManager.shared
     @State private var query = ""
     /// The keychain is not a publisher, so the pane holds its own copy of the *names* and
@@ -52,7 +53,9 @@ import SwiftUI
 
     private static let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
 
-    private var profileID: UUID { manager.active.id }
+    private var profileID: UUID {
+        manager.profiles.first { $0.id == settingsProfileID }?.id ?? manager.active.id
+    }
     private var groups: [(host: String, logins: [Passwords.Login])] {
         PasswordsPane.groups(logins, query: query)
     }
@@ -78,7 +81,7 @@ import SwiftUI
         .padding(.top, Look.inset * 2)
         .onAppear { reload() }
         .onDisappear { forgetSecrets() }
-        .onChange(of: manager.active.id) { reload() }
+        .onChange(of: profileID) { forgetSecrets(); reload() }
     }
 
     private func quiet(_ text: String) -> some View {

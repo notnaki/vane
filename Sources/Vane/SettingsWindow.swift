@@ -25,7 +25,7 @@ import SwiftUI
         set { UserDefaults.vane.set(newValue, forKey: "restoreSession") }
     }
 
-    /// Settings › General: what a launch after an unclean exit does. "continue" reopens the
+    /// Settings › Advanced: what a launch after an unclean exit does. "continue" reopens the
     /// session without asking, exactly as a launch after a clean quit does; "fresh" opens
     /// one empty window; "ask" is the old alert, for whoever wants to be asked.
     static let afterCrashChoices: [(name: String, key: String)] = [
@@ -36,7 +36,7 @@ import SwiftUI
         set { UserDefaults.vane.set(newValue, forKey: "afterCrash") }
     }
 
-    /// Settings › General: which way a new split opens. Side by side is Arc's answer and the
+    /// Settings › Advanced: which way a new split opens. Side by side is Arc's answer and the
     /// default, so the key is only ever written by someone asking for stacked — and it is
     /// stored as the Bool `Split.vertical` already asks, rather than a second spelling of it.
     static var stackSplits: Bool {
@@ -44,7 +44,7 @@ import SwiftUI
         set { UserDefaults.vane.set(newValue, forKey: "stackSplits") }
     }
 
-    /// Settings › General: how long an ordinary toast stands before it goes on its own.
+    /// Settings › Advanced: how long an ordinary toast stands before it goes on its own.
     /// `Look.toastDuration` is the default and stays the number the look is drawn around;
     /// this is only the clock. The hover hold and the × are unaffected — a toast the pointer
     /// is on never ages out however short this is, and any toast can be closed outright.
@@ -69,7 +69,7 @@ import SwiftUI
         UserDefaults.vane.string(forKey: LinkTarget.key) != LinkTarget.currentSpace
     }
 
-    /// Settings › Links, and on the way Arc has it: a link out of a Favourite or a Pinned
+    /// Settings › General › Previews: a link out of a Favourite or a Pinned
     /// tab opens *over* the window rather than navigating the tab away from the place it is
     /// supposed to be. Absent means on, so the key is only ever written by someone turning
     /// it off. What it decides, exactly, is `Peek.route`.
@@ -100,13 +100,13 @@ enum LinkTarget {
             NSApp.activate()
             return
         }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 600),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
         w.title = SettingsTab.all[0].title
-        // Wide enough that the longest row title ("New Space…" beside a 200pt field) stays
-        // on one line; at 640 it wrapped, and a wrapped title in a settings row reads as a bug.
-        w.minSize = NSSize(width: 720, height: 480)
+        // Keep both profile columns and all toolbar tabs visible at the minimum width.
+        w.minSize = NSSize(width: 760, height: 520)
+        w.collectionBehavior = [.fullScreenNone]
         w.isReleasedWhenClosed = false        // closing must not free the instance we keep
         // Arc's tab bar is a preference-style toolbar: icon over word, the selected one in
         // a rounded tile, the title centred above, and the whole band a shade lighter than
@@ -138,6 +138,9 @@ enum LinkTarget {
     /// "the setting you are after is over there".
     static func show(tab: String) {
         show()
+        if ["passwords", "privacy"].contains(tab) {
+            selection.profileID = ProfileManager.shared.active.id
+        }
         selection.id = tab
     }
 
@@ -174,26 +177,36 @@ enum LinkTarget {
     let id: String
     let title: String
     let icon: String
-    /// Takes the selection so a pane can send the user to another tab.
-    let pane: (Binding<String>) -> AnyView
+    /// Detail pages stay under their parent tab instead of crowding the toolbar.
+    var parent: String? = nil
+    let pane: (SettingsSelection) -> AnyView
+
+    var toolbarID: String { parent ?? id }
+    static var toolbarTabs: [SettingsTab] { all.filter { $0.parent == nil } }
 
     static let all: [SettingsTab] = [
         .init(id: "general", title: "General", icon: "gearshape",
-              pane: { _ in AnyView(GeneralPane()) }),
+              pane: { AnyView(GeneralPane(selection: $0)) }),
         .init(id: "profiles", title: "Profiles", icon: "person",
-              pane: { AnyView(ProfilesPane(tab: $0)) }),
-        .init(id: "passwords", title: "Passwords", icon: "key",
-              pane: { _ in AnyView(PasswordsPane()) }),
-        .init(id: "privacy", title: "Privacy", icon: "lock",
-              pane: { _ in AnyView(PrivacyPane()) }),
-        .init(id: "max", title: "Max", icon: "sparkles",
+              pane: { AnyView(ProfilesPane(selection: $0)) }),
+        .init(id: "max", title: "Max", icon: "command",
               pane: { _ in AnyView(MaxPane()) }),
-        .init(id: "links", title: "Links", icon: "link",
+        .init(id: "links", title: "Links", icon: "macwindow.on.rectangle",
               pane: { _ in AnyView(LinksPane()) }),
         .init(id: "shortcuts", title: "Shortcuts", icon: "keyboard",
               pane: { _ in AnyView(ShortcutsPane()) }),
+        .init(id: "icon", title: "Icon", icon: "v.square",
+              pane: { _ in AnyView(IconPane()) }),
         .init(id: "advanced", title: "Advanced", icon: "slider.horizontal.3",
               pane: { _ in AnyView(AdvancedPane()) }),
+        .init(id: "passwords", title: "Passwords", icon: "key", parent: "profiles",
+              pane: { AnyView(PasswordsPane(settingsProfileID: $0.profileID)) }),
+        .init(id: "privacy", title: "Privacy and Security", icon: "lock", parent: "profiles",
+              pane: { AnyView(PrivacyPane(selection: $0)) }),
+        .init(id: "search", title: "Search Settings", icon: "magnifyingglass", parent: "profiles",
+              pane: { _ in AnyView(SearchPane()) }),
+        .init(id: "previews", title: "Previews", icon: "rectangle.on.rectangle", parent: "general",
+              pane: { _ in AnyView(PreviewsPane()) }),
     ]
 }
 
@@ -202,8 +215,12 @@ enum LinkTarget {
 /// Advanced). Whichever writes, the toolbar's own highlight follows.
 @MainActor final class SettingsSelection: ObservableObject {
     @Published var id = SettingsTab.all[0].id {
-        didSet { toolbar?.selectedItemIdentifier = NSToolbarItem.Identifier(id) }
+        didSet {
+            let tab = SettingsTab.all.first { $0.id == id } ?? SettingsTab.all[0]
+            toolbar?.selectedItemIdentifier = NSToolbarItem.Identifier(tab.toolbarID)
+        }
     }
+    @Published var profileID: UUID?
     weak var toolbar: NSToolbar?
 }
 
@@ -212,7 +229,7 @@ enum LinkTarget {
     private let selection: SettingsSelection
     init(_ selection: SettingsSelection) { self.selection = selection }
 
-    private var ids: [NSToolbarItem.Identifier] { SettingsTab.all.map { .init($0.id) } }
+    private var ids: [NSToolbarItem.Identifier] { SettingsTab.toolbarTabs.map { .init($0.id) } }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { ids }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { ids }
     func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { ids }
@@ -223,6 +240,7 @@ enum LinkTarget {
         let item = NSToolbarItem(itemIdentifier: id)
         item.label = tab.title
         item.paletteLabel = tab.title
+        item.toolTip = tab.title
         item.image = NSImage(systemSymbolName: tab.icon, accessibilityDescription: tab.title)
         item.target = self
         item.action = #selector(pick(_:))
@@ -246,22 +264,46 @@ private struct SettingsView: View {
                 // stay in place while the shortcuts scroll.
                 pane
             } else {
-                ScrollView { pane }
+                ScrollView { pane }.id(current.id)
             }
         }
         .background(.windowBackground)
-        .toggleStyle(.switch)
+        .toggleStyle(SettingsToggleStyle())
+        .controlSize(.small)
         .onAppear { SettingsWindow.retitle(current.title) }
         .onChange(of: selection.id) { SettingsWindow.retitle(current.title) }
     }
 
     private var pane: some View {
-        current.pane($selection.id)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Look.paneMargin)
-            .padding(.bottom, Look.paneMargin)
+        VStack(alignment: .leading, spacing: 0) {
+            if let parent = current.parent,
+               let tab = SettingsTab.all.first(where: { $0.id == parent }) {
+                Button { selection.id = parent } label: {
+                    Label("Back to \(tab.title)", systemImage: "chevron.left")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .padding(.top, 20)
+                if ["passwords", "privacy"].contains(current.id),
+                   let profile = ProfileManager.shared.profiles.first(where: { $0.id == selection.profileID }) {
+                    Text(profile.name).font(Look.caption).foregroundStyle(.secondary)
+                        .padding(.top, 8)
+                }
+            }
+            current.pane(selection)
+        }
+        .frame(maxWidth: 760, alignment: .leading)
+        .padding(.horizontal, 64)
+        .padding(.bottom, 24)
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
+}
+
+private struct SettingsToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Toggle(configuration).toggleStyle(.switch).controlSize(.mini)
+    }
 }
 
 // MARK: - Card and row
@@ -323,11 +365,15 @@ struct SettingsRow<Trailing: View>: View {
     var body: some View {
         HStack(spacing: Look.inset) {
             Text(title).font(Look.text).foregroundStyle(Look.inkPrimary)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: Look.inset)
-            trailing
+            trailing.layoutPriority(1)
         }
         .padding(.horizontal, Look.cardInset)
+        .padding(.vertical, 9)
         .frame(minHeight: Look.settingsRow)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
     }
 }
 
@@ -393,196 +439,62 @@ private extension View {
 // MARK: - General
 
 private struct GeneralPane: View {
-    @AppStorage("homepage") private var homepage = ""
-    // Blocker's own key. Writing it directly skips Blocker.enabled's setter, so the
-    // recompile-and-reattach it would have done is hung off onChange instead.
-    @AppStorage("blockerEnabled") private var blocking = true
-    // HTTPSOnly reads this key straight out of defaults on every navigation, so writing it
-    // here is the whole of the preference.
-    @AppStorage("httpsOnly") private var httpsOnly = true
-    // PictureInPicture reads this key straight out of defaults on every tab switch, so
-    // writing it here is the whole of the preference. Its name comes from there, so the
-    // toggle and the reader cannot end up on two different keys.
-    @AppStorage(PictureInPicture.prefKey) private var autoPiP = true
+    @ObservedObject var selection: SettingsSelection
     @AppStorage("warnBeforeQuit") private var warnQuit = true
     @AppStorage("checkForUpdates") private var autoUpdate = true
-    @State private var restore = Prefs.restoreSession
-    @State private var afterCrash = Prefs.afterCrash
-    @State private var archiveAfter = Prefs.archiveAfter
-    @State private var toastSeconds = Prefs.toastSeconds
-    @State private var stackSplits = Prefs.stackSplits
     @State private var isDefault = URLHandling.isDefaultBrowser
 
     var body: some View {
         Pane {
             SettingsCard {
-                SettingsRow("Homepage") {
-                    TextField("", text: $homepage, prompt: Text(Prefs.homepage.absoluteString))
-                        .onSubmit {
-                            // Same parser as the address bar, so "example.com" is enough.
-                            if let u = Search.url(for: homepage) { homepage = u.absoluteString }
-                        }
-                        .settingsField().frame(width: 280)
+                SettingsRow("Automatically check for Vane updates") {
+                    Toggle("Automatically check for Vane updates", isOn: $autoUpdate).labelsHidden()
                 }
-                SettingsRow("Reopen windows and tabs on launch") {
-                    Toggle("", isOn: $restore).labelsHidden()
-                        .onChange(of: restore) { Prefs.restoreSession = restore }
+                SettingsRow("Warn before quitting") {
+                    Toggle("Warn before quitting", isOn: $warnQuit).labelsHidden()
                 }
-                SettingsRow("If Vane didn't quit cleanly") {
-                    Picker("", selection: $afterCrash) {
-                        ForEach(Prefs.afterCrashChoices, id: \.key) { Text($0.name).tag($0.key) }
-                    }
-                    .labelsHidden().fixedSize()
-                    .onChange(of: afterCrash) { Prefs.afterCrash = afterCrash }
-                }
-                // AppLifecycle reads this key on every terminate, so writing it here is the
-                // whole of the preference.
-                SettingsRow("Warn before quitting (\(Keybinding("q", .command).display))") {
-                    Toggle("", isOn: $warnQuit).labelsHidden()
-                }
-                // Updater reads this key on every tick, so writing it here is the whole of
-                // the preference — the polling stops within the minute.
-                SettingsRow("Check for updates automatically") {
-                    Toggle("", isOn: $autoUpdate).labelsHidden()
-                }
-                SettingsRow("Auto-archive today's tabs") {
-                    Picker("", selection: $archiveAfter) {
-                        ForEach(Prefs.archiveChoices, id: \.after) { choice in
-                            Text(choice.name).tag(choice.after)
-                        }
-                    }
-                    .labelsHidden().fixedSize()
-                    .onChange(of: archiveAfter) { Prefs.archiveAfter = archiveAfter }
-                }
-                Footnote("A tab under Today that nobody has looked at for this long leaves the "
-                         + "sidebar for the Library, where it can be opened again. Favourites "
-                         + "and pinned tabs are never archived.")
-                // Toasts read this key when the clock starts, so writing it here is the whole
-                // of the preference — the next toast up already stands for the new time.
-                SettingsRow("Toasts stay for") {
-                    Picker("", selection: $toastSeconds) {
-                        ForEach(Prefs.toastChoices, id: \.seconds) { choice in
-                            Text(choice.name).tag(choice.seconds)
-                        }
-                    }
-                    .labelsHidden().fixedSize()
-                    .onChange(of: toastSeconds) { Prefs.toastSeconds = toastSeconds }
-                }
-                Footnote("A toast stays put while the pointer is on it, and any toast can be "
-                         + "closed on the spot with its ×.")
             }
 
             SettingsCard {
-                SettingsRow("App icon") { AppIconPicker() }
-                Footnote("Default is the icon Vane already wears — the Dock composes it "
-                         + "from the bundle itself. " + (AppIcon.stamps
-                         ? "Glass and Navy show in the Dock while Vane runs, and stay on "
-                           + "Vane in the Finder once it is quit."
-                         : "Glass and Navy show in the Dock while Vane runs. Finder keeps "
-                           + "Default: Vane is sandboxed, and the sandbox will not let an "
-                           + "app write an icon onto its own bundle."))
-            }
-
-            SettingsCard {
-                SettingsRow("New splits") {
-                    Picker("", selection: $stackSplits) {
-                        Text("Side by side").tag(false)
-                        Text("Stacked").tag(true)
-                    }
-                    .labelsHidden().fixedSize()
-                    .onChange(of: stackSplits) { Prefs.stackSplits = stackSplits }
+                SettingsRow("Previews") {
+                    Button("Previews Settings…") { selection.id = "previews" }
                 }
-                Footnote("Which way a split view opens — dragging one tab onto another, or "
-                         + "\(Keybindings.binding(for: .addSplit).display). Splits already "
-                         + "open keep the shape they have, and dropping a tab on the top or "
-                         + "bottom edge of the page still stacks that one.")
-            }
-
-            SettingsCard {
-                SettingsRow("Block ads and trackers") {
-                    Toggle("", isOn: $blocking).labelsHidden()
-                        .onChange(of: blocking) { Blocker.refresh(); rebuild() }
+                SettingsRow("Manage your search engine, Auto-Archive, and downloads in Profile Settings.") {
+                    Button("Profile Settings…") { selection.id = "profiles" }
                 }
-                SettingsRow("Filter lists") {
-                    Button("Add Filter List…") { Blocker.chooseAndAddList() }
-                }
-                Footnote("Filter lists in EasyList syntax — an EasyList, EasyPrivacy or uBlock "
-                         + "Origin subscription file.")
-            }
-
-            SettingsCard {
-                SettingsRow("HTTPS-Only Mode") {
-                    Toggle("", isOn: $httpsOnly).labelsHidden()
-                        .onChange(of: httpsOnly) { rebuild() }
-                }
-                Footnote("Every page is loaded over an encrypted connection. A site that only "
-                         + "offers http stops on a warning instead of loading in the clear.")
-            }
-
-            SettingsCard {
-                SettingsRow("Automatically enter Picture in Picture when switching tabs") {
-                    Toggle("", isOn: $autoPiP).labelsHidden()
-                }
-                Footnote("A video playing in the tab you leave pops out into a floating window "
-                         + "and follows you around; coming back to the tab puts it back in the "
-                         + "page. A thumbnail or a silent background loop is left alone.")
             }
 
             SettingsCard {
                 SettingsRow("Default browser") {
-                    Button(isDefault ? "Vane is the default" : "Make Vane Default") {
+                    Button(isDefault ? "Vane is your default browser" : "Make Vane Default…") {
                         URLHandling.makeDefaultBrowser()
                         isDefault = URLHandling.isDefaultBrowser
                     }
                     .disabled(isDefault)
                 }
-                SettingsRow("Browsing history") {
-                    Button("Clear History…") {
-                        if confirm("Clear all browsing history?", "Clear",
-                                   "Bookmarks and saved passwords are not affected.") {
-                            Store.shared.clearHistory()
-                            rebuild()      // the History menu lists what was just deleted
-                        }
-                    }
-                }
-                SettingsRow("Start over") {
-                    Button("Erase Everything…") { EraseEverything.ask() }
-                }
-                Footnote("Every profile, Space, password, cookie, history entry, bookmark, "
-                         + "extension and setting goes, and Vane opens again empty. It asks "
-                         + "you to type a word first.")
             }
         }
+        .onAppear { isDefault = URLHandling.isDefaultBrowser }
     }
 }
 
-/// The app-icon choice, as pictures. An icon is the one preference nobody can pick from a
-/// list of names, so both tiles show the composed icon the Dock will actually draw — macOS
-/// shapes and lights it, the same way it does the one on screen now.
-private struct AppIconPicker: View {
-    @State private var chosen = AppIcon.current
+private struct PreviewsPane: View {
+    @AppStorage("linkPreviews") private var previews = true
+    @AppStorage(Peek.prefKey) private var peekLinks = true
 
     var body: some View {
-        HStack(spacing: Look.inset * 1.5) {
-            ForEach(AppIcon.variants, id: \.name) { variant in
-                let picked = variant.name == chosen
-                Button {
-                    AppIcon.apply(variant.name)
-                    chosen = AppIcon.current
-                } label: {
-                    VStack(spacing: Look.captionGap + 2) {
-                        Image(nsImage: variant.image).resizable()
-                            .frame(width: Look.appIconPreview, height: Look.appIconPreview)
-                        Text(variant.name).font(Look.caption)
-                            .foregroundStyle(picked ? Look.inkPrimary : Look.inkQuiet)
-                    }
-                    .padding(Look.inset - 2)
-                    // The chosen one sits in the accent tile every other selected row in this
-                    // window sits in; the others are bare.
-                    .background(picked ? Look.accentSelected : .clear,
-                                in: .rect(cornerRadius: Look.chipRadius))
+        Pane {
+            SettingsCard {
+                SettingsRow("Preview links on hover") {
+                    Toggle("Preview links on hover", isOn: $previews).labelsHidden()
                 }
-                .buttonStyle(.plain)
+                Footnote("Hover over a link to preview the page. The website sees a visit when its preview loads. An on-device summary appears when Max is available.")
+            }
+            SettingsCard {
+                SettingsRow("Open links from pinned tabs in Peek") {
+                    Toggle("Open links from pinned tabs in Peek", isOn: $peekLinks).labelsHidden()
+                }
+                Footnote("Links to other sites open over your window, keeping your pinned tab in place. Escape closes the preview; ⌘O keeps it as a tab. Shift-click reverses this preference for one link.")
             }
         }
     }
@@ -591,9 +503,15 @@ private struct AppIconPicker: View {
 // MARK: - Profiles
 
 private struct ProfilesPane: View {
-    @Binding var tab: String
+    @ObservedObject var selection: SettingsSelection
     @ObservedObject private var manager = ProfileManager.shared
-    @State private var selected = ProfileManager.shared.active.id
+    private var selected: UUID {
+        get { selection.profileID ?? manager.active.id }
+        nonmutating set { selection.profileID = newValue }
+    }
+    @AppStorage("searchEngine") private var engineID = Search.defaultEngine.id
+    @AppStorage("searchSuggestions") private var suggestions = false
+    @State private var archiveAfter = Prefs.archiveAfter
     /// Non-nil while a profile row is an editable field rather than a label.
     @State private var renaming: UUID?
     /// The Clear Browsing Data dialog, which is a sheet rather than an alert: it has four
@@ -626,15 +544,23 @@ private struct ProfilesPane: View {
                 .font(Look.text)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(alignment: .top, spacing: Look.inset * 1.5) {
+            HStack(alignment: .top, spacing: 10) {
                 // The list runs the full height of the controls beside it, like Arc's, so
                 // the two columns read as one layout rather than a card and a stack.
-                list.frame(width: Look.profileListWidth).frame(maxHeight: .infinity)
+                list.frame(width: 200).frame(maxHeight: .infinity)
                 VStack(alignment: .leading, spacing: Look.inset * 1.5) {
-                    identity
-                    spacesCard
+                    searchCard
                     downloadsCard
                     SettingsSection("Your Data and Settings") { data }
+                    DisclosureGroup("Manage Profile and Spaces") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            identity
+                            spacesCard
+                        }
+                        .padding(.top, 10)
+                    }
+                    .font(Look.text)
+                    .padding(.horizontal, Look.cardInset)
                 }
             }
         }
@@ -803,10 +729,35 @@ private struct ProfilesPane: View {
         }
     }
 
+    private var searchCard: some View {
+        SettingsCard {
+            SettingsRow("Search engine") {
+                Picker("Search engine", selection: $engineID) {
+                    ForEach(Search.all) { Text($0.name).tag($0.id) }
+                }
+                .labelsHidden().frame(width: 145)
+            }
+            SettingsRow("Manage search") {
+                Button("Search Settings…") { selection.id = "search" }
+            }
+            SettingsRow("Include search engine suggestions") {
+                Toggle("Include search engine suggestions", isOn: $suggestions).labelsHidden()
+            }
+            Footnote("Search and archive preferences apply to all profiles. Suggestions send what you type to your search engine; they stay off in private windows.")
+        }
+    }
+
     /// Arc keeps the download folder in Profiles, beside the search engine and the archive
     /// cadence — work and personal do not file their downloads in the same place.
     private var downloadsCard: some View {
         SettingsCard {
+            SettingsRow("Archive tabs after") {
+                Picker("Archive tabs after", selection: $archiveAfter) {
+                    ForEach(Prefs.archiveChoices, id: \.after) { Text($0.name).tag($0.after) }
+                }
+                .labelsHidden().fixedSize()
+                .onChange(of: archiveAfter) { Prefs.archiveAfter = archiveAfter }
+            }
             SettingsRow("Download location") {
                 Button(DownloadLocation.label(downloadDirectory)) {
                     if let picked = DownloadLocation.choose(for: profile.id,
@@ -825,9 +776,7 @@ private struct ProfilesPane: View {
                         DownloadLocation.setAskEveryTime(askWhereToSave, for: profile.id)
                     }
             }
-            Footnote("Downloads land in this folder without asking, keeping their own name "
-                     + "and never overwriting a file already there. Turn the switch on and "
-                     + "every download stops on a Save panel instead.")
+            Footnote("Only Today tabs auto-archive. Favourites and pinned tabs stay put. Downloads are saved to this profile’s folder.")
         }
     }
 
@@ -835,11 +784,13 @@ private struct ProfilesPane: View {
         SettingsCard(divided: false) {
             VStack(spacing: 0) {
                 DataRow(icon: "lock.fill", tint: .blue, title: "Privacy and Security") {
-                    tab = "privacy"
+                    selection.profileID = profile.id
+                    selection.id = "privacy"
                 }
                 DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
                     // The same place Menu.swift's Manage Saved Passwords… goes.
-                    tab = "passwords"
+                    selection.profileID = profile.id
+                    selection.id = "passwords"
                 }
                 DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
                     clearing = true
@@ -854,6 +805,8 @@ private struct ProfilesPane: View {
         name = profile.name
         downloadDirectory = DownloadLocation.directory(for: profile.id)
         askWhereToSave = DownloadLocation.askEveryTime(for: profile.id)
+        archiveAfter = Prefs.archiveAfter
+        engineID = Search.current.id
     }
 
     /// "1 Space", not "1 Spaces".
@@ -912,7 +865,6 @@ private struct MaxPane: View {
     @AppStorage("tidyTabs") private var tidyTabs = true
     @AppStorage("tidyDownloads") private var tidyDownloads = false
     @AppStorage("tidyTitles") private var tidyTitles = true
-    @AppStorage("linkPreviews") private var previews = true
     @AppStorage("instantLinks") private var instant = true
 
     private var off: Bool { !appleAI || !AppleAI.isAvailable }
@@ -942,16 +894,6 @@ private struct MaxPane: View {
             }
 
             SettingsCard {
-                // Not under the AI switch: the page render and its own description arrive in
-                // well under a second and need no model. The summary is the part that does,
-                // and it is extra rather than the point.
-                SettingsRow("Link previews") { Toggle("", isOn: $previews).labelsHidden() }
-                Footnote("Hovering a link loads the page in the background to show it, which "
-                         + "means the site sees a visit you did not make. If on-device AI is on, "
-                         + "a summary follows once it is ready.")
-            }
-
-            SettingsCard {
                 SettingsRow("Instant Links") { Toggle("", isOn: $instant).labelsHidden() }
                 Footnote("Shift-Return on a search opens the top result directly instead of the "
                          + "results page. The query goes to DuckDuckGo whichever engine you use, "
@@ -965,31 +907,7 @@ private struct MaxPane: View {
 // MARK: - Links
 
 private struct LinksPane: View {
-    // The key `Search.current` reads. AppStorage so the picker redraws itself.
-    @AppStorage("searchEngine") private var engineID = Search.defaultEngine.id
-    // `Prefs.openLinksInLittleArc` reads this; the default is written nowhere, so an
-    // unset key and "little" have to mean the same thing on both sides.
     @AppStorage(LinkTarget.key) private var externalLinks = LinkTarget.littleArc
-    // `Prefs.peekLinks` reads this, and reads an unset key as on — so does this default.
-    @AppStorage(Peek.prefKey) private var peekLinks = true
-    @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
-    // Absent = off. Deliberately not defaulted on: turning this on sends what you type to
-    // the search engine before you press Return.
-    @AppStorage("searchSuggestions") private var suggestions = false
-    // Neither list is @Published, so the views mirror them and refresh on every mutation.
-    @State private var engines = Search.all
-    @State private var newName = ""
-    @State private var newTemplate = ""
-    @State private var bangs = Bangs.custom
-    @State private var newBang = ""
-    @State private var newBangURL = ""
-    /// The sentence `Bangs.add` came back with when it refused.
-    @State private var bangError: String?
-
-    private var engineIsValid: Bool {
-        !newName.trimmingCharacters(in: .whitespaces).isEmpty && newTemplate.contains("%s")
-            && newTemplate.contains("://")
-    }
 
     var body: some View {
         Pane {
@@ -1011,23 +929,36 @@ private struct LinksPane: View {
             // only makes sense next to the default it is an exception to. See AirTraffic.swift.
             SettingsSection("Air Traffic Control") { AirTrafficCard() }
 
-            SettingsCard {
-                SettingsRow("Open a Peek window when clicking on links to other sites") {
-                    Toggle("", isOn: $peekLinks).labelsHidden()
-                }
-                Footnote("A Peek is the page floating over your window, opened by a link out "
-                         + "of a Favourite or a Pinned tab: the tab you clicked in stays on "
-                         + "the site you keep it on. Links to the same site still open in the "
-                         + "tab. \u{2318}O keeps a Peek as a tab beside the one it came from, "
-                         + "and Escape, \u{2318}W or a click outside throws it away — "
-                         + "Archive ▸ Reopen Last Peek brings the last one back. Off sends "
-                         + "those links to a new tab instead, which still leaves the Favourite "
-                         + "where it was. \u{21E7}-click overrides either way, off included: "
-                         + "an ordinary tab from a Favourite or a Pinned tab, a Peek from a "
-                         + "Today tab. A key you are holding down beats a switch you set once, "
-                         + "so \u{21E7}-click can still peek with this off.")
-            }
+        }
+    }
+}
 
+// MARK: - Search Settings
+
+private struct SearchPane: View {
+    // The key `Search.current` reads. AppStorage so the picker redraws itself.
+    @AppStorage("searchEngine") private var engineID = Search.defaultEngine.id
+    @AppStorage("aiAssistant") private var assistantID = AIChat.all[0].id
+    // Absent = off. Deliberately not defaulted on: turning this on sends what you type to
+    // the search engine before you press Return.
+    @AppStorage("searchSuggestions") private var suggestions = false
+    // Neither list is @Published, so the views mirror them and refresh on every mutation.
+    @State private var engines = Search.all
+    @State private var newName = ""
+    @State private var newTemplate = ""
+    @State private var bangs = Bangs.custom
+    @State private var newBang = ""
+    @State private var newBangURL = ""
+    /// The sentence `Bangs.add` came back with when it refused.
+    @State private var bangError: String?
+
+    private var engineIsValid: Bool {
+        !newName.trimmingCharacters(in: .whitespaces).isEmpty && newTemplate.contains("%s")
+            && newTemplate.contains("://")
+    }
+
+    var body: some View {
+        Pane {
             SettingsCard {
                 SettingsRow("AI assistant") {
                     Picker("", selection: $assistantID) {
@@ -1153,37 +1084,171 @@ private struct LinksPane: View {
     }
 }
 
+// MARK: - Icon
+
+private struct IconPane: View {
+    @State private var chosen = AppIcon.current
+    @State private var revision = 0
+    @State private var problem: String?
+
+    var body: some View {
+        Pane {
+            SettingsCard {
+                ForEach(AppIcon.variants, id: \.name) { variant in
+                    iconRow(variant.image, title: variant.name, selected: chosen == variant.name) {
+                        AppIcon.apply(variant.name)
+                        chosen = AppIcon.current
+                    }
+                }
+            }
+            .id(revision)
+
+            HStack(alignment: .top, spacing: 20) {
+                Text("Make Vane feel like yours. Choose an image for its Dock icon.")
+                    .font(Look.text).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("Choose Custom Icon…") {
+                    do {
+                        if try CustomAppIcon.choose() {
+                            chosen = AppIcon.current
+                            revision += 1
+                            problem = nil
+                        }
+                    } catch { problem = error.localizedDescription }
+                }
+            }
+            if let problem {
+                Text(problem).font(Look.text).foregroundStyle(Look.warning)
+            }
+        }
+    }
+
+    private func iconRow(_ image: NSImage, title: String, selected: Bool,
+                         action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 24) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .font(.system(size: 21))
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                Image(nsImage: image).resizable().scaledToFit()
+                    .frame(width: 52, height: 52)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Look.inkPrimary)
+                    if selected {
+                        Text("CURRENT ICON").font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 24)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+}
+
 // MARK: - Advanced
 
 private struct AdvancedPane: View {
     @AppStorage("userAgent") private var userAgent = safariUA
     @AppStorage("inspector") private var inspector = true
+    @AppStorage("homepage") private var homepage = ""
+    @AppStorage(PictureInPicture.prefKey) private var autoPiP = true
+    @State private var restore = Prefs.restoreSession
+    @State private var afterCrash = Prefs.afterCrash
+    @State private var toastSeconds = Prefs.toastSeconds
+    @State private var stackSplits = Prefs.stackSplits
 
     var body: some View {
         Pane {
-            SettingsCard {
-                SettingsRow("User agent") {
-                    Picker("", selection: $userAgent) {
-                        ForEach(Settings.userAgents, id: \.value) { Text($0.name).tag($0.value) }
+            SettingsSection("Windows and Tabs") {
+                SettingsCard {
+                    SettingsRow("Reopen windows and tabs on launch") {
+                        Toggle("Reopen windows and tabs on launch", isOn: $restore).labelsHidden()
+                            .onChange(of: restore) { Prefs.restoreSession = restore }
                     }
-                    .labelsHidden().fixedSize()
-                    .onChange(of: userAgent) { Settings.apply(); rebuild() }
-                }
-                SettingsRow("Allow Web Inspector") {
-                    Toggle("", isOn: $inspector).labelsHidden()
-                        .onChange(of: inspector) { Settings.apply(); rebuild() }
-                }
-                SettingsRow("Extensions") {
-                    Button("Install Extension…") {
-                        ExtensionHost.shared.chooseAndInstall(); rebuild()
+                    SettingsRow("If Vane didn’t quit cleanly") {
+                        Picker("After an unclean exit", selection: $afterCrash) {
+                            ForEach(Prefs.afterCrashChoices, id: \.key) { Text($0.name).tag($0.key) }
+                        }
+                        .labelsHidden().fixedSize()
+                        .onChange(of: afterCrash) { Prefs.afterCrash = afterCrash }
+                    }
+                    SettingsRow("Homepage") {
+                        TextField("Homepage", text: $homepage, prompt: Text(Prefs.homepage.absoluteString))
+                            .onSubmit {
+                                if let url = Search.url(for: homepage) { homepage = url.absoluteString }
+                            }
+                            .settingsField().frame(width: 280)
+                    }
+                    SettingsRow("Open new Split Views") {
+                        Picker("Open new Split Views", selection: $stackSplits) {
+                            Text("Side by side").tag(false)
+                            Text("Stacked").tag(true)
+                        }
+                        .labelsHidden().fixedSize()
+                        .onChange(of: stackSplits) { Prefs.stackSplits = stackSplits }
                     }
                 }
-                Footnote(Inspector.available
-                         ? "Sites that sniff the browser see the user agent instead. Reload the "
-                         + "page to apply it."
-                         : "Sites that sniff the browser see the user agent instead. Reload the "
-                         + "page to apply it. The in-app inspector is unavailable on this "
-                         + "macOS — right-click → Inspect Element still works.")
+            }
+
+            SettingsSection("Media and Notifications") {
+                SettingsCard {
+                    SettingsRow("Automatically enter Picture in Picture") {
+                        Toggle("Automatically enter Picture in Picture", isOn: $autoPiP).labelsHidden()
+                    }
+                    Footnote("Keep a playing video in view when switching tabs. Return to its tab to put it back in the page.")
+                    SettingsRow("Show notifications for") {
+                        Picker("Show notifications for", selection: $toastSeconds) {
+                            ForEach(Prefs.toastChoices, id: \.seconds) { Text($0.name).tag($0.seconds) }
+                        }
+                        .labelsHidden().fixedSize()
+                        .onChange(of: toastSeconds) { Prefs.toastSeconds = toastSeconds }
+                    }
+                }
+            }
+
+            SettingsSection("Developer") {
+                SettingsCard {
+                    SettingsRow("User agent") {
+                        Picker("", selection: $userAgent) {
+                            ForEach(Settings.userAgents, id: \.value) { Text($0.name).tag($0.value) }
+                        }
+                        .labelsHidden().fixedSize()
+                        .onChange(of: userAgent) { Settings.apply(); rebuild() }
+                    }
+                    SettingsRow("Allow Web Inspector") {
+                        Toggle("", isOn: $inspector).labelsHidden()
+                            .onChange(of: inspector) { Settings.apply(); rebuild() }
+                    }
+                    SettingsRow("Extensions") {
+                        Button("Install Extension…") {
+                            ExtensionHost.shared.chooseAndInstall(); rebuild()
+                        }
+                    }
+                    Footnote(Inspector.available
+                             ? "Sites that sniff the browser see the user agent instead. Reload the "
+                             + "page to apply it."
+                             : "Sites that sniff the browser see the user agent instead. Reload the "
+                             + "page to apply it. The in-app inspector is unavailable on this "
+                             + "macOS — right-click → Inspect Element still works.")
+                }
+            }
+
+            SettingsSection("Reset Vane") {
+                SettingsCard {
+                    SettingsRow("Start over") {
+                        Button("Erase Everything…") { EraseEverything.ask() }
+                    }
+                    Footnote("Erase all profiles, Spaces, passwords, browsing data, extensions, and settings. Vane asks you to type a confirmation before starting over.")
+                }
             }
 
         }
@@ -1196,8 +1261,9 @@ private struct AdvancedPane: View {
 /// this is the pane that row means: what is switched on to protect you, what has been
 /// answered on your behalf per site, and the one button that takes it all back.
 private struct PrivacyPane: View {
+    @ObservedObject var selection: SettingsSelection
     @AppStorage("httpsOnly") private var httpsOnly = true
-    @AppStorage("blockerEnabled") private var blocking = true
+    @State private var blocking = true
     @AppStorage("searchSuggestions") private var suggestions = false
     @ObservedObject private var manager = ProfileManager.shared
     /// Read once per appearance: they come out of UserDefaults, not out of a publisher.
@@ -1205,7 +1271,9 @@ private struct PrivacyPane: View {
     @State private var httpExceptions: [String] = []
     @State private var clearing = false
 
-    private var profile: Profile { manager.active }
+    private var profile: Profile {
+        manager.profiles.first { $0.id == selection.profileID } ?? manager.active
+    }
 
     var body: some View {
         Pane {
@@ -1215,7 +1283,7 @@ private struct PrivacyPane: View {
                 }
                 SettingsRow("Block ads and trackers") {
                     Toggle("", isOn: $blocking).labelsHidden()
-                        .onChange(of: blocking) { Blocker.refresh(); rebuild() }
+                        .onChange(of: blocking) { Blocker.setEnabled(blocking, for: profile.id); rebuild() }
                 }
                 SettingsRow("Filter lists") {
                     Button("Add Filter List…") { Blocker.chooseAndAddList() }
@@ -1272,10 +1340,10 @@ private struct PrivacyPane: View {
                     }
                     SettingsRow("Certificates you trusted anyway") {
                         Button("Forget Exceptions…") {
-                            if confirm("Forget every certificate you chose to trust anyway?",
+                            if confirm("Forget certificate exceptions for “\(profile.name)”?",
                                        "Forget",
                                        "Those sites will ask again the next time you visit them.") {
-                                CertificateTrust.forgetAll()
+                                CertificateTrust.forget(profile: profile.id)
                             }
                         }
                     }
@@ -1289,7 +1357,7 @@ private struct PrivacyPane: View {
                             clearing = true
                         }
                         DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
-                            SettingsWindow.show(tab: "passwords")
+                            selection.id = "passwords"
                         }
                     }
                     .padding(.vertical, Look.inset / 2)
@@ -1304,6 +1372,7 @@ private struct PrivacyPane: View {
     }
 
     private func reload() {
+        blocking = Blocker.enabled(for: profile.id)
         grants = SitePermissions.all(profileID: profile.id)
         httpExceptions = HTTPSOnly.exceptions(profileID: profile.id)
     }
