@@ -305,11 +305,12 @@ import WebKit
                 try require(try files.allSatisfy { try Data(contentsOf: $0) == Data("Vane download fixture\n".utf8) },
                             "real WKDownload writes complete bytes without replacing the earlier file")
 
+                try await multiWindow(base: base)
                 try await profileHopCheck(base: base)
 
                 await clean()
                 print("PASS browsercheck: \(assertions) real-WebKit assertions")
-                print("Coverage excludes live permissions/devices, upload dialogs, printing, DRM, persisted session relaunch and TLS trust.")
+                print("Coverage excludes live permissions/devices, upload dialogs, printing, DRM and TLS trust.")
                 exit(0)
             } catch {
                 await clean()
@@ -331,6 +332,253 @@ import WebKit
             window.orderFront(nil)
             windows.append(window)
             tabs.append(tab)
+        }
+
+        private func multiWindow(base: String) async throws {
+            let profile = ProfileManager.shared.create(name: "Window checks")
+            let space = ProfileManager.shared.createSpace(name: "Shared windows", in: profile.id)
+            let first = Windows.open(urls: [URL(string: "\(base)/form")!], profile: profile, space: space)
+            try await focus(first)
+            guard let page = first.active else { throw Failure("first shared window has no page") }
+            tabs.append(page)
+            try await loaded(page, path: "/form", title: "Fixture Form")
+            try await load(page, "\(base)/a", title: "Fixture A")
+            try await load(page, "\(base)/form", title: "Fixture Form")
+            _ = try await js(page, "document.body.style.height = '3000px'; window.scrollTo(0, 600); document.getElementById('query').value = 'keep this input'")
+            let originalWeb = page.web
+            let legacyState = page.snapshot.state
+            first.saveCurrentSpace()
+            let second = Windows.open(profile: profile, space: first.currentSpace)
+            try await focus(second)
+            defer {
+                first.window?.close()
+                second.window?.close()
+            }
+            try require(second.active === page,
+                        "two windows in one Space share the same tab identity and live page")
+            do {
+                try await wait("live page transfers to second window") { page.web.window === second.window }
+            } catch {
+                print("DIAG firstKey=\(first.window?.isKeyWindow ?? false) secondKey=\(second.window?.isKeyWindow ?? false) firstOwn=\(first.ownsPage(page)) secondOwn=\(second.ownsPage(page)) mountedFirst=\(page.web.window === first.window) mountedSecond=\(page.web.window === second.window) snapshot=\(page.windowSnapshot != nil)")
+                throw error
+            }
+            try require(page.windowSnapshot != nil && !first.ownsPage(page) && second.ownsPage(page),
+                        "the inactive copy has a snapshot and only the active window owns the page")
+            let preservedInput = try await js(page, "document.getElementById('query').value")
+            try require(page.web === originalWeb && preservedInput as? String == "keep this input",
+                        "window handoff preserves the live view and unsent form input")
+            let scroll = try await js(page, "window.scrollY") as? Double
+            try require(scroll == 600 && page.web.canGoBack,
+                        "window handoff preserves scroll position and back history")
+            try await focus(first)
+            try await wait("live page transfers back") { page.web.window === first.window }
+            try require(first.ownsPage(page) && !second.ownsPage(page),
+                        "activating the previous window reverses live and gray presentations")
+            page.onOpenBeside?(URL(string: "\(base)/a")!, true)
+            try await wait("page callback opens in its current owner") {
+                first.tabs.count == 2 && second.tabs.count == 2
+            }
+            try require(first.current != page.id && second.current == page.id,
+                        "page callbacks target the active window while each window keeps its selection")
+            guard let duplicate = first.active else { throw Failure("new shared tab was not selected") }
+            tabs.append(duplicate)
+            first.newTab(URL(string: "\(base)/a")!)
+            try await wait("duplicate URL propagates") { second.tabs.count == 3 }
+            try require(first.tabs[1].id != first.tabs[2].id && second.tabs[1] === first.tabs[1]
+                        && second.tabs[2] === first.tabs[2],
+                        "separately opened duplicate URLs remain distinct shared identities")
+            first.addPane(page.id, beside: duplicate.id)
+            try await wait("shared split propagates") { second.splits.count == 1 }
+            try await focus(second)
+            try await wait("both live split panes transfer") {
+                page.web.window === second.window && duplicate.web.window === second.window
+            }
+            try require(!first.ownsPage(page) && !first.ownsPage(duplicate),
+                        "every shared split pane has a single live owner")
+            first.window?.makeKeyAndOrderFront(nil)
+            second.window?.makeKeyAndOrderFront(nil)
+            first.window?.makeKeyAndOrderFront(nil)
+            try await wait("rapid window switches settle in the final owner") {
+                page.web.window === first.window && duplicate.web.window === first.window
+            }
+            try require(first.ownsPage(page) && first.ownsPage(duplicate),
+                        "late snapshot callbacks cannot undo the final window activation")
+            second.focusPane(duplicate.id)
+            second.current = first.tabs.last!.id
+            SharedTabs.flush()
+            first.focusPane(page.id)
+            SharedTabs.flush()
+            try require(second.split(containing: duplicate.id)?.activeTab == duplicate.id,
+                        "each window remembers its inactive split pane independently")
+            first.swapPanes()
+            SharedTabs.flush()
+            try require(second.split(containing: duplicate.id)?.activeTab == duplicate.id,
+                        "swapping shared panes preserves another window's remembered pane focus")
+            let extensionAdapter = page.extensions.adapter(for: page, in: first)
+            let entries = first.tabs.compactMap { tab -> Session.Entry? in
+                guard let url = tab.currentURL else { return nil }
+                return Session.Entry(id: tab.id.uuidString, url: url.absoluteString,
+                                     title: tab.title, kind: tab.kind)
+            }
+            let restored = Windows.open(profile: profile, space: first.currentSpace,
+                                        session: entries, selected: page.id)
+            try require(restored.active === page && restored.tabs.map(\.id) == first.tabs.map(\.id),
+                        "restoring another window reuses shared identities including duplicate URLs")
+            restored.window?.close()
+            second.current = page.id
+            try await focus(second)
+            try await wait("surviving window keeps the live page") { page.web.window === second.window }
+            try require(page.web === originalWeb && page.web.navigationDelegate != nil,
+                        "closing another window does not tear down a surviving shared page")
+            try require(extensionAdapter.store === second,
+                        "a shared tab extension adapter follows the current page owner")
+            let beforeBoth = Set(first.tabs.map(\.id))
+            first.newTab(URL(string: "\(base)/b")!)
+            let openedFirst = first.current
+            second.newTab(URL(string: "\(base)/b")!)
+            let openedSecond = second.current
+            try await wait("back-to-back opens synchronize") { first.tabs.map(\.id) == second.tabs.map(\.id) }
+            try require(first.tabs.count == beforeBoth.count + 2
+                        && first.tabs.contains { $0.id == openedFirst }
+                        && first.tabs.contains { $0.id == openedSecond },
+                        "back-to-back opens in different windows keep both new tabs")
+            let addedBeforePin = first.newBlankTab(focus: false)
+            addedBeforePin.park(url: URL(string: "\(base)/before-pin")!, Parked(title: "Before pin"))
+            second.move(duplicate.id, to: .pinned)
+            SharedTabs.flush()
+            try require(first.tabs.contains { $0 === addedBeforePin }
+                        && second.tabs.contains { $0 === addedBeforePin }
+                        && first.tabs.first?.kind == .pinned
+                        && first.pins.tabs.contains(duplicate.id.uuidString),
+                        "opening a tab then pinning in another window keeps the new row and section order")
+            let away = ProfileManager.shared.createSpace(name: "Away", in: profile.id)
+            first.switchTo(space: away)
+            try require(first.space(stashing: page.id) == space.id,
+                        "another Space keeps the shared tab stashed")
+            second.close(page.id)
+            try require(!first.everyTab.contains { $0.id == page.id },
+                        "closing a shared tab also removes copies stashed behind another Space")
+            first.switchTo(space: second.currentSpace!)
+            try require(!first.tabs.contains { $0.id == page.id },
+                        "returning to a Space does not resurrect its closed shared tab")
+            try require(first.current == openedFirst,
+                        "returning to a shared Space restores this window's own selected tab")
+            try require(!second.tabs.contains { $0.id == page.id },
+                        "closing a shared tab removes it from the other window")
+            // Both windows have visited the destination, so both can hold stale stashes.
+            var destination = ProfileManager.shared.createSpace(name: "Move destination", in: profile.id)
+            destination.tabURLs = [URL(string: "\(base)/b")!]
+            ProfileManager.shared.updateSpace(destination)
+            first.switchTo(space: destination)
+            second.switchTo(space: destination)
+            let staleDestinationPage = first.tabs.first!
+            first.switchTo(space: second.spaces.first { $0.id == space.id }!)
+            second.switchTo(space: first.currentSpace!)
+            let movedURL = URL(string: "\(base)/moved")!
+            let moving = first.newBlankTab(focus: false)
+            moving.park(url: movedURL, Parked(title: "Moved"))
+            Spaces.move(moving.id, to: destination.id, as: .today, from: first)
+            first.switchTo(space: destination)
+            try require(first.tabs.contains { $0.currentURL == movedURL },
+                        "entering a shared stashed Space includes tabs moved into it on disk")
+            try require(staleDestinationPage.web.navigationDelegate == nil,
+                        "replacing stale shared stashes tears down pages no window holds")
+            let anotherURL = URL(string: "\(base)/moved-again")!
+            let another = second.newBlankTab(focus: false)
+            another.park(url: anotherURL, Parked(title: "Moved again"))
+            Spaces.move(another.id, to: destination.id, as: .today, from: second)
+            try require(first.tabs.contains { $0.currentURL == anotherURL },
+                        "moving a tab into a Space already open in another window updates its live strip")
+            let pinnedCopy = second.newBlankTab(focus: false)
+            pinnedCopy.park(url: anotherURL, Parked(title: "Pinned copy"))
+            Spaces.move(pinnedCopy.id, to: destination.id, as: .pinned, from: second)
+            try require(first.tabs.contains { $0.kind == .pinned && $0.pinnedURL == anotherURL }
+                        && first.tabs.contains { $0.kind == .today && $0.pinnedURL == anotherURL },
+                        "moving a pinned copy preserves a Today tab with the same URL")
+            second.switchTo(space: first.currentSpace!)
+            let splitTabs = first.tabs.prefix(2).map(\.id)
+            first.addPane(splitTabs[1], beside: splitTabs[0])
+            SharedTabs.flush()
+            try await wait("session rows have navigable URLs") { first.tabs.allSatisfy { $0.currentURL != nil } }
+            let savedIDs = first.tabs.map(\.id)
+            let savedPanes = first.splits.first!.tabs
+            try require(Session.save(), "shared-window session saves")
+            let sessionFile = ProfileManager.sessionURL(for: profile.id, in: Store.directory)
+            let savedSession = try Data(contentsOf: sessionFile)
+            first.window?.close()
+            second.window?.close()
+            // Simulate a process restart with its quit-time snapshot. Explicit window
+            // closes save a smaller session, which is a different operation from quitting.
+            try savedSession.write(to: sessionFile, options: .atomic)
+            try require(Session.restore(profile: profile), "shared-window session restores")
+            SharedTabs.flush()
+            let restoredWindows = TabStore.all.filter { $0.profileID == profile.id && $0.window != nil }
+            defer { restoredWindows.forEach { $0.window?.close() } }
+            try require(restoredWindows.count == 2
+                        && restoredWindows.allSatisfy { $0.tabs.map(\.id) == savedIDs }
+                        && restoredWindows.allSatisfy { $0.splits.first?.tabs == savedPanes },
+                        "a disk session restores shared tab identities and splits in both windows")
+            try require(restoredWindows[0].tabs.first === restoredWindows[1].tabs.first,
+                        "disk session restoration recreates one live object per shared tab")
+            let survivor = restoredWindows[0], closing = restoredWindows[1]
+            guard let survivingPage = survivor.active else { throw Failure("restored window has no selected page") }
+            closing.current = survivingPage.id
+            try await focus(closing)
+            try await wait("closing window first owns the shared page") { survivingPage.web.window === closing.window }
+            let survivingWeb = survivingPage.web
+            let adapter = survivingPage.extensions.adapter(for: survivingPage, in: closing)
+            closing.window?.close()
+            try await focus(survivor)
+            try await wait("closing owner hands page to survivor") { survivingPage.web.window === survivor.window }
+            try require(survivingPage.web === survivingWeb && survivingWeb.navigationDelegate != nil
+                        && adapter.store === survivor,
+                        "closing the live owner preserves the page and its extension adapter in the surviving window")
+
+            let legacyProfile = ProfileManager.shared.create(name: "Legacy window checks")
+            var legacySpace = ProfileManager.shared.createSpace(name: "Legacy", in: legacyProfile.id)
+            let favouriteURL = URL(string: "\(base)/legacy-favourite")!
+            let pinURL = URL(string: "\(base)/legacy-pin")!
+            legacySpace.pinnedTabURLs = [pinURL]
+            ProfileManager.shared.updateSpace(legacySpace)
+            UserDefaults.vane.set([favouriteURL.absoluteString],
+                                  forKey: TabStore.defaultsKey(.favourite, legacyProfile.id))
+            let oldEntries: [[String: String]] = [
+                ["url": favouriteURL.absoluteString], ["url": pinURL.absoluteString],
+                ["url": "\(base)/form", "title": "Legacy saved form",
+                 "state": legacyState?.base64EncodedString() ?? ""],
+                ["url": "\(base)/b", "title": "Legacy other page"]
+            ]
+            let oldSession = try JSONSerialization.data(withJSONObject: [
+                "version": 3, "windows": [oldEntries, oldEntries],
+                "spaces": [legacySpace.id.uuidString, legacySpace.id.uuidString]
+            ])
+            try oldSession.write(to: ProfileManager.sessionURL(for: legacyProfile.id, in: Store.directory))
+            try require(Session.restore(profile: legacyProfile), "two-window v3 session restores")
+            let oldWindows = TabStore.all.filter { $0.profileID == legacyProfile.id && $0.window != nil }
+            defer { oldWindows.forEach { $0.window?.close() } }
+            SharedTabs.flush()
+            try require(oldWindows.count == 2 && oldWindows.allSatisfy { store in
+                store.tabs.filter { $0.kind == .favourite }.count == 1
+                    && store.tabs.filter { $0.kind == .pinned }.count == 1
+                    && store.tabs.filter { $0.kind == .today }.count == 4
+                    && !store.tabs.contains { $0.kind == .today
+                        && [favouriteURL, pinURL].contains($0.currentURL ?? TabStore.home) }
+            }, "legacy shared-window restore keeps pins and favourites out of Today")
+            try require(legacyState != nil && oldWindows[0].tabs.contains { tab in
+                tab.kind == .today && tab.suspended && tab.currentURL?.path == "/form"
+                    && tab.title == "Legacy saved form" && tab.snapshot.state == legacyState
+            }, "legacy shared-window restore preserves saved background page state and title")
+            try require(oldWindows[1].active?.suspended == false,
+                        "the selected page in the second legacy window wakes after restoration")
+            try await loaded(oldWindows[1].active!, path: "/b", title: "Fixture B")
+        }
+
+        private func focus(_ store: TabStore) async throws {
+            // The fixture is launched by a CLI, so ordering a window alone does not
+            // activate its app. Wait for a real key window before asserting handoff.
+            NSApp.activate(ignoringOtherApps: true)
+            store.window?.makeKeyAndOrderFront(nil)
+            try await wait("fixture window becomes key") { store.window?.isKeyWindow == true }
         }
 
         private func load(_ tab: Tab, _ address: String, title: String, finalPath: String? = nil) async throws {

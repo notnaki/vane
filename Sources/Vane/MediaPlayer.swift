@@ -360,7 +360,7 @@ struct OffscreenPages: View {
             ForEach(store.everyTab.filter {
                 !shown.contains($0.id) && !WebHost.cardHolds($0.web) && media.keepsRunning($0)
             }) { tab in
-                WebView(web: tab.web, offscreen: true).id(tab.id)
+                TabPage(tab: tab, offscreen: true).id(tab.id)
             }
         }
         .opacity(0)

@@ -228,6 +228,8 @@ enum Spaces {
         // Space's grid — send it down to Today first, then close it like any other tab.
         if tab.kind != .today { store.move(id, to: .today) }
         store.close(id)
+        SharedTabs.receiveSavedTab(url, parked: parked[url.absoluteString] ?? Parked(),
+                                   kind: kind, in: spaceID, profileID: store.profileID)
         store.spacesChanged()
     }
 

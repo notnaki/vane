@@ -28,10 +28,16 @@ struct WebView: NSViewRepresentable {
     /// Out of the window's key loop and out of the accessibility tree: a page kept running
     /// off screen (see `OffscreenPages`) must not be Tab-able to or readable by VoiceOver.
     var offscreen = false
+    var tab: Tab?
+    var store: TabStore?
+    private var mayMount: Bool {
+        guard let tab, let store else { return true }
+        return store.ownsPage(tab)
+    }
 
-    func makeNSView(context: Context) -> WebHost { WebHost(web, offscreen: offscreen) }
+    func makeNSView(context: Context) -> WebHost { WebHost(mayMount ? web : nil, offscreen: offscreen) }
     func updateNSView(_ host: WebHost, context: Context) {
-        host.show(web, keeping: live)
+        if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: WebHost, context: Context) -> CGSize? {
@@ -71,12 +77,18 @@ final class WebHost: NSView {
     /// the moment it exists: `WebHost.cardHolds` is asked about a page in the same pass the
     /// host holding it was made, and an answer that depended on `updateNSView` having run
     /// yet would be a race.
-    init(_ web: WKWebView, offscreen: Bool = false) {
+    init(_ web: WKWebView?, offscreen: Bool = false) {
         super.init(frame: .zero)
         wantsLayer = true
         self.offscreen = offscreen
         isHidden = offscreen
-        show(web)
+        if let web { show(web) }
+    }
+
+    func removePage() {
+        for page in subviews.compactMap({ $0 as? WKWebView }) { page.removeFromSuperview() }
+        web = nil
+        recent.removeAll()
     }
 
     /// Whether the page card is already holding this page — showing it, or keeping it hidden
@@ -228,6 +240,43 @@ final class WebHost: NSView {
                 == Array(many.dropFirst(keptPages))),
             ("the ceiling is the number of live pages a window pays for", keptPages == 4),
         ]
+    }
+}
+
+/// A shared tab has one interactive page and a gray snapshot in its other windows.
+struct TabPage: View {
+    @EnvironmentObject var store: TabStore
+    @ObservedObject var tab: Tab
+    var offscreen = false
+    var keepPages = false
+
+    var body: some View {
+        if store.ownsPage(tab) {
+            DeveloperFrame(tab: tab) {
+                WebView(web: tab.web,
+                        live: keepPages ? store.everyTab.filter { store.ownsPage($0) }.map(\.web) : [],
+                        offscreen: offscreen, tab: tab, store: store)
+            }
+                .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
+        } else if !offscreen {
+            GeometryReader { geometry in
+                ZStack {
+                    Color(nsColor: .windowBackgroundColor)
+                    if let image = tab.windowSnapshot {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
+                            .saturation(0)
+                            .opacity(0.55)
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(tab.title), active in another window")
+        }
     }
 }
 
@@ -580,8 +629,7 @@ struct WebCard: View {
                 // the one swapped: suspension excludes the active tab on both paths, the
                 // idle timer and memory pressure. Entering a split takes this branch away
                 // altogether and the held pages go with it.
-                DeveloperFrame(tab: tab) { WebView(web: tab.web, live: store.everyTab.map(\.web)) }
-                    .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
+                TabPage(tab: tab, keepPages: true)
             } else {
                 // No tabs: the sheet a page will land on, and nothing in it. With nothing
                 // mounted there is also no WKWebView to argue with over a dropped file, so

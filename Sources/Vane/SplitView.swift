@@ -424,6 +424,8 @@ struct Split: Equatable, Sendable {
     /// Put the session's splits back, once the window's tabs exist. Panes are matched by url
     /// and each tab is used once, so two panes on the same page do not collapse into one.
     func applySplits(_ saved: [Split.Saved]) {
+        // A restored window may inherit live splits; replace them with its saved layout.
+        splits.removeAll()
         var taken: Set<Tab.ID> = []
         for entry in saved {
             let candidates = tabs.compactMap { tab in
@@ -498,10 +500,7 @@ private struct Pane: View {
     let focus: () -> Void
 
     var body: some View {
-        DeveloperFrame(tab: tab) { WebView(web: tab.web).id(tab.id) }
-            // Anchored to a field in *this* pane's page, so it is drawn on the pane. On the
-            // card it would hang over the neighbour at whatever offset this page asked for.
-            .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
+        TabPage(tab: tab).id(tab.id)
             // A pane is on screen whether or not the keyboard is in it, so a pane that comes
             // back from the session parked has to wake up rather than sit there blank.
             .onAppear { tab.resume() }

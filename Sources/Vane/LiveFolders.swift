@@ -1042,19 +1042,15 @@ enum GitHubOAuth {
         var goodbyes = Set<String>()
         var showing = false
         for store in stores() where store.pins.folder(folder) != nil {
+            SharedTabs.flush()
             showing = true
             let record = store.pins.folder(folder)
             let owned = record?.owned ?? []
             let have = GitHub.mine(store.pins.children(of: folder).compactMap(store.rowURL),
                                    owned: owned)
-            // What the user took out stays out. Asked of *this* window, and answered for its
-            // own rows: two windows on one Space do not share tabs, so a row unpinned in one
-            // is still sitting in the other, and a list computed from one window's tabs is
-            // nonsense applied to the other's. Before the plan, not after: a dismissed pull
-            // request is one the search never asked for, so there is nothing to add, nothing
-            // to order and nothing to say goodbye to. The window that still holds the row
-            // keeps it this time round; the folder's hidden list is the union below, so the
-            // next refresh takes it there too, wearing its goodbye like any other.
+            // Finish the previous window's reconciliation before reading the shared rows.
+            // A dismissed pull request stays out in every presentation of the Space, and a
+            // refresh never creates a second identity for an existing row.
             let gone = GitHub.dismissed(previous: record?.dismissed ?? [], owned: owned,
                                         have: have, want: found)
             hidden.formUnion(gone)
@@ -1130,6 +1126,7 @@ enum GitHubOAuth {
     func stopKeepingFilled(_ folder: UUID, saying: Bool = true) {
         var name: String?
         for store in stores() where store.pins.folder(folder) != nil {
+            SharedTabs.flush()
             name = name ?? store.pins.folder(folder)?.name
             store.pins.edit(folder: folder) { $0.live = nil; $0.owned = nil; $0.dismissed = nil }
             store.savePins()
@@ -1258,6 +1255,7 @@ extension TabStore {
     /// go on owning them and go on drawing their goodbye until it can take them.
     @discardableResult
     func applyLive(_ plan: GitHub.Plan, to folder: UUID) -> [String] {
+        if sharingReady { SharedTabs.flush() }
         guard pins.folder(folder) != nil else { return [] }
         // A pull request renamed on GitHub renames its row, as Arc does — but only a parked
         // one: a loaded page has a title of its own, and the next refresh of that page is
@@ -1663,13 +1661,8 @@ extension GitHub {
         p = plan(have: [a], want: [a, b].filter { !hidden.contains($0) }, closing: [])
         assert("the plan is given the search minus what was taken out",
                p.add.isEmpty && p.order == [a] && !p.changesRows)
-        // Two windows on one Space, both showing the folder. They do not share tabs, so the
-        // row unpinned in one is still sitting in the other, and each window is asked about
-        // its own rows. What the folder writes down is the union of the answers — hidden
-        // anywhere is hidden for the folder — and a union does not care which window the
-        // loop reached last, which is the whole point: the other way round, whichever window
-        // came second decided for both, and the folder either forgot the unpin or told the
-        // window that still had the row to say goodbye to it.
+        // Reconciliation can observe different intermediate row lists. Hidden anywhere
+        // stays hidden for the folder regardless of the order those lists were read.
         let unpinned = dismissed(previous: [], owned: [a, b], have: [a], want: [a, b])
         let untouched = dismissed(previous: [], owned: [a, b], have: [a, b], want: [a, b])
         assert("a window is only ever asked about the rows it holds",

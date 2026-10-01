@@ -479,7 +479,8 @@ extension VaneWindow {
     static func open(isPrivate: Bool = false, urls: [URL] = [],
                      profile: Profile? = nil, space: Space? = nil,
                      parked: [String: Parked] = [:], focus: Bool = true,
-                     session: [Session.Entry]? = nil, selected: UUID? = nil) -> TabStore {
+                     session: [Session.Entry]? = nil, selected: UUID? = nil,
+                     restoringLegacySession: Bool = false) -> TabStore {
         let profile = profile ?? space.flatMap { s in
             ProfileManager.shared.profiles.first { $0.id == s.profileID }
         } ?? ProfileManager.shared.active
@@ -489,7 +490,8 @@ extension VaneWindow {
         // private window is Arc's incognito: no Space, nothing written down.
         let space = isPrivate ? nil : Spaces.resolve(space, for: profile)
         let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space,
-                             parked: parked, session: session, selected: selected)
+                             parked: parked, session: session, selected: selected,
+                             restoringLegacySession: restoringLegacySession)
         // Live folders keep themselves filled for as long as a window is open. A private
         // window holds none — it has no Pinned section — so it does not start the clock.
         if !isPrivate { LiveFolders.shared(for: profile.id).begin() }
@@ -553,6 +555,7 @@ extension VaneWindow {
         // window is on the store, so a Space pinned to light or dark came up wearing the
         // system's appearance until something else edited it.
         store.applySpaceAppearance()
+        SharedTabs.refreshPresentation()
         // A link opened from a floating page may need its first ordinary window, but
         // must leave the source window key just like a background tab does.
         if focus { window.makeKeyAndOrderFront(nil) } else { window.orderBack(nil) }
@@ -651,6 +654,7 @@ extension VaneWindow {
         arriving.resolveStaleSpace()
         arriving.switchTo(space: space)         // a no-op for a store built into it just now
         arriving.applySpaceAppearance()
+        SharedTabs.refreshPresentation()
         store.extensions.sync()
         arriving.extensions.sync()
         // The profile is in the window's title because there is otherwise nothing on screen
@@ -685,7 +689,10 @@ extension VaneWindow {
         }
         func windowDidResize(_ n: Notification) { recentre() }
         func windowDidEndLiveResize(_ n: Notification) { recentre() }
-        func windowDidBecomeKey(_ n: Notification) { recentre(); MainActor.assumeIsolated { rebuild() } }
+        func windowDidBecomeKey(_ n: Notification) {
+            recentre()
+            MainActor.assumeIsolated { rebuild(); SharedTabs.refreshPresentation() }
+        }
         func windowDidResignKey(_ n: Notification) { recentre() }
         func windowDidEnterFullScreen(_ n: Notification) { recentre() }
         func windowDidExitFullScreen(_ n: Notification) { recentre() }
@@ -714,15 +721,16 @@ extension VaneWindow {
                 for one in held {
                     // Take the pages down with the window: see `Tab.tearDown`. Every Space
                     // the store was keeping alive behind its own goes too — see `Stash`.
-                    one.tabs.forEach { $0.tearDown() }
-                    one.dropStashes()
+                    let pages = one.everyTab
                     TabStore.all.removeAll { $0 === one }
+                    SharedTabs.release(pages, excluding: one)
                     one.extensions.sync()
                     // After the removal, so it can see whether this was the profile's last
                     // window: the live folders' timer must not outlive the sidebar drawing
                     // them.
                     LiveFolders.forget(one.profileID)
                 }
+                SharedTabs.refreshPresentation()
                 delegates.removeAll { $0 === self }
             }
         }
@@ -847,7 +855,7 @@ extension TabStore {
             guard let self, let window else { return }
             let holder = window.firstResponder
             let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
-            let page = active?.web
+            let page = active.flatMap { ownsPage($0) ? $0.web : nil }
             guard Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
                                             libraryOpen: libraryOpen), let page else { return }
             window.makeFirstResponder(page)
@@ -861,7 +869,7 @@ extension TabStore {
     func focusPageAfterHop(remaining: Int = 6) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
             guard let self, let window, palette == nil, !libraryOpen,
-                  let page = active?.web else { return }
+                  let page = active.flatMap({ ownsPage($0) ? $0.web : nil }) else { return }
             let holder = window.firstResponder
             let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
             guard nobody else { return }
@@ -1131,7 +1139,8 @@ extension TabStore {
                                      profile: profile, space: spaces.first { $0.id == inSpace[i] },
                                      parked: identified ? [:] : parked(entries),
                                      session: identified ? normalizedEntries(entries) : nil,
-                                     selected: selected.indices.contains(i) ? selected[i] : nil)
+                                     selected: selected.indices.contains(i) ? selected[i] : nil,
+                                     restoringLegacySession: !identified)
             // After the window exists, because a split is named by its panes' urls and the
             // tabs that carry them are made by `TabStore.init`.
             store.applySplits(saved.indices.contains(i) ? saved[i] : [])

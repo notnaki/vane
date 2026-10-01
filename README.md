@@ -40,6 +40,12 @@ a Developer ID signature and notarization; see [releasing](#releasing).
 | Protection | WebKit content blocking, HTTPS-only mode, certificate warnings, and site permission prompts. |
 | Extras | Unpacked WebExtensions, GitHub-backed live folders, and an in-app update check for published releases. |
 
+Windows in the same Space share tabs. When both show the same tab, the focused
+window holds its live page and the other shows a gray snapshot. Switching windows
+preserves input, scroll position, and history; closing a tab removes it from every
+window. Each window keeps its own selection. Private and Little Vane windows keep
+their own pages.
+
 Some features depend on macOS services, site behavior, or a signed distribution
 build. The [known gaps](#known-gaps) section gives the practical limits.
 
