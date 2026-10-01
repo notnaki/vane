@@ -1130,6 +1130,9 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                 if let saved = ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == space.id }) {
                     check("quitting writes the same page down, so both writers agree",
                           saved.pinnedTabURLs == [home])
+                    // Simulate a new process; a second live window now shares this row.
+                    TabStore.all.removeAll { $0 === store }
+                    defer { TabStore.all.append(store) }
                     let relaunched = TabStore(profileID: profileID, space: saved)
                     let back = relaunched.tabs.first { $0.kind == .pinned }
                     check("the next launch keeps the page the pinned row wandered to",

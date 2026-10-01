@@ -197,7 +197,10 @@ extension Prefs {
     /// `everyTab`, not `tabs`: a Space a window is keeping alive behind the one it is showing
     /// is exactly where an idle page hides, and one the sweep could not see would never be
     /// unloaded at all. See `Stash`.
-    static var allTabs: [Tab] { TabStore.all.flatMap(\.everyTab) }
+    static var allTabs: [Tab] {
+        var seen = Set<UUID>()
+        return TabStore.all.flatMap(\.everyTab).filter { seen.insert($0.id).inserted }
+    }
 
     /// On screen in some window — which for a split view is every one of its panes, not just
     /// the one the keyboard is in. Tearing down the pane beside the one being read is exactly

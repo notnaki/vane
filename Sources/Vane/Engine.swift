@@ -235,6 +235,11 @@ struct TitleReveal: Equatable, Sendable {
 @MainActor final class Tab: NSObject, ObservableObject, Identifiable, WKUIDelegate,
                             WKNavigationDelegate, WKScriptMessageHandler {
     let id: UUID
+    /// One live page can be mounted in one window. Other windows draw its last snapshot.
+    @Published var presentationOwner: UUID?
+    @Published var windowSnapshot: NSImage?
+    var presentationGeneration = 0
+    var sharedSpaceID: UUID?
     /// A `var` only because suspension swaps it: the whole point of suspending a tab is
     /// dropping the WKWebView so WebKit tears its WebContent process down with it. Every
     /// reader outside this file keeps working — a suspended tab holds a fresh, unloaded
@@ -378,6 +383,7 @@ struct TitleReveal: Equatable, Sendable {
     private(set) var parkedURL: URL?
     private var parkedState: Data?
     private var suppressHistoryOnce = false
+    private var tornDown = false
     /// Set when a page is being edited in the URL field, so KVO doesn't fight the user.
     var editing = false
     private var obs: [NSKeyValueObservation] = []
@@ -719,7 +725,7 @@ struct TitleReveal: Equatable, Sendable {
     /// Split out of `suspend()` for `tearDown()`, which has to let go whatever the state of
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
-    private func release() {
+    private func release(replacing: Bool = true) {
         let old = web
         titleSettleTask?.cancel()
         titleSettleTask = nil
@@ -754,8 +760,10 @@ struct TitleReveal: Equatable, Sendable {
         // NSViewRepresentable is the next place to look. The leak is an empty view with no
         // page and no process, bounded per suspend, so it is a wart, not a regression.
         Tab.close(old)
-        web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
-        attach()
+        if replacing {
+            web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
+            attach()
+        }
     }
 
     /// Shut the page down explicitly. Dropping the last Swift reference *ought* to be
@@ -805,8 +813,12 @@ struct TitleReveal: Equatable, Sendable {
     /// `windowWillClose` → here, and a `suspend()` that decided there was nothing to do left
     /// that popup's WebContent process running for the life of the app.
     func tearDown() {
+        guard !tornDown else { return }
+        tornDown = true
+        presentationGeneration += 1
+        windowSnapshot = nil
         if isPrivate { SitePermissions.forgetPrivate(tabID: id) }
-        release()
+        release(replacing: false)
         TabAudio.forget(id)
         MediaState.shared.forget(id)
     }
@@ -1542,7 +1554,10 @@ struct Stash {
 }
 
 @MainActor final class TabStore: ObservableObject {
-    @Published var tabs: [Tab] = []
+    let windowID = UUID()
+    var sharingReady = false
+    var sharedUpdateQueued = false
+    @Published var tabs: [Tab] = [] { didSet { SharedTabs.schedule(from: self) } }
     /// The tab whose row is a name field right now. One at a time, per window — and one
     /// between the two: arming either name field puts the other away, or two rows in the
     /// same list are both waiting to be typed into and only one of them can be.
@@ -1555,12 +1570,12 @@ struct Stash {
     /// Arc's Folders: the shape of the Pinned section — which tabs sit in which folder, and
     /// the order the rows are drawn in. `tabs` still holds the tabs themselves; this only
     /// says how they are arranged. See `Pins` in Folders.swift.
-    @Published var pins = Pins()
+    @Published var pins = Pins() { didSet { SharedTabs.schedule(from: self) } }
     /// The same, for Today — which is where a tidy's folders go. A second instance of the
     /// same value rather than a section field on every row, so a tab in a folder here stays
     /// an ordinary Today tab: it keeps auto-archiving, ⌘W archives it, and Clear takes it.
     /// See `TabStore.shape(of:)`, which is what tells the shared rows which one they are on.
-    @Published var todayShape = Pins()
+    @Published var todayShape = Pins() { didSet { SharedTabs.schedule(from: self) } }
     /// The folder whose row is a name field right now, the way `renamingTab` is for a tab.
     @Published var renamingFolder: UUID? {
         didSet { if renamingFolder != nil { renamingTab = nil } }
@@ -1574,7 +1589,7 @@ struct Stash {
     /// The window's split views: 2–4 of the tabs above shown side by side in one page card
     /// and as one sidebar row. Ids, not tabs, so a split survives its panes moving section,
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.
-    @Published var splits: [Split] = []
+    @Published var splits: [Split] = [] { didSet { SharedTabs.schedule(from: self) } }
     /// Counts the archives that land in one burst, so Clear can sweep rows out one after
     /// another. See `archive`.
     private let bursts = Motion.Burst()
@@ -1601,6 +1616,7 @@ struct Stash {
                 PictureInPicture.exitIfAuto(tabs.first { $0.id == current })
             }
             extensions.sync()
+            if sharingReady { SharedTabs.refreshPresentation() }
         }
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
@@ -1694,10 +1710,29 @@ struct Stash {
         self.isLittle = isLittle
         self.profileID = profileID
         self.currentSpaceID = space?.id
+        SharedTabs.flush()
         TabStore.all.append(self)
+        defer {
+            sharingReady = true
+            SharedTabs.synchronize(from: self)
+            SharedTabs.refreshPresentation()
+        }
         Suspension.begin()        // idempotent; here so main.swift needs no wiring
+        if session == nil, sharesTabs,
+           let shared = SharedTabs.state(for: self, space: currentSpaceID) {
+            tabs = SharedTabs.favourites(for: self) + shared.tabs
+            pins = shared.pins
+            todayShape = shared.todayShape
+            splits = shared.splits
+            current = shared.current ?? tabs.first { $0.kind == .today }?.id
+            for url in urls { newTab(url) }
+            if current == nil { openPalette(.newTab) }
+            rememberSpace()
+            return
+        }
         if let session {
             restoreSession(session)
+            SharedTabs.mergeRestored(self)
             current = selected.flatMap { wanted in tabs.first { $0.id == wanted }?.id }
                 ?? tabs.first { $0.kind == .today }?.id
             if tabs.isEmpty { openPalette(.newTab) }
@@ -1799,6 +1834,11 @@ struct Stash {
         // restore wants both. Every caller sets `current` itself, once, when the strip is
         // built — being walked through thirty pages on the way there was only ever noise.
         urls.map { url in
+            if kind == .favourite, sharesTabs,
+               let existing = SharedTabs.favourites(for: self).first(where: { $0.pinnedURL == url }) {
+                tabs.append(existing)
+                return existing
+            }
             let t = newBlankTab(focus: false, as: kind)
             let p = parked[url.absoluteString] ?? Parked()
             // `url` is what the Space's list calls this row, which for a favourite or a
@@ -1878,7 +1918,9 @@ struct Stash {
     /// a load in flight is exactly the thing that would change the answer.
     func newBlankTab(focus: Bool = true, as kind: TabKind = .today,
                      id: UUID = UUID(), loading url: URL? = nil) -> Tab {
+        if sharingReady { SharedTabs.flush() }
         let t = Tab(id: id, isPrivate: isPrivate, profileID: profileID)
+        t.sharedSpaceID = currentSpaceID
         wire(t)
         t.kind = kind
         if let url { t.go(url) }
@@ -1907,6 +1949,12 @@ struct Stash {
         for entry in entries {
             guard let id = entry.id.flatMap(UUID.init(uuidString:)),
                   let url = URL(string: entry.url), let kind = entry.kind else { continue }
+            if sharesTabs, let shared = SharedTabs.existing(id, for: self) {
+                tabs.append(shared)
+                if kind == .today { today.append((url, shared)) }
+                if kind == .pinned { pinned.append((entry.home.flatMap(URL.init(string:)) ?? url, shared)) }
+                continue
+            }
             let tab = newBlankTab(focus: false, as: kind, id: id)
             let parked = Parked(title: entry.title ?? "",
                                 state: entry.state.flatMap { Data(base64Encoded: $0) })
@@ -2028,7 +2076,10 @@ struct Stash {
         // ponytail: the Space's own url list on disk keeps the archived page until the next
         // `saveCurrentSpace`, which is also what the stash is checked against, so the two
         // stay in step. Ceiling: quitting in between brings the page back at the next launch.
-        if let stashed { stashes[stashed]?.remove(id)?.tearDown() }
+        if let stashed {
+            SharedTabs.remove(id, from: self)
+            stashes[stashed]?.remove(id)?.tearDown()
+        }
         else { close(id, asPane: asPane) }
     }
 
@@ -2100,6 +2151,7 @@ struct Stash {
     /// `asPane` is the caller insisting this is a pane close whatever `splits` currently says
     /// — see `closeSplit` and `TabRowGlyph.isPane`.
     func close(_ id: Tab.ID, byScript: Bool = false, asPane: Bool = false) {
+        SharedTabs.flush()
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[i]
         // A pinned row's × — and ⌘W on it — is a two-step, and this is the one place that
@@ -2163,6 +2215,8 @@ struct Stash {
             if isPrivate { SitePermissions.forgetPrivate(tabID: id) }
             if TabStore.remembersClosed(keep: outcome.keep, byScript: byScript,
                                         isPrivate: isPrivate) { ClosedTabs.push(tab.currentURL) }
+            SharedTabs.remove(id, from: self)
+            tab.tearDown()
             Motion.list { _ = tabs.remove(at: i) }
             TabAudio.forget(id)        // else the maps grow by one per tab ever opened
             pins.remove(tab: id.uuidString)      // a folder outlives the tabs that left it
@@ -2263,6 +2317,7 @@ struct Stash {
     /// move tabs between sections any more — its folders are Today's — so the flag went with
     /// it rather than sitting here explaining a run that no longer happens.
     func move(_ id: Tab.ID, to kind: TabKind) {
+        if sharingReady { SharedTabs.flush() }
         guard let i = tabs.firstIndex(where: { $0.id == id }), tabs[i].kind != kind else { return }
         Motion.list {
             let tab = tabs.remove(at: i)
@@ -2361,6 +2416,7 @@ struct Stash {
     /// row sends it back down — so the grid and the two lists read as one strip the user
     /// drags across.
     func drop(_ id: Tab.ID, onto target: Tab.ID, after: Bool) {
+        if sharingReady { SharedTabs.flush() }
         guard id != target,
               let from = tabs.firstIndex(where: { $0.id == id }),
               let to = tabs.firstIndex(where: { $0.id == target }) else { return }
@@ -2706,6 +2762,7 @@ struct Stash {
     /// its one tab down as both would empty the grid and the Space it was opened from.
     @discardableResult
     func saveCurrentSpace() -> Bool {
+        SharedTabs.flush()
         guard !isPrivate, !isLittle,
               let id = currentSpaceID, var space = spaces.first(where: { $0.id == id })
         else { return true }
@@ -2766,12 +2823,13 @@ struct Stash {
         Spaces.rememberTab(leftOn.flatMap {
             $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
         }, in: id)
+        if savedSpace { SharedTabs.didSave(space: id, from: self) }
         return savedSpace && savedState
     }
 
     /// The Spaces this window has been in and is keeping alive behind the one it is showing,
     /// by Space id. See `Stash`.
-    private var stashes: [UUID: Stash] = [:]
+    var stashes: [UUID: Stash] = [:]
 
     /// Every tab this window is holding: the strip, plus the Spaces kept alive behind it.
     ///
@@ -2848,13 +2906,16 @@ struct Stash {
     /// Let a Space's kept-alive tabs go: the pages down, the stash gone. Never touches the
     /// strip — this is only ever about a Space the window is not showing.
     func drop(stash id: UUID) {
-        stashes.removeValue(forKey: id)?.tabs.forEach { $0.tearDown() }
+        if let removed = stashes.removeValue(forKey: id) {
+            SharedTabs.release(removed.tabs, excluding: self)
+        }
     }
 
     /// Every one of them, because the window itself is going. See `windowWillClose`.
     func dropStashes() {
-        stashes.values.flatMap(\.tabs).forEach { $0.tearDown() }
+        let removed = stashes.values.flatMap(\.tabs)
         stashes.removeAll()
+        SharedTabs.release(removed, excluding: self)
     }
 
     /// A Space has been deleted, so no window may keep its pages alive behind a strip that
@@ -2877,7 +2938,7 @@ struct Stash {
     /// The same, read off this profile's disk. A Space that is not there at all — deleted, or
     /// another profile's — fingerprints as an empty one, which no stash with anything in it
     /// can match.
-    private func fingerprint(of id: UUID) -> String {
+    func fingerprint(of id: UUID) -> String {
         let space = spaces.first { $0.id == id }
         return TabStore.fingerprint(tabURLs: space?.tabURLs ?? [],
                                     pinnedTabURLs: space?.pinnedTabURLs ?? [],
@@ -2901,7 +2962,10 @@ struct Stash {
     /// while it was away. Then each tab's interactionState comes back out of the sidecar, so
     /// even a rebuild lands on the same page, scroll offset and back/forward list, and only
     /// the tab that becomes current actually loads.
-    func switchTo(space: Space) {
+    func switchTo(space requested: Space) {
+        // Gestures and menus may hold an older Space value while another window edits it.
+        guard let space = ProfileManager.shared.spaces(for: requested.profileID)
+            .first(where: { $0.id == requested.id }) else { return }
         // A Little Arc is in no Space and has no strip to rebuild — switching one would throw
         // the page away and leave an empty window claiming to be in a Space. Every route into
         // here is shared with the browser window (the palette's Space rows, ⌃1–9, ⌥⌘←/→, the
@@ -2920,6 +2984,12 @@ struct Stash {
             return
         }
         saveCurrentSpace()
+        sharingReady = false
+        defer {
+            sharingReady = true
+            SharedTabs.synchronize(from: self)
+            SharedTabs.refreshPresentation()
+        }
         // Which way the strip slides. Set before the switch so the sidebar's transition and
         // the tint cross-fade are already pointing the right way when the list changes.
         spaceDirection = direction(to: space)
@@ -2958,7 +3028,7 @@ struct Stash {
             // stale one `resolveStaleSpace` is walking out of — has nothing to come back
             // from and nothing to check a stash against, so its pages simply go.
             for tab in leaving { dropPane(tab.id) }
-            leaving.forEach { $0.tearDown() }
+            SharedTabs.release(leaving, excluding: self)
         }
         tabs.removeAll { $0.kind != .favourite }
         // The one place tabs leave the strip without `close` — and so without
@@ -2968,7 +3038,19 @@ struct Stash {
         selection.clear()
         currentSpaceID = space.id
         applySpaceAppearance()          // the new space may be pinned to light or dark
-        if let kept = stashes[space.id], kept.fingerprint == fingerprint(of: space.id) {
+        if let shared = SharedTabs.state(for: self, space: space.id) {
+            let remembered = stashes[space.id]
+            drop(stash: space.id)
+            tabs = tabs.filter { $0.kind == .favourite } + shared.tabs
+            pins = shared.pins
+            todayShape = shared.todayShape
+            splits += shared.splits.map { split in
+                let focus = remembered?.splits.first { Set($0.tabs) == Set(split.tabs) }?.activeTab
+                return focus.map { split.focusing($0) } ?? split
+            }
+            current = remembered?.current.flatMap { id in shared.tabs.contains { $0.id == id } ? id : nil }
+                ?? shared.current ?? landing(in: space.id)
+        } else if let kept = stashes[space.id], kept.fingerprint == fingerprint(of: space.id) {
             // Nothing has edited this Space since we walked out of it, so the tabs we walked
             // out with are still what it is: the same objects, still loaded, in the same
             // order, with their folders, their splits and the row they were left on.

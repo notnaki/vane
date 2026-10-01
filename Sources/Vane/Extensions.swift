@@ -450,7 +450,8 @@ import WebKit
     /// screen has no rows to report. Finding nothing for a stashed page is what keeps the
     /// query, the events and this in agreement.
     private func store(holding tab: Tab) -> TabStore? {
-        myStores.first { $0.tabs.contains { $0 === tab } }
+        myStores.first { $0.windowID == tab.presentationOwner && $0.tabs.contains { $0 === tab } }
+            ?? myStores.first { $0.tabs.contains { $0 === tab } }
     }
 
     // MARK: Change notification
@@ -989,11 +990,19 @@ extension View {
 /// A Vane `Tab`, as an extension sees it.
 @MainActor final class ExtTab: NSObject, WKWebExtensionTab {
     private(set) weak var tab: Tab?
-    private(set) weak var store: TabStore?
+    private weak var originalStore: TabStore?
+    var store: TabStore? {
+        guard let tab else { return nil }
+        if originalStore?.sharesTabs == false { return originalStore }
+        let holders = TabStore.all.filter {
+            $0.sharesTabs && $0.profileID == tab.profileID && $0.tabs.contains { $0 === tab }
+        }
+        return holders.first { $0.windowID == tab.presentationOwner } ?? holders.first
+    }
 
     init(_ tab: Tab, in store: TabStore) {
         self.tab = tab
-        self.store = store
+        self.originalStore = store
     }
 
     func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
