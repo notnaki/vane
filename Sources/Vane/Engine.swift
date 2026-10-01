@@ -1705,7 +1705,8 @@ struct Stash {
     init(isPrivate: Bool = false, urls: [URL] = [],
          profileID: UUID = ProfileManager.shared.active.id, space: Space? = nil,
          parked: [String: Parked] = [:], isLittle: Bool = false,
-         session: [Session.Entry]? = nil, selected: UUID? = nil) {
+         session: [Session.Entry]? = nil, selected: UUID? = nil,
+         restoringLegacySession: Bool = false) {
         self.isPrivate = isPrivate
         self.isLittle = isLittle
         self.profileID = profileID
@@ -1725,7 +1726,23 @@ struct Stash {
             todayShape = shared.todayShape
             splits = shared.splits
             current = shared.current ?? tabs.first { $0.kind == .today }?.id
-            for url in urls { newTab(url) }
+            var restoredSelection: UUID?
+            for url in urls {
+                if restoringLegacySession {
+                    // Old sessions include pinned rows and favourites in their URL list.
+                    // The shared strip already has those rows; remaining URLs are saved
+                    // Today pages whose parked state must survive the migration.
+                    guard !tabs.contains(where: { $0.stays && $0.pinnedURL == url }) else { continue }
+                    let tab = newBlankTab(focus: false)
+                    tab.open(url, parked: parked[url.absoluteString])
+                    restoredSelection = tab.id
+                } else {
+                    newTab(url)
+                }
+            }
+            // Select only after opening/parking the rows so the current didSet wakes the
+            // selected restored page, while the other saved pages remain suspended.
+            if let restoredSelection { current = restoredSelection }
             if current == nil { openPalette(.newTab) }
             rememberSpace()
             return

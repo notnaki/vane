@@ -479,7 +479,8 @@ extension VaneWindow {
     static func open(isPrivate: Bool = false, urls: [URL] = [],
                      profile: Profile? = nil, space: Space? = nil,
                      parked: [String: Parked] = [:], focus: Bool = true,
-                     session: [Session.Entry]? = nil, selected: UUID? = nil) -> TabStore {
+                     session: [Session.Entry]? = nil, selected: UUID? = nil,
+                     restoringLegacySession: Bool = false) -> TabStore {
         let profile = profile ?? space.flatMap { s in
             ProfileManager.shared.profiles.first { $0.id == s.profileID }
         } ?? ProfileManager.shared.active
@@ -489,7 +490,8 @@ extension VaneWindow {
         // private window is Arc's incognito: no Space, nothing written down.
         let space = isPrivate ? nil : Spaces.resolve(space, for: profile)
         let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space,
-                             parked: parked, session: session, selected: selected)
+                             parked: parked, session: session, selected: selected,
+                             restoringLegacySession: restoringLegacySession)
         // Live folders keep themselves filled for as long as a window is open. A private
         // window holds none — it has no Pinned section — so it does not start the clock.
         if !isPrivate { LiveFolders.shared(for: profile.id).begin() }
@@ -1137,7 +1139,8 @@ extension TabStore {
                                      profile: profile, space: spaces.first { $0.id == inSpace[i] },
                                      parked: identified ? [:] : parked(entries),
                                      session: identified ? normalizedEntries(entries) : nil,
-                                     selected: selected.indices.contains(i) ? selected[i] : nil)
+                                     selected: selected.indices.contains(i) ? selected[i] : nil,
+                                     restoringLegacySession: !identified)
             // After the window exists, because a split is named by its panes' urls and the
             // tabs that carry them are made by `TabStore.init`.
             store.applySplits(saved.indices.contains(i) ? saved[i] : [])

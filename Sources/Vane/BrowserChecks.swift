@@ -346,6 +346,7 @@ import WebKit
             try await load(page, "\(base)/form", title: "Fixture Form")
             _ = try await js(page, "document.body.style.height = '3000px'; window.scrollTo(0, 600); document.getElementById('query').value = 'keep this input'")
             let originalWeb = page.web
+            let legacyState = page.snapshot.state
             first.saveCurrentSpace()
             let second = Windows.open(profile: profile, space: first.currentSpace)
             try await focus(second)
@@ -532,6 +533,44 @@ import WebKit
             try require(survivingPage.web === survivingWeb && survivingWeb.navigationDelegate != nil
                         && adapter.store === survivor,
                         "closing the live owner preserves the page and its extension adapter in the surviving window")
+
+            let legacyProfile = ProfileManager.shared.create(name: "Legacy window checks")
+            var legacySpace = ProfileManager.shared.createSpace(name: "Legacy", in: legacyProfile.id)
+            let favouriteURL = URL(string: "\(base)/legacy-favourite")!
+            let pinURL = URL(string: "\(base)/legacy-pin")!
+            legacySpace.pinnedTabURLs = [pinURL]
+            ProfileManager.shared.updateSpace(legacySpace)
+            UserDefaults.vane.set([favouriteURL.absoluteString],
+                                  forKey: TabStore.defaultsKey(.favourite, legacyProfile.id))
+            let oldEntries: [[String: String]] = [
+                ["url": favouriteURL.absoluteString], ["url": pinURL.absoluteString],
+                ["url": "\(base)/form", "title": "Legacy saved form",
+                 "state": legacyState?.base64EncodedString() ?? ""],
+                ["url": "\(base)/b", "title": "Legacy other page"]
+            ]
+            let oldSession = try JSONSerialization.data(withJSONObject: [
+                "version": 3, "windows": [oldEntries, oldEntries],
+                "spaces": [legacySpace.id.uuidString, legacySpace.id.uuidString]
+            ])
+            try oldSession.write(to: ProfileManager.sessionURL(for: legacyProfile.id, in: Store.directory))
+            try require(Session.restore(profile: legacyProfile), "two-window v3 session restores")
+            let oldWindows = TabStore.all.filter { $0.profileID == legacyProfile.id && $0.window != nil }
+            defer { oldWindows.forEach { $0.window?.close() } }
+            SharedTabs.flush()
+            try require(oldWindows.count == 2 && oldWindows.allSatisfy { store in
+                store.tabs.filter { $0.kind == .favourite }.count == 1
+                    && store.tabs.filter { $0.kind == .pinned }.count == 1
+                    && store.tabs.filter { $0.kind == .today }.count == 4
+                    && !store.tabs.contains { $0.kind == .today
+                        && [favouriteURL, pinURL].contains($0.currentURL ?? TabStore.home) }
+            }, "legacy shared-window restore keeps pins and favourites out of Today")
+            try require(legacyState != nil && oldWindows[0].tabs.contains { tab in
+                tab.kind == .today && tab.suspended && tab.currentURL?.path == "/form"
+                    && tab.title == "Legacy saved form" && tab.snapshot.state == legacyState
+            }, "legacy shared-window restore preserves saved background page state and title")
+            try require(oldWindows[1].active?.suspended == false,
+                        "the selected page in the second legacy window wakes after restoration")
+            try await loaded(oldWindows[1].active!, path: "/b", title: "Fixture B")
         }
 
         private func focus(_ store: TabStore) async throws {
