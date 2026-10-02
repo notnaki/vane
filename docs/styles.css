@@ -824,7 +824,12 @@ a.scene-link:hover { color:#fff; }
 
 /* Reserve a clear strip for chapter controls on compact screens. */
 .galaxy-journey:not(.journey-ready) .hero-line { margin-inline:auto; }
-@media(min-width:601px) { .journey-ready[data-chapter="3"] .galaxy-end { bottom:52px; } }
+@media(min-width:901px) {
+ .journey-ready[data-chapter="3"] .galaxy-controls { position:absolute; right:0; bottom:44px; }
+}
+@media(min-width:601px) and (max-width:900px) {
+ .journey-ready[data-chapter="3"] .galaxy-footer { bottom:52px; }
+}
 @media(max-width:600px) {
  .journey-ready .product-stage { top:auto; bottom:110px; }
  .journey-ready .product-pages { height:clamp(100px,calc(100svh - 464px),235px); }
