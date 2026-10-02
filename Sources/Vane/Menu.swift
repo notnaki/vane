@@ -686,6 +686,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
             NSApp.keyWindow?.styleMask.contains(.closable) ?? false
         },
         .separator(),
+        validated(item(.capturePage) { PageCapture.start(Windows.current?.active) }) {
+            PageCapture.available(Windows.current?.active)
+        },
         item(.savePageAs) { savePageAs() },
         item(.printPage) { printPage() },
         item(.sharePage) { sharePage() },

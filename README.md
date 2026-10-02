@@ -53,6 +53,15 @@ its browsing data and download records are not restored after quitting.
 Some features depend on macOS services, site behavior, or a signed distribution
 build. The [known gaps](#known-gaps) section gives the practical limits.
 
+Capture part of a page with **⌘⇧2**, **File → Capture a Portion of This Page**,
+the camera row in Site Controls, or by searching for **Capture** in the command
+palette. Click a highlighted element or drag a rectangle over the visible page;
+**Escape** cancels. **Return** captures the highlighted region or the visible page.
+The preview offers **Copy**, **Save PNG**, and **Share**. Captures use WebKit's page
+pixels at the display's resolution and need no screen-recording permission. An
+embedded frame is selected as a whole; custom drags can crop inside it. Captures
+are saved only when you choose an output action, including in private windows.
+
 Battery Saver lives in **Settings → Advanced → Performance**. Choose **Off**,
 **Automatic** (below 20% battery while unplugged), or **Always On**. While active,
 eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar

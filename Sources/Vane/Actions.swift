@@ -99,6 +99,9 @@ extension PaletteCommand {
                 PaletteCommand(.find, icon: "magnifyingglass", title: "Find in Page"),
                 PaletteCommand(.closeTab, icon: "archivebox"),
             ]
+            if PageCapture.available(tab) {
+                out.append(PaletteCommand(.capturePage, icon: "camera.viewfinder"))
+            }
             // Back and Forward are the two rows whose absence is information: with nothing
             // behind the page, Arc does not offer to go there.
             if tab.web.canGoBack { out.append(PaletteCommand(.back, icon: "chevron.left")) }
@@ -266,7 +269,7 @@ extension PaletteCommand {
         .newTab, .newLittleArc, .reopenClosedTab, .newWindow, .newPrivateWindow,
         .copyPageURL, .reload, .hardReload, .find, .closeTab, .back, .forward,
         .showReader, .pictureInPicture, .muteTab, .zoomIn, .zoomOut, .actualSize,
-        .sharePage, .savePageAs, .showWebInspector,
+        .sharePage, .savePageAs, .capturePage, .showWebInspector,
         .toggleSidebar, .pinTab, .favouriteTab, .addSplit, .removeSplit, .nextPane,
         .tidyTabs, .clearTabs, .newSpace, .nextSpace, .previousSpace,
         .showLibrary, .viewArchive, .viewHistory, .showDownloads,
