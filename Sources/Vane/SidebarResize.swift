@@ -22,18 +22,17 @@ import SwiftUI
 
     nonisolated fileprivate static let key = "sidebarWidth"
 
-    /// Arc's range, floored at the width the top row actually needs. Arc drags down to
-    /// ~200; Vane's own chrome — the 62pt the traffic lights reserve, the sidebar toggle and
-    /// the three navigation glyphs at `Look.icon` — measures ~210 with its padding, and a
-    /// frame narrower than its content does not clip it, it lets it slide under the page
-    /// card. 220 is the first width where nothing in the top row is cut off.
-    /// ponytail: a measured constant rather than a live measurement. Upgrade path if the top
-    /// row ever changes: read its fitting size instead of trusting this number.
-    nonisolated static let minimum: CGFloat = 220
-    nonisolated static let maximum: CGFloat = 400
-    /// What a double-click on the handle goes back to — the same number the design is drawn
-    /// against, so "reset" means "what the screenshots show".
-    nonisolated static var standard: CGFloat { 250 }
+    /// Measured from the installed Arc for macOS resize handlers: 164–500pt,
+    /// a 228pt reset width, and collapse when the pointer passes 82pt.
+    /// The compact header fits at the minimum without hiding navigation controls.
+    nonisolated static let minimum: CGFloat = 164
+    nonisolated static let maximum: CGFloat = 500
+    nonisolated static let collapseThreshold: CGFloat = 82
+    nonisolated static var standard: CGFloat { Look.sidebarWidth }
+
+    nonisolated static func shouldCollapse(_ proposed: CGFloat) -> Bool {
+        proposed.isFinite && proposed < collapseThreshold
+    }
 
     /// The width the handle is allowed to hand back. Pure, so `selfcheck --pure` can prove
     /// the clamp without a window server. NaN — which is what a drag against a collapsing
@@ -84,6 +83,7 @@ import SwiftUI
 /// be one more line in a window whose whole point is that it has none. It is `hitTestWidth`
 /// wide, centred on the seam, which is the same forgiveness AppKit gives a split view.
 struct SidebarHandle: View {
+    @EnvironmentObject private var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
     /// The gap between the pointer and the seam, taken on the drag's first frame and held
     /// for the rest of it, so the seam does not jump to the pointer when the grab was a few
@@ -116,10 +116,16 @@ struct SidebarHandle: View {
                         if start == nil { start = grab }
                         sidebar.width = SidebarWidth.clamp(value.location.x + grab)
                     }
-                    .onEnded { _ in
+                    .onEnded { value in
+                        let proposed = value.location.x + (start ?? 0)
                         start = nil
                         sidebar.save()
-                        axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
+                        if SidebarWidth.shouldCollapse(proposed) {
+                            store.sidebarShown = false
+                            axAnnounce("Sidebar hidden.")
+                        } else {
+                            axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
+                        }
                     }
             )
             // Arc's double-click on the divider. Simultaneous rather than stacked or
@@ -164,8 +170,12 @@ extension SidebarWidth {
             ("the ends of the range are themselves allowed",
              clamp(minimum) == minimum && clamp(maximum) == maximum),
             ("a nonsense width resolves to the default", clamp(.nan) == standard),
-            ("the range is Arc's, floored at the width the top row needs",
-             minimum == 220 && maximum == 400),
+            ("Arc-sized narrow sidebars remain usable",
+             clamp(164) == 164 && clamp(180) == 180 && clamp(200) == 200),
+            ("reset uses the installed Arc default", standard == 228),
+            ("a drag past Arc's collapse threshold hides the sidebar",
+             shouldCollapse(81) && !shouldCollapse(82) && !shouldCollapse(164)),
+            ("a nonsense drag does not hide the sidebar", !shouldCollapse(.nan)),
         ]
 
         let suite = "vane.check.sidebar.\(ProcessInfo.processInfo.processIdentifier)"
@@ -174,8 +184,8 @@ extension SidebarWidth {
             out.append(("an unset width reads back as the default", load(scratch) == standard))
             scratch.set(Double(999), forKey: key)
             out.append(("a stored width is clamped on the way back in", load(scratch) == maximum))
-            scratch.set(Double(280), forKey: key)
-            out.append(("a stored width round-trips", load(scratch) == 280))
+            scratch.set(Double(180), forKey: key)
+            out.append(("a stored narrow width round-trips", load(scratch) == 180))
         } else {
             out.append(("scratch defaults suite is available", false))
         }

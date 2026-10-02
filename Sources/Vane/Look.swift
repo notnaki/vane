@@ -8,7 +8,7 @@ import SwiftUI
 enum Look {
     /// The hazard tape round a Developer Mode page, and its "DEV" tag.
     static let developerYellow = Color(red: 1.0, green: 0.82, blue: 0.0)
-    static let sidebarWidth: CGFloat = 250
+    static let sidebarWidth: CGFloat = 228
     /// Settings cards, the find bar, and compact popovers. Arc's card corner is tight —
     /// 5–6pt fitted to the 2x corner profile — while their rows are round; they are not one
     /// family.
@@ -1033,21 +1033,14 @@ extension Look {
                     quitScrim > 0.2 && quitScrim < 0.6 && quitBlur >= 8 && quitBlur <= 24))
         out.append(("…on a picture small enough to be cheap, big enough to still blur",
                     quitBlurScale >= 2 && quitBlurScale <= 4 && quitBlur >= quitBlurScale))
-        // A toast is one row, always: the sentence on the left, the verb and the × on the
-        // right of it. The sentence takes what they leave and wraps into two lines of it —
-        // never a paragraph with a button parked underneath. So the width that has to be
-        // true is the sentence's column with the widest set of controls beside it.
+        // Narrow sidebars place action controls below the toast's sentence.
         let face = Typography.result.native
         func measure(_ s: String) -> CGFloat {
             (s as NSString).size(withAttributes: [.font: face]).width
         }
-        /// What is left for the sentence once the pill has paid for its padding, an Undo
-        /// capsule and the × — the fullest a toast ever is.
-        let column = sidebarWidth - inset * 2 - pillInset          // the pill's own edges
-            - inset - (measure("Undo") + inset * 2)                // the verb beside it
-            - inset - rowTarget - inset / 2                        // and the × after that
-        out.append(("a toast's sentence still gets half the sidebar with a verb and an × on it",
-                    column > sidebarWidth / 2 - inset * 2))
+        let column = SidebarWidth.minimum - inset * 2 - pillInset - inset / 2
+        out.append(("a narrow toast's controls fit below its sentence",
+                    measure("Undo") + inset * 3 + rowTarget < column))
         for sentence in ["Vane v10.10.100 is available", "Restart to update", "Update failed",
                          "Couldn't move Vane to Applications",
                          "This copy isn't signed for updates",
