@@ -18,9 +18,11 @@ enum ChromeMenuLayout {
     static let inset: CGFloat = 8
     static let groupHeight: CGFloat = 17
 
-    /// Prefer the requested edge, flip when necessary, and stay inside the visible screen.
-    static func frame(anchor: CGRect, size: CGSize, screen: CGRect, above: Bool) -> CGRect {
-        let safe = screen.insetBy(dx: 8, dy: 8)
+    /// Keep the entire surface inside both the owner's content and the visible screen.
+    static func frame(anchor: CGRect, size: CGSize, window: CGRect, screen: CGRect, above: Bool) -> CGRect {
+        let bounds = window.intersection(screen)
+        guard !bounds.isNull, bounds.width > 16, bounds.height > 16 else { return .zero }
+        let safe = bounds.insetBy(dx: 8, dy: 8)
         let height = min(size.height, safe.height)
         let width = min(size.width, safe.width)
         let upper = anchor.maxY + 6
@@ -77,16 +79,18 @@ struct ChromeMenuTypeahead {
               above: Bool = false, title: String) {
         dismiss()
         guard !items.isEmpty, let screen = owner.screen ?? NSScreen.main else { return }
-        self.items = items
-        self.owner = owner
-        selection = ChromeMenuSelection()
-        typeahead = ChromeMenuTypeahead()
         let size = CGSize(width: ChromeMenuLayout.width,
                           height: CGFloat(items.count) * ChromeMenuLayout.rowHeight
                             + CGFloat(items.filter(\.startsGroup).count) * ChromeMenuLayout.groupHeight
                             + ChromeMenuLayout.inset * 2)
         let frame = ChromeMenuLayout.frame(anchor: anchor, size: size,
+                                           window: owner.convertToScreen(owner.contentLayoutRect),
                                            screen: screen.visibleFrame, above: above)
+        guard !frame.isEmpty else { return }
+        self.items = items
+        self.owner = owner
+        selection = ChromeMenuSelection()
+        typeahead = ChromeMenuTypeahead()
         let panel = ChromeMenuPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
                                   backing: .buffered, defer: false)
         panel.isOpaque = false
