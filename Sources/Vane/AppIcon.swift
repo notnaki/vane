@@ -1,59 +1,52 @@
 import AppKit
 
-/// Which of the app icons the Dock draws.
-///
-/// `AppIcon.icon` is the dark icon Vane has always shipped; `AppIcon-Navy.icon` has a
-/// lighter navy fill. `AppIcon-Galaxy.icon` adds the website's blue-violet spiral stars
-/// behind a silver V. `make-app.sh` compiles all three into one `Assets.car`, so macOS
-/// shapes their squircle, lights the glass over the V, and drops the shadow itself.
-/// Nothing here paints an icon.
-///
-/// ponytail: no alternate-icon API is involved, because macOS has none —
-/// `setAlternateIconName` is UIKit's. Names in one asset catalogue and one assignment to
-/// `NSApp.applicationIconImage` is the whole mechanism.
+/// The standardized app-icon picker. Layered sources and compiled assets live in AppIcons.
+/// Normal uses the catalogue's glass render; Dark leaves the Dock's original composition.
+/// macOS has no UIKit alternate-icon API, so choices use applicationIconImage.
 @MainActor enum AppIcon {
     /// Where the choice lives. `UserDefaults.vane`, so a test instance on its own data dir
     /// does not repaint the real app's Dock tile.
     static let key = "appIcon"
 
-    /// The icons the app offers, in the order the picker shows them.
-    ///
-    /// Default is not a picture: it is the absence of one. The Dock composes the bundle's
-    /// icon itself, and its composition is not the asset catalogue's — measured, the tile
-    /// the Dock draws averages rgb 36,39,56 in the body where `NSImage(named: "AppIcon")`
-    /// averages 39,45,81, in either appearance. So "the icon I have today" is a third
-    /// answer, and it has to be the default, or choosing the default would change the icon.
-    ///
-    /// `asset` is the name inside `Assets.car`; nil means no override. `name` is both the
-    /// label and the value that is persisted, so renaming an asset cannot silently reset
-    /// somebody's choice.
+    /// Picker order. A nil asset keeps AppKit's original composition.
     nonisolated static let catalogue: [(name: String, asset: String?)] = [
-        ("Default", nil), ("Glass", "AppIcon"), ("Navy", "AppIcon-Navy"),
-        ("Galaxy", "AppIcon-Galaxy"),
+        ("Normal", "AppIcon"), ("Dark", nil), ("Galaxy", "AppIcon-Galaxy"),
+        ("Candy", "AppIcon-Candy"), ("Neon", "AppIcon-Neon"),
+        ("Fluted Glass", "AppIcon-FlutedGlass"), ("Schoolbook", "AppIcon-Schoolbook"),
+        ("Luminous", "AppIcon-Luminous"),
     ]
 
-    /// The shipped default — the Dock's own composition, with nothing overriding it.
-    nonisolated static var `default`: String { catalogue[0].name }
+    /// Preserve the original Dock composition for new installs and unavailable assets.
+    nonisolated static var `default`: String { "Dark" }
 
-    /// Whether choosing `name` means putting an image over the Dock's own. Pure, and the
-    /// single rule the launch path and the stamp both read.
-    nonisolated static func overrides(_ name: String) -> Bool { name != `default` }
+    /// Keep saved choices when the old overlapping labels are retired.
+    nonisolated static func canonicalName(_ name: String) -> String {
+        switch name {
+        case "Default": "Dark"
+        case "Glass", "Navy": "Normal"
+        default: name
+        }
+    }
+
+    nonisolated static func overrides(_ name: String) -> Bool {
+        canonicalName(name) != `default`
+    }
 
     /// What the Dock draws for the running copy with nothing overriding it — which is what
-    /// Default's preview has to be, since a picker that shows the catalogue render beside
-    /// "Default" would be showing the wrong icon under the right word.
+    /// Dark's preview has to be, since a picker that shows the catalogue render beside
+    /// "Dark" would be showing the wrong icon under the right word.
     ///
     /// Captured once, before anything is applied: `restoreAtLaunch` may set an override
     /// seconds later, and `applicationIconImage` would then answer with that instead.
     private static let composed: NSImage = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
 
     /// Every icon that actually loaded, as the image the Dock will draw once it is chosen.
-    /// Glass, Navy, and Galaxy come from the catalogue by name rather than from
+    /// Normal, Galaxy, and the material variants come from the catalogue by name rather than from
     /// `NSApp.applicationIconImage`, so a bundle whose Finder icon has already been stamped
     /// still offers the real ones back.
     ///
     /// A dev build is the bare binary out of `.build`: no bundle, so no catalogue and no
-    /// choice. Default alone then, and nothing crashes.
+    /// choice. Dark alone then, and nothing crashes.
     static var variants: [(name: String, image: NSImage)] {
         let bundled: [(name: String, image: NSImage)] = catalogue.compactMap { row in
             guard let asset = row.asset else { return (row.name, composed) }
@@ -66,7 +59,7 @@ import AppKit
     /// The chosen icon's name — the default whenever nothing is chosen, or the chosen one is
     /// no longer in the bundle (an older release, a dev build).
     static var current: String {
-        let saved = UserDefaults.vane.string(forKey: key) ?? `default`
+        let saved = canonicalName(UserDefaults.vane.string(forKey: key) ?? `default`)
         return variants.contains { $0.name == saved } ? saved : `default`
     }
 
@@ -75,14 +68,15 @@ import AppKit
     /// that last part happened; the first two always do.
     @discardableResult
     static func apply(_ name: String) -> Bool {
+        let name = canonicalName(name)
         guard let v = variants.first(where: { $0.name == name }) else { return false }
         // nil hands the tile back to AppKit, which composes the bundle's own icon — not the
-        // same thing as assigning the catalogue render, which is why Default exists.
+        // same thing as assigning the catalogue render, which is why Dark exists.
         NSApp.applicationIconImage = overrides(name) ? v.image : nil
         UserDefaults.vane.set(name, forKey: key)
         // User images are Dock overrides only; never stamp them onto the signed bundle.
         guard name != CustomAppIcon.name, stamps else { return false }
-        // Default *clears* the custom icon rather than writing one, so the bundle goes back
+        // Dark *clears* the custom icon rather than writing one, so the bundle goes back
         // to drawing the icon it ships with.
         return NSWorkspace.shared.setIcon(overrides(name) ? v.image : nil,
                                           forFile: Bundle.main.bundleURL.path, options: [])
@@ -91,10 +85,13 @@ import AppKit
     /// Called once at launch, before the first window. The Dock tile belongs to the running
     /// process, so a chosen icon has to be put back every time — and `Updater` replaces the
     /// whole bundle on an in-place update, which takes any stamped Finder icon with it.
-    /// Default is the one choice that does nothing at all: touching the tile to say "leave
+    /// Dark is the one choice that does nothing at all: touching the tile to say "leave
     /// it alone" is exactly what would not leave it alone.
     static func restoreAtLaunch() {
         let name = current
+        if let saved = UserDefaults.vane.string(forKey: key), saved != canonicalName(saved) {
+            UserDefaults.vane.set(name, forKey: key)
+        }
         guard overrides(name) else { return }
         apply(name)
     }
@@ -142,12 +139,18 @@ import AppKit
           shouldStamp(bundlePath: "/Applications/Vane.app", sandboxed: false)),
          ("the bare dev binary has no bundle to stamp",
           !shouldStamp(bundlePath: "/Users/ada/vane/.build/release/vane", sandboxed: false)),
-         ("the icon you already have is the default, and choosing it overrides nothing",
-          `default` == catalogue[0].name && !overrides(`default`)
-              && catalogue[0].asset == nil),
-         ("…and the bundled pictures, including Galaxy, do override it",
-          catalogue.dropFirst().allSatisfy { overrides($0.name) && $0.asset != nil }
-              && catalogue.count == 4
-              && catalogue.contains { $0.name == "Galaxy" && $0.asset == "AppIcon-Galaxy" })]
+         ("Dark preserves the Dock's original composition",
+          `default` == "Dark" && !overrides("Dark")
+              && catalogue.first { $0.name == "Dark" }?.asset == nil),
+         ("Normal and Galaxy remain explicit bundled choices",
+          catalogue.contains { $0.name == "Normal" && $0.asset == "AppIcon" }
+              && catalogue.contains { $0.name == "Galaxy" && $0.asset == "AppIcon-Galaxy" }),
+         ("legacy names keep the closest finish after standardization",
+          canonicalName("Default") == "Dark" && canonicalName("Glass") == "Normal"
+              && canonicalName("Navy") == "Normal" && canonicalName("Galaxy") == "Galaxy"
+              && canonicalName("Custom") == "Custom" && !overrides("Default")),
+         ("the standardized picker has eight finishes and no old duplicate labels",
+          catalogue.map(\.name) == ["Normal", "Dark", "Galaxy", "Candy", "Neon",
+                                    "Fluted Glass", "Schoolbook", "Luminous"])]
     }
 }

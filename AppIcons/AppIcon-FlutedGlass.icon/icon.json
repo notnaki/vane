@@ -1,17 +1,17 @@
 {
   "fill": {
-    "automatic-gradient": "display-p3:0.16000,0.19000,0.38000,1.00000"
+    "automatic-gradient": "srgb:0.31,0.34,0.47,1"
   },
   "groups": [
     {
       "layers": [
         {
-          "blend-mode": "screen",
+          "blend-mode": "normal",
           "fill": "none",
-          "glass": true,
+          "glass": false,
           "hidden": false,
-          "image-name": "vane-v.svg",
-          "name": "vane-v",
+          "image-name": "fluting.svg",
+          "name": "fluting",
           "position": {
             "scale": 1.0,
             "translation-in-points": [
@@ -23,22 +23,22 @@
       ],
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.5
+        "opacity": 0
       },
       "translucency": {
         "enabled": false,
-        "value": 0.5
+        "value": 0.25
       }
     },
     {
       "layers": [
         {
-          "blend-mode": "screen",
+          "blend-mode": "normal",
           "fill": "none",
-          "glass": false,
+          "glass": true,
           "hidden": false,
-          "image-name": "vane-glow.svg",
-          "name": "vane-glow",
+          "image-name": "glass-v.svg",
+          "name": "glass-v",
           "position": {
             "scale": 1.0,
             "translation-in-points": [
@@ -48,16 +48,17 @@
           }
         }
       ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.3
+      },
       "translucency": {
         "enabled": true,
-        "value": 0.5
+        "value": 0.25
       }
     }
   ],
   "supported-platforms": {
-    "circles": [
-      "watchOS"
-    ],
     "squares": "shared"
   }
 }
