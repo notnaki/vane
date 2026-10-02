@@ -1039,12 +1039,13 @@ struct CommandField: NSViewRepresentable {
         return out
     }
 
-    /// One open tab, wherever it is: favicon, title, and "Switch to Tab" as what Return does.
+    /// Only another tab or window needs a switch label; the current page needs no verb.
     private func tabRow(_ tab: Tab, in owner: TabStore, place: String) -> PaletteRow {
         let detail = [tab.address, place].filter { !$0.isEmpty }.joined(separator: " — ")
+        let isCurrent = owner === store && tab.id == store.current
         return PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
                           image: tab.favicon, title: tab.title, detail: detail, subtitle: place,
-                          trailing: "Switch to Tab", kind: "Open tab") { _ in
+                          trailing: isCurrent ? "" : "Switch to Tab", kind: "Open tab") { _ in
             Windows.reveal(tab, in: owner)
         }
     }
