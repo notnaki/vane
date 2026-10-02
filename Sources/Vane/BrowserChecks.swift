@@ -1167,6 +1167,10 @@ import WebKit
             guard let firstPageHost = firstTab.web.superview else {
                 throw Failure("first profile has no page host")
             }
+            firstStore.sidebarShown = false
+            try await wait("first profile hides its traffic lights") {
+                window.standardWindowButton(.closeButton)?.isHidden == true
+            }
             let extensionDirectory = Store.directory.appendingPathComponent("extension-window-fixture")
             try FileManager.default.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)
             try Data(#"{"manifest_version":3,"name":"Window fixture","version":"1"}"#.utf8)
@@ -1193,6 +1197,9 @@ import WebKit
             guard let secondTab = secondStore.tabs.last else { throw Failure("second profile has no tab") }
             try await loaded(secondTab, path: "/b", title: "Fixture B")
 
+            try await wait("second profile shows its traffic lights") {
+                window.standardWindowButton(.closeButton)?.isHidden == false
+            }
             let windowsBeforeLibrary = TabStore.all.filter { $0.window != nil }.count
             try require(Library.show(firstSpace, from: secondStore) === firstStore
                         && firstStore.window === window && !firstStore.isParked,
@@ -1213,6 +1220,14 @@ import WebKit
             window.contentView?.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
             print("PROFILE_RETURN_THROUGH_LAYOUT: \(hopStart.duration(to: .now))")
+            try await wait("returning profile restores its hidden traffic lights") {
+                window.standardWindowButton(.closeButton)?.isHidden == true
+                    && (window as? VaneWindow)?.peekingSidebar == false
+            }
+            try require(VaneWindow.lightKinds.allSatisfy {
+                window.standardWindowButton($0)?.isHidden == true
+            }, "a cached profile restores its own sidebar and window controls")
+            firstStore.sidebarShown = true
             try require(firstTab.web.superview === firstPageHost,
                         "returning to a profile reuses its mounted page host instead of rebuilding the browser")
             try require(extensionWindows(firstHost).contains(where: { $0.store === firstStore })
@@ -1241,7 +1256,18 @@ import WebKit
             try require(window.firstResponder === secondTab.web,
                         "revealing a parked tab leaves the page ready for typing")
 
+            secondStore.sidebarShown = false
+            try await wait("second profile hides its traffic lights") {
+                window.standardWindowButton(.closeButton)?.isHidden == true
+            }
             _ = Windows.switchTo(profile: first)
+            try await wait("returning profile restores its visible traffic lights") {
+                window.standardWindowButton(.closeButton)?.isHidden == false
+            }
+            try require(VaneWindow.lightKinds.allSatisfy {
+                window.standardWindowButton($0)?.isHidden == false
+            }, "a cached profile restores visible window controls after a hidden sidebar")
+            secondStore.sidebarShown = true
             renameSpace(secondSpace, in: firstStore)
             try require(secondStore.window === window && secondStore.renamingSpace == secondSpace.id,
                         "a foreign Space dot opens its inline rename field")
