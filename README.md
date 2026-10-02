@@ -93,8 +93,26 @@ provide.
 ## Test a change
 
 The project has one Swift executable target and no XCTest target. Its checks are
-run through `selfcheck`; CI builds the release configuration, runs the pure
-checks, assembles the app, and tests the DMG packager.
+run through `selfcheck`; routine CI builds the debug configuration, runs the pure
+checks, assembles the debug app, and tests the DMG packager. Debug builds avoid
+whole-module release optimization on every change. CI caches `.build` by macOS
+architecture, Swift/Xcode/SDK versions, and package/source hashes, and cancels
+superseded runs for the same branch or PR. SwiftPM still validates the build on
+every cache hit. A timestamp snapshot in the cache restores the previous modification
+time only when an input's SHA-256 still matches, letting unchanged files stay
+incremental across fresh checkouts. The release workflow builds and smoke-tests the optimized app;
+its build products are never cached because they can contain the OAuth secret.
+
+To run the same checks configuration locally:
+
+```sh
+swift build -c debug
+./.build/debug/vane selfcheck --pure
+./make-app.sh debug
+./scripts/test-build-dmg.sh
+```
+
+Before shipping, also check the release configuration:
 
 ```sh
 swift build -c release
