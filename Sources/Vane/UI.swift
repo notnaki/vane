@@ -623,6 +623,8 @@ private struct Shortcuts: View {
 /// hovers over the page (find, the save-password prompt) inside its clip.
 struct WebCard: View {
     @EnvironmentObject var store: TabStore
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Little Vane matches this gap to the inset above its toolbar pills.
     var topGap: CGFloat = Look.cardGap
 
@@ -664,6 +666,12 @@ struct WebCard: View {
             OffscreenPages()
             if let tab = store.active { LoadingBar(tab: tab, hidden: store.findOpen) }
             VStack(spacing: 8) {
+                if let notice = batterySaver.notice {
+                    BatterySaverPopup(notice: notice, saver: batterySaver)
+                        .id(notice.id)
+                        .transition(.opacity)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
                 if store.findOpen, let tab = store.active {
                     FindBar(tab: tab).frame(maxWidth: .infinity, alignment: .trailing)
                 }
@@ -681,6 +689,7 @@ struct WebCard: View {
             }
             .padding(.horizontal, 14)
             .padding(.top, 10)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: batterySaver.notice?.id)
             // Last in the stack, so it is above the page: a dragged sidebar tab lands on the
             // card's edge bands as a new pane. Only in the tree while a drag is in flight.
             SplitDropWell()
@@ -4401,23 +4410,11 @@ private struct TabIcon: View {
 
 private struct BottomRow: View {
     @EnvironmentObject var store: TabStore
-    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         HStack(spacing: 8) {
             LibraryButton(archive: Archive.shared(for: store.profileID),
                           downloads: Downloads.manager(for: store.profileID))
-            if batterySaver.isActive {
-                Button { SettingsWindow.show(tab: "advanced") } label: {
-                    Image(systemName: "leaf.fill")
-                        .foregroundStyle(.green)
-                        .rowTarget()
-                }
-                .buttonStyle(TactileButtonStyle())
-                .help("Battery Saver is active. Click to change it in Settings.")
-                .accessibilityLabel("Battery Saver")
-                .accessibilityValue("Active")
-            }
             Spacer(minLength: 0)
             // A private window has no Spaces — Arc's incognito has none either — so there
             // is nothing to draw dots for and nothing a `+` could make. The row keeps its

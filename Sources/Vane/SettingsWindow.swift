@@ -1208,7 +1208,7 @@ private struct AdvancedPane: View {
                     }
                     SettingsRow("Status") {
                         Label(batterySaver.isActive ? "Active" : "Inactive",
-                              systemImage: batterySaver.isActive ? "leaf.fill" : "leaf")
+                              systemImage: batterySaver.isActive ? "bolt.fill" : "bolt")
                             .foregroundStyle(batterySaver.isActive ? Color.green : Color.secondary)
                     }
                     Footnote("Automatic turns on below 20% battery while unplugged. Always On keeps it active on any power source; Off disables it.")
