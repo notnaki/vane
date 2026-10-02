@@ -671,7 +671,7 @@ private struct OpenInButton: View {
                 Text(title).font(Look.text).lineLimit(1)
                     .padding(.leading, Look.rowInset)
                     .padding(.trailing, store.isPrivate ? Look.rowInset : Look.captionGap)
-                    .frame(height: Look.topRow)
+                    .frame(height: Look.pillHeight)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -684,7 +684,7 @@ private struct OpenInButton: View {
                     Image(systemName: "chevron.down").font(Look.caption)
                         .padding(.leading, Look.captionGap)
                         .padding(.trailing, Look.rowInset)
-                        .frame(height: Look.topRow)
+                        .frame(height: Look.pillHeight)
                         .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
