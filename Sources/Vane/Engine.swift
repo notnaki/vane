@@ -1878,10 +1878,12 @@ struct Stash {
         collapsedPinnedSpaces.contains(currentSpaceID ?? profileID)
     }
     func togglePinnedSection() {
-        let id = currentSpaceID ?? profileID
-        if !collapsedPinnedSpaces.insert(id).inserted { collapsedPinnedSpaces.remove(id) }
-        if pinnedSectionCollapsed, selection.section == .pinned { selection.clear() }
-        spaceGesture.previews.removeAll()
+        Motion.list {
+            let id = currentSpaceID ?? profileID
+            if !collapsedPinnedSpaces.insert(id).inserted { collapsedPinnedSpaces.remove(id) }
+            if pinnedSectionCollapsed, selection.section == .pinned { selection.clear() }
+            spaceGesture.previews.removeAll()
+        }
     }
     /// The command bar. Set to open it in a mode, nil to close. Per window: two windows can
     /// each have their own open. `.address` is what ⌘L, ⌘T and clicking the address pill

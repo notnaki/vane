@@ -383,16 +383,19 @@ struct SpacePreviewList: View, Equatable {
             if includingFavorites { favoriteGrid }
             // The same metrics as `SpaceRow`, glyph for glyph: the ghost slides under the real
             // heading and any difference in size or ink reads as the row jumping on landing.
-            HStack(spacing: Look.rowSpacing) {
-                Image(systemName: space.icon ?? "cloud").font(Look.spaceIcon).frame(width: Look.tileIcon)
-                Text(space.name).font(Look.spaceTitle)
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(Look.spaceIcon)
-                    .frame(width: Look.rowTarget, height: Look.rowTarget)
-                    .opacity(pinnedCollapsed ? 1 : 0)
+            HStack(spacing: 0) {
+                HStack(spacing: Look.rowSpacing) {
+                    Image(systemName: (space.icon ?? "cloud") == "cloud" ? "cloud.fill" : (space.icon ?? "cloud"))
+                        .font(Look.spaceIcon).foregroundStyle(Look.inkPrimary).frame(width: Look.tileIcon)
+                    Text(space.name).font(Look.spaceTitle).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity)
+                Color.clear.frame(width: Look.rowTarget)
             }
             .foregroundStyle(Look.inkTertiary)
-            .padding(.horizontal, Look.rowInset)
+            .padding(.leading, Look.rowInset)
+            .padding(.trailing, Look.rowInset / 2)
             .frame(height: Look.rowHeight)
             .padding(.bottom, rows.pinned.isEmpty ? 0 : Look.sectionGap / 2 - Look.rowGap)
             // Offsets, not the url: the same page can be pinned and open at once, and two
