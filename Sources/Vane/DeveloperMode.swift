@@ -5,7 +5,7 @@ import WebKit
 /// Arc's Developer Mode. On by itself for anything served from this machine, and a switch
 /// per site for everything else (Site Control Center, the command bar, ⌥⌘D). A tab in it
 /// gets a bar above the page with the full url and the tools a developer keeps reaching
-/// for, a yellow-and-black outline round the page, and the Web Inspector — whatever the
+/// for, a striped toolbar joined to the page, and the Web Inspector — whatever the
 /// browser-wide "Allow Web Inspector" says.
 ///
 /// ponytail: one `[host: Bool]` per profile, stored only where the answer differs from the
@@ -109,20 +109,17 @@ import WebKit
 
 // MARK: - The bar
 
-/// A tab's page with Developer Mode's bar above it, in the gap Arc leaves: the pill wears
-/// the Space's colour and the page's top corners round off under it. Nothing at all when
-/// the mode is off, so the page sits exactly where it always did.
+/// The toolbar and page share the card's outer edges and clip. `WebCard` (or a split pane)
+/// owns their rounding and window inset; adding padding here would inset both a second time.
 struct DeveloperFrame<Content: View>: View {
     @ObservedObject var tab: Tab
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        VStack(spacing: Look.inset) {
+        VStack(spacing: 0) {
             if tab.developer { DeveloperBar(tab: tab) }
             content()
-                .clipShape(.rect(cornerRadius: tab.developer ? Look.paneRadius : 0))
         }
-        .padding(tab.developer ? Look.inset : 0)
         .accessibilityElement(children: .contain)
     }
 }
@@ -130,13 +127,12 @@ struct DeveloperFrame<Content: View>: View {
 /// Arc's dev toolbar: the lock, the whole url, then copy, capture, console, inspector, reload.
 private struct DeveloperBar: View {
     @ObservedObject var tab: Tab
-    @EnvironmentObject var store: TabStore
 
     var body: some View {
         HStack(spacing: Look.inset) {
             Image(systemName: tab.currentURL?.scheme == "https" ? "lock.fill" : "lock.open")
             Text(tab.currentURL?.absoluteString ?? tab.address)
-                .font(Look.small.monospaced())
+                .font(Look.small.monospaced().weight(.medium))
                 .lineLimit(1).truncationMode(.middle)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -154,18 +150,36 @@ private struct DeveloperBar: View {
             }
             tool("arrow.clockwise", "Reload Ignoring Cache") { tab.web.reloadFromOrigin() }
         }
-        .font(Look.caption.weight(.medium)).foregroundStyle(.white)
+        .font(Look.caption.weight(.medium)).foregroundStyle(Color(white: 0.86))
         .buttonStyle(FindControlStyle())
         .padding(.horizontal, Look.rowTrailingInset).frame(height: Look.rowHeight)
-        .background(tint, in: .rect(cornerRadius: Look.pillRadius))
+        .background {
+            Color(white: 0.18)
+                .overlay {
+                    Canvas { context, size in
+                        let stripe: CGFloat = 24
+                        for x in stride(from: -size.height, to: size.width, by: stripe * 2) {
+                            var path = Path()
+                            path.move(to: CGPoint(x: x, y: 0))
+                            path.addLine(to: CGPoint(x: x + stripe, y: 0))
+                            path.addLine(to: CGPoint(x: x + stripe + size.height, y: size.height))
+                            path.addLine(to: CGPoint(x: x + size.height, y: size.height))
+                            path.closeSubpath()
+                            context.fill(path, with: .color(.black.opacity(0.08)))
+                        }
+                    }
+                }
+                .clipped()
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(.white.opacity(0.08)).frame(height: 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .environment(\.colorScheme, .dark)
         .accessibilityLabel("Developer Mode")
-    }
-
-    /// The Space's own colour, the way Arc paints the bar in the Space's accent.
-    private var tint: Color {
-        let hex = store.currentSpace.map(Spaces.themeColors(of:))?.first ?? store.profile.colorHex
-        return Color(hex: hex) ?? .accentColor
     }
 
     private var divider: some View { Divider().frame(height: 14).opacity(0.5) }
