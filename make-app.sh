@@ -13,6 +13,13 @@ VERSION="${VANE_VERSION:-}"
 case "$VERSION" in [0-9]*) ;; *) VERSION="0.1.0" ;; esac
 BUILD="${VANE_BUILD:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 
+# Local and prerelease bundles must never ask to take over the user's browser.
+DEFAULT_BROWSER_PROMPT=false
+if [ "$CONF" = release ] && [ -n "${SIGN_ID:-}" ] && [ "${SIGN_ID:-}" != - ] \
+   && [[ "$VERSION" != *-* ]]; then
+  DEFAULT_BROWSER_PROMPT=true
+fi
+
 echo ">> building ($CONF)..."
 swift build -c "$CONF" >/dev/null
 [ -x "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
@@ -75,6 +82,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>        <string>APPL</string>
   <key>CFBundleShortVersionString</key> <string>$VERSION</string>
   <key>CFBundleVersion</key>            <string>$BUILD</string>
+  <key>VaneDefaultBrowserPromptEnabled</key> <$DEFAULT_BROWSER_PROMPT/>
   <key>LSMinimumSystemVersion</key>     <string>26.0</string>
   <key>NSHighResolutionCapable</key>    <true/>
   <key>NSPrincipalClass</key>           <string>NSApplication</string>

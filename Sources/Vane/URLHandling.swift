@@ -134,14 +134,19 @@ import AppKit
 
     private static let askedKey = "askedToBeDefaultBrowser"
 
+    /// The packager opts stable signed releases in. Missing metadata is a test build,
+    /// including bare executables and temporary browsercheck bundles.
+    static func defaultBrowserPromptAllowed(in bundle: Bundle) -> Bool {
+        bundle.bundleIdentifier == "io.github.notnaki.vane"
+            && bundle.object(forInfoDictionaryKey: "VaneDefaultBrowserPromptEnabled") as? Bool == true
+    }
+
     /// Asked exactly once, ever. A browser that renews this question every launch is a
     /// browser people uninstall.
     static func promptIfNotDefaultOnce() {
+        guard defaultBrowserPromptAllowed(in: .main) else { return }
         let defaults = UserDefaults.vane
-        // Running the bare binary out of .build has no bundle to register; asking there
-        // would burn the one question on something LaunchServices would refuse anyway.
-        guard Bundle.main.bundleIdentifier != nil,
-              !defaults.bool(forKey: askedKey), !isDefaultBrowser else { return }
+        guard !defaults.bool(forKey: askedKey), !isDefaultBrowser else { return }
         defaults.set(true, forKey: askedKey)
 
         let alert = NSAlert()
