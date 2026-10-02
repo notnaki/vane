@@ -579,7 +579,7 @@ struct LittleArcView: View {
             SpaceGround()
             VStack(spacing: 0) {
                 LittleArcBar()
-                WebCard()
+                WebCard(topGap: Look.littleTopInset)
             }
             // Last, so ⌘L's bar composites over the bar as well as the page.
             if let mode = store.palette {
