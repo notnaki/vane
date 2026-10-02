@@ -80,51 +80,18 @@ struct SpaceName: View {
     }
 }
 
-/// Left-clicking the Space's name: every Space on the strip, with its icon, the current one
-/// ticked — Arc's Space list. The strip runs across profiles, so this is every Space of every
-/// profile, in the order the footer's dots draw them, and picking one of another profile's
-/// moves the window there. An `NSMenu` rather than a SwiftUI `Menu` because the same row also
-/// has to take a double-click to rename, and a SwiftUI menu swallows both clicks.
-@MainActor func showSpaceList(_ store: TabStore) {
-    let menu = NSMenu()
-    var keep: [MenuAction] = []
-    for (n, space) in store.strip.enumerated() {
-        let item = NSMenuItem(title: space.name, action: #selector(MenuAction.fire), keyEquivalent: "")
-        let action = MenuAction { store.switchTo(space: space); rebuild() }
-        item.target = action
-        item.representedObject = action
-        keep.append(action)
-        item.state = store.currentSpaceID == space.id ? .on : .off
-        item.image = NSImage(systemSymbolName: space.icon ?? "cloud", accessibilityDescription: nil)
-        // ⌃1…⌃9 is what these are actually bound to, so the menu says so rather than
-        // inventing a second set of numbers.
-        if n < 9 {
-            item.keyEquivalent = "\(n + 1)"
-            item.keyEquivalentModifierMask = .control
+/// The Space picker uses the same custom surface as the footer's creation menu.
+@MainActor func showSpaceList(_ store: TabStore, anchor: ChromeMenuAnchor) {
+    let items = store.strip.enumerated().map { n, space in
+        ChromeMenuItem(title: space.name, symbol: space.icon ?? "cloud",
+                       shortcut: n < 9 ? "⌃\(n + 1)" : "",
+                       checked: store.currentSpaceID == space.id) {
+            store.switchTo(space: space); rebuild()
         }
-        menu.addItem(item)
-    }
-    // Always a separator: the list above it is never empty. A profile always has at least
-    // one Space, and this menu only ever hangs off a window that is showing one.
-    menu.addItem(.separator())
-    let new = NSMenuItem(title: "New Space", action: #selector(MenuAction.fire), keyEquivalent: "")
-    let make = MenuAction { store.newSpace(); rebuild() }
-    new.target = make
-    new.representedObject = make
-    keep.append(make)
-    menu.addItem(new)
-    // `keep` only exists so the actions outlive this function; `representedObject` is what
-    // actually holds them, and an unused-variable warning is not worth a stored property.
-    _ = keep
-    menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-}
-
-/// A closure with an `@objc` face, so an `NSMenuItem` can call it. Retained by the item's
-/// `representedObject`.
-@MainActor final class MenuAction: NSObject {
-    private let run: () -> Void
-    init(_ run: @escaping () -> Void) { self.run = run }
-    @objc func fire() { run() }
+    } + [ChromeMenuItem(title: "New Space", symbol: "rectangle.stack.badge.plus", startsGroup: true) {
+        store.newSpace(); rebuild()
+    }]
+    anchor.show(items, title: "Spaces")
 }
 
 // MARK: - Creating a Space
@@ -134,24 +101,29 @@ struct SpaceName: View {
 /// button and that panel.
 struct NewSpaceButton: View {
     @EnvironmentObject var store: TabStore
+    @StateObject private var menuAnchor = ChromeMenuAnchor()
 
     var body: some View {
-        // Arc’s footer `+` is a menu, not a button. ponytail: two items, not four — Easels
-        // and Notes are whole features, and a menu entry that opens an apology is worse than
-        // no entry. They belong here on the day they exist.
-        Menu {
-            Button("New Space") { store.newSpace() }
-            Button("New Folder") { store.newFolder() }
+        Button {
+            let shortcut = Keybindings.binding(for: .newTab)
+            menuAnchor.show([
+                ChromeMenuItem(title: "New Space", symbol: "rectangle.stack.badge.plus") {
+                    store.newSpace()
+                },
+                ChromeMenuItem(title: "New Folder", symbol: "folder") { store.newFolder() },
+                ChromeMenuItem(title: "New Tab", symbol: "plus.square",
+                               shortcut: shortcut == .unassigned ? "" : shortcut.display,
+                               startsGroup: true) { store.newTab(nil) },
+            ], above: true, title: "Create")
         } label: {
             Image(systemName: "plus")
+                .frame(width: Look.rowTarget, height: Look.rowTarget).contentShape(.rect)
         }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
             .buttonStyle(.plain)
+            .background(ChromeMenuAnchorView(anchor: menuAnchor))
             .foregroundStyle(Look.inkSecondary)
-            .help("New Space or Folder")
-            .accessibilityLabel("New Space or Folder")
+            .help("New Space, Folder, or Tab")
+            .accessibilityLabel("New Space, Folder, or Tab")
             .popover(isPresented: Binding(get: { store.editingSpace != nil },
                                           set: { if !$0 { store.editingSpace = nil } }),
                      arrowEdge: .top) {

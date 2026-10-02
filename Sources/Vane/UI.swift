@@ -2283,6 +2283,7 @@ private struct TabDrop: DropDelegate {
 /// profile it belongs to.
 private struct SpaceRow: View {
     @EnvironmentObject var store: TabStore
+    @StateObject private var menuAnchor = ChromeMenuAnchor()
     @State private var icons = false
     @State private var theme = false
     @State private var live = false
@@ -2290,8 +2291,9 @@ private struct SpaceRow: View {
     var body: some View {
         if let space = store.currentSpace {
             row(space.icon ?? "cloud", space, space.name)
+            .background(ChromeMenuAnchorView(anchor: menuAnchor))
             .onTapGesture(count: 2) { store.renamingSpace = space.id }
-            .onTapGesture { showSpaceList(store) }
+            .onTapGesture { showSpaceList(store, anchor: menuAnchor) }
             .contextMenu {
                 SpaceMenu(store: store, space: space, icons: $icons, theme: $theme, live: $live)
             }
