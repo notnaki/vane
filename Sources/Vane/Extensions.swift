@@ -11,11 +11,9 @@ import WebKit
 //     cfg.webExtensionController = ExtensionHost.host(for: profileID).controller
 //
 // One line, and it must run before `WKWebView(frame:configuration:)`. There is one host per
-// *profile*, so an extension loaded in one profile never sees another profile's tabs. Private
-// tabs share their profile's controller: WebKit gates them on each context's
-// `hasAccessToPrivateData` (off by default here), and Vane already satisfies the isolation
-// rule WebKit requires — a non-persistent data store plus a fresh WKUserContentController
-// per Tab.
+// *profile*, so an extension loaded in one profile never sees another profile's tabs.
+// Incognito has an empty, non-persistent controller of its own, plus a non-persistent
+// website data store and a fresh WKUserContentController per Tab.
 //
 // `configuration(for:)` below is the same thing spelled for a call site that has a store.
 //
@@ -31,8 +29,8 @@ import WebKit
 ///
 /// ponytail: one controller per profile, not per window — WKWebExtension is modelled that
 /// way (windows are things the controller asks *you* about). Profiles are exactly the level
-/// where a separate persistent store identifier is warranted. Upgrade path if private windows
-/// ever need their own extension set: a third host built on `.nonPersistent()`.
+/// where a separate persistent store identifier is warranted. Incognito's host uses
+/// `.nonPersistent()` and loads none of the saved profiles' extensions.
 @MainActor final class ExtensionHost: NSObject, ObservableObject, WKWebExtensionControllerDelegate {
     /// The active profile's host. One host — one controller, one extension set, one set of
     /// background pages — per profile, so an extension in one profile cannot see another
@@ -78,7 +76,9 @@ import WebKit
         // A profile-scoped controller configuration is what keeps extension storage and
         // background state from crossing profiles; the default profile keeps `.default()`
         // so already-installed extensions keep their storage.
-        let configuration = Self.controllerIdentifier(for: profileID,
+        let configuration = profileID == Profile.incognito.id
+            ? WKWebExtensionController.Configuration.nonPersistent()
+            : Self.controllerIdentifier(for: profileID,
                                                        dataDirectory: Store.overrideDirectory)
             .map(WKWebExtensionController.Configuration.init(identifier:))
             ?? WKWebExtensionController.Configuration.default()
@@ -86,6 +86,7 @@ import WebKit
         controller = WKWebExtensionController(configuration: configuration)
         super.init()
         controller.delegate = self
+        guard profileID != Profile.incognito.id else { return }
         for folder in ScopedPaths.urls(Self.key(for: profileID)) { begin(folder) }
     }
 

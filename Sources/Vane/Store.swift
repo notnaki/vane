@@ -76,7 +76,8 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     static func store(for profileID: UUID) -> Store {
         if let hit = cache[profileID] { return hit }
-        let fresh = Store(path: ProfileManager.dbURL(for: profileID, in: directory).path)
+        let fresh = Store(path: profileID == Profile.incognito.id ? ":memory:"
+                          : ProfileManager.dbURL(for: profileID, in: directory).path)
         cache[profileID] = fresh
         return fresh
     }

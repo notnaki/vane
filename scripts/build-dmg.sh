@@ -67,7 +67,7 @@ if [ -z "$MOUNT_POINT" ]; then
   exit 1
 fi
 
-diskutil rename "$DEVICE" Vane >/dev/null
+diskutil rename "$MOUNT_POINT" Vane >/dev/null
 BUILD_VOLUME=Vane
 FINDER_VOLUME=false
 for _ in {1..50}; do

@@ -46,6 +46,10 @@ preserves input, scroll position, and history; closing a tab removes it from eve
 window. Each window keeps its own selection. Private and Little Vane windows keep
 their own pages.
 
+Incognito uses a temporary identity of its own, with a glasses icon and a near-black
+theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and
+its browsing data and download records are not restored after quitting.
+
 Some features depend on macOS services, site behavior, or a signed distribution
 build. The [known gaps](#known-gaps) section gives the practical limits.
 

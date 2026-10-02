@@ -41,6 +41,7 @@ import WebKit
     /// Nil for ordinary isolated checks; production uses .vane and a focused check can
     /// supply a throwaway suite to exercise preference migration.
     private let locationDefaults: UserDefaults?
+    private var privateResumeData: [UUID: Data] = [:]
 
     @Published var items: [Item] = []
 
@@ -59,7 +60,8 @@ import WebKit
         self.profileID = profileID
         self.directory = directory
         self.sandboxed = sandboxed
-        self.locationDefaults = locationDefaults ?? (sandboxed ? nil : .vane)
+        self.locationDefaults = profileID == Profile.incognito.id ? nil
+            : locationDefaults ?? (sandboxed ? nil : .vane)
         super.init()
         // History, resumed transfers and Finder actions inspect saved destination URLs
         // before the next download asks for a destination. Reopen the folder's sandbox
@@ -252,6 +254,7 @@ import WebKit
     // MARK: Load and save
 
     private func load() {
+        guard profileID != Profile.incognito.id else { return }
         guard let data = try? Data(contentsOf: Self.listURL(for: profileID, in: directory)),
               let records = try? JSONDecoder().decode([Record].self, from: data) else { return }
         var upgraded = false
@@ -390,6 +393,7 @@ import WebKit
             ScopedPaths.releaseBookmark(owner: e.scopeOwner)
         }
         if !evicted.isEmpty { items = keep }
+        guard profileID != Profile.incognito.id else { return }
         guard let data = try? JSONEncoder().encode(keep.map(\.record)) else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? data.write(to: Self.listURL(for: profileID, in: directory))
@@ -698,6 +702,11 @@ import WebKit
     }
 
     private func writeResume(_ data: Data, for item: Item) {
+        if profileID == Profile.incognito.id {
+            privateResumeData[item.id] = data
+            item.resumeFile = "\(item.id.uuidString).resume"
+            return
+        }
         let dir = Self.resumeDir(for: profileID, in: directory)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         guard (try? data.write(to: resumeURL(item))) != nil else { return }
@@ -705,11 +714,13 @@ import WebKit
     }
 
     private func readResume(_ item: Item) -> Data? {
-        item.resumeFile == nil ? nil : try? Data(contentsOf: resumeURL(item))
+        if profileID == Profile.incognito.id { return privateResumeData[item.id] }
+        return item.resumeFile == nil ? nil : try? Data(contentsOf: resumeURL(item))
     }
 
     private func deleteResume(_ item: Item) {
-        try? FileManager.default.removeItem(at: resumeURL(item))
+        if profileID == Profile.incognito.id { privateResumeData[item.id] = nil }
+        else { try? FileManager.default.removeItem(at: resumeURL(item)) }
         item.resumeFile = nil
     }
 
@@ -862,6 +873,24 @@ import WebKit
         let file = dl.appendingPathComponent("kept.zip")
         try? Data("payload".utf8).write(to: file)
         let when = Date(timeIntervalSince1970: 1_700_000_000)
+        let incognito = Downloads(profileID: Profile.incognito.id, directory: root, sandboxed: true)
+        incognito.add(Record(name: "private.zip", destination: file,
+                             source: URL(string: "https://private.example/file"), state: "done"))
+        assert("incognito downloads remain available during the session", incognito.items.count == 1)
+        assert("incognito download records never create an index",
+               !fm.fileExists(atPath: listURL(for: Profile.incognito.id, in: root).path))
+        if let item = incognito.items.first {
+            let data = Data("private resume fixture".utf8)
+            incognito.writeResume(data, for: item)
+            assert("incognito downloads can resume from memory", incognito.readResume(item) == data)
+            assert("incognito resume data never creates a directory",
+                   !fm.fileExists(atPath: resumeDir(for: Profile.incognito.id, in: root).path))
+            incognito.deleteResume(item)
+            assert("forgetting private resume data removes it from memory",
+                   incognito.readResume(item) == nil && item.resumeFile == nil)
+        }
+        assert("a fresh incognito download manager restores no records",
+               Downloads(profileID: Profile.incognito.id, directory: root, sandboxed: true).items.isEmpty)
         let d = Downloads(profileID: ProfileManager.defaultID, directory: root, sandboxed: true)
         assert("a fresh profile starts with an empty list", d.items.isEmpty)
         d.add(Record(name: "kept.zip", destination: file,

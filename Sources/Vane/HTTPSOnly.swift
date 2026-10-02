@@ -39,13 +39,15 @@ import WebKit
     /// is no prefix sweep that could reach into another profile's keys — and deleting a
     /// profile is one `removeObject`.
     static let exceptionsKey = "httpsOnlyExceptions"
+    private static var incognitoExceptions: [String] = []
 
     private static func key(_ profileID: UUID) -> String {
         ProfileManager.defaultsKey(exceptionsKey, profileID)
     }
 
     static func exceptions(profileID: UUID = ProfileManager.activeProfileID) -> [String] {
-        (defaults.array(forKey: key(profileID)) as? [String]) ?? []
+        profileID == Profile.incognito.id ? incognitoExceptions
+            : (defaults.array(forKey: key(profileID)) as? [String]) ?? []
     }
 
     static func isExcepted(host: String, profileID: UUID = ProfileManager.activeProfileID) -> Bool {
@@ -62,24 +64,29 @@ import WebKit
         var list = exceptions(profileID: profileID)
         guard !list.contains(h) else { return }
         list.append(h)
-        defaults.set(list, forKey: key(profileID))
+        if profileID == Profile.incognito.id { incognitoExceptions = list }
+        else { defaults.set(list, forKey: key(profileID)) }
     }
 
     /// Exact host, never a suffix match: an exception for `example.com` must not cover
     /// `evil.example.com`, and forgetting one must not take the other down with it.
     static func forget(host: String, profileID: UUID = ProfileManager.activeProfileID) {
         let h = canonical(host)
-        defaults.set(exceptions(profileID: profileID).filter { $0 != h }, forKey: key(profileID))
+        let list = exceptions(profileID: profileID).filter { $0 != h }
+        if profileID == Profile.incognito.id { incognitoExceptions = list }
+        else { defaults.set(list, forKey: key(profileID)) }
     }
 
     /// nil profile means every profile — what the "forget everything" menu item wants.
     static func forgetAll(profileID: UUID? = nil) {
         guard let profileID else {
+            incognitoExceptions = []
             for k in defaults.dictionaryRepresentation().keys where k.hasPrefix(exceptionsKey) {
                 defaults.removeObject(forKey: k)
             }
             return
         }
+        if profileID == Profile.incognito.id { incognitoExceptions = []; return }
         defaults.removeObject(forKey: key(profileID))
     }
 
@@ -443,11 +450,14 @@ import WebKit
             return [("scratch defaults suite is available", false)]
         }
         let real = defaults
+        let realIncognitoExceptions = incognitoExceptions
+        incognitoExceptions = []
         defaults = scratch
         let realAttempts = attempts
         forgetLoopState()
         defer {
             defaults = real
+            incognitoExceptions = realIncognitoExceptions
             attempts = realAttempts
             UserDefaults.dropScratchSuite(suite)
         }
@@ -495,6 +505,12 @@ import WebKit
         ]
 
         // Exceptions: round trip, exactness, and the per-profile wall.
+        allow(host: "private.example", profileID: Profile.incognito.id)
+        out.append(("an incognito HTTP exception remains usable during the session",
+                    isExcepted(host: "private.example", profileID: Profile.incognito.id)))
+        out.append(("an incognito HTTP exception never writes a visited host to preferences",
+                    scratch.object(forKey: key(Profile.incognito.id)) == nil))
+        forgetAll(profileID: Profile.incognito.id)
         out.append(("an unvisited host has no exception", isExcepted(host: "old.example", profileID: p) == false))
         allow(host: "old.example", profileID: p)
         out.append(("an exception reads back", isExcepted(host: "old.example", profileID: p)))

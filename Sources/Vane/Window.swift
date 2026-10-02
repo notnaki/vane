@@ -482,7 +482,7 @@ extension VaneWindow {
                      parked: [String: Parked] = [:], focus: Bool = true,
                      session: [Session.Entry]? = nil, selected: UUID? = nil,
                      restoringLegacySession: Bool = false) -> TabStore {
-        let profile = profile ?? space.flatMap { s in
+        let profile = isPrivate ? .incognito : profile ?? space.flatMap { s in
             ProfileManager.shared.profiles.first { $0.id == s.profileID }
         } ?? ProfileManager.shared.active
         // Arc's rule: every tab in a browser window lives in a Space, so an ordinary window
@@ -503,7 +503,7 @@ extension VaneWindow {
         // The profile name is in the title because there is otherwise nothing on screen that
         // says which set of logins this window is using.
         let named = profile.isDefault ? "" : " — " + profile.name
-        window.title = isPrivate ? "Vane — Private" : "Vane" + named
+        window.title = isPrivate ? "Vane — Incognito" : "Vane" + named
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         // An empty toolbar, never shown: it only exists to make the titlebar 38pt tall,

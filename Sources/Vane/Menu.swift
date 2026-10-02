@@ -254,8 +254,12 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 }
 
 @MainActor private func siteItems() -> [NSMenuItem] {
-    let blocking = item(.blockAds) { Blocker.enabled.toggle(); rebuild() }
-    blocking.state = Blocker.enabled ? .on : .off
+    let profileID = Windows.current?.profileID ?? ProfileManager.activeProfileID
+    let blocking = item(.blockAds) {
+        Blocker.setEnabled(!Blocker.enabled(for: profileID), for: profileID)
+        rebuild()
+    }
+    blocking.state = Blocker.enabled(for: profileID) ? .on : .off
     let tidyDownloads = item("Tidy Download Filenames", "") {
         TidyDownloads.enabled.toggle(); rebuild()
     }
@@ -295,12 +299,13 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 
 @MainActor private func profileItems() -> [NSMenuItem] {
     let manager = ProfileManager.shared
+    let incognito = Windows.current?.isPrivate == true
     let switchers = manager.profiles.map { profile in
         let entry = item(profile.name, "") {
             _ = Windows.switchTo(profile: profile)
             rebuild()          // switchTo does not rebuild, and every checkmark below moved
         }
-        entry.state = manager.active.id == profile.id ? .on : .off
+        entry.state = !incognito && manager.active.id == profile.id ? .on : .off
         return entry
     }
     // delete() refuses on the last profile; disable rather than let it fail in an alert.
@@ -325,7 +330,14 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     }
     remove.isEnabled = manager.profiles.count > 1
 
-    return switchers + [
+    var identities = switchers
+    if incognito {
+        let entry = NSMenuItem(title: Profile.incognito.name, action: nil, keyEquivalent: "")
+        entry.image = NSImage(systemSymbolName: "eyeglasses", accessibilityDescription: "Incognito")
+        entry.state = .on
+        identities.insert(contentsOf: [entry, .separator()], at: 0)
+    }
+    return identities + [
         .separator(),
         item(.newProfile) {
             guard let name = askForName("Name the new profile") else { return }
@@ -803,7 +815,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
             a.messageText = "Clear all browsing history?"
             a.informativeText = "Bookmarks and saved passwords are not affected."
             a.addButton(withTitle: "Clear"); a.addButton(withTitle: "Cancel")
-            if a.runModal() == .alertFirstButtonReturn { Store.shared.clearHistory() }
+            if a.runModal() == .alertFirstButtonReturn {
+                Store.store(for: Windows.current?.profileID ?? ProfileManager.activeProfileID).clearHistory()
+            }
         },
         .separator(),
         // Arc has no Bookmarks menu; what Vane imports from other browsers lives here.
@@ -822,10 +836,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
             item(b.title.isEmpty ? b.url : b.title, "") {
                 guard let url = URL(string: b.url) else { return }
                 let profileID = BookmarkManager.currentActionProfile
-                let target = Windows.current(in: profileID)
-                    ?? ProfileManager.shared.profiles.first(where: { $0.id == profileID }).map {
-                        Windows.open(profile: $0)
-                    }
+                let target = BookmarkManager.browserWindow(for: profileID)
                 target?.shown.active?.web.load(URLRequest(url: url))
             }
         }),

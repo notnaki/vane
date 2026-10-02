@@ -13,8 +13,12 @@ import SwiftUI
 @MainActor enum HistoryWindow {
     private static var window: NSWindow?
 
-    static func show() {
+    static func show(profileID: UUID = Windows.current?.profileID ?? ProfileManager.activeProfileID) {
         if let w = window {
+            w.contentView = NSHostingView(rootView: HistoryView(profileID: profileID)
+                .font(Look.text))
+            w.title = profileID == Profile.incognito.id ? "History — Incognito" : "History"
+            w.appearance = profileID == Profile.incognito.id ? NSAppearance(named: .darkAqua) : nil
             w.makeKeyAndOrderFront(nil)
             NSApp.activate()
             return
@@ -22,11 +26,12 @@ import SwiftUI
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 600),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
-        w.title = "History"
+        w.title = profileID == Profile.incognito.id ? "History — Incognito" : "History"
+        w.appearance = profileID == Profile.incognito.id ? NSAppearance(named: .darkAqua) : nil
         w.minSize = NSSize(width: 520, height: 360)
         w.isReleasedWhenClosed = false        // closing must not free the instance we keep
         window = w
-        w.contentView = NSHostingView(rootView: HistoryView()
+        w.contentView = NSHostingView(rootView: HistoryView(profileID: profileID)
             .font(Look.text))
         // Position first, autosave second: setFrameUsingName reports whether there was one.
         if !w.setFrameUsingName("VaneHistory") { w.center() }
@@ -39,6 +44,8 @@ import SwiftUI
 // MARK: - The window's contents
 
 private struct HistoryView: View {
+    let profileID: UUID
+    private var store: Store { Store.store(for: profileID) }
     @State private var query = ""
     @State private var visits: [Visit] = []
     @State private var selection: Visit.ID?
@@ -95,7 +102,7 @@ private struct HistoryView: View {
             Button("Clear History…") {
                 guard confirm("Clear all browsing history?", "Clear",
                               "Bookmarks and saved passwords are not affected.") else { return }
-                Store.shared.clearHistory()
+                store.clearHistory()
                 reload()
                 axAnnounce("History cleared.")
             }
@@ -181,7 +188,7 @@ private struct HistoryView: View {
     // MARK: Doing things
 
     private func reload() {
-        visits = Store.shared.history(matching: query, limit: Self.limit)
+        visits = store.history(matching: query, limit: Self.limit)
         if let id = selection, !visits.contains(where: { $0.id == id }) { selection = nil }
     }
 
@@ -192,12 +199,12 @@ private struct HistoryView: View {
         selection = visit.id
         focus = .list
         guard let url = URL(string: visit.url) else { return }
-        (Windows.current ?? Windows.open()).newTab(url)
+        BookmarkManager.browserWindow(for: profileID)?.newTab(url)
         axAnnounce("Opened \(visit.display) in a new tab.")
     }
 
     private func delete(_ visit: Visit) {
-        Store.shared.deleteVisit(visit.id)
+        store.deleteVisit(visit.id)
         if selection == visit.id { selection = nil }
         reload()
         axAnnounce("Forgot \(visit.display).")

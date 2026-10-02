@@ -16,6 +16,16 @@ import SwiftUI
         actionProfile(window: Windows.current?.profileID, active: ProfileManager.activeProfileID)
     }
 
+    static func browserWindow(for profileID: UUID) -> TabStore? {
+        if profileID == Profile.incognito.id {
+            return Windows.current(in: profileID, isPrivate: true) ?? Windows.open(isPrivate: true)
+        }
+        return Windows.current(in: profileID)
+            ?? ProfileManager.shared.profiles.first(where: { $0.id == profileID }).map {
+                Windows.open(profile: $0)
+            }
+    }
+
     nonisolated static func keyboardSelection(ids: [Int64], selected: Set<Int64>,
                                                step: Int) -> Set<Int64> {
         guard !ids.isEmpty else { return [] }
@@ -62,6 +72,7 @@ import SwiftUI
     }
 
     private static func title(for id: UUID) -> String {
+        if id == Profile.incognito.id { return "Bookmarks — Incognito" }
         guard let profile = ProfileManager.shared.profiles.first(where: { $0.id == id }) else { return "Bookmarks" }
         return profile.id == ProfileManager.defaultID ? "Bookmarks" : "Bookmarks — \(profile.name)"
     }
@@ -369,10 +380,7 @@ private struct BookmarkManagerView: View {
         selection = [mark.id]
         listFocused = true
         guard let url = URL(string: mark.url) else { return }
-        let target = Windows.current(in: profileID)
-            ?? ProfileManager.shared.profiles.first(where: { $0.id == profileID }).map {
-                Windows.open(profile: $0)
-            }
+        let target = BookmarkManager.browserWindow(for: profileID)
         target?.shown.newTab(url)
     }
 

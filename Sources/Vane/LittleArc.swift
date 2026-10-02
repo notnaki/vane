@@ -143,6 +143,7 @@ import SwiftUI
         keptDelegates.append(delegate)
         window.delegate = delegate
         store.window = window
+        store.applySpaceAppearance()
         // `orderBack`, not merely `orderFront`, for the unfocused case: a window ordered to
         // the front without the key still covers the page the user is reading, which is the
         // whole of what they asked not to happen. It is a real window either way — in the
