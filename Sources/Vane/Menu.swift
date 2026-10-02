@@ -665,6 +665,10 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.newTab) { Windows.current?.shown.newTab(nil) },
         item(.newWindow) { Windows.open() },
         item(.newPrivateWindow) { Windows.open(isPrivate: true) },
+        validated(item(.newEasel) { EaselWindow.open(in: Windows.current, create: true) }) { EaselWindow.canOpen },
+        validated(item(.captureToEasel) { EaselWindow.capture(in: Windows.current) }) {
+            EaselWindow.canCapture(in: Windows.current)
+        },
         // Arc's ⌥⌘N: a search that is not in any window yet. `open(nil)` is the whole of it
         // — a Little Arc with no url comes up with its command bar over an empty page.
         item(.newLittleArc) { LittleArc.open(nil) },
@@ -862,6 +866,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         Standard.item("Zoom"),
         .separator(),
         item(.showLibrary) { toggleLibrary() },
+        validated(item(.showEasels) { EaselWindow.open(in: Windows.current) }) { EaselWindow.canOpen },
         .separator(),
         littleArcWindows(),
         Standard.item("Bring All to Front"),

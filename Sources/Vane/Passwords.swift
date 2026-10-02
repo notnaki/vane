@@ -1000,6 +1000,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("shortcuts pane", ShortcutsPane.check),
                                ("history window", HistoryWindow.check),
                                ("library", Library.check),
+                               ("easels", EaselChecks.check),
                                ("downloads", Downloads.check),
                                ("on-device ai", AppleAI.check),
                                ("picture in picture", PictureInPicture.check),

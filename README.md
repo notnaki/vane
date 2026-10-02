@@ -38,6 +38,7 @@ a Developer ID signature and notarization; see [releasing](#releasing).
 | Data | Separate profiles, downloads, saved passwords, and import of bookmarks, history, and password CSV exports. |
 | Controls | Battery Saver, custom search engines and `!bang` shortcuts, per-site controls, keyboard shortcut settings, and appearance settings. |
 | Protection | WebKit content blocking, HTTPS-only mode, certificate warnings, and site permission prompts. |
+| Easels | Saved visual boards with notes, images, web captures, drawing, zoom, undo/redo, and export. |
 | Extras | Unpacked WebExtensions, GitHub-backed live folders, and an in-app update check for published releases. |
 
 Windows in the same Space share tabs. When both show the same tab, the focused
@@ -60,6 +61,32 @@ motion is reduced. Active pages, pinned tabs, media/Picture in Picture, private 
 and unfinished forms keep their existing suspension protections. A green leaf in
 the sidebar opens the setting; sleeping tabs reload when selected. The mode respects
 the existing idle-suspension preference and preserves an already shorter timeout.
+
+### Easels
+
+Open **Library → Easels** or **Window → Show Easels**. **File → New Easel**
+(`⌥⌘E`) creates a board; **File → Capture Page to Easel** (`⇧⌘E`) collects the
+visible page into the selected board with its source link. Boards belong to the
+browser window's profile and save locally after each edit. Private windows cannot
+create boards or save captures.
+
+Add notes, links, images, or paste from the clipboard. Drag items to arrange them,
+use the selected item's corner to resize, and double-click to edit or crop an image.
+The Pen draws on the canvas; turn it off to move items. Scroll in either direction
+and choose a zoom level. New items appear near the current canvas viewport.
+Standard Undo/Redo work on the board and inside its text editors.
+
+A web capture's play button opens its source page as an interactive live view using
+that profile's cookies and content blocker. Pause returns to the saved image. Live
+views are temporary, limited to four at once, and stop when switching boards or
+closing the window. They show the source page rather than a live cropped region;
+permission prompts, popups, password autofill, and downloads belong in browser tabs.
+
+The `…` menu duplicates or deletes a board, exports a PNG, or exports an editable
+JSON document with embedded images. Import the JSON from the Easels sidebar. The
+canvas is 6,000 × 4,000 points; a board holds up to 256 items, and PNG export scales
+the entire occupied canvas to at most 4,096 pixels. Easels do not include cloud
+sharing or collaboration.
 
 ### A few shortcuts
 

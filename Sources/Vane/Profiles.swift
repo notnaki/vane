@@ -611,6 +611,8 @@ struct Space: Identifiable, Codable, Equatable {
         try? fm.removeItem(at: Self.sessionURL(for: id, in: directory))
         try? fm.removeItem(at: Suspension.SpaceState.url(for: id, in: directory))
         Downloads.forget(id, in: directory)
+        EaselStore.forget(id, directory: directory)
+        if !sandboxed { EaselWindow.forget(id) }
         TidyTitles.forget(id)
         Zoom.forget(profile: id)
         CertificateTrust.forget(profile: id)
