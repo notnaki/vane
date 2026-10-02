@@ -142,12 +142,8 @@ import WebKit
                 self.pending[key]?.urls.removeFirst()
                 let data = await Favicons.fetch(url)
                 if self.pending[key]?.fallbackURLs.contains(url) == true { attemptedFallback = true }
-                guard let data,
-                      let img = NSImage(data: data), img.isValid, img.size.width > 0
+                guard let data, let img = Favicons.image(from: data)
                 else { continue }
-                // Icons ship at anything from 16 to 512px; pin the point size so SwiftUI
-                // picks the right representation instead of laying out a 512pt image.
-                img.size = NSSize(width: 16, height: 16)
                 self.memory[key] = img
                 self.misses.removeValue(forKey: key)
                 // A public fallback does not authorize storing another tab's private-only
@@ -253,6 +249,46 @@ import WebKit
 
     // MARK: Disk
 
+    /// A dark mark on transparency (such as GitHub's favicon) is an alpha mask, so let
+    /// AppKit/SwiftUI draw it with the surrounding ink in both light and dark chrome.
+    /// Colored artwork, light details, and opaque tiles keep their original pixels.
+    /// Applied on decode so old disk entries benefit without changing the cached bytes.
+    nonisolated static func image(from data: Data) -> NSImage? {
+        guard let image = NSImage(data: data), image.isValid,
+              image.size.width > 0, image.size.height > 0 else { return nil }
+        image.isTemplate = isDarkMark(image)
+        // Pin the point size regardless of the site's bitmap resolution.
+        image.size = NSSize(width: 16, height: 16)
+        return image
+    }
+
+    private nonisolated static func isDarkMark(_ image: NSImage) -> Bool {
+        guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let context = CGContext(data: nil, width: 32, height: 32, bitsPerComponent: 8,
+                bytesPerRow: 32 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                    | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+        context.draw(source, in: CGRect(x: 0, y: 0, width: 32, height: 32))
+        guard let bytes = context.data?.assumingMemoryBound(to: UInt8.self) else { return false }
+        var visible = 0
+        var transparent = 0
+        for pixel in 0..<(32 * 32) {
+            let offset = pixel * 4
+            let alpha = Double(bytes[offset + 3])
+            if alpha < 16 { transparent += 1; continue }
+            visible += 1
+            let red = Double(bytes[offset])
+            let green = Double(bytes[offset + 1])
+            let blue = Double(bytes[offset + 2])
+            let high = max(red, green, blue)
+            let low = min(red, green, blue)
+            // Components are premultiplied: compare against alpha, not 255, so a
+            // translucent colored logo is never mistaken for a dark gray mark.
+            guard high <= alpha * 0.35, high - low <= alpha * 0.08 else { return false }
+        }
+        return visible >= 32 && transparent >= 32
+    }
+
     /// ponytail: synchronous file IO on the main thread. These are sub-10KB reads on a
     /// local SSD, once per host per launch; if it ever shows up in a trace, move it behind
     /// the same Task the network fetch already uses.
@@ -273,8 +309,7 @@ import WebKit
 
     private nonisolated static func read(_ file: URL) -> Icon {
         guard let data = try? Data(contentsOf: file),
-              let img = NSImage(data: data), img.isValid else { return Icon(image: nil) }
-        img.size = NSSize(width: 16, height: 16)
+              let img = image(from: data) else { return Icon(image: nil) }
         return Icon(image: img)
     }
 
