@@ -3082,7 +3082,6 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     /// Secondary rather than primary type: "New Tab" is an action among places, and Arc
     /// sets it a step quieter than the tabs around it.
     var dimmed = false
-    var spacing: CGFloat = Look.rowSpacing
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let label: () -> Label
@@ -3091,7 +3090,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: spacing) {
+        HStack(spacing: Look.rowSpacing) {
             leading()
             // Every tab title in the same ink, selected or not — Arc's list is one grey on
             // dark all the way down, and the selection is the fill, not a change of ink.
@@ -3536,8 +3535,7 @@ private struct TabRow: View {
         let ticked = store.selection.contains(tab.id)
         let returning = tab.kind == .pinned && !tab.atHome
         let title = returning ? (TabActions.rename(tab) ?? tab.title) : TidyTitles.title(for: tab)
-        SidebarRow(selected: selected, ticked: ticked,
-                   spacing: returning ? Look.returnRowSpacing : Look.rowSpacing, action: select) {
+        SidebarRow(selected: selected, ticked: ticked, action: select) {
             TabHomeIcon(store: store, tab: tab)
         } label: {
             // Arc's in-row rename: the title becomes a field and the row keeps its shape.
@@ -4270,6 +4268,9 @@ private struct TabHomeIcon: View {
     var body: some View {
         if tab.kind == .pinned && !tab.atHome {
             GoHomeGlyph(store: store, tab: tab, tiled: true)
+                // The tile can draw past the favicon's box, but must not move the icon
+                // or title when this pin leaves or returns to its saved page.
+                .frame(width: size, height: size)
         } else if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
             // The favicon's box, so the row's text starts exactly where it always did. The
             // glyph's hit target is bigger than this and is allowed to spill past it — a

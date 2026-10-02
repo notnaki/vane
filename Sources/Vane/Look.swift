@@ -42,8 +42,7 @@ enum Look {
     /// Inside a row: from its fill to the favicon, and from the favicon to the title.
     static let rowInset: CGFloat = 10
     static let rowSpacing: CGFloat = 11
-    /// A wandered pin's two-line label sits close to its full-height favicon tile.
-    static let returnRowSpacing: CGFloat = 4
+    /// A wandered pin's Return tile draws around the ordinary favicon slot.
     static let returnTileSize: CGFloat = rowHeight
     /// From a row's fill to its trailing edge: the close ×'s target on a tab row, and simply
     /// where the title's box stops on the rows that have no glyph at all — New Tab, and the

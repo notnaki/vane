@@ -776,15 +776,14 @@ private struct LibraryHead<Filter: View, Actions: View>: View {
                 // at the size of the words rather than at the field's.
                 pill(filling: filtering) {
                     Menu { filter() } label: {
-                        HStack(spacing: Look.captionGap * 2) {
-                            Image(systemName: "line.3.horizontal.decrease.circle")
-                            Text("Filter")
-                        }
-                        .font(Look.small)
-                        .foregroundStyle(filtering ? Look.inkPrimary : Look.inkSecondary)
+                        // Keep room for the full search prompt in the narrow list column.
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                            .font(Look.small)
+                            .foregroundStyle(filtering ? Look.inkPrimary : Look.inkSecondary)
                     }
                     .accessibilityLabel("Filter")
                     .accessibilityValue(filtering ? "On" : "Off")
+                    .help("Filter")
                 }
                 // Its own control, beside Filter and not inside it. Clear is a destructive
                 // verb, and nobody goes looking for one in a menu called Filter.
