@@ -71,8 +71,9 @@ Battery Saver lives in **Settings → Advanced → Performance**. Choose **Off**
 **Automatic** (below 20% battery while unplugged), or **Always On**. While active,
 eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar
 motion is reduced. Active pages, pinned tabs, media/Picture in Picture, private tabs,
-and unfinished forms keep their existing suspension protections. A green leaf in
-the sidebar opens the setting; sleeping tabs reload when selected. The mode respects
+and unfinished forms keep their existing suspension protections. State changes show
+a temporary green lightning popup at the page's top right, with an **Edit this setting**
+button. Hovering keeps the popup visible; sleeping tabs reload when selected. The mode respects
 the existing idle-suspension preference and preserves an already shorter timeout.
 
 ### Easels

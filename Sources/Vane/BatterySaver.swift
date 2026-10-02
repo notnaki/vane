@@ -54,19 +54,32 @@ import IOKit.ps
 
     @Published private(set) var mode: Mode
     @Published private(set) var isActive: Bool
+    struct Notice: Identifiable {
+        let id = UUID()
+        let isActive: Bool
+        var text: String { "Battery Saver Mode \(isActive ? "Activated" : "Deactivated")" }
+    }
+    @Published private(set) var notice: Notice?
     private let defaults: UserDefaults
     private var power = Power()
     private let onActivation: () -> Void
     private var source: CFRunLoopSource?
     private var started = false
+    private let noticeDuration: Duration
+    private var noticeTimer: Task<Void, Never>?
+    private var noticeHolds: Set<UUID> = []
 
-    init(defaults: UserDefaults, onActivation: @escaping () -> Void = {}) {
+    init(defaults: UserDefaults, noticeDuration: Duration = .seconds(4),
+         onActivation: @escaping () -> Void = {}) {
         self.defaults = defaults
+        self.noticeDuration = noticeDuration
         self.onActivation = onActivation
         let mode = Mode(rawValue: defaults.string(forKey: Self.key) ?? "") ?? .automatic
         self.mode = mode
         isActive = Self.shouldSave(mode: mode, power: Power())
     }
+
+    deinit { noticeTimer?.cancel() }
 
     func setMode(_ mode: Mode) {
         guard self.mode != mode else { return }
@@ -84,7 +97,42 @@ import IOKit.ps
         let active = Self.shouldSave(mode: mode, power: power)
         guard active != isActive else { return }
         isActive = active
+        noticeHolds.removeAll()
+        notice = Notice(isActive: active)
+        scheduleNotice()
         if active { onActivation() }
+    }
+
+    /// One app-wide notice with a fresh identity and clock for each state transition.
+    /// A window opened later sees only news that has not yet expired.
+    func dismissNotice(_ id: UUID) {
+        guard notice?.id == id else { return }
+        noticeTimer?.cancel()
+        noticeTimer = nil
+        noticeHolds.removeAll()
+        notice = nil
+    }
+
+    /// Keep the setting button still while a pointer is reaching for it. Track hosts
+    /// separately so closing or leaving one window cannot release another's hold.
+    func holdNotice(_ held: Bool, by host: UUID) {
+        if held {
+            noticeHolds.insert(host)
+            noticeTimer?.cancel()
+        } else if noticeHolds.remove(host) != nil {
+            scheduleNotice()
+        }
+    }
+
+    private func scheduleNotice() {
+        noticeTimer?.cancel()
+        guard noticeHolds.isEmpty, let id = notice?.id else { return }
+        let duration = noticeDuration
+        noticeTimer = Task { [weak self] in
+            do { try await Task.sleep(for: duration) } catch { return }
+            guard !Task.isCancelled else { return }
+            self?.dismissNotice(id)
+        }
     }
 
     nonisolated static func shouldSave(mode: Mode, power: Power) -> Bool {
