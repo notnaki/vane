@@ -20,11 +20,9 @@ enum Spaces {
         "airplane", "car", "cup.and.saucer", "sparkles", "moon", "sun.max",
     ]
 
-    // MARK: - Every tab lives in a Space
+    // MARK: - Legacy migration
 
-    /// Arc's rule, and the one this half of the file exists for: a browser window always
-    /// shows a Space, so a profile always has one to show. Vane used to let both be nil —
-    /// a window opened with no Space kept its pinned rows in a profile-level `pinnedRows`
+    /// Before Spaces, a window kept its pinned rows in a profile-level `pinnedRows`
     /// key and its Today tabs in the session file, which is a second, invisible Space that
     /// nothing could name, switch to or move a tab out of.
     ///
@@ -64,8 +62,7 @@ enum Spaces {
     }
 
     /// Which Space an ordinary window opens in: the one it was asked for, else the profile's
-    /// last-used one, else its first. Nil only for a profile with no Spaces at all, which
-    /// `ProfileManager.ensureSpaces` is what makes impossible.
+    /// last-used one, else its first. Nil for a profile with no Spaces.
     ///
     /// A Space that is not in `all` is not a Space this profile can show — it was deleted,
     /// or belongs to somebody else — so the request is answered with a real one rather than
@@ -78,8 +75,8 @@ enum Spaces {
         return all.first { $0.id == last } ?? all.first
     }
 
-    /// `pick`, against the profile's real Spaces — creating and migrating its first one if
-    /// it has none. Private windows never come through here: Arc's incognito has no Spaces
+    /// `pick`, against the profile's real Spaces — migrating a first one only when there
+    /// is no Spaces file yet. Private windows never come through here: incognito has no Spaces
     /// either, and a window that writes nothing down must not create a Space as a side
     /// effect of being opened.
     ///
@@ -252,18 +249,19 @@ enum Spaces {
     /// Settings' minus button cannot disagree about what deleting means — Settings used to
     /// drop the pages and leave the folders behind.
     ///
-    /// Refused on a profile's last Space, which is the model's half of Arc greying the item
-    /// out: a profile with no Space is the state this file exists to prevent. Returns
-    /// whether it happened. Every window showing it switches to a survivor before returning,
-    /// including stores parked behind another profile and deletions from Settings.
+    /// A profile may have no Spaces. Windows leave the deleted Space, switching to a
+    /// survivor when there is one or clearing its tabs when the profile is empty.
     @discardableResult
     @MainActor static func delete(_ id: UUID, in profileID: UUID) -> Bool {
+        let showing = TabStore.all.filter { $0.profileID == profileID && $0.currentSpaceID == id }
+        // Flush the shared live tabs before reading the saved Space.
+        guard showing.allSatisfy({ $0.saveCurrentSpace() }) else { return false }
         let all = ProfileManager.shared.spaces(for: profileID)
         // Read the Space back rather than trusting the caller's copy: what is on disk is
         // what is about to be deleted, and it is newer than the copy a menu was built from.
-        guard all.count > 1, let space = all.first(where: { $0.id == id }) else { return false }
+        guard let space = all.first(where: { $0.id == id }),
+              ProfileManager.shared.deleteSpace(id, in: profileID) else { return false }
         archiveContents(of: space)
-        ProfileManager.shared.deleteSpace(id, in: profileID)
         TabStore.forgetShape(space: id, profileID: profileID)
         rememberTab(nil, in: id)       // and the row saying which tab it was left on
         for store in TabStore.all where store.profileID == profileID {

@@ -67,13 +67,54 @@ import XCTest
         XCTAssertEqual(owner.currentSpaceID, active.id)
     }
 
-    func testRefusingTheLastSpaceKeepsTheCurrentSpace() {
+    func testDeletingTheLastSpaceLeavesOwnersAndTheProfileEmpty() {
         let (active, other) = spaces()
         XCTAssertTrue(Spaces.delete(other.id, in: active.profileID))
         let owner = store(in: active)
-        XCTAssertFalse(Spaces.delete(active.id, in: active.profileID))
+        XCTAssertTrue(Spaces.delete(active.id, in: active.profileID))
         XCTAssertFalse(Spaces.delete(UUID(), in: active.profileID))
-        XCTAssertEqual(owner.currentSpaceID, active.id)
-        XCTAssertEqual(ProfileManager.shared.spaces(for: active.profileID).map(\.id), [active.id])
+        XCTAssertNil(owner.currentSpaceID)
+        XCTAssertTrue(ProfileManager.shared.spaces(for: active.profileID).isEmpty)
+        XCTAssertNil(Spaces.resolve(nil, for: Profile(id: active.profileID, name: "Empty")))
+    }
+
+    func testCreatingTheFirstSpaceKeepsLooseTabsAndTheirFolders() {
+        let (active, other) = spaces()
+        XCTAssertTrue(Spaces.delete(other.id, in: active.profileID))
+        let owner = store(in: active)
+        XCTAssertTrue(Spaces.delete(active.id, in: active.profileID))
+        let url = URL(string: "https://loose.example/")!
+        let tab = owner.newBlankTab(focus: false)
+        tab.park(url: url, Parked(title: "Loose"))
+        let folder = owner.todayShape.newFolder(named: "Loose folder")!
+        owner.todayShape.move(tab.id.uuidString, into: folder.id)
+        owner.current = tab.id
+
+        let created = owner.newSpace(named: "First")!
+
+        XCTAssertTrue(owner.tabs.contains { $0 === tab })
+        XCTAssertEqual(owner.current, tab.id)
+        XCTAssertEqual(owner.todayShape.folder(holding: tab.id.uuidString)?.id, folder.id)
+        XCTAssertEqual(ProfileManager.shared.spaces(for: active.profileID).first?.tabURLs, [url])
+        XCTAssertEqual(owner.currentSpaceID, created.id)
+    }
+
+    func testEnteringASpaceCreatedInSettingsPreservesLooseTabs() {
+        let (active, other) = spaces()
+        XCTAssertTrue(Spaces.delete(other.id, in: active.profileID))
+        let owner = store(in: active)
+        XCTAssertTrue(Spaces.delete(active.id, in: active.profileID))
+        let loose = owner.newBlankTab(focus: false)
+        loose.park(url: URL(string: "https://loose-settings.example/")!, Parked(title: "Loose"))
+        owner.current = loose.id
+        var created = ProfileManager.shared.createSpace(name: "Settings", in: active.profileID)
+        created.tabURLs = [URL(string: "https://existing.example/")!]
+        XCTAssertTrue(ProfileManager.shared.updateSpace(created))
+        owner.resolveStaleSpace()
+
+        XCTAssertTrue(owner.tabs.contains { $0 === loose })
+        XCTAssertEqual(owner.current, loose.id)
+        XCTAssertEqual(Set(owner.tabs.compactMap(\.pinnedURL)), Set(created.tabURLs + [loose.currentURL!]))
+        XCTAssertEqual(ProfileManager.shared.spaces(for: active.profileID).first?.tabURLs.count, 2)
     }
 }

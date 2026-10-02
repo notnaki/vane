@@ -1535,10 +1535,11 @@ import WebKit
                     && Session.decodeSelected($0) == [selectedAfter]
             } == true, "deleting from a closed profile clears only its Space's session row")
 
+            try require(deleteSpaceConfirmed(closedSpare, in: firstStore)
+                        && manager.spaces(for: closedProfile.id).isEmpty
+                        && (try? Data(contentsOf: closedSession)).map { Session.decode($0).isEmpty } == true,
+                        "deleting a profile's last Space leaves it empty and prunes its saved session")
             let survivingSession = try Data(contentsOf: closedSession)
-            try require(!deleteSpaceConfirmed(closedSpare, in: firstStore)
-                        && (try? Data(contentsOf: closedSession)) == survivingSession,
-                        "refusing a profile's last Space preserves its saved session")
             let blockedDelete = manager.createSpace(name: "Blocked deletion", in: closedProfile.id)
             let malformedSession = Data("unreadable session fixture".utf8)
             try malformedSession.write(to: closedSession)

@@ -956,7 +956,7 @@ extension TabStore {
         var splits: [[Split.Saved]]?
         /// Which Space each window was showing, aligned index-for-index with `windows`.
         /// Optional so a session written before this existed still decodes, and `""` for a
-        /// window that was in none — which only a pre-migration file can contain.
+        /// window that was in none, including a profile whose last Space was deleted.
         var spaces: [String]?
         /// Selected tab identity per window. Optional so every v1-v3 file still decodes.
         var selected: [String?]?
@@ -1145,9 +1145,9 @@ extension TabStore {
         let profile = profile ?? ProfileManager.shared.active
         guard let data = try? Data(contentsOf: file(profile.id)) else { return false }
         let saved = decodeSplits(data)
-        // Each window comes back into the Space it was in. `Windows.open` resolves the rest:
-        // a window whose Space is gone — or a session written before Spaces were per-window —
-        // lands in the profile's last-used one.
+        // Each window comes back into the Space it was in. A session row for a deleted or
+        // moved Space is skipped: its pages must not reappear in the source profile.
+        // Sessions predating per-window Spaces still use the profile's last-used Space.
         // The one place session urls may be migrated into a Space: this is the session being
         // restored, so folding a pre-Spaces file's tabs in is right. `Spaces.resolve` — every
         // other way a window opens — passes none, or "Start Fresh" would put back exactly the
@@ -1157,7 +1157,10 @@ extension TabStore {
         let inSpace = decodeSpaces(data)
         let selected = decodeSelected(data)
         let hasIdentityFormat = (try? JSONDecoder().decode(Disk.self, from: data).version) == 4
-        let windows = decode(data).enumerated().filter { !$0.element.isEmpty }
+        let knownSpaces = Set(spaces.map(\.id))
+        let windows = decode(data).enumerated().filter {
+            !$0.element.isEmpty && (inSpace[$0.offset].map { knownSpaces.contains($0) } ?? true)
+        }
         guard !windows.isEmpty else { return false }
         for (i, entries) in windows {
             let identified = hasIdentityFormat || entries.allSatisfy { $0.id.flatMap(UUID.init(uuidString:)) != nil
