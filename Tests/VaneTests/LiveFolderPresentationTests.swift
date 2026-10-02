@@ -47,6 +47,14 @@ final class LiveFolderPresentationTests: XCTestCase {
         XCTAssertTrue(GitHub.presentation([], goodbyes: [], previous: rows, details: [:]).isEmpty)
     }
 
+    func testHeldClosedPRIsRecheckedBecauseItCanReopenAndMerge() {
+        let closed = [url: GitHub.Row(author: "notnaki", state: .closed)]
+        XCTAssertEqual(GitHub.detailRows(have: [url], found: [], previous: closed), [url])
+        let merged = [url: GitHub.Row(author: "notnaki", state: .merged)]
+        XCTAssertTrue(GitHub.detailRows(have: [url], found: [], previous: merged).isEmpty)
+        XCTAssertTrue(GitHub.detailRows(have: [url + "/files"], found: [url], previous: closed).isEmpty)
+    }
+
     func testDetailRequestsUseOnlyTrustedPRPaths() {
         XCTAssertEqual(GitHub.detailURL(url + "/files")?.absoluteString, "https://api.github.com/repos/notnaki/vane/pulls/195")
         for bad in ["https://evil.test/notnaki/vane/pull/195", "http://github.com/notnaki/vane/pull/195", "https://github.com@evil.test/notnaki/vane/pull/195", "https://user@github.com/notnaki/vane/pull/195", "https://github.com/notnaki/vane/pull/0", "https://github.com/notnaki/vane/issues/195"] {

@@ -321,6 +321,13 @@ enum GitHub {
         return URL(string: api + "/repos/" + repo + "/pulls/" + String(number))
     }
 
+    /// Merges are permanent; closed PRs can reopen and merge between refreshes.
+    static func detailRows(have: Set<String>, found: Set<String>, previous: [String: Row]) -> Set<String> {
+        Set(have.filter { row in
+            !found.contains { GitHub.row(row, isFor: $0) } && previous[row]?.state != .merged
+        })
+    }
+
     static func presentation(_ prs: [PR], goodbyes: Set<String>, previous: [String: Row],
                              details: [String: Row]) -> [String: Row] {
         var rows = Dictionary(prs.map { ($0.url, Row(author: $0.author,
@@ -1067,15 +1074,12 @@ enum GitHubOAuth {
             var details: [String: GitHub.Row] = [:]
             if case .success(let prs) = answer, signIn?.token == requestedToken {
                 let found = Set(prs.map(\.url))
-                let missing = Set(stores().flatMap { store -> [String] in
+                let have = Set(stores().flatMap { store -> [String] in
                     guard let record = store.pins.folder(folder) else { return [] }
                     return GitHub.mine(store.pins.children(of: folder).compactMap(store.rowURL),
                                        owned: record.owned ?? [])
-                }).filter { row in
-                    !found.contains { GitHub.row(row, isFor: $0) }
-                        && rows[folder]?[row]?.state != .merged
-                        && rows[folder]?[row]?.state != .closed
-                }
+                })
+                let missing = GitHub.detailRows(have: have, found: found, previous: rows[folder] ?? [:])
                 // Resolve departures concurrently; a failed lookup preserves the previous
                 // metadata without claiming that disappearance proves a merge.
                 let detailToken = requestedToken

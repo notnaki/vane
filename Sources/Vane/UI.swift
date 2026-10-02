@@ -1906,6 +1906,7 @@ private struct PaneStrip: View {
             ForEach(Array(panes.enumerated()), id: \.element.id) { i, pane in
                 PanePill(store: store, tab: pane, active: pane.id == split.activeTab,
                          index: i, of: panes.count)
+                    .environment(\.livePR, presentation(of: pane))
             }
             // A split's row is still a row: the pane making the noise says so and can be
             // muted from here, and the × closes the pane the row is showing.
@@ -1923,6 +1924,13 @@ private struct PaneStrip: View {
         .onHover { hovering = $0 }
         .onTapGesture { store.focusPane(split.activeTab) }
         .environment(\.rowHovering, hovering)
+    }
+
+    /// A split can mix a live PR with unrelated pages. Each pane owns its own icon metadata.
+    private func presentation(of tab: Tab) -> GitHub.Row? {
+        guard let folder = store.pins.folder(holding: tab.id.uuidString),
+              folder.live != nil, let url = store.rowURL(tab.id.uuidString) else { return nil }
+        return LiveFolders.existing(for: store.profileID)?.row(of: url, in: folder)
     }
 
     /// Which pane the row's trailing glyphs are about. Whichever one is making the noise —
