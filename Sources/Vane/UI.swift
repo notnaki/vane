@@ -690,9 +690,6 @@ struct WebCard: View {
             .padding(.horizontal, 14)
             .padding(.top, 10)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: batterySaver.notice?.id)
-            .onChange(of: batterySaver.notice?.id) {
-                if let notice = batterySaver.notice { axAnnounce(notice.text) }
-            }
             // Last in the stack, so it is above the page: a dragged sidebar tab lands on the
             // card's edge bands as a new pane. Only in the tree while a drag is in flight.
             SplitDropWell()

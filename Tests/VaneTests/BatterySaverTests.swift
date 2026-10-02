@@ -107,6 +107,17 @@ import XCTest
         XCTAssertTrue(saver.isActive, "Dismissing the notification must not turn saving off")
     }
 
+    func testNoticeAnnouncesOncePerAppWideTransition() {
+        var announced: [Bool] = []
+        let saver = BatterySaver(defaults: defaults(), onNotice: { announced.append($0.isActive) })
+        saver.update(power: .init(onBattery: true, percent: 10))
+        saver.update(power: .init(onBattery: true, percent: 9))
+        saver.setMode(.alwaysOn)
+        XCTAssertEqual(announced, [true])
+        saver.setMode(.off)
+        XCTAssertEqual(announced, [true, false])
+    }
+
     func testHoverInAnyWindowHoldsNoticeUntilAllPointersLeave() async throws {
         let saver = BatterySaver(defaults: defaults(), noticeDuration: .milliseconds(40))
         saver.setMode(.alwaysOn)

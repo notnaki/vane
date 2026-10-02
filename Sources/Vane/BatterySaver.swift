@@ -4,7 +4,7 @@ import IOKit.ps
 
 @MainActor final class BatterySaver: ObservableObject {
     static let key = "batterySaverMode"
-    static let shared = BatterySaver(defaults: .vane, onActivation: {
+    static let shared = BatterySaver(defaults: .vane, onNotice: { axAnnounce($0.text) }, onActivation: {
         Previews.shared.cancel()
         Suspension.sweep()
     })
@@ -63,6 +63,7 @@ import IOKit.ps
     private let defaults: UserDefaults
     private var power = Power()
     private let onActivation: () -> Void
+    private let onNotice: (Notice) -> Void
     private var source: CFRunLoopSource?
     private var started = false
     private let noticeDuration: Duration
@@ -70,10 +71,12 @@ import IOKit.ps
     private var noticeHolds: Set<UUID> = []
 
     init(defaults: UserDefaults, noticeDuration: Duration = .seconds(4),
+         onNotice: @escaping (Notice) -> Void = { _ in },
          onActivation: @escaping () -> Void = {}) {
         self.defaults = defaults
         self.noticeDuration = noticeDuration
         self.onActivation = onActivation
+        self.onNotice = onNotice
         let mode = Mode(rawValue: defaults.string(forKey: Self.key) ?? "") ?? .automatic
         self.mode = mode
         isActive = Self.shouldSave(mode: mode, power: Power())
@@ -98,8 +101,10 @@ import IOKit.ps
         guard active != isActive else { return }
         isActive = active
         noticeHolds.removeAll()
-        notice = Notice(isActive: active)
+        let notice = Notice(isActive: active)
+        self.notice = notice
         scheduleNotice()
+        onNotice(notice)
         if active { onActivation() }
     }
 
