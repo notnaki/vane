@@ -2587,14 +2587,18 @@ struct Stash {
               let to = tabs.firstIndex(where: { $0.id == target }) else { return }
         let want = tabs[to].kind
         Motion.list {
-            let tab = tabs.remove(at: from)
+            var ordered = tabs
+            let tab = ordered.remove(at: from)
             setKind(tab, want)
             let dest = TabStore.clampedDestination(
-                others: tabs.map(\.kind), moving: want,
+                others: ordered.map(\.kind), moving: want,
                 to: TabStore.insertionIndex(from: from, target: to, after: after))
-            tabs.insert(tab, at: min(dest, tabs.count))
+            ordered.insert(tab, at: min(dest, ordered.count))
+            tabs = ordered
+            // The shape owns the visible order, so its update belongs to the same list
+            // animation rather than a second, unanimated reorder after it.
+            placeInShape(id, onto: target, after: after)
         }
-        placeInShape(id, onto: target, after: after)
         // Always. This used to skip the write for a drop that stayed inside Today, on the
         // grounds that nothing written down had changed; Today's order and its folders are
         // in the shape now, so a reorder there is exactly what has to be saved.
