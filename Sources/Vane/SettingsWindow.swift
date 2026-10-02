@@ -874,14 +874,19 @@ private struct MaxPane: View {
     @AppStorage("tidyDownloads") private var tidyDownloads = false
     @AppStorage("tidyTitles") private var tidyTitles = true
     @AppStorage("instantLinks") private var instant = true
+    @AppStorage("aiSettingsRevision") private var aiRevision = 0
 
-    private var off: Bool { !appleAI || !AppleAI.isAvailable }
+    private var off: Bool {
+        _ = aiRevision
+        return !appleAI || !BrowserAI.ready
+    }
 
     var body: some View {
         Pane {
+            AIProviderSettings()
             SettingsCard {
-                SettingsRow("On-device AI features") {
-                    Toggle("", isOn: $appleAI).labelsHidden().disabled(!AppleAI.isAvailable)
+                SettingsRow("AI features") {
+                    Toggle("", isOn: $appleAI).labelsHidden()
                 }
                 // Each feature is separately switchable, because they do not cost the same.
                 // Grouping tabs is ~12 seconds of model time; the others are far cheaper or
@@ -895,10 +900,8 @@ private struct MaxPane: View {
                 SettingsRow("Shorten pinned tab titles") {
                     Toggle("", isOn: $tidyTitles).labelsHidden().disabled(off)
                 }
-                Footnote(AppleAI.unavailableReason
-                         ?? "Apple's on-device model. Nothing is sent anywhere, and nothing "
-                         + "happens until you ask for it — grouping tabs takes around twelve "
-                         + "seconds, so it is a menu item, never automatic.")
+                Footnote(BrowserAI.unavailableReason
+                         ?? "Names and groups use your selected AI provider. Grouping runs when you choose Tidy Tabs; download naming and pinned title shortening use the switches above.")
             }
 
             SettingsCard {

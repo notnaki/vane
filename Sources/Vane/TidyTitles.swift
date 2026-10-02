@@ -298,7 +298,7 @@ import Foundation
         if let c = cleaned, !uninformative(c, host: host) { return Tidied(text: c, fromModel: false) }
         // AppleAI returns nil for every kind of "no answer" — unavailable, off, refused,
         // timed out — and every one of them means the same thing here: keep the cheap one.
-        guard let raw = await AppleAI.shortTitle(for: title, url: url),
+        guard let raw = await BrowserAI.shortTitle(for: title, url: url),
               let checked = validate(raw, original: title) else {
             return cleaned.map { Tidied(text: $0, fromModel: false) }
         }
@@ -322,6 +322,14 @@ import Foundation
     private static let cacheKey = "tidyTitleCache"
     private static let overrideKey = "tidyTitleOverrides"
     private static let pinnedKey = "pinnedNames"
+
+    /// A provider change discards generated names, preserving manual and pin-time names.
+    static func invalidateGeneratedNames() {
+        for key in UserDefaults.vane.dictionaryRepresentation().keys where key.hasPrefix(cacheKey) {
+            UserDefaults.vane.removeObject(forKey: key)
+        }
+        decoded = decoded.filter { !$0.key.hasPrefix(cacheKey) }
+    }
 
     /// `UserDefaults.dictionary(forKey:)` decodes the stored plist and hands back a fresh
     /// dictionary every time it is asked, and `title(for:)` asks up to three times — per
@@ -535,8 +543,10 @@ import Foundation
         let raw = tab.title
         guard !raw.isEmpty, raw != "New Tab" else { return }
         let profileID = tab.profileID
+        let aiRevision = UserDefaults.vane.integer(forKey: "aiSettingsRevision")
         Task { @MainActor [weak tab] in
-            guard let out = await tidy(title: raw, url: url) else { return }
+            guard let out = await tidy(title: raw, url: url),
+                  aiRevision == UserDefaults.vane.integer(forKey: "aiSettingsRevision") else { return }
             // Read *before* the cache is written, because `title(for:)` reads the cache: this
             // is the name the row is showing at this instant, and it is what the shimmer
             // fades out from under the new one.
