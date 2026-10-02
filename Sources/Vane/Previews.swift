@@ -566,9 +566,12 @@ import WebKit
         timer = setTimeout(function () { timer = null; if (at === a) { send(a); } }, DWELL);
       }
 
-      var shifted = false;
+      var shifted = false, blocked = false;
 
       document.addEventListener('mouseover', function (e) {
+        shifted = !!e.shiftKey;
+        blocked = !!(e.metaKey || e.altKey || e.ctrlKey);
+        if (blocked) { gone(); return; }
         var a = link(e.target);
         if (!a || !web(a)) { return; }
         if (!shifted && samePage(a)) { return; }
@@ -584,17 +587,19 @@ import WebKit
         gone();
       }, true);
 
-      // Holding Shift over a link that was filtered out promotes it there and then, and
-      // skips the dwell for one that was merely still waiting.
-      document.addEventListener('keydown', function (e) {
-        if (e.key !== 'Shift' || shifted) { return; }
-        shifted = true;
+      // Modifiers can arrive before the hover or change with the pointer stationary.
+      // Command/Option belong to opening hints; they must not also raise a preview.
+      function modifiers(e) {
+        var shift = !!e.shiftKey, block = !!(e.metaKey || e.altKey || e.ctrlKey);
+        if (shift === shifted && block === blocked) { return; }
+        shifted = shift; blocked = block;
+        gone();
+        if (blocked) { return; }
         var hovered = document.querySelector('a[href]:hover');
-        if (hovered && web(hovered)) { at = null; enter(hovered); }
-      }, true);
-      document.addEventListener('keyup', function (e) {
-        if (e.key === 'Shift') { shifted = false; }
-      }, true);
+        if (hovered && web(hovered) && (shifted || !samePage(hovered))) { enter(hovered); }
+      }
+      document.addEventListener('keydown', modifiers, true);
+      document.addEventListener('keyup', modifiers, true);
 
       // Anything that moves the page out from under the popover retracts it.
       window.addEventListener('scroll', gone, true);

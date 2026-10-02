@@ -283,7 +283,7 @@ struct TitleReveal: Equatable, Sendable {
     @Published var audible = false
     @Published var favicon: NSImage?
     /// The link under the pointer, for the status bar. nil when nothing is hovered.
-    @Published var hoveredLink: String?
+    @Published var hoveredLink: StatusBar.Hover?
     /// The frames of this page that say they hold a caret — an input, a textarea, a
     /// contenteditable. Kept current by the page itself (see `PageFocus`) so the key monitor
     /// can ask without an await: it is what stops ⌘← navigating out of a half-typed comment.
@@ -402,6 +402,10 @@ struct TitleReveal: Equatable, Sendable {
     /// Left nil in a window with nowhere to float one, which is what keeps the test in
     /// `decidePolicyFor` a single condition rather than a list of exceptions.
     var onPeek: ((URL) -> Void)?
+    /// A webpage link opened beside its source, preserving that page and its split.
+    var onOpenInSplit: ((URL) -> Void)?
+    var linkSplitIsFull: (() -> Bool)?
+    var linkOpensInFloatingWindow = false
     /// A window this page asked for with `window.open` or `target=_blank`, and where its
     /// window said it should go. The web view that comes back is WebKit's own — see
     /// `createWebViewWith`, which hands it straight on. Nil is a popup that was refused.
@@ -1075,6 +1079,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         Trace.begin(id)
+        hoveredLink = nil
         (w as? LinkContextWebView)?.navigationStarted()
         CertificateTrust.navigationStarted(in: self)
         Previews.shared.cancel()      // the link that raised it is gone
@@ -1224,74 +1229,42 @@ struct TitleReveal: Equatable, Sendable {
             ExternalApps.offer(url, from: w.url ?? currentURL, tab: self)
             return
         }
-        // ⌘-click, ⇧⌘-click and middle-click are a request for a tab, and ⌥⌘-click one for a
-        // Little Arc — not for this page to go somewhere. Before HTTPS-only, because the new
-        // tab or window does its own load and gets its own vetting.
-        // A Little Arc needs no `onOpenBeside`: it is a window of its own, so the gesture
-        // works from inside a Little Arc and a Peek as well as from a browser window.
-        if let intent = TabActions.intent(for: navigationAction),
-           let url = navigationAction.request.url {
-            // Main frame only, for the reason the Peek branch below spells out: cancelling
-            // a subframe's navigation would float an ad's destination out of the box it
-            // belongs in, and `target=_blank` is already on its way to `createWebViewWith`.
-            if intent.little, navigationAction.targetFrame?.isMainFrame == true {
-                decisionHandler(.cancel)
-                // The window this page came out of decides whether the Little Arc is
-                // private — a page lifted out of a Private Window must not start writing
-                // itself into history.
-                LittleArc.open(url, isPrivate: isPrivate)
-                return
-            }
-            if let open = onOpenBeside {
-                decisionHandler(.cancel)
-                open(url, intent.focus)
-                return
-            }
-        }
-        // Where a clicked link opens: over the window, in a tab of its own, or right here.
-        // A link out of a favourite or a pinned tab that leads somewhere else does not take
-        // that tab off the site it is kept on — ⇧ picks the other answer in either
-        // direction. Before HTTPS-only, which vets whichever page actually loads. The table
-        // and the reasoning are in Peek.swift.
-        //
-        // Only a navigation of the *main* frame. `targetFrame` is nil for `target=_blank`,
-        // which WebKit is about to hand to `createWebViewWith` and `onOpenBeside` — Arc
-        // opens those beside the tab, not in a Peek — and it is a subframe for a link
-        // inside an iframe, which cancelling would have peeked an ad's destination over the
-        // whole window instead of loading it in the box it belongs to.
-        //
-        // `from` is the frame that fired the click rather than `w.url`, which a navigation
-        // already in flight may have moved on; a subframe aiming at the top is judged
-        // against the page it is replacing, since the tab's site is what "the place you
-        // keep" means, not the embed's.
-        //
-        // `onPeek` is nil in a window with nowhere to float one — a Little Arc, a Peek — and
-        // gates the whole table, not just the peeking half: a floating one-page window has no
-        // sidebar for the other answer to put a tab in either, so its links keep navigating.
         if navigationAction.navigationType == .linkActivated,
-           navigationAction.targetFrame?.isMainFrame == true,
-           let url = navigationAction.request.url, let peek = onPeek {
+           let url = navigationAction.request.url {
+            let target: LinkInteraction.Target = navigationAction.targetFrame.map {
+                $0.isMainFrame ? .main : .subframe
+            } ?? .newWindow
             let source = navigationAction.sourceFrame
             let from = (source.isMainFrame ? source.request.url : nil) ?? w.url ?? url
-            switch Peek.route(sourceKind: kind, from: from, to: url,
-                              modifiers: navigationAction.modifierFlags,
-                              enabled: Prefs.peekLinks) {
+            let action = LinkInteraction.route(to: url,
+                context: linkContext(target: target, source: from),
+                modifiers: navigationAction.modifierFlags,
+                button: navigationAction.buttonNumber,
+                preferences: .current)
+            switch action {
+            case .little:
+                decisionHandler(.cancel)
+                LittleArc.open(url, isPrivate: isPrivate, profileID: profileID)
+                return
+            case .split:
+                decisionHandler(.cancel)
+                onOpenInSplit?(url)
+                return
             case .peek:
                 decisionHandler(.cancel)
-                peek(url)
+                onPeek?(url)
                 return
-            // The link asked for a tab instead: ⇧-clicked out of a place you keep, or the
-            // preference is off and this tab is still not going to be taken off its site.
-            //
-            // Cancelled first and unconditionally. A window with a sidebar always has an
-            // `onOpenBeside` — `newBlankTab` sets one on every tab it makes — but "unless it
-            // doesn't, in which case navigate here" is exactly the fallback this whole change
-            // exists to remove: it would put the favourite on the page in the one case
-            // nobody tests.
-            case .newTab(let focus):
-                decisionHandler(.cancel)
-                onOpenBeside?(url, focus)
-                return
+            case .tab(let focus):
+                // An ordinary target=_blank still needs WebKit's popup configuration
+                // so window.opener and scripted close continue working. Modified clicks
+                // deliberately ask for a separate browser tab instead.
+                if target == .newWindow, !navigationAction.modifierFlags.contains(.command),
+                   navigationAction.buttonNumber != TabActions.middleButton { break }
+                if let open = onOpenBeside {
+                    decisionHandler(.cancel)
+                    open(url, focus)
+                    return
+                }
             case .navigate:
                 break
             }
@@ -1365,7 +1338,7 @@ struct TitleReveal: Equatable, Sendable {
             MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
             return
         }
-        if m.name == StatusBar.messageName { hoveredLink = StatusBar.link(from: m.body); return }
+        if m.name == StatusBar.messageName { hoveredLink = StatusBar.hover(from: m.body); return }
         if m.name == PageFocus.messageName {
             editableFrames = PageFocus.frames(m.body, in: editableFrames)
             return
@@ -2024,6 +1997,7 @@ struct Stash {
     /// delegate. It needs exactly the same wiring, and a second copy of this list is how
     /// popups would quietly stop peeking, or stop opening beside, a release later.
     func wire(_ t: Tab) {
+        t.linkOpensInFloatingWindow = isLittle
         t.onNewTab = { [weak self] u in self?.newTab(u) }
         // A popup or a `target=_blank` link belongs next to the page that opened it, not at
         // the bottom of a list of thirty tabs — and it is what the user just asked for, so
@@ -2063,6 +2037,14 @@ struct Stash {
         // is already one floating page, so a link in it has nothing to float over and simply
         // navigates.
         if !isLittle {
+            t.linkSplitIsFull = { [weak self, weak t] in
+                guard let self, let t else { return false }
+                return split(containing: t.id)?.isFull == true
+            }
+            t.onOpenInSplit = { [weak self, weak t] url in
+                guard let self, let t else { return }
+                openLinkInSplit(url, beside: t.id)
+            }
             t.onPeek = { [weak self, weak t] u in
                 guard let self, let t else { return }
                 Peek.open(u, from: t, in: self)

@@ -2,9 +2,8 @@ import SwiftUI
 import WebKit
 
 /// The url under the pointer, in a small capsule at the bottom-left of the page card — the
-/// status bar every browser has and Arc keeps. A tiny script posts the link a mouse is over
-/// (and when it leaves); the Swift side waits `Look.statusDelay` before showing it, so a
-/// pointer crossing a page does not flicker urls at the user, and fades it in and out.
+/// status bar every browser has and Arc keeps. Ordinary hover waits `Look.statusDelay`;
+/// holding an opening modifier shows the destination and action immediately.
 enum StatusBar {
     static let messageName = "vanehover"
 
@@ -13,40 +12,65 @@ enum StatusBar {
     /// to say about it). Capturing listeners on the document, so a page that stops
     /// propagation on its own anchors still reports them. Idempotent: WebKit re-runs user
     /// scripts on back/forward cache restores.
+    struct Hover: Equatable {
+        var url: String
+        var target: LinkInteraction.Target = .main
+    }
+
     static let script = """
     (function () {
       if (window.__vaneHover) return; window.__vaneHover = true;
       var last = null;
-      function send(h) {
-        h = h || "";
-        if (h === last) return;
-        last = h;
-        try { webkit.messageHandlers.\(messageName).postMessage(h); } catch (e) {}
+      function target(a) {
+        var base = document.querySelector('base[target]');
+        var name = (a.getAttribute('target') || (base && base.getAttribute('target')) || '_self');
+        var lower = name.toLowerCase();
+        if (lower === '_blank') return 'newWindow';
+        if (lower === '_self' || lower === '_top' || lower === '_parent' || name === window.name)
+          return 'main';
+        return 'subframe';
+      }
+      function send(a) {
+        var body = a ? {url: a.href, target: target(a)} : '';
+        var key = JSON.stringify(body);
+        if (key === last) return;
+        last = key;
+        try { webkit.messageHandlers.\(messageName).postMessage(body); } catch (e) {}
       }
       function link(el) {
-        return el && el.closest ? el.closest("a[href], area[href]") : null;
+        return el && el.closest ? el.closest('a[href], area[href]') : null;
       }
-      document.addEventListener("mouseover", function (e) {
+      document.addEventListener('mouseover', function (e) {
         var a = link(e.target);
-        if (a) send(a.href);
+        if (a) send(a);
       }, true);
-      document.addEventListener("mouseout", function (e) {
+      document.addEventListener('mouseout', function (e) {
         var a = link(e.target);
         if (!a) return;
         var to = link(e.relatedTarget);
-        if (to !== a) send(to ? to.href : null);
+        if (to !== a) send(to);
       }, true);
-      document.addEventListener("mousedown", function () { send(null); }, true);
-      window.addEventListener("pagehide", function () { send(null); });
-      window.addEventListener("blur", function () { send(null); });
+      // Refresh a dynamically changed href/target while the pointer stays over the link.
+      document.addEventListener('keydown', function () {
+        send(document.querySelector('a[href]:hover, area[href]:hover'));
+      }, true);
+      document.addEventListener('mousedown', function () { send(null); }, true);
+      window.addEventListener('scroll', function () { send(null); }, true);
+      window.addEventListener('pagehide', function () { send(null); });
+      window.addEventListener('blur', function () { send(null); });
     })();
     """
 
-    /// The message body as a link: a non-empty string, or nil for "nothing hovered".
-    nonisolated static func link(from body: Any) -> String? {
-        guard let s = body as? String, !s.isEmpty else { return nil }
-        return s
+    nonisolated static func hover(from body: Any) -> Hover? {
+        if let raw = body as? String, !raw.isEmpty { return Hover(url: raw) }
+        guard let body = body as? [String: Any], let raw = body["url"] as? String,
+              !raw.isEmpty, let target = body["target"] as? String,
+              let destination = LinkInteraction.Target(rawValue: target) else { return nil }
+        return Hover(url: raw, target: destination)
     }
+
+    /// The legacy string shape is also accepted for a restored page's older script.
+    nonisolated static func link(from body: Any) -> String? { hover(from: body)?.url }
 
     /// What the capsule shows for a url. The `https://` every link has is dropped, the way
     /// Chrome and Arc drop it; `http://` stays, because a plain-http link is worth seeing.
@@ -91,44 +115,80 @@ enum StatusBar {
     }
 }
 
-/// The bottom-left capsule itself. Owned by the card, keyed to the active tab.
+/// The bottom-left capsule, including an immediate explanation while modifiers are held.
 struct StatusBarView: View {
     @ObservedObject var tab: Tab
-    /// What is showing, once the delay has run. Swaps at once while already visible: moving
-    /// from one link to the next should not go dark in between.
-    @State private var shown: String?
+    @State private var shown: StatusBar.Hover?
     @State private var pending: Task<Void, Never>?
+    @State private var modifiers: NSEvent.ModifierFlags = []
+    @State private var modifierMonitor: Any?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(LinkInteraction.Preferences.littleKey, store: .vane) private var littleLinks = true
+    @AppStorage(LinkInteraction.Preferences.shiftKey, store: .vane) private var shiftPeek = true
+    @AppStorage(Peek.prefKey, store: .vane) private var automaticPeek = true
+
+    private var preferences: LinkInteraction.Preferences {
+        .init(littleLinks: littleLinks, shiftPeek: shiftPeek, automaticPeek: automaticPeek)
+    }
+
+    private func hint(for hover: StatusBar.Hover) -> String? {
+        guard let url = URL(string: hover.url) else { return nil }
+        return LinkInteraction.hint(to: url, context: tab.linkContext(target: hover.target),
+                                    modifiers: modifiers, preferences: preferences)
+    }
 
     var body: some View {
         Group {
             if let shown {
-                Text(StatusBar.display(shown))
-                    .font(Look.small)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .foregroundStyle(Look.barText)
-                    .padding(.horizontal, Look.rowInset)
-                    .frame(height: Look.statusHeight)
-                    .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
-                    .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
-                    .hairline(radius: Look.cardRadius, Look.barStroke)
-                    .transition(.opacity)
+                let suffix = hint(for: shown)
+                let fullSplit = suffix == " in Split View" && tab.linkSplitIsFull?() == true
+                HStack(spacing: 0) {
+                    if suffix != nil {
+                        Text(fullSplit ? "Cannot open " : "Open ")
+                            .foregroundStyle(Look.barText).fixedSize()
+                    }
+                    Text(suffix == nil ? StatusBar.display(shown.url) : shown.url)
+                        .fontWeight(suffix == nil ? .regular : .semibold)
+                        .foregroundStyle(suffix == nil ? Look.barText : .white)
+                        .lineLimit(1).truncationMode(.middle)
+                    if let suffix {
+                        Text(suffix + (fullSplit ? " (4 panes maximum)" : ""))
+                            .foregroundStyle(Look.barText).fixedSize()
+                    }
+                }
+                .font(Look.small)
+                .padding(.horizontal, Look.rowInset)
+                .frame(height: Look.statusHeight)
+                .background(Look.barFill, in: .capsule)
+                .background(Look.barMaterial, in: .capsule)
+                .overlay { Capsule().strokeBorder(Look.barStroke, lineWidth: 1) }
+                .transition(.opacity)
             }
         }
         .animation(reduceMotion ? nil : Look.statusFade, value: shown)
         .onChange(of: tab.hoveredLink, initial: true) { _, link in schedule(link) }
-        .onDisappear { pending?.cancel() }
+        .onChange(of: modifiers) { _, _ in schedule(tab.hoveredLink) }
+        .onAppear {
+            modifiers = NSEvent.modifierFlags
+            modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                modifiers = event.modifierFlags
+                return event
+            }
+        }
+        .onDisappear {
+            pending?.cancel()
+            shown = nil
+            if let modifierMonitor { NSEvent.removeMonitor(modifierMonitor) }
+            modifierMonitor = nil
+        }
         .allowsHitTesting(false)
-        // A pointer-only affordance: there is no hover for VoiceOver to have made, and the
-        // link itself already reads its destination.
         .accessibilityHidden(true)
     }
 
-    private func schedule(_ link: String?) {
+    private func schedule(_ link: StatusBar.Hover?) {
         pending?.cancel()
         guard let link else { shown = nil; return }
-        if shown != nil { shown = link; return }
+        if shown != nil || hint(for: link) != nil { shown = link; return }
         pending = Task {
             try? await Task.sleep(for: .seconds(Look.statusDelay))
             guard !Task.isCancelled else { return }
