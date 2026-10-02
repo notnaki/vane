@@ -56,11 +56,16 @@ import XCTest
     }
 
     private func challenge(navigation: String?, host: String, port: Int = 443,
-                           expectsPrompt: Bool) async throws {
+                           startsProvisional: Bool = true, expectsPrompt: Bool) async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let tab = Tab(isPrivate: true, profileID: UUID())
+        tab.web.navigationDelegate = nil
+        let load = try XCTUnwrap(tab.web.loadHTMLString("certificate fixture", baseURL: nil))
         tab.allowCertificateNavigation(to: navigation.flatMap(URL.init(string:)))
+        if startsProvisional && navigation != nil {
+            tab.webView(tab.web, didStartProvisionalNavigation: load)
+        }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -99,6 +104,11 @@ import XCTest
     func testDirectInvalidPageStillOffersCertificateWarning() async throws {
         try await challenge(navigation: "https://example.com:8443/study", host: "example.com",
                             port: 8443, expectsPrompt: true)
+    }
+
+    func testSameDocumentPolicyCannotEnableBackgroundCertificateSheet() async throws {
+        try await challenge(navigation: "https://example.com/study#section", host: "example.com",
+                            startsProvisional: false, expectsPrompt: false)
     }
 
     func testCanceledOlderNavigationCannotEraseNewCertificateDestination() throws {

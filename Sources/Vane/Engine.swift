@@ -355,9 +355,12 @@ struct TitleReveal: Equatable, Sendable {
     @Published var address = ""          // what the URL field shows
     @Published var progress = 0.0
     @Published var loading = false
-    /// Allowed main-frame destination, including redirects, until it commits or fails.
-    /// Background TLS failures must never raise a page-level certificate sheet.
-    private(set) var certificateNavigationURL: URL?
+    /// Only an actual provisional load may offer a certificate exception. An anchor
+    /// navigation receives policy approval too, but never starts a new document load.
+    var certificateNavigationURL: URL? {
+        certificateNavigation == nil ? nil : certificateDestinationURL
+    }
+    private var certificateDestinationURL: URL?
     private var certificateNavigation: WKNavigation?
     @Published var canGoBack = false
     @Published var canGoForward = false
@@ -848,7 +851,7 @@ struct TitleReveal: Equatable, Sendable {
     /// "nothing was parked" must never mean "nothing was released".
     private func release(replacing: Bool = true) {
         let old = web
-        certificateNavigationURL = nil
+        certificateDestinationURL = nil
         certificateNavigation = nil
         titleSettleTask?.cancel()
         titleSettleTask = nil
@@ -1206,12 +1209,12 @@ struct TitleReveal: Equatable, Sendable {
         // WebKit may cancel the previous navigation after this policy answer and
         // before starting the new one. That old callback must not clear this target.
         certificateNavigation = nil
-        certificateNavigationURL = url
+        certificateDestinationURL = url
     }
 
     private func finishCertificateNavigation(_ navigation: WKNavigation?, in w: WKWebView) {
         guard w === web, let navigation, certificateNavigation === navigation else { return }
-        certificateNavigationURL = nil
+        certificateDestinationURL = nil
         certificateNavigation = nil
     }
 
@@ -1248,7 +1251,7 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
         guard w === web else { return }
         certificateNavigation = navigation
-        certificateNavigationURL = w.url
+        certificateDestinationURL = w.url
     }
 
     /// loadSimulatedRequest, not loadHTMLString: it leaves the failed url in the address bar
