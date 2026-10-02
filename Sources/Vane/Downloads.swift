@@ -471,11 +471,21 @@ import WebKit
         return resolved
     }
 
-    private var saveAsDownloads: Set<ObjectIdentifier> = []
+    private var saveAsDownloads: [ObjectIdentifier: String] = [:]
 
-    func attach(_ download: WKDownload, alwaysAsk: Bool = false) {
-        if alwaysAsk { saveAsDownloads.insert(ObjectIdentifier(download)) }
+    func attach(_ download: WKDownload, alwaysAsk: Bool = false, suggestedFilename: String? = nil) {
+        if alwaysAsk { saveAsDownloads[ObjectIdentifier(download)] = suggestedFilename ?? "" }
         download.delegate = self
+    }
+
+    /// A server filename wins over the anchor's download attribute. Otherwise preserve
+    /// that attribute, including its extension, rather than the URL's endpoint name.
+    nonisolated static func saveAsFilename(anchor: String?, server: String, disposition: String?) -> String {
+        if disposition?.range(of: #"(?:^|;)\s*filename\*?\s*="#,
+                              options: [.regularExpression, .caseInsensitive]) != nil { return server }
+        guard let anchor, !anchor.isEmpty else { return server }
+        let safe = anchor.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "\\", with: "_")
+        return safe == "." || safe == ".." ? server : safe
     }
 
     /// Never overwrite: "report.pdf", then "report 2.pdf". Unchanged behaviour, just lifted
@@ -512,10 +522,12 @@ import WebKit
             return
         }
         var target = Self.uniqueDestination(in: destinationDirectory, suggested: suggestedFilename)
-        let explicitlySaveAs = saveAsDownloads.remove(ObjectIdentifier(download)) != nil
-        let chosenByPanel = explicitlySaveAs || DownloadLocation.askEveryTime(for: profileID)
+        let anchorFilename = saveAsDownloads.removeValue(forKey: ObjectIdentifier(download))
+        let chosenByPanel = anchorFilename != nil || DownloadLocation.askEveryTime(for: profileID)
         if chosenByPanel {
-            guard let chosen = askWhereToSave(suggested: suggestedFilename,
+            let disposition = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Disposition")
+            let name = Self.saveAsFilename(anchor: anchorFilename, server: suggestedFilename, disposition: disposition)
+            guard let chosen = askWhereToSave(suggested: name,
                                               in: destinationDirectory) else {
                 completionHandler(nil)      // cancelled: no file, and no row either
                 return
@@ -571,7 +583,7 @@ import WebKit
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        saveAsDownloads.remove(ObjectIdentifier(download))
+        saveAsDownloads.removeValue(forKey: ObjectIdentifier(download))
         guard let i = item(for: download) else { return }
         i.unwatch()
         finish(i, error: error.localizedDescription, resumeData: resumeData)

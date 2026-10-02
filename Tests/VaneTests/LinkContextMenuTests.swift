@@ -95,7 +95,7 @@ import XCTest
         let clicked = URL(string: "https://example.test/report.pdf")!
         var saved: URL?
         var opened = false
-        view.saveLink = { saved = $0 }
+        view.saveLink = { url, _ in saved = url }
         view.openBackground = { _ in opened = true }
         view.contextLink = clicked
         view.willOpenMenu(menu, with: event)
@@ -105,4 +105,29 @@ import XCTest
         XCTAssertEqual(saved, clicked)
         XCTAssertFalse(opened)
     }
+
+    func testSaveMenuCapturesAnchorDownloadFilename() throws {
+        let (view, menu, event) = fixture()
+        view.rightMouseDown(with: event)
+        view.receiveContextLink(["url": "https://example.test/export?id=123",
+                                 "filename": "statement.csv", "at": Date().timeIntervalSince1970 * 1_000])
+        view.willOpenMenu(menu, with: event)
+        let save = try XCTUnwrap(menu.items.first { $0.title == "Save Link As…" })
+        let request = save.representedObject as? [String: Any]
+        XCTAssertEqual(request?["filename"] as? String, "statement.csv")
+        var savedName: String?
+        view.saveLink = { _, filename in savedName = filename }
+        view.contextLink = URL(string: "https://example.test/later")!
+        _ = view.perform(try XCTUnwrap(save.action), with: save)
+        XCTAssertEqual(savedName, "statement.csv")
+    }
+    func testSaveFilenameKeepsExtensionAndHonorsServerFilename() {
+        XCTAssertEqual(Downloads.saveAsFilename(anchor: "statement.csv", server: "export", disposition: nil), "statement.csv")
+        XCTAssertEqual(Downloads.saveAsFilename(anchor: "statement.csv", server: "server.csv", disposition: "attachment; filename=server.csv"), "server.csv")
+        XCTAssertEqual(Downloads.saveAsFilename(anchor: "statement.csv", server: "server.csv", disposition: "attachment; filename*=UTF-8''server.csv"), "server.csv")
+        XCTAssertEqual(Downloads.saveAsFilename(anchor: "statement.csv", server: "export", disposition: "attachment"), "statement.csv")
+        XCTAssertEqual(Downloads.saveAsFilename(anchor: "", server: "report.txt", disposition: nil), "report.txt")
+        XCTAssertEqual(Downloads.saveAsFilename(anchor: "../statement.csv", server: "export", disposition: nil), ".._statement.csv")
+    }
+
 }

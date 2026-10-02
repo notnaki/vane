@@ -36,6 +36,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
           node instanceof Element && node.matches('a[href], area[href]'));
         webkit.messageHandlers.vanelinkcontext.postMessage({
           url: link ? new URL(link.getAttribute('href'), link.baseURI).href : '',
+          filename: link instanceof HTMLAnchorElement ? (link.getAttribute('download') || '') : '',
           at: Date.now()
         });
       }, true);
@@ -63,7 +64,8 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     var openBackground: ((URL) -> Void)?
     var openDestination: ((URL, Destination) -> Void)?
     var canOpenSplit: (() -> Bool)?
-    var saveLink: ((URL) -> Void)?
+    var saveLink: ((URL, String?) -> Void)?
+    private var contextFilename: String?
     private var originalItems: [(item: NSMenuItem, title: String)] = []
     var contextLink: URL? {
         didSet { if let activeMenu { update(activeMenu) } }
@@ -75,6 +77,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// the asynchronous script reply a native, bounded lifetime and prevents a reply from
     /// a closed menu (or another frame's old document) attaching itself to a later menu.
     override func rightMouseDown(with event: NSEvent) {
+        contextFilename = nil
         contextLink = nil
         contextArmedAt = Date().timeIntervalSince1970
         super.rightMouseDown(with: event)
@@ -82,6 +85,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) {
+            contextFilename = nil
             contextLink = nil
             contextArmedAt = Date().timeIntervalSince1970
         }
@@ -100,12 +104,14 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
         activeMenu = nil
         originalItems = []
+        contextFilename = nil
         contextArmedAt = nil
         contextLink = nil
         super.didCloseMenu(menu, with: event)
     }
 
     func navigationStarted() {
+        contextFilename = nil
         contextArmedAt = nil
         contextLink = nil
     }
@@ -113,6 +119,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func receiveContextLink(_ body: Any) {
         guard Self.isCurrentEvent(body, armedAt: contextArmedAt,
                                   now: Date().timeIntervalSince1970) else { return }
+        contextFilename = (body as? [String: Any])?["filename"] as? String
         contextLink = Self.link(from: (body as? [String: Any])?["url"] as Any)
     }
 
@@ -141,7 +148,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         menu.addItem(.separator())
         let save = NSMenuItem(title: "Save Link As…", action: #selector(saveLinkAs(_:)), keyEquivalent: "")
         save.target = self
-        save.representedObject = contextLink
+        save.representedObject = ["url": contextLink, "filename": contextFilename ?? ""] as [String: Any]
         save.isEnabled = saveLink != nil
         menu.addItem(save)
         let copy = NSMenuItem(title: "Copy Link Address", action: #selector(copyLinkAddress(_:)), keyEquivalent: "")
@@ -190,8 +197,9 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     }
 
     @objc private func saveLinkAs(_ sender: NSMenuItem) {
-        guard let url = sender.representedObject as? URL else { return }
-        saveLink?(url)
+        guard let request = sender.representedObject as? [String: Any],
+              let url = request["url"] as? URL else { return }
+        saveLink?(url, request["filename"] as? String)
     }
 
     @objc private func copyLinkAddress(_ sender: NSMenuItem) {
@@ -625,13 +633,13 @@ struct TitleReveal: Equatable, Sendable {
                 guard let self else { return false }
                 return onOpenInSplit != nil && linkSplitIsFull?() != true
             }
-            linkView.saveLink = { [weak self] url in
+            linkView.saveLink = { [weak self] url, filename in
                 guard let self else { return }
                 let manager = Downloads.manager(for: profileID)
                 let title = web.title
                 web.startDownload(using: URLRequest(url: url)) { download in
                     TidyDownloads.remember(download, pageTitle: title)
-                    manager.attach(download, alwaysAsk: true)
+                    manager.attach(download, alwaysAsk: true, suggestedFilename: filename)
                 }
             }
         }
