@@ -197,8 +197,12 @@ extension TabStore {
     /// A drag of some *other* row leaves the selection alone: its own tabs have not moved.
     func selectionLanded(_ moved: [Tab.ID], in kind: TabKind) {
         guard !selection.isEmpty, moved.contains(where: selection.contains) else { return }
-        // Favourites are tiles, not rows — see the ponytail note on `moveSelection(to:)`.
-        if kind == .favourite { selection.clear() } else { selection.moved(to: kind) }
+        // Selection ends when its destination has no visible selection fill.
+        if kind == .favourite || (kind == .pinned && pinnedSectionCollapsed) {
+            selection.clear()
+        } else {
+            selection.moved(to: kind)
+        }
     }
 
     // MARK: Bulk actions
@@ -225,7 +229,7 @@ extension TabStore {
         // that lands there is one the user can neither see nor click their way out of, so it
         // ends at the grid's edge. Upgrade path: give the tile the same ticked/edge treatment
         // `SidebarRow` has and this becomes `moved(to: .favourite)` like the other two.
-        if kind == .favourite { selection.clear() } else { selection.moved(to: kind) }
+        selectionLanded(ids, in: kind)
         axAnnounce("Moved \(ids.count) tab\(ids.count == 1 ? "" : "s") to \(TabMenu.name(kind)).")
     }
 
@@ -234,7 +238,7 @@ extension TabStore {
         let ids = selectedTabs.map(\.id)
         guard !ids.isEmpty else { return }
         ids.forEach { move($0, into: folder) }
-        selection.moved(to: .pinned)
+        selectionLanded(ids, in: .pinned)
         axAnnounce("Moved \(ids.count) tab\(ids.count == 1 ? "" : "s") into the folder.")
     }
 

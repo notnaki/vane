@@ -3,6 +3,39 @@ import XCTest
 @testable import vane
 
 @MainActor final class PinnedSectionTests: XCTestCase {
+    func testMovingTodaySelectionsIntoCollapsedPinsClearsHiddenSelection() {
+        TestEnvironment.prepare()
+        for route in 0..<3 {
+            let space = Space(name: "Work", profileID: UUID(),
+                              tabURLs: [URL(string: "about:blank#1")!, URL(string: "about:blank#2")!])
+            let store = TabStore(profileID: space.profileID, space: space)
+            defer {
+                store.dropStashes()
+                let tabs = store.tabs
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+                Store.forget(store.profileID)
+                try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: store.profileID, in: Store.directory))
+            }
+            store.selection.selectAll(in: store.section(.today))
+            let selected = store.selectedTabs.map(\.id)
+            XCTAssertEqual(selected.count, 2)
+            store.togglePinnedSection()
+            XCTAssertEqual(store.selectedTabs.count, 2, "Collapsing pins keeps Today selections")
+            switch route {
+            case 0: store.moveSelection(to: .pinned)
+            case 1:
+                selected.forEach { store.move($0, to: .pinned) }
+                store.selectionLanded(selected, in: .pinned)
+            default:
+                let folder = store.pins.newFolder(named: "Pinned folder")!
+                store.moveSelection(into: folder.id)
+            }
+            XCTAssertEqual(store.tabs.filter { $0.kind == .pinned }.count, 2)
+            XCTAssertTrue(store.selection.isEmpty, "Moving into hidden rows must clear bulk selection (route \(route))")
+        }
+    }
+
     func testCrossProfilePreviewOnlyUsesThisWindowsCollapseState() {
         TestEnvironment.prepare()
         let first = Space(name: "First", profileID: UUID())
