@@ -806,7 +806,7 @@ private struct Sidebar: View {
                 SpaceSidebarStrip(store: store, favorites: Favorites(), sections:
                     VStack(spacing: Look.rowGap) {
                         SpaceRow()
-                        PinnedTabs()
+                        if !store.pinnedSectionCollapsed { PinnedTabs() }
                         TidyRow()
                         NewTabRow()
                         OpenTabs()
@@ -2310,13 +2310,13 @@ private struct SpaceRow: View {
     @State private var icons = false
     @State private var theme = false
     @State private var live = false
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if let space = store.currentSpace {
             row(space.icon ?? "cloud", space, space.name)
             .background(ChromeMenuAnchorView(anchor: menuAnchor))
-            .onTapGesture(count: 2) { store.renamingSpace = space.id }
-            .onTapGesture { showSpaceList(store, anchor: menuAnchor) }
             .contextMenu {
                 SpaceMenu(store: store, space: space, icons: $icons, theme: $theme, live: $live)
             }
@@ -2327,8 +2327,12 @@ private struct SpaceRow: View {
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Space")
-            .accessibilityValue(space.name)
-            .accessibilityHint("Click for the list of spaces, double-click to rename this one.")
+            .accessibilityValue(space.name + (store.pinnedSectionCollapsed ? ", pinned tabs collapsed" : ", pinned tabs expanded"))
+            .accessibilityHint("Click for the list of spaces, double-click to rename. Use the chevron to toggle pinned tabs.")
+            .accessibilityAction { showSpaceList(store, anchor: menuAnchor) }
+            .accessibilityAction(named: store.pinnedSectionCollapsed ? "Expand Pinned Tabs" : "Collapse Pinned Tabs") {
+                store.togglePinnedSection()
+            }
             .accessibilityAction(named: "Rename Space") { renameSpace(space, in: store) }
             .accessibilityAction(named: "Change Space Icon") { icons = true }
             .accessibilityAction(named: "Edit Theme Color") { theme = true }
@@ -2340,6 +2344,9 @@ private struct SpaceRow: View {
             .accessibilityLabel("Incognito")
             .accessibilityValue(store.profile.name)
             .accessibilityHint("A private window is in no space and keeps nothing.")
+            .accessibilityAction(named: store.pinnedSectionCollapsed ? "Expand Pinned Tabs" : "Collapse Pinned Tabs") {
+                store.togglePinnedSection()
+            }
         } else {
             // An ordinary window pointing at a Space that is no longer there: deleted from
             // another window, from Settings or from the Library. It has one frame of the
@@ -2352,14 +2359,34 @@ private struct SpaceRow: View {
 
     private func row(_ icon: String, _ space: Space?, _ name: String) -> some View {
         HStack(spacing: Look.rowSpacing) {
-            Image(systemName: icon).font(Look.spaceIcon).frame(width: Look.tileIcon)
-            SpaceName(store: store, space: space, fallback: name)
-            Spacer(minLength: 0)
+            HStack(spacing: Look.rowSpacing) {
+                Image(systemName: icon).font(Look.spaceIcon).frame(width: Look.tileIcon)
+                SpaceName(store: store, space: space, fallback: name)
+                Spacer(minLength: 0)
+            }
+            .contentShape(.rect)
+            .onTapGesture(count: 2) { if let space { store.renamingSpace = space.id } }
+            .onTapGesture { if space != nil { showSpaceList(store, anchor: menuAnchor) } }
+            Button {
+                withAnimation(reduceMotion ? nil : Look.list) { store.togglePinnedSection() }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .rotationEffect(.degrees(store.pinnedSectionCollapsed ? -90 : 0))
+                    .font(Look.spaceIcon)
+                    .rowTarget()
+            }
+            .buttonStyle(.plain)
+            .opacity(hovering || store.pinnedSectionCollapsed ? 1 : 0)
+            .help(store.pinnedSectionCollapsed ? "Expand Pinned Tabs" : "Collapse Pinned Tabs")
         }
         // Arc's quietest ink on the sidebar (152 on 66): a heading, not a row.
         .foregroundStyle(Look.inkTertiary)
         .padding(.horizontal, Look.rowInset)
         .frame(height: Look.rowHeight)
+        .background(hovering ? Look.hovered : .clear, in: .rect(cornerRadius: Look.pillRadius))
+        .onHover { hovering = $0 }
+        .padding(.bottom, store.pinnedSectionCollapsed || store.pins.visible.isEmpty
+                 ? 0 : Look.sectionGap / 2 - Look.rowGap)
         .contentShape(.rect)
         // Dropping a tab on the space's name pins it — the way into an empty Pinned section
         // now that there is no placeholder slot to drop on.
@@ -3232,11 +3259,9 @@ private struct TidyRow: View {
         .font(Look.sectionCaption)
         .foregroundStyle(Look.inkTertiary)
         .padding(.horizontal, Look.rowInset)
-        // Arc butts this label to the last pinned row and leaves the room *below* it, so
-        // the divider reads as the end of one section rather than the start of the next.
+        // Split the section gap equally around the divider, accounting for the stack gap.
         .frame(height: Look.tidyRow)
-        .padding(.top, -Look.rowGap)
-        .padding(.bottom, Look.sectionGap - Look.rowGap)
+        .padding(.vertical, Look.sectionGap / 2 - Look.rowGap)
         // The divider is the end of the Pinned list, so a tab let go on it pins, at the end
         // — otherwise the band between the last pinned row and the New Tab row is a hole a
         // drag can be released into and have nothing happen. It is also the whole of an
