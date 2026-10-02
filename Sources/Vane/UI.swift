@@ -1926,7 +1926,7 @@ private struct PaneStrip: View {
             // A split's row is still a row: the pane making the noise says so and can be
             // muted from here, and the × closes the pane the row is showing.
             if live, let voice {
-                TabRowTrailing(store: store, tab: voice, selected: selected,
+                TabRowTrailing(store: store, tab: voice,
                                pane: true, closes: panes.first { $0.id == split.activeTab })
             }
         }
@@ -3536,7 +3536,7 @@ private struct TabRow: View {
                 LivePRTitle(title: TidyTitles.title(for: tab), reveal: tab.titleReveal, pr: pr)
             }
         } trailing: {
-            TabRowTrailing(store: store, tab: tab, selected: selected)
+            TabRowTrailing(store: store, tab: tab)
         }
         // Arc's hazard tape: a Developer Mode tab is marked on its row, not on the page.
         .overlay {
@@ -4139,7 +4139,6 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
 private struct TabRowTrailing: View {
     let store: TabStore
     @ObservedObject var tab: Tab
-    let selected: Bool
     /// On a split's row the × closes the pane the row is showing, not a whole tab's worth of
     /// row — so it says so, in the tooltip and to VoiceOver.
     var pane = false
@@ -4165,7 +4164,7 @@ private struct TabRowTrailing: View {
                 .help(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
                 .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
-            if hovering || selected {
+            if hovering {
                 // On a split's row the glyph is about the *pane*, which is closed whatever
                 // section its tab is in — a pane is not a pin. The table knows that; it is
                 // an input to it rather than a special case around it, so `TabStore.close`
@@ -4173,7 +4172,15 @@ private struct TabRowTrailing: View {
                 let glyph = TabRowGlyph.decide(kind: closing.kind, suspended: closing.suspended,
                                                pane: pane, atHome: closing.atHome)
                 Button { store.close(closing.id) } label: {
-                    Image(systemName: glyph.symbol).font(Look.rowGlyph).rowTarget()
+                    Image(systemName: glyph.symbol)
+                        .font(glyph == .unload ? Look.rowGlyph : .system(size: 13, weight: .semibold))
+                        .rowTarget()
+                        .background {
+                            if glyph != .unload {
+                                RoundedRectangle(cornerRadius: Look.cardRadius, style: .continuous)
+                                    .fill(Look.controlFill)
+                            }
+                        }
                 }
                 .help((pane ? "Close Pane" : glyph.verb) + " (⌘W)")
                 .accessibilityLabel((pane ? "Close pane " : glyph.spoken)
