@@ -355,6 +355,9 @@ struct TitleReveal: Equatable, Sendable {
     @Published var address = ""          // what the URL field shows
     @Published var progress = 0.0
     @Published var loading = false
+    /// Allowed main-frame destination, including redirects, until it commits or fails.
+    /// Background TLS failures must never raise a page-level certificate sheet.
+    var certificateNavigationURL: URL?
     @Published var canGoBack = false
     @Published var canGoForward = false
     /// A password the page just submitted, waiting on the user to approve saving it.
@@ -844,6 +847,7 @@ struct TitleReveal: Equatable, Sendable {
     /// "nothing was parked" must never mean "nothing was released".
     private func release(replacing: Bool = true) {
         let old = web
+        certificateNavigationURL = nil
         titleSettleTask?.cancel()
         titleSettleTask = nil
         CertificateTrust.navigationStarted(in: self)
@@ -1211,13 +1215,20 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        certificateNavigationURL = nil
         loading = false
         show(error, in: w)
     }
 
     func webView(_ w: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        certificateNavigationURL = nil
         loading = false
         show(error, in: w)
+    }
+
+    func webView(_ w: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
+        guard w === web else { return }
+        certificateNavigationURL = w.url
     }
 
     /// loadSimulatedRequest, not loadHTMLString: it leaves the failed url in the address bar
@@ -1270,6 +1281,7 @@ struct TitleReveal: Equatable, Sendable {
     /// redirect applies the wrong site's level) and didFinish is too late (the page has
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
+        certificateNavigationURL = nil
         Trace.note("committed")
         Zoom.apply(to: self)
         DeveloperMode.apply(to: self)   // localhost → deployed site, and back
@@ -1278,6 +1290,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
+        certificateNavigationURL = nil
         progress = 1
         loading = false
         Trace.end(id)
@@ -1387,6 +1400,10 @@ struct TitleReveal: Equatable, Sendable {
         }
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
+            if navigationAction.targetFrame?.isMainFrame == true {
+                CertificateTrust.navigationStarted(in: self)
+                certificateNavigationURL = navigationAction.request.url
+            }
             decisionHandler(.allow)
         case .upgrade(let to):
             decisionHandler(.cancel)
