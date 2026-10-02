@@ -589,6 +589,7 @@ struct Space: Identifiable, Codable, Equatable {
         guard persist(Disk(profiles: remaining, activeID: nextActiveID)) else { return false }
         profiles = remaining
         activeID = nextActiveID
+        Tab.discardPreparedFirstPage(for: id)
 
         if !sandboxed {
             // Close the sqlite connection and drop the cached objects before the files go.

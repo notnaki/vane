@@ -93,10 +93,10 @@ import WebKit
         if let img = memory[key] { tab.favicon = img; return }
         // Keep disk reads and decoding off the main actor, including during restoration.
         let file = profileID == Profile.incognito.id ? nil : dir.appendingPathComponent(key)
-        let web = tab.web
+        let web = tab.existingWeb
         Task { @MainActor [weak self, weak tab, weak web] in
             let diskImage = if let file { await Favicons.decoded(file) } else { nil as NSImage? }
-            guard let self, let tab, let web, tab.web === web, tab.currentURL == url else { return }
+            guard let self, let tab, tab.existingWeb === web, tab.currentURL == url else { return }
             if let img = self.memory[key] ?? diskImage {
                 self.memory[key] = img
                 tab.favicon = img
@@ -109,16 +109,17 @@ import WebKit
                 }
                 return
             }
+            guard let web else { return }
             // A failed root probe says nothing about the icons declared by this page.
             let declared = ((try? await web.evaluateJavaScript(Favicons.linkJS)) as? String ?? "")
                 .split(separator: "\n").compactMap { URL(string: String($0)) }
-            guard tab.web === web, tab.currentURL == url else { return }
+            guard tab.existingWeb === web, tab.currentURL == url else { return }
             var candidates = Favicons.ordered(declared)
             let fallback = self.missed(key) ? nil : Favicons.fallback(for: url)
             if let fallback { candidates.append(fallback) }
             guard !candidates.isEmpty else { tab.favicon = self.memory[key]; return }
             await self.warm(key: key, urls: candidates, persist: !tab.isPrivate, fallback: fallback).value
-            guard tab.web === web, tab.currentURL == url else { return }
+            guard tab.existingWeb === web, tab.currentURL == url else { return }
             tab.favicon = self.memory[key]
         }
     }

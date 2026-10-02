@@ -228,11 +228,10 @@ import WebKit
         tab.presentationGeneration += 1
         let generation = tab.presentationGeneration
         guard tab.presentationOwner != store.windowID else { return }
-        let web = tab.web
-        if tab.presentationOwner != nil, web.window != nil, !tab.suspended {
+        if tab.presentationOwner != nil, let web = tab.existingWeb, web.window != nil, !tab.suspended {
             web.takeSnapshot(with: nil) { [weak tab, weak store, weak web] image, _ in
                 guard let tab, let store, let web,
-                      tab.presentationGeneration == generation, tab.web === web,
+                      tab.presentationGeneration == generation, tab.existingWeb === web,
                       TabStore.all.contains(where: { $0 === store }),
                       store.everyTab.contains(where: { $0 === tab }) else { return }
                 if let image { tab.windowSnapshot = image }

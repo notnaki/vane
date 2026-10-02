@@ -216,7 +216,7 @@ extension Prefs {
     private static func facts(_ tab: Tab, now: Date) -> Facts {
         Facts(active: isActive(tab), pinned: tab.stays, stashed: isStashed(tab),
               isPrivate: tab.isPrivate, loading: tab.loading, suspended: tab.suspended,
-              loaded: tab.web.url != nil, idle: now.timeIntervalSince(tab.lastActive))
+              loaded: tab.existingWeb?.url != nil, idle: now.timeIntervalSince(tab.lastActive))
     }
 
     /// Held for a Space no window is showing. Only the pinned exemption asks — a Today tab

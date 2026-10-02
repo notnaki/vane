@@ -144,6 +144,22 @@ import WebKit
                 // HTTPS upgrades are tested by SelfCheck; this fixture has no TLS server.
                 HTTPSOnly.enabled = false
                 let profile = ProfileManager.shared.active.id
+                let prepareStart = ContinuousClock.now
+                Tab.prepareFirstPage(profileID: profile)
+                print("PERF first-page preparation at launch: \(prepareStart.duration(to: .now))")
+                let firstPageStart = ContinuousClock.now
+                let firstPage = makeTab(profile: profile)
+                let firstViewTime = firstPageStart.duration(to: .now)
+                try require(firstPage.currentURL == nil && !firstPage.canGoBack,
+                            "preparing the first page performs no navigation or history entry")
+                try require(firstPage.web.configuration.websiteDataStore.identifier
+                            == ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: directory),
+                            "the prepared first page uses its profile's isolated storage")
+                try await load(firstPage, "\(base)/a", title: "Fixture A")
+                try require(!firstPage.canGoBack,
+                            "the first navigation has no synthetic blank page to go back to")
+                print("PERF first local page: \(firstPageStart.duration(to: .now)), view setup=\(firstViewTime)")
+                try await parkedStartupChecks(base: base)
                 try await faviconChecks(base: base, server: server)
                 let tab = makeTab(profile: profile)
                 let expectedStore = ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: directory)
@@ -602,6 +618,67 @@ import WebKit
             let tab = Tab(isPrivate: isPrivate, profileID: profile)
             host(tab)
             return tab
+        }
+
+        private func parkedStartupChecks(base: String) async throws {
+            let manager = ProfileManager.shared
+            let profile = manager.create(name: "Startup fixture")
+            let space = manager.createSpace(name: "Restored", in: profile.id)
+            let entries = (0..<100).map { i in
+                Session.Entry(id: UUID().uuidString, url: "\(base)/a?tab=\(i)",
+                              title: "Saved page \(i)", kind: .pinned)
+            }
+            let start = ContinuousClock.now
+            let store = Windows.open(profile: profile, space: space, focus: false, session: entries)
+            defer { store.window?.close() }
+            let elapsed = start.duration(to: .now)
+            let created = store.tabs.filter { $0.existingWeb != nil }.count
+            print("PERF restored window, 100 parked tabs: \(elapsed), web views=\(created)")
+            try require(store.tabs.count == 100 && store.tabs.allSatisfy(\.suspended),
+                        "restoration keeps all 100 saved rows parked")
+            try require(created == 0, "restoring parked rows creates no web views")
+            Settings.apply()
+            try require(store.tabs.allSatisfy { $0.existingWeb == nil },
+                        "applying global settings keeps parked rows without pages")
+            try require(store.tabs[73].title == "Saved page 73"
+                        && store.tabs[73].snapshot.title == "Saved page 73"
+                        && store.tabs[73].currentURL?.query == "tab=73",
+                        "parked metadata and session snapshots need no page")
+            try await Task.sleep(for: .milliseconds(150))
+            try require(store.tabs.allSatisfy { $0.existingWeb == nil },
+                        "sidebar rendering and favicon work keep parked rows without pages")
+            let selected = store.tabs[73]
+            store.current = selected.id
+            try await loaded(selected, path: "/a", title: "Fixture A")
+            try require(store.tabs.filter { $0.existingWeb != nil }.count == 1,
+                        "selecting a saved row creates only its page")
+            selected.suspend()
+            try require(selected.suspended && selected.existingWeb == nil,
+                        "suspending a page releases its view without creating a replacement")
+            store.current = store.tabs[74].id
+            store.current = selected.id
+            try await loaded(selected, path: "/a", title: "Fixture A")
+            try require(selected.currentURL?.query == "tab=73",
+                        "a released page restores its saved destination")
+            let extensionDirectory = Store.directory.appendingPathComponent("startup-extension-fixture")
+            try FileManager.default.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)
+            try Data(#"{"manifest_version":3,"name":"Startup fixture","version":"1"}"#.utf8)
+                .write(to: extensionDirectory.appendingPathComponent("manifest.json"))
+            let extensionObject = try await WKWebExtension(resourceBaseURL: extensionDirectory)
+            let context = WKWebExtensionContext(for: extensionObject)
+            let background = store.tabs[75]
+            let adapter = store.extensions.adapter(for: background, in: store)
+            try require(adapter.webView(for: context) == nil
+                        && adapter.url(for: context)?.query == "tab=75"
+                        && adapter.title(for: context) == "Saved page 75"
+                        && background.existingWeb == nil,
+                        "extension metadata queries do not create parked pages")
+            let destination = URL(string: "\(base)/b?extension=1")!
+            (adapter as any WKWebExtensionTab).loadURL?(destination, for: context, completionHandler: { _ in })
+            try await loaded(background, path: "/b", title: "Fixture B")
+            try require(!background.suspended && store.current == selected.id
+                        && background.currentURL == destination,
+                        "an extension can navigate a parked row without selecting it")
         }
 
         private func host(_ tab: Tab) {

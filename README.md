@@ -243,6 +243,10 @@ swift build -c release
 For a logged-in macOS 26 desktop, the smoke script creates a temporary signed
 app and isolated test profile, then runs real WebKit assertions:
 
+The smoke run also reports first-page setup and 100-tab session restoration timings.
+It checks that parked rows need no web views, selecting a row creates its page, and
+global settings and extension metadata queries keep background rows parked.
+
 ```sh
 swift build
 python3 scripts/check-browser-smoke.py
