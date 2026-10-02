@@ -100,7 +100,7 @@ enum PasswordImport {
 
     // MARK: UI
 
-    @MainActor static func chooseAndImport() {
+    @MainActor static func chooseAndImport(profileID: UUID = ProfileManager.activeProfileID) {
         let panel = NSOpenPanel()
         panel.title = "Import Passwords"
         panel.message = "Choose a password export (.csv) from Chrome, Safari, Firefox, "
@@ -110,7 +110,10 @@ enum PasswordImport {
 
         let alert = NSAlert()
         do {
-            let result = try importFile(file)
+            let result = try importFile(file, save: {
+                Passwords.save(host: $0.host, account: $0.account, password: $0.password,
+                               profileID: profileID)
+            })
             alert.messageText = result.failed == 0
                 ? "Imported \(result.imported) password\(result.imported == 1 ? "" : "s")."
                 : "Some passwords could not be imported."

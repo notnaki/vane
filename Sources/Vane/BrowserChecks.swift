@@ -110,6 +110,14 @@ import WebKit
         exit(code)
     }
 
+    @MainActor private final class PasswordCapture: NSObject, WKScriptMessageHandler {
+        var offers: [(String, String)] = []
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard let body = message.body as? [String: Any], let password = body["password"] as? String else { return }
+            offers.append((body["account"] as? String ?? "", password))
+        }
+    }
+
     private struct Failure: Error, CustomStringConvertible {
         let description: String
         init(_ description: String) { self.description = description }
@@ -171,6 +179,9 @@ import WebKit
                 TabStore.all.removeAll {
                     $0 === background || $0 === incoming || $0 === requestedPin
                 }
+                try await load(tab, "\(base)/a", title: "Fixture A")
+                try await pageEnhancements(tab)
+                try await passwordCapture(tab)
                 try await load(tab, "\(base)/a", title: "Fixture A")
                 try require(tab.history.history().contains { URL(string: $0.url)?.path == "/a" },
                             "normal navigation records a real history visit")
@@ -382,6 +393,166 @@ import WebKit
             tabs.append(tab)
         }
 
+        private func pageEnhancements(_ tab: Tab) async throws {
+            _ = try await js(tab, """
+                document.body.innerHTML = '<article>' + Array(1200).fill('<p>' +
+                  'A substantial article sentence with enough prose to read. '.repeat(12) + '</p>').join('') + '</article>';
+                """)
+            let start = ContinuousClock.now
+            let available = await Reader.isAvailable(in: tab.web)
+            print("PERF reader availability, 1200 paragraphs: \(start.duration(to: .now)), available=\(available)")
+            try require(available, "reader detection recognizes a substantial article")
+            _ = try await js(tab, """
+                window.__vaneMute(true);
+                window.mediaScans = 0;
+                const queryAll = Document.prototype.querySelectorAll;
+                Document.prototype.querySelectorAll = function(selector) {
+                  if (selector === 'video,audio') window.mediaScans++;
+                  return queryAll.call(this, selector);
+                };
+                let ticks = 0;
+                window.mutationDone = false;
+                const churn = setInterval(() => {
+                  const node = document.createElement('span');
+                  node.textContent = 'ordinary page update';
+                  document.body.append(node); node.remove();
+                  if (++ticks === 20) { clearInterval(churn); window.mutationDone = true; }
+                }, 30);
+                """)
+            try await Task.sleep(for: .milliseconds(1100))
+            let scans = try await js(tab, "window.mediaScans") as? Int ?? -1
+            print("PERF audio scans for 20 unrelated DOM updates: \(scans)")
+            try require(scans == 0, "ordinary DOM updates do not rescan the page for media")
+
+            _ = try await js(tab, """
+                document.body.innerHTML = '<form><input autocomplete="username" id="stepUser"></form>';
+                document.getElementById('stepUser').focus();
+                """)
+            let usernameFilled = try await js(tab,
+                Autofill.fillJS(account: "ada@example.test", password: "fixture-secret"), world: Autofill.world)
+            try require(usernameFilled as? Bool == true,
+                        "autofill supports the username step of a two-step sign-in")
+            let username = try await js(tab, "document.getElementById('stepUser').value")
+            try require(username as? String == "ada@example.test", "two-step sign-in receives the username")
+            _ = try await js(tab, """
+                document.body.innerHTML = '<form><input autocomplete="username" id="newUser">' +
+                  '<input type="password" autocomplete="new-password" id="newPass"></form>';
+                document.getElementById('newUser').focus();
+                """)
+            _ = try await js(tab,
+                Autofill.fillJS(account: "ada@example.test", password: "fixture-secret"), world: Autofill.world)
+            let untouched = try await js(tab, "document.getElementById('newPass').value === ''")
+            try require(untouched as? Bool == true, "autofill never overwrites a new-password field")
+            _ = try await js(tab, """
+                document.body.innerHTML = '<form><input autocomplete="username" id="registerUser">' +
+                  '<input type="password" autocomplete="new-password" id="registerPass"></form>' +
+                  '<form><input autocomplete="username" id="loginUser">' +
+                  '<input type="password" autocomplete="current-password" id="loginPass"></form>';
+                """)
+            _ = try await js(tab,
+                Autofill.fillJS(account: "ada@example.test", password: "fixture-secret"), world: Autofill.world)
+            let scoped = try await js(tab, "document.getElementById('registerUser').value === '' && " +
+                "document.getElementById('loginUser').value === 'ada@example.test' && " +
+                "document.getElementById('loginPass').value === 'fixture-secret'")
+            try require(scoped as? Bool == true, "autofill keeps username and password in the same login form")
+            _ = try await js(tab, "document.getElementById('loginUser').value = 'already-typing'")
+            _ = try await js(tab,
+                Autofill.fillJS(account: "different-account", password: "different-password", automatic: true),
+                world: Autofill.world)
+            let preserved = try await js(tab, "document.getElementById('loginUser').value === 'already-typing' && " +
+                "document.getElementById('loginPass').value === 'fixture-secret'")
+            try require(preserved as? Bool == true, "automatic autofill preserves fields the user has already filled")
+            _ = try await js(tab, """
+                document.body.innerHTML = '<form><input autocomplete=username readonly value=ada@example.test>' +
+                  '<input id=captcha><input type=password id=readonlyPassword></form>';
+                """)
+            let rejected = try await js(tab, Autofill.fillJS(account: "bob@example.test", password: "secret", automatic: true), world: Autofill.world)
+            try require(rejected as? Bool == false, "automatic fill rejects a different read-only account")
+            _ = try await js(tab, Autofill.fillJS(account: "ada@example.test", password: "secret", automatic: true), world: Autofill.world)
+            let matched = try await js(tab, "document.getElementById('captcha').value === '' && document.getElementById('readonlyPassword').value === 'secret'")
+            try require(matched as? Bool == true, "a matching read-only account fills only the password")
+            _ = try await js(tab, "document.body.innerHTML = '<form><input type=email id=newsletter></form>'")
+            let newsletter = try await js(tab, Autofill.fillJS(account: "ada@example.test", password: "secret", automatic: true), world: Autofill.world)
+            try require(newsletter as? Bool == false, "automatic username fill ignores newsletter forms")
+        }
+
+        private func passwordCapture(_ tab: Tab) async throws {
+            // Exercise the production script in its own world, without keychain writes.
+            let world = WKContentWorld.world(name: "vane-password-capture-check")
+            let capture = PasswordCapture()
+            let controller = tab.web.configuration.userContentController
+            controller.add(capture, contentWorld: world, name: "vanepw")
+            defer { controller.removeScriptMessageHandler(forName: "vanepw", contentWorld: world) }
+            _ = try await js(tab, Autofill.script, world: world)
+            let cases: [(String, String, String, String)] = [
+                ("signup passwords are offered for saving",
+                 "<form><input autocomplete=username value=signup@example.test><input type=password autocomplete=new-password value=new-secret></form>",
+                 "signup@example.test", "new-secret"),
+                ("read-only usernames remain attached to submitted passwords",
+                 "<form><input autocomplete=username readonly value=readonly@example.test><input type=password value=secret></form>",
+                 "readonly@example.test", "secret"),
+                ("hidden usernames remain attached to submitted passwords",
+                 "<form><input autocomplete=username type=hidden value=hidden@example.test><input type=password value=secret></form>",
+                 "hidden@example.test", "secret"),
+                ("password resets offer the new password",
+                 "<form><input autocomplete=username value=reset@example.test><input type=password autocomplete=current-password value=old-secret><input type=password autocomplete=new-password value=new-secret></form>",
+                 "reset@example.test", "new-secret")
+            ]
+            for (name, html, account, password) in cases {
+                let encoded = String(decoding: try JSONSerialization.data(withJSONObject: [html]), as: UTF8.self)
+                let before = capture.offers.count
+                _ = try await js(tab, "document.body.innerHTML = (" + encoded + ")[0]; document.forms[0].dispatchEvent(new Event('submit', {bubbles:true,cancelable:true}));")
+                try await wait(name) { capture.offers.count > before }
+                try require(capture.offers.last?.0 == account && capture.offers.last?.1 == password, name)
+            }
+            let resetCount = capture.offers.count
+            _ = try await js(tab, """
+                const newPassword = document.querySelector('[autocomplete="new-password"]');
+                newPassword.focus();
+                newPassword.dispatchEvent(new Event('input', {bubbles:true}));
+                window.dispatchEvent(new Event('pagehide'));
+                """)
+            try await wait("fetch reset capture") { capture.offers.count > resetCount }
+            try require(capture.offers.last?.0 == "reset@example.test" && capture.offers.last?.1 == "new-secret",
+                        "fetch password resets are captured on pagehide")
+            _ = try await js(tab, """
+                document.body.innerHTML = '<form><input autocomplete=username id=unrelated value=unrelated@example.test></form>' +
+                  '<form id=secretForm><input type=password value=independent-secret></form>';
+                document.getElementById('unrelated').focus();
+                document.getElementById('unrelated').dispatchEvent(new Event('input', {bubbles:true}));
+                """)
+            var before = capture.offers.count
+            _ = try await js(tab, "document.getElementById('secretForm').dispatchEvent(new Event('submit', {bubbles:true}));")
+            try await wait("independent form capture") { capture.offers.count > before }
+            try require(capture.offers.last?.0 == "", "a password-only form cannot inherit another form's account")
+            _ = try await js(tab, """
+                document.body.innerHTML = '<form id=step><input autocomplete=username id=stepUser value=step@example.test></form>';
+                document.getElementById('stepUser').dispatchEvent(new Event('input', {bubbles:true}));
+                document.getElementById('step').innerHTML = '<input type=password value=step-secret>';
+                """)
+            before = capture.offers.count
+            _ = try await js(tab, "document.getElementById('step').dispatchEvent(new Event('submit', {bubbles:true}));")
+            try await wait("username-step capture") { capture.offers.count > before }
+            try require(capture.offers.last?.0 == "step@example.test", "a password step retains its own removed username")
+            let submittedCount = capture.offers.count
+            _ = try await js(tab, """
+                document.body.innerHTML = '<form><input autocomplete=username value=other@example.test>' +
+                  '<input type=password value=other-secret id=otherPassword></form>';
+                document.getElementById('otherPassword').focus();
+                window.dispatchEvent(new Event('pagehide'));
+                """)
+            try await Task.sleep(for: .milliseconds(100))
+            try require(capture.offers.count == submittedCount, "another form cannot replace the submitted credential on pagehide")
+            _ = try await js(tab, """
+                document.body.innerHTML = '<input autocomplete=username id=decoy>' +
+                  '<input autocomplete=username id=actual><input type=password autocomplete=current-password id=password>';
+                document.getElementById('actual').focus();
+                """)
+            _ = try await js(tab, Autofill.fillJS(account: "actual@example.test", password: "secret"), world: world)
+            let scoped = try await js(tab, "document.getElementById('decoy').value === '' && document.getElementById('actual').value === 'actual@example.test'")
+            try require(scoped as? Bool == true, "formless login uses its nearest semantic username")
+        }
+
         private func multiWindow(base: String) async throws {
             let profile = ProfileManager.shared.create(name: "Window checks")
             let space = ProfileManager.shared.createSpace(name: "Shared windows", in: profile.id)
@@ -394,6 +565,7 @@ import WebKit
             try await load(page, "\(base)/form", title: "Fixture Form")
             _ = try await js(page, "document.body.style.height = '3000px'; window.scrollTo(0, 600); document.getElementById('query').value = 'keep this input'")
             let originalWeb = page.web
+            try await chooserDismissal(page, in: first)
             let legacyState = page.snapshot.state
             first.saveCurrentSpace()
             let second = Windows.open(profile: profile, space: first.currentSpace)
@@ -621,6 +793,38 @@ import WebKit
             try await loaded(oldWindows[1].active!, path: "/b", title: "Fixture B")
         }
 
+        private func chooserDismissal(_ page: Tab, in store: TabStore) async throws {
+            guard let window = store.window else { throw Failure("chooser fixture has no window") }
+            let choice = PasswordChoice(host: "example.test", accounts: ["ada"],
+                                        anchor: CGRect(x: 50, y: 80, width: 240, height: 0))
+            page.passwordChoice = choice
+            let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0)!
+            try require(!PasswordChooser.handleKey(key) && page.passwordChoice == nil,
+                        "typing dismisses the password chooser and preserves the keystroke")
+            page.passwordChoice = choice
+            let size = page.web.bounds.size
+            let topPoint = CGPoint(x: 60, y: 90)
+            let shiftedArrow = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .shift,
+                timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 125)!
+            try require(!PasswordChooser.handleKey(shiftedArrow) && page.passwordChoice != nil,
+                        "shifted navigation remains available to the password field")
+            let local = CGPoint(x: topPoint.x, y: page.web.isFlipped ? topPoint.y : size.height - topPoint.y)
+            let inside = page.web.convert(local, to: nil)
+            let click = NSEvent.mouseEvent(with: .leftMouseDown, location: inside, modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 1, clickCount: 1, pressure: 1)!
+            PasswordChooser.handlePointer(click)
+            try require(page.passwordChoice != nil, "clicking a password row keeps it alive for selection")
+            let outside = NSEvent.mouseEvent(with: .leftMouseDown, location: CGPoint(x: 1, y: 1), modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 2, clickCount: 1, pressure: 1)!
+            PasswordChooser.handlePointer(outside)
+            try require(page.passwordChoice == nil, "clicking outside dismisses the password chooser")
+        }
+
         private func focus(_ store: TabStore) async throws {
             // The fixture is launched by a CLI, so ordering a window alone does not
             // activate its app. Wait for a real key window before asserting handoff.
@@ -645,12 +849,14 @@ import WebKit
             guard ready as? String == "complete" else { throw Failure("\(path) did not finish loading") }
         }
 
-        private func js(_ tab: Tab, _ source: String) async throws -> Any? {
+        private func js(_ tab: Tab, _ source: String, world: WKContentWorld = .page) async throws -> Any? {
             // WebKit returns Any, which cannot cross a continuation's sending boundary.
             // Move only serialized data between callbacks and the suspended task.
             let data: Data? = try await withCheckedThrowingContinuation { continuation in
-                tab.web.evaluateJavaScript(source) { value, error in
-                    if let error { continuation.resume(throwing: error); return }
+                tab.web.evaluateJavaScript(source, in: nil, in: world) { result in
+                    let value: Any?
+                    do { value = try result.get() }
+                    catch { continuation.resume(throwing: error); return }
                     guard let value else { continuation.resume(returning: nil); return }
                     do {
                         let data = try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed])
