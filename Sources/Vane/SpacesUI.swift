@@ -769,6 +769,8 @@ struct CreateSpaceForm: View {
                 .foregroundStyle(Look.inkSecondary)
                 .padding(.bottom, Look.inset)
             Text("Create a Space").font(Look.dialogTitle)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(Look.inkPrimary)
             Text("Separate your tabs for life, work, projects, and more.")
                 .font(Look.text).foregroundStyle(Look.inkSecondary)
@@ -791,10 +793,9 @@ struct CreateSpaceForm: View {
                         Button(p.name) { profile = p }
                     }
                 } label: {
-                    Text(chosenProfile.name)
+                    Text(chosenProfile.name).lineLimit(1)
                 }
                 .menuStyle(.borderlessButton)
-                .fixedSize()
             }
             field {
                 Image(systemName: "paintbrush").frame(width: Look.tileIcon)
@@ -809,7 +810,8 @@ struct CreateSpaceForm: View {
                 // The first page of the theme editor's own swatches: one tap, one colour.
                 // The full editor, with its gradients and grain, is a right-click away once
                 // the Space exists.
-                HStack(spacing: Look.inset / 2) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: Look.swatch * 0.6),
+                                           spacing: Look.inset / 2)], spacing: Look.inset / 2) {
                     ForEach(Look.themeSwatches.prefix(Look.swatchPage), id: \.self) { hex in
                         Button { colorHex = hex; theming = false } label: {
                             Circle().fill(Color(hex: hex) ?? .clear)

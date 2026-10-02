@@ -376,6 +376,7 @@ struct OffscreenPages: View {
 struct MediaTrayView: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var media = MediaState.shared
+    @ObservedObject private var sidebar = SidebarWidth.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The tab on the tray, resolved through the pure rule above. `everyTab`, because the
@@ -408,32 +409,25 @@ struct MediaTrayView: View {
         let info = media.info(for: tab.id) ?? MediaTray.Info(playing: TabAudio.isPlaying(tab))
         let muted = TabAudio.isMuted(tab)
         let title = info.title.isEmpty ? TidyTitles.title(for: tab) : info.line
-        return HStack(spacing: Look.rowSpacing) {
-            SiteIcon(icon: tab.favicon, fallback: "waveform", size: Look.rowIcon)
-            // The whole title is the way back: Arc's mini player jumps to the tab that is
-            // playing, which is the one thing you always want from it.
-            Button { store.reveal(tab.id) } label: {
-                Marquee(text: title).foregroundStyle(Look.barText)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(title), playing in another tab")
-            .accessibilityHint("Go to the tab")
-
-            if muted {
-                glyph("speaker.slash.fill", "Unmute") { TabAudio.toggleMute(tab) }
-            }
-            if info.prev {
-                glyph("backward.fill", "Previous") { media.send(.prev, to: tab) }
-            }
-            glyph(info.playing ? "pause.fill" : "play.fill", info.playing ? "Pause" : "Play") {
-                media.send(.playpause, to: tab)
-            }
-            if info.next {
-                glyph("forward.fill", "Next") { media.send(.next, to: tab) }
+        return Group {
+            if sidebar.width < 220 {
+                VStack(spacing: Look.inset / 2) {
+                    titleRow(tab, title: title).frame(height: Look.control)
+                    HStack(spacing: Look.inset) {
+                        Spacer(minLength: 0)
+                        transport(tab, info: info, muted: muted)
+                    }
+                }
+                .padding(.vertical, Look.inset)
+            } else {
+                HStack(spacing: Look.rowSpacing) {
+                    titleRow(tab, title: title)
+                    transport(tab, info: info, muted: muted)
+                }
+                .frame(height: Look.trayHeight)
             }
         }
         .padding(.horizontal, Look.rowInset)
-        .frame(height: Look.trayHeight)
         .background(Look.barFill, in: RoundedRectangle(cornerRadius: Look.pillRadius))
         .hairline(radius: Look.pillRadius, Look.barStroke)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
@@ -441,6 +435,33 @@ struct MediaTrayView: View {
         .id(tab.id)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Mini audio player")
+    }
+
+    private func titleRow(_ tab: Tab, title: String) -> some View {
+        HStack(spacing: Look.rowSpacing) {
+            SiteIcon(icon: tab.favicon, fallback: "waveform", size: Look.rowIcon)
+            Button { store.reveal(tab.id) } label: {
+                Marquee(text: title).foregroundStyle(Look.barText)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(title), playing in another tab")
+            .accessibilityHint("Go to the tab")
+        }
+    }
+
+    @ViewBuilder private func transport(_ tab: Tab, info: MediaTray.Info, muted: Bool) -> some View {
+        if muted {
+            glyph("speaker.slash.fill", "Unmute") { TabAudio.toggleMute(tab) }
+        }
+        if info.prev {
+            glyph("backward.fill", "Previous") { media.send(.prev, to: tab) }
+        }
+        glyph(info.playing ? "pause.fill" : "play.fill", info.playing ? "Pause" : "Play") {
+            media.send(.playpause, to: tab)
+        }
+        if info.next {
+            glyph("forward.fill", "Next") { media.send(.next, to: tab) }
+        }
     }
 
     private func glyph(_ name: String, _ label: String, _ run: @escaping () -> Void) -> some View {
