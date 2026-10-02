@@ -349,7 +349,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .openFile:         Keybinding("o", .command)
         // Arc's ⌘S is the sidebar, and Save Page As is one modifier up — see §G.
         case .savePageAs:       Keybinding("s", [.command, .shift])
-        case .capturePage:      Keybinding("2", [.command, .shift])
+        // Like ⌘+, store the shifted glyph that charactersIgnoringModifiers sends.
+        case .capturePage:      Keybinding("@", .command) // ⌘⇧2 on a US layout
         case .find:             Keybinding("f", .command)
         case .findNext:         Keybinding("g", .command)
         case .findPrevious:     Keybinding("g", [.command, .shift])

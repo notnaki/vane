@@ -21,13 +21,36 @@ import XCTest
     func testCaptureIsDiscoverableAndHasArcsShortcut() {
         let command = Command(rawValue: "capturePage")
         XCTAssertNotNil(command)
-        XCTAssertEqual(command?.defaultBinding, Keybinding("2", [.command, .shift]))
+        XCTAssertEqual(command?.defaultBinding, Keybinding("@", .command))
         XCTAssertTrue(PaletteCommand.registered.contains { $0.rawValue == "capturePage" })
         let row = SiteControlModel(host: "example.com", scheme: "https").rows.first {
             $0.title == "Capture a Portion of This Page"
         }
         XCTAssertEqual(row?.glyph, "camera.viewfinder")
         XCTAssertEqual(row?.control, .action)
+    }
+
+    private final class ShortcutTarget: NSObject {
+        var fired = false
+        @objc func capture(_ sender: Any?) { fired = true }
+    }
+
+    func testCaptureShortcutMatchesTheShiftedKeyboardEventAndNativeMenu() throws {
+        let command = try XCTUnwrap(Command(rawValue: "capturePage"))
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [.command, .shift], timestamp: 0, windowNumber: 0, context: nil,
+            characters: "@", charactersIgnoringModifiers: "@", isARepeat: false, keyCode: 19))
+        XCTAssertEqual(Keybinding(event: event), command.defaultBinding)
+        let target = ShortcutTarget()
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let item = NSMenuItem(title: command.title, action: #selector(ShortcutTarget.capture(_:)),
+                              keyEquivalent: command.defaultBinding.menuKeyEquivalent)
+        item.keyEquivalentModifierMask = command.defaultBinding.menuModifierMask
+        item.target = target
+        menu.addItem(item)
+        XCTAssertTrue(menu.performKeyEquivalent(with: event))
+        XCTAssertTrue(target.fired)
     }
 
     func testElementSelectionUsesVisibleCoordinatesAtPageZoom() async throws {
@@ -135,5 +158,19 @@ import XCTest
         XCTAssertEqual(tab.web.subviews.count, initial, "The selection overlay must be removed before capture")
         window.endSheet(preview)
         preview.orderOut(nil)
+    }
+
+    func testCaptureModeDoesNotForwardPageScrollingKeys() async throws {
+        let (_, tab, window) = try await visiblePage()
+        PageCapture.start(tab)
+        for (characters, code): (String, UInt16) in [("\u{F72D}", 121), (" ", 49)] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+            window.firstResponder?.keyDown(with: event)
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        let scroll = try await tab.web.evaluateJavaScript("window.scrollY") as? Double
+        XCTAssertEqual(scroll, 0, "Capture mode must keep the viewport under the selection stable")
     }
 }

@@ -262,7 +262,8 @@ import WebKit
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { cancel?() }
         else if event.keyCode == 36 || event.keyCode == 76 { select?(region ?? bounds, nil) }
-        else { super.keyDown(with: event) }
+        // Unhandled keys must not reach WebKit: Space, arrows and Page Down scroll
+        // the page underneath the highlighted region and invalidate its coordinates.
     }
     override func scrollWheel(with event: NSEvent) {} // Keep the selected viewport stable.
     override func setFrameSize(_ newSize: NSSize) {
