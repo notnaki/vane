@@ -2503,9 +2503,7 @@ private struct SpaceMenu: View {
         return false
     }
     guard Spaces.delete(space.id, in: space.profileID) else { return false }
-    // A parked store is still showing this Space in memory. Walk every owner into a
-    // survivor now, or a later hop would save pages back to a Space that no longer exists.
-    for owner in owners { owner.resolveStaleSpace(); owner.spacesChanged() }
+    // `Spaces.delete` has already walked every owner, including parked stores, into a survivor.
     store.spacesChanged()                  // the strip is a dot shorter
     rebuild()
     return true
