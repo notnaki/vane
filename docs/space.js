@@ -350,11 +350,11 @@
       const smallScreen = compact && surface.height<=720;
       const baseTop=surface.height*(compact ? (smallScreen ? .48 : .51) : (surface.height<=640 ? .54 : .59));
       const titleTop=compact ? (smallScreen ? 136 : 144) : surface.height*.32;
-      const textWidth=Math.min(480,surface.width-80);
-      const textLeft=Math.max(40,(surface.width-1120)/2);
+      const textWidth=heroMessage.offsetWidth || Math.min(480,surface.width-80);
+      const textLeft=panels[0].getBoundingClientRect?.().left ?? Math.max(40,(surface.width-1120)/2);
       const shiftX=compact ? 0 : (textLeft+textWidth*.82/2-surface.width/2)*arrival;
       heroLines.forEach(line => {
-        const inset=Math.max(0,((compact ? surface.width-40 : textWidth)-line.offsetWidth)/2);
+        const inset=Math.max(0,(textWidth-line.offsetWidth)/2);
         line.style.transform=`translateX(${inset*(compact ? 1 : 1-arrival)}px)`;
       });
       heroMessage.style.transform=`translateX(-50%) translate(${shiftX}px,${(titleTop-baseTop)*arrival}px) scale(${1-arrival*(compact ? .43 : .18)})`;
