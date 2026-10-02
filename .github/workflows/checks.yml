@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+# A newer commit makes the older checks for this branch/PR redundant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     # macOS 26 / Xcode 26: Package.swift targets .macOS("26.0"), and the WebKit APIs this
@@ -13,22 +21,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Identify Swift toolchain
+        id: toolchain
+        run: |
+          set -euo pipefail
+          KEY=$({ swift --version; xcodebuild -version; xcrun --show-sdk-path; xcrun --show-sdk-build-version; } | shasum -a 256 | cut -d ' ' -f 1)
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      # Only checks builds go into this cache. Release builds compile an OAuth secret
+      # into the app, so their build products must never enter a PR-readable cache.
+      - name: Cache Swift debug build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swift-debug-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
+          restore-keys: |
+            swift-debug-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+
+      # Debug avoids whole-module release optimization on every PR. Always ask SwiftPM
+      # to build, even on an exact cache hit, so it validates the restored outputs.
+      # The release workflow still builds and smoke-tests the optimized, signed app.
       - name: Build
-        run: swift build -c release
+        run: swift build -c debug
 
       # --pure stops before the keychain and WebKit assertions, which need a real signed
       # bundle and a window server respectively. Those stay a local `vane selfcheck`.
       - name: Checks
-        run: ./.build/release/vane selfcheck --pure
+        run: ./.build/debug/vane selfcheck --pure
 
       - name: CLI password import errors
-        run: bash scripts/test-cli-import.sh .build/release/vane
+        run: bash scripts/test-cli-import.sh .build/debug/vane
 
       - name: Release workflow fixture
         run: python3 scripts/test-release-workflow.py
 
       - name: Bundle
-        run: ./make-app.sh
+        run: ./make-app.sh debug
 
       - name: DMG package
         run: ./scripts/test-build-dmg.sh
