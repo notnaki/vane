@@ -632,13 +632,21 @@ enum GitHubOAuth {
         guard let reply = try? decoder.decode(Grant.self, from: data), reply.error == nil,
               let access = reply.accessToken, !access.isEmpty else { return nil }
         let refresh = reply.refreshToken.flatMap { $0.isEmpty ? nil : $0 }
-        if reply.expiresIn != nil && refresh == nil { return nil }
+        if (reply.expiresIn != nil || reply.refreshTokenExpiresIn != nil) && refresh == nil { return nil }
         for duration in [reply.expiresIn, reply.refreshTokenExpiresIn].compactMap({ $0 }) {
             guard duration.isFinite && duration > 0 else { return nil }
         }
         return GitHubCredential(accessToken: access, refreshToken: refresh,
                                 expiresAt: reply.expiresIn.map { now.addingTimeInterval($0) },
                                 refreshExpiresAt: reply.refreshTokenExpiresIn.map { now.addingTimeInterval($0) })
+    }
+
+    /// A refresh consumes the previous pair. An incomplete rotation must never be saved
+    /// as a supposedly non-expiring token; initial non-expiring sign-ins stay compatible.
+    nonisolated static func refreshedGrant(_ data: Data, now: Date = .now) -> GitHubCredential? {
+        guard let next = grant(data, now: now), next.refreshToken != nil,
+              next.expiresAt != nil, next.refreshExpiresAt != nil else { return nil }
+        return next
     }
 
     nonisolated static func token(_ data: Data) -> String? { grant(data)?.accessToken }

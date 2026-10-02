@@ -64,6 +64,14 @@ import XCTest
         }
     }
 
+    func testRefreshReplyRequiresCompleteRotatingPair() {
+        for json in [#"{"access_token":"fixture"}"#, #"{"access_token":"fixture","refresh_token":"refresh"}"#, #"{"access_token":"fixture","refresh_token":"refresh","expires_in":28800}"#] {
+            XCTAssertNil(GitHubOAuth.refreshedGrant(Data(json.utf8)), json)
+        }
+        XCTAssertNotNil(GitHubOAuth.refreshedGrant(Data(#"{"access_token":"fixture","refresh_token":"refresh","expires_in":28800,"refresh_token_expires_in":15897600}"#.utf8)))
+        XCTAssertNotNil(GitHubOAuth.grant(Data(#"{"access_token":"fixture"}"#.utf8)), "Initial non-expiring grants remain supported")
+    }
+
     func testRefreshRequestUsesFormBodyAndEscapesSecrets() throws {
         let request = try XCTUnwrap(GitHubOAuth.refresh(refreshToken: "refresh+ &fixture", secret: "secret+&fixture"))
         XCTAssertEqual(request.url?.absoluteString, GitHubOAuth.tokenURL)
@@ -190,6 +198,19 @@ import XCTest
         XCTAssertNil(fixture.stored)
         XCTAssertNil(live.connectedLogin)
         XCTAssertFalse(live.needsReconnect)
+    }
+
+    func testUnavailablePostRotationReadKeepsNewPairForPersistenceRetry() async throws {
+        let fixture = RenewalFixture()
+        fixture.duringRequest = { fixture.unavailable = true }
+        let coordinator = fixture.coordinator()
+        await assertFailure(coordinator, .offline)
+        XCTAssertEqual(fixture.writes, 0)
+        fixture.unavailable = false
+        let recovered = try await coordinator.token(after: "old-fixture").get()
+        XCTAssertEqual(recovered.token, "new-fixture")
+        XCTAssertEqual(fixture.stored?.refreshToken, "new-refresh")
+        XCTAssertEqual(fixture.calls, 1, "GitHub already consumed the old refresh token")
     }
 
     func testCredentialRemovedDuringRequestCannotBeResurrected() async {

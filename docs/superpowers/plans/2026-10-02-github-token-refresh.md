@@ -37,5 +37,5 @@
 - [x] Integrate grant saving in OAuth exchange, grant decoding in LiveCredentialCache, and renewal before fetch plus a single retry on 401. Serialize explicit saves/removals with the same lock.
 - [x] Cover simultaneous renewal, relaunch, stale responses, sign-out/replacement, lock contention, offline retry, failed persistence, and rejection in regression tests.
 - [x] Extend the disposable fresh-process Keychain script to verify a complete versioned grant, then document automatic renewal and the one reconnect needed for previously discarded refresh tokens.
-- [ ] Run `swift build -c debug`, `swift test`, isolated `vane selfcheck --pure`, credential persistence check, `./make-app.sh debug`; confirm the CI DMG packaging check passes. Local build, 126 tests, pure selfcheck, Keychain persistence, and app packaging passed.
+- [x] Run `swift build -c debug`, `swift test`, isolated `vane selfcheck --pure`, credential persistence check, `./make-app.sh debug`; confirm the CI DMG packaging check passes. Local build, 128 tests, pure selfcheck, Keychain persistence, and app packaging passed.
 - [ ] Commit only task changes, open PR, obtain independent review, resolve findings, verify current head/CI/mergeability, squash-merge, and clean up any owned test processes.

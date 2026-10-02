@@ -95,17 +95,30 @@ final class GitHubRefreshLock {
         return result
     }
 
-    private func saved() -> GitHubSignedIn? {
-        guard case let .found(account, value) = read(),
-              let grant = GitHubCredential.restore(value) else { return nil }
-        return GitHubSignedIn(login: account, credential: grant)
+    private enum Saved {
+        case found(GitHubSignedIn), missing, unavailable
+    }
+
+    private func saved() -> Saved {
+        switch read() {
+        case .missing: return .missing
+        case .unavailable: return .unavailable
+        case let .found(account, value):
+            guard let grant = GitHubCredential.restore(value) else { return .unavailable }
+            return .found(GitHubSignedIn(login: account, credential: grant))
+        }
     }
 
     private func rotate(after token: String, force: Bool) async -> Result<GitHubSignedIn, GitHub.Trouble> {
         do {
             let lock = try await GitHubRefreshLock.acquire(lockURL)
             defer { withExtendedLifetime(lock) {} }
-            guard let current = saved() else { return .failure(.offline) }
+            let current: GitHubSignedIn
+            switch saved() {
+            case .found(let session): current = session
+            case .missing: pending = nil; return .failure(.offline)
+            case .unavailable: return .failure(.offline)
+            }
             if let waiting = pending {
                 if current.login == waiting.previous.login && current.credential == waiting.previous.credential {
                     guard write(waiting.next.login, waiting.next.credential.stored) else { return .failure(.offline) }
@@ -133,9 +146,16 @@ final class GitHubRefreshLock {
             }
             // Settings can remove credentials independently of Live Folders. Never revive
             // one removed during the network request or overwrite a replacement sign-in.
-            guard let latest = saved() else { return .failure(.offline) }
-            guard latest.login == current.login && latest.credential == current.credential else { return .success(latest) }
             let next = GitHubSignedIn(login: current.login, credential: grant)
+            let latest: GitHubSignedIn
+            switch saved() {
+            case .found(let session): latest = session
+            case .missing: pending = nil; return .failure(.offline)
+            case .unavailable:
+                pending = (current, next)
+                return .failure(.offline)
+            }
+            guard latest.login == current.login && latest.credential == current.credential else { return .success(latest) }
             guard write(next.login, grant.stored) else {
                 pending = (current, next)
                 return .failure(.offline)
@@ -163,7 +183,7 @@ final class GitHubRefreshLock {
                                                remaining: http.value(forHTTPHeaderField: "X-RateLimit-Remaining"),
                                                retryAfter: http.value(forHTTPHeaderField: "Retry-After")) ?? .offline)
             }
-            guard let grant = GitHubOAuth.grant(data) else { return .failure(.offline) }
+            guard let grant = GitHubOAuth.refreshedGrant(data) else { return .failure(.offline) }
             return .success(grant)
         } catch { return .failure(.offline) }
     }
