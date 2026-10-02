@@ -10,6 +10,15 @@ import WebKit
 ///
 @MainActor enum CertificateTrust {
 
+    /// Challenges have no frame information. Only the current main-frame HTTPS
+    /// destination may offer an exception; an invalid background connection fails closed.
+    static func shouldPrompt(host: String, port: Int, navigationURL: URL?) -> Bool {
+        guard let navigationURL, navigationURL.scheme?.lowercased() == "https",
+              let destinationHost = navigationURL.host else { return false }
+        return destinationHost.lowercased() == host.lowercased()
+            && (navigationURL.port ?? 443) == (port > 0 ? port : 443)
+    }
+
     /// Swapped out under `check()` so assertions never touch the user's real preferences.
     private static var defaults: UserDefaults = .vane
 
@@ -275,6 +284,8 @@ import WebKit
         }
         let host = challenge.protectionSpace.host
         let port = challenge.protectionSpace.port
+        let memory = memory(for: tab)
+        let generation = memory.generation
         let outcome = await evaluate(trust, host: host, port: port)
         // The overwhelmingly common case: the certificate is fine. Hand it back to the
         // system rather than minting a credential of our own.
@@ -282,7 +293,9 @@ import WebKit
         // The evaluation suspended, so the tab may have been navigated away or suspended
         // out from under this challenge. Answered either way — a challenge left unanswered
         // hangs the load until WebKit's own timeout.
-        guard tab.existingWeb === web else { return (.cancelAuthenticationChallenge, nil) }
+        guard tab.existingWeb === web, memory.generation == generation else {
+            return (.cancelAuthenticationChallenge, nil)
+        }
 
         guard let scope = Scope(profileID: tab.profileID, host: host, port: port) else {
             return (.cancelAuthenticationChallenge, nil)
@@ -292,10 +305,13 @@ import WebKit
             // No certificate to pin an exception to, so there is no safe way to offer one.
             return (.cancelAuthenticationChallenge, nil)
         }
-        let memory = memory(for: tab)
         if trusted(scope: scope, fingerprint: fp,
                    privateMemory: tab.isPrivate ? memory.exceptions : nil) {
             return (.useCredential, URLCredential(trust: trust))
+        }
+
+        guard shouldPrompt(host: host, port: port, navigationURL: tab.certificateNavigationURL) else {
+            return (.cancelAuthenticationChallenge, nil)
         }
 
         let status = outcome.status
