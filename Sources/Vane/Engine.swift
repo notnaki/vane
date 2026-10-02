@@ -357,7 +357,8 @@ struct TitleReveal: Equatable, Sendable {
     @Published var loading = false
     /// Allowed main-frame destination, including redirects, until it commits or fails.
     /// Background TLS failures must never raise a page-level certificate sheet.
-    var certificateNavigationURL: URL?
+    private(set) var certificateNavigationURL: URL?
+    private var certificateNavigation: WKNavigation?
     @Published var canGoBack = false
     @Published var canGoForward = false
     /// A password the page just submitted, waiting on the user to approve saving it.
@@ -848,6 +849,7 @@ struct TitleReveal: Equatable, Sendable {
     private func release(replacing: Bool = true) {
         let old = web
         certificateNavigationURL = nil
+        certificateNavigation = nil
         titleSettleTask?.cancel()
         titleSettleTask = nil
         CertificateTrust.navigationStarted(in: self)
@@ -1199,7 +1201,24 @@ struct TitleReveal: Equatable, Sendable {
         passwordChoice = PasswordChoice(host: host, accounts: accounts, anchor: anchor)
     }
 
+    func allowCertificateNavigation(to url: URL?) {
+        CertificateTrust.navigationStarted(in: self)
+        // WebKit may cancel the previous navigation after this policy answer and
+        // before starting the new one. That old callback must not clear this target.
+        certificateNavigation = nil
+        certificateNavigationURL = url
+    }
+
+    private func finishCertificateNavigation(_ navigation: WKNavigation?, in w: WKWebView) {
+        guard w === web, let navigation, certificateNavigation === navigation else { return }
+        certificateNavigationURL = nil
+        certificateNavigation = nil
+    }
+
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if w === web {
+            certificateNavigation = navigation
+        }
         Trace.begin(id)
         hoveredLink = nil
         (w as? LinkContextWebView)?.navigationStarted()
@@ -1215,19 +1234,20 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        certificateNavigationURL = nil
+        finishCertificateNavigation(navigation, in: w)
         loading = false
         show(error, in: w)
     }
 
     func webView(_ w: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        certificateNavigationURL = nil
+        finishCertificateNavigation(navigation, in: w)
         loading = false
         show(error, in: w)
     }
 
     func webView(_ w: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
         guard w === web else { return }
+        certificateNavigation = navigation
         certificateNavigationURL = w.url
     }
 
@@ -1281,7 +1301,7 @@ struct TitleReveal: Equatable, Sendable {
     /// redirect applies the wrong site's level) and didFinish is too late (the page has
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
-        certificateNavigationURL = nil
+        finishCertificateNavigation(navigation, in: w)
         Trace.note("committed")
         Zoom.apply(to: self)
         DeveloperMode.apply(to: self)   // localhost → deployed site, and back
@@ -1290,7 +1310,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
-        certificateNavigationURL = nil
+        finishCertificateNavigation(navigation, in: w)
         progress = 1
         loading = false
         Trace.end(id)
@@ -1401,8 +1421,7 @@ struct TitleReveal: Equatable, Sendable {
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             if navigationAction.targetFrame?.isMainFrame == true {
-                CertificateTrust.navigationStarted(in: self)
-                certificateNavigationURL = navigationAction.request.url
+                allowCertificateNavigation(to: navigationAction.request.url)
             }
             decisionHandler(.allow)
         case .upgrade(let to):

@@ -60,7 +60,7 @@ import XCTest
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let tab = Tab(isPrivate: true, profileID: UUID())
-        tab.certificateNavigationURL = navigation.flatMap(URL.init(string:))
+        tab.allowCertificateNavigation(to: navigation.flatMap(URL.init(string:)))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 300),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -99,5 +99,54 @@ import XCTest
     func testDirectInvalidPageStillOffersCertificateWarning() async throws {
         try await challenge(navigation: "https://example.com:8443/study", host: "example.com",
                             port: 8443, expectsPrompt: true)
+    }
+
+    func testCanceledOlderNavigationCannotEraseNewCertificateDestination() throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let tab = Tab(isPrivate: true, profileID: UUID())
+        defer { tab.tearDown() }
+        // Obtain real navigation identities without delivering asynchronous callbacks.
+        tab.web.navigationDelegate = nil
+        let first = try XCTUnwrap(tab.web.loadHTMLString("first", baseURL: nil))
+        let second = try XCTUnwrap(tab.web.loadHTMLString("second", baseURL: nil))
+        let destination = URL(string: "https://example.com:8443/study")!
+
+        tab.allowCertificateNavigation(to: URL(string: "https://old.example"))
+        tab.webView(tab.web, didStartProvisionalNavigation: first)
+        tab.allowCertificateNavigation(to: destination)
+        tab.webView(tab.web, didFailProvisionalNavigation: first,
+                    withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+        tab.webView(tab.web, didStartProvisionalNavigation: second)
+        XCTAssertEqual(tab.certificateNavigationURL, destination)
+        XCTAssertTrue(CertificateTrust.shouldPrompt(host: "example.com", port: 8443,
+                                                    navigationURL: tab.certificateNavigationURL))
+
+        tab.webView(tab.web, didCommit: first)
+        XCTAssertEqual(tab.certificateNavigationURL, destination, "An older commit cannot clear the new target")
+        tab.webView(tab.web, didCommit: second)
+        XCTAssertNil(tab.certificateNavigationURL, "Background challenges cannot prompt after commit")
+    }
+
+    func testRedirectPolicyRestoresIdentityForMatchingCompletion() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let tab = Tab(isPrivate: true, profileID: UUID())
+        defer { tab.tearDown() }
+        tab.web.navigationDelegate = nil
+        let destination = URL(string: "https://redirect.example/study")!
+        let navigation = try XCTUnwrap(tab.web.loadHTMLString("redirect target", baseURL: destination))
+        let deadline = Date.now.addingTimeInterval(10)
+        while tab.web.url != destination && Date.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(tab.web.url, destination)
+        tab.allowCertificateNavigation(to: URL(string: "https://old.example"))
+        tab.webView(tab.web, didStartProvisionalNavigation: navigation)
+        tab.allowCertificateNavigation(to: destination)
+        tab.webView(tab.web, didReceiveServerRedirectForProvisionalNavigation: navigation)
+        XCTAssertEqual(tab.certificateNavigationURL, destination)
+        tab.webView(tab.web, didCommit: navigation)
+        XCTAssertNil(tab.certificateNavigationURL)
     }
 }
