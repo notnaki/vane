@@ -848,7 +848,7 @@ struct TitleReveal: Equatable, Sendable {
         // ordinary way a pinned row comes back named after its host. See `saveCurrentSpace`.
         title = TabStore.parkedTitle(saved: p.title, remembered: history.title(for: url), url: url)
         address = url.absoluteString
-        favicon = favicons.icon(for: url)      // from the cache, no page needed
+        favicons.load(for: self)              // cached or fetched, no page needed
     }
 
     /// Restore a row whose current page may differ from the page its pinned row stands for.

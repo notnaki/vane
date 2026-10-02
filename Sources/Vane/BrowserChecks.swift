@@ -144,6 +144,7 @@ import WebKit
                 // HTTPS upgrades are tested by SelfCheck; this fixture has no TLS server.
                 HTTPSOnly.enabled = false
                 let profile = ProfileManager.shared.active.id
+                try await faviconChecks(base: base, server: server)
                 let tab = makeTab(profile: profile)
                 let expectedStore = ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: directory)
                 try require(expectedStore != nil && tab.web.configuration.websiteDataStore.identifier == expectedStore,
@@ -375,6 +376,97 @@ import WebKit
             try require(store.swipeSpace?.name == renamed.name
                         && store.swipeStrip.contains { $0.id == added.id },
                         "ending a swipe releases its snapshot and reveals fresh Space edits")
+        }
+
+        private func faviconChecks(base: String, server: Server) async throws {
+            let url = URL(string: "\(base)/icon-page")!
+            let missing = makeTab(profile: ProfileManager.shared.create(name: "Favicon checks").id)
+            let before = server.requests["/favicon.ico", default: 0]
+            _ = missing.favicons.icon(for: url)
+            let companion = makeTab(profile: missing.profileID)
+            companion.park(url: url, Parked(title: "Another restored tab"))
+            try await wait("favicon fallback is requested") {
+                server.requests["/favicon.ico", default: 0] > before
+            }
+            let deadline = Date.now.addingTimeInterval(8)
+            while !(await URLSession.shared.allTasks).isEmpty {
+                guard Date.now < deadline else { throw Failure("favicon request did not settle") }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            await Task.yield()
+            let discoveryBefore = server.requests["/icon-discovery/b", default: 0]
+            try await load(missing, "\(base)/b", title: "Fixture B")
+            try await wait("iconless page discovery") {
+                server.requests["/icon-discovery/b", default: 0] > discoveryBefore
+            }
+            _ = try await js(missing, "document.readyState")
+            while !(await URLSession.shared.allTasks).isEmpty {
+                guard Date.now < deadline else { throw Failure("favicon retry did not settle") }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            try require(server.requests["/favicon.ico", default: 0] == before + 1,
+                        "an iconless page does not repeat the fallback during its retry delay")
+            try await load(missing, url.absoluteString, title: "Fixture Icon")
+            try await wait("declared icon after a failed fallback") { missing.favicon != nil }
+            try require(missing.favicon?.isValid == true,
+                        "a failed fallback does not suppress a page's declared icon")
+            try await wait("a parked tab receives another tab's discovered icon") { companion.favicon != nil }
+            try require(companion.suspended && companion.favicon?.isValid == true,
+                        "a parked tab updates when a loaded tab discovers the same site's icon")
+
+            let racing = makeTab(profile: ProfileManager.shared.create(name: "Favicon checks").id)
+            let raceBefore = server.requests["/favicon.ico", default: 0]
+            let raceDiscovery = server.requests["/icon-discovery/icon-page", default: 0]
+            server.holdFavicons = true
+            _ = racing.favicons.icon(for: url)
+            try await wait("the fallback request is in flight") {
+                server.requests["/favicon.ico", default: 0] > raceBefore
+            }
+            try await load(racing, url.absoluteString, title: "Fixture Icon")
+            try await wait("the page's favicon declarations were inspected") {
+                server.requests["/icon-discovery/icon-page", default: 0] > raceDiscovery
+            }
+            // The observed discovery follows detached disk decoding. This subsequent
+            // round trip lets its native callback enqueue declarations before release.
+            _ = try await js(racing, "document.querySelector('link[rel=icon]').href")
+            server.releaseFavicons()
+            try await wait("declared icon while the fallback is in flight") { racing.favicon != nil }
+            try require(racing.favicon?.isValid == true,
+                        "page icon candidates survive an in-flight fallback request")
+
+            let privateRace = makeTab(profile: ProfileManager.shared.create(name: "Private race checks").id,
+                                      isPrivate: true)
+            let privateBefore = server.requests["/favicon.ico", default: 0]
+            let privateDiscovery = server.requests["/icon-discovery/icon-page", default: 0]
+            server.holdFavicons = true
+            _ = privateRace.favicons.icon(for: url) // regular cache lookup may persist only its own fallback
+            try await wait("regular fallback preceding a private declaration") {
+                server.requests["/favicon.ico", default: 0] > privateBefore
+            }
+            try await load(privateRace, url.absoluteString, title: "Fixture Icon")
+            try await wait("private declarations inspected during the regular fallback") {
+                server.requests["/icon-discovery/icon-page", default: 0] > privateDiscovery
+            }
+            _ = try await js(privateRace, "document.readyState")
+            server.releaseFavicons()
+            try await wait("the private-only declared icon") { privateRace.favicon != nil }
+            let raceCache = ProfileManager.faviconDir(for: privateRace.profileID, in: Store.directory)
+            let raceFiles = (try? FileManager.default.contentsOfDirectory(atPath: raceCache.path)) ?? []
+            try require(raceFiles.isEmpty, "a regular fallback does not persist a private-only declared icon")
+
+            server.faviconAvailable = true
+            let parked = makeTab(profile: ProfileManager.shared.create(name: "Favicon checks").id)
+            parked.park(url: url, Parked(title: "Parked icon", state: nil))
+            try await wait("a parked tab's fetched icon") { parked.favicon != nil }
+            try require(parked.suspended && parked.web.url == nil && parked.favicon?.isValid == true,
+                        "a restored tab receives its favicon without loading its page")
+            let privateTab = makeTab(profile: ProfileManager.shared.create(name: "Private favicon checks").id, isPrivate: true)
+            privateTab.park(url: url, Parked(title: "Private restored tab"))
+            try await wait("a private parked tab's fetched icon") { privateTab.favicon != nil }
+            let privateCache = ProfileManager.faviconDir(for: privateTab.profileID, in: Store.directory)
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: privateCache.path)) ?? []
+            try require(files.isEmpty, "fetching a private parked tab's icon does not write it to disk")
+            server.faviconAvailable = false
         }
 
         private func makeTab(profile: UUID, isPrivate: Bool = false) -> Tab {
@@ -1200,6 +1292,12 @@ import WebKit
         var error: String?
         var requests: [String: Int] = [:]
         var connections: [NWConnection] = []
+        var faviconAvailable = false
+        var holdFavicons = false
+        private var heldFavicons: [(NWConnection, Data)] = []
+        private let icon = Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO1sAAAAASUVORK5CYII=")!
+
 
         init() throws {
             let parameters = NWParameters.tcp
@@ -1224,6 +1322,14 @@ import WebKit
 
         func stop() { listener.cancel(); connections.forEach { $0.cancel() } }
 
+        func releaseFavicons() {
+            holdFavicons = false
+            for (connection, response) in heldFavicons {
+                connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+            }
+            heldFavicons = []
+        }
+
         private func receive(_ connection: NWConnection, buffer: Data) {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { [weak self] data, _, complete, error in
                 MainActor.assumeIsolated {
@@ -1240,14 +1346,20 @@ import WebKit
                     let path = String(target.split(separator: "?", maxSplits: 1)[0])
                     self.requests[path, default: 0] += 1
                     let attachment = path == "/download"
-                    let body = attachment ? "Vane download fixture\n" : self.html(path)
+                    let image = path == "/site-icon.png" || (path == "/favicon.ico" && self.faviconAvailable)
+                    let body = image ? self.icon : Data((attachment ? "Vane download fixture\n" : self.html(path)).utf8)
                     let redirect = path == "/redirect"
-                    let status = redirect ? "302 Found" : "200 OK"
+                    let status = redirect ? "302 Found" : (path == "/favicon.ico" && !image ? "404 Not Found" : "200 OK")
                     let location = redirect ? "Location: /b\r\n" : ""
-                    let contentType = attachment ? "application/octet-stream" : "text/html; charset=utf-8"
+                    let contentType = image ? "image/png" : (attachment ? "application/octet-stream" : "text/html; charset=utf-8")
                     let disposition = attachment ? "Content-Disposition: attachment; filename=fixture.txt\r\n" : ""
-                    let response = "HTTP/1.1 \(status)\r\n\(location)\(disposition)Content-Type: \(contentType)\r\nCache-Control: no-store\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
-                    connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+                    let header = "HTTP/1.1 \(status)\r\n\(location)\(disposition)Content-Type: \(contentType)\r\nCache-Control: no-store\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+                    let response = Data(header.utf8) + body
+                    if path == "/favicon.ico", self.holdFavicons {
+                        self.heldFavicons.append((connection, response))
+                    } else {
+                        connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+                    }
                 }
             }
         }
@@ -1256,6 +1368,7 @@ import WebKit
             let title: String
             let content: String
             switch path {
+            case "/icon-page": title = "Icon"; content = "<link rel=icon href=/site-icon.png><p>Declared icon</p>"
             case "/a": title = "A"; content = "<p>needle one</p><p>needle two</p><a id=next href=/b>Next</a>"
             case "/b": title = "B"; content = "<p>Second page</p>"
             case "/form":
@@ -1271,7 +1384,17 @@ import WebKit
             case "/private": title = "Private"; content = "<p>Private storage</p>"
             default: title = "Empty"; content = ""
             }
-            return "<!doctype html><meta charset=utf-8><title>Fixture \(title)</title><body>\(content)</body>"
+            return """
+                <!doctype html><meta charset=utf-8><title>Fixture \(title)</title>
+                <script>
+                const originalQuery = document.querySelectorAll;
+                document.querySelectorAll = function(selector) {
+                    const result = originalQuery.call(this, selector);
+                    if (selector.startsWith("link[rel~='icon'")) fetch('/icon-discovery' + location.pathname);
+                    return result;
+                };
+                </script><body>\(content)</body>
+                """
         }
     }
 }
