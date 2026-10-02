@@ -3755,8 +3755,7 @@ extension View {
 }
 
 /// A tab title that says so when the on-device model has just renamed the row: the old name
-/// fades out from underneath while the new one is wiped in from the left with a spark riding
-/// the edge. Arc's shimmer.
+/// fades out from underneath while the new one is wiped in from the left.
 ///
 /// Only ever for a *model* answer — `Tab.titleReveal` is bumped by nothing else — because
 /// the point is to explain a name that changed while nobody touched the tab. A page
@@ -3766,8 +3765,8 @@ extension View {
 /// part the wipe has not reached yet is the name the row had a moment ago. That is the whole
 /// trick, and it is why this is a mask rather than two crossfading labels.
 ///
-/// ponytail: three bits of `@State` and no timer. `withAnimation`'s completion handler is
-/// what puts the spark away and drops the old name, so nothing here has to be cancelled when
+/// `withAnimation`'s completion handler drops the old name and restores the plain label,
+/// so nothing here has to be cancelled when
 /// the row goes — and a row that has never been renamed runs no animation at all, because
 /// `onChange` never fires.
 private struct ShimmerTitle: View {
@@ -3783,11 +3782,8 @@ private struct ShimmerTitle: View {
     /// The name being replaced, while it is still on its way out.
     @State private var leaving: String?
     @State private var leavingOpacity: Double = 0
-    @State private var sparking = false
-    /// Whether a wipe is actually in flight. The three layers below exist for a fifth of a
-    /// second, a handful of times ever; without this flag every title in the sidebar is
-    /// drawn through a gradient mask, with a ghost behind it and a `GeometryReader` over it,
-    /// for the life of the window. A row at rest is a plain `Text` with nothing done to it.
+    /// Whether a wipe is actually in flight. The mask and old title only exist during the
+    /// rename; a row at rest is a plain `Text` with nothing done to it.
     ///
     /// Its own flag rather than a test on `wipe`: `withAnimation` sets the state to its
     /// final value at once and animates the *rendering*, so `wipe` is already at rest while
@@ -3800,7 +3796,6 @@ private struct ShimmerTitle: View {
                 Text(title)
                     .mask { wipeMask }
                     .background(alignment: .leading) { ghost }
-                    .overlay { spark }
             } else {
                 Text(title)
             }
@@ -3834,32 +3829,15 @@ private struct ShimmerTitle: View {
         }
     }
 
-    /// One glyph riding the wipe's edge. Drawn in a `GeometryReader` so it can be placed by
-    /// the title's own width, which is the only measurement this view needs and the only
-    /// place it can be taken.
-    private var spark: some View {
-        GeometryReader { geometry in
-            Image(systemName: Look.shimmerSparkle)
-                .font(Look.rowGlyph)
-                .foregroundStyle(Color.accentColor)
-                .opacity(sparking ? Look.shimmerSparkleOpacity : 0)
-                .animation(reduceMotion ? nil : Look.shimmerFade, value: sparking)
-                .position(x: min(wipe, 1) * geometry.size.width, y: geometry.size.height / 2)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-
     private func start(_ reveal: TitleReveal) {
         guard reveal.count > 0 else { return }
         leaving = reveal.from.isEmpty ? nil : reveal.from
         leavingOpacity = 1
         wiping = true
         // Reduced motion still gets the *event* — a name that changed by itself has to be
-        // visible — it simply gets it as a crossfade with no travel and no spark.
+        // visible — it simply gets it as a crossfade with no travel.
         guard !reduceMotion else {
             wipe = ShimmerTitle.full
-            sparking = false
             withAnimation(Look.quick) { leavingOpacity = 0 } completion: {
                 leaving = nil
                 wiping = false
@@ -3867,12 +3845,10 @@ private struct ShimmerTitle: View {
             return
         }
         wipe = 0
-        sparking = true
         withAnimation(Look.shimmerFade) { leavingOpacity = 0 } completion: { leaving = nil }
         // The sweep is the longer of the two, so its completion is where the row goes back
         // to being a plain label.
         withAnimation(Look.shimmerSweep) { wipe = ShimmerTitle.full } completion: {
-            sparking = false
             wiping = false
         }
     }
