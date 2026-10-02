@@ -37,12 +37,14 @@ import SwiftUI
         XCTAssertTrue(Suspension.SpaceState.save([url.absoluteString: Parked(title: "Original document")],
             space: space.id, profileID: profile, in: Store.directory))
         let preview = SpacePreviewList(space: space, liveTabs: nil)
-        let original = try render(preview)
+        let original = preview.rows.today.map { preview.title(for: $0) }
         XCTAssertTrue(Suspension.SpaceState.save([url.absoluteString: Parked(title: "Changed document")],
             space: space.id, profileID: profile, in: Store.directory))
-        XCTAssertEqual(try render(preview), original, "Swipe frames must reuse captured saved metadata")
-        XCTAssertNotEqual(try render(SpacePreviewList(space: space, liveTabs: nil)), original,
-                          "A later swipe must show newly saved titles")
+        XCTAssertEqual(preview.rows.today.map { preview.title(for: $0) }, original, "Swipe frames must reuse captured saved metadata")
+        let next = SpacePreviewList(space: space, liveTabs: nil)
+        XCTAssertEqual(original, ["Original document"])
+        XCTAssertEqual(next.rows.today.map { next.title(for: $0) }, ["Changed document"],
+                       "A later swipe must show newly saved titles")
     }
 
     func testPopulatedPreviewFrameCost() {
@@ -63,9 +65,4 @@ import SwiftUI
         XCTAssertFalse(preview.rows.today.isEmpty)
     }
 
-    private func render(_ preview: SpacePreviewList) throws -> Data {
-        let renderer = ImageRenderer(content: preview.frame(width: 225, height: 300))
-        let image = try XCTUnwrap(renderer.cgImage)
-        return try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
-    }
 }

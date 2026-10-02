@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 /// The window, only so the traffic lights can be nailed to the sidebar's top row.
 ///
@@ -534,8 +535,7 @@ extension VaneWindow {
         window.delegate = delegate
         // `BrowserWindowHost`, not `BrowserWindow` directly: a window hops profiles in place,
         // so which store it is showing is a thing that changes. The host is what watches it.
-        window.contentView = NSHostingView(rootView: BrowserWindowHost(shown: delegate.shown)
-            .font(Look.text))
+        window.contentView = BrowserWindowHost(shown: delegate.shown)
         // Position first, autosave second, as SettingsWindow does: `setFrameUsingName`
         // says whether there was a saved frame, and centring after it would throw the
         // saved position away and keep only the size — which is what every launch did.
@@ -622,8 +622,8 @@ extension VaneWindow {
     /// Not one store showing two profiles: a `TabStore` is built out of its profile's website
     /// data store, cookie jar, history, favicon cache and extension host, and none of those
     /// can be re-homed under a live web view. The window swaps which store it points at
-    /// instead, which is the same tear-down and rebuild opening a window does — see
-    /// `BrowserWindowHost`, and `TabStore.parkedIn` for what "behind" means.
+    /// instead. BrowserWindowHost keeps each profile's interface with its parked store,
+    /// so returning reuses the page host and sidebar rather than rebuilding them.
     ///
     /// Returns nil, changing nothing, for a window that has no profile to hop *to*: a private
     /// window and a Little Vane are both spaceless.
@@ -647,7 +647,7 @@ extension VaneWindow {
         store.window = nil
         arriving.parkedIn = nil
         arriving.window = window
-        delegate.shown.store = arriving         // and the chrome is rebuilt around it
+        delegate.shown.store = arriving         // reattach this profile's existing interface
         ProfileManager.shared.active = profile
         // Live folders keep themselves filled for as long as a window is showing the profile.
         LiveFolders.shared(for: profile.id).begin()
@@ -663,8 +663,8 @@ extension VaneWindow {
         // that says which set of logins the page is using. See `open`.
         window.title = "Vane" + (profile.isDefault ? "" : " — " + profile.name)
         rebuild()                               // the Spaces menu's checkmark has changed profile
-        // Rebuilding the chrome detaches the old first responder. Put the keyboard on the
-        // arriving page once AppKit has mounted it, so a keyboard Space switch can keep typing.
+        // Swapping the profile host detaches the old first responder. Put the keyboard on
+        // the arriving page once AppKit has mounted it, so a keyboard switch can keep typing.
         arriving.focusPageAfterHop()
         return arriving
     }
@@ -800,27 +800,44 @@ extension VaneWindow {
     init(_ store: TabStore) { self.store = store }
 }
 
-/// What a browser window actually hosts: the chrome, pointed at whichever store its window is
-/// showing.
-///
-/// The environment is re-made on every change and the tree is keyed on the store's identity,
-/// so a hop tears the chrome down and builds it again exactly as opening a window does. That
-/// is deliberate rather than cheap: the sidebar, the page card, the footer, the Library and
-/// the swipe monitor all hold `@State` and `@Namespace` belonging to the profile they came up
-/// in, and carrying that across a profile boundary is how a monitor goes on feeding a store
-/// nobody is looking at. The cost is that a cross-profile switch cuts rather than slides —
-/// there is no shared tree left for a transition to run in.
-///
-/// ProfileManager is in the environment so chrome can show the profile and Space it is in and
-/// redraw when either list changes; a view that does not want it simply ignores it.
-struct BrowserWindowHost: View {
-    @ObservedObject var shown: ShownStore
+/// One native hosting view per profile visited in this window. Removing a host from the
+/// window preserves its SwiftUI state and mounted WebKit pages; returning only reattaches
+/// it. Each root stays bound to its own store, so gestures and shortcuts cannot leak into
+/// another profile. Parked stores have no window, and their event monitors ignore input.
+@MainActor final class BrowserWindowHost: NSView {
+    private var hosts: [ObjectIdentifier: NSView] = [:]
+    private var current: ObjectIdentifier?
+    private var subscription: AnyCancellable?
 
-    var body: some View {
-        BrowserWindow()
-            .environmentObject(shown.store)
-            .environmentObject(ProfileManager.shared)
-            .id(ObjectIdentifier(shown.store))
+    init(shown: ShownStore) {
+        super.init(frame: .zero)
+        subscription = shown.$store.sink { [weak self] store in self?.show(store) }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func show(_ store: TabStore) {
+        let id = ObjectIdentifier(store)
+        guard current != id else { return }
+        // Profile deletion can release a parked store. Do not keep its interface alive.
+        let kept = Set(TabStore.all.map(ObjectIdentifier.init)).union([id])
+        for stale in Array(hosts.keys) where !kept.contains(stale) {
+            hosts.removeValue(forKey: stale)?.removeFromSuperview()
+        }
+        let host: NSView
+        if let existing = hosts[id] { host = existing }
+        else {
+            host = NSHostingView(rootView: BrowserWindow()
+                .environmentObject(store)
+                .environmentObject(ProfileManager.shared)
+                .font(Look.text))
+            hosts[id] = host
+        }
+        if let current { hosts[current]?.removeFromSuperview() }
+        host.frame = bounds
+        host.autoresizingMask = [.width, .height]
+        addSubview(host)
+        current = id
     }
 }
 

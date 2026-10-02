@@ -353,10 +353,10 @@ struct SpacePreviewList: View, Equatable {
             .frame(height: Look.rowHeight)
             // Offsets, not the url: the same page can be pinned and open at once, and two
             // rows sharing an id makes SwiftUI draw one of them.
-            ForEach(Array(rows.pinned.enumerated()), id: \.offset) { row($0.element, saved) }
+            ForEach(Array(rows.pinned.enumerated()), id: \.offset) { row($0.element) }
             tidy
             newTab
-            ForEach(Array(rows.today.enumerated()), id: \.offset) { row($0.element, saved) }
+            ForEach(Array(rows.today.enumerated()), id: \.offset) { row($0.element) }
             Spacer(minLength: 0)
         }
     }
@@ -424,7 +424,7 @@ struct SpacePreviewList: View, Equatable {
         .frame(height: Look.rowHeight)
     }
 
-    @ViewBuilder private func row(_ row: Row, _ saved: [String: Parked]) -> some View {
+    @ViewBuilder private func row(_ row: Row) -> some View {
         let tab = liveTab(for: row)
         let page = pageURL(for: row, saved: saved, tab: tab)
         let developer = page.map { DeveloperMode.wants($0, profile: space.profileID) } ?? false
@@ -445,7 +445,7 @@ struct SpacePreviewList: View, Equatable {
                 Text(f.name).font(Look.folderTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
             case .site(let url, _, _):
                 SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
-                LivePRTitle(title: title(for: row, saved: saved),
+                LivePRTitle(title: title(for: row),
                             pr: nil, developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
                     .font(Look.rowTitle).lineLimit(1)
                     .foregroundStyle(Look.inkPrimary)
@@ -457,6 +457,8 @@ struct SpacePreviewList: View, Equatable {
         .frame(height: Look.rowHeight)
         .overlay { if developer { DeveloperTabBorder() } }
     }
+
+    func title(for row: Row) -> String { title(for: row, saved: saved) }
 
     func title(for row: Row, saved: [String: Parked]) -> String {
         switch row {
@@ -648,15 +650,11 @@ private struct SpaceSwipe: ViewModifier {
     private func land(_ direction: Int, from index: Int, width: CGFloat, store: TabStore) {
         guard list.indices.contains(index + direction) else { return settle(store) }
         let target = list[index + direction]
-        // A landing over a profile boundary is a cut, like reduced motion below: the window
-        // hops to that profile's store and the chrome is built again around it, so there is
-        // no shared view tree left for a spring to carry home — and springing the store being
-        // parked would leave it holding an offset nobody is looking at. The ghost has already
-        // drawn where the strip lands. See `Windows.hop`.
-        guard target.profileID == store.profileID,
-              !Motion.reduced else {
+        // Finish the preview's travel before swapping hosts, including across profiles.
+        // Cached profile interfaces can be attached at rest without tearing down the page.
+        guard !Motion.reduced else {
             store.spaceDrag = 0
-            store.spaceSwiping = false          // a cut, not a slide: `SpaceSlide` will not animate
+            store.spaceSwiping = false
             store.switchTo(space: target)
             rebuild()
             return
