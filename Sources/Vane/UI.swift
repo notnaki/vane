@@ -1452,11 +1452,12 @@ private struct FavoriteTile: View {
         // indent is not something VoiceOver can read out.
         if let folder = store.pins.folder(holding: tab.id.uuidString) {
             bits.append("in \(folder.name)")
-            // The state glyph is drawn but hidden from VoiceOver: a row reads as one
+            // The secondary line belongs to the same VoiceOver element: a row reads as one
             // element, so what it means belongs here rather than as a second thing to find.
             if folder.live != nil, let url = store.rowURL(tab.id.uuidString),
-               let pr = LiveFolders.shared(for: store.profileID).state(of: url, in: folder) {
-                bits.append(pr.says.lowercased())
+               let pr = LiveFolders.shared(for: store.profileID).row(of: url, in: folder) {
+                if !pr.author.isEmpty { bits.append("by " + pr.author) }
+                bits.append(pr.state.says.lowercased())
             }
         }
     case .today:
@@ -1917,6 +1918,7 @@ private struct PaneStrip: View {
             ForEach(Array(panes.enumerated()), id: \.element.id) { i, pane in
                 PanePill(store: store, tab: pane, active: pane.id == split.activeTab,
                          index: i, of: panes.count)
+                    .environment(\.livePR, presentation(of: pane))
             }
             // A split's row is still a row: the pane making the noise says so and can be
             // muted from here, and the × closes the pane the row is showing.
@@ -1934,6 +1936,13 @@ private struct PaneStrip: View {
         .onHover { hovering = $0 }
         .onTapGesture { store.focusPane(split.activeTab) }
         .environment(\.rowHovering, hovering)
+    }
+
+    /// A split can mix a live PR with unrelated pages. Each pane owns its own icon metadata.
+    private func presentation(of tab: Tab) -> GitHub.Row? {
+        guard let folder = store.pins.folder(holding: tab.id.uuidString),
+              folder.live != nil, let url = store.rowURL(tab.id.uuidString) else { return nil }
+        return LiveFolders.existing(for: store.profileID)?.row(of: url, in: folder)
     }
 
     /// Which pane the row's trailing glyphs are about. Whichever one is making the noise —
@@ -2743,7 +2752,7 @@ private struct PinnedSection: View {
             VStack(spacing: Look.rowGap) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                     ShapeRow(row: row, index: index, rows: rows.count,
-                             shape: \.pins, pr: state(of: row))
+                             shape: \.pins, pr: presentation(of: row))
                         .transition(.rowCollapse)
                 }
             }
@@ -2764,10 +2773,10 @@ private struct PinnedSection: View {
     /// The pull request a row stands for — only for a row a live folder actually owns, so a
     /// page dragged into one, and every row elsewhere in the sidebar that happens to be on
     /// the same page, wears no mark.
-    private func state(of row: Pins.Visible) -> GitHub.State? {
+    private func presentation(of row: Pins.Visible) -> GitHub.Row? {
         guard let id = row.entry.tab, let folder = store.pins.folder(holding: id),
               folder.live != nil, let url = store.rowURL(id) else { return nil }
-        return live.state(of: url, in: folder)
+        return live.row(of: url, in: folder)
     }
 }
 
@@ -2784,9 +2793,9 @@ private struct ShapeRow: View {
     let shape: ReferenceWritableKeyPath<TabStore, Pins>
     /// The pull request this row stands for, when a live folder owns it. Through the
     /// environment rather than through `StripRow` and `TabRow`'s signatures: only the Pinned
-    /// section can know it, only the row's trailing edge draws it, and every other row in
+    /// section can know it, the row's label and icon draw it, and every other row in
     /// the app — Today, a pane strip, the Library — correctly gets the default of nil.
-    var pr: GitHub.State?
+    var pr: GitHub.Row?
 
     var body: some View {
         Group {
@@ -3126,7 +3135,7 @@ extension SidebarRow where Leading == GlyphBox, Label == Text, Trailing == Empty
 private struct RowHoveringKey: EnvironmentKey { static let defaultValue = false }
 /// The pull request a pinned row stands for, set by `PinnedRow` on the rows a live folder
 /// owns. nil everywhere else, which is every other row in the app.
-private struct LivePRKey: EnvironmentKey { static let defaultValue: GitHub.State? = nil }
+private struct LivePRKey: EnvironmentKey { static let defaultValue: GitHub.Row? = nil }
 /// The sidebar's geometry group (see `Sidebar.strip`). nil outside the sidebar — the
 /// Library's rows are not in it.
 private struct StripKey: EnvironmentKey { static let defaultValue: Namespace.ID? = nil }
@@ -3135,7 +3144,7 @@ extension EnvironmentValues {
         get { self[RowHoveringKey.self] }
         set { self[RowHoveringKey.self] = newValue }
     }
-    fileprivate var livePR: GitHub.State? {
+    fileprivate var livePR: GitHub.Row? {
         get { self[LivePRKey.self] }
         set { self[LivePRKey.self] = newValue }
     }
@@ -3482,12 +3491,34 @@ private struct SplitMenu: View {
     }
 }
 
+/// The title and secondary line share one label, so both truncate within the row.
+struct LivePRTitle: View {
+    let title: String
+    var reveal = TitleReveal()
+    var pr: GitHub.Row?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ShimmerTitle(title: title, reveal: reveal)
+            if let pr, !pr.subtitle.isEmpty {
+                Text(pr.subtitle)
+                    .font(Look.small)
+                    .foregroundStyle(Look.inkTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+    }
+}
+
 private struct TabRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
     /// Its place in the strip, so a drag can say where it started — see `Landing`.
     var spot: Landing.Spot?
     @Environment(\.strip) private var strip
+
+    @Environment(\.livePR) private var pr
 
     var body: some View {
         let selected = store.current == tab.id
@@ -3499,7 +3530,7 @@ private struct TabRow: View {
             if store.renamingTab == tab.id {
                 RenameField(store: store, tab: tab)
             } else {
-                ShimmerTitle(title: TidyTitles.title(for: tab), reveal: tab.titleReveal)
+                LivePRTitle(title: TidyTitles.title(for: tab), reveal: tab.titleReveal, pr: pr)
             }
         } trailing: {
             TabRowTrailing(store: store, tab: tab, selected: selected)
@@ -4114,7 +4145,6 @@ private struct TabRowTrailing: View {
     /// the row is showing, which may be a different one.
     var closes: Tab? = nil
     @Environment(\.rowHovering) private var hovering
-    @Environment(\.livePR) private var pr
 
     var body: some View {
         let closing = closes ?? tab
@@ -4123,21 +4153,6 @@ private struct TabRowTrailing: View {
         // A gap on top of that would be a strip of bare row between two buttons, which
         // belongs to the row's own tap and so *shows* the tab from between its two glyphs.
         HStack(spacing: 0) {
-            // A live folder's row says which pull request it is. Always drawn, not only
-            // under the pointer: it is state, not an action. Hidden from VoiceOver because
-            // the row's own value already says it — see `tabState`.
-            if let pr {
-                Image(systemName: pr.symbol)
-                    .font(Look.rowGlyph)
-                    .foregroundStyle(pr == .closed ? Look.inkTertiary : Look.inkSecondary)
-                    // A button's square of width, so it sits in line with the two beside it
-                    // — but not `rowTarget()`, which also lays down a hit shape. There is
-                    // nothing here to press: this is what the row *is*, not something to do
-                    // to it, and a target over it would only swallow part of the row's click.
-                    .frame(width: Look.rowTarget)
-                    .help(pr.says)
-                    .accessibilityHidden(true)
-            }
             if tab.audible || TabAudio.isMuted(tab) {
                 Button { TabAudio.toggleMute(tab) } label: {
                     Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
@@ -4278,14 +4293,14 @@ private struct TabIcon: View {
 
     var body: some View {
         Group {
-            if let icon = tab.favicon {
-                Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
-            } else if pr != nil {
+            if pr != nil {
                 // A live folder's rows are parked until they are clicked, so github.com's
                 // own icon has not been fetched for most of them and a bare "G" is what the
                 // folder would otherwise be full of. The mark is what Arc draws there, and
                 // here it is only ever drawn on a row a GitHub folder owns.
-                GitHubMark().fill(Look.inkSecondary)
+                GitHubMark().fill(Look.inkPrimary)
+            } else if let icon = tab.favicon {
+                Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
             } else {
                 FaviconPlaceholder(size: size)
             }

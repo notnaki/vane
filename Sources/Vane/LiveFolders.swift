@@ -113,17 +113,27 @@ enum GitHub {
         var draft: Bool
         var repo: String
         var number: Int
+        var author: String = ""
     }
 
-    /// The glyph a live row wears. `closed` is the goodbye — see `plan`.
-    enum State: String, Sendable {
-        case open, draft, closed
+    /// Presentation metadata belongs to the PR, even when its parked tab has never loaded.
+    struct Row: Equatable, Sendable {
+        var author: String
+        var state: State
 
-        var symbol: String {
+        var subtitle: String {
+            [author, state.badge].filter { !$0.isEmpty }.joined(separator: " · ")
+        }
+    }
+
+    enum State: String, Sendable {
+        case open, draft, merged, closed, unavailable
+
+        var badge: String {
             switch self {
-            case .open: "arrow.triangle.pull"
-            case .draft: "pencil.circle"
-            case .closed: "checkmark.circle"
+            case .merged: "Merged"
+            case .closed: "Closed"
+            case .open, .draft, .unavailable: ""
             }
         }
 
@@ -131,7 +141,9 @@ enum GitHub {
             switch self {
             case .open: "Open pull request"
             case .draft: "Draft pull request"
-            case .closed: "Merged or closed"
+            case .merged: "Merged pull request"
+            case .closed: "Closed pull request"
+            case .unavailable: "No longer in this view"
             }
         }
     }
@@ -248,6 +260,8 @@ enum GitHub {
 
     // MARK: The reply
 
+    private struct Author: Decodable { let login: String }
+
     private struct Reply: Decodable {
         struct Item: Decodable {
             let htmlUrl: String
@@ -255,6 +269,7 @@ enum GitHub {
             let draft: Bool?
             let number: Int
             let repositoryUrl: String?
+            let user: Author?
         }
         let items: [Item]
     }
@@ -272,8 +287,62 @@ enum GitHub {
                // nothing rather than to a wrong name: it is only ever shown, never queried.
                repo: ($0.repositoryUrl.map { URL(string: $0) } ?? nil)
                    .map { $0.pathComponents.suffix(2).joined(separator: "/") } ?? "",
-               number: $0.number)
+               number: $0.number, author: $0.user?.login ?? "")
         }
+    }
+
+    /// A missing search result can still be open (filter changes, age limits, or paging).
+    /// Only the PR endpoint's merge evidence earns the Merged label.
+    static func detail(_ data: Data) -> Row? {
+        struct Reply: Decodable {
+            let user: Author?
+            let state: String
+            let draft: Bool?
+            let merged: Bool?
+            let mergedAt: String?
+        }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let reply = try? decoder.decode(Reply.self, from: data),
+              reply.state == "open" || reply.state == "closed" else { return nil }
+        let state: State = reply.merged == true || reply.mergedAt != nil ? .merged
+            : reply.state == "closed" ? .closed : reply.draft == true ? .draft : .open
+        return Row(author: reply.user?.login ?? "", state: state)
+    }
+
+    /// Construct credentialed requests only for validated GitHub PR paths.
+    static func detailURL(_ row: String) -> URL? {
+        guard let url = URL(string: row), url.scheme == "https", url.host == "github.com",
+              url.user == nil, url.password == nil, url.port == nil else { return nil }
+        let parts = url.pathComponents
+        guard parts.count >= 5, parts[3] == "pull",
+              let repo = repository(parts[1] + "/" + parts[2]),
+              let number = Int(parts[4]), number > 0 else { return nil }
+        return URL(string: api + "/repos/" + repo + "/pulls/" + String(number))
+    }
+
+    /// Merges are permanent; closed PRs can reopen and merge between refreshes.
+    static func detailRows(have: Set<String>, found: Set<String>, previous: [String: Row]) -> Set<String> {
+        Set(have.filter { row in
+            !found.contains { GitHub.row(row, isFor: $0) } && previous[row]?.state != .merged
+        })
+    }
+
+    static func presentation(_ prs: [PR], goodbyes: Set<String>, previous: [String: Row],
+                             details: [String: Row]) -> [String: Row] {
+        var rows = Dictionary(prs.map { ($0.url, Row(author: $0.author,
+                                                  state: $0.draft ? .draft : .open)) },
+                              uniquingKeysWith: { first, _ in first })
+        for url in goodbyes {
+            let old = previous[url] ?? previous.first { row(url, isFor: $0.key) }?.value
+            var value = details[url] ?? old ?? Row(author: "", state: .unavailable)
+            if details[url] == nil, value.state == .open || value.state == .draft {
+                value.state = .unavailable
+            }
+            if value.author.isEmpty { value.author = old?.author ?? "" }
+            rows[url] = value
+        }
+        return rows
     }
 
     /// `GET /user`, the login, so the sheet can greet whoever the token belongs to.
@@ -360,7 +429,7 @@ enum GitHub {
 
     /// What a refresh does to a folder's rows. The rows become exactly the pull requests the
     /// search returned, in the order it returned them — except that a row whose pull request
-    /// has just gone is kept for one more refresh wearing the "merged or closed" glyph, so
+    /// has just gone is kept for one more refresh showing its final status, so
     /// it says goodbye rather than blinking out.
     struct Plan: Equatable, Sendable {
         /// Pull request urls with no row yet, in search order.
@@ -379,7 +448,7 @@ enum GitHub {
     }
 
     /// `have` are the folder's row urls in order, `want` the search's pull request urls in
-    /// order, `closing` the rows already wearing the goodbye glyph.
+    /// order, `closing` the rows already in the goodbye cycle.
     static func plan(have: [String], want: [String], closing: Set<String>) -> Plan {
         var seen = Set<String>()
         let wanted = want.filter { seen.insert($0).inserted }
@@ -610,20 +679,10 @@ enum GitHubOAuth {
 
     let profileID: UUID
 
-    /// Per folder, the glyph each of its rows wears. Keyed by folder, not by url alone: the
-    /// same pull request can sit in two live folders, and one global map would let the
-    /// folder that refreshed first take the other's goodbye cycle with it.
-    ///
-    /// Inside a folder, a key is the pull request's url while it is open, and the row's own
-    /// url once it has closed; `state(of:in:)` reads either the same way.
-    ///
-    /// Only the glyphs live here. *Which rows are the folder's* is `Folder.owned`, written
-    /// down with the folder, because a wrong answer to that closes a tab — see `GitHub.mine`.
-    /// A glyph is only a glyph: the worst a lost one costs is one plain row until the next
-    /// refresh. It is dropped when the folder is deleted and not before — a Space the user
-    /// has switched away from is not a deleted folder, and treating it as one was how the
-    /// goodbye state used to evaporate on the way out of a Space and back.
-    @Published private(set) var states: [UUID: [String: GitHub.State]] = [:]
+    /// Per-folder metadata, scoped to rows owned by that live folder.
+    @Published private(set) var rows: [UUID: [String: GitHub.Row]] = [:]
+    /// Goodbye-cycle membership is separate from GitHub's actual PR state.
+    private var departures: [UUID: Set<String>] = [:]
     /// Folders whose last refresh failed. The mark wears `Look.warning` until one succeeds.
     @Published private(set) var failing: Set<UUID> = []
 
@@ -933,14 +992,15 @@ enum GitHubOAuth {
         for (id, q) in live() { refresh(id, query: q, token: token) }
     }
 
-    /// A folder has been deleted, or has stopped being live. Its glyphs go with it — this is
+    /// A folder has been deleted, or has stopped being live. Its metadata goes with it — this is
     /// the *only* thing that drops them, because it is the only event that means the folder
     /// is not coming back. `live()` sees only the Spaces the open windows are holding, so a
     /// folder in a Space no window has been in is missing from it, and pruning against that
     /// used to throw away a goodbye every time the user walked out of a Space and back.
     /// Called from `deleteFolder`.
     func forget(folder: UUID) {
-        states[folder] = nil
+        rows[folder] = nil
+        departures[folder] = nil
         failing.remove(folder)
         last[folder] = nil
     }
@@ -1010,14 +1070,47 @@ enum GitHubOAuth {
                 requestedToken = replacement.token
                 answer = await LiveFolders.fetch(query, token: requestedToken)
             }
-            busy.remove(folder)
-            receive(answer, for: folder, token: requestedToken)
+            defer { busy.remove(folder) }
+            var details: [String: GitHub.Row] = [:]
+            if case .success(let prs) = answer, signIn?.token == requestedToken {
+                let found = Set(prs.map(\.url))
+                let have = Set(stores().flatMap { store -> [String] in
+                    guard let record = store.pins.folder(folder) else { return [] }
+                    return GitHub.mine(store.pins.children(of: folder).compactMap(store.rowURL),
+                                       owned: record.owned ?? [])
+                })
+                let missing = GitHub.detailRows(have: have, found: found, previous: rows[folder] ?? [:])
+                // Resolve departures concurrently; a failed lookup preserves the previous
+                // metadata without claiming that disappearance proves a merge.
+                let detailToken = requestedToken
+                details = await withTaskGroup(of: (String, GitHub.Row?).self) { group in
+                    var result: [String: GitHub.Row] = [:]
+                    for (index, row) in missing.enumerated() {
+                        // At most four detail requests in flight per folder.
+                        if index >= 4, let (finished, value) = await group.next() {
+                            result[finished] = value
+                        }
+                        group.addTask {
+                            guard let url = GitHub.detailURL(row),
+                                  case .success(let values) = await Self.ask(url, token: detailToken, shape: {
+                                      GitHub.detail($0).map { [$0] }
+                                  }) else { return (row, nil) }
+                            return (row, values.first)
+                        }
+                    }
+                    for await (row, value) in group { result[row] = value }
+                    return result
+                }
+                guard live()[folder] == query else { return }
+            }
+            receive(answer, for: folder, token: requestedToken, details: details)
         }
     }
 
     /// Apply a refresh response without treating it as permission to erase credentials.
     /// Keep retrying on the ordinary clock; a later success can recover a transient refusal.
-    func receive(_ answer: Result<[GitHub.PR], GitHub.Trouble>, for folder: UUID, token: String) {
+    func receive(_ answer: Result<[GitHub.PR], GitHub.Trouble>, for folder: UUID, token: String,
+                 details: [String: GitHub.Row] = [:]) {
         // A sign-in may have completed after the request (or its retry) started. Neither
         // an old failure nor an old account's successful result belongs to that sign-in.
         guard let current = signIn else { failing.insert(folder); return }
@@ -1031,11 +1124,11 @@ enum GitHubOAuth {
             credential.record(trouble: nil, token: token)
             needsReconnect = credential.needsReconnect
             failing.remove(folder)
-            apply(prs, to: folder)
+            apply(prs, to: folder, details: details)
         }
     }
 
-    private func apply(_ prs: [GitHub.PR], to folder: UUID) {
+    private func apply(_ prs: [GitHub.PR], to folder: UUID, details: [String: GitHub.Row]) {
         let found = prs.map(\.url)
         var mine = Set<String>()
         var hidden = Set<String>()
@@ -1056,7 +1149,7 @@ enum GitHubOAuth {
             hidden.formUnion(gone)
             let want = found.filter { !gone.contains($0) }
             mine.formUnion(want)
-            let closing = Set((states[folder] ?? [:]).filter { $0.value == .closed }.keys)
+            let closing = departures[folder] ?? []
             var plan = GitHub.plan(have: have, want: want, closing: closing)
             plan.titles = Dictionary(prs.map { ($0.url, $0.title) }, uniquingKeysWith: { a, _ in a })
             // A row still on its way out keeps its own url as its identity for one more
@@ -1071,18 +1164,18 @@ enum GitHubOAuth {
         }
         // Not while the reply was in the air: a folder deleted, or told to stop keeping
         // itself filled, between the request and the answer must not be brought back to life
-        // by a map entry — the glyphs would outlive the folder and `forget(folder:)` would
+        // by a map entry — the metadata would outlive the folder and `forget(folder:)` would
         // already have run.
         guard showing else { return }
         // One list for the folder, whatever order the windows came in: hidden anywhere is
-        // hidden for the folder. The glyphs are one map for the whole folder and the record
+        // hidden for the folder. The metadata is one map for the whole folder and the record
         // is written into every window, so both take the union — sorted, so a refresh that
         // found nothing new writes nothing at all.
         let taken = hidden.sorted()
-        var glyphs: [String: GitHub.State] = [:]
-        for pr in prs where !hidden.contains(pr.url) { glyphs[pr.url] = pr.draft ? .draft : .open }
-        for url in goodbyes { glyphs[url] = .closed }
-        states[folder] = glyphs
+        rows[folder] = GitHub.presentation(prs.filter { !hidden.contains($0.url) },
+                                          goodbyes: goodbyes, previous: rows[folder] ?? [:],
+                                          details: details)
+        departures[folder] = goodbyes
         // Written down with the folder, in every window showing it, because it is the one
         // thing a relaunch cannot guess. `applyLive` has already saved the shape around the
         // rows; this saves what the folder now claims as its own.
@@ -1101,17 +1194,10 @@ enum GitHubOAuth {
         }
     }
 
-    /// The glyph a row in this folder wears, or nil — for a row the folder does not own (a
-    /// page dragged in, and every row elsewhere in the sidebar that merely happens to be on
-    /// the same page), and for a folder that has never come back from GitHub.
-    ///
-    /// Takes the folder rather than its id so ownership is answered from the record that
-    /// holds it, which is the same one the reconcile reads.
-    func state(of row: String, in folder: Folder) -> GitHub.State? {
-        guard let glyphs = states[folder.id],
+    func row(of row: String, in folder: Folder) -> GitHub.Row? {
+        guard let values = rows[folder.id],
               !GitHub.mine([row], owned: folder.owned ?? []).isEmpty else { return nil }
-        if let exact = glyphs[row] { return exact }
-        return glyphs.first { GitHub.row(row, isFor: $0.key) }?.value
+        return values[row] ?? values.first { GitHub.row(row, isFor: $0.key) }?.value
     }
 
     /// "Stop Keeping Filled": the folder becomes an ordinary one holding exactly the rows it
