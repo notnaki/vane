@@ -70,14 +70,17 @@ NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotif
 }
 
 Inspector.configure()
-AppleAI.prewarm()      // first request otherwise pays model load on top of its own latency
 NotificationCenter.default.addObserver(forName: NSApplication.didFinishLaunchingNotification,
                                        object: nil, queue: .main) { _ in
+    Task { @MainActor in
+        Tab.prepareFirstPage(profileID: ProfileManager.shared.active.id)
+    }
     // Keep the previous bundle through startup and the first few seconds of WebKit work.
     // If this copy crashes first, its next launch restores the previous version.
     Task { @MainActor in
         try? await Task.sleep(for: .seconds(5))
         Updater.markHealthyLaunch()
+        AppleAI.prewarm() // leave the first page's CPU and disk work ahead of model warming
     }
 }
 Updater.shared.begin() // a first look five seconds in, then a conditional one on a tick

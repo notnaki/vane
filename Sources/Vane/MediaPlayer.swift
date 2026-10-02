@@ -358,7 +358,8 @@ struct OffscreenPages: View {
             // would be *moved* here rather than shared, and the switch back would race this
             // host's teardown for it — a blink, and a stopped song.
             ForEach(store.everyTab.filter {
-                !shown.contains($0.id) && !WebHost.cardHolds($0.web) && media.keepsRunning($0)
+                !shown.contains($0.id) && media.keepsRunning($0)
+                    && $0.existingWeb.map { !WebHost.cardHolds($0) } == true
             }) { tab in
                 TabPage(tab: tab, offscreen: true).id(tab.id)
             }

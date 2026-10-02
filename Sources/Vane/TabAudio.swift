@@ -176,7 +176,7 @@ import WebKit
     /// Is this tab making noise right now. Muted wins outright: `_isPlayingAudio` deliberately
     /// ignores page mute — measured, it stays true under `_setPageMuted:` — because WebKit is
     /// answering "is media running", and we are answering "can the user hear it".
-    static func isAudible(_ tab: Tab) -> Bool { audible(id: tab.id, web: tab.web) }
+    static func isAudible(_ tab: Tab) -> Bool { audible(id: tab.id, web: tab.existingWeb) }
 
     /// Tabs with media running, whether or not the user can hear it. Kept as a set rather
     /// than asked per tab per render: the page card and the tray both need the answer for

@@ -338,11 +338,42 @@ struct TitleReveal: Equatable, Sendable {
     @Published var windowSnapshot: NSImage?
     var presentationGeneration = 0
     var sharedSpaceID: UUID?
-    /// A `var` only because suspension swaps it: the whole point of suspending a tab is
-    /// dropping the WKWebView so WebKit tears its WebContent process down with it. Every
-    /// reader outside this file keeps working — a suspended tab holds a fresh, unloaded
-    /// WKWebView, which costs no process.
-    private(set) var web: WKWebView
+    /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
+    /// maintenance and session persistence use `existingWeb` to avoid creating one.
+    private(set) var existingWeb: WKWebView?
+    private static var preparedFirstPage: (profileID: UUID, web: WKWebView)?
+
+    /// Pay WebKit/configuration setup after the first window appears, before the first
+    /// navigation. An unloaded view has no URL, history or WebContent process.
+    static func prepareFirstPage(profileID: UUID) {
+        guard profileID != Profile.incognito.id, preparedFirstPage == nil,
+              !TabStore.all.filter({ $0.profileID == profileID }).flatMap(\.everyTab)
+                .contains(where: { $0.existingWeb != nil }) else { return }
+        preparedFirstPage = (profileID, freshWebView(isPrivate: false, profileID: profileID))
+    }
+
+    static func discardPreparedFirstPage(for profileID: UUID) {
+        guard let prepared = preparedFirstPage, prepared.profileID == profileID else { return }
+        close(prepared.web)
+        preparedFirstPage = nil
+    }
+
+    var web: WKWebView {
+        if let existingWeb { return existingWeb }
+        let fresh: WKWebView
+        if !isPrivate, let prepared = Self.preparedFirstPage, prepared.profileID == profileID {
+            Self.preparedFirstPage = nil
+            fresh = prepared.web
+            // The blocker may have finished compiling since this unloaded view was made.
+            fresh.configuration.userContentController.removeAllContentRuleLists()
+            Blocker.apply(to: fresh.configuration.userContentController, profileID: profileID)
+        } else {
+            fresh = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
+        }
+        existingWeb = fresh // attach() reads `web`, so publish the view first.
+        attach()
+        return fresh
+    }
     @Published var title = "New Tab"
     /// The page whose persisted title is standing in while a parked web view wakes. WebKit
     /// briefly reports an empty title during reconstruction; that is not a page title.
@@ -535,9 +566,7 @@ struct TitleReveal: Equatable, Sendable {
         self.id = id
         self.isPrivate = isPrivate
         self.profileID = isPrivate ? Profile.incognito.id : profileID
-        web = Tab.freshWebView(isPrivate: isPrivate, profileID: self.profileID)
         super.init()
-        attach()
         if let url { go(url) }
     }
 
@@ -565,7 +594,7 @@ struct TitleReveal: Equatable, Sendable {
         // would tear the other's password bridge, media tray and status bar out from under
         // it. The scripts and the blocker's rules go onto one of this tab's own instead.
         cfg.userContentController = Tab.contentController(profileID: self.profileID)
-        web = LinkContextWebView(frame: .zero, configuration: cfg)
+        existingWeb = LinkContextWebView(frame: .zero, configuration: cfg)
         super.init()
         attach()
         // Deliberately no load: WebKit navigates the view it is handed back, and for a popup
@@ -746,7 +775,7 @@ struct TitleReveal: Equatable, Sendable {
                     Task { [weak self, weak w] in
                         let ok = await CertificateTrust.evaluate(
                             trust, host: w?.url?.host ?? "", port: w?.url?.port ?? 443).ok
-                        guard let self, let w, self.web === w, !self.suspended,
+                        guard let self, let w, self.existingWeb === w, !self.suspended,
                               w.serverTrust === trust else { return }
                         self.certificateTrusted = ok
                     }
@@ -767,7 +796,7 @@ struct TitleReveal: Equatable, Sendable {
         titleSettleTask = Task { @MainActor [weak self, weak observedWeb] in
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled, let self, let observedWeb,
-                  self.web === observedWeb, !observedWeb.isLoading,
+                  self.existingWeb === observedWeb, !observedWeb.isLoading,
                   self.titlePlaceholderURL != nil else { return }
             let update = Files.settledRestoredTitle(cached: self.title,
                                                     placeholderURL: self.titlePlaceholderURL,
@@ -819,21 +848,21 @@ struct TitleReveal: Equatable, Sendable {
     /// The url this tab is on, live or parked. Everything that writes a tab down — pins,
     /// the session, spaces — has to come through here, or a suspended tab quietly vanishes
     /// from all of them.
-    var currentURL: URL? { web.url ?? parkedURL }
+    var currentURL: URL? { existingWeb?.url ?? parkedURL }
 
     /// Enough to redraw the strip and to come back exactly where the user left off.
     var snapshot: Parked {
         // A host label is a placeholder, not a name: written down it comes back as the
         // name, and the row is called "github.com" for good. See `TabStore.parkedTitle`.
         Parked(title: TidyTitles.realTitle(title, at: currentURL) ? title : "",
-               state: parkedState ?? web.interactionState as? Data)
+               state: parkedState ?? existingWeb?.interactionState as? Data)
     }
 
     /// Drop the WKWebView, and with it the WebContent process, keeping only the
     /// interactionState. The failure mode is one-directional: a state that does not come
     /// back just means the tab reloads from its url.
     func suspend() {
-        guard !suspended, let url = web.url else { return }
+        guard !suspended, let url = existingWeb?.url else { return }
         parkedState = web.interactionState as? Data
         parkedURL = url
         titlePlaceholderURL = Files.restorationPlaceholder(for: url)
@@ -842,17 +871,15 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     /// The half of suspension that lets go: the observers, the script message handlers, the
-    /// view, and the WebContent process behind it — with a fresh unloaded view put in its
-    /// place, so every `tab.web.…` call site elsewhere still has a real object to talk to
-    /// and none of them costs a process.
+    /// view, and the WebContent process behind it. Its replacement is created on demand.
     ///
     /// Split out of `suspend()` for `tearDown()`, which has to let go whatever the state of
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
     private func release(replacing: Bool = true) {
-        let old = web
         certificateDestinationURL = nil
         certificateNavigation = nil
+        guard let old = existingWeb else { return }
         titleSettleTask?.cancel()
         titleSettleTask = nil
         CertificateTrust.navigationStarted(in: self)
@@ -892,8 +919,7 @@ struct TitleReveal: Equatable, Sendable {
         // page and no process, bounded per suspend, so it is a wart, not a regression.
         Tab.close(old)
         if replacing {
-            web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
-            attach()
+            existingWeb = nil
         }
     }
 
@@ -1009,6 +1035,14 @@ struct TitleReveal: Equatable, Sendable {
     /// Load it now, or park it if we know enough about it to draw it without loading.
     func open(_ url: URL, parked p: Parked?) {
         if let p, Prefs.suspendTabs { park(url: url, p) } else { go(url) }
+    }
+
+    /// An explicit navigation replaces parked state instead of loading its old page first.
+    func navigate(to url: URL) {
+        suspended = false
+        parkedState = nil
+        parkedURL = nil
+        go(url)
     }
 
     func isPlayingMedia() async -> Bool {
@@ -1130,7 +1164,7 @@ struct TitleReveal: Equatable, Sendable {
                   let json = raw.data(using: .utf8),
                   let rect = try? JSONSerialization.jsonObject(with: json) as? [String: Double]
             else { return }
-            guard let self, self.web.url == pageURL else { return }
+            guard let self, self.existingWeb?.url == pageURL else { return }
             self.openChooser(host: host, accounts: hits.map(\.account), at: rect)
         }
     }
@@ -1148,7 +1182,7 @@ struct TitleReveal: Equatable, Sendable {
                                in: nil, in: Autofill.world) { [weak self] result in
             // The script says whether it found a form. Silence on a page with no sign-in
             // form is indistinguishable from a fill that went somewhere invisible.
-            guard let self, self.web.url == pageURL, case let .success(value) = result else { return }
+            guard let self, self.existingWeb?.url == pageURL, case let .success(value) = result else { return }
             if (value as? Bool) == true {
                 self.lastFilledAt = .now
                 Passwords.recordUse(host: login.host, account: login.account, profileID: self.profileID)
@@ -1213,13 +1247,13 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     private func finishCertificateNavigation(_ navigation: WKNavigation?, in w: WKWebView) {
-        guard w === web, let navigation, certificateNavigation === navigation else { return }
+        guard w === existingWeb, let navigation, certificateNavigation === navigation else { return }
         certificateDestinationURL = nil
         certificateNavigation = nil
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        if w === web {
+        if w === existingWeb {
             certificateNavigation = navigation
         }
         Trace.begin(id)
@@ -1249,7 +1283,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
-        guard w === web else { return }
+        guard w === existingWeb else { return }
         certificateNavigation = navigation
         certificateDestinationURL = w.url
     }
@@ -1322,10 +1356,10 @@ struct TitleReveal: Equatable, Sendable {
         guard let url = w.url else { return }
         bookmarked = history.isBookmarked(url)
         Task { [weak self, weak w] in
-            guard let self, let w, self.web === w, w.url == url else { return }
+            guard let self, let w, self.existingWeb === w, w.url == url else { return }
             Trace.note("reader probe")
             let available = await Reader.isAvailable(in: w)
-            guard self.web === w, w.url == url else { return }
+            guard self.existingWeb === w, w.url == url else { return }
             self.readerAvailable = available
             Trace.note("reader probe answered")
         }
@@ -1483,8 +1517,8 @@ struct TitleReveal: Equatable, Sendable {
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         if m.name == LinkContextWebView.messageName {
-            guard m.webView === web else { return }
-            guard let linkView = web as? LinkContextWebView else { return }
+            guard m.webView === existingWeb else { return }
+            guard let linkView = existingWeb as? LinkContextWebView else { return }
             linkView.receiveContextLink(m.body)
             return
         }

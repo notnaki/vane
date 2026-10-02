@@ -814,7 +814,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         var view = NSApp.keyWindow?.firstResponder as? NSView
         while let v = view {
             if let web = v as? WKWebView {
-                return TabStore.all.lazy.flatMap(\.tabs).first { $0.web === web }
+                return TabStore.all.lazy.flatMap(\.tabs).first { $0.existingWeb === web }
             }
             view = v.superview
         }

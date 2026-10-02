@@ -813,11 +813,11 @@ extension PasswordChooser {
     @MainActor static func handlePointer(_ event: NSEvent) {
         guard [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) else { return }
         for store in TabStore.all where store.window === event.window {
-            for tab in store.everyTab where tab.web.window === event.window {
-                guard let choice = tab.passwordChoice else { continue }
-                let size = tab.web.bounds.size
-                let point = tab.web.convert(event.locationInWindow, from: nil)
-                let topPoint = CGPoint(x: point.x, y: tab.web.isFlipped ? point.y : size.height - point.y)
+            for tab in store.everyTab where tab.existingWeb?.window === event.window {
+                guard let choice = tab.passwordChoice, let web = tab.existingWeb else { continue }
+                let size = web.bounds.size
+                let point = web.convert(event.locationInWindow, from: nil)
+                let topPoint = CGPoint(x: point.x, y: web.isFlipped ? point.y : size.height - point.y)
                 let height = height(rows: choice.accounts.count)
                 let at = place(anchor: choice.anchor, in: size, height: height)
                 let inside = at.map {

@@ -254,7 +254,8 @@ enum Spaces {
     ///
     /// Refused on a profile's last Space, which is the model's half of Arc greying the item
     /// out: a profile with no Space is the state this file exists to prevent. Returns
-    /// whether it happened, so the caller knows whether to switch the window somewhere.
+    /// whether it happened. Every window showing it switches to a survivor before returning,
+    /// including stores parked behind another profile and deletions from Settings.
     @discardableResult
     @MainActor static func delete(_ id: UUID, in profileID: UUID) -> Bool {
         let all = ProfileManager.shared.spaces(for: profileID)
@@ -265,6 +266,13 @@ enum Spaces {
         ProfileManager.shared.deleteSpace(id, in: profileID)
         TabStore.forgetShape(space: id, profileID: profileID)
         rememberTab(nil, in: id)       // and the row saying which tab it was left on
+        for store in TabStore.all where store.profileID == profileID {
+            // A theme preview can still make `currentSpace` answer with the deleted Space.
+            // Clear it before resolving, so the switch cannot be deferred to a view's task.
+            if store.previewSpace?.id == id { store.previewSpace = nil }
+            if store.currentSpaceID == id { store.resolveStaleSpace() }
+            store.spacesChanged()
+        }
         return true
     }
 
