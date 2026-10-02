@@ -555,6 +555,8 @@ struct CommandField: NSViewRepresentable {
     let dismiss: () -> Void
 
     @State private var query = ""
+    /// The selected address is a starting value, not a query until the user edits it.
+    @State private var seededAddress: String?
     @State private var index = 0
     /// In-memory rows refresh immediately; database suggestions arrive separately.
     @State private var rows: [PaletteRow] = []
@@ -619,6 +621,7 @@ struct CommandField: NSViewRepresentable {
         .onAppear {
             // ⌘L over a page opens with that page's address, selected.
             if mode == .address, let address = store.active?.address, !address.isEmpty {
+                seededAddress = address
                 query = address
             }
             ready = true
@@ -627,10 +630,11 @@ struct CommandField: NSViewRepresentable {
             withAnimation(motion(Look.appear)) { shown = true }
         }
         .onChange(of: query) {
+            if query != seededAddress { seededAddress = nil }
             // Not while scoped to actions: the catalogue is local, and asking the engine
             // for completions to "reload pa" is a network round-trip for rows the scope
             // will not show anyway.
-            if mode != .tabs, !actionsOnly { store.suggest(query) }
+            if mode != .tabs, !actionsOnly { store.suggest(typed) }
             refresh()
         }
         // Completions land later than the keystroke that asked for them; the list has to
@@ -867,7 +871,9 @@ struct CommandField: NSViewRepresentable {
         return true
     }
 
-    private var typed: String { query.trimmingCharacters(in: .whitespaces) }
+    private var typed: String {
+        query == seededAddress ? "" : query.trimmingCharacters(in: .whitespaces)
+    }
 
     /// Where Return loads: a fresh tab when the bar was opened by ⌘T or ⌘Return was held,
     /// else the tab it was opened on. Made only now, so a dismissed bar never leaves an

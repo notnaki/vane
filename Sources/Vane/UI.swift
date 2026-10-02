@@ -937,7 +937,7 @@ struct AddressPill: View {
         if let tab {
             LiveAddressPill(tab: tab)
         } else {
-            PillBody(tab: nil, host: "", address: "", reader: false, readerOn: false)
+            PillBody(tab: nil, host: "", address: "")
         }
     }
 }
@@ -956,7 +956,6 @@ private struct LiveAddressPill: View {
         // and the badge describing the page before last.
         let site = SiteControlModel(tab)
         PillBody(tab: tab, host: host, address: tab.address,
-                 reader: tab.readerAvailable || Reader.isOn(tab), readerOn: Reader.isOn(tab),
                  site: site,
                  zoom: PillState.zoomLabel(tab.zoom))
     }
@@ -974,8 +973,6 @@ private struct PillBody: View {
     let tab: Tab?
     let host: String
     let address: String
-    let reader: Bool
-    let readerOn: Bool
     /// Connection and permission status for the trailing site-controls button.
     var site = SiteControlModel()
     /// "125%" while the page is zoomed, nil at 100 %. Clicking it puts the page back.
@@ -1030,7 +1027,6 @@ private struct PillBody: View {
                     .accessibilityHidden(true)
                 Text("Search or Enter URL…").font(Look.heading).lineLimit(1)
             } else {
-                if reader, let tab { ReaderGlyph(tab: tab, on: readerOn) }
                 Text(host).font(Look.text).lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -1070,22 +1066,6 @@ private struct PillBody: View {
         store.feedback.copied(u)
         axAnnounce("Link copied.")
         Toasts.show("Copied URL", in: store)
-    }
-}
-
-/// The reader toggle, before the host.
-private struct ReaderGlyph: View {
-    let tab: Tab
-    let on: Bool
-    var body: some View {
-        Button { Reader.toggle(tab) } label: {
-            Image(systemName: on ? "doc.plaintext.fill" : "doc.plaintext")
-        }
-        .buttonStyle(TactileButtonStyle())
-        .foregroundStyle(on ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-        .help("Reader (⌥⌘R)")
-        .accessibilityLabel("Reader")
-        .accessibilityValue(on ? "On" : "Off")
     }
 }
 
