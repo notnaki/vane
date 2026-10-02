@@ -345,14 +345,14 @@ struct SpacePreviewList: View, Equatable {
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
     init(space: Space, liveTabs: [Tab]?, state: Stash? = nil,
-         favorites: [URL] = [], includingFavorites: Bool = false) {
+         favorites: [URL] = [], includingFavorites: Bool = false, pinnedCollapsed: Bool = false) {
         self.space = space
         self.liveTabs = state?.tabs ?? liveTabs
         self.favorites = favorites
         self.includingFavorites = includingFavorites
         saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
                                             in: Store.directory)
-        let pinned = Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
+        let pinned = pinnedCollapsed ? [] : Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
                                   liveShape: state?.pins, splits: state?.splits ?? [])
         let today = Self.section(space: space, kind: .today, tabs: self.liveTabs,
                                  liveShape: state?.todayShape, splits: state?.splits ?? [])
@@ -380,7 +380,8 @@ struct SpacePreviewList: View, Equatable {
             // The same metrics as `SpaceRow`, glyph for glyph: the ghost slides under the real
             // heading and any difference in size or ink reads as the row jumping on landing.
             HStack(spacing: Look.rowSpacing) {
-                Image(systemName: space.icon ?? "cloud").font(Look.spaceIcon).frame(width: Look.tileIcon)
+                Image(systemName: (space.icon ?? "cloud") == "cloud" ? "cloud.fill" : (space.icon ?? "cloud"))
+                    .font(Look.spaceIcon).foregroundStyle(Look.inkPrimary).frame(width: Look.tileIcon)
                 Text(space.name).font(Look.spaceTitle)
                 Spacer(minLength: 0)
             }
@@ -547,8 +548,14 @@ extension TabStore {
         let favorites = owner?.tabs.filter { $0.kind == .favourite }.compactMap(\.pinnedURL)
             ?? (UserDefaults.vane.stringArray(forKey: TabStore.defaultsKey(.favourite, space.profileID)) ?? [])
                 .compactMap { URL(string: $0) }
+        // A foreign profile's shared pages may come from another window; its disclosure
+        // state belongs only to a store parked in this window.
+        let disclosureOwner = space.profileID == profileID ? self : TabStore.all.first {
+            $0.profileID == space.profileID && $0.parkedIn === window && window != nil
+        }
         let preview = SpacePreviewList(space: space, liveTabs: state?.tabs, state: state,
-                                       favorites: favorites, includingFavorites: space.profileID != profileID)
+                                       favorites: favorites, includingFavorites: space.profileID != profileID,
+                                       pinnedCollapsed: disclosureOwner?.collapsedSpaceCards.contains(space.id) ?? false)
         if spaceSwiping { spaceGesture.previews[space.id] = preview }
         return preview
     }

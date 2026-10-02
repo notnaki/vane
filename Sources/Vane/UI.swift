@@ -2306,17 +2306,15 @@ private struct TabDrop: DropDelegate {
 /// profile it belongs to.
 private struct SpaceRow: View {
     @EnvironmentObject var store: TabStore
-    @StateObject private var menuAnchor = ChromeMenuAnchor()
     @State private var icons = false
     @State private var theme = false
     @State private var live = false
+    @State private var hovered = false
+    @FocusState private var optionsFocused: Bool
 
     var body: some View {
         if let space = store.currentSpace {
             row(space.icon ?? "cloud", space, space.name)
-            .background(ChromeMenuAnchorView(anchor: menuAnchor))
-            .onTapGesture(count: 2) { store.renamingSpace = space.id }
-            .onTapGesture { showSpaceList(store, anchor: menuAnchor) }
             .contextMenu {
                 SpaceMenu(store: store, space: space, icons: $icons, theme: $theme, live: $live)
             }
@@ -2325,10 +2323,7 @@ private struct SpaceRow: View {
             .sheet(isPresented: $live) {
                 LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Space")
-            .accessibilityValue(space.name)
-            .accessibilityHint("Click for the list of spaces, double-click to rename this one.")
+            .accessibilityElement(children: .contain)
             .accessibilityAction(named: "Rename Space") { renameSpace(space, in: store) }
             .accessibilityAction(named: "Change Space Icon") { icons = true }
             .accessibilityAction(named: "Edit Theme Color") { theme = true }
@@ -2351,16 +2346,72 @@ private struct SpaceRow: View {
     }
 
     private func row(_ icon: String, _ space: Space?, _ name: String) -> some View {
-        HStack(spacing: Look.rowSpacing) {
-            Image(systemName: icon).font(Look.spaceIcon).frame(width: Look.tileIcon)
-            SpaceName(store: store, space: space, fallback: name)
-            Spacer(minLength: 0)
+        let highlighted = space != nil && (hovered || optionsFocused || icons || theme)
+        return HStack(spacing: 0) {
+            HStack(spacing: Look.rowSpacing) {
+                ZStack {
+                    Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
+                        .font(Look.spaceIcon)
+                        .foregroundStyle(Look.inkPrimary)
+                        .opacity(highlighted ? 0 : 1)
+                    Image(systemName: "chevron.down")
+                        .font(Look.spaceIcon.weight(.bold))
+                        .foregroundStyle(Look.inkSecondary)
+                        .rotationEffect(.degrees(store.spaceCardCollapsed ? -90 : 0))
+                        .animation(Motion.reduced ? nil : Look.quick, value: store.spaceCardCollapsed)
+                        .opacity(highlighted ? 1 : 0)
+                }
+                .frame(width: Look.tileIcon, height: Look.rowHeight)
+                .accessibilityHidden(true)
+                SpaceName(store: store, space: space, fallback: name)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(.rect)
+            .onTapGesture(count: 2) {
+                if let space { store.renamingSpace = space.id }
+            }
+            .onTapGesture {
+                if space != nil { store.toggleSpaceCard() }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(space == nil ? [] : .isButton)
+            .accessibilityLabel(space == nil ? name : "Space")
+            .accessibilityValue(space == nil ? name : "\(name), \(store.spaceCardCollapsed ? "collapsed" : "expanded")")
+            .accessibilityHint(space == nil ? "" : "Click to collapse or expand pinned tabs, double-click to rename this Space.")
+            .accessibilityAction {
+                if space != nil { store.toggleSpaceCard() }
+            }
+
+            if let space {
+                Menu {
+                    SpaceMenu(store: store, space: space, icons: $icons, theme: $theme, live: $live)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(Look.spaceIcon.weight(.bold))
+                        .frame(width: Look.rowTarget, height: Look.rowHeight)
+                        .contentShape(.rect)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .focused($optionsFocused)
+                .opacity(hovered || optionsFocused ? 1 : 0)
+                .accessibilityHidden(false)
+                .accessibilityLabel("Space options")
+                .accessibilityValue(space.name)
+                .help("Space options")
+            }
         }
-        // Arc's quietest ink on the sidebar (152 on 66): a heading, not a row.
         .foregroundStyle(Look.inkTertiary)
-        .padding(.horizontal, Look.rowInset)
+        .padding(.leading, Look.rowInset)
+        .padding(.trailing, space == nil ? Look.rowInset : Look.rowInset / 2)
         .frame(height: Look.rowHeight)
-        .contentShape(.rect)
+        .background(highlighted ? Look.hovered : .clear,
+                    in: .rect(cornerRadius: Look.pillRadius))
+        .contentShape(.rect(cornerRadius: Look.pillRadius))
+        .onHover { hovered = $0 }
         // Dropping a tab on the space's name pins it — the way into an empty Pinned section
         // now that there is no placeholder slot to drop on.
         .onDrop(of: [.plainText],
@@ -2733,7 +2784,7 @@ private struct PinnedSection: View {
         // actually draw a row are counted — a pinned pane that is not its split's lead, and
         // an entry whose tab has gone, draw nothing, and a place in the list counted in
         // entries rather than rows lands beside the wrong one. See `OpenTabs`.
-        let rows = store.pins.visible.filter { row in
+        let available = store.pins.visible.filter { row in
             if row.entry.folder != nil { return true }
             guard let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab })
             else { return false }
@@ -2745,7 +2796,8 @@ private struct PinnedSection: View {
         // which would push the whole strip down a pitch under the pointer and take
         // `Landing`'s arithmetic with it. The way in is the divider below, which is the end
         // of this list and takes a drop as one; the space row above; ⌘⇧D; or New Folder.
-        if !rows.isEmpty {
+        let rows = store.spaceCardCollapsed ? [] : available
+        if !available.isEmpty {
             VStack(spacing: Look.rowGap) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                     ShapeRow(row: row, index: index, rows: rows.count,
@@ -2753,7 +2805,10 @@ private struct PinnedSection: View {
                         .transition(.rowCollapse)
                 }
             }
-            .overlay(alignment: .topLeading) { HeldRow(kind: .pinned) }
+            .padding(.bottom, store.spaceCardCollapsed ? -Look.rowGap : 0)
+            .overlay(alignment: .topLeading) {
+                if !store.spaceCardCollapsed { HeldRow(kind: .pinned) }
+            }
             .contextMenu {
                 Button("New Folder") { store.newFolder() }
                 Button("New Live Folder…") { store.askForLiveFolder { open($sheet) } }
@@ -2761,6 +2816,7 @@ private struct PinnedSection: View {
             .sheet(isPresented: $sheet) {
                 LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
             }
+            .accessibilityHidden(store.spaceCardCollapsed)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Pinned Tabs")
             .accessibilityValue("\(store.pins.tabs.count) pinned")

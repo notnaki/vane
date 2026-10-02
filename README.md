@@ -58,6 +58,10 @@ leaves its saved page, its sidebar row offers **Return to Pinned Tab**; returnin
 loads the pinned URL again. Favorites belong to a profile, while pinned and Today
 tabs belong to a Space. Library lists Spaces across all profiles.
 
+Hover the Space card to reveal its chevron and `…` menu. Click the card to collapse
+or expand its pinned tabs; Today stays visible. Double-click its name to rename
+the Space. Each window remembers the collapsed state for each Space while open.
+
 Incognito uses a temporary identity of its own, with a glasses icon and a near-black
 theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and
 its browsing data and download records are not restored after quitting.

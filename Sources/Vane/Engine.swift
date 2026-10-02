@@ -1866,6 +1866,19 @@ struct Stash {
     let profileID: UUID
     /// Which space this window is showing, if any. A window shows one space at a time.
     @Published private(set) var currentSpaceID: UUID?
+    /// Disclosure belongs to this window's Space, without closing or unloading its tabs.
+    @Published private(set) var collapsedSpaceCards: Set<UUID> = []
+
+    var spaceCardCollapsed: Bool {
+        currentSpaceID.map { collapsedSpaceCards.contains($0) } ?? false
+    }
+
+    func toggleSpaceCard() {
+        guard !isPrivate, let id = currentSpaceID else { return }
+        Motion.list {
+            if !collapsedSpaceCards.insert(id).inserted { collapsedSpaceCards.remove(id) }
+        }
+    }
     weak var window: NSWindow?
     /// The window this store is parked behind while that window shows another profile.
     ///
