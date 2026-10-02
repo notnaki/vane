@@ -471,7 +471,12 @@ import WebKit
         return resolved
     }
 
-    func attach(_ download: WKDownload) { download.delegate = self }
+    private var saveAsDownloads: Set<ObjectIdentifier> = []
+
+    func attach(_ download: WKDownload, alwaysAsk: Bool = false) {
+        if alwaysAsk { saveAsDownloads.insert(ObjectIdentifier(download)) }
+        download.delegate = self
+    }
 
     /// Never overwrite: "report.pdf", then "report 2.pdf". Unchanged behaviour, just lifted
     /// out of the delegate so `check()` can prove it against a temp directory instead of
@@ -507,7 +512,8 @@ import WebKit
             return
         }
         var target = Self.uniqueDestination(in: destinationDirectory, suggested: suggestedFilename)
-        let chosenByPanel = DownloadLocation.askEveryTime(for: profileID)
+        let explicitlySaveAs = saveAsDownloads.remove(ObjectIdentifier(download)) != nil
+        let chosenByPanel = explicitlySaveAs || DownloadLocation.askEveryTime(for: profileID)
         if chosenByPanel {
             guard let chosen = askWhereToSave(suggested: suggestedFilename,
                                               in: destinationDirectory) else {
@@ -565,6 +571,7 @@ import WebKit
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        saveAsDownloads.remove(ObjectIdentifier(download))
         guard let i = item(for: download) else { return }
         i.unwatch()
         finish(i, error: error.localizedDescription, resumeData: resumeData)
