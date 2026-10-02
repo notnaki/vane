@@ -272,6 +272,9 @@ import WebKit
         guard let bytes = context.data?.assumingMemoryBound(to: UInt8.self) else { return false }
         var visible = 0
         var transparent = 0
+        var solid = 0
+        var lowerInk = 0.0
+        var upperInk = 1.0
         for pixel in 0..<(32 * 32) {
             let offset = pixel * 4
             let alpha = Double(bytes[offset + 3])
@@ -284,9 +287,16 @@ import WebKit
             let low = min(red, green, blue)
             // Components are premultiplied: compare against alpha, not 255, so a
             // translucent colored logo is never mistaken for a dark gray mark.
-            guard high <= alpha * 0.35, high - low <= alpha * 0.08 else { return false }
+            guard high <= alpha * 0.35, high - low <= alpha * 0.025 + 1 else { return false }
+            // Require one flat ink, not merely a collection of dark gray tones.
+            // Allow one byte of rounding at antialiased edges after unpremultiplying.
+            let ink = (red + green + blue) / (3 * alpha)
+            lowerInk = max(lowerInk, ink - 1 / alpha)
+            upperInk = min(upperInk, ink + 1 / alpha)
+            guard lowerInk - upperInk <= 0.025 else { return false }
+            if alpha >= 127 { solid += 1 }
         }
-        return visible >= 32 && transparent >= 32
+        return visible >= 32 && transparent >= 32 && solid >= 32
     }
 
     /// ponytail: synchronous file IO on the main thread. These are sub-10KB reads on a

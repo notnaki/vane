@@ -78,4 +78,11 @@ import XCTest
         XCTAssertFalse(try cachedIcon(foreground:
             NSColor(calibratedRed: 0, green: 0, blue: 1, alpha: 0.15)).isTemplate)
     }
+
+    func testDarkGrayDetailsAndMutedBrandColorsAreNotFlattened() throws {
+        XCTAssertFalse(try cachedIcon(foreground: NSColor(white: 0.08, alpha: 1),
+            detail: NSColor(white: 0.20, alpha: 1)).isTemplate)
+        XCTAssertFalse(try cachedIcon(foreground:
+            NSColor(calibratedRed: 0.10, green: 0.10, blue: 0.14, alpha: 1)).isTemplate)
+    }
 }
