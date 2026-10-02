@@ -1,6 +1,6 @@
 {
   "fill": {
-    "automatic-gradient": "srgb:0.27,0.30,0.43,1"
+    "automatic-gradient": "srgb:0.65,0.70,0.82,1"
   },
   "groups": [
     {
@@ -8,25 +8,10 @@
         {
           "blend-mode": "normal",
           "fill": "none",
-          "glass": false,
-          "hidden": false,
-          "image-name": "blue-fold.svg",
-          "name": "blue-fold",
-          "position": {
-            "scale": 1.0,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        },
-        {
-          "blend-mode": "normal",
-          "fill": "none",
           "glass": true,
           "hidden": false,
-          "image-name": "porcelain-v.svg",
-          "name": "porcelain-v",
+          "image-name": "swoosh.svg",
+          "name": "swoosh",
           "position": {
             "scale": 1.0,
             "translation-in-points": [
@@ -38,7 +23,61 @@
       ],
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.3
+        "opacity": 0.28
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.25
+      }
+    },
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
+          "glass": true,
+          "hidden": false,
+          "image-name": "right.svg",
+          "name": "right",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.28
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.25
+      }
+    },
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
+          "glass": true,
+          "hidden": false,
+          "image-name": "left.svg",
+          "name": "left",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.28
       },
       "translucency": {
         "enabled": false,

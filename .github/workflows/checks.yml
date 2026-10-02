@@ -57,6 +57,9 @@ jobs:
       - name: Checks
         run: ./.build/debug/vane selfcheck --pure
 
+      - name: App icon migration and bundled selections
+        run: scripts/check-app-icons.sh
+
       - name: Search typing regressions
         run: swift test
 

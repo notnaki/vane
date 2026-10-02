@@ -90,7 +90,7 @@ import AppKit
     static func restoreAtLaunch() {
         let name = current
         if let saved = UserDefaults.vane.string(forKey: key), saved != canonicalName(saved) {
-            UserDefaults.vane.set(name, forKey: key)
+            UserDefaults.vane.set(canonicalName(saved), forKey: key)
         }
         guard overrides(name) else { return }
         apply(name)

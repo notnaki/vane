@@ -10,23 +10,8 @@
           "fill": "none",
           "glass": false,
           "hidden": false,
-          "image-name": "paper-v.svg",
-          "name": "paper-v",
-          "position": {
-            "scale": 1.0,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        },
-        {
-          "blend-mode": "normal",
-          "fill": "none",
-          "glass": false,
-          "hidden": false,
-          "image-name": "ivory-border.svg",
-          "name": "ivory-border",
+          "image-name": "swoosh.svg",
+          "name": "swoosh",
           "position": {
             "scale": 1.0,
             "translation-in-points": [
@@ -38,7 +23,61 @@
       ],
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.15
+        "opacity": 0.16
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.25
+      }
+    },
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
+          "glass": false,
+          "hidden": false,
+          "image-name": "right.svg",
+          "name": "right",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.16
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.25
+      }
+    },
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
+          "glass": false,
+          "hidden": false,
+          "image-name": "left.svg",
+          "name": "left",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.16
       },
       "translucency": {
         "enabled": false,
