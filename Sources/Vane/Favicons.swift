@@ -37,14 +37,35 @@ import WebKit
 
     private var memory: [String: NSImage] = [:]
     private var inflight: [String: Task<Void, Never>] = [:]
+    private struct Pending {
+        var urls: [URL] = []
+        var seen: Set<URL> = []
+        var persistentURLs: Set<URL> = []
+        var fallbackURLs: Set<URL> = []
+
+        mutating func append(_ candidates: [URL], persist: Bool, fallback: URL?) {
+            for url in candidates where seen.insert(url).inserted { urls.append(url) }
+            if persist { persistentURLs.formUnion(candidates) }
+            if let fallback { fallbackURLs.insert(fallback) }
+        }
+    }
+    private var pending: [String: Pending] = [:]
+    /// Parked tabs have no didFinish callback to pick up an icon discovered later by
+    /// another tab. Weak references let every row for that host receive the result.
+    private let tabs = NSHashTable<Tab>.weakObjects()
     /// Hosts that had nothing to give, and when they said so. A 404 isn't re-requested on
     /// every page load — but a timeout during a busy restore is not a verdict for the whole
     /// session either, and it left a real icon showing as a letter until relaunch. After
     /// `missFor` the host is asked again.
     private var misses: [String: Date] = [:]
     private static let missFor: TimeInterval = 600
-    private func missed(_ key: String) -> Bool {
-        misses[key].map { Date.now.timeIntervalSince($0) < Self.missFor } ?? false
+    private func missed(_ key: String, at date: Date = .now) -> Bool {
+        misses[key].map { date.timeIntervalSince($0) < Self.missFor } ?? false
+    }
+
+    private func recordMiss(_ key: String, attemptedFallback: Bool, at date: Date = .now) {
+        guard attemptedFallback else { return }
+        misses[key] = date
     }
 
     private static let maxBytes = 512_000     // an icon that big is a mistake, not an icon
@@ -59,39 +80,45 @@ import WebKit
         if let img = memory[key] { return img }
         if let img = readDisk(key) { memory[key] = img; return img }
         guard !missed(key), let fallback = Favicons.fallback(for: url) else { return nil }
-        warm(key: key, urls: [fallback], persist: true)
+        warm(key: key, urls: [fallback], persist: true, fallback: fallback)
         return nil
     }
 
-    /// Call on didFinish: asks the page which icon it declares, falls back to /favicon.ico.
+    /// Call on didFinish or restoration. Loaded pages supply their declarations; parked
+    /// tabs use the cache and root fallback without starting a WebContent process.
     func load(for tab: Tab) {
-        // A local file has no host to fetch an icon from; Finder's own icon for the
-        // document is what it is recognised by everywhere else on the Mac.
-        if let url = tab.web.url, url.isFileURL { tab.favicon = Files.icon(for: url); return }
-        guard let url = tab.web.url, let key = Favicons.key(for: url) else { tab.favicon = nil; return }
-        // The memory cache stays in front and stays synchronous: the second tab on a host
-        // has its icon in the same turn the page finished in.
+        tabs.add(tab)
+        if let url = tab.currentURL, url.isFileURL { tab.favicon = Files.icon(for: url); return }
+        guard let url = tab.currentURL, let key = Favicons.key(for: url) else { tab.favicon = nil; return }
         if let img = memory[key] { tab.favicon = img; return }
-        // Everything past here is a file read and a PNG decode, and didFinish is the single
-        // busiest moment in a page's life. ponytail: a cold host's icon now appears a turn
-        // after its title rather than with it, which is what a favicon appearing looks like
-        // anyway. `icon(for:)` keeps the synchronous read — SwiftUI's `body` is sync.
+        // Keep disk reads and decoding off the main actor, including during restoration.
         let file = dir.appendingPathComponent(key)
-        Task { @MainActor [weak self, weak tab] in
-            if let img = await Favicons.decoded(file) {
-                self?.memory[key] = img
-                tab?.favicon = img
+        let web = tab.web
+        Task { @MainActor [weak self, weak tab, weak web] in
+            let diskImage = await Favicons.decoded(file)
+            guard let self, let tab, let web, tab.web === web, tab.currentURL == url else { return }
+            if let img = self.memory[key] ?? diskImage {
+                self.memory[key] = img
+                tab.favicon = img
                 return
             }
-            guard let self, let tab else { return }
-            guard !self.missed(key) else { tab.favicon = nil; return }
-            let declared = ((try? await tab.web.evaluateJavaScript(Favicons.linkJS)) as? String ?? "")
+            if tab.suspended {
+                tab.favicon = nil
+                if !self.missed(key), let fallback = Favicons.fallback(for: url) {
+                    self.warm(key: key, urls: [fallback], persist: !tab.isPrivate, fallback: fallback)
+                }
+                return
+            }
+            // A failed root probe says nothing about the icons declared by this page.
+            let declared = ((try? await web.evaluateJavaScript(Favicons.linkJS)) as? String ?? "")
                 .split(separator: "\n").compactMap { URL(string: String($0)) }
+            guard tab.web === web, tab.currentURL == url else { return }
             var candidates = Favicons.ordered(declared)
-            if let f = Favicons.fallback(for: url) { candidates.append(f) }
-            // A private tab may read the shared cache but never writes to it — a favicon
-            // on disk is a record that the host was visited.
-            await self.warm(key: key, urls: candidates, persist: !tab.isPrivate).value
+            let fallback = self.missed(key) ? nil : Favicons.fallback(for: url)
+            if let fallback { candidates.append(fallback) }
+            guard !candidates.isEmpty else { tab.favicon = self.memory[key]; return }
+            await self.warm(key: key, urls: candidates, persist: !tab.isPrivate, fallback: fallback).value
+            guard tab.web === web, tab.currentURL == url else { return }
             tab.favicon = self.memory[key]
         }
     }
@@ -100,24 +127,39 @@ import WebKit
 
     /// One fetch per host at a time; a second tab on the same host awaits the same task.
     @discardableResult
-    private func warm(key: String, urls: [URL], persist: Bool) -> Task<Void, Never> {
+    private func warm(key: String, urls: [URL], persist: Bool, fallback: URL?) -> Task<Void, Never> {
+        var request = pending[key] ?? Pending()
+        request.append(urls, persist: persist, fallback: fallback)
+        pending[key] = request
         if let running = inflight[key] { return running }
         let task = Task { @MainActor [weak self] in
-            defer { self?.inflight[key] = nil }
-            for url in urls {
-                guard let data = await Favicons.fetch(url),
+            guard let self else { return }
+            defer { self.inflight[key] = nil; self.pending[key] = nil }
+            var attemptedFallback = false
+            // A page may finish while a cache-only /favicon.ico probe is awaiting its
+            // response. Keep its declarations in the same queue instead of losing them.
+            while let url = self.pending[key]?.urls.first {
+                self.pending[key]?.urls.removeFirst()
+                let data = await Favicons.fetch(url)
+                if self.pending[key]?.fallbackURLs.contains(url) == true { attemptedFallback = true }
+                guard let data,
                       let img = NSImage(data: data), img.isValid, img.size.width > 0
                 else { continue }
                 // Icons ship at anything from 16 to 512px; pin the point size so SwiftUI
                 // picks the right representation instead of laying out a 512pt image.
                 img.size = NSSize(width: 16, height: 16)
-                guard let self else { return }
                 self.memory[key] = img
-                if persist { self.writeDisk(key, data) }
+                self.misses.removeValue(forKey: key)
+                // A public fallback does not authorize storing another tab's private-only
+                // declaration. Eligibility follows the successful URL, not the batch.
+                if self.pending[key]?.persistentURLs.contains(url) == true { self.writeDisk(key, data) }
+                for tab in self.tabs.allObjects where tab.currentURL.flatMap(Favicons.key) == key {
+                    tab.favicon = img
+                }
                 self.generation += 1
                 return
             }
-            self?.misses[key] = .now
+            self.recordMiss(key, attemptedFallback: attemptedFallback)
         }
         inflight[key] = task
         return task
@@ -156,8 +198,15 @@ import WebKit
 
     /// Always the site's own host — never a third party's icon service.
     static func fallback(for url: URL) -> URL? {
-        guard let host = url.host, url.scheme?.hasPrefix("http") == true else { return nil }
-        return URL(string: "https://\(host)/favicon.ico")
+        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              url.host != nil,
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        components.user = nil
+        components.password = nil
+        components.path = "/favicon.ico"
+        components.query = nil
+        components.fragment = nil
+        return components.url
     }
 
     /// Cache key: the host, with a leading "www." folded onto the apex, and anything that
@@ -260,7 +309,15 @@ import WebKit
     static func check() -> [(String, Bool)] {
         let u = { (s: String) in URL(string: s)! }
         let d = { (t: Double) in Date(timeIntervalSince1970: t) }
+        let retry = Favicons()
+        retry.recordMiss("retry-fixture", attemptedFallback: true, at: d(100))
+        retry.recordMiss("retry-fixture", attemptedFallback: false, at: d(500))
+        let declarationKeepsDeadline = !retry.missed("retry-fixture", at: d(710))
+        retry.recordMiss("retry-fixture", attemptedFallback: true, at: d(750))
+        let fallbackRestartsDeadline = retry.missed("retry-fixture", at: d(800))
         return [
+            ("a failed declaration does not extend the fallback retry delay", declarationKeepsDeadline),
+            ("a newly attempted fallback starts its own retry delay", fallbackRestartsDeadline),
             ("cache key is the host", key(for: u("https://example.com/a?b=c")) == "example.com"),
             ("www folds onto the apex", key(for: u("https://WWW.Example.com/")) == "example.com"),
             ("a subdomain keeps its own key", key(for: u("https://a.example.com/")) == "a.example.com"),
@@ -272,6 +329,12 @@ import WebKit
                 == "https://www.example.com/favicon.ico"),
             ("fallback never points at a third-party host",
              fallback(for: u("https://example.com/x"))?.host == "example.com"),
+            ("fallback preserves HTTP and a custom port",
+             fallback(for: u("http://127.0.0.1:8123/page?q=x#part"))?.absoluteString
+                == "http://127.0.0.1:8123/favicon.ico"),
+            ("fallback preserves HTTPS and a custom port",
+             fallback(for: u("https://example.com:8443/page"))?.absoluteString
+                == "https://example.com:8443/favicon.ico"),
             ("apple-touch-icon is tried before a .ico",
              ordered([u("https://e.com/favicon.ico"), u("https://e.com/apple-touch-icon.png")])
                 .first?.lastPathComponent == "apple-touch-icon.png"),
