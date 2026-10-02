@@ -1161,6 +1161,12 @@ import WebKit
             manager.deleteSpace(imported.id, in: second.id)
             firstStore.newTab(firstURL)
             firstStore.palette = nil
+            guard let firstTab = firstStore.active else { throw Failure("first profile has no tab") }
+            try await loaded(firstTab, path: "/a", title: "Fixture A")
+            try await wait("first profile page mounts") { firstTab.web.superview is WebHost }
+            guard let firstPageHost = firstTab.web.superview else {
+                throw Failure("first profile has no page host")
+            }
             let extensionDirectory = Store.directory.appendingPathComponent("extension-window-fixture")
             try FileManager.default.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)
             try Data(#"{"manifest_version":3,"name":"Window fixture","version":"1"}"#.utf8)
@@ -1187,7 +1193,14 @@ import WebKit
             guard let secondTab = secondStore.tabs.last else { throw Failure("second profile has no tab") }
             try await loaded(secondTab, path: "/b", title: "Fixture B")
 
+            let hopStart = ContinuousClock.now
             _ = Windows.switchTo(profile: first)
+            try await wait("returning profile page mounts") { firstTab.web.window === window }
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            print("PROFILE_RETURN_THROUGH_LAYOUT: \(hopStart.duration(to: .now))")
+            try require(firstTab.web.superview === firstPageHost,
+                        "returning to a profile reuses its mounted page host instead of rebuilding the browser")
             try require(extensionWindows(firstHost).contains(where: { $0.store === firstStore })
                         && !extensionWindows(secondStore.extensions).contains(where: { $0.store === secondStore }),
                         "extensions list the returning profile's window again")
