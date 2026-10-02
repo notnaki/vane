@@ -2550,6 +2550,11 @@ private struct SpaceMenu: View {
             return
         }
     }
+    if let saved = ProfileManager.shared.spaces(for: space.profileID).first(where: { $0.id == space.id }),
+       ProfileManager.shared.spaceContainsEasels(saved) {
+        Toasts.show("Remove this Space’s Easel tabs before moving it to another profile. Its boards stay in Library.", in: store)
+        return
+    }
     // Prune a prior crash snapshot before the source Space disappears. This also handles a
     // profile with no open store, which Session.save() below deliberately does not rewrite.
     guard Session.forget(space: space.id, in: space.profileID) else {

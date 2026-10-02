@@ -89,6 +89,8 @@ board in Library. **File → Capture Page to Easel** (`⇧⌘E`) collects the vi
 into the most recently used Easel in this Space, or the latest saved board, with its
 source link. Boards belong to the browser window's profile and save locally after
 each edit. Private windows cannot create boards or save captures.
+To move a Space to another profile, remove its Easel tabs first; their boards stay
+in the original profile's Library. Export/import a board to copy it to another profile.
 
 Add notes, links, images, or paste from the clipboard. Drag items to arrange them,
 use the selected item's corner to resize, and double-click to edit or crop an image.

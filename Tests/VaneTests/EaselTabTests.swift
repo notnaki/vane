@@ -3,6 +3,33 @@ import XCTest
 @testable import vane
 
 @MainActor final class EaselTabTests: XCTestCase {
+    func testProfileMoveCannotStrandLocalEaselBoards() throws {
+        TestEnvironment.prepare()
+        let directory = Store.directory.appendingPathComponent("easel-profile-move-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let manager = ProfileManager(directory: directory, sandboxed: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = manager.create(name: "Source"), destination = manager.create(name: "Destination")
+        _ = manager.createSpace(name: "Keep", in: source.id)
+        var space = manager.createSpace(name: "Research", in: source.id)
+        let address = EaselAddress.url(UUID())
+        space.pinnedTabURLs = [address]
+        XCTAssertTrue(manager.updateSpace(space))
+        XCTAssertNil(manager.moveSpace(space.id, from: source.id, to: destination.id))
+        XCTAssertEqual(manager.spaces(for: source.id).first { $0.id == space.id }?.pinnedTabURLs, [address])
+        XCTAssertFalse(manager.spaces(for: destination.id).contains { $0.id == space.id })
+
+        // A webpage pin currently showing an Easel carries the board in its sidecar.
+        let home = URL(string: "https://example.com/")!
+        space.pinnedTabURLs = [home]
+        XCTAssertTrue(manager.updateSpace(space))
+        XCTAssertTrue(Suspension.SpaceState.save([home.absoluteString: Parked(title: "Board", page: address)],
+                                                space: space.id, profileID: source.id, in: directory))
+        XCTAssertNil(manager.moveSpace(space.id, from: source.id, to: destination.id))
+        XCTAssertTrue(Suspension.SpaceState.save([:], space: space.id, profileID: source.id, in: directory))
+        XCTAssertNotNil(manager.moveSpace(space.id, from: source.id, to: destination.id), "Ordinary webpage Spaces can still move")
+    }
+
     func testRealSessionAndSpaceWritersPreserveEaselTabsFoldersAndSelection() throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared

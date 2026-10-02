@@ -903,13 +903,23 @@ struct Space: Identifiable, Codable, Equatable {
 
     /// Re-home a Space with the state stored outside spaces.json. The destination is written
     /// first; a failed write leaves the source intact, where its windows can still find it.
+    /// Easel documents belong to their profile. Moving only their addresses would strand
+    /// the tabs in another repository, so those tabs must be removed before this operation.
+    func spaceContainsEasels(_ space: Space) -> Bool {
+        let urls = space.tabURLs + (space.pinnedTabURLs ?? [])
+        if urls.contains(where: { EaselAddress.boardID($0) != nil }) { return true }
+        let state = Suspension.SpaceState.load(space: space.id, profileID: space.profileID, in: directory)
+        return state.values.contains { $0.page.flatMap(EaselAddress.boardID) != nil }
+    }
+
     @discardableResult
     func moveSpace(_ id: UUID, from source: UUID, to destination: UUID,
                    defaults: UserDefaults = .vane) -> Space? {
         let sourceSpaces = spaces(for: source)
         guard source != destination, sourceSpaces.count > 1,
               profiles.contains(where: { $0.id == destination }),
-              let original = sourceSpaces.first(where: { $0.id == id }) else { return nil }
+              let original = sourceSpaces.first(where: { $0.id == id }),
+              !spaceContainsEasels(original) else { return nil }
         let destinationSpaces = spaces(for: destination)
         guard !destinationSpaces.contains(where: { $0.id == id }) else { return nil }
 
