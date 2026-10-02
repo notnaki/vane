@@ -54,6 +54,8 @@ struct RenameField: View {
     @ObservedObject var store: TabStore
     @ObservedObject var tab: Tab
     var font: Font = Look.rowTitle
+    /// A row may show the wandered page's title rather than its saved pinned name.
+    var initialTitle: String?
     @State private var draft = ""
     @State private var done = false
     @FocusState private var focused: Bool
@@ -70,7 +72,7 @@ struct RenameField: View {
             .onExitCommand { cancel() }
             // What the row showed, selected whole: focusing an NSTextField selects its text,
             // so the first keystroke replaces the name rather than appending to it.
-            .onAppear { draft = TidyTitles.title(for: tab); focused = true }
+            .onAppear { draft = initialTitle ?? TidyTitles.title(for: tab); focused = true }
             // Clicking away commits, the way the Finder does — the alternative is a field the
             // user has to press Return in to be rid of.
             .onChange(of: focused) { _, now in if !now { commit() } }

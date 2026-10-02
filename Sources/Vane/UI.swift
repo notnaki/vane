@@ -3528,16 +3528,17 @@ private struct TabRow: View {
         let selected = store.current == tab.id
         let ticked = store.selection.contains(tab.id)
         let returning = tab.kind == .pinned && !tab.atHome
+        let title = returning ? (TabActions.rename(tab) ?? tab.title) : TidyTitles.title(for: tab)
         SidebarRow(selected: selected, ticked: ticked,
                    spacing: returning ? Look.returnRowSpacing : Look.rowSpacing, action: select) {
             TabHomeIcon(store: store, tab: tab)
         } label: {
             // Arc's in-row rename: the title becomes a field and the row keeps its shape.
             if store.renamingTab == tab.id {
-                RenameField(store: store, tab: tab)
+                RenameField(store: store, tab: tab, initialTitle: title)
             } else if returning {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(tab.title).truncationMode(.tail)
+                    Text(title).truncationMode(.tail)
                     Text("Return to Pinned Tab")
                         .font(Look.small)
                         .foregroundStyle(Look.inkTertiary)
@@ -3596,7 +3597,7 @@ private struct TabRow: View {
         // state is the value, and the close button becomes an action rather than a second
         // element the user has to find and then guess the meaning of.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(returning ? tab.title : TidyTitles.title(for: tab))
+        .accessibilityLabel(title)
         .accessibilityValue(tabState(tab, in: store)
                             + selectionSuffix(ticked, store.selection.count))
         .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
