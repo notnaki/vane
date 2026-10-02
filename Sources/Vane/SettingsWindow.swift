@@ -716,10 +716,6 @@ private struct ProfilesPane: View {
                         reload(); rebuild()
                     } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
-                        // Arc greys "Delete Space" out on the last one: a profile always has
-                        // a Space, because every tab in a browser window lives in one. The
-                        // sidebar's own Delete Space is disabled on the same rule.
-                        .disabled(spaces.count < 2)
                         .accessibilityLabel("Delete the space \(space.name)")
                 }
             }
@@ -729,6 +725,10 @@ private struct ProfilesPane: View {
                         let name = newSpace.trimmingCharacters(in: .whitespaces)
                         guard !name.isEmpty else { return }
                         manager.createSpace(name: name, in: profile.id)
+                        for store in TabStore.all where store.profileID == profile.id {
+                            store.resolveStaleSpace()
+                            store.spacesChanged()
+                        }
                         newSpace = ""
                         reload(); rebuild()
                     }

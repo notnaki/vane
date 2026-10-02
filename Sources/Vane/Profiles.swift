@@ -822,12 +822,11 @@ struct Space: Identifiable, Codable, Equatable {
         return true
     }
 
-    /// The profile's Spaces, guaranteed non-empty, with anything the profile was keeping
-    /// *outside* a Space folded in.
+    /// Migrate profiles that predate Spaces. A saved empty list is intentional and stays
+    /// empty, including when the user deletes or moves away the profile's last Space.
     ///
-    /// In Arc a profile always has at least one Space and a browser window always shows it.
-    /// A profile that has none is either brand new or predates that rule, and in the second
-    /// case it has tabs to account for: the pinned rows Vane kept in a profile-level
+    /// A profile without a Spaces file is brand new or predates Spaces. Older profiles
+    /// have tabs to account for: the pinned rows Vane kept in a profile-level
     /// defaults key, and the Today tabs the caller hands in from the session file.
     ///
     /// The key is the awkward half. It was written by *any* window whose `currentSpaceID`
@@ -837,7 +836,7 @@ struct Space: Identifiable, Codable, Equatable {
     /// last-used one (else the first), never into a Space of their own.
     ///
     /// The key is only removed once the Spaces holding those rows are demonstrably on disk.
-    /// If the write failed there is nothing honest to hand back, so the profile's Spaces are
+    /// If the write failed, the profile's Spaces are
     /// returned as they were and the key is left for the next launch to try again — one
     /// launch in the old spaceless shape beats a silently emptied Pinned section.
     ///
@@ -850,6 +849,10 @@ struct Space: Identifiable, Codable, Equatable {
     @discardableResult
     func ensureSpaces(for profile: Profile, defaults: UserDefaults = .vane,
                       sessionTabs: [URL] = []) -> [Space] {
+        if let data = try? Data(contentsOf: Self.spacesURL(for: profile.id, in: directory)),
+           let saved = try? JSONDecoder().decode([Space].self, from: data), saved.isEmpty {
+            return []
+        }
         let key = TabStore.defaultsKey(.pinned, profile.id)
         let stranded = (defaults.stringArray(forKey: key) ?? []).compactMap(URL.init(string:))
         let existing = spaces(for: profile.id)
@@ -895,9 +898,13 @@ struct Space: Identifiable, Codable, Equatable {
     /// Deleted, or moved to another profile — either way it is off this profile's list, so no
     /// window here may go on keeping its pages alive behind the Space it is showing: there is
     /// no strip left that could ever draw them again. See `Stash`.
-    func deleteSpace(_ id: UUID, in profileID: UUID) {
-        saveSpaces(spaces(for: profileID).filter { $0.id != id }, for: profileID)
+    @discardableResult
+    func deleteSpace(_ id: UUID, in profileID: UUID) -> Bool {
+        let all = spaces(for: profileID)
+        guard all.contains(where: { $0.id == id }),
+              saveSpaces(all.filter { $0.id != id }, for: profileID) else { return false }
         TabStore.forgetStashes(space: id, profileID: profileID)
+        return true
     }
 
     /// Re-home a Space with the state stored outside spaces.json. The destination is written
@@ -906,7 +913,7 @@ struct Space: Identifiable, Codable, Equatable {
     func moveSpace(_ id: UUID, from source: UUID, to destination: UUID,
                    defaults: UserDefaults = .vane) -> Space? {
         let sourceSpaces = spaces(for: source)
-        guard source != destination, sourceSpaces.count > 1,
+        guard source != destination,
               profiles.contains(where: { $0.id == destination }),
               let original = sourceSpaces.first(where: { $0.id == id }) else { return nil }
         let destinationSpaces = spaces(for: destination)
@@ -1172,6 +1179,12 @@ struct Space: Identifiable, Codable, Equatable {
                                                                 profileID: transferProfile.id)) == nil
                    && defaults.data(forKey: TabStore.shapeKey(.today, space: transferring.id,
                                                                profileID: transferProfile.id)) == nil)
+            let last = transferManager.spaces(for: transferProfile.id).first!
+            assert("the last Space can move to another profile",
+                   transferManager.moveSpace(last.id, from: transferProfile.id,
+                                             to: defaultID, defaults: defaults)?.id == last.id)
+            assert("moving the last Space leaves its source profile empty on reopen",
+                   transferManager.ensureSpaces(for: transferProfile, defaults: defaults).isEmpty)
         } else {
             assert("scratch defaults for Space transfer are available", false)
         }
@@ -1209,10 +1222,17 @@ struct Space: Identifiable, Codable, Equatable {
         pm.updateSpace(edited)
         pm.deleteSpace(reading.id, in: work.id)
         assert("a deleted space is gone", pm.spaces(for: work.id).isEmpty)
+        let emptyProfile = pm.profiles.first { $0.id == work.id }!
+        assert("opening a profile whose last space was deleted leaves it empty",
+               pm.ensureSpaces(for: emptyProfile).isEmpty)
+        assert("an empty profile stays empty after reopening the manager",
+               ProfileManager(directory: root, sandboxed: true)
+                   .ensureSpaces(for: emptyProfile).isEmpty)
 
-        // Arc's rule: every tab in a browser window lives in a Space, so a profile always
-        // has one. `work` has just been emptied, which is exactly the state a profile that
-        // predates the rule is in — its tabs kept in a profile-level defaults key and in the
+        // A missing Spaces file is the legacy fixture; a saved empty list is intentional.
+        try? fm.removeItem(at: spacesURL(for: work.id, in: root))
+
+        // A profile that predates Spaces has its tabs in a profile-level defaults key and the
         // session file. Both have to come back inside the Space that is made for it.
         // A throwaway suite, so the real preferences are never read or written here.
         let suite = "vane.check.\(UUID().uuidString)"

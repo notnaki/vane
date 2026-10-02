@@ -3192,6 +3192,12 @@ struct Stash {
             return
         }
         saveCurrentSpace()
+        // Tabs opened while a profile has no Spaces join the first Space it enters.
+        // Keep their objects, folders and selection through the ordinary incoming rebuild.
+        let loose = currentSpaceID == nil
+            ? Stash(tabs: tabs.filter { $0.kind != .favourite }, pins: pins,
+                    todayShape: todayShape, splits: splits, current: current, fingerprint: "")
+            : nil
         sharingReady = false
         defer {
             sharingReady = true
@@ -3235,8 +3241,12 @@ struct Stash {
             // A Space that is not on disk any more — deleted from another window, or the
             // stale one `resolveStaleSpace` is walking out of — has nothing to come back
             // from and nothing to check a stash against, so its pages simply go.
-            for tab in leaving { dropPane(tab.id) }
-            SharedTabs.release(leaving, excluding: self)
+            if loose == nil {
+                for tab in leaving { dropPane(tab.id) }
+                SharedTabs.release(leaving, excluding: self)
+            } else {
+                splits = []
+            }
         }
         tabs.removeAll { $0.kind != .favourite }
         // The one place tabs leave the strip without `close` — and so without
@@ -3283,6 +3293,20 @@ struct Stash {
             // to the first Today tab, the first pinned row, and finally an empty pill.
             current = landing(in: space.id)
         }
+        if let loose {
+            let existing = Set(tabs.map(\.id))
+            tabs += loose.tabs.filter { !existing.contains($0.id) }
+            let pinEntries = Set(pins.entries.map(\.id))
+            pins.entries += loose.pins.entries.filter { !pinEntries.contains($0.id) }
+            let todayEntries = Set(todayShape.entries.map(\.id))
+            todayShape.entries += loose.todayShape.entries.filter { !todayEntries.contains($0.id) }
+            let incomingSplits = splits
+            splits += loose.splits.filter { split in !incomingSplits.contains { $0.tabs == split.tabs } }
+            if let selected = loose.current, tabs.contains(where: { $0.id == selected }) { current = selected }
+            normaliseSections()
+            syncShapes()
+            if !saveCurrentSpace() { Toasts.show("Could not save Space", in: self) }
+        }
         // Only when the landing found nothing at all. A Space of pinned rows and no Today
         // tabs lands on a row, and the command bar over the page it just opened would be a
         // bar nobody asked for.
@@ -3292,13 +3316,35 @@ struct Stash {
     }
 
     /// A Space deleted from another window, from Settings or from the Library leaves this
-    /// window pointing at one that is not on disk. An ordinary window always shows a Space,
-    /// so it falls into a survivor rather than drawing a sidebar with no heading and a
-    /// Pinned section it can never save. The tabs it was showing went to the Archive with
-    /// the Space, which is where `switchTo` emptying the strip leaves the user looking.
+    /// window pointing at one that is not on disk. Switch to a survivor, or clear the
+    /// deleted Space's tabs and let the profile remain without any Spaces.
     func resolveStaleSpace() {
-        guard !isPrivate, !isLittle, currentSpace == nil, let first = spaces.first else { return }
-        switchTo(space: first)
+        guard !isPrivate, !isLittle,
+              !spaces.contains(where: { $0.id == currentSpaceID }) else { return }
+        previewSpace = nil
+        if let first = spaces.first { switchTo(space: first); return }
+        guard currentSpaceID != nil else { return }
+        sharingReady = false
+        defer {
+            sharingReady = true
+            SharedTabs.synchronize(from: self)
+            SharedTabs.refreshPresentation()
+        }
+        let leaving = tabs.filter { $0.kind != .favourite }
+        for tab in leaving { dropPane(tab.id) }
+        tabs.removeAll { $0.kind != .favourite }
+        SharedTabs.release(leaving, excluding: self)
+        selection.clear()
+        current = nil
+        currentSpaceID = nil
+        editingSpace = nil
+        renamingSpace = nil
+        pins = Pins()
+        todayShape = Pins()
+        applySpaceAppearance()
+        rememberSpace()
+        openPalette(.newTab)
+        extensions.sync()
     }
 
     /// ⌥⌘→ / ⌥⌘←: the next or previous space along the strip, wrapping round. The strip runs

@@ -2388,7 +2388,6 @@ private struct SpaceMenu: View {
     /// How many Spaces the profile that owns *this* Space has. The dots this menu hangs off
     /// are the whole strip now, so the Space under the pointer need not be this window's
     /// profile's — and "never its last one" is a question about its own profile, not ours.
-    private var siblings: Int { ProfileManager.shared.spaces(for: space.profileID).count }
 
     var body: some View {
         Button("Change Space Icon…") { open($icons) }
@@ -2405,9 +2404,6 @@ private struct SpaceMenu: View {
                 }
             }
         }
-        // Moving a Space out is a delete on this side, so the last one is as un-movable as
-        // it is un-deletable: a profile always has a Space.
-        .disabled(siblings < 2)
         Divider()
         Button("New Folder") { spaceMenuTarget(space, from: store)?.newFolder() }
         // Arc asks nothing: signed in, the folder is there on the click. Signed out, the
@@ -2426,7 +2422,6 @@ private struct SpaceMenu: View {
         Button("Manage Spaces…") { Library.open(.spaces, in: store) }
         Divider()
         Button("Delete Space") { deleteSpace(space, in: store) }
-            .disabled(siblings < 2)
     }
 }
 
@@ -2464,10 +2459,6 @@ private struct SpaceMenu: View {
 }
 
 @MainActor private func deleteSpace(_ space: Space, in store: TabStore) {
-    // The owning profile's list, not this window's: the footer's dots are the whole strip, so
-    // the Space being deleted may belong to a profile this window is not showing.
-    let siblings = ProfileManager.shared.spaces(for: space.profileID)
-    guard siblings.count > 1 else { return }
     let a = NSAlert()
     a.messageText = "Delete the space “\(space.name)”?"
     a.informativeText = "Its tabs and pinned tabs go to the Archive, where the Library can "
@@ -2484,7 +2475,6 @@ private struct SpaceMenu: View {
 /// prove that a parked profile's live navigation is archived before the Space disappears.
 @discardableResult
 @MainActor func deleteSpaceConfirmed(_ space: Space, in store: TabStore) -> Bool {
-    guard ProfileManager.shared.spaces(for: space.profileID).count > 1 else { return false }
     let owners = storesShowing(space)
     guard saveSpaces(in: owners, reportingIn: store) else { return false }
     // A hidden Space can still navigate in a stash. Archive its live snapshot when no
@@ -2526,12 +2516,7 @@ private struct SpaceMenu: View {
 /// runs across profiles, so a Space that changes profile has only moved along it, and a window
 /// showing it follows in place. See `Windows.hop`.
 @MainActor func moveSpace(_ space: Space, to profile: Profile, from store: TabStore) {
-    // The source profile is losing a Space, so the same rule as Delete applies: never its
-    // last one. Without this the profile is left with none, this window's close writes its
-    // tabs into that profile's session, and the next window there invents a Space holding a
-    // second copy of every page that just moved out.
-    guard profile.id != space.profileID,
-          ProfileManager.shared.spaces(for: space.profileID).count > 1 else { return }
+    guard profile.id != space.profileID else { return }
     let showing = space.id == store.currentSpaceID
     let owners = storesShowing(space)
     guard saveSpaces(in: owners, reportingIn: store) else { return }
