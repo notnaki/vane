@@ -1196,6 +1196,14 @@ import WebKit
             secondStore.palette = nil
             guard let secondTab = secondStore.tabs.last else { throw Failure("second profile has no tab") }
             try await loaded(secondTab, path: "/b", title: "Fixture B")
+            let favorite = secondStore.newBlankTab()
+            favorite.park(url: firstURL, Parked(title: "Foreign favourite"))
+            secondStore.move(favorite.id, to: .favourite)
+            guard let previewFolder = secondStore.newFolder(from: secondTab.id, in: \.todayShape) else {
+                throw Failure("swipe preview could not group a Today tab")
+            }
+            secondStore.renamingFolder = nil
+            secondStore.current = secondTab.id
 
             try await wait("second profile shows its traffic lights") {
                 window.standardWindowButton(.closeButton)?.isHidden == false
@@ -1227,6 +1235,26 @@ import WebKit
             try require(VaneWindow.lightKinds.allSatisfy {
                 window.standardWindowButton($0)?.isHidden == true
             }, "a cached profile restores its own sidebar and window controls")
+            firstStore.spaceSwiping = true
+            firstStore.spaceDrag = -20
+            let foreignPreview = firstStore.swipePreview(in: secondSpace)
+            try require(foreignPreview.includingFavorites && foreignPreview.favorites == [firstURL]
+                        && secondStore.isParked && firstStore.currentSpaceID == firstSpace.id,
+                        "a cross-profile ghost includes incoming favourites before the profile handoff")
+            try require(foreignPreview.rows.today.map(\.depth) == [0, 1]
+                        && foreignPreview.title(for: foreignPreview.rows.today[0]) == previewFolder.name,
+                        "a parked profile's Today ghost preserves its expanded folder and child indentation")
+            secondStore.toggleFolder(previewFolder.id, in: \.todayShape)
+            try require(firstStore.swipePreview(in: secondSpace) == foreignPreview
+                        && foreignPreview.rows.today.count == 2,
+                        "a moving ghost keeps its captured collapse state until the gesture ends")
+            firstStore.spaceSwiping = false
+            let closedPreview = firstStore.swipePreview(in: secondSpace)
+            try require(closedPreview.rows.today.count == 1
+                        && closedPreview.title(for: closedPreview.rows.today[0]) == previewFolder.name,
+                        "the next ghost reflects the parked profile's closed Today folder")
+            firstStore.spaceDrag = 0
+            secondStore.deleteFolder(previewFolder.id, in: \.todayShape)
             firstStore.sidebarShown = true
             try require(firstTab.web.superview === firstPageHost,
                         "returning to a profile reuses its mounted page host instead of rebuilding the browser")
@@ -1251,7 +1279,9 @@ import WebKit
                 let responder = window.firstResponder
                 throw Failure("keyboard focus stayed on \(String(describing: responder)) "
                               + "(key=\(window.isKeyWindow), pageWindow=\(secondTab.web.window === window), "
-                              + "palette=\(String(describing: secondStore.palette)))")
+                              + "palette=\(String(describing: secondStore.palette)), "
+                              + "firstPage=\(responder === firstTab.web), favoritePage=\(responder === favorite.web), "
+                              + "owned=\(secondStore.ownsPage(secondTab)))")
             }
             try require(window.firstResponder === secondTab.web,
                         "revealing a parked tab leaves the page ready for typing")

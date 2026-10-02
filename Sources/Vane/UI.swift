@@ -794,19 +794,14 @@ private struct Sidebar: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
             ScrollView {
-                VStack(spacing: Look.rowGap) {
-                    Favorites()
-                    // Everything a Space owns, and nothing it shares: the grid above stays
-                    // put while these slide in from the direction of travel.
+                SpaceSidebarStrip(store: store, favorites: Favorites(), sections:
                     VStack(spacing: Look.rowGap) {
                         SpaceRow()
                         PinnedTabs()
                         TidyRow()
                         NewTabRow()
                         OpenTabs()
-                    }
-                    .spaceSlide(store)
-                }
+                    })
                 // The list is at least as tall as what it is scrolling in, so the emptiness
                 // under the last tab is part of the *content* — which is what lets the drag
                 // ground behind it see the pointer. A scroll view claims the hover over its

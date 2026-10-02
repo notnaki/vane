@@ -233,12 +233,40 @@ struct MoveToSpaceMenu: View {
 
 extension View {
     /// The sidebar's Space-owned sections sliding in from the direction of travel while the
-    /// tint cross-fades under them. Favourites are outside it on purpose: they are the same
-    /// tiles in every Space, and Arc's grid does not move when you switch.
+    /// tint cross-fades under them. Within a profile the shared favourites stay in place;
+    /// at a profile boundary the grid travels with the incoming profile's sections.
     func spaceSlide(_ store: TabStore) -> some View { modifier(SpaceSlide(store: store)) }
 
     /// Two-finger horizontal swipe on the sidebar switches Space.
     func spaceSwipe(_ store: TabStore) -> some View { modifier(SpaceSwipe(store: store)) }
+}
+
+/// Profile favourites travel with the incoming Space only at a profile boundary.
+/// Observing the gesture here keeps the rest of the browser out of per-frame updates.
+struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
+    let store: TabStore
+    let favorites: Favorites
+    let sections: Sections
+    @ObservedObject private var gesture: SpaceGesture
+
+    init(store: TabStore, favorites: Favorites, sections: Sections) {
+        self.store = store
+        self.favorites = favorites
+        self.sections = sections
+        gesture = store.spaceGesture
+    }
+
+    var body: some View {
+        if let neighbour = store.swipeNeighbour, neighbour.profileID != store.profileID {
+            VStack(spacing: Look.rowGap) { favorites; sections }
+                .spaceSlide(store)
+        } else {
+            VStack(spacing: Look.rowGap) {
+                favorites
+                sections.spaceSlide(store)
+            }
+        }
+    }
 }
 
 private struct SpaceSlide: ViewModifier {
@@ -279,7 +307,7 @@ private struct SpaceSlide: ViewModifier {
     /// whole point is that there is nothing over there to show.
     @ViewBuilder private var preview: some View {
         let drag = gesture.drag
-        if drag != 0, let space = neighbour(of: drag) {
+        if drag != 0, let space = store.swipeNeighbour {
             store.swipePreview(in: space)
                 .equatable()
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -289,15 +317,6 @@ private struct SpaceSlide: ViewModifier {
                 // announcing a list that may spring straight back is noise.
                 .accessibilityHidden(true)
         }
-    }
-
-    private func neighbour(of drag: CGFloat) -> Space? {
-        // The strip: the Space on the other side of a profile boundary is the next one along
-        // just as any other neighbour is, and its ghost is what the fingers are pulling in.
-        let list = store.swipeStrip
-        guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return nil }
-        let n = drag < 0 ? i + 1 : i - 1
-        return list.indices.contains(n) ? list[n] : nil
     }
 }
 
@@ -316,31 +335,44 @@ struct SpacePreviewList: View, Equatable {
     private let saved: [String: Parked]
     let rows: (pinned: [Row], today: [Row])
     private let todayCount: Int
+    let favorites: [URL]
+    let includingFavorites: Bool
 
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
-    init(space: Space, liveTabs: [Tab]?) {
+    init(space: Space, liveTabs: [Tab]?, state: Stash? = nil,
+         favorites: [URL] = [], includingFavorites: Bool = false) {
         self.space = space
-        self.liveTabs = liveTabs
+        self.liveTabs = state?.tabs ?? liveTabs
+        self.favorites = favorites
+        self.includingFavorites = includingFavorites
         saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
                                             in: Store.directory)
-        let today = Self.todayRows(space: space, liveTabs: liveTabs)
-        todayCount = today.count
-        rows = Self.rows(space: space, today: today)
+        let pinned = Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
+                                  liveShape: state?.pins, splits: state?.splits ?? [])
+        let today = Self.section(space: space, kind: .today, tabs: self.liveTabs,
+                                 liveShape: state?.todayShape, splits: state?.splits ?? [])
+        todayCount = self.liveTabs?.filter { $0.kind == .today }.count ?? space.tabURLs.count
+        let room = max(0, Look.spacePreviewRows - pinned.count)
+        rows = (Array(pinned.prefix(Look.spacePreviewRows)), Array(today.prefix(room)))
     }
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
 
-    /// What a preview row can be. A folder is one row whether it is open or shut: the
-    /// sidebar under the fingers is a shape, and a folder that unpacked itself here would
-    /// push every row below it out of line with the Space it is sliding over.
     enum Row {
-        case folder(Folder)
-        case site(URL, TabKind, Tab? = nil)
+        case folder(Folder, depth: Int = 0)
+        case site(URL, TabKind, Tab? = nil, depth: Int = 0)
+
+        var depth: Int {
+            switch self {
+            case .folder(_, let depth), .site(_, _, _, let depth): return depth
+            }
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.rowGap) {
+            if includingFavorites { favoriteGrid }
             // The same metrics as `SpaceRow`, glyph for glyph: the ghost slides under the real
             // heading and any difference in size or ink reads as the row jumping on landing.
             HStack(spacing: Look.rowSpacing) {
@@ -361,37 +393,46 @@ struct SpacePreviewList: View, Equatable {
         }
     }
 
-    /// The Space's Pinned section in the shape it was left in, then its Today tabs. The
-    /// shape comes from the same defaults key the real sidebar restores from, so a folder
-    /// previews where it will actually be.
-    private static func rows(space: Space, today: [Row]) -> (pinned: [Row], today: [Row]) {
-        let urls = space.pinnedTabURLs ?? []
-        var pinned: [Row] = []
-        if let shape = TabStore.savedShape(space: space.id, profileID: space.profileID) {
-            for entry in shape.entries where entry.parent == nil {
-                switch entry.row {
-                case .folder(let f): pinned.append(.folder(f))
-                case .tab(let name): if let url = URL(string: name) { pinned.append(.site(url, .pinned)) }
-                }
-            }
-            // A tab another window moved into this Space while it was shut is in the urls
-            // but not in the shape, and the real sidebar draws it after the rest.
-            let named = Set(shape.tabs)
-            pinned += urls.filter { !named.contains($0.absoluteString) }.map { .site($0, .pinned) }
-        } else {
-            pinned = urls.map { .site($0, .pinned) }
+    /// Use the same visible outline as the live sidebar, including nesting and collapse.
+    /// Disk shapes name URLs; live shapes name Tab IDs, so restore the former with the
+    /// same counted URL mapping as the real section (duplicates remain distinct).
+    private static func section(space: Space, kind: TabKind, tabs: [Tab]?,
+                                liveShape: Pins?, splits: [Split]) -> [Row] {
+        let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
+        let loaded = tabs?.filter { $0.kind == kind }
+        let opened: [(url: String, id: String)] = loaded.map { tabs in
+            tabs.compactMap { tab in tab.pinnedURL.map { ($0.absoluteString, tab.id.uuidString) } }
+        } ?? urls.enumerated().map { ($0.element.absoluteString, String($0.offset)) }
+        let disk = TabStore.savedShape(kind, space: space.id, profileID: space.profileID)
+        var shape = liveShape ?? TabStore.adopted(disk, opened: opened)
+        if kind == .today { shape.removeEmptyFolders() }
+        let byID = Dictionary(uniqueKeysWithValues: opened.map { ($0.id, $0.url) })
+        let liveByID = Dictionary(uniqueKeysWithValues: (loaded ?? []).map { ($0.id.uuidString, $0) })
+        let strip = (tabs ?? []).map { ($0.id, $0.kind) }
+        return shape.visible.compactMap { visible in
+            if let folder = visible.entry.folder { return .folder(folder, depth: visible.depth) }
+            guard let id = visible.entry.tab, let name = byID[id], let url = URL(string: name) else { return nil }
+            let tab = liveByID[id]
+            if let tab, let split = splits.first(where: { $0.contains(tab.id) }),
+               Split.lead(of: split.tabs, strip: strip) != tab.id { return nil }
+            return .site(url, kind, tab, depth: visible.depth)
         }
-        let room = max(0, Look.spacePreviewRows - pinned.count)
-        return (Array(pinned.prefix(Look.spacePreviewRows)),
-                Array(today.prefix(room)))
     }
 
-    private static func todayRows(space: Space, liveTabs: [Tab]?) -> [Row] {
-        guard let liveTabs else { return space.tabURLs.map { .site($0, .today) } }
-        // Two pages at the same URL can have different live titles. Keep the tab itself
-        // rather than looking both rows up by URL and finding the first one twice.
-        return liveTabs.filter { $0.kind == .today }.compactMap { tab in
-            tab.currentURL.map { .site($0, .today, tab) }
+    private var favoriteGrid: some View {
+        Group {
+            if !favorites.isEmpty {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
+                    count: SidebarWidth.favouriteColumns(favorites.count, width: SidebarWidth.shared.width)),
+                    spacing: Look.inset) {
+                    ForEach(Array(favorites.enumerated()), id: \.offset) { _, url in
+                        SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.tileIcon)
+                            .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
+                            .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+                    }
+                }
+                .padding(.bottom, Look.inset - Look.rowGap)
+            }
         }
     }
 
@@ -430,7 +471,7 @@ struct SpacePreviewList: View, Equatable {
         let developer = page.map { DeveloperMode.wants($0, profile: space.profileID) } ?? false
         HStack(spacing: Look.rowSpacing) {
             switch row {
-            case .folder(let f):
+            case .folder(let f, _):
                 Group {
                     if f.iconIsEmoji { Text(f.icon).font(Look.small) } else { Image(systemName: f.icon) }
                 }
@@ -443,7 +484,7 @@ struct SpacePreviewList: View, Equatable {
                     }
                 }
                 Text(f.name).font(Look.folderTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
-            case .site(let url, _, _):
+            case .site(let url, _, _, _):
                 SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
                 LivePRTitle(title: title(for: row),
                             pr: nil, developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
@@ -451,19 +492,25 @@ struct SpacePreviewList: View, Equatable {
                     .foregroundStyle(Look.inkPrimary)
             }
             Spacer(minLength: 0)
+            if case .folder(let folder, _) = row {
+                Image(systemName: "chevron.down")
+                    .font(Look.rowGlyph).foregroundStyle(Look.inkSecondary)
+                    .rotationEffect(.degrees(folder.collapsed ? -90 : 0))
+            }
         }
         .padding(.leading, Look.rowInset)
         .padding(.trailing, Look.rowTrailingInset)
         .frame(height: Look.rowHeight)
         .overlay { if developer { DeveloperTabBorder() } }
+        .padding(.leading, CGFloat(row.depth) * Look.folderIndent)
     }
 
     func title(for row: Row) -> String { title(for: row, saved: saved) }
 
     func title(for row: Row, saved: [String: Parked]) -> String {
         switch row {
-        case .folder(let folder): return folder.name
-        case .site(let url, let kind, _):
+        case .folder(let folder, _): return folder.name
+        case .site(let url, let kind, _, _):
             return liveTab(for: row).map { TidyTitles.title(for: $0) }
                 ?? TidyTitles.previewName(for: url, in: space.profileID,
                     saved: saved[url.absoluteString]?.title, stays: kind != .today)
@@ -471,36 +518,58 @@ struct SpacePreviewList: View, Equatable {
     }
 
     private func liveTab(for row: Row) -> Tab? {
-        guard case .site(let url, let kind, let live) = row else { return nil }
+        guard case .site(let url, let kind, let live, _) = row else { return nil }
         return live ?? liveTabs?.first { $0.kind == kind && $0.pinnedURL == url }
     }
 
     private func pageURL(for row: Row, saved: [String: Parked], tab: Tab?) -> URL? {
-        guard case .site(let url, _, _) = row else { return nil }
+        guard case .site(let url, _, _, _) = row else { return nil }
         return tab?.currentURL ?? saved[url.absoluteString]?.page ?? url
     }
 }
 
 extension TabStore {
-    /// A gesture can reverse direction, so keep each encountered neighbour until it ends.
-    /// Live-stash validation and sidecar reads run once, never as the offset changes.
+    var swipeNeighbour: Space? {
+        let drag = spaceGesture.drag
+        guard drag != 0, let index = swipeStrip.firstIndex(where: { $0.id == currentSpaceID }) else { return nil }
+        let next = drag < 0 ? index + 1 : index - 1
+        return swipeStrip.indices.contains(next) ? swipeStrip[next] : nil
+    }
+
+    /// Cache the complete visual state once per neighbour, including a parked profile.
     func swipePreview(in space: Space) -> SpacePreviewList {
-        guard spaceSwiping else {
-            return SpacePreviewList(space: space, liveTabs: previewTabs(in: space))
-        }
-        if let preview = spaceGesture.previews[space.id] { return preview }
-        let preview = SpacePreviewList(space: space, liveTabs: previewTabs(in: space))
-        spaceGesture.previews[space.id] = preview
+        if spaceSwiping, let preview = spaceGesture.previews[space.id] { return preview }
+        let state = previewState(in: space)
+        let owner = previewOwner(for: space)
+        let favorites = owner?.tabs.filter { $0.kind == .favourite }.compactMap(\.pinnedURL)
+            ?? (UserDefaults.vane.stringArray(forKey: TabStore.defaultsKey(.favourite, space.profileID)) ?? [])
+                .compactMap { URL(string: $0) }
+        let preview = SpacePreviewList(space: space, liveTabs: state?.tabs, state: state,
+                                       favorites: favorites, includingFavorites: space.profileID != profileID)
+        if spaceSwiping { spaceGesture.previews[space.id] = preview }
         return preview
     }
 
-    /// Mirror the switch's choice of live rows; a stale stash must not override disk edits.
-    func previewTabs(in space: Space) -> [Tab]? {
-        guard space.profileID == profileID else { return nil }
-        if let shared = SharedTabs.state(for: self, space: space.id) { return shared.tabs }
-        guard let kept = stashes[space.id], kept.fingerprint == fingerprint(of: space.id) else { return nil }
-        return kept.tabs
+    private func previewOwner(for space: Space) -> TabStore? {
+        if space.profileID == profileID { return self }
+        return TabStore.all.first { $0.profileID == space.profileID && $0.parkedIn === window && window != nil }
+            ?? TabStore.all.first { $0.profileID == space.profileID && $0.sharesTabs }
     }
+
+    func previewState(in space: Space) -> Stash? {
+        guard let owner = previewOwner(for: space) else { return nil }
+        if owner !== self { return owner.previewState(in: space) }
+        if currentSpaceID == space.id {
+            return Stash(tabs: tabs.filter { $0.kind != .favourite }, pins: pins, todayShape: todayShape,
+                         splits: splits, current: current, fingerprint: "")
+        }
+        if let shared = SharedTabs.state(for: self, space: space.id) { return shared }
+        guard let kept = stashes[space.id], kept.fingerprint == fingerprint(of: space.id) else { return nil }
+        return kept
+    }
+
+    func previewTabs(in space: Space) -> [Tab]? { previewState(in: space)?.tabs }
+
 }
 
 private struct SpaceSwipe: ViewModifier {
@@ -567,7 +636,7 @@ private struct SpaceSwipe: ViewModifier {
                                       create: creatable)
             if creating {
                 if let direction = out.commit, direction < 0 { store.cancelCreatingSpace() }
-                if phase == .ended || event.momentumPhase.contains(.ended) { self.forget() }
+                if phase == .ended || phase == .cancelled || event.momentumPhase.contains(.ended) { self.forget() }
                 return nil
             }
             if let offset = out.offset {
@@ -581,7 +650,7 @@ private struct SpaceSwipe: ViewModifier {
                 } else {
                     self.land(direction, from: index, width: width, store: store)
                 }
-            } else if phase == .ended, !self.landing {
+            } else if phase == .ended || phase == .cancelled, !self.landing {
                 // Not while landing: a `.cancelled` followed by an `.ended` would otherwise
                 // spring the strip home over the top of the spring taking it the other way.
                 self.settle(store)
@@ -590,7 +659,7 @@ private struct SpaceSwipe: ViewModifier {
             // own to be judged on; past the end of the gesture it must not carry the next
             // one. The momentum tail re-decides itself, on deltas that are still going the
             // way the fingers were.
-            if phase == .ended || event.momentumPhase.contains(.ended) { self.forget() }
+            if phase == .ended || phase == .cancelled || event.momentumPhase.contains(.ended) { self.forget() }
             return nil              // swallowed, so the tab list does not scroll sideways too
         }
         // The fingers can be taken away without an `.ended`: ⌘S hides the sidebar mid-swipe
@@ -640,7 +709,8 @@ private struct SpaceSwipe: ViewModifier {
     private static func phase(of event: NSEvent) -> Spaces.Swipe.Phase {
         if !event.momentumPhase.isEmpty { return .momentum }
         if event.phase.contains(.began) { return .began }
-        if event.phase.contains(.ended) || event.phase.contains(.cancelled) { return .ended }
+        if event.phase.contains(.cancelled) { return .cancelled }
+        if event.phase.contains(.ended) { return .ended }
         return .changed
     }
 

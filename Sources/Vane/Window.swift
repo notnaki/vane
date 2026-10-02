@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Combine
+import WebKit
 
 /// The window, only so the traffic lights can be nailed to the sidebar's top row.
 ///
@@ -891,7 +892,11 @@ extension TabStore {
                   let page = active.flatMap({ ownsPage($0) ? $0.web : nil }) else { return }
             let holder = window.firstResponder
             let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
-            guard nobody else { return }
+            // A cached profile can restore its previously focused favourite even when
+            // reveal selected a different tab. Keep actual text fields alone, but move
+            // focus from a stale page to the page this handoff selected.
+            let stalePage = holder is WKWebView && holder !== page
+            guard nobody || stalePage else { return }
             if page.window === window { window.makeFirstResponder(page) }
             let stillNobody = window.firstResponder === window
                 || (window.firstResponder as? NSView).map { $0.window !== window } ?? false

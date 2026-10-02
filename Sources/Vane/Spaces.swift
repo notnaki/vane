@@ -422,7 +422,7 @@ enum Spaces {
         /// because it must be *ignored*: the fingers have already left the trackpad and the
         /// commit has already been decided, so feeding the coast back in would carry the
         /// strip through the next Space and the one after it.
-        enum Phase { case began, changed, ended, momentum }
+        enum Phase { case began, changed, ended, cancelled, momentum }
 
         /// How far across the sidebar the fingers have to have carried the strip for
         /// fingers-up to commit. A shade under Arc's third, so the page changes a little
@@ -431,6 +431,8 @@ enum Spaces {
         static let commitFraction: CGFloat = 0.3
         /// …or this fast, in points per second, so a flick that barely moves still switches.
         static let flickSpeed: CGFloat = 600
+        /// A few fast pixels at the edge are noise, not a deliberate flick.
+        static let flickFraction: CGFloat = 0.1
         /// How much of the travel past the first or last Space actually shows: the strip
         /// gives, so the gesture is answered, but it plainly does not want to go.
         static let bandGive: CGFloat = 0.3
@@ -471,6 +473,11 @@ enum Spaces {
             switch phase {
             case .momentum:
                 return (nil, nil, 0)
+            case .cancelled:
+                travel = 0
+                speed = 0
+                armed = false
+                return (nil, nil, 0)
             case .began:
                 travel = 0
                 speed = 0
@@ -492,17 +499,23 @@ enum Spaces {
                 return (offset, nil, pull)
             case .ended:
                 defer { travel = 0; speed = 0 }
-                guard armed, let direction = Self.commit(travel: travel, speed: speed, width: width,
-                                                         count: count, index: index)
-                else { return (nil, nil, 0) }
+                guard armed else { return (nil, nil, 0) }
                 armed = false
+                // A filled ring can be released to open the form; continuing the pull
+                // still opens it while the fingers are down at the solid-circle threshold.
+                if Self.pull(travel, width: width, count: count, index: index, create: create) >= 1 {
+                    return (nil, 1, 0)
+                }
+                let direction = Self.commit(travel: travel, speed: speed, width: width,
+                                            count: count, index: index)
                 return (nil, direction, 0)
             }
         }
 
         /// A pull past the last Space is two stages of the same motion: the ring fills to
-        /// 1, then the circle behind it fills solid to `pullFull`. Only solid commits, so a
-        /// pull that stops at a full ring is a pull that changed its mind.
+        /// 1, then the circle behind it fills solid to `pullFull`. Continuing to the
+        /// solid circle opens the form immediately. Releasing at a
+        /// filled ring opens it too; a shorter pull springs back.
         static let pullFull: CGFloat = 2
 
         /// How far the pull has got, 0…`pullFull` — zero anywhere but past the last Space.
@@ -537,7 +550,8 @@ enum Spaces {
             // gesture saying there is nothing over there.
             guard (0..<count).contains(index + direction) else { return nil }
             let far = abs(travel) >= width * commitFraction
-            let flick = abs(speed) >= flickSpeed && (speed < 0) == (travel < 0)
+            let flick = abs(travel) >= width * flickFraction
+                && abs(speed) >= flickSpeed && (speed < 0) == (travel < 0)
             return far || flick ? direction : nil
         }
     }
