@@ -295,12 +295,13 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 
 @MainActor private func profileItems() -> [NSMenuItem] {
     let manager = ProfileManager.shared
+    let incognito = Windows.current?.isPrivate == true
     let switchers = manager.profiles.map { profile in
         let entry = item(profile.name, "") {
             _ = Windows.switchTo(profile: profile)
             rebuild()          // switchTo does not rebuild, and every checkmark below moved
         }
-        entry.state = manager.active.id == profile.id ? .on : .off
+        entry.state = !incognito && manager.active.id == profile.id ? .on : .off
         return entry
     }
     // delete() refuses on the last profile; disable rather than let it fail in an alert.
@@ -325,7 +326,14 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     }
     remove.isEnabled = manager.profiles.count > 1
 
-    return switchers + [
+    var identities = switchers
+    if incognito {
+        let entry = NSMenuItem(title: Profile.incognito.name, action: nil, keyEquivalent: "")
+        entry.image = NSImage(systemSymbolName: "eyeglasses", accessibilityDescription: "Incognito")
+        entry.state = .on
+        identities.insert(contentsOf: [entry, .separator()], at: 0)
+    }
+    return identities + [
         .separator(),
         item(.newProfile) {
             guard let name = askForName("Name the new profile") else { return }

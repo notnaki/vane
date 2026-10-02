@@ -373,6 +373,10 @@ import WebKit
 /// history+bookmarks database, its own keychain items, favicons, pins, session, extensions
 /// and spaces.
 struct Profile: Identifiable, Codable, Equatable, Hashable {
+    /// A temporary browsing identity, never inserted into the saved profile list.
+    static let incognito = Profile(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+                                   name: "Incognito", colorHex: "#111111")
+
     let id: UUID
     var name: String
     var colorHex: String
@@ -775,6 +779,7 @@ struct Space: Identifiable, Codable, Equatable {
     /// Private tabs use .nonPersistent() instead. Cache keys are profile IDs because
     /// VANE_DATA_DIR is fixed for the process's lifetime.
     static func dataStore(for id: UUID) -> WKWebsiteDataStore {
+        if id == Profile.incognito.id { return .nonPersistent() }
         guard let storeID = dataStoreIdentifier(for: id, dataDirectory: Store.overrideDirectory)
         else { return .default() }
         if let existing = dataStores[id] { return existing }

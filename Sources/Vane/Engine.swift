@@ -424,8 +424,8 @@ struct TitleReveal: Equatable, Sendable {
          profileID: UUID = ProfileManager.shared.active.id) {
         self.id = id
         self.isPrivate = isPrivate
-        self.profileID = profileID
-        web = Tab.freshWebView(isPrivate: isPrivate, profileID: profileID)
+        self.profileID = isPrivate ? Profile.incognito.id : profileID
+        web = Tab.freshWebView(isPrivate: isPrivate, profileID: self.profileID)
         super.init()
         attach()
         if let url { go(url) }
@@ -447,14 +447,14 @@ struct TitleReveal: Equatable, Sendable {
     init(popup cfg: WKWebViewConfiguration, isPrivate: Bool, profileID: UUID) {
         self.id = UUID()
         self.isPrivate = isPrivate
-        self.profileID = profileID
+        self.profileID = isPrivate ? Profile.incognito.id : profileID
         // The one thing that must *not* be shared. WebKit copies the configuration but not
         // its content controller — the popup arrives holding the opener's own object — and
         // two tabs on one controller is two bugs: `attach()` would throw on script message
         // handlers that are already registered under those names, and suspending either tab
         // would tear the other's password bridge, media tray and status bar out from under
         // it. The scripts and the blocker's rules go onto one of this tab's own instead.
-        cfg.userContentController = Tab.contentController(profileID: profileID)
+        cfg.userContentController = Tab.contentController(profileID: self.profileID)
         web = LinkContextWebView(frame: .zero, configuration: cfg)
         super.init()
         attach()
@@ -907,6 +907,7 @@ struct TitleReveal: Equatable, Sendable {
     static func configuration(isPrivate: Bool = false,
                               profileID: UUID = ProfileManager.shared.active.id,
                               blocking: Bool = true) -> WKWebViewConfiguration {
+        let profileID = isPrivate ? Profile.incognito.id : profileID
         let cfg = WKWebViewConfiguration()
         // Persistent: cookies, logins, media keys — and one persistent store per profile, via
         // WKWebsiteDataStore(forIdentifier:). A private window gets a store that lives only as
@@ -1718,7 +1719,8 @@ struct Stash {
     static var all: [TabStore] = []
 
     var profile: Profile {
-        ProfileManager.shared.profiles.first { $0.id == profileID } ?? ProfileManager.shared.active
+        isPrivate ? .incognito
+            : ProfileManager.shared.profiles.first { $0.id == profileID } ?? ProfileManager.shared.active
     }
     var history: Store { Store.store(for: profileID) }
     var favicons: Favicons { Favicons.cache(for: profileID) }
@@ -1735,6 +1737,8 @@ struct Stash {
          restoringLegacySession: Bool = false) {
         self.isPrivate = isPrivate
         self.isLittle = isLittle
+        let profileID = isPrivate ? Profile.incognito.id : profileID
+        let space = isPrivate ? nil : space
         self.profileID = profileID
         self.currentSpaceID = space?.id
         SharedTabs.flush()
@@ -2048,6 +2052,8 @@ struct Stash {
             }
             if let target = peekParent ?? Windows.current(in: profileID, isPrivate: isPrivate) {
                 target.openBeside(url, focus: false)
+            } else if isPrivate {
+                Windows.open(isPrivate: true, urls: [url], focus: false)
             } else if let profile = ProfileManager.shared.profiles.first(where: { $0.id == profileID }) {
                 // Do not fall back to the globally selected profile if this one vanished.
                 Windows.open(isPrivate: isPrivate, urls: [url], profile: profile, focus: false)
@@ -2656,7 +2662,7 @@ struct Stash {
     /// is the complete list *this store* can ever show — what a Space is saved into, what its
     /// stash is checked against, and what "its last Space" means are all about this profile.
     var spaces: [Space] {
-        fold(preview: ProfileManager.shared.spaces(for: profileID))
+        isPrivate ? [] : fold(preview: ProfileManager.shared.spaces(for: profileID))
     }
 
     /// Every space of every profile, in one list: Arc's sidebar strip, which runs across
@@ -2668,7 +2674,8 @@ struct Stash {
     /// the window to that profile in place rather than showing its tabs here. See
     /// `switchTo(space:)` and `Windows.hop`.
     var strip: [Space] {
-        fold(preview: Spaces.strip(profiles: ProfileManager.shared.profiles) {
+        guard !isPrivate else { return [] }
+        return fold(preview: Spaces.strip(profiles: ProfileManager.shared.profiles) {
             ProfileManager.shared.spaces(for: $0.id)
         })
     }
@@ -2814,7 +2821,7 @@ struct Stash {
     /// A space can pin its window to light or dark; nil follows the system, which is what
     /// every window did before spaces had a look.
     func applySpaceAppearance() {
-        switch currentSpace?.appearance {
+        switch isPrivate ? "dark" : currentSpace?.appearance {
         case "light": window?.appearance = NSAppearance(named: .aqua)
         case "dark":  window?.appearance = NSAppearance(named: .darkAqua)
         default:      window?.appearance = nil

@@ -80,7 +80,7 @@ import WebKit
         if let img = memory[key] { return img }
         if let img = readDisk(key) { memory[key] = img; return img }
         guard !missed(key), let fallback = Favicons.fallback(for: url) else { return nil }
-        warm(key: key, urls: [fallback], persist: true, fallback: fallback)
+        warm(key: key, urls: [fallback], persist: profileID != Profile.incognito.id, fallback: fallback)
         return nil
     }
 
@@ -92,10 +92,10 @@ import WebKit
         guard let url = tab.currentURL, let key = Favicons.key(for: url) else { tab.favicon = nil; return }
         if let img = memory[key] { tab.favicon = img; return }
         // Keep disk reads and decoding off the main actor, including during restoration.
-        let file = dir.appendingPathComponent(key)
+        let file = profileID == Profile.incognito.id ? nil : dir.appendingPathComponent(key)
         let web = tab.web
         Task { @MainActor [weak self, weak tab, weak web] in
-            let diskImage = await Favicons.decoded(file)
+            let diskImage = if let file { await Favicons.decoded(file) } else { nil as NSImage? }
             guard let self, let tab, let web, tab.web === web, tab.currentURL == url else { return }
             if let img = self.memory[key] ?? diskImage {
                 self.memory[key] = img
@@ -263,7 +263,8 @@ import WebKit
     }
 
     private func readDisk(_ key: String) -> NSImage? {
-        Favicons.read(dir.appendingPathComponent(key)).image
+        guard profileID != Profile.incognito.id else { return nil }
+        return Favicons.read(dir.appendingPathComponent(key)).image
     }
 
     /// Freshly made here and handed over untouched, which is the whole of what the box
@@ -284,6 +285,7 @@ import WebKit
     }
 
     private func writeDisk(_ key: String, _ data: Data) {
+        guard profileID != Profile.incognito.id else { return }
         try? data.write(to: dir.appendingPathComponent(key))
         prune()
     }

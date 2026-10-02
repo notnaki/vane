@@ -74,12 +74,14 @@ extension Prefs {
 
     private init(profileID: UUID) {
         self.profileID = profileID
+        guard profileID != Profile.incognito.id else { return }
         let key = ProfileManager.defaultsKey("archivedTabs", profileID)
         entries = (UserDefaults.vane.data(forKey: key))
             .flatMap { try? JSONDecoder().decode([Entry].self, from: $0) } ?? []
     }
 
     private func save() {
+        guard profileID != Profile.incognito.id else { return }
         guard let data = try? JSONEncoder().encode(entries) else { return }
         UserDefaults.vane.set(data, forKey: ProfileManager.defaultsKey("archivedTabs", profileID))
     }

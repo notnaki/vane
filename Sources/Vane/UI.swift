@@ -488,6 +488,9 @@ struct SpaceGround: View {
         // the same fraction the strip has travelled: the colour has to arrive with the
         // content, or one switch reads as two events.
         ZStack {
+            if store.isPrivate {
+                Color(hex: Profile.incognito.colorHex)
+            }
             wash(stops)
                 .opacity(Look.groundOpacity(dark: dark))
                 // A `LinearGradient` is not animatable, so a switch between two multi-colour
@@ -2238,7 +2241,7 @@ private struct SpaceRow: View {
             // its heading. No click, no rename, no context menu — there is nothing to act on.
             row("eyeglasses", nil, store.profile.name)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Private window")
+            .accessibilityLabel("Incognito")
             .accessibilityValue(store.profile.name)
             .accessibilityHint("A private window is in no space and keeps nothing.")
         } else {

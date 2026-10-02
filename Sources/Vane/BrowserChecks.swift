@@ -282,7 +282,38 @@ import WebKit
 
                 try await load(tab, "\(base)/storage", title: "Fixture Storage")
                 _ = try await js(tab, "localStorage.setItem('scope', 'regular')")
+                let profilesBefore = ProfileManager.shared.profiles
+                let privateWindow = Windows.open(isPrivate: true,
+                    profile: ProfileManager.shared.profiles.first { $0.id == profile },
+                    space: ProfileManager.shared.spaces(for: profile).first)
+                defer { privateWindow.window?.close() }
+                try require(privateWindow.profile.name == "Incognito"
+                            && privateWindow.profileID != profile,
+                            "incognito has its own identity instead of the launching profile")
+                try require(privateWindow.currentSpace == nil && privateWindow.spaces.isEmpty
+                            && privateWindow.strip.isEmpty,
+                            "incognito cannot inherit or browse saved profile spaces")
+                try require(privateWindow.window?.appearance?.name == .darkAqua
+                            && privateWindow.profile.colorHex == "#111111",
+                            "incognito uses a near-black theme and forces dark window chrome")
+                try require(ProfileManager.shared.profiles == profilesBefore,
+                            "incognito never becomes a saved profile")
+                try require(privateWindow.history !== tab.history
+                            && privateWindow.history.history().isEmpty
+                            && privateWindow.extensions.installed.isEmpty,
+                            "incognito does not expose saved profile history or extensions")
+                privateWindow.history.record([(URL(string: "\(base)/private-bookmark")!, "Private", Date.now)])
+                try require(!FileManager.default.fileExists(atPath:
+                                ProfileManager.dbURL(for: privateWindow.profileID, in: Store.directory).path),
+                            "incognito database operations use memory instead of a profile file")
+                let privateDownloads = Downloads.manager(for: privateWindow.profileID)
+                privateDownloads.save()
+                try require(!FileManager.default.fileExists(atPath:
+                                Downloads.listURL(for: privateWindow.profileID, in: Store.directory).path),
+                            "incognito download history is kept off disk")
                 let privateTab = makeTab(profile: profile, isPrivate: true)
+                try require(privateTab.profileID == privateWindow.profileID,
+                            "private tabs use the same independent incognito identity")
                 try require(!privateTab.web.configuration.websiteDataStore.isPersistent
                             && privateTab.web.configuration.websiteDataStore.identifier == nil,
                             "private browsing uses an unnamed ephemeral WebKit store")
@@ -290,6 +321,22 @@ import WebKit
                 try await load(privateTab, "\(base)/private", title: "Fixture Private")
                 let inherited = try await js(privateTab, "localStorage.getItem('scope') === null")
                 try require(inherited as? Bool == true, "private browsing cannot read regular local storage")
+                try require(!FileManager.default.fileExists(atPath:
+                                ProfileManager.faviconDir(for: privateTab.profileID, in: Store.directory).path),
+                            "incognito icons never create a disk cache")
+                let floating = LittleArc.open(nil, isPrivate: true)
+                try require(floating.profileID == privateWindow.profileID
+                            && floating.window?.appearance?.name == .darkAqua,
+                            "private floating windows retain the incognito identity and dark appearance")
+                privateWindow.window?.close()
+                let floatingTab = floating.newBlankTab()
+                let backgroundURL = URL(string: "\(base)/private-background")!
+                floatingTab.onOpenLinkInBackground?(backgroundURL)
+                let backgroundPrivate = Windows.current(in: floating.profileID, isPrivate: true)
+                try require(backgroundPrivate?.tabs.contains { $0.currentURL == backgroundURL } == true,
+                            "a private floating link can create an incognito window without a saved profile")
+                backgroundPrivate?.window?.close()
+                floating.window?.close()
                 _ = try await js(privateTab, "localStorage.setItem('scope', 'private')")
                 let regular = try await js(tab, "localStorage.getItem('scope')")
                 try require(regular as? String == "regular", "private writes do not change regular storage")
