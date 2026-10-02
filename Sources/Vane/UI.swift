@@ -1178,7 +1178,7 @@ private struct PillHoverGlyphs: View {
             .accessibilityLabel("Copy Link")
             .accessibilityValue(copied ? "Copied" : "")
         Button { showingSiteControls.toggle() } label: {
-            Image(systemName: "slider.horizontal.3.square")
+            Image(systemName: "slider.horizontal.3")
                 .overlay(alignment: .topTrailing) {
                     if site.badge != nil {
                         Circle().fill(Color.accentColor)
