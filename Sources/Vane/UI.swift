@@ -299,6 +299,7 @@ struct TabPage: View {
 /// so the desktop shows through everything the sidebar does not cover.
 struct BrowserWindow: View {
     @EnvironmentObject var store: TabStore
+    @EnvironmentObject var profiles: ProfileManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The sidebar sliding in over the page because the pointer went to the window's edge.
     @State private var peeking = false
@@ -316,7 +317,7 @@ struct BrowserWindow: View {
     /// strip blank at the top of its rail, so a panel with no lights beside it is a hole.
     private var chrome: Bool { store.sidebarShown || peeking || store.libraryOpen }
 
-    /// How many Spaces the profile has. Read when that changes, never per frame: `store.spaces`
+    /// How many Spaces all profiles have. Read when that changes, never per frame: `allSpaces`
     /// decodes spaces.json every time it is touched, and this number feeds the `.animation`
     /// key the page's slide follows — reading it there put a file read and a JSON decode in
     /// every frame of a two-finger Space swipe.
@@ -374,9 +375,10 @@ struct BrowserWindow: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
         // The one place the Space list is counted: when it changes, and when the Library
-        // opens onto it. `spaceRevision` is bumped by everything that adds or removes one.
-        .onChange(of: store.spaceRevision, initial: true) { spaceCount = store.spaces.count }
-        .onChange(of: store.libraryOpen) { if store.libraryOpen { spaceCount = store.spaces.count } }
+        // opens onto it. Changes in another profile invalidate the count too.
+        .onChange(of: profiles.spacesRevision, initial: true) { spaceCount = profiles.allSpaces.count }
+        .onChange(of: profiles.profiles) { spaceCount = profiles.allSpaces.count }
+        .onChange(of: store.libraryOpen) { if store.libraryOpen { spaceCount = profiles.allSpaces.count } }
         // The page slides over as the panel takes its width, and back when it gives it up —
         // including when the Spaces section widens the panel to fit another card.
         .animation(reduceMotion ? nil : Look.appear, value: libraryWidth)
@@ -1831,6 +1833,7 @@ private struct HeldRow: View {
     /// Which section's overlay this is: the row is only drawn over the list it is in.
     let kind: TabKind
     @ObservedObject private var held = Held.shared
+    @ObservedObject private var dragging = Dragging.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -1870,6 +1873,10 @@ private struct HeldRow: View {
                 // one source per id is the most it can have.
                 .environment(\.strip, nil)
                 .offset(y: air.y)
+                // Pointer movement must not inherit a neighbour's list spring. Once
+                // released, the same offset can animate the row back into its slot.
+                .animation(dragging.tab == air.tab || reduceMotion ? nil : Look.list,
+                           value: air.y)
                 // It leaves by fading, crossing with the slot coming back to full — see
                 // `Dragging.end`. Cutting it instead shows the row jump out of its own
                 // shadow at the end of every drag.
@@ -3082,7 +3089,6 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     /// Secondary rather than primary type: "New Tab" is an action among places, and Arc
     /// sets it a step quieter than the tabs around it.
     var dimmed = false
-    var spacing: CGFloat = Look.rowSpacing
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let label: () -> Label
@@ -3091,7 +3097,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: spacing) {
+        HStack(spacing: Look.rowSpacing) {
             leading()
             // Every tab title in the same ink, selected or not — Arc's list is one grey on
             // dark all the way down, and the selection is the fill, not a change of ink.
@@ -3536,8 +3542,7 @@ private struct TabRow: View {
         let ticked = store.selection.contains(tab.id)
         let returning = tab.kind == .pinned && !tab.atHome
         let title = returning ? (TabActions.rename(tab) ?? tab.title) : TidyTitles.title(for: tab)
-        SidebarRow(selected: selected, ticked: ticked,
-                   spacing: returning ? Look.returnRowSpacing : Look.rowSpacing, action: select) {
+        SidebarRow(selected: selected, ticked: ticked, action: select) {
             TabHomeIcon(store: store, tab: tab)
         } label: {
             // Arc's in-row rename: the title becomes a field and the row keeps its shape.
@@ -4270,6 +4275,9 @@ private struct TabHomeIcon: View {
     var body: some View {
         if tab.kind == .pinned && !tab.atHome {
             GoHomeGlyph(store: store, tab: tab, tiled: true)
+                // The tile can draw past the favicon's box, but must not move the icon
+                // or title when this pin leaves or returns to its saved page.
+                .frame(width: size, height: size)
         } else if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
             // The favicon's box, so the row's text starts exactly where it always did. The
             // glyph's hit target is bigger than this and is allowed to spill past it — a

@@ -439,6 +439,34 @@ extension Library {
         TabStore.all.first { $0.currentSpaceID == space && !$0.isLittle && !$0.isPrivate }
     }
 
+    /// Use the sidebar's profile hop so a parked profile returns in this same window.
+    @discardableResult
+    static func show(_ space: Space, from store: TabStore) -> TabStore? {
+        let profiles = ProfileManager.shared
+        guard !store.isPrivate, !store.isLittle, !store.isParked,
+              profiles.profiles.contains(where: { $0.id == space.profileID }),
+              profiles.spaces(for: space.profileID).contains(where: { $0.id == space.id }) else { return nil }
+        let target: TabStore
+        if store.profileID == space.profileID {
+            target = store
+        } else {
+            guard let hopped = Windows.hop(store, to: space) else { return nil }
+            target = hopped
+        }
+        target.switchTo(space: space)
+        rebuild()
+        return target
+    }
+
+    /// Profiles keep separate tabs and website data. A card in another profile is a
+    /// navigation destination, but never a destination for moving this profile's tabs.
+    static func canMove(from source: UUID, to target: UUID, profile: UUID,
+                        profiles: ProfileManager = .shared) -> Bool {
+        guard source != target else { return false }
+        let spaces = profiles.spaces(for: profile)
+        return spaces.contains { $0.id == source } && spaces.contains { $0.id == target }
+    }
+
     /// Dragging a row from one Space's column onto another's, and the right-click that says
     /// the same thing. Either end can be on screen or on disk, and the two are stored in
     /// different places, so both ends are asked separately.
@@ -448,7 +476,7 @@ extension Library {
     /// something that can be carried.
     static func move(_ url: URL, from source: UUID, to target: UUID,
                      pinned: Bool, profile: UUID) {
-        guard source != target else { return }
+        guard canMove(from: source, to: target, profile: profile) else { return }
         let kind: TabKind = pinned ? .pinned : .today
         let into = owner(of: target)
         // What the target opens. The card names a row by the page it is on, and a pinned row
@@ -776,15 +804,14 @@ private struct LibraryHead<Filter: View, Actions: View>: View {
                 // at the size of the words rather than at the field's.
                 pill(filling: filtering) {
                     Menu { filter() } label: {
-                        HStack(spacing: Look.captionGap * 2) {
-                            Image(systemName: "line.3.horizontal.decrease.circle")
-                            Text("Filter")
-                        }
-                        .font(Look.small)
-                        .foregroundStyle(filtering ? Look.inkPrimary : Look.inkSecondary)
+                        // Keep room for the full search prompt in the narrow list column.
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                            .font(Look.small)
+                            .foregroundStyle(filtering ? Look.inkPrimary : Look.inkSecondary)
                     }
                     .accessibilityLabel("Filter")
                     .accessibilityValue(filtering ? "On" : "Off")
+                    .help("Filter")
                 }
                 // Its own control, beside Filter and not inside it. Clear is a destructive
                 // verb, and nobody goes looking for one in a menu called Filter.
@@ -1380,18 +1407,17 @@ private struct MediaTile: View {
 
 // MARK: - Spaces
 
-/// Arc's "Manage Spaces": every Space of this profile as a card of its own, side by side,
-/// each wearing that Space's ground so the row of cards reads as the row of Spaces the
-/// footer's dots stand for. A page drags from one card into another.
+/// Every profile's Spaces as cards side by side, with their owning profile in the header.
+/// Each wears its own ground. Pages can move between cards in the same profile.
 private struct SpacesPane: View {
-    @EnvironmentObject var store: TabStore
+    @EnvironmentObject var profiles: ProfileManager
 
     var body: some View {
         // No search field and no empty state: a profile always has at least one Space, and
         // a Space is found by looking at four cards rather than by typing.
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: Look.spaceCardGap) {
-                ForEach(store.spaces) { SpaceCard(space: $0) }
+                ForEach(profiles.allSpaces) { SpaceCard(space: $0) }
                 NewSpaceCard()
             }
             .padding(Look.spaceCardGap)
@@ -1573,7 +1599,7 @@ private struct SpaceCard: View {
         .hairline(radius: Look.cardRadius, over ? Look.selectedEdge : Look.cardStroke)
         .onDrop(of: [.utf8PlainText], isTargeted: $over) { drop($0) }
         .onAppear { reload() }
-        .onChange(of: store.spaceRevision) { reload() }
+        .onChange(of: profiles.spacesRevision) { reload() }
         // A Space made from the Library's `+` is named on its own card, not on a sidebar
         // button that is not on screen. See `NewSpaceCard`.
         .onChange(of: library.naming, initial: true) {
@@ -1607,13 +1633,13 @@ private struct SpaceCard: View {
                 .help("Rename this Space, or change its icon and colour")
                 .accessibilityLabel("Edit \(space.name)")
                 .popover(isPresented: $editing, arrowEdge: .bottom) {
-                    ThemeEditor(store: store, space: space, naming: true)
+                    ThemeEditor(store: live ?? store, space: space, naming: true)
                 }
         }
         .padding(.horizontal, Look.inset)
         .frame(height: Look.rowHeight)
         .contentShape(.rect)
-        .onTapGesture { store.switchTo(spaceID: space.id) }
+        .onTapGesture { Library.show(space, from: store) }
     }
 
     /// Arc's card foot: the handle a card is dragged by, and the "…" that holds what is done
@@ -1621,7 +1647,7 @@ private struct SpaceCard: View {
     /// the handle switches to the Space rather than picking the card up.
     private var footer: some View {
         HStack(spacing: 0) {
-            Button { store.switchTo(spaceID: space.id) } label: {
+            Button { Library.show(space, from: store) } label: {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
             }
             .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkTertiary)
@@ -1632,7 +1658,7 @@ private struct SpaceCard: View {
             // its own confirmation, and a second route to the same irreversible thing is a
             // second place to keep that confirmation honest.
             Menu {
-                Button("Go to \(space.name)") { store.switchTo(spaceID: space.id) }
+                Button("Go to \(space.name)") { Library.show(space, from: store) }
                 Button("Rename…") { editing = true }
             } label: {
                 Image(systemName: "ellipsis")
@@ -1657,7 +1683,8 @@ private struct SpaceCard: View {
         guard let from = LibraryDragging.shared.from, from != space.id,
               let provider = providers.first else { return false }
         let pinned = LibraryDragging.shared.pinned
-        let target = space.id, name = space.name, profile = store.profileID
+        guard Library.canMove(from: from, to: space.id, profile: space.profileID) else { return false }
+        let target = space.id, name = space.name, profile = space.profileID
         _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.utf8PlainText.identifier) { data, _ in
             guard let data, let text = String(data: data, encoding: .utf8),
                   let url = URL(string: text) else { return }
@@ -1730,7 +1757,7 @@ private struct PageRow: View {
     /// a pinned tab that has been restored but not loaded, which is most of them in a window
     /// that has just come up. Either way the address is what the row falls back to.
     private var title: String {
-        if let tab = store.tabs.first(where: { $0.currentURL == url }), !tab.title.isEmpty {
+        if let tab = Library.owner(of: space.id)?.tabs.first(where: { $0.currentURL == url }), !tab.title.isEmpty {
             return TidyTitles.title(for: tab)
         }
         return Library.label(for: url)
@@ -1738,7 +1765,7 @@ private struct PageRow: View {
 
     var body: some View {
         HStack(spacing: Look.captionGap * 3) {
-            SiteIcon(icon: store.favicons.icon(for: url), size: Look.captionGap * 7)
+            SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.captionGap * 7)
             Text(title).font(Look.caption).foregroundStyle(Look.inkPrimary).lineLimit(1)
             Spacer(minLength: Look.captionGap)
         }
@@ -1755,10 +1782,10 @@ private struct PageRow: View {
         .contextMenu {
             Button("Open") { open() }
             Menu("Move to Space") {
-                ForEach(store.spaces.filter { $0.id != space.id }) { other in
+                ForEach(ProfileManager.shared.spaces(for: space.profileID).filter { $0.id != space.id }) { other in
                     Button(other.name) {
                         Library.move(url, from: space.id, to: other.id,
-                                     pinned: pinned, profile: store.profileID)
+                                     pinned: pinned, profile: space.profileID)
                     }
                 }
             }
@@ -1780,13 +1807,14 @@ private struct PageRow: View {
     /// Clicking a page in another Space goes to that Space first — a page opened out of a
     /// Space it does not belong to would be a tab in the wrong list.
     private func open() {
-        if space.id != store.currentSpaceID { store.switchTo(spaceID: space.id) }
-        if let tab = store.tabs.first(where: { $0.currentURL == url }) {
-            store.current = tab.id
+        guard let target = Library.show(space, from: store) else { return }
+        if let tab = target.tabs.first(where: { $0.currentURL == url }) {
+            target.current = tab.id
         } else {
-            store.newTab(url)
+            target.newTab(url)
         }
         Library.close(store)
+        if target !== store { Library.close(target) }
     }
 
     private func payload() -> NSItemProvider {

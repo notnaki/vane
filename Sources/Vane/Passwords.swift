@@ -1128,6 +1128,9 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             print("  --    no bundle (running the bare binary), nothing to compare")
         }
 
+        print("tab reordering notifications")
+        for (name, ok) in TabOrderingChecks.check() { check(name, ok) }
+
         // Not pure: the whole claim is about `Tab` objects surviving a switch, and a pure row
         // over ids cannot tell a tab that was kept from one that was opened again for the
         // same url. Only on a private `VANE_DATA_DIR` — this makes Spaces and pages, and a
