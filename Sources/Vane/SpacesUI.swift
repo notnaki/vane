@@ -229,7 +229,7 @@ struct MoveToSpaceMenu: View {
                     }
                 }
             }
-            .disabled(tab.currentURL?.scheme?.hasPrefix("http") != true)
+            .disabled(!TabAddress.restorable(tab.currentURL))
         }
     }
 }

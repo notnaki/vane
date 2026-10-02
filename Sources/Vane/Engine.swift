@@ -1090,7 +1090,8 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func isPlayingMedia() async -> Bool {
-        await web.requestMediaPlaybackState() == .playing
+        guard let web = existingWeb else { return false }
+        return await web.requestMediaPlaybackState() == .playing
     }
 
     /// ponytail: one evaluateJavaScript, main frame only, `value != defaultValue` so a page
@@ -1098,6 +1099,7 @@ struct TitleReveal: Equatable, Sendable {
     /// an iframe or a shadow root counts, and a page that stores its draft in JS state
     /// rather than in the DOM looks empty.
     func hasUnsubmittedInput() async -> Bool {
+        guard let web = existingWeb else { return false }
         let js = """
         (function(){for(const e of document.querySelectorAll('input,textarea')){\
         const t=(e.type||'').toLowerCase();\
@@ -2314,7 +2316,7 @@ struct Stash {
         let stashed = space(stashing: id)
         guard let tab = everyTab.first(where: { $0.id == id }) else { return }
         if tab.kind == .today, !isPrivate, let u = tab.currentURL,
-           u.scheme?.hasPrefix("http") == true {
+           TabAddress.restorable(u) {
             // The Space it was in and whether it was a Little Arc go down with it, so the
             // Library can put it back where it came from and filter on where it came from.
             Archive.shared(for: profileID).add(url: u, title: TidyTitles.title(for: tab),
@@ -2732,11 +2734,11 @@ struct Stash {
         ProfileManager.defaultsKey(kind == .favourite ? "pinnedTabs" : "pinnedRows", profileID)
     }
 
-    /// What is written down for a favourite or a pinned tab: the page it is on. Only web
-    /// pages; a blank or file tab is not a place to come back to.
+    /// Web pages and profile-local Easels can return as saved tabs. Blank and file
+    /// tabs remain transient.
     static func pinURL(_ current: URL?) -> String? {
-        guard let s = current?.absoluteString, s.hasPrefix("http") else { return nil }
-        return s
+        guard let current, TabAddress.restorable(current) else { return nil }
+        return current.absoluteString
     }
 
     /// The home a row takes on when it changes section: the page it is on as it enters
@@ -2775,17 +2777,16 @@ struct Stash {
     /// where it is, because the key is the page.
     ///
     /// nil for a row there is nothing to file: one with no page at all, and one on a page
-    /// that is not web — a dropped `file://` PDF has no business becoming a key in a file
-    /// every reader hands http urls to.
+    /// that is not restorable — a dropped `file://` PDF remains transient.
     ///
     /// Pure, so `selfcheck --pure` can drive it with no tab in the room: it is the write
     /// half of the round trip `restore(_:as:parked:)` reads, and the two drifting apart is
     /// a rebuilt Space full of rows named after their host.
     nonisolated static func sidecarEntry(page: URL?, home: URL?,
                                          snapshot: Parked) -> (key: String, parked: Parked)? {
-        guard let page, page.scheme?.hasPrefix("http") == true,
+        guard let page, TabAddress.restorable(page),
               let key = pinned(home: home, at: page),
-              key.scheme?.hasPrefix("http") == true else { return nil }
+              TabAddress.restorable(key) else { return nil }
         return (key.absoluteString, key == page ? snapshot : snapshot.on(page))
     }
 
@@ -3068,7 +3069,7 @@ struct Stash {
         // back in. A Today tab has no home, so for those it is `currentURL` exactly as
         // before. See `Tab.homeURL`.
         func urls(_ keep: (Tab) -> Bool) -> [URL] {
-            tabs.filter(keep).compactMap(\.pinnedURL).filter { $0.scheme?.hasPrefix("http") == true }
+            tabs.filter(keep).compactMap(\.pinnedURL).filter { TabAddress.restorable($0) }
         }
         space.tabURLs = urls { $0.kind == .today }
         space.pinnedURLs = []              // Favourites are the profile's; see `savePins`
@@ -3109,7 +3110,7 @@ struct Stash {
         // And which tab the Space is being left on, so switching back lands on it rather
         // than on whatever is first. Written here rather than in `switchTo` so the swipe
         // commit, the Spaces menu, ⌥⌘←/→ and ⌃1–9 all get it — every one of them saves
-        // first. Only a web page is worth coming back to (see `Spaces.rememberTab`), and
+        // first. Only a restorable tab is worth coming back to (see `Spaces.rememberTab`), and
         // never a favourite: the grid is the profile's, so every Space would remember the
         // same tile and land on it. See `Spaces.landing`.
         // `pinnedURL`, and the same in `landing(in:)`: a Space rebuilt from disk brings a
@@ -3117,7 +3118,7 @@ struct Stash {
         // every list — this one included — names it by.
         let leftOn = active.flatMap { $0.kind == .favourite ? nil : $0.pinnedURL }
         Spaces.rememberTab(leftOn.flatMap {
-            $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
+            TabAddress.restorable($0) ? $0.absoluteString : nil
         }, in: id)
         if savedSpace { SharedTabs.didSave(space: id, from: self) }
         return savedSpace && savedState
@@ -3149,7 +3150,7 @@ struct Stash {
         guard var space = spaces.first(where: { $0.id == id }) else { return false }
         func urls(_ kind: TabKind) -> [URL] {
             stash.tabs.filter { $0.kind == kind }.compactMap(\.pinnedURL)
-                .filter { $0.scheme?.hasPrefix("http") == true }
+                .filter { TabAddress.restorable($0) }
         }
         space.tabURLs = urls(.today)
         space.pinnedTabURLs = urls(.pinned)
@@ -3168,7 +3169,7 @@ struct Stash {
                            space: id, profileID: profileID, ownsSection: true)
         let selected = stash.tabs.first { $0.id == stash.current }?.pinnedURL
         Spaces.rememberTab(selected.flatMap {
-            $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
+            TabAddress.restorable($0) ? $0.absoluteString : nil
         }, in: id)
         return true
     }

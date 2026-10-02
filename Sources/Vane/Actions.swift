@@ -215,7 +215,7 @@ extension PaletteCommand {
             }
             // Arc's "Move to Space ▸" is a submenu, and a search bar has no submenus — so it
             // is one row per Space, which is also the row typing the Space's name lands on.
-            if let tab = store.active, tab.currentURL?.scheme?.hasPrefix("http") == true {
+            if let tab = store.active, TabAddress.restorable(tab.currentURL) {
                 for space in store.spaces where space.id != store.currentSpaceID {
                     out.append(PaletteCommand("Move Tab to \(space.name)",
                                               icon: space.icon ?? "square.on.square",

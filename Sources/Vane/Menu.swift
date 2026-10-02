@@ -844,7 +844,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
                 guard let url = URL(string: b.url) else { return }
                 let profileID = BookmarkManager.currentActionProfile
                 let target = BookmarkManager.browserWindow(for: profileID)
-                target?.shown.active?.web.load(URLRequest(url: url))
+                target?.shown.active?.navigate(to: url)
             }
         }),
     ]))

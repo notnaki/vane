@@ -17,6 +17,16 @@ enum EaselAddress {
     }
 }
 
+/// Addresses that can return in a saved browser tab. Files and arbitrary custom
+/// schemes remain transient; an Easel is a profile-local document, not a web page.
+enum TabAddress {
+    static func restorable(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        return ["http", "https"].contains(url.scheme?.lowercased() ?? "")
+            || EaselAddress.boardID(url) != nil
+    }
+}
+
 extension TabStore {
     /// Opening an existing board focuses its tab in this Space; a new board is pinned.
     @discardableResult func openEasel(_ boardID: UUID? = nil, create: Bool = false) -> Tab? {

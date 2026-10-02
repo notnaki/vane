@@ -3,6 +3,107 @@ import XCTest
 @testable import vane
 
 @MainActor final class EaselTabTests: XCTestCase {
+    func testRealSessionAndSpaceWritersPreserveEaselTabsFoldersAndSelection() throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let profile = UUID()
+        let space = Space(name: "Canvas", profileID: profile)
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([space], for: profile))
+        let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
+        let board = try repository.create(title: "Saved research")
+        let address = EaselAddress.url(board.id)
+        let store = TabStore(profileID: profile, space: space, session: [])
+        defer {
+            store.dropStashes()
+            let tabs = store.tabs
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(tabs)
+            EaselStore.forget(profile, directory: Store.directory)
+            Store.forget(profile)
+        }
+        let tab = try XCTUnwrap(store.openEasel(board.id))
+        let folder = Folder(name: "Research")
+        store.pins.entries = [.init(row: .folder(folder)),
+                              .init(row: .tab(tab.id.uuidString), parent: folder.id)]
+        XCTAssertTrue(Session.save())
+        let savedSpace = try XCTUnwrap(ProfileManager.shared.spaces(for: profile).first)
+        XCTAssertEqual(savedSpace.pinnedTabURLs, [address])
+        XCTAssertEqual(Spaces.lastTab(in: space.id), address.absoluteString)
+        let shape = try XCTUnwrap(TabStore.savedShape(space: space.id, profileID: profile))
+        XCTAssertEqual(shape.folder(holding: address.absoluteString)?.id, folder.id)
+        let sidecar = Suspension.SpaceState.load(space: space.id, profileID: profile, in: Store.directory)
+        XCTAssertEqual(sidecar[address.absoluteString]?.title, board.title)
+        let data = try Data(contentsOf: ProfileManager.sessionURL(for: profile, in: Store.directory))
+        let entries = try XCTUnwrap(Session.decode(data).first)
+        XCTAssertEqual(entries.map(\.url), [address.absoluteString], "An Easel-only window must survive quit")
+        XCTAssertEqual(Session.decodeSelected(data).first, tab.id)
+        XCTAssertEqual(entries.first?.home, address.absoluteString)
+        XCTAssertEqual(entries.first?.kind, .pinned)
+        XCTAssertNil(tab.existingWeb)
+
+        TabStore.all.removeAll { $0 === store }
+        SharedTabs.release(store.tabs)
+        let restored = TabStore(profileID: profile, space: savedSpace, session: entries,
+                                selected: tab.id)
+        defer {
+            TabStore.all.removeAll { $0 === restored }
+            SharedTabs.release(restored.tabs)
+        }
+        XCTAssertEqual(restored.active?.easelID, board.id)
+        XCTAssertEqual(restored.active?.title, board.title)
+        XCTAssertNil(restored.active?.existingWeb)
+        XCTAssertEqual(restored.pins.folder(holding: tab.id.uuidString)?.id, folder.id)
+    }
+
+    func testEaselMovesToAnotherSpaceAndSurvivesStashedSpaceSave() throws {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let first = Space(name: "First", profileID: profile)
+        let second = Space(name: "Second", profileID: profile)
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: profile))
+        let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
+        let board = try repository.create(title: "Move me")
+        let address = EaselAddress.url(board.id)
+        let store = TabStore(profileID: profile, space: first, session: [])
+        defer {
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(store.tabs)
+            EaselStore.forget(profile, directory: Store.directory)
+            Store.forget(profile)
+        }
+        let tab = try XCTUnwrap(store.openEasel(board.id))
+        Spaces.move(tab.id, to: second.id, as: .pinned, from: store)
+        XCTAssertFalse(store.tabs.contains { $0.easelID == board.id })
+        store.switchTo(space: second)
+        let moved = try XCTUnwrap(store.tabs.first { $0.easelID == board.id })
+        store.current = moved.id
+        XCTAssertEqual(moved.kind, .pinned)
+        XCTAssertNil(moved.existingWeb)
+        store.switchTo(space: first)
+        XCTAssertTrue(store.saveStashedSpace(second.id))
+        XCTAssertEqual(ProfileManager.shared.spaces(for: profile).first { $0.id == second.id }?.pinnedTabURLs, [address])
+        XCTAssertEqual(Spaces.lastTab(in: second.id), address.absoluteString)
+        XCTAssertEqual(Suspension.SpaceState.load(space: second.id, profileID: profile, in: Store.directory)[address.absoluteString]?.title, board.title)
+    }
+
+    func testExplicitNavigationLeavesNativeCanvasAndCanReturnToItsPinnedHome() throws {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let repository = EaselStore.shared(profileID: profile, directory: Store.directory)
+        defer { EaselStore.forget(profile, directory: Store.directory) }
+        let board = try repository.create()
+        let tab = Tab(url: EaselAddress.url(board.id), profileID: profile)
+        defer { tab.tearDown() }
+        tab.kind = .pinned
+        tab.navigate(to: URL(string: "about:blank")!)
+        XCTAssertNil(tab.easelSession)
+        XCTAssertNotNil(tab.existingWeb)
+        tab.navigate(to: EaselAddress.url(board.id))
+        XCTAssertEqual(tab.easelID, board.id)
+        XCTAssertNil(tab.existingWeb)
+    }
+
     func testOpeningAndRestoringAnEaselKeepsNativeContentAndTheBoardAddress() throws {
         TestEnvironment.prepare()
         let profile = UUID()

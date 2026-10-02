@@ -576,7 +576,7 @@ import WebKit
         let store = (configuration.window as? ExtWindow)?.store ?? myFocusedStore ?? myStores.last
             ?? Windows.open(profile: ProfileManager.shared.profiles.first { $0.id == profileID })
         let tab = store.newBlankTab()
-        if let url = configuration.url { tab.web.load(URLRequest(url: url)) }
+        if let url = configuration.url { tab.navigate(to: url) }
         if !configuration.shouldBeActive, let first = store.tabs.first { store.current = first.id }
         sync()
         return adapter(for: tab, in: store)
@@ -1079,7 +1079,7 @@ extension View {
                    for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
         guard let store, let url = tab?.currentURL else { return nil }
         let copy = store.newBlankTab()
-        copy.web.load(URLRequest(url: url))
+        copy.navigate(to: url)
         let host = ExtensionHost.host(for: store.profileID)
         host.sync()
         return host.adapter(for: copy, in: store)

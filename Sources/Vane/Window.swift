@@ -1117,7 +1117,7 @@ extension TabStore {
                 // currentURL, not web.url: a suspended tab has no live page and would
                 // otherwise drop out of its own session.
                 guard let u = tab.currentURL,
-                      u.scheme?.hasPrefix("http") == true else { return nil }
+                      TabAddress.restorable(u) else { return nil }
                 let snap = tab.snapshot
                 return Entry(id: tab.id.uuidString, url: u.absoluteString, title: snap.title,
                              state: snap.state?.base64EncodedString(), kind: tab.kind,
@@ -1181,7 +1181,7 @@ extension TabStore {
 @MainActor enum ClosedTabs {
     private static var stack: [URL] = []
     static func push(_ url: URL?) {
-        guard let url, url.scheme?.hasPrefix("http") == true else { return }
+        guard let url, TabAddress.restorable(url) else { return }
         stack.append(url)
         if stack.count > 32 { stack.removeFirst() }
     }
