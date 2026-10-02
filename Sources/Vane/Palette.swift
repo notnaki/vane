@@ -423,7 +423,7 @@ struct CommandField: NSViewRepresentable {
     let label: String
     let hint: String
     /// The bar's size by default; the find bar asks for its own, smaller one.
-    var font: NSFont = .systemFont(ofSize: Look.barFontSize)
+    var font: NSFont = Look.Typography.input.native
     /// Return true to swallow the key; false lets the field editor have it.
     let onKey: (Key) -> Bool
 

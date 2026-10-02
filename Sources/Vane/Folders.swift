@@ -1548,7 +1548,7 @@ struct FolderNameField: View {
     var body: some View {
         TextField("Folder name", text: $draft)
             .textFieldStyle(.plain)
-            .font(Look.rowTitle)
+            .font(Look.folderTitle)
             .foregroundStyle(Look.inkPrimary)
             .focused($focused)
             .onSubmit { commit() }

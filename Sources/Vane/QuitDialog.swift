@@ -173,7 +173,7 @@ import SwiftUI
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: Look.inset) {
                         Text("Quit Vane?")
-                            .font(.system(size: 20, weight: .semibold))
+                            .font(Look.dialogTitle)
                             .foregroundStyle(Look.barSelectedText)
                         Text("This will close all Vane windows.")
                             .font(Look.text).foregroundStyle(Look.barPlaceholder)
@@ -234,7 +234,7 @@ import SwiftUI
                 HStack(spacing: Look.inset) {
                     Text(title).font(Look.text)
                     if let key {
-                        Text(key).font(Look.footnote.weight(.semibold))
+                        Text(key).font(Look.shortcut)
                             .padding(.horizontal, Look.inset / 2).padding(.vertical, 1)
                             .background(Look.ink(0.12), in: .rect(cornerRadius: Look.cardRadius - 2))
                             .accessibilityHidden(true)   // the button's own shortcut says it

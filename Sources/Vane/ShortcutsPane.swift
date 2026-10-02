@@ -146,7 +146,7 @@ import SwiftUI
 
             VStack(alignment: .leading, spacing: Look.inset) {
                 Text("Custom Shortcuts")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(Look.Typography.featureHeading.font)
                 Text("Change shortcuts for your favorite actions, and choose whether Vane or a website takes priority.")
                     .font(Look.rowTitle)
                     .foregroundStyle(.secondary)

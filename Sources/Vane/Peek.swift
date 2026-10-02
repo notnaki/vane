@@ -215,6 +215,7 @@ import WebKit
 
         let session = Session(store: store, parent: parent, source: source.id, window: window)
         window.contentView = NSHostingView(rootView: PeekView(shown: session.shown)
+            .font(Look.text)
             .environmentObject(store)
             .environmentObject(ProfileManager.shared))
         store.window = window

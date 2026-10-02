@@ -136,7 +136,7 @@ private struct DeveloperBar: View {
         HStack(spacing: Look.inset) {
             Image(systemName: tab.currentURL?.scheme == "https" ? "lock.fill" : "lock.open")
             Text(tab.currentURL?.absoluteString ?? tab.address)
-                .font(.system(size: Look.findFontSize, design: .monospaced))
+                .font(Look.small.monospaced())
                 .lineLimit(1).truncationMode(.middle)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)

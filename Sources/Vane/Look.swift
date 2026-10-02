@@ -124,7 +124,7 @@ enum Look {
     static let chip: CGFloat = 24
     static let chipRadius: CGFloat = 6
     /// The field's type. Larger than body because it is the one thing being typed into.
-    static let barFontSize: CGFloat = 18
+    static let barFontSize = Typography.input.size
     /// The magnifying glass beside it, and the symbols standing in for favicons on rows —
     /// Arc's are small (24px at 2x) and regular weight.
     static let fieldIcon = Font.system(size: 13)
@@ -132,7 +132,7 @@ enum Look {
     // Find bar. A strip over the page card rather than a sheet: small type, a field wide
     // enough for a phrase, and a fixed slot for "128 of 250" so stepping through the
     // matches never shuffles the buttons beside it a pixel at a time.
-    static let findFontSize: CGFloat = 12
+    static let findFontSize = Typography.secondary.size
     static let findFieldWidth: CGFloat = 180
     static let findCountWidth: CGFloat = 64
 
@@ -322,21 +322,54 @@ enum Look {
     static let stepGap: CGFloat = 2
     static let stepLabel: CGFloat = 38
 
-    static let text = Font.system(size: 13)
-    /// A sidebar row's title, the space's name, New Tab: Arc sets these a point larger than
+    /// Text uses the same system face and metrics in SwiftUI and AppKit. Keep SF Symbols
+    /// separate: their optical size and weight belong to the icon, not to its label.
+    enum Typography {
+        struct Style {
+            let size: CGFloat
+            let weight: NSFont.Weight
+
+            var native: NSFont { .systemFont(ofSize: size, weight: weight) }
+            var font: Font { Font(native) }
+        }
+
+        static let body = Style(size: 13, weight: .regular)
+        static let sidebar = Style(size: 14, weight: .regular)
+        static let sidebarHeading = Style(size: 14, weight: .semibold)
+        static let caption = Style(size: 11, weight: .regular)
+        static let section = Style(size: 11, weight: .semibold)
+        static let secondary = Style(size: 12, weight: .regular)
+        static let heading = Style(size: 13, weight: .semibold)
+        static let result = Style(size: 13, weight: .medium)
+        static let input = Style(size: 18, weight: .medium)
+        static let featureHeading = Style(size: 16, weight: .semibold)
+        static let compactCaption = Style(size: 10, weight: .semibold)
+        static let dialog = Style(size: 20, weight: .semibold)
+        static let shortcut = Style(size: 12, weight: .semibold)
+        static let badge = Style(size: 8, weight: .semibold)
+        static let tileLabel = Style(size: 10, weight: .medium)
+    }
+
+    static let text = Typography.body.font
+    /// A sidebar row's title and New Tab: Arc sets these a point larger than
     /// body ("Vesta macOS Terminal" is 288px wide at 2x — 14 regular to the pixel).
-    static let rowTitle = Font.system(size: 14)
-    static let caption = Font.system(size: 11)
+    static let rowTitle = Typography.sidebar.font
+    /// Space headers are compact; folder names keep the row size. Both are semibold.
+    static let spaceTitle = Typography.heading.font
+    static let folderTitle = Typography.sidebarHeading.font
+    static let caption = Typography.caption.font
     /// A mark in the corner of another glyph — a live folder's source. Small enough that
     /// the glyph it sits on still reads as itself.
     static let badgeGlyph = Font.system(size: 9, weight: .semibold)
     /// Tidy | Clear: caption-sized but heavy, the way Arc sets them.
-    static let sectionCaption = Font.system(size: 11, weight: .semibold)
+    static let sectionCaption = Typography.section.font
     /// A settings footnote. Arc's are 12, a step under the rows they explain.
-    static let footnote = Font.system(size: 12)
-    static let heading = Font.system(size: 13, weight: .semibold)
+    static let footnote = Typography.secondary.font
+    static let heading = Typography.heading.font
+    static let dialogTitle = Typography.dialog.font
+    static let shortcut = Typography.shortcut.font
     /// Secondary type: the find field, a download's name, the current space's dot.
-    static let small = Font.system(size: 12)
+    static let small = Typography.secondary.font
     /// The sidebar's symbol buttons: the top row and the footer (16 medium: sidebar.left
     /// 37×29px, arrow.left 30×24, plus 28×28).
     static let icon = Font.system(size: 16, weight: .medium)
@@ -356,7 +389,7 @@ enum Look {
     static let symbol = Font.system(size: 13)
     /// The digits in an extension action's badge. Small enough that "99+" still leaves the
     /// icon under it recognisable.
-    static let badgeText = Font.system(size: 8, weight: .semibold)
+    static let badgeText = Typography.badge.font
     /// A glyph inside a small tile: a link row's coloured square.
     static let glyph = Font.system(size: 12, weight: .semibold)
     /// The "→" in a chip.
@@ -365,7 +398,7 @@ enum Look {
     static let rowGlyph = Font.system(size: 13)
     /// Command bar rows: a step heavier than body, the way Arc sets them, so a title reads
     /// at a glance against the grey trailing label.
-    static let rowText = Font.system(size: 13, weight: .medium)
+    static let rowText = Typography.result.font
 
     /// White in dark, black in light, at one strength. Keyed off the *window's* appearance
     /// rather than SwiftUI's colour scheme, so a space pinned to dark gets white ink even
@@ -870,7 +903,7 @@ extension Look {
         // stops looking like a card. Text measurement needs fonts, not a window server, so
         // it is fair game in the pure pass.
         let titles = ["Cancel", "Always Allow", "Allow"]
-        let font = NSFont.systemFont(ofSize: 13)          // `Look.text`
+        let font = Typography.body.native
         let words = titles.reduce(0 as CGFloat) {
             $0 + NSAttributedString(string: $1, attributes: [.font: font]).size().width
         }
@@ -1002,7 +1035,7 @@ extension Look {
         // right of it. The sentence takes what they leave and wraps into two lines of it —
         // never a paragraph with a button parked underneath. So the width that has to be
         // true is the sentence's column with the widest set of controls beside it.
-        let face = NSFont.systemFont(ofSize: 13, weight: .medium)     // == `rowText`
+        let face = Typography.result.native
         func measure(_ s: String) -> CGFloat {
             (s as NSString).size(withAttributes: [.font: face]).width
         }

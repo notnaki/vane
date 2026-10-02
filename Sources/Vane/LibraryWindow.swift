@@ -550,7 +550,7 @@ extension Look {
     /// behind the glyph.
     static let libraryTile: CGFloat = 62
     static let libraryTileIcon = Font.system(size: 19)
-    static let libraryTileLabel = Font.system(size: 10, weight: .medium)
+    static let libraryTileLabel = Typography.tileLabel.font
     /// A Library row: a favicon or a file icon, a title, and one grey line under it.
     static let libraryRow: CGFloat = 44
     static let libraryThumb: CGFloat = 20
@@ -1682,7 +1682,7 @@ private struct FolderCardRow: View {
     var body: some View {
         HStack(spacing: Look.captionGap * 3) {
             Image(systemName: shut ? "chevron.right" : "chevron.down")
-                .font(.system(size: 8, weight: .semibold))
+                .font(Look.badgeText)
                 .foregroundStyle(Look.inkTertiary)
                 .frame(width: Look.captionGap * 4)
             if folder.iconIsEmoji {

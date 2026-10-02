@@ -2755,7 +2755,7 @@ private struct FolderRow: View {
             if store.renamingFolder == folder.id {
                 FolderNameField(store: store, folder: folder, shape: shape)
             } else {
-                Text(folder.name)
+                Text(folder.name).font(Look.folderTitle)
             }
         } trailing: {
             Image(systemName: "chevron.down")
@@ -2782,7 +2782,7 @@ private struct FolderRow: View {
         .onDrag { folderDragPayload(folder) } preview: {
             HStack(spacing: Look.rowSpacing) {
                 FolderGlyph(folder: folder)
-                Text(folder.name).lineLimit(1).font(Look.rowTitle)
+                Text(folder.name).lineLimit(1).font(Look.folderTitle)
             }
             .padding(.horizontal, Look.rowInset).padding(.vertical, 4)
         }

@@ -288,7 +288,7 @@ private struct FindBarBody: View {
                                  label: "Find on Page",
                                  hint: "Return finds the next match, Shift-Return the previous "
                                      + "one, Escape closes the bar.",
-                                 font: .systemFont(ofSize: Look.findFontSize),
+                                 font: Look.Typography.secondary.native,
                                  onKey: key)
                         .foregroundStyle(miss ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
                 }

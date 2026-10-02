@@ -228,7 +228,7 @@ import SwiftUI
                         if isEditing {
                             SecureField("Password", text: $draftPassword).textFieldStyle(.roundedBorder)
                         } else {
-                            Text(shown ?? Self.dots).font(.system(.body, design: .monospaced))
+                            Text(shown ?? Self.dots).font(Look.text)
                                 .textSelection(.enabled)
                                 .accessibilityLabel("Password")
                                 .accessibilityValue(Self.spoken(shown))
