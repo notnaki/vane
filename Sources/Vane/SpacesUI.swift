@@ -279,7 +279,7 @@ private struct SpaceSlide: ViewModifier {
     @ViewBuilder private var preview: some View {
         let drag = gesture.drag
         if drag != 0, let space = neighbour(of: drag) {
-            SpacePreviewList(space: space)
+            SpacePreviewList(space: space, liveTabs: store.previewTabs(in: space))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .offset(x: drag + (drag < 0 ? sidebar.width : -sidebar.width))
                 .allowsHitTesting(false)
@@ -302,21 +302,21 @@ private struct SpaceSlide: ViewModifier {
 /// The neighbouring Space's sidebar, as a ghost, for the width of a swipe: its name, its
 /// pinned rows, its tabs.
 ///
-/// ponytail: rows built from the urls in `spaces.json`, not from tabs. A Space that is not on
-/// screen has no `Tab` objects and no web views, and making them so the user can glance at
-/// them mid-swipe would mean loading another Space's pages in order to slide past them.
+/// Rows use already loaded tabs when available, and saved metadata otherwise. Previewing
+/// another Space never creates a tab or loads a page.
 /// Ceiling: a site never visited has no cached favicon. The label climbs the same ladder the
 /// real row does — a typed name, the tidied name, the name it was pinned under, the title
 /// the sidecar saved — and only a row nothing has ever named is its host.
 private struct SpacePreviewList: View {
     let space: Space
+    let liveTabs: [Tab]?
 
     /// What a preview row can be. A folder is one row whether it is open or shut: the
     /// sidebar under the fingers is a shape, and a folder that unpacked itself here would
     /// push every row below it out of line with the Space it is sliding over.
     private enum Row {
         case folder(Folder)
-        case site(URL)
+        case site(URL, TabKind)
     }
 
     var body: some View {
@@ -354,19 +354,23 @@ private struct SpacePreviewList: View {
             for entry in shape.entries where entry.parent == nil {
                 switch entry.row {
                 case .folder(let f): pinned.append(.folder(f))
-                case .tab(let name): if let url = URL(string: name) { pinned.append(.site(url)) }
+                case .tab(let name): if let url = URL(string: name) { pinned.append(.site(url, .pinned)) }
                 }
             }
             // A tab another window moved into this Space while it was shut is in the urls
             // but not in the shape, and the real sidebar draws it after the rest.
             let named = Set(shape.tabs)
-            pinned += urls.filter { !named.contains($0.absoluteString) }.map(Row.site)
+            pinned += urls.filter { !named.contains($0.absoluteString) }.map { .site($0, .pinned) }
         } else {
-            pinned = urls.map(Row.site)
+            pinned = urls.map { .site($0, .pinned) }
         }
         let room = max(0, Look.spacePreviewRows - pinned.count)
         return (Array(pinned.prefix(Look.spacePreviewRows)),
-                space.tabURLs.prefix(room).map(Row.site))
+                todayURLs.prefix(room).map { .site($0, .today) })
+    }
+
+    private var todayURLs: [URL] {
+        liveTabs.map { $0.filter { $0.kind == .today }.compactMap(\.currentURL) } ?? space.tabURLs
     }
 
     /// The divider under Pinned. Not the real `TidyRow`: its two buttons act on the window's
@@ -376,7 +380,7 @@ private struct SpacePreviewList: View {
     private var tidy: some View {
         HStack(spacing: 8) {
             Hairline()
-            if space.tabURLs.count >= Look.tidyThreshold {
+            if todayURLs.count >= Look.tidyThreshold {
                 Text("Tidy | Clear").font(Look.sectionCaption).foregroundStyle(Look.inkTertiary)
             }
         }
@@ -399,6 +403,9 @@ private struct SpacePreviewList: View {
     }
 
     @ViewBuilder private func row(_ row: Row, _ saved: [String: Parked]) -> some View {
+        let tab = liveTab(for: row)
+        let page = pageURL(for: row, saved: saved, tab: tab)
+        let developer = page.map { DeveloperMode.wants($0, profile: space.profileID) } ?? false
         HStack(spacing: Look.rowSpacing) {
             switch row {
             case .folder(let f):
@@ -414,17 +421,40 @@ private struct SpacePreviewList: View {
                     }
                 }
                 Text(f.name).font(Look.folderTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
-            case .site(let url):
+            case .site(let url, let kind):
                 SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
-                Text(TidyTitles.previewName(for: url, in: space.profileID,
-                                            saved: saved[url.absoluteString]?.title))
-                    .font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
+                LivePRTitle(title: tab.map { TidyTitles.title(for: $0) }
+                                ?? TidyTitles.previewName(for: url, in: space.profileID,
+                                    saved: saved[url.absoluteString]?.title, stays: kind != .today),
+                            pr: nil, developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
+                    .foregroundStyle(Look.inkPrimary)
             }
             Spacer(minLength: 0)
         }
         .padding(.leading, Look.rowInset)
         .padding(.trailing, Look.rowTrailingInset)
         .frame(height: Look.rowHeight)
+        .overlay { if developer { DeveloperTabBorder() } }
+    }
+
+    private func liveTab(for row: Row) -> Tab? {
+        guard case .site(let url, let kind) = row else { return nil }
+        return liveTabs?.first { $0.kind == kind && $0.pinnedURL == url }
+    }
+
+    private func pageURL(for row: Row, saved: [String: Parked], tab: Tab?) -> URL? {
+        guard case .site(let url, _) = row else { return nil }
+        return tab?.currentURL ?? saved[url.absoluteString]?.page ?? url
+    }
+}
+
+extension TabStore {
+    /// Mirror the switch's choice of live rows; a stale stash must not override disk edits.
+    func previewTabs(in space: Space) -> [Tab]? {
+        guard space.profileID == profileID else { return nil }
+        if let shared = SharedTabs.state(for: self, space: space.id) { return shared.tabs }
+        guard let kept = stashes[space.id], kept.fingerprint == fingerprint(of: space.id) else { return nil }
+        return kept.tabs
     }
 }
 

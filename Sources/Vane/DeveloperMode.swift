@@ -71,6 +71,14 @@ import WebKit
 
     static func toggle(_ tab: Tab) { set(!tab.developer, on: tab) }
 
+    /// Keep the port visible so two local servers are distinguishable in the sidebar.
+    nonisolated static func endpoint(_ url: URL?) -> String? {
+        guard let url, let host = url.host(), !host.isEmpty else { return nil }
+        let port = url.port ?? (url.scheme == "https" ? 443 : url.scheme == "http" ? 80 : nil)
+        let label = host.contains(":") ? "[\(host)]" : host
+        return port.map { "\(label):\($0)" } ?? label
+    }
+
     /// The page, to the clipboard — Arc's "Capture" from the same bar.
     static func capture(_ tab: Tab) {
         Task {
@@ -104,6 +112,20 @@ import WebKit
         out.append(("saying yes to a real site is a row", t == ["staging.example.com": true]))
         out.append(("…keyed by host, not page", wants(u("https://staging.example.com/y"), said: t)))
         return out
+    }
+}
+
+/// Black fills the gaps between yellow dashes even on a light or tinted sidebar.
+struct DeveloperTabBorder: View {
+    var body: some View {
+        let outline = RoundedRectangle(cornerRadius: Look.pillRadius)
+        outline.strokeBorder(.black, lineWidth: 1.5)
+            .overlay {
+                outline.strokeBorder(Look.developerYellow,
+                    style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
