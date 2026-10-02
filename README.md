@@ -159,7 +159,7 @@ provide.
 
 ## Test a change
 
-The project has one Swift executable target and no XCTest target. Its checks are
+The project has one Swift executable target, XCTest regressions, and inline checks
 run through `selfcheck`; routine CI builds the debug configuration, runs the pure
 checks, assembles the debug app, and tests the DMG packager. Debug builds avoid
 whole-module release optimization on every change. CI caches `.build` by macOS
@@ -181,7 +181,23 @@ swift build -c debug
 
 `swift test` runs isolated search regressions, including rapid typing against a
 large history database, keyboard selection, local and remote cancellation, live
-history changes, and private windows.
+history changes, and private windows. GitHub credential regressions exercise the real
+Live Folder response handler with an isolated credential-storage fixture:
+
+```sh
+swift test --filter LiveCredentialTests
+python3 scripts/check-live-credential-persistence.py
+```
+
+A rejected GitHub credential stays in Keychain while Edit Live Folder offers
+reconnection. Ordinary refreshes continue, and a successful retry clears the warning.
+Only explicit sign-out or other user-requested credential removal deletes it.
+For a real-session check, reconnect in the installed app, quit normally, relaunch the
+same signed build, and refresh the folder. If authentication fails again, Console's
+`[vane] GitHub` messages distinguish missing/inaccessible Keychain credentials from
+HTTP 401 responses and record GitHub's request ID. These diagnostics never log tokens
+or response bodies. A genuinely revoked or expired token still needs reconnection;
+retaining it does not make GitHub accept it.
 
 Before shipping, also check the release configuration:
 

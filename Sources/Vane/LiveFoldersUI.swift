@@ -59,6 +59,7 @@ struct LiveFolderSheet: View {
         .padding(Look.paneMargin)
         .frame(width: 460)
         .onAppear(perform: load)
+        .onChange(of: live.needsReconnect) { login = live.connectedLogin }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(editing == nil ? "New Live Folder" : "Edit Live Folder")
     }
@@ -73,7 +74,7 @@ struct LiveFolderSheet: View {
             // field below it is the way in — see `LiveFolders.route`.
             if OAuthSecret.github != nil {
                 SettingsRow("GitHub") {
-                    Button("Connect…") {
+                    Button(live.needsReconnect ? "Reconnect…" : "Connect…") {
                         live.connect(in: store, thenCreate: false)
                         dismiss()
                     }
@@ -99,7 +100,9 @@ struct LiveFolderSheet: View {
                 Button(checking ? "Checking…" : "Sign In") { check() }
                     .disabled(checking || TabActions.cleanName(token) == nil)
             }
-            Footnote(problem ?? tokenFootnote)
+            Footnote(problem ?? (live.needsReconnect
+                ? "GitHub rejected the saved sign-in. Reconnect to try again. Your saved credential and folder tabs have been kept."
+                : tokenFootnote))
         }
     }
 
@@ -168,7 +171,7 @@ struct LiveFolderSheet: View {
     // MARK: Doing it
 
     private func load() {
-        login = live.signIn?.login
+        login = live.connectedLogin
         guard let editing, case .github(let q)? = editing.live else { return }
         hidden = editing.dismissed ?? []
         query = q
