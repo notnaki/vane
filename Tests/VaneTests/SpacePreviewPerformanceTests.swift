@@ -47,6 +47,41 @@ import SwiftUI
                        "A later swipe must show newly saved titles")
     }
 
+    func testPreviewDrawsExpandedPinnedChildrenAndKeepsClosedChildrenHidden() throws {
+        TestEnvironment.prepare()
+        let profile = UUID(), a = URL(string: "https://a.example")!, b = URL(string: "https://b.example")!
+        let open = Folder(name: "Open"), closed = Folder(name: "Closed", collapsed: true)
+        let space = Space(name: "Work", profileID: profile, pinnedTabURLs: [a, b])
+        let key = TabStore.shapeKey(space: space.id, profileID: profile)
+        defer { UserDefaults.vane.removeObject(forKey: key) }
+        let shape = Pins(entries: [.init(row: .folder(open)), .init(row: .tab(a.absoluteString), parent: open.id),
+                                   .init(row: .folder(closed)), .init(row: .tab(b.absoluteString), parent: closed.id)])
+        UserDefaults.vane.set(try JSONEncoder().encode(shape), forKey: key)
+        let preview = SpacePreviewList(space: space, liveTabs: nil)
+        XCTAssertEqual(preview.rows.pinned.map { preview.title(for: $0) }, ["Open", "a.example", "Closed"])
+        XCTAssertEqual(preview.rows.pinned.map(\.depth), [0, 1, 0])
+        var changed = shape
+        changed.toggle(folder: open.id)
+        UserDefaults.vane.set(try JSONEncoder().encode(changed), forKey: key)
+        XCTAssertEqual(preview.rows.pinned.map { preview.title(for: $0) }, ["Open", "a.example", "Closed"])
+        XCTAssertEqual(SpacePreviewList(space: space, liveTabs: nil).rows.pinned.count, 2)
+    }
+
+    func testPreviewDrawsTodayFoldersInsteadOfFlatteningTheirTabs() throws {
+        TestEnvironment.prepare()
+        let profile = UUID(), a = URL(string: "https://a.example")!, b = URL(string: "https://b.example")!
+        let open = Folder(name: "Today open"), closed = Folder(name: "Today closed", collapsed: true)
+        let space = Space(name: "Work", profileID: profile, tabURLs: [a, b])
+        let key = TabStore.shapeKey(.today, space: space.id, profileID: profile)
+        defer { UserDefaults.vane.removeObject(forKey: key) }
+        let shape = Pins(entries: [.init(row: .folder(open)), .init(row: .tab(a.absoluteString), parent: open.id),
+                                   .init(row: .folder(closed)), .init(row: .tab(b.absoluteString), parent: closed.id)])
+        UserDefaults.vane.set(try JSONEncoder().encode(shape), forKey: key)
+        let preview = SpacePreviewList(space: space, liveTabs: nil)
+        XCTAssertEqual(preview.rows.today.map { preview.title(for: $0) }, ["Today open", "a.example", "Today closed"])
+        XCTAssertEqual(preview.rows.today.map(\.depth), [0, 1, 0])
+    }
+
     func testPopulatedPreviewFrameCost() {
         TestEnvironment.prepare()
         let profile = UUID(), spaceID = UUID()

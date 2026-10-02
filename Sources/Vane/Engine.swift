@@ -2850,7 +2850,18 @@ struct Stash {
     let spaceGesture = SpaceGesture()
     var spaceDrag: CGFloat {
         get { spaceGesture.drag }
-        set { if newValue != spaceGesture.drag { spaceGesture.drag = newValue } }
+        set {
+            // A zero target starts the return spring; retain the grid's motion mode
+            // until that animation completes.
+            if newValue != 0 {
+                let neighbour = swipeNeighbour(for: newValue)
+                spaceGesture.neighbour = neighbour
+                spaceGesture.previewDirection = newValue < 0 ? 1 : -1
+                let moves = neighbour.map { $0.profileID != profileID } ?? false
+                if moves != spaceGesture.travelsFavorites { spaceGesture.travelsFavorites = moves }
+            }
+            if newValue != spaceGesture.drag { spaceGesture.drag = newValue }
+        }
     }
 
     /// True from the moment a Space swipe claims the strip until its spring has settled.
@@ -2865,7 +2876,10 @@ struct Stash {
             spaceGesture.swiping = newValue
             if !newValue {
                 spaceGesture.strip = nil
+                spaceGesture.neighbour = nil
+                spaceGesture.previewDirection = 0
                 spaceGesture.previews.removeAll()
+                if spaceGesture.travelsFavorites { spaceGesture.travelsFavorites = false }
             }
         }
     }
