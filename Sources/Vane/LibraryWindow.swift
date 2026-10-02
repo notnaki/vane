@@ -107,7 +107,10 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     static func open(_ requested: LibrarySection, in store: TabStore?) {
         // History is a window of its own. Raising it must not become the rail's section,
         // or every later ⇧⌘L would raise it again.
-        guard requested != .history else { HistoryWindow.show(); return }
+        guard requested != .history else {
+            HistoryWindow.show(profileID: store?.profileID ?? ProfileManager.activeProfileID)
+            return
+        }
         guard let store else { return }
         // A private window has no Spaces, and ⇧⌘L must still open *something*: falling back
         // beats a keystroke that silently does nothing and a rail with no tile lit.

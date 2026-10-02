@@ -811,7 +811,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
             a.messageText = "Clear all browsing history?"
             a.informativeText = "Bookmarks and saved passwords are not affected."
             a.addButton(withTitle: "Clear"); a.addButton(withTitle: "Cancel")
-            if a.runModal() == .alertFirstButtonReturn { Store.shared.clearHistory() }
+            if a.runModal() == .alertFirstButtonReturn {
+                Store.store(for: Windows.current?.profileID ?? ProfileManager.activeProfileID).clearHistory()
+            }
         },
         .separator(),
         // Arc has no Bookmarks menu; what Vane imports from other browsers lives here.
@@ -830,10 +832,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
             item(b.title.isEmpty ? b.url : b.title, "") {
                 guard let url = URL(string: b.url) else { return }
                 let profileID = BookmarkManager.currentActionProfile
-                let target = Windows.current(in: profileID)
-                    ?? ProfileManager.shared.profiles.first(where: { $0.id == profileID }).map {
-                        Windows.open(profile: $0)
-                    }
+                let target = BookmarkManager.browserWindow(for: profileID)
                 target?.shown.active?.web.load(URLRequest(url: url))
             }
         }),

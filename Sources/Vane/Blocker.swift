@@ -49,6 +49,7 @@ private struct BlockRule: Encodable, Equatable {
 /// blocks the wrong thing. Upgrade path the day that stops being enough: vendor AdGuard's
 /// SafariConverter instead of growing this file.
 @MainActor enum Blocker {
+    private static var incognitoEnabled = true
 
     // MARK: - Public API
 
@@ -63,11 +64,13 @@ private struct BlockRule: Encodable, Equatable {
     /// the others. The default profile keeps the un-suffixed key, so an existing preference
     /// carries over.
     static func enabled(for profileID: UUID) -> Bool {
-        UserDefaults.vane.object(forKey: ProfileManager.defaultsKey("blockerEnabled", profileID)) as? Bool ?? true
+        if profileID == Profile.incognito.id { return incognitoEnabled }
+        return UserDefaults.vane.object(forKey: ProfileManager.defaultsKey("blockerEnabled", profileID)) as? Bool ?? true
     }
 
     static func setEnabled(_ on: Bool, for profileID: UUID) {
-        UserDefaults.vane.set(on, forKey: ProfileManager.defaultsKey("blockerEnabled", profileID))
+        if profileID == Profile.incognito.id { incognitoEnabled = on }
+        else { UserDefaults.vane.set(on, forKey: ProfileManager.defaultsKey("blockerEnabled", profileID)) }
         refresh()
     }
 
@@ -94,7 +97,8 @@ private struct BlockRule: Encodable, Equatable {
     static func refresh() {
         let generation = refreshState.begin()
         Task {
-            let wanted = ProfileManager.shared.profiles.contains { enabled(for: $0.id) }
+            let wanted = enabled(for: Profile.incognito.id)
+                || ProfileManager.shared.profiles.contains { enabled(for: $0.id) }
             if wanted {
                 do {
                     let fresh = try await build()

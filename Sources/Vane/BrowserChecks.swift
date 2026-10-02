@@ -337,6 +337,10 @@ import WebKit
                             "a private floating link can create an incognito window without a saved profile")
                 backgroundPrivate?.window?.close()
                 floating.window?.close()
+                let bookmarkWindow = BookmarkManager.browserWindow(for: privateWindow.profileID)
+                try require(bookmarkWindow?.isPrivate == true,
+                            "incognito bookmarks reopen in an incognito window without a saved profile")
+                bookmarkWindow?.window?.close()
                 _ = try await js(privateTab, "localStorage.setItem('scope', 'private')")
                 let regular = try await js(tab, "localStorage.getItem('scope')")
                 try require(regular as? String == "regular", "private writes do not change regular storage")
