@@ -280,6 +280,7 @@ import WebKit
                 try require((popupBody as? String)?.contains("Popup content") == true,
                             "the opener writes into the returned popup web view")
 
+                try await floatingLinkPopupChecks(base: base, profile: profile)
                 try await load(tab, "\(base)/storage", title: "Fixture Storage")
                 _ = try await js(tab, "localStorage.setItem('scope', 'regular')")
                 let profilesBefore = ProfileManager.shared.profiles
@@ -1036,6 +1037,37 @@ import WebKit
                 eventNumber: 2, clickCount: 1, pressure: 1)!
             PasswordChooser.handlePointer(outside)
             try require(page.passwordChoice == nil, "clicking outside dismisses the password chooser")
+        }
+
+        private func floatingLinkPopupChecks(base: String, profile: UUID) async throws {
+            let source = makeTab(profile: profile)
+            source.linkOpensInFloatingWindow = true
+            source.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+            var child: Tab?
+            var closed = false
+            source.onPopup = { [weak self] configuration, _ in
+                guard let self else { return nil }
+                let made = Tab(popup: configuration, isPrivate: false, profileID: profile)
+                child = made
+                made.onClose = { closed = true }
+                self.host(made)
+                return made.web
+            }
+            try await load(source, "\(base)/a", title: "Fixture A")
+            _ = try await js(source, """
+                var a = document.createElement('a');
+                a.href = '\(base)/b'; a.target = '_blank'; a.rel = 'opener';
+                document.body.appendChild(a); a.click();
+                """)
+            try await wait("floating link reaches WebKit popup construction") { child != nil }
+            guard let child else { throw Failure("floating link lost its popup configuration") }
+            try await wait("floating link popup loads") { child.web.title == "Fixture B" }
+            let opener = try await js(child, "window.opener && window.opener.document.title")
+            try require(opener as? String == "Fixture A",
+                        "a floating target=_blank link retains window.opener")
+            _ = try await js(child, "window.close()")
+            try await wait("floating link popup closes by script") { closed }
+            try require(closed, "a floating link popup retains scripted close")
         }
 
         private func focus(_ store: TabStore) async throws {

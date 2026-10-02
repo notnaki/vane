@@ -74,7 +74,7 @@ import SwiftUI
     /// supposed to be. Absent means on, so the key is only ever written by someone turning
     /// it off. What it decides, exactly, is `Peek.route`.
     static var peekLinks: Bool {
-        UserDefaults.standard.object(forKey: Peek.prefKey) as? Bool ?? true
+        UserDefaults.vane.object(forKey: Peek.prefKey) as? Bool ?? true
     }
 }
 
@@ -916,6 +916,8 @@ private struct MaxPane: View {
 
 private struct LinksPane: View {
     @AppStorage(LinkTarget.key) private var externalLinks = LinkTarget.littleArc
+    @AppStorage(LinkInteraction.Preferences.littleKey) private var littleLinks = true
+    @AppStorage(LinkInteraction.Preferences.shiftKey) private var shiftPeek = true
 
     var body: some View {
         Pane {
@@ -931,6 +933,18 @@ private struct LinksPane: View {
                          + "it, then close it with \u{2318}W — or press \u{2318}O to keep it as a "
                          + "tab in a Space. Current Space puts every link straight into the "
                          + "window you already have open.")
+            }
+
+            SettingsCard {
+                SettingsRow("Open ⌥⌘-clicked links in Little Vane") {
+                    Toggle("Open ⌥⌘-clicked links in Little Vane", isOn: $littleLinks).labelsHidden()
+                }
+                SettingsRow("Open ⇧-clicked links in Peek") {
+                    Toggle("Open ⇧-clicked links in Peek", isOn: $shiftPeek).labelsHidden()
+                }
+                Footnote("Hold ⌘ over a link to open a background tab, or ⇧⌘ to open and focus it. "
+                         + "⌥ opens a link in Split View. The hint at the bottom of the page "
+                         + "updates as you hold or release these keys.")
             }
 
             // Arc's Air Traffic Control, directly under the preference it overrides — a rule

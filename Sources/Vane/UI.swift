@@ -672,7 +672,9 @@ struct WebCard: View {
         // The status bar: the hovered link's url, bottom-left, inside the card's clip the
         // way Arc's sits on the page rather than under it.
         .overlay(alignment: .bottomLeading) {
-            if let tab = store.active { StatusBarView(tab: tab).padding(Look.statusInset) }
+            ForEach(store.onScreenTabs) { tab in
+                StatusBarView(tab: tab).padding(Look.statusInset)
+            }
         }
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }

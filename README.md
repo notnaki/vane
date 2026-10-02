@@ -74,6 +74,23 @@ the existing idle-suspension preference and preserves an already shorter timeout
 
 Shortcuts can be changed in Settings. The menu bar shows the current bindings.
 
+While hovering a webpage link, hold a modifier to see where clicking will open it:
+
+| Link gesture | Result |
+| --- | --- |
+| `⌘`-click or middle-click | New background tab |
+| `⇧⌘`-click | New tab, focused immediately |
+| `⌥`-click (also `⌥⇧`) | Split View beside the source page, up to four panes |
+| `⌥⌘`-click (also `⌥⇧⌘`) | Little Vane |
+| `⇧`-click | Peek, including from pinned and favorite tabs |
+
+Settings › Links can disable the Little Vane and Shift-click Peek gestures.
+With Little Vane disabled, `⌥⌘` follows the normal Command-click tab behavior.
+The automatic Peek preference for links leaving pinned sites is independent.
+Shift-hover previews still require Previews to be enabled; holding Command or
+Option hides the preview so it does not cover the opening hint. Floating windows
+keep their existing one-page behavior and do not grow Split Views.
+
 ## Command line
 
 The executable is `.build/release/vane` after `swift build -c release`. These

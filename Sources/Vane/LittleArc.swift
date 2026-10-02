@@ -65,9 +65,9 @@ import SwiftUI
     /// one thing that window exists not to do. Peek passes it for the same reason, and a
     /// link from another app has no window to inherit from, so it takes the default.
     @discardableResult
-    static func open(_ url: URL?, isPrivate: Bool = false) -> TabStore {
-        let profile = ProfileManager.shared.active
-        return present(floatingStore(url, profileID: profile.id, isPrivate: isPrivate))
+    static func open(_ url: URL?, isPrivate: Bool = false, profileID: UUID? = nil) -> TabStore {
+        let id = profileID ?? ProfileManager.shared.active.id
+        return present(floatingStore(url, profileID: id, isPrivate: isPrivate))
     }
 
     /// A Little Vane around a page WebKit has already made: a sign-in popup, a share sheet,

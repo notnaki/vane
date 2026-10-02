@@ -278,6 +278,20 @@ struct Split: Equatable, Sendable {
         palette = .address
     }
 
+    /// Option-click on a webpage link. Check capacity before making a tab: a full
+    /// split must not leave an unattached tab behind or navigate its source away.
+    func openLinkInSplit(_ url: URL, beside anchor: Tab.ID) {
+        guard !isLittle, tabs.contains(where: { $0.id == anchor }) else { return }
+        guard split(containing: anchor)?.isFull != true else {
+            axAnnounce("Split view already has \(Split.maxPanes) panes.")
+            Toasts.show("Split View already has \(Split.maxPanes) panes.")
+            return
+        }
+        let fresh = newTabBeside(anchor, focus: false)
+        fresh.go(url)
+        addPane(fresh.id, beside: anchor)
+    }
+
     /// The context menu's "Add Split View" / "Add to Split", ⌥-click on a row, and a drop on
     /// the page card: `id` becomes a pane beside the tab the user is looking at. `side` is
     /// which beside — the half of the row a drop landed on (see `Landing.side`); everything
