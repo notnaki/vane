@@ -466,6 +466,8 @@ struct Space: Identifiable, Codable, Equatable {
     let sandboxed: Bool
 
     @Published private(set) var profiles: [Profile] = []
+    /// Invalidates Library cards in every window when any profile saves its Spaces.
+    @Published private(set) var spacesRevision = 0
     @Published private var activeID: UUID = ProfileManager.defaultID
     /// A damaged existing list is kept for recovery; no mutation may replace it with a
     /// newly invented default profile.
@@ -804,14 +806,20 @@ struct Space: Identifiable, Codable, Equatable {
         return all.filter { $0.profileID == profileID }
     }
 
+    /// Every saved Space, in profile order and then each profile's Space order.
+    /// Read-only: opening the Library must not create Spaces in unused profiles.
+    var allSpaces: [Space] { profiles.flatMap { spaces(for: $0.id) } }
+
     /// Returns whether the list actually reached the disk. Almost every caller ignores it —
     /// a failed write means the Space keeps the shape it had — but the migration below has
     /// to know, because it deletes the only other copy of what it just wrote.
     @discardableResult
     func saveSpaces(_ spaces: [Space], for profileID: UUID) -> Bool {
         let owned = spaces.filter { $0.profileID == profileID }
-        guard let data = try? JSONEncoder().encode(owned) else { return false }
-        return SnapshotPersistence.write(data, to: Self.spacesURL(for: profileID, in: directory))
+        guard let data = try? JSONEncoder().encode(owned),
+              SnapshotPersistence.write(data, to: Self.spacesURL(for: profileID, in: directory)) else { return false }
+        spacesRevision += 1
+        return true
     }
 
     /// The profile's Spaces, guaranteed non-empty, with anything the profile was keeping
@@ -964,6 +972,48 @@ struct Space: Identifiable, Codable, Equatable {
         assert("the normal orphan sweep leaves data-dir stores alone",
                !orphanedStores([isolatedDefault, otherProfile], keeping: []).contains(isolatedDefault)
                && orphanedStores([isolatedDefault, otherProfile], keeping: []) == [otherProfile])
+
+        // A Library opened in any profile must still discover the other profiles' Spaces.
+        do {
+            let directory = root.appendingPathComponent("library")
+            try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            let library = ProfileManager(directory: directory, sandboxed: true)
+            let school = library.create(name: "School")
+            let spare = library.create(name: "Spare")
+            let personalSpace = library.createSpace(name: "Sky", in: defaultID)
+            let schoolSpace = library.createSpace(name: "Sky", in: school.id)
+            let spareSpace = library.createSpace(name: "Reading", in: spare.id)
+            assert("the Library fixture saves all three Spaces",
+                   library.profiles.flatMap { library.spaces(for: $0.id) }.count == 3)
+            library.active = school
+            assert("the Library lists all three profiles' Spaces in profile order",
+                   library.allSpaces.map(\.id) == [personalSpace.id, schoolSpace.id, spareSpace.id])
+            library.active = spare
+            assert("changing the active profile does not hide Library Spaces",
+                   library.allSpaces.map(\.id) == [personalSpace.id, schoolSpace.id, spareSpace.id])
+            let second = library.createSpace(name: "Second", in: school.id)
+            assert("Library tab moves within the owning profile are allowed",
+                   Library.canMove(from: schoolSpace.id, to: second.id, profile: school.id, profiles: library))
+            assert("Library tab moves cannot cross profiles",
+                   !Library.canMove(from: schoolSpace.id, to: personalSpace.id, profile: school.id, profiles: library))
+            assert("a foreign source cannot move this profile's tabs",
+                   !Library.canMove(from: personalSpace.id, to: second.id, profile: school.id, profiles: library))
+            assert("a deleted destination cannot receive a Library tab",
+                   !Library.canMove(from: schoolSpace.id, to: UUID(), profile: school.id, profiles: library))
+            assert("moving a Library tab to its own Space is refused",
+                   !Library.canMove(from: schoolSpace.id, to: schoolSpace.id, profile: school.id, profiles: library))
+            library.deleteSpace(second.id, in: school.id)
+            let revision = library.spacesRevision
+            var renamed = spareSpace
+            renamed.name = "Updated Reading"
+            library.updateSpace(renamed)
+            assert("saving another profile's Space invalidates open Library cards",
+                   library.spacesRevision > revision
+                   && library.allSpaces.first { $0.id == spareSpace.id }?.name == "Updated Reading")
+            library.delete(spare.id)
+            assert("deleted profiles leave no Library cards",
+                   library.allSpaces.map(\.id) == [personalSpace.id, schoolSpace.id])
+        }
 
         // Pre-existing, pre-profiles data sitting in the directory before any profile exists.
         let legacyDB = root.appendingPathComponent("vane.db")

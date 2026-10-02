@@ -299,6 +299,7 @@ struct TabPage: View {
 /// so the desktop shows through everything the sidebar does not cover.
 struct BrowserWindow: View {
     @EnvironmentObject var store: TabStore
+    @EnvironmentObject var profiles: ProfileManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The sidebar sliding in over the page because the pointer went to the window's edge.
     @State private var peeking = false
@@ -316,7 +317,7 @@ struct BrowserWindow: View {
     /// strip blank at the top of its rail, so a panel with no lights beside it is a hole.
     private var chrome: Bool { store.sidebarShown || peeking || store.libraryOpen }
 
-    /// How many Spaces the profile has. Read when that changes, never per frame: `store.spaces`
+    /// How many Spaces all profiles have. Read when that changes, never per frame: `allSpaces`
     /// decodes spaces.json every time it is touched, and this number feeds the `.animation`
     /// key the page's slide follows — reading it there put a file read and a JSON decode in
     /// every frame of a two-finger Space swipe.
@@ -374,9 +375,10 @@ struct BrowserWindow: View {
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
         // The one place the Space list is counted: when it changes, and when the Library
-        // opens onto it. `spaceRevision` is bumped by everything that adds or removes one.
-        .onChange(of: store.spaceRevision, initial: true) { spaceCount = store.spaces.count }
-        .onChange(of: store.libraryOpen) { if store.libraryOpen { spaceCount = store.spaces.count } }
+        // opens onto it. Changes in another profile invalidate the count too.
+        .onChange(of: profiles.spacesRevision, initial: true) { spaceCount = profiles.allSpaces.count }
+        .onChange(of: profiles.profiles) { spaceCount = profiles.allSpaces.count }
+        .onChange(of: store.libraryOpen) { if store.libraryOpen { spaceCount = profiles.allSpaces.count } }
         // The page slides over as the panel takes its width, and back when it gives it up —
         // including when the Spaces section widens the panel to fit another card.
         .animation(reduceMotion ? nil : Look.appear, value: libraryWidth)
