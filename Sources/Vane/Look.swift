@@ -84,6 +84,8 @@ enum Look {
     // centred sheet the user is typing into, not a dense list they are scanning. The
     // numbers are Arc's, measured off the reference screenshots at 2x.
     static let barWidth: CGFloat = 760
+    /// The address editor opens over the sidebar and extends a little into the page.
+    static let sidebarSearchWidth: CGFloat = 350
     static let barRadius: CGFloat = 12
     /// Rows are `barRowHeight` tall on a `barRowHeight + barRowGap` pitch, so a selection
     /// fill has a sliver of ground on every side instead of touching its neighbours.

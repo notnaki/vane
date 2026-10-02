@@ -5,7 +5,7 @@ import WebKit
 // MARK: - The model
 
 /// Arc's Site Control Center: everything this browser can be told about *one site*, in one
-/// popover hanging off the address pill's site glyph. Before it, the glyph opened the whole
+/// popover hanging off the address pill's trailing controls button. Before it, the glyph opened the whole
 /// Settings window and the per-site answers (camera, zoom, the inspector) were spread across
 /// four menus and a preferences pane.
 ///
