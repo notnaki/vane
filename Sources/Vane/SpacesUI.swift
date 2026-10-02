@@ -307,16 +307,16 @@ private struct SpaceSlide: ViewModifier {
 /// Ceiling: a site never visited has no cached favicon. The label climbs the same ladder the
 /// real row does — a typed name, the tidied name, the name it was pinned under, the title
 /// the sidecar saved — and only a row nothing has ever named is its host.
-private struct SpacePreviewList: View {
+struct SpacePreviewList: View {
     let space: Space
     let liveTabs: [Tab]?
 
     /// What a preview row can be. A folder is one row whether it is open or shut: the
     /// sidebar under the fingers is a shape, and a folder that unpacked itself here would
     /// push every row below it out of line with the Space it is sliding over.
-    private enum Row {
+    enum Row {
         case folder(Folder)
-        case site(URL, TabKind)
+        case site(URL, TabKind, Tab? = nil)
     }
 
     var body: some View {
@@ -347,7 +347,7 @@ private struct SpacePreviewList: View {
     /// The Space's Pinned section in the shape it was left in, then its Today tabs. The
     /// shape comes from the same defaults key the real sidebar restores from, so a folder
     /// previews where it will actually be.
-    private var rows: (pinned: [Row], today: [Row]) {
+    var rows: (pinned: [Row], today: [Row]) {
         let urls = space.pinnedTabURLs ?? []
         var pinned: [Row] = []
         if let shape = TabStore.savedShape(space: space.id, profileID: space.profileID) {
@@ -366,11 +366,16 @@ private struct SpacePreviewList: View {
         }
         let room = max(0, Look.spacePreviewRows - pinned.count)
         return (Array(pinned.prefix(Look.spacePreviewRows)),
-                todayURLs.prefix(room).map { .site($0, .today) })
+                Array(todayRows.prefix(room)))
     }
 
-    private var todayURLs: [URL] {
-        liveTabs.map { $0.filter { $0.kind == .today }.compactMap(\.currentURL) } ?? space.tabURLs
+    private var todayRows: [Row] {
+        guard let liveTabs else { return space.tabURLs.map { .site($0, .today) } }
+        // Two pages at the same URL can have different live titles. Keep the tab itself
+        // rather than looking both rows up by URL and finding the first one twice.
+        return liveTabs.filter { $0.kind == .today }.compactMap { tab in
+            tab.currentURL.map { .site($0, .today, tab) }
+        }
     }
 
     /// The divider under Pinned. Not the real `TidyRow`: its two buttons act on the window's
@@ -380,7 +385,7 @@ private struct SpacePreviewList: View {
     private var tidy: some View {
         HStack(spacing: 8) {
             Hairline()
-            if todayURLs.count >= Look.tidyThreshold {
+            if todayRows.count >= Look.tidyThreshold {
                 Text("Tidy | Clear").font(Look.sectionCaption).foregroundStyle(Look.inkTertiary)
             }
         }
@@ -421,12 +426,11 @@ private struct SpacePreviewList: View {
                     }
                 }
                 Text(f.name).font(Look.folderTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
-            case .site(let url, let kind):
+            case .site(let url, _, _):
                 SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
-                LivePRTitle(title: tab.map { TidyTitles.title(for: $0) }
-                                ?? TidyTitles.previewName(for: url, in: space.profileID,
-                                    saved: saved[url.absoluteString]?.title, stays: kind != .today),
+                LivePRTitle(title: title(for: row, saved: saved),
                             pr: nil, developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
+                    .font(Look.rowTitle).lineLimit(1)
                     .foregroundStyle(Look.inkPrimary)
             }
             Spacer(minLength: 0)
@@ -437,13 +441,23 @@ private struct SpacePreviewList: View {
         .overlay { if developer { DeveloperTabBorder() } }
     }
 
+    func title(for row: Row, saved: [String: Parked]) -> String {
+        switch row {
+        case .folder(let folder): return folder.name
+        case .site(let url, let kind, _):
+            return liveTab(for: row).map { TidyTitles.title(for: $0) }
+                ?? TidyTitles.previewName(for: url, in: space.profileID,
+                    saved: saved[url.absoluteString]?.title, stays: kind != .today)
+        }
+    }
+
     private func liveTab(for row: Row) -> Tab? {
-        guard case .site(let url, let kind) = row else { return nil }
-        return liveTabs?.first { $0.kind == kind && $0.pinnedURL == url }
+        guard case .site(let url, let kind, let live) = row else { return nil }
+        return live ?? liveTabs?.first { $0.kind == kind && $0.pinnedURL == url }
     }
 
     private func pageURL(for row: Row, saved: [String: Parked], tab: Tab?) -> URL? {
-        guard case .site(let url, _) = row else { return nil }
+        guard case .site(let url, _, _) = row else { return nil }
         return tab?.currentURL ?? saved[url.absoluteString]?.page ?? url
     }
 }

@@ -67,4 +67,18 @@ import SwiftUI
         XCTAssertGreaterThan(black, 30, "The gaps must be black, even over a light sidebar")
         XCTAssertGreaterThan(yellow, 30, "Yellow must alternate with black along the border")
     }
+
+    func testDuplicateLiveTodayTabsKeepTheirOwnGhostTitle() {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let url = URL(string: "https://example.com/document")!
+        let first = Tab(profileID: profile), second = Tab(profileID: profile)
+        defer { first.tearDown(); second.tearDown(); Store.forget(profile) }
+        first.park(url: url, Parked(title: "First document state"))
+        second.park(url: url, Parked(title: "Second document state"))
+        let preview = SpacePreviewList(space: Space(name: "Work", profileID: profile,
+            tabURLs: [url, url]), liveTabs: [first, second])
+        XCTAssertEqual(preview.rows.today.map { preview.title(for: $0, saved: [:]) },
+                       ["First document state", "Second document state"])
+    }
 }
