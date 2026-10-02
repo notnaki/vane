@@ -37,10 +37,10 @@ release builds packaged with `SIGN_ID` offer it once. You can still use the manu
 
 | Area | Available now |
 | --- | --- |
-| Browsing | Tabs, pinned tabs, multiple windows, private windows, session restore, find on page, reader mode, picture in picture, and Web Inspector. |
+| Browsing | Tabs, pinned tabs, multiple windows, private windows, Split View, Peek, Little Vane, session restore, find on page, reader mode, picture in picture, page capture, and Web Inspector. |
 | Organization | Spaces, sidebar folders, bookmarks, a searchable history window, Library, and a command palette. |
-| Data | Separate profiles, downloads, saved passwords, and import of bookmarks, history, and password CSV exports. |
-| Controls | Battery Saver, custom search engines and `!bang` shortcuts, per-site controls, keyboard shortcut settings, and appearance settings. |
+| Data | Separate profiles, downloads, a bookmark manager, a saved-password manager and account chooser, and import of bookmarks, history, and password CSV exports. |
+| Controls | Battery Saver, custom search engines and `!bang` shortcuts, per-site controls, keyboard shortcut settings, themes, and a Dock icon picker. |
 | Protection | WebKit content blocking, HTTPS-only mode, certificate warnings, and site permission prompts. |
 | Easels | Saved visual boards with notes, images, web captures, drawing, zoom, undo/redo, and export. |
 | Extras | Unpacked WebExtensions, GitHub-backed live folders, and an in-app update check for published releases. |
@@ -49,11 +49,24 @@ Windows in the same Space share tabs. When both show the same tab, the focused
 window holds its live page and the other shows a gray snapshot. Switching windows
 preserves input, scroll position, and history; closing a tab removes it from every
 window. Each window keeps its own selection. Private and Little Vane windows keep
-their own pages.
+their own pages. Split View shows two to four pages side by side or stacked, with
+resizable dividers. Peek opens a link over the current page; Little Vane opens it
+in a separate compact window.
+
+Pinned tabs keep their saved name as you navigate within them. When a pinned tab
+leaves its saved page, its sidebar row offers **Return to Pinned Tab**; returning
+loads the pinned URL again. Favorites belong to a profile, while pinned and Today
+tabs belong to a Space. Library lists Spaces across all profiles.
 
 Incognito uses a temporary identity of its own, with a glasses icon and a near-black
 theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and
 its browsing data and download records are not restored after quitting.
+
+Settings → Passwords lets you search, add, edit, reveal, copy, and delete saved
+logins. When a site has multiple saved accounts, the autofill chooser lets you
+select one. Credentials stay in the local macOS Keychain and are scoped to the
+profile; private browsing does not use saved passwords. The bookmark manager
+supports folders, search, bulk actions, and HTML import/export.
 
 Some features depend on macOS services, site behavior, or a signed distribution
 build. The [known gaps](#known-gaps) section gives the practical limits.
@@ -75,6 +88,14 @@ and unfinished forms keep their existing suspension protections. State changes s
 a temporary green lightning popup at the page's top right, with an **Edit this setting**
 button. Hovering keeps the popup visible; sleeping tabs reload when selected. The mode respects
 the existing idle-suspension preference and preserves an already shorter timeout.
+
+### Appearance and icons
+
+Settings → Icon offers Normal, Dark, Galaxy, Candy, Neon, Fluted Glass,
+Fluted Glass Dark, Schoolbook, and Luminous, plus **Choose Custom Icon…** for
+your own image. The choice persists across launches and changes the running
+app's Dock icon. Sandboxed builds keep the bundled Finder icon. The bare SwiftPM
+executable has no bundled icon catalogue; build `Vane.app` to use these finishes.
 
 ### Easels
 
@@ -134,13 +155,11 @@ keep their existing one-page behavior and do not grow Split Views.
 
 ## AI providers and your own keys
 
-
 Settings → Max lets you choose Apple (on-device), Groq, OpenAI, OpenRouter, or an
 OpenAI-compatible HTTPS API. For a cloud provider, enter its model ID, paste your own
 API key, choose **Save Key**, then **Test Connection**. Groq defaults to
-`openai/gpt-oss-20b`; its free account is enough to get started, subject to its quotas.
-OpenAI and other providers may charge for usage. Custom providers need a base URL such
-as `https://api.example.com/v1` and support for JSON chat completions.
+`openai/gpt-oss-20b`. Cloud providers may charge for usage or impose quotas.
+Custom providers need a base URL such as `https://api.example.com/v1` and support for JSON chat completions.
 
 Every person uses their own key. Keys are stored as local, non-synchronizing macOS
 Keychain items, separately for each provider and custom endpoint. No key is bundled
@@ -191,10 +210,11 @@ provide.
 
 ## Test a change
 
-The project has one Swift executable target, XCTest regressions, and inline checks
-run through `selfcheck`; routine CI builds the debug configuration, runs the pure
-checks, assembles the debug app, and tests the DMG packager. Debug builds avoid
-whole-module release optimization on every change. CI caches `.build` by macOS
+The project has one Swift executable target, an XCTest target, and inline checks
+run through `selfcheck`. Routine CI builds the debug configuration, runs the pure
+checks and XCTest regressions, checks icon selections and cloud AI behavior, tests
+CLI import errors and workflow fixtures, assembles the debug app, and exercises
+the DMG packager and update installer. Debug builds avoid whole-module release optimization on every change. CI caches `.build` by macOS
 architecture, Swift/Xcode/SDK versions, and package/source hashes, and cancels
 superseded runs for the same branch or PR. SwiftPM still validates the build on
 every cache hit. A timestamp snapshot in the cache restores the previous modification
@@ -207,14 +227,24 @@ To run the same checks configuration locally:
 ```sh
 swift build -c debug
 ./.build/debug/vane selfcheck --pure
+swift test
+scripts/check-app-icons.sh
+scripts/check-cloud-ai.sh
+bash scripts/test-cli-import.sh .build/debug/vane
+python3 scripts/test-ci-source-state.py
+python3 scripts/test-release-workflow.py
 ./make-app.sh debug
+python3 scripts/test-default-browser-prompt.py
 ./scripts/test-build-dmg.sh
+bash scripts/test-update-installer.sh Vane.app --unsigned
 ```
 
-`swift test` runs isolated search regressions, including rapid typing against a
-large history database, keyboard selection, local and remote cancellation, live
-history changes, and private windows. GitHub credential regressions exercise the real
-Live Folder response handler with an isolated credential-storage fixture:
+`swift test` covers search typing and cancellation, link gestures and previews,
+Space switching and deletion, tab ordering, Battery Saver, Easels, page capture,
+and other browser UI behavior. Search fixtures include a large history database,
+keyboard selection, live history changes, and private windows. GitHub credential
+regressions exercise the real Live Folder response handler with an isolated
+credential-storage fixture:
 
 ```sh
 swift test --filter LiveCredentialTests
@@ -307,14 +337,20 @@ with `check-release-candidate.sh` before treating it as a distribution build.
 
 - Real-site coverage is still needed for sign-in providers, passkeys, uploads,
   printing, protected media, device permissions, and complex web apps.
-- Password autofill is heuristic. Sites with unusual forms or login flows may
-  need manual entry; multiple saved accounts for one host are not fully handled.
+- Password autofill is heuristic. Multiple saved accounts have a chooser, but
+  unusual, multi-step, or embedded login forms may still need manual entry.
 - Content blocking supports a documented subset of EasyList syntax. Filter
   lists added from disk do not update on a schedule.
 - Data does not sync between Macs. Imports do not bring over browser cookies or
   signed-in sessions.
-- Some system dialogs are app-modal, and some browser features depend on WebKit
-  behavior that can change with macOS releases.
+- Camera and microphone prompts are app-modal; certificate and HTTP authentication
+  prompts attach to the requesting window. One-time media grants and broader
+  permission lifecycle verification remain deferred.
+- Extensions load from unpacked MV2/MV3 folders. This does not guarantee Chrome
+  extension compatibility; installation consent and expanded-access review remain
+  deferred.
+- Some browser features, including the in-app inspector, depend on WebKit behavior
+  or private APIs that can change with macOS releases.
 - Distribution readiness requires a real signed and notarized candidate,
   clean-Mac install and upgrade checks, and broader compatibility testing.
 
@@ -326,13 +362,22 @@ The tracked engineering work is in
 | Path | Purpose |
 | --- | --- |
 | [`Sources/Vane/main.swift`](Sources/Vane/main.swift) | CLI dispatch and application startup. |
+| [`Sources/Vane/AppLifecycle.swift`](Sources/Vane/AppLifecycle.swift) | Application delegate, Dock actions, and window lifecycle. |
 | [`Sources/Vane/Engine.swift`](Sources/Vane/Engine.swift) | Tabs, WebViews, navigation, and WebKit delegates. |
+| [`Sources/Vane/SharedTabs.swift`](Sources/Vane/SharedTabs.swift) | Shared Space tabs and live-page ownership between windows. |
 | [`Sources/Vane/UI.swift`](Sources/Vane/UI.swift) | Main browser window and SwiftUI controls. |
 | [`Sources/Vane/Profiles.swift`](Sources/Vane/Profiles.swift) | Profile and Space state, paths, and isolation. |
 | [`Sources/Vane/Store.swift`](Sources/Vane/Store.swift) | SQLite history and bookmarks. |
+| [`Sources/Vane/LibraryWindow.swift`](Sources/Vane/LibraryWindow.swift) | Downloads, media, archives, Spaces, and Easels browsing. |
+| [`Sources/Vane/Easels.swift`](Sources/Vane/Easels.swift), [`EaselWindow.swift`](Sources/Vane/EaselWindow.swift) | Saved board data and the editing canvas. |
+| [`Sources/Vane/PageCapture.swift`](Sources/Vane/PageCapture.swift) | Element and region selection, page snapshots, and capture outputs. |
+| [`Sources/Vane/BatterySaver.swift`](Sources/Vane/BatterySaver.swift) | Battery-aware suspension and reduced preview/motion policy. |
+| [`Sources/Vane/AppIcon.swift`](Sources/Vane/AppIcon.swift), [`AppIcons/`](AppIcons/) | Dock icon selection and bundled Icon Composer assets. |
+| [`Sources/Vane/CloudAI.swift`](Sources/Vane/CloudAI.swift), [`AIKeys.swift`](Sources/Vane/AIKeys.swift) | Provider requests, privacy rules, and local API-key storage. |
 | [`Sources/Vane/Passwords.swift`](Sources/Vane/Passwords.swift) | Keychain integration, autofill, and the selfcheck runner. |
 | [`Sources/Vane/Updater.swift`](Sources/Vane/Updater.swift) | Release checks and authenticated XPC installation; the signed installer checks Gatekeeper and removes update quarantine before the locked, crash-recoverable swap. |
-| [`scripts/`](scripts/) | Browser smoke, release-candidate, and packaging checks. |
+| [`Tests/VaneTests/`](Tests/VaneTests/) | XCTest browser and UI regressions. |
+| [`scripts/`](scripts/) | Browser smoke, release-candidate, packaging, and integration checks. |
 
 ## License
 
