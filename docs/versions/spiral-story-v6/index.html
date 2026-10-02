@@ -6,14 +6,14 @@
 <title>Vane · A native Mac browser</title>
 <meta name="description" content="Vane is a native macOS browser in the shape of Arc: sidebar tabs, Spaces, splits, Little Vane windows, and Live Folders.">
 <link rel="icon" href="icon.png">
-<link rel="stylesheet" href="styles.css?v=22">
+<link rel="stylesheet" href="styles.css?v=15">
 
 <meta name="theme-color" content="#06090d">
-<script src="space.js?v=11" defer></script>
+<script src="space.js?v=7" defer></script>
 </head>
 <body class="home-page"><a class="skip-link" href="#main-content">Skip to content</a>
 <header class="site-nav">
-  <a class="brand" href="./" aria-label="Vane home"><img src="icon-dark.png" alt="" width="32" height="32">Vane</a>
+  <a class="brand" href="./" aria-label="Vane home"><img src="icon.png" alt="" width="32" height="32">Vane</a>
   <nav class="links" aria-label="Main navigation">
     <a href="features.html">Features</a>
     <a href="docs.html">Guide</a>
@@ -29,14 +29,13 @@
     <div class="galaxy-hero">
       <div class="galaxy-stage">
         <canvas class="galaxy-canvas" data-galaxy="hero" tabindex="0" role="img" aria-label="A flowing galaxy surrounding the Vane logo" aria-describedby="galaxy-instructions"></canvas>
-        <p id="galaxy-instructions" class="visually-hidden">Scroll to explore. Drag or use arrow keys to rotate. Home resets the view. Use the motion control to pause animation.</p>
+        <p id="galaxy-instructions" class="visually-hidden">Scroll to explore. Drag or use arrow keys to rotate. Home resets the view. The pause button stops motion.</p>
       </div>
       <svg class="galaxy-v" viewBox="0 0 200 230" fill="none" aria-hidden="true"><defs><linearGradient id="v-metal" x1="30" y1="0" x2="165" y2="200" gradientUnits="userSpaceOnUse"><stop stop-color="#fffdf5"/><stop offset=".45" stop-color="#e5e9f7"/><stop offset=".7" stop-color="#a4aec7"/><stop offset="1" stop-color="#fffdf5"/></linearGradient></defs><path d="M8 10H66L118 153Q123 165 128 153L136 10H192Q177 128 101 219Z" fill="url(#v-metal)" stroke="#f6f7ff" stroke-opacity=".65" stroke-width="2"/></svg>
       <div class="journey-panels">
         <section class="journey-panel journey-intro" data-chapter="0" aria-labelledby="hero-heading">
           <div class="hero-message">
-          <h1 id="hero-heading"><span class="hero-line">Your internet.</span>
-<span class="hero-line">A little more you.</span></h1></div>
+          <h1 id="hero-heading">Your internet.<br>A little more you.</h1></div>
           <div class="intro-support">
           <p class="intro">A native Mac browser, made for your way of browsing.</p>
           <nav class="hero-actions" aria-label="Get Vane"><a class="primary" href="download.html">Download for macOS <span aria-hidden="true">↓</span></a></nav>
@@ -66,10 +65,9 @@
           </div>
         </div>
       </div>
-      <div class="galaxy-footer"><nav class="journey-nav" aria-label="Galaxy chapters"><a href="#galaxy-home" aria-current="step">Vane</a><a href="#galaxy-spaces">Spaces</a><a href="#galaxy-split">Split View</a><a href="#galaxy-little">Little Vane</a></nav><div class="galaxy-controls"><button class="galaxy-toggle" type="button" aria-pressed="false" aria-label="Pause galaxy animation"><svg class="state-pause" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg><svg class="state-play" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg><span class="toggle-label">Pause motion</span></button></div></div>
-      <footer class="galaxy-end"><a href="https://github.com/notnaki/vane">Source</a><a href="docs.html">Guide</a><a href="https://github.com/notnaki/vane/issues">Feedback</a></footer>
+      <div class="galaxy-footer"><nav class="journey-nav" aria-label="Galaxy chapters"><a href="#galaxy-home" aria-current="step">Vane</a><a href="#galaxy-spaces">Spaces</a><a href="#galaxy-split">Split View</a><a href="#galaxy-little">Little Vane</a></nav><div class="galaxy-controls"><span class="drag-hint">Scroll to explore</span><button class="galaxy-toggle" type="button" aria-pressed="false" aria-label="Pause galaxy animation"><svg class="state-pause" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg><svg class="state-play" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg></button><button class="galaxy-reset" type="button" aria-label="Reset galaxy rotation"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 9a8 8 0 1 1-1 6M5 3v6h6"/></svg></button></div></div>
     </div>
   </section>
-</main>
+</main><footer><a href="./">Vane</a><div><a href="features.html">Features</a><a href="https://github.com/notnaki/vane">Source</a><a href="docs.html">Guide</a><a href="https://github.com/notnaki/vane/issues">Feedback</a></div></footer>
 </body>
 </html>
