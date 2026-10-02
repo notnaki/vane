@@ -845,3 +845,64 @@ a.scene-link:hover { color:#fff; }
 .galaxy-controls .galaxy-toggle { width:44px; padding:8px; }
 .galaxy-toggle svg { width:14px; height:14px; }
 @media(min-width:901px) { .galaxy-footer { justify-content:flex-start; gap:24px; } }
+
+/* Keep narrow headlines on two lines and scale the complete browser illustration. */
+@media(max-width:600px) {
+ .journey-intro h1 { font-size:clamp(18px,10vw,42px); }
+ .hero-line { white-space:nowrap; }
+ .intro-support .hero-actions a { max-width:100%; }
+}
+@media(max-width:300px) {
+ .site-nav { gap:6px; }
+ .site-nav .brand-label { display:none; }
+ .site-nav .brand { gap:0; }
+ .site-nav .links { gap:2px; }
+ .site-nav .links a { font-size:.65625rem; padding-inline:5px; }
+ .galaxy-footer { inset-inline:12px; gap:4px; }
+ .journey-nav { gap:4px; }
+ .journey-nav a { font-size:clamp(7px,3.6vw,9px); }
+ .galaxy-end { inset-inline:12px; gap:16px; }
+ .journey-intro .intro { font-size:.75rem; }
+}
+.journey-ready .product-stage .product-shell { width:552px; max-width:none; margin:0; transform-origin:top left; }
+.journey-ready .product-stage .product-pages { height:325px; }
+.journey-ready .product-stage .window-top { padding:15px 18px; font-size:.625rem; }
+.journey-ready .product-stage .mini-browser { min-height:0; grid-template-columns:38% 62%; }
+.journey-ready .product-stage .mini-browser aside { padding:24px 12px 16px; gap:10px; }
+.journey-ready .product-stage .mini-space-title { font-size:.875rem; padding:0 10px 15px; }
+.journey-ready .product-stage .mini-tab { font-size:.65rem; padding:10px 8px; }
+.journey-ready .product-stage .mini-space-switch { font-size:.56rem; gap:9px; padding-top:30px; }
+.journey-ready .product-stage .mini-document { padding:34px 26px; }
+.journey-ready .product-stage .mini-document h3 { font-size:1.8rem; margin-block:22px; }
+.journey-ready .product-stage .document-swatch { margin-top:30px; }
+.journey-ready .product-stage .document-swatch span { width:38px; height:38px; }
+.journey-ready .product-stage .mini-split > div { min-height:0; padding:30px 22px; }
+.journey-ready .product-stage .split-art { height:140px; margin-top:25px; }
+.journey-ready .product-stage .mini-split h3 { font-size:1.5rem; margin-block:22px; }
+.journey-ready .product-stage .product-little > .mini-document { width:72%; padding:40px 30px; }
+.journey-ready .product-stage .product-little > .mini-document h3 { font-size:1.625rem; }
+.journey-ready .product-stage .little-inset { width:58%; right:20px; bottom:18px; }
+.journey-ready .product-stage .little-inset .mini-document { padding:20px; font-size:1rem; line-height:1.6; }
+.journey-ready .product-stage .little-inset h3 { font-size:1.6rem; margin-block:15px; }
+.journey-ready .product-stage .mini-pill { font-size:.65rem; padding:8px 12px; line-height:1.4; }
+
+@media(max-height:520px) {
+ .journey-intro h1 { font-size:clamp(18px,min(10vw,7.5svh),42px); }
+ .journey-copy h2 { font-size:1.5rem; margin-bottom:8px; }
+ .journey-copy p:not(.eyebrow) { font-size:.75rem; line-height:1.4; margin-bottom:6px; }
+ .journey-copy .scene-link { font-size:.6875rem; min-height:28px; }
+}
+@media(max-height:520px) and (max-width:600px) {
+ .journey-intro h1 { font-size:clamp(18px,min(10vw,6svh),32px); }
+ .journey-copy h2 { font-size:1.125rem; }
+ .journey-copy p:not(.eyebrow) { font-size:.625rem; }
+ .journey-copy .scene-link { font-size:.625rem; min-height:24px; }
+}
+
+@media(max-height:520px) and (min-width:601px) {
+ .hero-message, .intro-support { width:min(340px,calc(50% - 56px)); }
+ .intro-support { right:auto; }
+ .journey-ready[data-chapter="3"] .galaxy-footer { bottom:46px; }
+ .journey-intro .intro { font-size:.75rem; line-height:1.4; }
+ .journey-intro .hero-actions a { font-size:.75rem; padding:10px 14px; }
+}
