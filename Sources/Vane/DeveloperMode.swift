@@ -58,10 +58,11 @@ import WebKit
         let on = wants(tab.currentURL, profile: tab.profileID)
         if tab.developer != on { tab.developer = on }
         let inspect = on || Settings.inspectorEnabled
-        tab.web.isInspectable = inspect
+        guard let web = tab.existingWeb else { return }
+        web.isInspectable = inspect
         // "Inspect Element" and the in-app inspector are gated on this preference, not on
         // `isInspectable` — see Tab.configuration.
-        tab.web.configuration.preferences.setValue(inspect, forKey: "developerExtrasEnabled")
+        web.configuration.preferences.setValue(inspect, forKey: "developerExtrasEnabled")
     }
 
     static func set(_ on: Bool, on tab: Tab) {

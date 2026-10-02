@@ -132,7 +132,7 @@ private struct BlockRule: Encodable, Equatable {
             for store in TabStore.all {
                 let on = enabled(for: store.profileID)
                 for tab in store.everyTab {
-                    let controller = tab.web.configuration.userContentController
+                    guard let controller = tab.existingWeb?.configuration.userContentController else { continue }
                     controller.removeAllContentRuleLists()
                     if on, let compiled { controller.add(compiled) }
                 }

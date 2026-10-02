@@ -523,7 +523,7 @@ import WebKit
             }
             // Title and URL together: onUpdated does not care which of the two moved.
             for tab in store.tabs {
-                let state = tab.title + "\u{0}" + (tab.web.url?.absoluteString ?? "")
+                let state = tab.title + "\u{0}" + (tab.currentURL?.absoluteString ?? "")
                     + "\u{0}" + (tab.loading ? "L" : "")
                 guard tabState[tab.id] != state else { continue }
                 let first = tabState[tab.id] == nil
@@ -1015,10 +1015,22 @@ extension View {
         return i
     }
 
-    // Everything WebKit can read straight off the web view (url, zoom, loading, snapshots,
+    // Everything WebKit can read straight off the web view (zoom, loading, snapshots,
     // back/forward, reload) is deliberately left unimplemented — the protocol's documented
     // defaults already do it against `webView(for:)`.
-    func webView(for context: WKWebExtensionContext) -> WKWebView? { tab?.web }
+    func webView(for context: WKWebExtensionContext) -> WKWebView? { tab?.existingWeb }
+
+    func url(for context: WKWebExtensionContext) -> URL? { tab?.currentURL }
+
+    func loadURL(_ url: URL, for context: WKWebExtensionContext,
+                 completionHandler: @escaping (Error?) -> Void) {
+        guard let tab else {
+            completionHandler(ExtensionHost.Failure("This tab has closed."))
+            return
+        }
+        tab.navigate(to: url)
+        completionHandler(nil)
+    }
 
     func title(for context: WKWebExtensionContext) -> String? { tab?.title }
 
@@ -1065,7 +1077,7 @@ extension View {
 
     func duplicate(using configuration: WKWebExtension.TabConfiguration,
                    for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
-        guard let store, let url = tab?.web.url else { return nil }
+        guard let store, let url = tab?.currentURL else { return nil }
         let copy = store.newBlankTab()
         copy.web.load(URLRequest(url: url))
         let host = ExtensionHost.host(for: store.profileID)

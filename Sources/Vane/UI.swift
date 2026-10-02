@@ -266,7 +266,7 @@ struct TabPage: View {
         if store.ownsPage(tab) {
             DeveloperFrame(tab: tab) {
                 WebView(web: tab.web,
-                        live: keepPages ? store.everyTab.filter { store.ownsPage($0) }.map(\.web) : [],
+                        live: keepPages ? store.everyTab.filter { store.ownsPage($0) }.compactMap(\.existingWeb) : [],
                         offscreen: offscreen, tab: tab, store: store)
             }
                 .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }

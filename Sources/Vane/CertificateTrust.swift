@@ -257,7 +257,7 @@ import WebKit
     /// for a method that also covers client certificates and NTLM.
     static func handle(challenge: URLAuthenticationChallenge, tab: Tab, web: WKWebView) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
-        guard tab.web === web else { return (.cancelAuthenticationChallenge, nil) }
+        guard tab.existingWeb === web else { return (.cancelAuthenticationChallenge, nil) }
         switch challenge.protectionSpace.authenticationMethod {
         case NSURLAuthenticationMethodServerTrust:
             return await serverTrust(challenge, tab: tab, web: web)
@@ -282,7 +282,7 @@ import WebKit
         // The evaluation suspended, so the tab may have been navigated away or suspended
         // out from under this challenge. Answered either way — a challenge left unanswered
         // hangs the load until WebKit's own timeout.
-        guard tab.web === web else { return (.cancelAuthenticationChallenge, nil) }
+        guard tab.existingWeb === web else { return (.cancelAuthenticationChallenge, nil) }
 
         guard let scope = Scope(profileID: tab.profileID, host: host, port: port) else {
             return (.cancelAuthenticationChallenge, nil)
@@ -416,7 +416,7 @@ import WebKit
         let response = await alert.beginSheetModal(for: window)
         if memory.prompt === alert { memory.prompt = nil; memory.window = nil }
         guard stillCurrent(generation: generation, currentGeneration: memory.generation,
-                           sameWeb: tab.web === web, sameWindow: web.window === window,
+                           sameWeb: tab.existingWeb === web, sameWindow: web.window === window,
                            visible: !web.isHiddenOrHasHiddenAncestor) else { return .abort }
         return response
     }
