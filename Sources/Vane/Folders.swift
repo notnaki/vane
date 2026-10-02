@@ -1016,7 +1016,13 @@ extension TabStore {
             let a = order[$0.element.id.uuidString] ?? Int.max, b = order[$1.element.id.uuidString] ?? Int.max
             return a == b ? $0.offset < $1.offset : a < b          // sort() is not stable
         }
-        for (slot, tab) in zip(section.map(\.offset), sorted.map(\.element)) { tabs[slot] = tab }
+        // @Published emits even when a subscript is assigned the same tab. Building the
+        // finished order locally avoids one sidebar invalidation per row on every drag
+        // crossing, and an already ordered section needs no notification at all.
+        var ordered = tabs
+        for (slot, tab) in zip(section.map(\.offset), sorted.map(\.element)) { ordered[slot] = tab }
+        guard ordered.map(\.id) != tabs.map(\.id) else { return }
+        tabs = ordered
     }
 
     /// A drop on the strip, told to the section it landed in: a tab dropped on a row joins

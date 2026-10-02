@@ -1831,6 +1831,7 @@ private struct HeldRow: View {
     /// Which section's overlay this is: the row is only drawn over the list it is in.
     let kind: TabKind
     @ObservedObject private var held = Held.shared
+    @ObservedObject private var dragging = Dragging.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -1870,6 +1871,10 @@ private struct HeldRow: View {
                 // one source per id is the most it can have.
                 .environment(\.strip, nil)
                 .offset(y: air.y)
+                // Pointer movement must not inherit a neighbour's list spring. Once
+                // released, the same offset can animate the row back into its slot.
+                .animation(dragging.tab == air.tab || reduceMotion ? nil : Look.list,
+                           value: air.y)
                 // It leaves by fading, crossing with the slot coming back to full — see
                 // `Dragging.end`. Cutting it instead shows the row jump out of its own
                 // shadow at the end of every drag.
