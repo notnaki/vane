@@ -247,7 +247,7 @@ regressions exercise the real Live Folder response handler with an isolated
 credential-storage fixture:
 
 ```sh
-swift test --filter LiveCredentialTests
+swift test --filter 'LiveCredentialTests|GitHubRenewalTests'
 python3 scripts/check-live-credential-persistence.py
 ```
 
@@ -258,8 +258,25 @@ For a real-session check, reconnect in the installed app, quit normally, relaunc
 same signed build, and refresh the folder. If authentication fails again, Console's
 `[vane] GitHub` messages distinguish missing/inaccessible Keychain credentials from
 HTTP 401 responses and record GitHub's request ID. These diagnostics never log tokens
-or response bodies. A genuinely revoked or expired token still needs reconnection;
-retaining it does not make GitHub accept it.
+or response bodies.
+
+OAuth sign-ins store the access token, refresh token, and expiry together in the same
+scoped Keychain item. Live Folders renews shortly before the access token expires and
+can renew after an early rejection, then retries the API request once. Concurrent
+folders and app processes sharing a profile serialize token rotation and use the
+persisted replacement. A temporary network or Keychain failure retains the credentials;
+an unsaved rotated pair is kept in memory while Vane retries its Keychain write.
+The regression tests advance expiry and inject OAuth/network/storage responses without
+using a real GitHub account. The fresh-process Keychain check verifies both tokens and
+expiry survive relaunch with disposable fixture credentials.
+
+Sign-ins saved by older builds need one reconnect because those builds discarded the
+refresh token. A revoked or expired refresh token also needs reconnection. Source builds
+without the OAuth client secret can still use personal access tokens; they cannot renew
+a web-flow OAuth grant. A signed release includes the secret required for renewal.
+For a live check, reconnect using that release, quit/relaunch, and refresh after eight
+hours: the folder should renew automatically, and Console should record
+`[vane] GitHub OAuth credential renewed` without requiring another sign-in.
 
 Before shipping, also check the release configuration:
 
