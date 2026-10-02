@@ -1,22 +1,22 @@
 import AppKit
 
-/// Which of the two app icons the Dock draws.
+/// Which of the app icons the Dock draws.
 ///
-/// Both are the same Icon Composer document in two fills — `AppIcon.icon` (the dark one Vane
-/// has always shipped) and `AppIcon-Navy.icon` (the lighter navy the website showed) —
-/// compiled into one `Assets.car` by `make-app.sh`. So macOS composes them the same way: it
-/// shapes the squircle, lights the glass over the V and drops the shadow itself. Navy is a
-/// *fill*, not a flat picture; nothing here paints an icon.
+/// `AppIcon.icon` is the dark icon Vane has always shipped; `AppIcon-Navy.icon` has a
+/// lighter navy fill. `AppIcon-Galaxy.icon` adds the website's blue-violet spiral stars
+/// behind a silver V. `make-app.sh` compiles all three into one `Assets.car`, so macOS
+/// shapes their squircle, lights the glass over the V, and drops the shadow itself.
+/// Nothing here paints an icon.
 ///
 /// ponytail: no alternate-icon API is involved, because macOS has none —
-/// `setAlternateIconName` is UIKit's. Two names in one asset catalogue and one assignment to
+/// `setAlternateIconName` is UIKit's. Names in one asset catalogue and one assignment to
 /// `NSApp.applicationIconImage` is the whole mechanism.
 @MainActor enum AppIcon {
     /// Where the choice lives. `UserDefaults.vane`, so a test instance on its own data dir
     /// does not repaint the real app's Dock tile.
     static let key = "appIcon"
 
-    /// The three the app offers, in the order the picker shows them.
+    /// The icons the app offers, in the order the picker shows them.
     ///
     /// Default is not a picture: it is the absence of one. The Dock composes the bundle's
     /// icon itself, and its composition is not the asset catalogue's — measured, the tile
@@ -29,6 +29,7 @@ import AppKit
     /// somebody's choice.
     nonisolated static let catalogue: [(name: String, asset: String?)] = [
         ("Default", nil), ("Glass", "AppIcon"), ("Navy", "AppIcon-Navy"),
+        ("Galaxy", "AppIcon-Galaxy"),
     ]
 
     /// The shipped default — the Dock's own composition, with nothing overriding it.
@@ -47,7 +48,7 @@ import AppKit
     private static let composed: NSImage = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
 
     /// Every icon that actually loaded, as the image the Dock will draw once it is chosen.
-    /// Glass and Navy come from the catalogue by name rather than from
+    /// Glass, Navy, and Galaxy come from the catalogue by name rather than from
     /// `NSApp.applicationIconImage`, so a bundle whose Finder icon has already been stamped
     /// still offers the real ones back.
     ///
@@ -144,8 +145,9 @@ import AppKit
          ("the icon you already have is the default, and choosing it overrides nothing",
           `default` == catalogue[0].name && !overrides(`default`)
               && catalogue[0].asset == nil),
-         ("…and the two that are pictures do override it",
+         ("…and the bundled pictures, including Galaxy, do override it",
           catalogue.dropFirst().allSatisfy { overrides($0.name) && $0.asset != nil }
-              && catalogue.count == 3)]
+              && catalogue.count == 4
+              && catalogue.contains { $0.name == "Galaxy" && $0.asset == "AppIcon-Galaxy" })]
     }
 }
