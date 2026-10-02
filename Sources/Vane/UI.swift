@@ -4170,7 +4170,15 @@ private struct TabRowTrailing: View {
                 let glyph = TabRowGlyph.decide(kind: closing.kind, suspended: closing.suspended,
                                                pane: pane, atHome: closing.atHome)
                 Button { store.close(closing.id) } label: {
-                    Image(systemName: glyph.symbol).font(Look.rowGlyph).rowTarget()
+                    Image(systemName: glyph.symbol)
+                        .font(glyph == .unload ? Look.rowGlyph : .system(size: 13, weight: .semibold))
+                        .rowTarget()
+                        .background {
+                            if glyph != .unload {
+                                RoundedRectangle(cornerRadius: Look.cardRadius, style: .continuous)
+                                    .fill(Look.controlFill)
+                            }
+                        }
                 }
                 .help((pane ? "Close Pane" : glyph.verb) + " (⌘W)")
                 .accessibilityLabel((pane ? "Close pane " : glyph.spoken)
