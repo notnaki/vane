@@ -46,6 +46,7 @@ import SwiftUI
                                      y: anchor.midY - panel.frame.height / 2))
         NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
+        animateEntrance(of: panel.contentView!, card: panel.contentView!)
         NSApp.runModal(for: panel)
         panel.orderOut(nil)
         panel.answer = nil
@@ -73,11 +74,43 @@ import SwiftUI
         NSApp.activate()
         host.makeKeyAndOrderFront(nil)
         host.makeFirstResponder(scrim)
+        animateEntrance(of: scrim, card: card)
         NSApp.runModal(for: host)
         scrim.removeFromSuperview()
         scrim.answer = nil
         host.makeFirstResponder(was)
         return answer
+    }
+
+    /// Fade the captured blur and card together, with a small, centred settle for the card.
+    /// Explicit layer animations keep running inside AppKit's modal loop and leave the
+    /// model at its final values, so an immediate answer never waits for an animation.
+    private static func animateEntrance(of overlay: NSView, card: NSView) {
+        overlay.wantsLayer = true
+        card.wantsLayer = true
+        overlay.layoutSubtreeIfNeeded()
+        guard let overlayLayer = overlay.layer, let cardLayer = card.layer else { return }
+        let reduced = Motion.reduced
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0
+        fade.toValue = 1
+        fade.duration = reduced ? 0.12 : 0.22
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        overlayLayer.add(fade, forKey: "quitEntranceFade")
+        guard !reduced else { return }
+
+        // AppKit chooses its backing layers' anchors. Translate the scale to the card's
+        // centre without changing the geometry AppKit owns (or its button hit targets).
+        let scale: CGFloat = 0.96
+        var start = CATransform3DMakeScale(scale, scale, 1)
+        start.m41 = cardLayer.bounds.width * (0.5 - cardLayer.anchorPoint.x) * (1 - scale)
+        start.m42 = cardLayer.bounds.height * (0.5 - cardLayer.anchorPoint.y) * (1 - scale)
+        let settle = CABasicAnimation(keyPath: "transform")
+        settle.fromValue = NSValue(caTransform3D: start)
+        settle.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+        settle.duration = 0.22
+        settle.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        cardLayer.add(settle, forKey: "quitEntranceScale")
     }
 
     /// A picture of the window, blurred and dimmed, taken the moment the question is asked.
