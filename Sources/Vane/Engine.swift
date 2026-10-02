@@ -24,7 +24,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 /// isolated world only accepts trusted user events and runs in every frame, so relative
 /// links, linked images, links inside iframes, and open shadow roots resolve in the document
 /// that owns them. Closed shadow roots deliberately remain opaque to the document listener.
-@MainActor final class LinkContextWebView: WKWebView {
+@MainActor final class LinkContextWebView: WKWebView, NSMenuItemValidation {
     static let messageName = "vanelinkcontext"
     static let world = WKContentWorld.world(name: "vane-link-context")
     static let itemID = NSUserInterfaceItemIdentifier("VaneOpenLinkInNewTab")
@@ -36,13 +36,37 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
           node instanceof Element && node.matches('a[href], area[href]'));
         webkit.messageHandlers.vanelinkcontext.postMessage({
           url: link ? new URL(link.getAttribute('href'), link.baseURI).href : '',
+          filename: link instanceof HTMLAnchorElement ? (link.getAttribute('download') || '') : '',
           at: Date.now()
         });
       }, true);
     })();
     """
 
+    enum Destination: String, CaseIterable {
+        case tab = "VaneOpenLinkInNewTab"
+        case window = "VaneOpenLinkInNewWindow"
+        case split = "VaneOpenLinkInSplitView"
+        case little = "VaneOpenLinkInLittleVane"
+        case privateWindow = "VaneOpenLinkInPrivateWindow"
+
+        var title: String {
+            switch self {
+            case .tab: "Open Link in New Tab"
+            case .window: "Open Link in New Window"
+            case .split: "Open Link in Split View"
+            case .little: "Open Link in Little Vane"
+            case .privateWindow: "Open Link in Private Window"
+            }
+        }
+    }
+
     var openBackground: ((URL) -> Void)?
+    var openDestination: ((URL, Destination) -> Void)?
+    var canOpenSplit: (() -> Bool)?
+    var saveLink: ((URL, String?) -> Void)?
+    private var contextFilename: String?
+    private var originalItems: [(item: NSMenuItem, title: String)] = []
     var contextLink: URL? {
         didSet { if let activeMenu { update(activeMenu) } }
     }
@@ -53,6 +77,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     /// the asynchronous script reply a native, bounded lifetime and prevents a reply from
     /// a closed menu (or another frame's old document) attaching itself to a later menu.
     override func rightMouseDown(with event: NSEvent) {
+        contextFilename = nil
         contextLink = nil
         contextArmedAt = Date().timeIntervalSince1970
         super.rightMouseDown(with: event)
@@ -60,6 +85,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) {
+            contextFilename = nil
             contextLink = nil
             contextArmedAt = Date().timeIntervalSince1970
         }
@@ -68,18 +94,24 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
 
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
         super.willOpenMenu(menu, with: event)
+        if activeMenu !== menu {
+            originalItems = menu.items.map { ($0, $0.title) }
+        }
         activeMenu = menu
         update(menu)
     }
 
     override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
         activeMenu = nil
+        originalItems = []
+        contextFilename = nil
         contextArmedAt = nil
         contextLink = nil
         super.didCloseMenu(menu, with: event)
     }
 
     func navigationStarted() {
+        contextFilename = nil
         contextArmedAt = nil
         contextLink = nil
     }
@@ -87,27 +119,93 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
     func receiveContextLink(_ body: Any) {
         guard Self.isCurrentEvent(body, armedAt: contextArmedAt,
                                   now: Date().timeIntervalSince1970) else { return }
+        contextFilename = (body as? [String: Any])?["filename"] as? String
         contextLink = Self.link(from: (body as? [String: Any])?["url"] as Any)
     }
 
-    /// Updating also handles the script message arriving just after AppKit opens the menu.
+    /// Rebuild from the original WebKit items when an asynchronous context reply arrives.
+    /// Identifiers, rather than translated titles, identify the four native link actions.
     private func update(_ menu: NSMenu) {
-        if let previous = menu.items.first(where: { $0.identifier == Self.itemID }) {
-            menu.removeItem(previous)
+        if activeMenu !== menu {
+            originalItems = menu.items.map { ($0, $0.title) }
+            activeMenu = menu
         }
-        guard let contextLink, openBackground != nil else { return }
-        let item = NSMenuItem(title: "Open Link in New Tab",
-                              action: #selector(openLinkInNewTab(_:)), keyEquivalent: "")
-        item.identifier = Self.itemID
-        item.target = self
-        // Keep the exact URL with this menu item, independent of later hover/navigation.
-        item.representedObject = contextLink
-        menu.insertItem(item, at: 0)
+        menu.removeAllItems()
+        for original in originalItems { original.item.title = original.title }
+        guard let contextLink, openBackground != nil else {
+            originalItems.forEach { menu.addItem($0.item) }
+            return
+        }
+        for destination in Destination.allCases {
+            let item = NSMenuItem(title: destination.title, action: #selector(openLink(_:)), keyEquivalent: "")
+            item.identifier = .init(destination.rawValue)
+            item.target = self
+            item.representedObject = contextLink
+            item.isEnabled = destination == .tab || openDestination != nil
+            if destination == .split { item.isEnabled = canOpenSplit?() == true }
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let save = NSMenuItem(title: "Save Link As…", action: #selector(saveLinkAs(_:)), keyEquivalent: "")
+        save.target = self
+        save.representedObject = ["url": contextLink, "filename": contextFilename ?? ""] as [String: Any]
+        save.isEnabled = saveLink != nil
+        menu.addItem(save)
+        let copy = NSMenuItem(title: "Copy Link Address", action: #selector(copyLinkAddress(_:)), keyEquivalent: "")
+        copy.target = self
+        copy.representedObject = contextLink
+        menu.addItem(copy)
+
+        let replaced: Set<String> = ["WKMenuItemIdentifierOpenLink", "WKMenuItemIdentifierOpenLinkInNewWindow",
+                                     "WKMenuItemIdentifierDownloadLinkedFile", "WKMenuItemIdentifierCopyLink"]
+        let extras = originalItems.map(\.item).filter { !replaced.contains($0.identifier?.rawValue ?? "") }
+        let inspectID = NSUserInterfaceItemIdentifier("WKMenuItemIdentifierInspectElement")
+        // Preserve image, selection, spelling, services and other WebKit actions, then
+        // give Inspect its own final group. Never produce empty or doubled separators.
+        for item in extras where item.identifier != inspectID {
+            if item.isSeparatorItem {
+                if menu.items.last?.isSeparatorItem == false { menu.addItem(item) }
+            } else {
+                if menu.numberOfItems == Destination.allCases.count + 3 { menu.addItem(.separator()) }
+                menu.addItem(item)
+            }
+        }
+        while menu.items.last?.isSeparatorItem == true { menu.removeItem(at: menu.numberOfItems - 1) }
+        for item in extras where item.identifier == inspectID {
+            menu.addItem(.separator())
+            item.title = "Inspect"
+            menu.addItem(item)
+        }
     }
 
-    @objc private func openLinkInNewTab(_ sender: NSMenuItem) {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(saveLinkAs(_:)) { return saveLink != nil }
+        if item.action == #selector(openLink(_:)), let id = item.identifier?.rawValue,
+           let destination = Destination(rawValue: id) {
+            if destination == .tab { return openBackground != nil }
+            if destination == .split { return openDestination != nil && canOpenSplit?() == true }
+            return openDestination != nil
+        }
+        return true
+    }
+
+    @objc func openLink(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL,
+              let id = sender.identifier?.rawValue, let destination = Destination(rawValue: id) else { return }
+        if destination == .tab { openBackground?(url) }
+        else if destination != .split || canOpenSplit?() == true { openDestination?(url, destination) }
+    }
+
+    @objc private func saveLinkAs(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? [String: Any],
+              let url = request["url"] as? URL else { return }
+        saveLink?(url, request["filename"] as? String)
+    }
+
+    @objc private func copyLinkAddress(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
-        openBackground?(url)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
     }
 
     nonisolated static func link(from body: Any) -> URL? {
@@ -204,7 +302,7 @@ enum TabKind: Int, Codable, Comparable, Sendable, CaseIterable {
         var out = [("link menu preserves WebKit items", menu.items.contains { $0.title == "Copy Link" }),
                    ("link menu adds one Open Link in New Tab item", menu.items.filter { $0.identifier == itemID }.count == 1)]
         view.contextLink = URL(string: "https://other.test/")
-        if let item { view.openLinkInNewTab(item) }
+        if let item { view.openLink(item) }
         out.append(("link menu action uses captured clicked URL", opened == first))
         view.contextLink = nil
         view.update(menu)
@@ -398,6 +496,7 @@ struct TitleReveal: Equatable, Sendable {
     var onOpenBeside: ((URL, Bool) -> Void)?
     /// Explicit page-context action always targets an ordinary background tab.
     var onOpenLinkInBackground: ((URL) -> Void)?
+    var onOpenContextLink: ((URL, LinkContextWebView.Destination) -> Void)?
     /// A link this tab should show *over* the window instead of going to — see Peek.swift.
     /// Left nil in a window with nowhere to float one, which is what keeps the test in
     /// `decidePolicyFor` a single condition rather than a list of exceptions.
@@ -529,6 +628,20 @@ struct TitleReveal: Equatable, Sendable {
     private func attach() {
         if let linkView = web as? LinkContextWebView {
             linkView.openBackground = { [weak self] url in self?.onOpenLinkInBackground?(url) }
+            linkView.openDestination = { [weak self] url, destination in self?.onOpenContextLink?(url, destination) }
+            linkView.canOpenSplit = { [weak self] in
+                guard let self else { return false }
+                return onOpenInSplit != nil && linkSplitIsFull?() != true
+            }
+            linkView.saveLink = { [weak self] url, filename in
+                guard let self else { return }
+                let manager = Downloads.manager(for: profileID)
+                let title = web.title
+                web.startDownload(using: URLRequest(url: url)) { download in
+                    TidyDownloads.remember(download, pageTitle: title)
+                    manager.attach(download, alwaysAsk: true, suggestedFilename: filename)
+                }
+            }
         }
         web.configuration.userContentController.add(WeakHandler(self),
                                                     contentWorld: LinkContextWebView.world,
@@ -738,7 +851,12 @@ struct TitleReveal: Equatable, Sendable {
         TabAudio.unwatch(self)         // KVO on a dead observee is a crash, not a leak
         obs = []                       // KVO on a view that is about to die
         old.stopLoading()
-        (old as? LinkContextWebView)?.openBackground = nil
+        if let linkView = old as? LinkContextWebView {
+            linkView.openBackground = nil
+            linkView.openDestination = nil
+            linkView.canOpenSplit = nil
+            linkView.saveLink = nil
+        }
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: LinkContextWebView.messageName, contentWorld: LinkContextWebView.world)
         old.uiDelegate = nil
@@ -2029,6 +2147,20 @@ struct Stash {
             } else if let profile = ProfileManager.shared.profiles.first(where: { $0.id == profileID }) {
                 // Do not fall back to the globally selected profile if this one vanished.
                 Windows.open(isPrivate: isPrivate, urls: [url], profile: profile, focus: false)
+            }
+        }
+        t.onOpenContextLink = { [weak self, weak t] url, destination in
+            guard let self, let t else { return }
+            switch destination {
+            case .tab: t.onOpenLinkInBackground?(url)
+            case .split: t.onOpenInSplit?(url)
+            case .little: LittleArc.open(url, isPrivate: isPrivate, profileID: profileID)
+            case .privateWindow: Windows.open(isPrivate: true, urls: [url])
+            case .window:
+                if isPrivate { Windows.open(isPrivate: true, urls: [url]) }
+                else if let profile = ProfileManager.shared.profiles.first(where: { $0.id == profileID }) {
+                    Windows.open(urls: [url], profile: profile)
+                }
             }
         }
         // A Peek floats over a window with a sidebar in it. A Little Arc — or a Peek itself —
