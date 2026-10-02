@@ -1268,6 +1268,51 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
             print("  --    no private VANE_DATA_DIR, nothing to pin")
         }
 
+        print("closing a selected pinned page")
+        if Store.overrideDirectory != nil {
+            let store = TabStore(isPrivate: true)
+            let home = URL(string: "https://pin.example/")!
+            let away = URL(string: "https://pin.example/away")!
+            let row = store.newBlankTab(focus: false, as: .pinned)
+            row.park(url: home, Parked(title: "Pin"))
+            store.current = row.id
+            let today = store.newBlankTab(focus: false)
+            today.park(url: away, Parked(title: "Today"))
+            // Real committed pages exercise suspend, rather than a value-only close rule.
+            func load(_ url: URL) -> Bool {
+                row.web.loadSimulatedRequest(URLRequest(url: url), responseHTML: "<p>Pin</p>")
+                let deadline = Date().addingTimeInterval(5)
+                while (row.web.url != url || row.loading), Date() < deadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+                }
+                return row.web.url == url && !row.loading
+            }
+            check("the selected pin has a live page at home", load(home))
+            store.close(row.id)
+            check("closing the selected pin clears its sidebar selection",
+                  store.current == nil && store.active == nil)
+            check("closing keeps the pin parked and does not wake a Today tab",
+                  row.kind == .pinned && row.suspended && today.suspended
+                  && store.tabs.contains { $0 === row })
+            store.current = row.id
+            check("clicking the closed pin selects and resumes it",
+                  store.current == row.id && !row.suspended)
+            check("the selected pin can browse away from home", load(away))
+            store.close(row.id)
+            check("sending a selected pin home clears its sidebar selection too",
+                  store.current == nil && row.suspended && row.currentURL == home)
+            store.current = row.id
+            check("the reopened pin has a live page", load(home))
+            let other = store.newBlankTab()
+            store.close(row.id)
+            check("closing a background pin leaves the selected tab alone",
+                  store.current == other.id && row.suspended)
+            store.tabs.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+        } else {
+            print("  --    no private VANE_DATA_DIR, nothing to close")
+        }
+
         print("keychain round-trip")
         Passwords.delete(host: host, account: user)
         Passwords.save(host: host, account: user, password: pass)

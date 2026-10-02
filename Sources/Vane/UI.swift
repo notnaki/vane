@@ -86,7 +86,10 @@ final class WebHost: NSView {
     }
 
     func removePage() {
-        for page in subviews.compactMap({ $0 as? WKWebView }) { page.removeFromSuperview() }
+        for page in recent {
+            Inspector.hideAttached(to: page, in: self)
+            if page.superview === self { page.removeFromSuperview() }
+        }
         web = nil
         recent.removeAll()
     }
@@ -126,7 +129,7 @@ final class WebHost: NSView {
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() {
         layer?.backgroundColor = Look.pageGround.cgColor
-        subviews.compactMap { $0 as? WKWebView }.forEach(ground)
+        recent.filter { $0.superview === self }.forEach(ground)
     }
 
     private func ground(_ web: WKWebView) {
@@ -170,7 +173,11 @@ final class WebHost: NSView {
     /// redrawing keeps its page until the next switch, which is the next thing that happens.
     func show(_ next: WKWebView, keeping live: [WKWebView] = []) {
         let outgoing = web
+        if let outgoing, outgoing !== next { Inspector.hideAttached(to: outgoing, in: self) }
         if next.superview !== self {
+            if let previousHost = next.superview {
+                Inspector.hideAttached(to: next, in: previousHost)
+            }
             next.frame = bounds
             next.autoresizingMask = [.width, .height]
             addSubview(next)
@@ -180,7 +187,9 @@ final class WebHost: NSView {
         web = next
         recent.removeAll { $0 === next }
         recent.insert(next, at: 0)
-        let held = subviews.compactMap { $0 as? WKWebView }
+        // WebKit's docked inspector is also a WKWebView sibling. Only pages we
+        // mounted belong to the tab cache; pruning every web view removes the inspector.
+        let held = recent.filter { $0.superview === self }
         let going = Set(WebHost.dropping(held.map(ObjectIdentifier.init),
                                          showing: ObjectIdentifier(next),
                                          live: live.map(ObjectIdentifier.init),
@@ -202,7 +211,10 @@ final class WebHost: NSView {
             }
         }
         for page in held where page !== next {
-            if going.contains(ObjectIdentifier(page)) { page.removeFromSuperview() }
+            if going.contains(ObjectIdentifier(page)) {
+                Inspector.hideAttached(to: page, in: self)
+                page.removeFromSuperview()
+            }
             else { page.isHidden = true }
         }
         // A page let go of here, and a page some other host or a suspension took out from
