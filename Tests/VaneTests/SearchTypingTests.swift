@@ -2,14 +2,8 @@ import XCTest
 @testable import vane
 
 @MainActor final class SearchTypingTests: XCTestCase {
-    private static let fixtureDirectory: URL = {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vane-search-tests-\(UUID())")
-        setenv("VANE_DATA_DIR", dir.path, 1)
-        return dir
-    }()
-
     private func window(isPrivate: Bool = false) -> TabStore {
-        _ = Self.fixtureDirectory
+        TestEnvironment.prepare()
         // An unregistered profile has no user tabs, preferences, or history to touch.
         let store = TabStore(isPrivate: isPrivate, profileID: UUID(), session: [])
         SearchSuggestions.enabled = false
@@ -64,6 +58,17 @@ import XCTest
         store.clearSuggestions()
         try await Task.sleep(for: .milliseconds(350))
         XCTAssertTrue(store.suggestions.isEmpty)
+    }
+
+    func testLateSuggestionsKeepTheKeyboardDestinationSelected() {
+        XCTAssertEqual(Palette.selectedIndex(previous: 1, selectedID: "tab:weak",
+            rowIDs: ["typed", "url:history", "tab:weak"], reset: false), 2)
+        XCTAssertEqual(Palette.selectedIndex(previous: 3, selectedID: "cmd:reload",
+            rowIDs: ["typed", "cmd:reload"], reset: false), 1)
+        XCTAssertEqual(Palette.selectedIndex(previous: 2, selectedID: "url:deleted",
+            rowIDs: ["typed", "tab:weak"], reset: false), 1)
+        XCTAssertEqual(Palette.selectedIndex(previous: 2, selectedID: "tab:weak",
+            rowIDs: ["typed", "url:history", "tab:weak"], reset: true), 0)
     }
 
     func testNewQueryClearsOldRowsAndSeesHistoryChanges() async throws {

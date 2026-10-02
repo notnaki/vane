@@ -113,7 +113,8 @@ swift build -c debug
 ```
 
 `swift test` runs isolated search regressions, including rapid typing against a
-large history database, cancellation, live history changes, and private windows.
+large history database, keyboard selection, local and remote cancellation, live
+history changes, and private windows.
 
 Before shipping, also check the release configuration:
 

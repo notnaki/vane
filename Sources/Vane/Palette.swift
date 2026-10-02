@@ -141,6 +141,13 @@ enum Palette {
         commandHeld || mode == .newTab || !hasActiveTab
     }
 
+    /// Selection after a result refresh. Query changes reset; later results retain selection.
+    static func selectedIndex(previous: Int, selectedID: String?, rowIDs: [String], reset: Bool) -> Int {
+        if reset { return 0 }
+        if let selectedID, let kept = rowIDs.firstIndex(of: selectedID) { return kept }
+        return min(previous, max(0, rowIDs.count - 1))
+    }
+
     static func check() -> [(String, Bool)] {
         // Force-unwrapped inside the assertions on purpose: a nil here is the failure the
         // line above it already checks for, so it can only fire if the checks disagree.
@@ -891,6 +898,7 @@ struct CommandField: NSViewRepresentable {
     // MARK: The list
 
     private func refresh(reset: Bool = true) {
+        let selectedID = rows.indices.contains(index) ? rows[index].id : nil
         var out: [PaletteRow] = []
         func matchingTabs() -> [PaletteRow] {
             Palette.rank(query, tabRows(), key: { $0.title + " " + $0.detail })
@@ -940,7 +948,8 @@ struct CommandField: NSViewRepresentable {
             }
             return row
         }
-        index = reset ? 0 : min(index, max(0, rows.count - 1))
+        index = Palette.selectedIndex(previous: index, selectedID: selectedID,
+                                      rowIDs: rows.map(\.id), reset: reset)
         guard reset else { return }
         axAnnounce(rows.isEmpty ? "No results" : "\(rows.count) result\(rows.count == 1 ? "" : "s")")
     }
