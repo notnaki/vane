@@ -928,8 +928,8 @@ private struct NavGlyphs: View {
 
 /// Where the address bar used to be. It is a button, not a field: typing happens in the
 /// search bar, which is the one place in Vane a url or a search is entered.
-/// With no tab it stays, empty: same fill, same height, glyphs disabled, and a click opens
-/// the search bar to make the first tab. The sidebar keeps its shape whatever is open.
+/// With no address it shows a search prompt; clicking opens the search bar.
+/// Loaded pages show the host, with copy and site controls available on hover.
 struct AddressPill: View {
     let tab: Tab?
 
@@ -945,13 +945,13 @@ struct AddressPill: View {
 /// Split from `PillBody` only so the tab can be observed; the empty pill has none.
 private struct LiveAddressPill: View {
     @ObservedObject var tab: Tab
-    /// The site glyph's badge is not on the tab: it is a remembered permission, written by
+    /// The site-controls badge is not on the tab: it is a remembered permission, written by
     /// a modal prompt that has no route back into this view. See `SiteChanges`.
     @ObservedObject private var changes = SiteChanges.shared
 
     var body: some View {
         // Built *here*, where the tab is observed, and handed down as a value. Built inside
-        // the glyph instead, SwiftUI would be free to skip that view's body across a
+        // the controls instead, SwiftUI would be free to skip that view's body across a
         // navigation — its one stored property, the Tab, is unchanged — and leave the lock
         // and the badge describing the page before last.
         let site = SiteControlModel(tab)
@@ -976,12 +976,12 @@ private struct PillBody: View {
     let address: String
     let reader: Bool
     let readerOn: Bool
-    /// The page as the Site Control Center sees it: which glyph the pill leads with,
-    /// whether it is badged, and what the popover will say. Empty with no tab.
+    /// Connection and permission status for the trailing site-controls button.
     var site = SiteControlModel()
     /// "125%" while the page is zoomed, nil at 100 %. Clicking it puts the page back.
     var zoom: String?
     @State private var hovering = false
+    @State private var showingSiteControls = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -1014,25 +1014,33 @@ private struct PillBody: View {
         // The two glyphs are only drawn on hover, so the actions they stand for have to be
         // on the pill itself — a pointer gesture is not a route VoiceOver has.
         .accessibilityAction(named: "Copy Link") { copyLink() }
-        .accessibilityAction(named: "Browser Settings") { SettingsWindow.show() }
+        .accessibilityAction(named: "Site Controls") {
+            if tab != nil, !address.isEmpty { showingSiteControls = true }
+        }
+        .onChange(of: tab?.id) { showingSiteControls = false }
+        .onChange(of: address) { showingSiteControls = false }
         .accessibilityAction(named: "Actual Size") { if let tab, zoom != nil { Zoom.reset(tab) } }
     }
 
     private var content: some View {
         HStack(spacing: Look.pillGlyphGap) {
-            SiteGlyph(tab: tab, site: site)
-            if reader, let tab { ReaderGlyph(tab: tab, on: readerOn) }
-            // Secondary ink, the way Arc sets the host (179 on 84): the address is a
-            // label for the page, not a title among titles.
-            Text(host).font(Look.text).lineLimit(1)
+            if address.isEmpty {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13))
+                    .accessibilityHidden(true)
+                Text("Search or Enter URL…").font(Look.heading).lineLimit(1)
+            } else {
+                if reader, let tab { ReaderGlyph(tab: tab, on: readerOn) }
+                Text(host).font(Look.text).lineLimit(1)
+            }
             Spacer(minLength: 4)
             if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
             // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
             // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
             // They sit past a Spacer, so arriving and leaving never moves the host.
-            if hovering {
-                PillHoverGlyphs(enabled: tab != nil, feedback: store.feedback,
-                                address: address, copyLink: copyLink)
+            if !address.isEmpty, let tab, hovering || showingSiteControls {
+                PillHoverGlyphs(tab: tab, site: site, showingSiteControls: $showingSiteControls,
+                                feedback: store.feedback, address: address, copyLink: copyLink)
             }
             // Pinned extension actions, last: everything after the Spacer is flush right, so
             // the *last* item is the one the hover glyphs appearing beside it cannot move —
@@ -1084,7 +1092,9 @@ private struct ReaderGlyph: View {
 /// Copy Link and Site Settings, the two glyphs Arc's pill grows on hover.
 private struct PillHoverGlyphs: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let enabled: Bool
+    let tab: Tab
+    let site: SiteControlModel
+    @Binding var showingSiteControls: Bool
     @ObservedObject var feedback: InteractionFeedback
     let address: String
     let copyLink: () -> Void
@@ -1095,37 +1105,14 @@ private struct PillHoverGlyphs: View {
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 .foregroundStyle(copied ? Color.accentColor : Look.inkSecondary)
                 .animation(reduceMotion ? nil : Look.quick, value: copied)
+                .frame(width: Look.control, height: Look.control)
+                .contentShape(.rect)
         }
-            .disabled(!enabled)
             .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
             .accessibilityLabel("Copy Link")
             .accessibilityValue(copied ? "Copied" : "")
-        Button { SettingsWindow.show() } label: { Image(systemName: "slider.horizontal.3") }
-            // Browser-wide, not per-site: per-site lives in the Site Control Center on the
-            // pill's leading glyph (SiteControl.swift), which is where Arc keeps it.
-            .disabled(!enabled)
-            .help("Browser Settings")
-            .accessibilityLabel("Browser Settings")
-    }
-}
-
-/// Arc's site mark, before the host, and the button that opens the Site Control Center.
-/// Always drawn — a lock, a broken lock, or a globe with no page — because the sidebar's
-/// chrome does not come and go, and a control the user has to make a page insecure to find
-/// is not a control.
-private struct SiteGlyph: View {
-    let tab: Tab?
-    /// Passed in rather than derived, so this view redraws whenever the page does — see
-    /// the note in `LiveAddressPill`. `SiteControlModel` is `Equatable`, so an unchanged
-    /// page still costs nothing.
-    let site: SiteControlModel
-    @State private var open = false
-
-    var body: some View {
-        Button { open.toggle() } label: {
-            Image(systemName: site.glyph)
-                // Tiny on purpose: it says "this site holds a grant", and anything bigger
-                // would read as a warning about the connection instead.
+        Button { showingSiteControls.toggle() } label: {
+            Image(systemName: "slider.horizontal.3.square")
                 .overlay(alignment: .topTrailing) {
                     if site.badge != nil {
                         Circle().fill(Color.accentColor)
@@ -1133,19 +1120,18 @@ private struct SiteGlyph: View {
                             .offset(x: Look.badgeOffset, y: -Look.badgeOffset)
                     }
                 }
+                .frame(width: Look.control, height: Look.control)
+                .background(showingSiteControls ? Look.hovered : .clear,
+                            in: .rect(cornerRadius: Look.pillRadius))
+                .contentShape(.rect)
         }
-        .buttonStyle(TactileButtonStyle())
-        // A broken lock drawn in the same grey as the host beside it is not a warning. Only
-        // a live insecure page tints: with no tab there is nothing to warn about, and the
-        // glyph keeps the ink `PillBody` hands down, dimmed with the rest of the pill.
-        .foregroundStyle(tab != nil && site.insecure ? Look.warning : Look.inkSecondary)
-        .disabled(tab == nil)
+        .foregroundStyle(site.insecure ? Look.warning : Look.inkSecondary)
         .help(site.siteless ? "Site Controls" : "\(site.title) — \(site.connection)")
         .accessibilityLabel("Site Controls")
         .accessibilityValue([site.connection, site.badge].compactMap { $0 }.joined(separator: ", "))
         .accessibilityHint("Shows what this site is allowed to do, and its zoom, extensions and data.")
-        .popover(isPresented: $open, arrowEdge: .bottom) {
-            if let tab { SiteControlPopover(tab: tab) }
+        .popover(isPresented: $showingSiteControls, arrowEdge: .bottom) {
+            SiteControlPopover(tab: tab)
         }
     }
 }

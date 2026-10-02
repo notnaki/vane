@@ -579,8 +579,12 @@ struct CommandField: NSViewRepresentable {
     /// Above and below the rows: a row gap's less at the top, where the divider already
     /// separates, than at the bottom, where the bar's edge has to.
     private var listPadding: CGFloat { Look.barInset - Look.barRowGap + Look.barInset }
+    private var sidebarAddress: Bool {
+        mode == .address && store.sidebarShown && !store.libraryOpen && !store.isLittle
+    }
+    private var fieldHeight: CGFloat { sidebarAddress ? Look.barRowHeight : Look.barFieldHeight }
     private var barHeight: CGFloat {
-        Look.barFieldHeight + (rows.isEmpty ? 0 : 1 + listHeight + listPadding)
+        fieldHeight + (rows.isEmpty ? 0 : 1 + listHeight + listPadding)
     }
 
     /// Nil under Reduce Motion, which SwiftUI reads as "just change".
@@ -588,23 +592,25 @@ struct CommandField: NSViewRepresentable {
 
     var body: some View {
         GeometryReader { geo in
-            ZStack(alignment: .top) {
+            ZStack(alignment: sidebarAddress ? .topLeading : .top) {
                 // Click-off to dismiss. Decoration only — Esc is the accessible route out,
                 // and VoiceOver should never land on a full-screen unlabelled rectangle.
-                Look.scrim
+                (sidebarAddress ? Color.clear : Look.scrim)
                     .contentShape(.rect)
                     .onTapGesture { close() }
                     .accessibilityHidden(true)
 
                 bar
-                    .frame(width: min(Look.barWidth, geo.size.width - Look.inset * 2))
+                    .frame(width: min(sidebarAddress ? Look.sidebarSearchWidth : Look.barWidth,
+                                      geo.size.width - Look.inset * 2))
                     .scaleEffect(shown ? 1 : Look.appearScale)
                     .opacity(shown ? 1 : 0)
-                    // Centred on the window, the way Arc's is, growing about its middle as
-                    // the list does — but never so far down that a tall list runs off the
-                    // bottom of a short window.
+                    // Editing the current address opens over the sidebar pill. Other
+                    // search modes retain their centered layout.
+                    .padding(.leading, sidebarAddress ? Look.inset : 0)
                     .padding(.top, max(Look.inset,
-                                       min((geo.size.height - barHeight) / 2,
+                                       min(sidebarAddress ? Look.topInset + Look.topRow + Look.inset
+                                           : (geo.size.height - barHeight) / 2,
                                            geo.size.height - barHeight - Look.inset)))
                     .animation(motion(Look.quick), value: rows.count)
             }
@@ -641,10 +647,16 @@ struct CommandField: NSViewRepresentable {
     private var bar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Look.barRowInset) {
-                Image(systemName: actionsOnly ? "command" : "magnifyingglass")
-                    .font(Look.fieldIcon)
-                    .foregroundStyle(Look.barPlaceholder)
-                    .frame(width: Look.rowIcon)
+                Group {
+                    if sidebarAddress, !actionsOnly, let icon = store.active?.favicon {
+                        Image(nsImage: icon).resizable().aspectRatio(contentMode: .fit)
+                    } else {
+                        Image(systemName: actionsOnly ? "command" : "magnifyingglass")
+                            .font(Look.fieldIcon)
+                            .foregroundStyle(Look.barPlaceholder)
+                    }
+                }
+                .frame(width: Look.rowIcon, height: Look.rowIcon)
                 if ready {
                     CommandField(text: $query, prompt: actionsOnly ? "Run a command…" : mode.prompt,
                                  selectAll: mode == .address,
@@ -671,7 +683,7 @@ struct CommandField: NSViewRepresentable {
             }
             // The same two insets a row has, so the field's icon sits over the rows' icons.
             .padding(.horizontal, Look.barInset + Look.barRowInset)
-            .frame(height: Look.barFieldHeight)
+            .frame(height: fieldHeight)
 
             if !rows.isEmpty {
                 Hairline().padding(.horizontal, Look.barInset)
