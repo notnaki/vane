@@ -298,6 +298,20 @@ import WebKit
                             "incognito uses a near-black theme and forces dark window chrome")
                 try require(ProfileManager.shared.profiles == profilesBefore,
                             "incognito never becomes a saved profile")
+                let savedBlocking = Blocker.enabled(for: profile)
+                rebuild()
+                guard let blockerItem = NSApp.mainMenu?.item(withTitle: "Vane")?.submenu?
+                    .item(withTitle: "Sites")?.submenu?.item(withTitle: "Block Ads and Trackers"),
+                      let blockerAction = blockerItem.action else {
+                    throw Failure("the content blocker menu item is available")
+                }
+                let sent = NSApp.sendAction(blockerAction, to: blockerItem.target, from: blockerItem)
+                let toggledPrivateOnly = sent && !Blocker.enabled(for: privateWindow.profileID)
+                    && Blocker.enabled(for: profile) == savedBlocking
+                Blocker.setEnabled(savedBlocking, for: profile)
+                Blocker.setEnabled(true, for: privateWindow.profileID)
+                try require(toggledPrivateOnly,
+                            "the blocker menu changes incognito without changing a saved profile")
                 try require(privateWindow.history !== tab.history
                             && privateWindow.history.history().isEmpty
                             && privateWindow.extensions.installed.isEmpty,

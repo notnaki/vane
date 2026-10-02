@@ -254,8 +254,12 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 }
 
 @MainActor private func siteItems() -> [NSMenuItem] {
-    let blocking = item(.blockAds) { Blocker.enabled.toggle(); rebuild() }
-    blocking.state = Blocker.enabled ? .on : .off
+    let profileID = Windows.current?.profileID ?? ProfileManager.activeProfileID
+    let blocking = item(.blockAds) {
+        Blocker.setEnabled(!Blocker.enabled(for: profileID), for: profileID)
+        rebuild()
+    }
+    blocking.state = Blocker.enabled(for: profileID) ? .on : .off
     let tidyDownloads = item("Tidy Download Filenames", "") {
         TidyDownloads.enabled.toggle(); rebuild()
     }
