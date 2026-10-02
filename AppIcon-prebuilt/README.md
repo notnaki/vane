@@ -2,9 +2,9 @@
 
 `AppIcon.icns` and `Assets.car` are `actool`'s output for the three Icon Composer documents
 beside them, `../AppIcon.icon` (Glass, the default) and `../AppIcon-Navy.icon` (the lighter
-navy), plus `../AppIcon-Galaxy.icon` (the galaxy website’s blue-violet spiral and silver V).
+navy), plus `../AppIcon-Galaxy.icon` (the selected violet galaxy and a silver V at the original icon size).
 macOS composes them the same way — the
-squircle, the glass over the V, the shadow — and Settings ▸ Icon offers the choice.
+squircle, lighting, and shadow — and Settings ▸ Icon offers the choice.
 
 They are committed because `actool` only renders a `.icon` on macOS 26 with Xcode 26, and
 the CI runner may have neither; `make-app.sh` prefers these files and falls back to

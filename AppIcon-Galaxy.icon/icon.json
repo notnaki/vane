@@ -13,7 +13,7 @@
           "image-name": "vane-v.svg",
           "name": "vane-v",
           "position": {
-            "scale": 0.72,
+            "scale": 1.0,
             "translation-in-points": [
               0,
               0
