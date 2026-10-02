@@ -4232,19 +4232,33 @@ private struct GoHomeGlyph: View {
     }
 }
 
-/// A site's own icon, with a fallback symbol standing in until it arrives (or forever, for
-/// a page that has none).
+/// A quiet, rounded square holding a favicon's place until it arrives.
+private struct FaviconPlaceholder: View {
+    let size: CGFloat
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: size / 4, style: .continuous)
+            .fill(Look.inkQuiet)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
+/// A site's own icon, with a placeholder until it arrives (or forever, for a page that
+/// has none). Callers can supply a symbol when the slot also identifies a specific feature.
 struct SiteIcon: View {
     let icon: NSImage?
-    var fallback = "globe"
+    var fallback: String? = nil
     var size: CGFloat = 16
 
     var body: some View {
         Group {
             if let icon {
                 Image(nsImage: icon).resizable().interpolation(.high)
-            } else {
+            } else if let fallback {
                 Image(systemName: fallback).resizable().foregroundStyle(.tertiary)
+            } else {
+                FaviconPlaceholder(size: size)
             }
         }
         .aspectRatio(contentMode: .fit)
@@ -4260,7 +4274,7 @@ struct SiteIcon: View {
 /// is gone for exactly as long as the page takes. Arc keeps the icon the tab had until the
 /// next one has actually been decoded and then swaps it — which is free here, because
 /// `Favicons.load` only ever writes on `didFinish`, so a tab holds its old icon for the
-/// whole of a navigation. A tab that has never had one shows the site's letter instead.
+/// whole of a navigation. A tab that has never had one shows a quiet rounded square.
 ///
 /// Loading is still said, twice: the pill's 2pt progress line, and the row's accessibility
 /// value, which reads "loading" in words. In words and in a line, not in motion.
@@ -4282,16 +4296,8 @@ private struct TabIcon: View {
                 // folder would otherwise be full of. The mark is what Arc draws there, and
                 // here it is only ever drawn on a row a GitHub folder owns.
                 GitHubMark().fill(Look.inkSecondary)
-            } else if let letter = Favicons.letter(for: tab.currentURL) {
-                // Flat, no box: a tile and a pane pill already have a fill under this, and a
-                // second one inside it would read as an icon with a badge.
-                Text(letter)
-                    .font(Look.letterFont(box: size))
-                    .foregroundStyle(Look.inkSecondary)
             } else {
-                // Nothing to take a letter from: a blank tab, or a file with no icon yet.
-                Image(systemName: "globe").resizable().aspectRatio(contentMode: .fit)
-                    .foregroundStyle(.tertiary)
+                FaviconPlaceholder(size: size)
             }
         }
         .frame(width: size, height: size)
