@@ -2,7 +2,7 @@
 
 All icon sources and compiled assets live here. Open any `.icon` document in Icon Composer; the V, material layers, and background remain editable. macOS supplies the tile shape and lighting.
 
-Settings → Icon offers **Normal, Dark, Galaxy, Candy, Neon, Fluted Glass, Schoolbook, and Luminous**. Normal is the original glass catalogue render (`AppIcon.icon`). Dark is the Dock’s original composition of that same source, with no image override. Galaxy has open blue/ivory spiral arms behind the silver V. The new finishes use rounded, overlapping V ribbons and retain Vane’s slate-blue, periwinkle, and ivory palette.
+Settings → Icon offers **Normal, Dark, Galaxy, Candy, Neon, Fluted Glass, Schoolbook, and Luminous**. Normal is the original glass catalogue render (`AppIcon.icon`). Dark is the Dock’s original composition of that same source, with no image override. Galaxy has open blue/ivory spiral arms behind the silver V. The new finishes use a larger folded V and retain Vane’s slate-blue, periwinkle, and ivory palette. Candy has an ivory rim and a blue glass fold; Neon has a bright outline and a blue bloom; Schoolbook uses paper color blocks; Luminous uses a sculpted blue gradient. Fluted Glass places a softened, refracted V beneath wide cylindrical cream-glass ribs, with native blur, refraction, and translucency controls.
 
 Old saved labels migrate: Default → Dark, Glass → Normal, Navy → Normal. Galaxy and custom images retain their selections.
 

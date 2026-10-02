@@ -1,6 +1,6 @@
 {
   "fill": {
-    "automatic-gradient": "srgb:0.31,0.34,0.47,1"
+    "solid": "srgb:0.93,0.925,0.905,1"
   },
   "groups": [
     {
@@ -8,10 +8,43 @@
         {
           "blend-mode": "normal",
           "fill": "none",
+          "glass": true,
+          "hidden": false,
+          "image-name": "fluted-pane.svg",
+          "name": "fluted-pane",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.12
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.65
+      },
+      "blur-material": 0.22,
+      "refractivity": {
+        "enabled": true,
+        "strength": 0.65,
+        "depth": 0.25
+      }
+    },
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
           "glass": false,
           "hidden": false,
-          "image-name": "fluting.svg",
-          "name": "fluting",
+          "image-name": "refracted-v.svg",
+          "name": "refracted-v",
           "position": {
             "scale": 1.0,
             "translation-in-points": [
@@ -35,10 +68,10 @@
         {
           "blend-mode": "normal",
           "fill": "none",
-          "glass": true,
+          "glass": false,
           "hidden": false,
-          "image-name": "swoosh.svg",
-          "name": "swoosh",
+          "image-name": "diffused-light.svg",
+          "name": "diffused-light",
           "position": {
             "scale": 1.0,
             "translation-in-points": [
@@ -50,61 +83,7 @@
       ],
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.28
-      },
-      "translucency": {
-        "enabled": false,
-        "value": 0.25
-      }
-    },
-    {
-      "layers": [
-        {
-          "blend-mode": "normal",
-          "fill": "none",
-          "glass": true,
-          "hidden": false,
-          "image-name": "right.svg",
-          "name": "right",
-          "position": {
-            "scale": 1.0,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.28
-      },
-      "translucency": {
-        "enabled": false,
-        "value": 0.25
-      }
-    },
-    {
-      "layers": [
-        {
-          "blend-mode": "normal",
-          "fill": "none",
-          "glass": true,
-          "hidden": false,
-          "image-name": "left.svg",
-          "name": "left",
-          "position": {
-            "scale": 1.0,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.28
+        "opacity": 0
       },
       "translucency": {
         "enabled": false,
@@ -114,5 +93,8 @@
   ],
   "supported-platforms": {
     "squares": "shared"
-  }
+  },
+  "features": [
+    "refractivity"
+  ]
 }

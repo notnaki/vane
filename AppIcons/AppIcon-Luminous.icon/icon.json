@@ -10,10 +10,10 @@
           "fill": "none",
           "glass": true,
           "hidden": false,
-          "image-name": "swoosh.svg",
-          "name": "swoosh",
+          "image-name": "fold.svg",
+          "name": "fold",
           "position": {
-            "scale": 1.0,
+            "scale": 1.15,
             "translation-in-points": [
               0,
               0
@@ -23,7 +23,7 @@
       ],
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.28
+        "opacity": 0.3
       },
       "translucency": {
         "enabled": false,
@@ -37,10 +37,10 @@
           "fill": "none",
           "glass": true,
           "hidden": false,
-          "image-name": "right.svg",
-          "name": "right",
+          "image-name": "body.svg",
+          "name": "body",
           "position": {
-            "scale": 1.0,
+            "scale": 1.15,
             "translation-in-points": [
               0,
               0
@@ -50,34 +50,7 @@
       ],
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.28
-      },
-      "translucency": {
-        "enabled": false,
-        "value": 0.25
-      }
-    },
-    {
-      "layers": [
-        {
-          "blend-mode": "normal",
-          "fill": "none",
-          "glass": true,
-          "hidden": false,
-          "image-name": "left.svg",
-          "name": "left",
-          "position": {
-            "scale": 1.0,
-            "translation-in-points": [
-              0,
-              0
-            ]
-          }
-        }
-      ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.28
+        "opacity": 0.4
       },
       "translucency": {
         "enabled": false,
