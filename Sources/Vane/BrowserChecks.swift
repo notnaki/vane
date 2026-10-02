@@ -1180,6 +1180,20 @@ import WebKit
             guard let secondTab = secondStore.tabs.last else { throw Failure("second profile has no tab") }
             try await loaded(secondTab, path: "/b", title: "Fixture B")
 
+            let windowsBeforeLibrary = TabStore.all.filter { $0.window != nil }.count
+            try require(Library.show(firstSpace, from: secondStore) === firstStore
+                        && firstStore.window === window && !firstStore.isParked,
+                        "a Library card reveals its parked profile in the same window")
+            guard let libraryPageOwner = Library.show(secondSpace, from: firstStore) else {
+                throw Failure("Library could not return to the second profile")
+            }
+            libraryPageOwner.current = secondTab.id
+            try require(libraryPageOwner === secondStore && secondStore.window === window
+                        && secondStore.current == secondTab.id && !secondStore.isParked,
+                        "a Library page selects a tab in the revealed profile")
+            try require(TabStore.all.filter { $0.window != nil }.count == windowsBeforeLibrary,
+                        "Library profile round trips do not create extra windows")
+
             _ = Windows.switchTo(profile: first)
             try require(extensionWindows(firstHost).contains(where: { $0.store === firstStore })
                         && !extensionWindows(secondStore.extensions).contains(where: { $0.store === secondStore }),

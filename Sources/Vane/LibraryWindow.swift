@@ -439,21 +439,19 @@ extension Library {
         TabStore.all.first { $0.currentSpaceID == space && !$0.isLittle && !$0.isPrivate }
     }
 
-    /// Cards can belong to another profile; navigate using that profile's window.
+    /// Use the sidebar's profile hop so a parked profile returns in this same window.
     @discardableResult
     static func show(_ space: Space, from store: TabStore) -> TabStore? {
         let profiles = ProfileManager.shared
-        guard !store.isPrivate,
-              let profile = profiles.profiles.first(where: { $0.id == space.profileID }),
-              profiles.spaces(for: profile.id).contains(where: { $0.id == space.id }) else { return nil }
+        guard !store.isPrivate, !store.isLittle, !store.isParked,
+              profiles.profiles.contains(where: { $0.id == space.profileID }),
+              profiles.spaces(for: space.profileID).contains(where: { $0.id == space.id }) else { return nil }
         let target: TabStore
-        if store.profileID == profile.id {
+        if store.profileID == space.profileID {
             target = store
         } else {
-            profiles.active = profile
-            target = owner(of: space.id) ?? Windows.current(in: profile.id)
-                ?? Windows.open(profile: profile, space: space)
-            target.window?.makeKeyAndOrderFront(nil)
+            guard let hopped = Windows.hop(store, to: space) else { return nil }
+            target = hopped
         }
         target.switchTo(space: space)
         rebuild()
