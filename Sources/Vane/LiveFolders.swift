@@ -321,6 +321,23 @@ enum GitHub {
         return URL(string: api + "/repos/" + repo + "/pulls/" + String(number))
     }
 
+    struct MenuPR: Equatable, Sendable {
+        let url: URL
+        let number: Int
+    }
+
+    /// Resolve the folder's PR, independently of refresh metadata or the tab's live page.
+    static func menuPR(row: String, in folder: Folder) -> MenuPR? {
+        guard case .github = folder.live,
+              let owned = folder.owned?.first(where: { GitHub.row(row, isFor: $0) }),
+              let detail = detailURL(owned),
+              let number = Int(detail.lastPathComponent),
+              let url = URL(string: "https://github.com/" + detail.pathComponents[2]
+                            + "/" + detail.pathComponents[3] + "/pull/" + String(number))
+        else { return nil }
+        return MenuPR(url: url, number: number)
+    }
+
     /// Merges are permanent; closed PRs can reopen and merge between refreshes.
     static func detailRows(have: Set<String>, found: Set<String>, previous: [String: Row]) -> Set<String> {
         Set(have.filter { row in
@@ -1230,6 +1247,33 @@ extension TabStore {
     /// gone.
     func rowURL(_ id: String) -> String? {
         tabs.first { $0.id.uuidString == id }?.pinnedURL?.absoluteString
+    }
+
+    func livePullRequest(_ id: Tab.ID) -> GitHub.MenuPR? {
+        guard let tab = tabs.first(where: { $0.id == id }), tab.kind == .pinned,
+              let folder = pins.folder(holding: id.uuidString),
+              let home = tab.pinnedURL?.absoluteString else { return nil }
+        return GitHub.menuPR(row: home, in: folder)
+    }
+
+    /// Explicitly archive in one step; a normal pinned close only parks the page.
+    func archivePullRequest(_ id: Tab.ID) {
+        if sharingReady { SharedTabs.flush() }
+        guard let pr = livePullRequest(id),
+              let folder = pins.folder(holding: id.uuidString),
+              let tab = tabs.first(where: { $0.id == id }) else { return }
+        pins.edit(folder: folder.id) {
+            var hidden = $0.dismissed ?? []
+            if !hidden.contains(pr.url.absoluteString) { hidden.append(pr.url.absoluteString) }
+            $0.dismissed = hidden
+        }
+        if !isPrivate {
+            Archive.shared(for: profileID).add(url: pr.url, title: TidyTitles.title(for: tab),
+                                              space: currentSpaceID, littleArc: isLittle)
+        }
+        move(id, to: .today)
+        close(id)
+        axAnnounce("Pull request archived.")
     }
 
     /// "New Live Folder…", the whole of it. Arc has one kind of live folder and asks nothing
