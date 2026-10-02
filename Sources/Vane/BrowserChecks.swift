@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Network
 import Security
 import WebKit
@@ -306,6 +307,7 @@ import WebKit
                             "real WKDownload writes complete bytes without replacing the earlier file")
 
                 try await multiWindow(base: base)
+                try swipeRenderCheck()
                 try await profileHopCheck(base: base)
 
                 await clean()
@@ -316,6 +318,52 @@ import WebKit
                 await clean()
                 fail(String(describing: error), code: 1)
             }
+        }
+
+        private func swipeRenderCheck() throws {
+            let manager = ProfileManager.shared
+            let profile = manager.create(name: "Swipe rendering checks")
+            let space = manager.ensureSpaces(for: profile).first!
+            let store = Windows.open(profile: profile, space: space)
+            defer {
+                store.spaceDrag = 0
+                store.spacePull = 0
+                store.spaceSwiping = false
+                store.window?.close()
+            }
+            store.palette = nil
+            store.spaceSwiping = true
+            var windowInvalidations = 0
+            var gestureInvalidations = 0
+            let subscription = store.objectWillChange.sink { windowInvalidations += 1 }
+            let gestureSubscription = store.spaceGesture.objectWillChange.sink { gestureInvalidations += 1 }
+            for frame in 1...20 {
+                store.spaceDrag = -CGFloat(frame)
+                store.spacePull = CGFloat(frame) / 100
+            }
+            subscription.cancel()
+            gestureSubscription.cancel()
+            try require(windowInvalidations == 0,
+                        "swipe frames do not invalidate the whole browser window (got \(windowInvalidations))")
+            try require(gestureInvalidations > 0 && store.spaceDrag == -20 && store.spacePull == 0.2,
+                        "swipe frames still publish their live offset and pull to gesture views")
+
+            var renamed = space
+            renamed.name = "Renamed during a swipe"
+            try require(manager.updateSpace(renamed), "the swipe fixture can edit its Space on disk")
+            let added = manager.createSpace(name: "Added during a swipe", in: profile.id)
+            try require(store.swipeSpace?.name == space.name
+                        && !store.swipeStrip.contains { $0.id == added.id },
+                        "the tint, preview and dots share a stable Space snapshot during a swipe")
+            let monitor = SwipeMonitor()
+            monitor.install(store)
+            monitor.abort()
+            monitor.remove()
+            try require(store.spaceDrag == 0 && store.spacePull == 0 && !store.spaceSwiping,
+                        "an interrupted swipe resets offset, pull and gesture state")
+            try require(store.swipeSpace?.name == renamed.name
+                        && store.swipeStrip.contains { $0.id == added.id },
+                        "ending a swipe releases its snapshot and reveals fresh Space edits")
         }
 
         private func makeTab(profile: UUID, isPrivate: Bool = false) -> Tab {

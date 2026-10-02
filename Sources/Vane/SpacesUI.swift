@@ -2,6 +2,15 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Only the sliding sections, tint and footer track these per-frame gesture values.
+/// Publishing them on TabStore would invalidate the entire browser on every scroll event.
+@MainActor final class SpaceGesture: ObservableObject {
+    @Published var drag: CGFloat = 0
+    @Published var pull: CGFloat = 0
+    @Published var swiping = false
+    var strip: [Space]?
+}
+
 /// The Spaces chrome: the header row's two clicks, the footer's dots and its `+`, the inline
 /// editor Arc's `+` opens, "Move to Space" and the two-finger swipe.
 ///
@@ -261,8 +270,14 @@ extension View {
 
 private struct SpaceSlide: ViewModifier {
     @ObservedObject var store: TabStore
+    @ObservedObject private var gesture: SpaceGesture
     @ObservedObject private var sidebar = SidebarWidth.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(store: TabStore) {
+        self.store = store
+        gesture = store.spaceGesture
+    }
 
     func body(content: Content) -> some View {
         let forwards = store.spaceDirection > 0
@@ -276,9 +291,9 @@ private struct SpaceSlide: ViewModifier {
                 removal: .move(edge: forwards ? .leading : .trailing).combined(with: .opacity)))
             // A swipe has already carried the sections to where the new Space's preview was
             // standing; letting this run on top would slide the same content a second time.
-            .animation(reduceMotion || store.spaceSwiping ? nil : Look.spaceSlide,
+            .animation(reduceMotion || gesture.swiping ? nil : Look.spaceSlide,
                        value: store.currentSpaceID)
-            .offset(x: store.spaceDrag)
+            .offset(x: gesture.drag)
             // An overlay, not a second row in a stack: the preview must not be allowed to
             // make the scroll view's content taller or wider than the Space's own sections.
             // The scroll view clips it, which is what turns it into a strip coming in from
@@ -290,7 +305,7 @@ private struct SpaceSlide: ViewModifier {
     /// the two move as a single strip. Nothing at either end of the list: the rubber band's
     /// whole point is that there is nothing over there to show.
     @ViewBuilder private var preview: some View {
-        let drag = store.spaceDrag
+        let drag = gesture.drag
         if drag != 0, let space = neighbour(of: drag) {
             SpacePreviewList(space: space)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -305,7 +320,7 @@ private struct SpaceSlide: ViewModifier {
     private func neighbour(of drag: CGFloat) -> Space? {
         // The strip: the Space on the other side of a profile boundary is the next one along
         // just as any other neighbour is, and its ghost is what the fingers are pulling in.
-        let list = store.strip
+        let list = store.swipeStrip
         guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return nil }
         let n = drag < 0 ? i + 1 : i - 1
         return list.indices.contains(n) ? list[n] : nil
@@ -700,10 +715,12 @@ private struct SpaceSwipe: ViewModifier {
 /// Space, and a form the moment it is full. Overlaid on the sidebar's scroll view, trailing
 /// and centred, so it sits where the pull is coming from.
 struct PullPlus: View {
-    @ObservedObject var store: TabStore
+    @ObservedObject private var gesture: SpaceGesture
+
+    init(store: TabStore) { gesture = store.spaceGesture }
 
     var body: some View {
-        let pull = store.spacePull
+        let pull = gesture.pull
         let ring = min(1, pull)
         let solid = max(0, pull - 1)
         ZStack {
