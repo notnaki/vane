@@ -180,8 +180,9 @@ extension Prefs {
             // One timer for both sweeps. Auto-archive's shortest interval is twelve hours,
             // so a minute of slop on it is beneath noticing, and a second Timer to say the
             // same thing is a second Timer.
-            MainActor.assumeIsolated { sweep(); Archive.sweep() }
+            MainActor.assumeIsolated { BatterySaver.shared.refresh(); sweep(); Archive.sweep() }
         }
+        timer?.tolerance = 10
         let src = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
         // The source is read back off the stored property rather than captured, so nothing
         // non-Sendable crosses into the handler.
@@ -229,7 +230,8 @@ extension Prefs {
     /// expensive ones for the handful of tabs still standing.
     static func sweep(now: Date = .now) {
         guard Prefs.suspendTabs else { return }
-        let limit = Prefs.suspendAfter
+        let limit = BatterySaver.idleLimit(normal: Prefs.suspendAfter,
+                                          saving: BatterySaver.shared.isActive)
         for tab in allTabs {
             var f = facts(tab, now: now)
             guard shouldSuspend(f, after: limit) else { continue }
@@ -250,11 +252,14 @@ extension Prefs {
                 f.hasInput = await tab.hasUnsubmittedInput()
                 // Re-read the cheap facts too: the awaits above gave the user time to click.
                 let fresh = facts(tab, now: .now)
-                f.active = fresh.active
-                f.suspended = fresh.suspended
-                f.loading = fresh.loading
-                f.loaded = fresh.loaded
-                if shouldSuspend(f, after: limit) { tab.suspend() }
+                let playing = f.playing, hasInput = f.hasInput
+                f = fresh
+                f.playing = playing || tab.pictureInPicture
+                f.hasInput = hasInput
+                // Re-read the policy too: saving may have stopped during the WebKit awaits.
+                let currentLimit = BatterySaver.idleLimit(normal: Prefs.suspendAfter,
+                                                         saving: BatterySaver.shared.isActive)
+                if Prefs.suspendTabs, shouldSuspend(f, after: currentLimit) { tab.suspend() }
             }
         }
     }

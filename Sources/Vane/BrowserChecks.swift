@@ -386,6 +386,7 @@ import WebKit
                 try await multiWindow(base: base)
                 try swipeRenderCheck()
                 try await profileHopCheck(base: base)
+                try await batterySaverCheck(base: base, profile: profile)
 
                 await clean()
                 print("PASS browsercheck: \(assertions) real-WebKit assertions")
@@ -395,6 +396,61 @@ import WebKit
                 await clean()
                 fail(String(describing: error), code: 1)
             }
+        }
+
+        private func batterySaverCheck(base: String, profile: UUID) async throws {
+            let saver = BatterySaver.shared
+            let oldMode = saver.mode, oldSuspend = Prefs.suspendTabs
+            let oldLimit = Prefs.suspendAfter
+            let store = TabStore(profileID: profile, isLittle: true, session: [])
+            defer {
+                saver.setMode(oldMode)
+                Prefs.suspendTabs = oldSuspend
+                Prefs.suspendAfter = oldLimit
+                Previews.shared.cancel()
+                TabStore.all.removeAll { $0 === store }
+            }
+            saver.setMode(.off)
+            Prefs.suspendTabs = true
+            Prefs.suspendAfter = 1800
+            let active = makeTab(profile: profile), idle = makeTab(profile: profile)
+            let draft = makeTab(profile: profile), pinned = makeTab(profile: profile)
+            let pip = makeTab(profile: profile)
+            try await load(active, "\(base)/a", title: "Fixture A")
+            try await load(idle, "\(base)/b", title: "Fixture B")
+            try await load(draft, "\(base)/form", title: "Fixture Form")
+            try await load(pinned, "\(base)/a", title: "Fixture A")
+            try await load(pip, "\(base)/a", title: "Fixture A")
+            _ = try await js(draft, "document.getElementById('query').value = 'keep my draft'")
+            pinned.kind = .pinned
+            pip.pictureInPicture = true
+            store.tabs = [active, idle, draft, pinned, pip]
+            store.current = active.id
+            store.tabs.forEach { $0.lastActive = .now.addingTimeInterval(-360) }
+            Suspension.sweep()
+            try require(!idle.suspended, "Off leaves a six-minute idle page on the normal clock")
+
+            Previews.shared.request(URL(string: "\(base)/b?preview=before-saving")!, from: active)
+            try require(Previews.shared.current != nil, "hover previews work before saving")
+            saver.setMode(.alwaysOn)
+            try require(saver.isActive && Previews.shared.current == nil && Motion.reduced,
+                        "Always On immediately cancels previews and reduces sidebar motion")
+            try await wait("battery saving releases an eligible idle WebKit page") { idle.suspended }
+            let input = try await js(draft, "document.getElementById('query').value")
+            try require(!active.suspended && !pinned.suspended && !pip.suspended,
+                        "battery saving preserves the active, pinned and Picture in Picture pages")
+            try require(!draft.suspended && input as? String == "keep my draft",
+                        "battery saving preserves a real unfinished form")
+            Previews.shared.request(URL(string: "\(base)/a?preview=during-saving")!, from: active)
+            try require(Previews.shared.current == nil, "saving refuses new speculative previews")
+            store.current = idle.id
+            try await loaded(idle, path: "/b", title: "Fixture B")
+            try require(!idle.suspended, "selecting a sleeping page restores it")
+            saver.setMode(.off)
+            Previews.shared.request(URL(string: "\(base)/a?preview=after-saving")!, from: idle)
+            try require(!saver.isActive && Previews.shared.current != nil,
+                        "turning saving Off immediately restores hover previews")
+            pip.pictureInPicture = false
         }
 
         private func swipeRenderCheck() throws {

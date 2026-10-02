@@ -159,7 +159,7 @@ import WebKit
     /// Start (or instantly re-show) a preview of `url`. Safe to call on every hover event —
     /// the same link twice in a row costs nothing.
     func request(_ url: URL, from tab: Tab) {
-        guard Previews.enabled else { return }
+        guard Previews.enabled, !BatterySaver.shared.isActive else { return }
         guard Previews.eligible(url, onPage: tab.currentURL) else { cancel(); return }
         let key = Previews.key(for: url)
         if showing == key { return }

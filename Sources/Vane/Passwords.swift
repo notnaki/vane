@@ -994,6 +994,7 @@ final class WeakHandler: NSObject, WKScriptMessageHandler {
                                ("find in page", Find.check),
                                ("clear browsing data", BrowsingData.check),
                                ("tab suspension", Suspension.check),
+                               ("battery saver", BatterySaver.check),
                                ("keybindings", Keybindings.check),
                                ("standard mac shortcuts", Standard.check),
                                ("shortcuts pane", ShortcutsPane.check),

@@ -609,7 +609,7 @@ private struct SpaceSwipe: ViewModifier {
         // parked would leave it holding an offset nobody is looking at. The ghost has already
         // drawn where the strip lands. See `Windows.hop`.
         guard target.profileID == store.profileID,
-              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+              !Motion.reduced else {
             store.spaceDrag = 0
             store.spaceSwiping = false          // a cut, not a slide: `SpaceSlide` will not animate
             store.switchTo(space: target)
@@ -652,7 +652,7 @@ private struct SpaceSwipe: ViewModifier {
     private func settle(_ store: TabStore) {
         withAnimation(Look.spaceSpring) { store.spacePull = 0 }
         guard store.spaceDrag != 0 else { store.spaceSwiping = false; return }
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+        guard !Motion.reduced else {
             store.spaceDrag = 0
             store.spaceSwiping = false
             return
