@@ -26,7 +26,8 @@ import SwiftUI
         w.minSize = NSSize(width: 520, height: 360)
         w.isReleasedWhenClosed = false        // closing must not free the instance we keep
         window = w
-        w.contentView = NSHostingView(rootView: HistoryView())
+        w.contentView = NSHostingView(rootView: HistoryView()
+            .font(Look.text))
         // Position first, autosave second: setFrameUsingName reports whether there was one.
         if !w.setFrameUsingName("VaneHistory") { w.center() }
         w.setFrameAutosaveName("VaneHistory")

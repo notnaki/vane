@@ -53,7 +53,7 @@ struct SpaceName: View {
         if let space, renaming {
             TextField("Space name", text: $draft)
                 .textFieldStyle(.plain)
-                .font(Look.text)
+                .font(Look.spaceTitle)
                 .focused($focused)
                 .onSubmit { commit(space) }
                 // Escape reverts. `onExitCommand` and not a key handler: the field is first
@@ -65,7 +65,7 @@ struct SpaceName: View {
                 .onChange(of: focused) { _, now in if !now { commit(space) } }
                 .accessibilityLabel("Space name")
         } else {
-            Text(space?.name ?? fallback).font(Look.text)
+            Text(space?.name ?? fallback).font(Look.spaceTitle)
         }
     }
 
@@ -356,7 +356,7 @@ private struct SpacePreviewList: View {
             // heading and any difference in size or ink reads as the row jumping on landing.
             HStack(spacing: Look.rowSpacing) {
                 Image(systemName: space.icon ?? "cloud").font(Look.spaceIcon).frame(width: Look.tileIcon)
-                Text(space.name).font(Look.text)
+                Text(space.name).font(Look.spaceTitle)
                 Spacer(minLength: 0)
             }
             .foregroundStyle(Look.inkTertiary)
@@ -441,7 +441,7 @@ private struct SpacePreviewList: View {
                             .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
                     }
                 }
-                Text(f.name).font(Look.rowTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
+                Text(f.name).font(Look.folderTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
             case .site(let url):
                 SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
                 Text(TidyTitles.previewName(for: url, in: space.profileID,
@@ -768,7 +768,7 @@ struct CreateSpaceForm: View {
                 .font(.system(size: 40, weight: .regular))
                 .foregroundStyle(Look.inkSecondary)
                 .padding(.bottom, Look.inset)
-            Text("Create a Space").font(.system(size: 20, weight: .semibold))
+            Text("Create a Space").font(Look.dialogTitle)
                 .foregroundStyle(Look.inkPrimary)
             Text("Separate your tabs for life, work, projects, and more.")
                 .font(Look.text).foregroundStyle(Look.inkSecondary)

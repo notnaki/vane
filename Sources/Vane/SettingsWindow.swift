@@ -126,6 +126,7 @@ enum LinkTarget {
         // otherwise, which would leave a test instance's Settings toggles in the user's own
         // preferences. `UserDefaults.vane` *is* `.standard` in normal use; see Store.swift.
         w.contentView = NSHostingView(rootView: SettingsView(selection: selection)
+            .font(Look.text)
             .defaultAppStorage(.vane))
         // Position first, autosave second: setFrameUsingName reports whether there was one.
         if !w.setFrameUsingName("VaneSettings") { w.center() }
@@ -1142,10 +1143,10 @@ private struct IconPane: View {
                     .frame(width: 52, height: 52)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.system(size: 14, weight: .semibold))
+                    Text(title).font(Look.Typography.sidebarHeading.font)
                         .foregroundStyle(Look.inkPrimary)
                     if selected {
-                        Text("CURRENT ICON").font(.system(size: 10, weight: .semibold))
+                        Text("CURRENT ICON").font(Look.Typography.compactCaption.font)
                             .foregroundStyle(Color.accentColor)
                     }
                 }

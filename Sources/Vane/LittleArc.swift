@@ -119,6 +119,7 @@ import SwiftUI
         window.isOpaque = false
         window.backgroundColor = NSColor.black.withAlphaComponent(0.001)
         window.contentView = NSHostingView(rootView: LittleArcView()
+            .font(Look.text)
             .environmentObject(store)
             .environmentObject(ProfileManager.shared))
         // Centred, and cascading from there once there is more than one — deliberately no

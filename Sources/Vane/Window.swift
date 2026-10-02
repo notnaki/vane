@@ -534,7 +534,8 @@ extension VaneWindow {
         window.delegate = delegate
         // `BrowserWindowHost`, not `BrowserWindow` directly: a window hops profiles in place,
         // so which store it is showing is a thing that changes. The host is what watches it.
-        window.contentView = NSHostingView(rootView: BrowserWindowHost(shown: delegate.shown))
+        window.contentView = NSHostingView(rootView: BrowserWindowHost(shown: delegate.shown)
+            .font(Look.text))
         // Position first, autosave second, as SettingsWindow does: `setFrameUsingName`
         // says whether there was a saved frame, and centring after it would throw the
         // saved position away and keep only the size — which is what every launch did.
