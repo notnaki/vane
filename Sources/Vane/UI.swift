@@ -833,16 +833,21 @@ private struct Sidebar: View {
 /// lights are drawn, so the row is laid out around them.
 private struct TopRow: View {
     @EnvironmentObject var store: TabStore
+    @ObservedObject private var sidebar = SidebarWidth.shared
+    private var compact: Bool { sidebar.width < 220 }
 
     var body: some View {
-        HStack(spacing: 12) {
+        // At 164pt: 16pt outer padding + 62pt lights + 22pt toggle +
+        // three 20pt navigation targets + two 2pt gaps = 164pt.
+        HStack(spacing: compact ? 0 : 12) {
             Spacer().frame(width: Look.trafficLights)   // traffic lights
             Button { store.sidebarShown.toggle() } label: { Image(systemName: "sidebar.left") }
+                .frame(width: compact ? 22 : nil)
                 .help("Toggle Sidebar (\(Keybindings.binding(for: .toggleSidebar).display))")
                 .accessibilityLabel("Toggle Sidebar")
                 .accessibilityValue(store.sidebarShown ? "Shown" : "Hidden")
             Spacer(minLength: 0)
-            NavButtons(tab: store.active)
+            NavButtons(tab: store.active, compact: compact)
         }
         .buttonStyle(TactileButtonStyle())
         .font(Look.icon)
@@ -856,12 +861,13 @@ private struct TopRow: View {
 /// that as the window emptying out rather than as one tab going away.
 struct NavButtons: View {
     let tab: Tab?
+    var compact = false
 
     var body: some View {
         if let tab {
-            LiveNavButtons(tab: tab)
+            LiveNavButtons(tab: tab, compact: compact)
         } else {
-            NavGlyphs(tab: nil, back: false, forward: false, loading: false)
+            NavGlyphs(tab: nil, back: false, forward: false, loading: false, compact: compact)
         }
     }
 }
@@ -870,8 +876,10 @@ struct NavButtons: View {
 /// optional, and the disabled state above has no tab to observe.
 private struct LiveNavButtons: View {
     @ObservedObject var tab: Tab
+    var compact = false
     var body: some View {
-        NavGlyphs(tab: tab, back: tab.canGoBack, forward: tab.canGoForward, loading: tab.loading)
+        NavGlyphs(tab: tab, back: tab.canGoBack, forward: tab.canGoForward,
+                  loading: tab.loading, compact: compact)
     }
 }
 
@@ -880,6 +888,7 @@ private struct NavGlyphs: View {
     let back: Bool
     let forward: Bool
     let loading: Bool
+    var compact = false
     /// One per glyph, and kept across redraws: the AppKit view the menu hangs off is
     /// reached through it, and a new holder every frame would lose that view.
     @StateObject private var backMenu = HoldMenu()
@@ -891,8 +900,10 @@ private struct NavGlyphs: View {
     var body: some View {
         // Icon-only, so each one carries its own label and tooltip — without them
         // VoiceOver announces three identical "button"s.
-        HStack(spacing: 16) {
-            Button { tab?.back() } label: { Image(systemName: "arrow.left") }
+        HStack(spacing: compact ? 2 : 16) {
+            Button { tab?.back() } label: {
+                Image(systemName: "arrow.left").frame(width: compact ? 20 : nil)
+            }
                 .disabled(!back)
                 .help("Back (⌘[)")
                 .accessibilityLabel("Back")
@@ -900,7 +911,9 @@ private struct NavGlyphs: View {
                 .holdMenu(backMenu, enabled: back, named: "Show History") {
                     tab.flatMap { NavHistory.menu(for: $0, back: true) }
                 }
-            Button { tab?.forward() } label: { Image(systemName: "arrow.right") }
+            Button { tab?.forward() } label: {
+                Image(systemName: "arrow.right").frame(width: compact ? 20 : nil)
+            }
                 .disabled(!forward)
                 .help("Forward (⌘])")
                 .accessibilityLabel("Forward")
@@ -912,6 +925,7 @@ private struct NavGlyphs: View {
                 else { reloadSpinning = true; reloadTurn += 1; tab?.reload() }
             } label: {
                 Image(systemName: loading && !reloadSpinning ? "xmark" : "arrow.clockwise")
+                    .frame(width: compact ? 20 : nil)
                     .rotationEffect(.degrees(reduceMotion ? 0 : Double(reloadTurn) * 360))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: reloadTurn)
                     .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
@@ -973,6 +987,7 @@ private struct LiveAddressPill: View {
 
 private struct PillBody: View {
     @EnvironmentObject var store: TabStore
+    @ObservedObject private var sidebar = SidebarWidth.shared
     let tab: Tab?
     let host: String
     let address: String
@@ -982,6 +997,7 @@ private struct PillBody: View {
     var zoom: String?
     @State private var hovering = false
     @State private var showingSiteControls = false
+    @StateObject private var overflowAnchor = ActionAnchor()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -1022,7 +1038,51 @@ private struct PillBody: View {
         .accessibilityAction(named: "Actual Size") { if let tab, zoom != nil { Zoom.reset(tab) } }
     }
 
-    private var content: some View {
+    @ViewBuilder private var content: some View {
+        if sidebar.width < 220 {
+            HStack(spacing: Look.pillGlyphGap) {
+                if address.isEmpty {
+                    Image(systemName: "magnifyingglass").accessibilityHidden(true)
+                    Text("Search or Enter URL…").font(Look.heading).lineLimit(1)
+                } else {
+                    Text(host).font(Look.text).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                overflowMenu
+            }
+        } else {
+            fullContent
+        }
+    }
+
+    private var overflowMenu: some View {
+        Menu {
+            Button("Copy Link", action: copyLink).disabled(tab == nil)
+            Button("Browser Settings") { SettingsWindow.show() }
+            if let tab, !address.isEmpty {
+                Button("Site Controls") { showingSiteControls = true }
+                if tab.readerAvailable || Reader.isOn(tab) {
+                    Button(Reader.isOn(tab) ? "Exit Reader" : "Enter Reader") { Reader.toggle(tab) }
+                }
+            }
+            if let zoom, let tab {
+                Button("Actual Size (\(zoom))") { Zoom.reset(tab) }
+            }
+            PinnedExtensionMenu(store: store, tab: tab, anchor: overflowAnchor)
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .actionAnchor(overflowAnchor)
+        .help("Page Actions")
+        .accessibilityLabel("Page Actions")
+        .popover(isPresented: $showingSiteControls, arrowEdge: .bottom) {
+            if let tab { SiteControlPopover(tab: tab) }
+        }
+    }
+
+    private var fullContent: some View {
         HStack(spacing: Look.pillGlyphGap) {
             if address.isEmpty {
                 Image(systemName: "magnifyingglass")
@@ -1139,6 +1199,28 @@ private struct PinnedExtensions: View {
         let host = ExtensionHost.host(for: store.profileID)
         ForEach(host.pinned(private: store.isPrivate), id: \.uniqueIdentifier) { context in
             ExtensionGlyph(host: host, tab: tab, context: context)
+        }
+    }
+}
+
+/// Narrow address pills keep extension actions in a menu anchored to the pill.
+private struct PinnedExtensionMenu: View {
+    let store: TabStore
+    let tab: Tab?
+    let anchor: ActionAnchor
+    @ObservedObject private var changes = SiteChanges.shared
+
+    var body: some View {
+        let host = ExtensionHost.host(for: store.profileID)
+        let pinned = host.pinned(private: store.isPrivate)
+        if !pinned.isEmpty {
+            Divider()
+            ForEach(pinned, id: \.uniqueIdentifier) { context in
+                Button(context.webExtension.displayName ?? "Extension") {
+                    if let tab { host.run(context, for: tab, from: anchor.view) }
+                }
+                .disabled(tab == nil || host.action(context, for: tab)?.isEnabled == false)
+            }
         }
     }
 }
@@ -2505,7 +2587,7 @@ private struct SpaceDots: View {
         let list = store.swipeStrip
         let lit = weights(list)
         HStack(spacing: 8) {
-            ForEach(list) { dot($0, lit: lit[$0.id] ?? 0) }
+            ForEach(list) { dot($0, lit: lit[$0.id] ?? 0).id($0.id) }
             // The Space a pull is making gets a dot of its own before it exists: it fills
             // with the pull, and on the form it is simply the one you are on.
             if store.creatingSpace || gesture.pull > 0 {
@@ -4223,8 +4305,16 @@ private struct BottomRow: View {
             // is nothing to draw dots for and nothing a `+` could make. The row keeps its
             // height regardless: nothing in the sidebar's chrome may come and go.
             if !store.isPrivate {
-                SpaceDots()
-                Spacer(minLength: 0)
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal) {
+                        SpaceDots()
+                    }
+                    .scrollIndicators(.never)
+                    .defaultScrollAnchor(.center)
+                    .onChange(of: store.currentSpaceID, initial: true) {
+                        proxy.scrollTo(store.currentSpaceID, anchor: .center)
+                    }
+                }
                 NewSpaceButton()
             }
         }

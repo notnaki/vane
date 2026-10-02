@@ -154,6 +154,7 @@ import SwiftUI
 struct ToastHost: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var toasts = Toasts.shared
+    @ObservedObject private var sidebar = SidebarWidth.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -174,16 +175,24 @@ struct ToastHost: View {
         // top and bottom flush with the pill, leaving a hard rectangular edge.
     }
 
-    /// One row, always: the sentence on the left, its verb and its × on the right, centred
-    /// on it. "Copied URL" hugs its words the way Arc's little pill does; "Archived <a very
-    /// long page title>" wraps to a second line and the pill grows taller — it never becomes
-    /// a paragraph with a button parked underneath it. The text takes whatever width the
-    /// controls leave and gets two lines of it, so nothing is squeezed mid-word to make room
-    /// for a button either.
+    /// Narrow sidebars put the action below the message, leaving the text enough
+    /// room to wrap and keeping the action and dismiss targets fully visible.
     private func pill(_ toast: Toasts.Toast) -> some View {
-        HStack(spacing: Look.inset) {
-            text(toast)
-            controls(toast)
+        Group {
+            if sidebar.width < 250, toast.action != nil {
+                VStack(alignment: .leading, spacing: Look.inset / 2) {
+                    text(toast)
+                    HStack(spacing: Look.inset) {
+                        Spacer(minLength: 0)
+                        controls(toast)
+                    }
+                }
+            } else {
+                HStack(spacing: Look.inset) {
+                    text(toast)
+                    controls(toast)
+                }
+            }
         }
         .padding(.leading, Look.pillInset)
         // Every toast ends in an ×, and an × is a `rowTarget` square with its glyph small in
@@ -228,10 +237,11 @@ struct ToastHost: View {
             Button(action.title) { toasts.act(toast) }
                 .buttonStyle(.plain)
                 .font(Look.rowText)
-                .fixedSize()            // a verb is a word; it never truncates
+                .lineLimit(2)
+                .fixedSize(horizontal: sidebar.width >= 250, vertical: true)
                 .foregroundStyle(Look.barText)
                 .padding(.horizontal, Look.inset)
-                .frame(height: Look.control)
+                .frame(minHeight: Look.control)
                 .background(Look.barSelected, in: .capsule)
         }
         // Every toast, not only the sticky one: the pointer resting on a pill already stops
