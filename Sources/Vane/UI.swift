@@ -936,9 +936,10 @@ private struct NavGlyphs: View {
     var body: some View {
         // Icon-only, so each one carries its own label and tooltip — without them
         // VoiceOver announces three identical "button"s.
-        HStack(spacing: compact ? 2 : 16) {
+        HStack(spacing: compact ? 2 : 6) {
             Button { tab?.back() } label: {
-                Image(systemName: "arrow.left").frame(width: compact ? 20 : nil)
+                Image(systemName: "arrow.left")
+                    .modifier(NavigationTarget(compact: compact))
             }
                 .disabled(!back)
                 .help("Back (⌘[)")
@@ -948,7 +949,8 @@ private struct NavGlyphs: View {
                     tab.flatMap { NavHistory.menu(for: $0, back: true) }
                 }
             Button { tab?.forward() } label: {
-                Image(systemName: "arrow.right").frame(width: compact ? 20 : nil)
+                Image(systemName: "arrow.right")
+                    .modifier(NavigationTarget(compact: compact))
             }
                 .disabled(!forward)
                 .help("Forward (⌘])")
@@ -961,10 +963,10 @@ private struct NavGlyphs: View {
                 else { reloadSpinning = true; reloadTurn += 1; tab?.reload() }
             } label: {
                 Image(systemName: loading && !reloadSpinning ? "xmark" : "arrow.clockwise")
-                    .frame(width: compact ? 20 : nil)
                     .rotationEffect(.degrees(reduceMotion ? 0 : Double(reloadTurn) * 360))
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: reloadTurn)
                     .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                    .modifier(NavigationTarget(compact: compact))
             }
             .disabled(tab == nil)
             .help(loading ? "Stop Loading" : "Reload Page (⌘R)")
@@ -976,6 +978,25 @@ private struct NavGlyphs: View {
             do { try await Task.sleep(for: .seconds(0.26)) } catch { return }
             reloadSpinning = false
         }
+    }
+}
+
+/// The target participates in layout, so Reload's hover edge ends on the address
+/// pill's trailing edge. Equal slots also keep Stop from moving its neighbours.
+private struct NavigationTarget: ViewModifier {
+    var compact: Bool
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: compact ? 20 : Look.control, height: Look.control)
+            .background(enabled && hovering ? Look.hovered : .clear,
+                        in: .rect(cornerRadius: Look.cardRadius))
+            .contentShape(.rect)
+            .onHover { hovering = $0 }
+            .animation(reduceMotion ? nil : Look.quick, value: enabled && hovering)
     }
 }
 
