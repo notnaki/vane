@@ -13,6 +13,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 passwords = (ROOT / "Sources/Vane/Passwords.swift").read_text()
 store = (ROOT / "Sources/Vane/Store.swift").read_text()
+credential = (ROOT / "Sources/Vane/GitHubCredential.swift").read_text()
 
 
 def declaration(source, marker):
@@ -46,6 +47,7 @@ extension UserDefaults {
 ''' + declaration(store, "nonisolated static func suiteName(") + '''
     static var vane: UserDefaults { UserDefaults(suiteName: suiteName(forDataDir: Store.overrideDirectory!))! }
 }
+''' + declaration(credential, "struct GitHubCredential") + '''
 enum Passwords {
     private static let creator: NSNumber = 0x5661_6E65
     private static func invalidate() {}
@@ -72,6 +74,20 @@ case "read":
     case .missing: print("FAIL persisted credential missing"); exit(3)
     case let .unavailable(status): print("FAIL Keychain read unavailable, status \\(status)"); exit(4)
     }
+case "write-oauth":
+    let grant = GitHubCredential(accessToken: fixture, refreshToken: "nonsecret-refresh-fixture",
+                                 expiresAt: Date(timeIntervalSince1970: 1000000),
+                                 refreshExpiresAt: Date(timeIntervalSince1970: 2000000))
+    guard Passwords.savePreferredCredential(host: host, account: account, password: grant.stored,
+                                            profileID: profile) else { exit(10) }
+    print("PASS complete dummy OAuth pair persisted")
+case "read-oauth":
+    guard case let .found(name, value) = Passwords.readCredential(host: host, profileID: profile),
+          name == account, let grant = GitHubCredential.restore(value),
+          grant.accessToken == fixture, grant.refreshToken == "nonsecret-refresh-fixture",
+          grant.expiresAt == Date(timeIntervalSince1970: 1000000),
+          grant.refreshExpiresAt == Date(timeIntervalSince1970: 2000000) else { exit(11) }
+    print("PASS fresh process recovered complete OAuth pair and expiry")
 case "expect-missing":
     guard case .missing = Passwords.readCredential(host: host, profileID: profile) else { exit(7) }
     print("PASS credential namespace stayed isolated")
@@ -110,6 +126,10 @@ with tempfile.TemporaryDirectory(prefix="vane-credential-persistence-") as direc
                        env=env_a, check=True, timeout=20)
         subprocess.run([str(binary), "expect-missing", default_profile],
                        env=env_b, check=True, timeout=20)
+        subprocess.run([str(binary), "write-oauth", default_profile, new_account, new_token],
+                       env=env_a, check=True, timeout=20)
+        subprocess.run([str(binary), "read-oauth", default_profile, new_account, new_token],
+                       env=env_a, check=True, timeout=20)
         subprocess.run([str(binary), "cleanup-others", default_profile, new_account],
                        env=env_a, check=True, timeout=20)
         subprocess.run([str(binary), "expect-account-missing", default_profile, old_account],
