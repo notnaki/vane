@@ -115,6 +115,8 @@ struct NewSpaceButton: View {
                     store.newSpace()
                 },
                 ChromeMenuItem(title: "New Folder", symbol: "folder") { store.newFolder() },
+                ChromeMenuItem(title: "New Easel", symbol: "paintpalette",
+                               shortcut: Keybindings.binding(for: .newEasel).display) { store.openEasel(create: true) },
                 ChromeMenuItem(title: "New Tab", symbol: "plus.square",
                                shortcut: shortcut == .unassigned ? "" : shortcut.display,
                                startsGroup: true) { store.newTab(nil) },
@@ -126,8 +128,8 @@ struct NewSpaceButton: View {
             .buttonStyle(.plain)
             .background(ChromeMenuAnchorView(anchor: menuAnchor))
             .foregroundStyle(Look.inkSecondary)
-            .help("New Space, Folder, or Tab")
-            .accessibilityLabel("New Space, Folder, or Tab")
+            .help("New Space, Folder, Easel, or Tab")
+            .accessibilityLabel("New Space, Folder, Easel, or Tab")
             .popover(isPresented: Binding(get: { store.editingSpace != nil },
                                           set: { if !$0 { store.editingSpace = nil } }),
                      arrowEdge: .top) {
@@ -227,7 +229,7 @@ struct MoveToSpaceMenu: View {
                     }
                 }
             }
-            .disabled(tab.currentURL?.scheme?.hasPrefix("http") != true)
+            .disabled(!TabAddress.restorable(tab.currentURL))
         }
     }
 }

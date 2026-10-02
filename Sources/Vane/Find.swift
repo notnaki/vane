@@ -405,6 +405,7 @@ extension TabStore {
             Library.focusSearch()
             return
         }
+        guard active?.easelID == nil else { return }
         findOpen = true
     }
 
@@ -412,7 +413,7 @@ extension TabStore {
     /// AppKit rather than tracked, because every field in the window can take the keyboard
     /// and only one of them is the page.
     var keyboardOnPage: Bool {
-        guard let web = active?.web, let responder = window?.firstResponder as? NSView
+        guard let web = active?.existingWeb, let responder = window?.firstResponder as? NSView
         else { return false }
         return responder === web || responder.isDescendant(of: web)
     }

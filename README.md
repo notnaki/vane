@@ -75,7 +75,9 @@ Capture part of a page with **⌘⇧2**, **File → Capture a Portion of This Pa
 the camera row in Site Controls, or by searching for **Capture** in the command
 palette. Click a highlighted element or drag a rectangle over the visible page;
 **Escape** cancels. **Return** captures the highlighted region or the visible page.
-The preview offers **Copy**, **Save PNG**, and **Share**. Captures use WebKit's page
+The preview offers **Copy**, **Save PNG**, **Share**, and **Add to Easel**. In an ordinary
+browser window, **Add to Easel** saves the region with its source link to a new or existing
+board and opens that board's tab. Captures use WebKit's page
 pixels at the display's resolution and need no screen-recording permission. An
 embedded frame is selected as a whole; custom drags can crop inside it. Captures
 are saved only when you choose an output action, including in private windows.
@@ -99,11 +101,17 @@ executable has no bundled icon catalogue; build `Vane.app` to use these finishes
 
 ### Easels
 
-Open **Library → Easels** or **Window → Show Easels**. **File → New Easel**
-(`⌥⌘E`) creates a board; **File → Capture Page to Easel** (`⇧⌘E`) collects the
-visible page into the selected board with its source link. Boards belong to the
-browser window's profile and save locally after each edit. Private windows cannot
-create boards or save captures.
+Easels open as native tabs inside the browser. Choose **New Easel** from the sidebar's
+**+** menu, type **New Easel** in the command palette (`⌘T`), or use **File → New Easel**
+(`⌥⌘E`). New boards are pinned in the current Space and return after relaunch. Find
+all saved boards under **Library → Easels** or **Window → Show Easels**; opening a board
+already in this Space focuses its existing tab. Closing or unpinning a tab keeps its
+board in Library. **File → Capture Page to Easel** (`⇧⌘E`) collects the visible webpage
+into the most recently used Easel in this Space, or the latest saved board, with its
+source link. Boards belong to the browser window's profile and save locally after
+each edit. Private windows cannot create boards or save captures.
+To move a Space to another profile, remove its Easel tabs first; their boards stay
+in the original profile's Library. Export/import a board to copy it to another profile.
 
 Add notes, links, images, or paste from the clipboard. Drag items to arrange them,
 use the selected item's corner to resize, and double-click to edit or crop an image.
@@ -114,11 +122,11 @@ Standard Undo/Redo work on the board and inside its text editors.
 A web capture's play button opens its source page as an interactive live view using
 that profile's cookies and content blocker. Pause returns to the saved image. Live
 views are temporary, limited to four at once, and stop when switching boards or
-closing the window. They show the source page rather than a live cropped region;
+leaving the Easel tab or closing the window. They show the source page rather than a live cropped region;
 permission prompts, popups, password autofill, and downloads belong in browser tabs.
 
 The `…` menu duplicates or deletes a board, exports a PNG, or exports an editable
-JSON document with embedded images. Import the JSON from the Easels sidebar. The
+JSON document with embedded images. Import the JSON from **Library → Easels**. The
 canvas is 6,000 × 4,000 points; a board holds up to 256 items, and PNG export scales
 the entire occupied canvas to at most 4,096 pixels. Easels do not include cloud
 sharing or collaboration.

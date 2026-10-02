@@ -10,7 +10,7 @@ import WebKit
     private static var session: CaptureSession?
 
     static func available(_ tab: Tab?) -> Bool {
-        guard let tab else { return false }
+        guard let tab, tab.easelID == nil else { return false }
         return tab.web.window != nil && !tab.web.isHiddenOrHasHiddenAncestor
             && !tab.web.isLoading && tab.web.url != nil && !tab.web.bounds.isEmpty
     }
@@ -176,11 +176,21 @@ import WebKit
             }
             self.overlay.removeFromSuperview()
             do {
+                let source = self.tab.currentURL
+                let title = self.tab.title
                 let image = try await PageCapture.snapshot(chosen, in: self.tab.web)
                 guard self.live, !Task.isCancelled, let window = self.window else { return }
                 guard let png = PageCapture.png(image) else { throw CaptureError.encoding }
                 self.cancel()
-                CapturePreviewController.present(image: image, png: png, in: window)
+                let store = TabStore.all.first { $0.window === window && $0.profileID == self.tab.profileID }
+                let canSave = store.map { !$0.isPrivate && !$0.isLittle } == true
+                    && source.flatMap { EaselItem.webURL($0.absoluteString) } != nil
+                let boards = canSave ? EaselStore.shared(profileID: self.tab.profileID, directory: Store.directory).boards : []
+                let add: ((UUID?) -> Bool)? = canSave ? { [weak store] id in
+                    guard let store, let source else { return false }
+                    return EaselWindow.addCapture(image, title: title, source: source.absoluteString, to: id, in: store)
+                } : nil
+                CapturePreviewController.present(image: image, png: png, in: window, boards: boards, addToEasel: add)
             } catch {
                 guard self.live, !Task.isCancelled else { return }
                 let window = self.window
@@ -302,12 +312,13 @@ import WebKit
     private let png: Data
     private var picker: NSSharingServicePicker?
 
-    static func present(image: NSImage, png: Data, in window: NSWindow) {
-        let controller = CapturePreviewController(image: image, png: png)
+    static func present(image: NSImage, png: Data, in window: NSWindow,
+                        boards: [EaselBoard] = [], addToEasel: ((UUID?) -> Bool)? = nil) {
+        let controller = CapturePreviewController(image: image, png: png, boards: boards, addToEasel: addToEasel)
         window.beginSheet(controller.panel) { _ in _ = controller }
     }
 
-    init(image: NSImage, png: Data) {
+    init(image: NSImage, png: Data, boards: [EaselBoard], addToEasel: ((UUID?) -> Bool)?) {
         self.image = image
         self.png = png
         panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 640, height: 480),
@@ -315,7 +326,10 @@ import WebKit
         panel.title = "Page Capture"
         panel.contentView = NSHostingView(rootView: CapturePreview(image: image,
             copy: { [weak self] in self?.copy() }, save: { [weak self] in self?.save() },
-            share: { [weak self] in self?.share() }, close: { [weak self] in self?.close() }))
+            share: { [weak self] in self?.share() }, close: { [weak self] in self?.close() },
+            boards: boards, addToEasel: addToEasel.map { add in { [weak self] id in
+                if add(id) { self?.close() }
+            } }))
     }
 
     private func copy() {
@@ -355,6 +369,8 @@ private struct CapturePreview: View {
     let save: () -> Void
     let share: () -> Void
     let close: () -> Void
+    var boards: [EaselBoard] = []
+    var addToEasel: ((UUID?) -> Void)?
     var body: some View {
         VStack(spacing: 20) {
             Image(nsImage: image).resizable().scaledToFit()
@@ -363,6 +379,15 @@ private struct CapturePreview: View {
             HStack {
                 Button("Close", action: close).keyboardShortcut(.cancelAction)
                 Spacer()
+                if let addToEasel {
+                    Menu("Add to Easel") {
+                        Button("New Easel") { addToEasel(nil) }
+                        if !boards.isEmpty { Divider() }
+                        ForEach(boards) { board in
+                            Button(board.title.isEmpty ? "Untitled Easel" : board.title) { addToEasel(board.id) }
+                        }
+                    }.fixedSize()
+                }
                 Button("Share…", action: share)
                 Button("Save PNG…", action: save)
                 Button("Copy", action: copy).keyboardShortcut(.defaultAction)

@@ -145,7 +145,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// not there any more.
     static func close(_ store: TabStore) {
         store.libraryOpen = false
-        if let web = store.active?.web { store.window?.makeFirstResponder(web) }
+        store.focusPage()
     }
 }
 

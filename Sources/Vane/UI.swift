@@ -264,12 +264,16 @@ struct TabPage: View {
 
     var body: some View {
         if store.ownsPage(tab) {
-            DeveloperFrame(tab: tab) {
-                WebView(web: tab.web,
+            if let session = tab.easelSession {
+                EaselTabPage(session: session, store: store).id(tab.id)
+            } else {
+                DeveloperFrame(tab: tab) {
+                    WebView(web: tab.web,
                         live: keepPages ? store.everyTab.filter { store.ownsPage($0) }.compactMap(\.existingWeb) : [],
                         offscreen: offscreen, tab: tab, store: store)
-            }
+                }
                 .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
+            }
         } else if !offscreen {
             GeometryReader { geometry in
                 ZStack {
@@ -1012,6 +1016,7 @@ private struct LiveAddressPill: View {
     /// The host alone, the way Arc shows it — or a local file's own name. See
     /// `Files.pillLabel`, which is where both are decided.
     private var host: String {
+        if tab.easelID != nil { return "Local Easel" }
         if let label = Files.pillLabel(tab.currentURL) { return label }
         return tab.address.isEmpty ? "Search or Enter URL" : tab.address
     }
@@ -1063,7 +1068,7 @@ private struct PillBody: View {
         // on the pill itself — a pointer gesture is not a route VoiceOver has.
         .accessibilityAction(named: "Copy Link") { copyLink() }
         .accessibilityAction(named: "Site Controls") {
-            if tab != nil, !address.isEmpty { showingSiteControls = true }
+            if tab != nil, tab?.easelID == nil, !address.isEmpty { showingSiteControls = true }
         }
         .onChange(of: tab?.id) { showingSiteControls = false }
         .onChange(of: address) { showingSiteControls = false }
@@ -1091,7 +1096,7 @@ private struct PillBody: View {
         Menu {
             Button("Copy Link", action: copyLink).disabled(tab == nil)
             Button("Browser Settings") { SettingsWindow.show() }
-            if let tab, !address.isEmpty {
+            if let tab, tab.easelID == nil, !address.isEmpty {
                 Button("Site Controls") { showingSiteControls = true }
                 if tab.readerAvailable || Reader.isOn(tab) {
                     Button(Reader.isOn(tab) ? "Exit Reader" : "Enter Reader") { Reader.toggle(tab) }
@@ -1129,7 +1134,7 @@ private struct PillBody: View {
             // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
             // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
             // They sit past a Spacer, so arriving and leaving never moves the host.
-            if !address.isEmpty, let tab, hovering || showingSiteControls {
+            if !address.isEmpty, let tab, tab.easelID == nil, hovering || showingSiteControls {
                 PillHoverGlyphs(tab: tab, site: site, showingSiteControls: $showingSiteControls,
                                 feedback: store.feedback, address: address, copyLink: copyLink)
             }
@@ -2556,6 +2561,11 @@ private struct SpaceMenu: View {
             Toasts.show("Could not save Space", in: store)
             return
         }
+    }
+    if let saved = ProfileManager.shared.spaces(for: space.profileID).first(where: { $0.id == space.id }),
+       ProfileManager.shared.spaceContainsEasels(saved) {
+        Toasts.show("Remove this Space’s Easel tabs before moving it to another profile. Its boards stay in Library.", in: store)
+        return
     }
     // Prune a prior crash snapshot before the source Space disappears. This also handles a
     // profile with no open store, which Session.save() below deliberately does not rewrite.
@@ -4407,6 +4417,8 @@ private struct TabIcon: View {
                 // folder would otherwise be full of. The mark is what Arc draws there, and
                 // here it is only ever drawn on a row a GitHub folder owns.
                 GitHubMark().fill(Look.inkPrimary)
+            } else if tab.easelID != nil {
+                Image(systemName: "paintpalette").foregroundStyle(Look.inkPrimary)
             } else if let icon = tab.favicon {
                 Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
             } else {

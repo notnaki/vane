@@ -429,7 +429,7 @@ private struct MoveSelectionToSpaceMenu: View {
                 }
             }
             .disabled(!store.selectedTabs.contains {
-                $0.currentURL?.scheme?.hasPrefix("http") == true
+                TabAddress.restorable($0.currentURL)
             })
         }
     }

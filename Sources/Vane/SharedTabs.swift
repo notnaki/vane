@@ -228,6 +228,15 @@ import WebKit
         tab.presentationGeneration += 1
         let generation = tab.presentationGeneration
         guard tab.presentationOwner != store.windowID else { return }
+        if let session = tab.easelSession,
+           let previous = TabStore.all.first(where: { $0.windowID == tab.presentationOwner }),
+           let host = EaselHostingView.find(session, in: previous.window?.contentView),
+           let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            let image = NSImage(size: host.bounds.size)
+            image.addRepresentation(bitmap)
+            tab.windowSnapshot = image
+        }
         if tab.presentationOwner != nil, let web = tab.existingWeb, web.window != nil, !tab.suspended {
             web.takeSnapshot(with: nil) { [weak tab, weak store, weak web] image, _ in
                 guard let tab, let store, let web,

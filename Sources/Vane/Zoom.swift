@@ -135,6 +135,7 @@ import WebKit
     static func reset(_ tab: Tab)   { move(tab) { _ in normal } }
 
     private static func move(_ tab: Tab, _ next: (Double) -> Double) {
+        guard tab.easelID == nil else { return }
         let level = next(tab.web.pageZoom)
         tab.web.pageZoom = level
         tab.zoom = level                 // the pill's chip
