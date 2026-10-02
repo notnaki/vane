@@ -906,3 +906,12 @@ a.scene-link:hover { color:#fff; }
  .journey-intro .intro { font-size:.75rem; line-height:1.4; }
  .journey-intro .hero-actions a { font-size:.75rem; padding:10px 14px; }
 }
+
+/* The inner pages share the galaxy's ink-blue palette without changing their scenes. */
+body.inner-page {
+ background-color:#06090d;
+ background-image:radial-gradient(ellipse at 70% 20%,rgba(39,58,94,.16),transparent 65%),radial-gradient(ellipse at 15% 80%,rgba(54,43,79,.08),transparent 60%);
+ background-attachment:fixed;
+}
+.inner-page .space-background { opacity:.8; }
+body.inner-page::after { opacity:.004; }
