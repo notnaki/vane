@@ -466,6 +466,7 @@ struct CommandField: NSViewRepresentable {
         // keep calling into the state the view had when it was first made.
         context.coordinator.parent = self
         if f.stringValue != text { f.stringValue = text }
+        if f.font != font { f.font = font }
         // The prompt is not fixed for the life of the field: ⇥ turns the bar into an
         // actions search and says so here as well as in the scope chip.
         if f.placeholderString != prompt { f.placeholderString = prompt }
@@ -669,6 +670,8 @@ struct CommandField: NSViewRepresentable {
                                      + "Return opens it, Tab searches actions, "
                                      + "Option-Command-Delete forgets a history result, "
                                      + "Escape closes.",
+                                 font: sidebarAddress ? Look.Typography.addressInput.native
+                                     : Look.Typography.input.native,
                                  onKey: key)
                 }
                 // The scope chip: with ⇥ on, the field says what it is searching, so a bar

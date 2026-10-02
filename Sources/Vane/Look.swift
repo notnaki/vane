@@ -343,6 +343,8 @@ enum Look {
         static let secondary = Style(size: 12, weight: .regular)
         static let heading = Style(size: 13, weight: .semibold)
         static let result = Style(size: 13, weight: .medium)
+        /// The sidebar URL editor keeps the sidebar's scale inside its compact field row.
+        static let addressInput = Style(size: 14, weight: .medium)
         static let input = Style(size: 18, weight: .medium)
         static let featureHeading = Style(size: 16, weight: .semibold)
         static let compactCaption = Style(size: 10, weight: .semibold)
