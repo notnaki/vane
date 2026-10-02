@@ -62,6 +62,16 @@ import XCTest
         XCTAssertNil(StatusBar.hover(from: capture.messages[4]))
     }
 
+    func testNamedPopupAndExistingFrameHaveDifferentHoverTargets() async throws {
+        let (web, capture) = try await script(StatusBar.script, handler: StatusBar.messageName)
+        try await js(web, "document.getElementById('link').target='details'; document.getElementById('link').dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));")
+        try await wait { capture.messages.count == 1 }
+        XCTAssertEqual(StatusBar.hover(from: capture.messages[0])?.target, .newWindow)
+        try await js(web, "var frame=document.createElement('iframe'); frame.name='details'; document.body.appendChild(frame); document.getElementById('link').dispatchEvent(new MouseEvent('mouseover', {bubbles:true}));")
+        try await wait { capture.messages.count == 2 }
+        XCTAssertEqual(StatusBar.hover(from: capture.messages[1])?.target, .subframe)
+    }
+
     func testShiftHeldBeforeHoverPreviewsImmediatelyAndCommandCancelsIt() async throws {
         let (web, capture) = try await script(Previews.script, handler: Previews.messageName)
         try await js(web, "document.getElementById('link').dispatchEvent(new MouseEvent('mouseover', {bubbles:true, shiftKey:true}));")

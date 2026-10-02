@@ -21,6 +21,16 @@ enum StatusBar {
     (function () {
       if (window.__vaneHover) return; window.__vaneHover = true;
       var last = null;
+      function frameNamed(root, name) {
+        try {
+          var frame = root.frames[name];
+          if (frame && frame.window === frame) return true;
+        } catch (e) {}
+        for (var i = 0; i < root.frames.length; i++) {
+          if (frameNamed(root.frames[i], name)) return true;
+        }
+        return false;
+      }
       function target(a) {
         var base = document.querySelector('base[target]');
         var name = (a.getAttribute('target') || (base && base.getAttribute('target')) || '_self');
@@ -28,7 +38,7 @@ enum StatusBar {
         if (lower === '_blank') return 'newWindow';
         if (lower === '_self' || lower === '_top' || lower === '_parent' || name === window.name)
           return 'main';
-        return 'subframe';
+        return frameNamed(window, name) ? 'subframe' : 'newWindow';
       }
       function send(a) {
         var body = a ? {url: a.href, target: target(a)} : '';

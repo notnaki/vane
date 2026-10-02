@@ -1255,17 +1255,15 @@ struct TitleReveal: Equatable, Sendable {
                 onPeek?(url)
                 return
             case .tab(let focus):
-                // An ordinary target=_blank still needs WebKit's popup configuration
-                // so window.opener and scripted close continue working. Modified clicks
-                // deliberately ask for a separate browser tab instead.
-                if target == .newWindow, !navigationAction.modifierFlags.contains(.command),
-                   navigationAction.buttonNumber != TabActions.middleButton { break }
                 if let open = onOpenBeside {
                     decisionHandler(.cancel)
                     open(url, focus)
                     return
                 }
-            case .navigate:
+            case .navigate, .popup:
+                // WebKit must create ordinary target=_blank windows itself so its
+                // configuration retains window.opener and scripted close, including
+                // from a floating window. createWebViewWith chooses the placement.
                 break
             }
         }

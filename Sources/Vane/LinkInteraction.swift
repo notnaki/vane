@@ -6,10 +6,13 @@ enum LinkInteraction {
     enum Target: String, Equatable, Sendable { case main, newWindow, subframe }
     enum Action: Equatable, Sendable {
         case navigate, tab(focus: Bool), split, little, peek
+        /// WebKit must construct this page with its opener-linked configuration.
+        case popup(floating: Bool)
 
         var hint: String? {
             switch self {
             case .navigate: nil
+            case .popup(let floating): floating ? " in Little Vane" : " in a new tab and focus it"
             case .tab(let focus): focus ? " in a new tab and focus it" : " in a new tab"
             case .split: " in Split View"
             case .little: " in Little Vane"
@@ -64,9 +67,7 @@ enum LinkInteraction {
            context.target != .subframe { return .split }
         if web, context.target != .subframe, context.canPeek,
            modifiers.contains(.shift), preferences.shiftPeek { return .peek }
-        if context.target == .newWindow {
-            return context.floating ? .little : .tab(focus: true)
-        }
+        if context.target == .newWindow { return .popup(floating: context.floating) }
         guard web, context.target == .main, context.canPeek else { return .navigate }
         // Shift has already been handled, or explicitly disabled. The automatic pinned
         // link rule still applies independently of that preference.

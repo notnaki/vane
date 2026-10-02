@@ -53,8 +53,13 @@ final class LinkInteractionTests: XCTestCase {
         XCTAssertEqual(route([], kind: .pinned, button: 0), .peek)
     }
 
+    func testOrdinaryFloatingPopupIsDelegatedToWebKit() {
+        XCTAssertEqual(route([], target: .newWindow, floating: true), .popup(floating: true),
+                          "Ordinary popups need WebKit's configuration, opener and scripted close")
+    }
+
     func testTargetsAndFloatingWindowsKeepTheirOwnNavigation() {
-        XCTAssertEqual(route([], target: .newWindow), .tab(focus: true))
+        XCTAssertEqual(route([], target: .newWindow), .popup(floating: false))
         XCTAssertEqual(route(.shift, target: .newWindow), .peek)
         XCTAssertEqual(route([], kind: .pinned, target: .subframe), .navigate)
         XCTAssertEqual(route(.shift, floating: true), .navigate)
