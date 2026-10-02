@@ -63,9 +63,7 @@ enum Look {
     /// Between the pill's glyphs and the host between them. An action badge is sized against
     /// it: a badge wider than its icon plus this gap would touch the glyph beside it.
     static let pillGlyphGap: CGFloat = 8
-    /// The Tidy | Clear divider row: a caption's height, butted to the row above it, with
-    /// `sectionGap` to the New Tab row below. Arc's label centre sits 6.5pt under the last
-    /// pinned row and New Tab's top 22.5pt under that.
+    /// The Tidy | Clear divider row, with half of `sectionGap` on either side.
     static let tidyRow: CGFloat = 13
     /// How many Today tabs a Space has to hold before Tidy and Clear are offered at all.
     /// Below it there is no pile: five tabs fit in the strip and the one you want is the one
@@ -935,7 +933,7 @@ extension Look {
                     popupWidth >= 600 && popupHeight >= 600))
         out.append(("the sidebar is laid out on Arc's 41pt row pitch", rowHeight + rowGap == 41))
         out.append(("the top strip is Arc's 45pt", topInset + topRow + inset == 45))
-        out.append(("the Tidy row and New Tab are Arc's 31pt apart",
+        out.append(("the divider and its two gaps occupy 31pt",
                     tidyRow + sectionGap == 31))
         out.append(("the footer glyphs sit 24pt above the window's bottom edge",
                     footer / 2 + footerInset == 24))

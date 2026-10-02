@@ -1732,6 +1732,16 @@ struct Stash {
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
     @Published var sidebarShown = true
+    /// Presentation only, per Space and window: hiding pins never changes their contents.
+    @Published private(set) var collapsedPinnedSpaces: Set<UUID> = []
+    var pinnedSectionCollapsed: Bool {
+        collapsedPinnedSpaces.contains(currentSpaceID ?? profileID)
+    }
+    func togglePinnedSection() {
+        let id = currentSpaceID ?? profileID
+        if !collapsedPinnedSpaces.insert(id).inserted { collapsedPinnedSpaces.remove(id) }
+        spaceGesture.previews.removeAll()
+    }
     /// The command bar. Set to open it in a mode, nil to close. Per window: two windows can
     /// each have their own open. `.address` is what ⌘L, ⌘T and clicking the address pill
     /// open — the place to type a url or a search.

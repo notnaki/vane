@@ -341,19 +341,21 @@ struct SpacePreviewList: View, Equatable {
     private let todayCount: Int
     let favorites: [URL]
     let includingFavorites: Bool
+    let pinnedCollapsed: Bool
 
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
     init(space: Space, liveTabs: [Tab]?, state: Stash? = nil,
-         favorites: [URL] = [], includingFavorites: Bool = false) {
+         favorites: [URL] = [], includingFavorites: Bool = false, pinnedCollapsed: Bool = false) {
         self.space = space
         self.liveTabs = state?.tabs ?? liveTabs
         self.favorites = favorites
         self.includingFavorites = includingFavorites
+        self.pinnedCollapsed = pinnedCollapsed
         saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
                                             in: Store.directory)
-        let pinned = Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
-                                  liveShape: state?.pins, splits: state?.splits ?? [])
+        let pinned = pinnedCollapsed ? [] : Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
+                                                         liveShape: state?.pins, splits: state?.splits ?? [])
         let today = Self.section(space: space, kind: .today, tabs: self.liveTabs,
                                  liveShape: state?.todayShape, splits: state?.splits ?? [])
         todayCount = self.liveTabs?.filter { $0.kind == .today }.count ?? space.tabURLs.count
@@ -383,10 +385,14 @@ struct SpacePreviewList: View, Equatable {
                 Image(systemName: space.icon ?? "cloud").font(Look.spaceIcon).frame(width: Look.tileIcon)
                 Text(space.name).font(Look.spaceTitle)
                 Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(Look.spaceIcon)
+                    .frame(width: Look.rowTarget, height: Look.rowTarget)
+                    .opacity(pinnedCollapsed ? 1 : 0)
             }
             .foregroundStyle(Look.inkTertiary)
             .padding(.horizontal, Look.rowInset)
             .frame(height: Look.rowHeight)
+            .padding(.bottom, rows.pinned.isEmpty ? 0 : Look.sectionGap / 2 - Look.rowGap)
             // Offsets, not the url: the same page can be pinned and open at once, and two
             // rows sharing an id makes SwiftUI draw one of them.
             ForEach(Array(rows.pinned.enumerated()), id: \.offset) { row($0.element) }
@@ -453,8 +459,7 @@ struct SpacePreviewList: View, Equatable {
         }
         .padding(.horizontal, Look.rowInset)
         .frame(height: Look.tidyRow)
-        .padding(.top, -Look.rowGap)
-        .padding(.bottom, Look.sectionGap - Look.rowGap)
+        .padding(.vertical, Look.sectionGap / 2 - Look.rowGap)
     }
 
     private var newTab: some View {
@@ -548,7 +553,8 @@ extension TabStore {
             ?? (UserDefaults.vane.stringArray(forKey: TabStore.defaultsKey(.favourite, space.profileID)) ?? [])
                 .compactMap { URL(string: $0) }
         let preview = SpacePreviewList(space: space, liveTabs: state?.tabs, state: state,
-                                       favorites: favorites, includingFavorites: space.profileID != profileID)
+                                       favorites: favorites, includingFavorites: space.profileID != profileID,
+                                       pinnedCollapsed: (owner ?? self).collapsedPinnedSpaces.contains(space.id))
         if spaceSwiping { spaceGesture.previews[space.id] = preview }
         return preview
     }
