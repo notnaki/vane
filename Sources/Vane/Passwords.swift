@@ -602,53 +602,95 @@ struct PasswordChoice: Equatable {
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       }
-      // The username is the last text-ish input before the password field.
-      function pair(root) {
-        var pw = root.querySelector('input[type=password]');
-        if (!pw) { return null; }
-        var inputs = Array.prototype.slice.call(root.querySelectorAll('input'));
-        var user = null;
-        for (var i = inputs.indexOf(pw) - 1; i >= 0; i--) {
-          var t = (inputs[i].type || 'text').toLowerCase();
-          if (t === 'text' || t === 'email' || t === 'tel') { user = inputs[i]; break; }
-        }
-        return { user: user, pass: pw };
+      function usableInput(el) {
+        return !el.disabled && !el.readOnly && el.type !== 'hidden' && el.getClientRects().length > 0;
       }
-      var lastPair = null;
-      function pairFor(el) {
-        if (!el) { return null; }
-        var p = pair(el.form || document);
+      // Prefer semantic autocomplete attributes, then the nearest preceding username.
+      // Never use a registration/reset password as an existing sign-in password.
+      function pair(root, capture) {
+        var inputs = Array.from(root.querySelectorAll('input'));
+        if (!capture) inputs = inputs.filter(usableInput);
+        var passwords = inputs.filter(function (el) {
+          return (el.type === 'password' || el.autocomplete.includes('current-password')) &&
+            (capture || !el.autocomplete.includes('new-password'));
+        });
+        var pw = passwords.find(function (el) {
+          return el.autocomplete.includes(capture ? 'new-password' : 'current-password');
+        }) || passwords[0];
+        if (!capture && !pw && inputs.some(function (el) { return el.autocomplete.includes('new-password'); })) return null;
+        if (pw && root === document) inputs = inputs.filter(function (el) { return el.form === pw.form; });
+        var user, before = pw ? inputs.slice(0, inputs.indexOf(pw)).reverse() : inputs;
+        user = before.find(function (el) { return el.autocomplete.split(/\\s+/).includes('username'); });
+        if (!user && (!pw || pw.form)) {
+          user = inputs.find(function (el) { return el.autocomplete.split(/\\s+/).includes('username'); });
+        }
+        if (!user && pw) user = before.find(function (el) { return ['text', 'email', 'tel'].includes(el.type); });
+        if (!pw && !user) {
+          user = inputs.find(function (el) {
+            return el.type === 'email' || (el.type === 'text' && /user|login|email|account/i.test(el.name + ' ' + el.id));
+          });
+        }
+        return pw || user ? { user: user, pass: pw } : null;
+      }
+      var lastPair = null, lastCapturePair = null, usernameStep = null;
+      var selectedAccounts = new WeakMap();
+      function rememberStep(p) {
+        if (!p || p.pass || !p.user || !p.user.value) return;
+        var root = p.user.form || p.user;
+        usernameStep = { field: p.user, account: p.user.value, root: root,
+          parent: root.parentNode, before: root.previousSibling, after: root.nextSibling };
+      }
+      function carriedAccount(p) {
+        if (selectedAccounts.has(p.pass)) return selectedAccounts.get(p.pass);
+        var step = usernameStep, root = p.pass.form || p.pass;
+        if (!step || step.field.isConnected) return '';
+        if (root === step.root || (!step.root.isConnected && root.parentNode === step.parent &&
+            root.previousSibling === step.before && root.nextSibling === step.after)) return step.account;
+        return '';
+      }
+      function pairFor(el, capture) {
+        if (!el || el.tagName !== 'INPUT') { return null; }
+        var p = pair(el.form || document, capture);
         return p && (el === p.user || el === p.pass) ? p : null;
       }
       function visible(p) {
-        return p && p.pass.isConnected && p.pass.getClientRects().length > 0;
+        var field = p && (p.pass || p.user);
+        return field && field.isConnected && field.getClientRects().length > 0;
       }
-      function targetPair() {
-        var focused = pairFor(document.activeElement);
+      function targetPair(capture) {
+        var focused = pairFor(document.activeElement, capture);
         if (visible(focused)) { return focused; }
         // A SPA can replace the username alone. Re-pair from the cached password node
         // so a connected password never carries a detached username into a fill.
-        var recent = lastPair && pairFor(lastPair.pass);
+        var cached = capture ? lastCapturePair : lastPair;
+        var recent = cached && pairFor(cached.pass || cached.user, capture);
         if (visible(recent)) { return recent; }
+        var usernameStep = null;
         for (var i = 0; i < document.forms.length; i++) {
-          var candidate = pair(document.forms[i]);
-          if (visible(candidate)) { return candidate; }
+          var candidate = pair(document.forms[i], capture);
+          if (!visible(candidate)) continue;
+          if (candidate.pass) return candidate;
+          if (!usernameStep) usernameStep = candidate;
         }
-        var ungrouped = pair(document);
-        return visible(ungrouped) ? ungrouped : null;
+        var ungrouped = pair(document, capture);
+        if (visible(ungrouped) && ungrouped.pass) return ungrouped;
+        return usernameStep || (visible(ungrouped) ? ungrouped : null);
       }
       // Where a chooser should hang: under the username field, its width, in CSS pixels
       // relative to the viewport — which is exactly what the web view is showing.
       function anchor() {
         var p = targetPair();
         if (!p) { return null; }
-        var r = (p.user || p.pass).getBoundingClientRect();
+        var field = document.activeElement;
+        if (field !== p.user && field !== p.pass) field = p.user || p.pass;
+        var r = field.getBoundingClientRect();
         return { x: r.left, y: r.bottom, w: r.width };
       }
       window.__vaneAnchor = function () { return JSON.stringify(anchor()); };
       var listOpen = false;
       function send(m) {
-        listOpen = !!m.focus;
+        if (m.focus) listOpen = true;
+        if (m.dismiss) listOpen = false;
         webkit.messageHandlers.vanepw.postMessage(m);
       }
       function ours(el) { return !!pairFor(el); }
@@ -656,19 +698,23 @@ struct PasswordChoice: Equatable {
       // focus it, and Arc inherits that. Capture phase throughout: a site that stops these
       // events from bubbling must not also stop the browser's own chrome from appearing —
       // or, worse, from going away again.
-      document.addEventListener('focusin', function (e) {
-        var p = pairFor(e.target);
+      function focused(el) {
+        var captured = pairFor(el, true);
+        if (captured) lastCapturePair = captured;
+        var p = pairFor(el);
         if (!p) { return; }
         lastPair = p;
         var a = anchor();
         if (a) { send({ focus: true, x: a.x, y: a.y, w: a.w }); }
-      }, true);
+      }
+      document.addEventListener('focusin', function (e) { focused(e.target); }, true);
+      document.addEventListener('click', function (e) { focused(e.target); }, true);
       // Everything that means "not interested any more". The list is anchored to a point
       // that stops being true the moment any of these happens, so each one closes it.
       document.addEventListener('focusout', function (e) {
         if (ours(e.target)) { send({ dismiss: 'blur' }); }
       }, true);
-      document.addEventListener('mousedown', function (e) {
+      document.addEventListener('pointerdown', function (e) {
         if (!ours(e.target)) { send({ dismiss: 'click' }); }
       }, true);
       // Only while the list is actually up. A scroll handler that posts on every wheel
@@ -686,8 +732,8 @@ struct PasswordChoice: Equatable {
           && form.nextSibling === a.after;
       }
       function offer(p) {
-        if (!p || !p.pass.value) { return; }
-        send({ account: p.user ? p.user.value : '', password: p.pass.value });
+        if (!p || !p.pass || !p.pass.value) { return; }
+        send({ account: p.user ? p.user.value : carriedAccount(p), password: p.pass.value });
       }
       document.addEventListener('submit', function (e) {
         var form = e.target;
@@ -696,11 +742,16 @@ struct PasswordChoice: Equatable {
           before: form.previousSibling, after: form.nextSibling,
           formsAtSubmit: Array.prototype.slice.call(document.forms), retry: null
         };
-        offer(pair(e.target));
+        offer(pair(e.target, true));
       }, true);
       // A failed sign-in can leave the page in place. An edited field starts a new attempt.
       document.addEventListener('input', function (e) {
-        if (!submittedAttempt || !pairFor(e.target)) { return; }
+        var p = pairFor(e.target);
+        if (p) {
+          if (e.isTrusted) send({ dismiss: 'input' });
+          rememberStep(p);
+        }
+        if (!submittedAttempt || !pairFor(e.target, true)) { return; }
         var form = e.target.form;
         if (form === submittedAttempt.form) { submittedAttempt = null; return; }
         // Only a newly created form in the submitted form's old slot is its retry.
@@ -711,23 +762,56 @@ struct PasswordChoice: Equatable {
       // pagehide catches those. ponytail: best effort; a site that logs in without any
       // navigation at all still slips through.
       window.addEventListener('pagehide', function () {
-        if (!submittedAttempt) { offer(targetPair()); }
+        if (!submittedAttempt) { offer(targetPair(true)); }
         else if (replacesSubmitted(submittedAttempt.retry)) {
-          offer(pair(submittedAttempt.retry));
+          offer(pair(submittedAttempt.retry, true));
         }
       });
-      window.__vaneFill = function (account, password) {
+      window.__vaneFill = function (account, password, automatic) {
         var p = targetPair();
         if (!p) { return false; }
-        if (p.user && account) { setValue(p.user, account); }
-        setValue(p.pass, password);
+        // Read-only/hidden account hints are useful for validation, never for writing.
+        var identity = pair(p.pass ? (p.pass.form || document) : (p.user.form || document), true);
+        if (identity && identity.user && identity.user !== p.user) {
+          if (identity.user.value && identity.user.value !== account) return false;
+          if (!usableInput(identity.user)) p.user = null;
+        }
+        if (!p.pass && !p.user) return false;
+        if (automatic && !p.pass && !p.user.autocomplete.split(/\\s+/).includes('username') &&
+            !/user|login|account/i.test(p.user.name + ' ' + p.user.id)) return false;
+        if (automatic && ((p.user && p.user.value && p.user.value !== account) ||
+                          (p.pass && p.pass.value))) return false;
+        if (p.user && account) setValue(p.user, account);
+        rememberStep(p);
+        if (!p.user && p.pass) selectedAccounts.set(p.pass, account);
+        if (p.pass) setValue(p.pass, password);
         return true;   // never auto-submit
       };
+      // DOMContentLoaded precedes slow images/iframes. Newly mounted SPA forms get the
+      // same notification, coalesced and only when added nodes can contain inputs.
+      var seen = new WeakSet(), pending = false;
+      function ready() {
+        var p = targetPair(), field = p && (p.pass || p.user);
+        if (!field || seen.has(field)) return;
+        seen.add(field);
+        send({ ready: true });
+        if (ours(document.activeElement)) focused(document.activeElement);
+      }
+      ready();
+      new MutationObserver(function (records) {
+        if (pending || !records.some(function (r) {
+          return Array.from(r.addedNodes).some(function (n) {
+            return n.nodeType === 1 && (n.matches('input') || !!n.querySelector('input'));
+          });
+        })) return;
+        pending = true;
+        setTimeout(function () { pending = false; ready(); }, 80);
+      }).observe(document.documentElement, { childList: true, subtree: true });
     })();
     """
 
-    static func fillJS(account: String, password: String) -> String {
-        let args = try! JSONSerialization.data(withJSONObject: [account, password])
+    static func fillJS(account: String, password: String, automatic: Bool = false) -> String {
+        let args = try! JSONSerialization.data(withJSONObject: [account, password, automatic])
         return "window.__vaneFill && window.__vaneFill.apply(null, \(String(decoding: args, as: UTF8.self)))"
     }
 }

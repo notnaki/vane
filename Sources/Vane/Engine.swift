@@ -974,7 +974,7 @@ struct TitleReveal: Equatable, Sendable {
     /// than asking, and it is what Arc does.
     ///
     /// Names only until something is chosen: deciding *whether* to ask decrypts nothing.
-    func fillPassword(announcing: Bool = false) {
+    func fillPassword(announcing: Bool = false, automatic: Bool = false) {
         guard let host = secureHost else {
             if announcing { axAnnounce("No saved password for this page.") }
             return
@@ -982,36 +982,47 @@ struct TitleReveal: Equatable, Sendable {
         let hits = Passwords.matches(host: host, profileID: profileID)
         guard hits.count > 1 else {
             if let one = hits.first {
-                fill(one)
+                fill(one, automatic: automatic)
             } else if announcing {
                 axAnnounce("No saved password for \(host).")
             }
             return
         }
+        // Multiple saved accounts are offered on focus; loading a page alone should not
+        // open a popup over a field the user has not interacted with.
+        if automatic { return }
+        let pageURL = web.url
         web.evaluateJavaScript("window.__vaneAnchor && window.__vaneAnchor()",
                                in: nil, in: Autofill.world) { [weak self] result in
             guard case let .success(value) = result, let raw = value as? String,
                   let json = raw.data(using: .utf8),
                   let rect = try? JSONSerialization.jsonObject(with: json) as? [String: Double]
             else { return }
-            self?.openChooser(host: host, accounts: hits.map(\.account), at: rect)
+            guard let self, self.web.url == pageURL else { return }
+            self.openChooser(host: host, accounts: hits.map(\.account), at: rect)
         }
     }
 
     /// Fills both fields and remembers the choice, so this account leads the list next time.
     /// The password is read here and nowhere else, and lives exactly as long as the call.
-    func fill(_ login: Passwords.Login) {
+    func fill(_ login: Passwords.Login, automatic: Bool = false) {
+        guard secureHost == login.host else { return }
         closeChooser(.filled)
-        lastFilledAt = .now
         guard let password = Passwords.password(host: login.host, account: login.account,
                                                 profileID: profileID) else { return }
-        Passwords.recordUse(host: login.host, account: login.account, profileID: profileID)
-        web.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password),
-                               in: nil, in: Autofill.world) { result in
+        let pageURL = web.url
+        web.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
+                                             automatic: automatic),
+                               in: nil, in: Autofill.world) { [weak self] result in
             // The script says whether it found a form. Silence on a page with no sign-in
             // form is indistinguishable from a fill that went somewhere invisible.
-            guard case let .success(value) = result, (value as? Bool) == false else { return }
-            Task { @MainActor in axAnnounce("No sign-in form on this page.") }
+            guard let self, self.web.url == pageURL, case let .success(value) = result else { return }
+            if (value as? Bool) == true {
+                self.lastFilledAt = .now
+                Passwords.recordUse(host: login.host, account: login.account, profileID: self.profileID)
+            } else if !automatic {
+                axAnnounce("No sign-in form on this page.")
+            }
         }
     }
 
@@ -1146,14 +1157,16 @@ struct TitleReveal: Equatable, Sendable {
         progress = 1
         loading = false
         Trace.end(id)
-        fillPassword()
         Trace.note("favicon")
         favicons.load(for: self)
         guard let url = w.url else { return }
         bookmarked = history.isBookmarked(url)
-        Task {
+        Task { [weak self, weak w] in
+            guard let self, let w, self.web === w, w.url == url else { return }
             Trace.note("reader probe")
-            readerAvailable = await Reader.isAvailable(in: w)
+            let available = await Reader.isAvailable(in: w)
+            guard self.web === w, w.url == url else { return }
+            self.readerAvailable = available
             Trace.note("reader probe answered")
         }
         TabAudio.reapply(self)         // no-op unless this tab is muted
@@ -1372,6 +1385,13 @@ struct TitleReveal: Equatable, Sendable {
             return
         }
         guard let body = m.body as? [String: Any] else { return }
+        guard m.name == "vanepw", m.frameInfo.isMainFrame,
+              m.frameInfo.securityOrigin.protocol == "https",
+              m.frameInfo.securityOrigin.host == secureHost else { return }
+        if body["ready"] as? Bool == true {
+            fillPassword(automatic: true)
+            return
+        }
         // The page saying the list is no longer wanted: a blur, a click elsewhere, a scroll,
         // or a history move inside a single-page app.
         if let why = body["dismiss"] as? String {
@@ -1384,7 +1404,7 @@ struct TitleReveal: Equatable, Sendable {
         if body["focus"] as? Bool == true {
             guard let host = secureHost else { return }
             let hits = Passwords.matches(host: host, profileID: profileID)
-            guard hits.count > 1 else { return }
+            guard !hits.isEmpty else { return }
             openChooser(host: host, accounts: hits.map(\.account),
                         at: body.compactMapValues { $0 as? Double })
             return

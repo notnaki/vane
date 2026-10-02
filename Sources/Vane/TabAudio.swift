@@ -96,7 +96,16 @@ import WebKit
       function watch() {
         if (watching) { return; }
         watching = true;
-        new MutationObserver(function () {
+        function containsMedia(node) {
+          return node.nodeType === 1 &&
+            (node.matches('video,audio') || !!node.querySelector('video,audio'));
+        }
+        new MutationObserver(function (records) {
+          // Ordinary prose/framework updates cannot change the media membership.
+          if (!records.some(function (record) {
+            return Array.from(record.addedNodes).some(containsMedia) ||
+                   Array.from(record.removedNodes).some(containsMedia);
+          })) { return; }
           if (pending) { return; }
           pending = true;
           setTimeout(function () {
