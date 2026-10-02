@@ -3540,6 +3540,7 @@ private struct TabRow: View {
     @Environment(\.strip) private var strip
 
     @Environment(\.livePR) private var pr
+    @State private var returnHovering = false
 
     var body: some View {
         let selected = store.current == tab.id
@@ -3547,12 +3548,12 @@ private struct TabRow: View {
         let returning = tab.kind == .pinned && !tab.atHome
         let title = TidyTitles.title(for: tab)
         SidebarRow(selected: selected, highlightSelection: !returning, ticked: ticked, action: select) {
-            TabHomeIcon(store: store, tab: tab)
+            TabHomeIcon(store: store, tab: tab, returnHovering: $returnHovering)
         } label: {
             // Arc's in-row rename: the title becomes a field and the row keeps its shape.
             if store.renamingTab == tab.id {
                 RenameField(store: store, tab: tab, initialTitle: title)
-            } else if returning {
+            } else if returning && returnHovering {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(title).truncationMode(.tail)
                     Text("Return to Pinned Tab")
@@ -4266,19 +4267,20 @@ private struct TabRowTrailing: View {
     }
 }
 
-/// A wandered pin keeps its favicon on a rounded Return tile beside its two-line label.
+/// A wandered pin reveals its Return tile and caption while the tile itself is hovered.
 /// Favourites keep their compact return arrow under the pointer. Rows at home and Today
 /// keep their ordinary favicon.
 /// See `TabRowGlyph.showsGoHome`, where that is decided.
 private struct TabHomeIcon: View {
     let store: TabStore
     @ObservedObject var tab: Tab
+    @Binding var returnHovering: Bool
     var size: CGFloat = Look.rowIcon
     @Environment(\.rowHovering) private var hovering
 
     var body: some View {
         if tab.kind == .pinned && !tab.atHome {
-            GoHomeGlyph(store: store, tab: tab, tiled: true)
+            GoHomeGlyph(store: store, tab: tab, tiled: true, returnHovering: $returnHovering)
                 // The tile can draw past the favicon's box, but must not move the icon
                 // or title when this pin leaves or returns to its saved page.
                 .frame(width: size, height: size)
@@ -4300,13 +4302,13 @@ private struct GoHomeGlyph: View {
     let store: TabStore
     let tab: Tab
     var tiled = false
-    @Environment(\.rowHovering) private var hovering
+    var returnHovering: Binding<Bool> = .constant(false)
 
     var body: some View {
         Button { store.goHome(tab.id) } label: {
             if tiled {
                 Group {
-                    if hovering {
+                    if returnHovering.wrappedValue {
                         Image(systemName: "arrow.uturn.backward")
                             .font(Look.rowGlyph)
                             .foregroundStyle(Look.inkSecondary)
@@ -4315,8 +4317,11 @@ private struct GoHomeGlyph: View {
                     }
                 }
                 .frame(width: Look.returnTileSize, height: Look.returnTileSize)
-                .background(hovering ? Look.hovered : .clear, in: .rect(cornerRadius: Look.pillRadius))
+                .background(returnHovering.wrappedValue ? Look.hovered : .clear,
+                            in: .rect(cornerRadius: Look.pillRadius))
                 .contentShape(.rect(cornerRadius: Look.pillRadius))
+                .onHover { returnHovering.wrappedValue = $0 }
+                .onDisappear { returnHovering.wrappedValue = false }
             } else {
                 Image(systemName: "arrow.uturn.backward")
                     .font(Look.rowGlyph)
