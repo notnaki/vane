@@ -1,8 +1,38 @@
+import AppKit
 import XCTest
 @testable import vane
 
 @MainActor final class PinnedSectionTests: XCTestCase {
-    func testCollapseKeepsPinsAndSelectionAndIsIndependentPerSpace() {
+    func testCrossProfilePreviewOnlyUsesThisWindowsCollapseState() {
+        TestEnvironment.prepare()
+        let first = Space(name: "First", profileID: UUID())
+        let second = Space(name: "Second", profileID: UUID(),
+                           pinnedTabURLs: [URL(string: "https://example.com")!])
+        let receiver = TabStore(profileID: first.profileID, space: first)
+        let owner = TabStore(profileID: second.profileID, space: second)
+        let receiverWindow = NSWindow(), otherWindow = NSWindow()
+        receiver.window = receiverWindow
+        owner.window = otherWindow
+        defer {
+            for store in [receiver, owner] {
+                store.dropStashes()
+                let tabs = store.tabs
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+                Store.forget(store.profileID)
+                try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: store.profileID, in: Store.directory))
+            }
+        }
+        owner.togglePinnedSection()
+        XCTAssertFalse(receiver.swipePreview(in: second).rows.pinned.isEmpty,
+                       "A fresh profile in this window expands even if another window collapsed it")
+        owner.window = nil
+        owner.parkedIn = receiverWindow
+        XCTAssertTrue(receiver.swipePreview(in: second).rows.pinned.isEmpty,
+                      "A parked profile in this same window retains its collapsed presentation")
+    }
+
+    func testCollapseKeepsPinsAndCurrentTabAndIsIndependentPerSpace() {
         TestEnvironment.prepare()
         let profile = UUID()
         let first = Space(name: "First", profileID: profile,
@@ -21,11 +51,16 @@ import XCTest
         }
         let pins = store.pins
         let selected = store.current
+        store.selection.selectAll(in: store.section(.pinned))
+        XCTAssertFalse(store.selection.isEmpty)
         XCTAssertFalse(store.pinnedSectionCollapsed)
         store.togglePinnedSection()
         XCTAssertTrue(store.pinnedSectionCollapsed)
         XCTAssertEqual(store.pins, pins)
         XCTAssertEqual(store.current, selected)
+        XCTAssertTrue(store.selection.isEmpty, "Hidden rows must not remain a bulk-action target")
+        store.selection.selectAll(in: store.section(.pinned))
+        XCTAssertTrue(store.selectedTabs.isEmpty, "Select All must not select collapsed rows")
         XCTAssertTrue(store.swipePreview(in: first).rows.pinned.isEmpty)
         XCTAssertEqual(store.swipePreview(in: first).rows.today.count, 1)
 

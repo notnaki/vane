@@ -549,12 +549,16 @@ extension TabStore {
         if spaceSwiping, let preview = spaceGesture.previews[space.id] { return preview }
         let state = previewState(in: space)
         let owner = previewOwner(for: space)
+        // Shared content can come from another window; presentation must come from this one.
+        let presentationOwner = space.profileID == profileID ? self : TabStore.all.first {
+            $0.profileID == space.profileID && window != nil && $0.parkedIn === window
+        }
         let favorites = owner?.tabs.filter { $0.kind == .favourite }.compactMap(\.pinnedURL)
             ?? (UserDefaults.vane.stringArray(forKey: TabStore.defaultsKey(.favourite, space.profileID)) ?? [])
                 .compactMap { URL(string: $0) }
         let preview = SpacePreviewList(space: space, liveTabs: state?.tabs, state: state,
                                        favorites: favorites, includingFavorites: space.profileID != profileID,
-                                       pinnedCollapsed: (owner ?? self).collapsedPinnedSpaces.contains(space.id))
+                                       pinnedCollapsed: presentationOwner?.collapsedPinnedSpaces.contains(space.id) ?? false)
         if spaceSwiping { spaceGesture.previews[space.id] = preview }
         return preview
     }

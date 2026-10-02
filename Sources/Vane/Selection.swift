@@ -126,6 +126,7 @@ extension TabStore {
         guard kind == .pinned else {
             return .init(kind: kind, ids: tabs.filter { $0.kind == kind && hasRow($0.id) }.map(\.id))
         }
+        guard !pinnedSectionCollapsed else { return .init(kind: .pinned, ids: []) }
         let live = Dictionary(tabs.map { ($0.id.uuidString, $0.id) }, uniquingKeysWith: { a, _ in a })
         return .init(kind: .pinned,
                      ids: pins.visible.compactMap { $0.entry.tab.flatMap { live[$0] } }.filter(hasRow))
