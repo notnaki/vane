@@ -12,7 +12,9 @@
 
 ## Test app cleanup
 
-- Track the bundle paths and process IDs of any Vane test copies launched for the task, including copies in worktrees or temporary build directories.
+- Track the bundle paths, process IDs, and process start times of any Vane test copies launched for the task, including copies in worktrees or temporary build directories.
 - After a successful merge, quit every Vane test instance launched for the task before reporting completion. Also clean up these instances when abandoning the task.
-- Target only the tracked test instances; leave the user's regular Vane app and instances belonging to other tasks running. Prefer a normal quit, and use a targeted process termination only if an owned test instance does not exit. Do not use blanket commands such as `killall Vane` or `pkill vane`.
+- Target only the tracked test instances; leave the user's regular Vane app and instances belonging to other tasks running. Do not use blanket commands such as `killall Vane` or `pkill vane`.
+- A normal quit can stop at Vane's "Quit Vane?" confirmation. When using UI automation, confirm the prompt belongs to the tracked test instance and choose "Quit" (or press Return in that instance's focused dialog). Do not choose "Quit and don't ask again" or change the user's quit-confirmation preference. Sending a quit request alone does not count as cleanup.
+- If the confirmation cannot be handled or the owned test instance remains running, terminate that specific process with `kill -TERM <pid>`. Wait briefly and check for exit; if it still remains, use `kill -KILL <pid>` as a last resort. Before each signal, revalidate that the PID still belongs to the tracked test executable and launch, since PIDs can be reused. This fallback is authorized for task-owned test instances; do not leave them running merely because a quit confirmation is blocking normal exit.
 - Verify the tracked test processes have exited. If cleanup is blocked, report the remaining instance and reason instead of claiming cleanup succeeded.
