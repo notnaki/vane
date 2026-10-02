@@ -3084,6 +3084,8 @@ private struct FolderDrop: DropDelegate {
 /// trailing edge. One shape so the list reads as one list.
 private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     let selected: Bool
+    /// A wandered pin offers Return on hover instead of keeping its row highlighted.
+    var highlightSelection = true
     /// In a multi-select. It wears the same fill as `selected` — a selection is a selection —
     /// and the row that is *also* `selected` is picked out by an accent hairline, so the
     /// list still says which of the ticked tabs is the one on screen.
@@ -3121,7 +3123,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     }
 
     private var fill: Color {
-        selected || ticked ? Look.selected : (hovering ? Look.hovered : .clear)
+        (selected && highlightSelection) || ticked ? Look.selected : (hovering ? Look.hovered : .clear)
     }
 }
 
@@ -3543,8 +3545,8 @@ private struct TabRow: View {
         let selected = store.current == tab.id
         let ticked = store.selection.contains(tab.id)
         let returning = tab.kind == .pinned && !tab.atHome
-        let title = returning ? (TabActions.rename(tab) ?? tab.title) : TidyTitles.title(for: tab)
-        SidebarRow(selected: selected, ticked: ticked, action: select) {
+        let title = TidyTitles.title(for: tab)
+        SidebarRow(selected: selected, highlightSelection: !returning, ticked: ticked, action: select) {
             TabHomeIcon(store: store, tab: tab)
         } label: {
             // Arc's in-row rename: the title becomes a field and the row keeps its shape.
@@ -4313,7 +4315,7 @@ private struct GoHomeGlyph: View {
                     }
                 }
                 .frame(width: Look.returnTileSize, height: Look.returnTileSize)
-                .background(Look.hovered, in: .rect(cornerRadius: Look.pillRadius))
+                .background(hovering ? Look.hovered : .clear, in: .rect(cornerRadius: Look.pillRadius))
                 .contentShape(.rect(cornerRadius: Look.pillRadius))
             } else {
                 Image(systemName: "arrow.uturn.backward")
