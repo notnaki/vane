@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "AppIcons"
+FLUTE_PITCH = 48
 # Rounded corners retain the distinctive curved right arm and tapered Vane silhouette.
 V = ("M 289,258 H 410 Q 420,258 424,270 L 551,574 Q 560,599 568,576 "
      "Q 590,444 596,278 Q 596,258 616,258 H 728 Q 752,258 748,282 "
@@ -42,8 +43,8 @@ def fluted_mark():
     definitions = [gradient("mark", ["#333B62", "#6E7DD2", "#273052"]),
                    path(fill="url(#mark)", extra='transform="translate(512,512) scale(1.15) translate(-512,-512)"').replace('<path ', '<path id="mark-shape" ')]
     bands = []
-    pitch = 24
-    for rib in range(43):
+    pitch = FLUTE_PITCH
+    for rib in range(math.ceil(1024 / pitch)):
         for band in range(5):
             x = rib * pitch + band * pitch / 5
             clip = f"lens-{rib}-{band}"
@@ -66,9 +67,9 @@ def fluted_pane():
                    '<stop offset=".78" stop-color="#65708E" stop-opacity=".13"/>'
                    '<stop offset=".91" stop-color="#FFFFFF" stop-opacity=".47"/>'
                    '<stop offset="1" stop-color="#FFFFFF" stop-opacity=".76"/></linearGradient>')
-    ribs = ''.join(f'<rect x="{x}" width="24" height="1024" fill="url(#rib)"/>'
-                   f'<rect x="{x+22.5}" width="1.5" height="1024" fill="#FFFFFF" opacity=".68"/>'
-                   for x in range(0, 1024, 24))
+    ribs = ''.join(f'<rect x="{x}" width="{FLUTE_PITCH}" height="1024" fill="url(#rib)"/>'
+                   f'<rect x="{x+FLUTE_PITCH-1.5}" width="1.5" height="1024" fill="#FFFFFF" opacity=".68"/>'
+                   for x in range(0, 1024, FLUTE_PITCH))
     return svg(ribs, definitions)
 
 
