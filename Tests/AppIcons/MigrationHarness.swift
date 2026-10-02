@@ -20,7 +20,11 @@ extension UserDefaults {
         }
         let packaged = CommandLine.arguments.contains("--packaged")
         if packaged { _ = NSApplication.shared }
-        expect(AppIcon.variants.count == (packaged ? 8 : 1), "all expected images load")
+        expect(AppIcon.variants.count == (packaged ? 9 : 1), "all expected images load")
+        if packaged {
+            expect(AppIcon.variants.contains { $0.name == "Fluted Glass Dark" },
+                   "the dark fluted finish loads from the bundled catalogue")
+        }
         for (legacy, canonical) in [("Default", "Dark"), ("Glass", "Normal"), ("Navy", "Normal")] {
             UserDefaults.vane.set(legacy, forKey: AppIcon.key)
             AppIcon.restoreAtLaunch()

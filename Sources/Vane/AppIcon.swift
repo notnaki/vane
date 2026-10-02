@@ -12,7 +12,8 @@ import AppKit
     nonisolated static let catalogue: [(name: String, asset: String?)] = [
         ("Normal", "AppIcon"), ("Dark", nil), ("Galaxy", "AppIcon-Galaxy"),
         ("Candy", "AppIcon-Candy"), ("Neon", "AppIcon-Neon"),
-        ("Fluted Glass", "AppIcon-FlutedGlass"), ("Schoolbook", "AppIcon-Schoolbook"),
+        ("Fluted Glass", "AppIcon-FlutedGlass"), ("Fluted Glass Dark", "AppIcon-FlutedGlassDark"),
+        ("Schoolbook", "AppIcon-Schoolbook"),
         ("Luminous", "AppIcon-Luminous"),
     ]
 
@@ -149,8 +150,8 @@ import AppKit
           canonicalName("Default") == "Dark" && canonicalName("Glass") == "Normal"
               && canonicalName("Navy") == "Normal" && canonicalName("Galaxy") == "Galaxy"
               && canonicalName("Custom") == "Custom" && !overrides("Default")),
-         ("the standardized picker has eight finishes and no old duplicate labels",
+         ("the standardized picker has nine finishes and no old duplicate labels",
           catalogue.map(\.name) == ["Normal", "Dark", "Galaxy", "Candy", "Neon",
-                                    "Fluted Glass", "Schoolbook", "Luminous"])]
+                                    "Fluted Glass", "Fluted Glass Dark", "Schoolbook", "Luminous"])]
     }
 }
