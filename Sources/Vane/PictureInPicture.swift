@@ -129,6 +129,7 @@ import WebKit
     /// and is forgotten on the spot so the next press reaches the main frame again.
     /// `weak`: a completion handler is no reason to keep a closed tab alive.
     private static func run(_ js: String, in tab: Tab, then: (@MainActor () -> Void)? = nil) {
+        guard tab.easelID == nil else { then?(); return }
         tab.web.evaluateJavaScript(js, in: tab.pipFrame, in: world) { [weak tab] result in
             MainActor.assumeIsolated {
                 if case .failure = result, let tab, tab.pipFrame != nil { tab.pipFrame = nil }

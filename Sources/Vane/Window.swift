@@ -875,7 +875,7 @@ extension TabStore {
             guard let self, let window else { return }
             let holder = window.firstResponder
             let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
-            let page = active.flatMap { ownsPage($0) ? $0.web : nil }
+            let page = activePageResponder
             guard Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
                                             libraryOpen: libraryOpen), let page else { return }
             window.makeFirstResponder(page)
@@ -889,7 +889,7 @@ extension TabStore {
     func focusPageAfterHop(remaining: Int = 6) {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
             guard let self, let window, palette == nil, !libraryOpen,
-                  let page = active.flatMap({ ownsPage($0) ? $0.web : nil }) else { return }
+                  let page = activePageResponder else { return }
             let holder = window.firstResponder
             let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
             // A cached profile can restore its previously focused favourite even when

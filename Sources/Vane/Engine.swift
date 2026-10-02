@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import WebKit
 
 /// Safari's UA string. WKWebView's own UA gets Netflix/Disney+ bounced on sight, and
@@ -375,6 +376,9 @@ struct TitleReveal: Equatable, Sendable {
         return fresh
     }
     @Published var title = "New Tab"
+    @Published private(set) var easelSession: EaselSession?
+    var easelID: UUID? { easelSession?.selected }
+    private var easelObservation: AnyCancellable?
     /// The page whose persisted title is standing in while a parked web view wakes. WebKit
     /// briefly reports an empty title during reconstruction; that is not a page title.
     private var titlePlaceholderURL: URL?
@@ -841,7 +845,46 @@ struct TitleReveal: Equatable, Sendable {
     /// The url this tab is on, live or parked. Everything that writes a tab down — pins,
     /// the session, spaces — has to come through here, or a suspended tab quietly vanishes
     /// from all of them.
-    var currentURL: URL? { existingWeb?.url ?? parkedURL }
+    var currentURL: URL? { easelID.map(EaselAddress.url) ?? existingWeb?.url ?? parkedURL }
+
+    /// Internal canvases never pass through WebKit or the history database.
+    /// Missing boards remain identifiable so the page can offer the Library.
+    @discardableResult func routeEasel(_ url: URL, parked: Bool = false) -> Bool {
+        guard let id = EaselAddress.boardID(url) else { return false }
+        guard !isPrivate else { return true }
+        release()
+        let repository = EaselStore.shared(profileID: profileID, directory: Store.directory)
+        let session = EaselSession(repository)
+        session.selected = id
+        easelSession = session
+        parkedState = nil
+        parkedURL = nil
+        suspended = parked
+        hasEverLoaded = true
+        address = url.absoluteString
+        progress = 0; loading = false
+        canGoBack = false; canGoForward = false
+        favicon = nil
+        developer = false; readerAvailable = false
+        pendingSave = nil; passwordChoice = nil
+        editableFrames.removeAll()
+        titlePlaceholderURL = nil
+        if stays, homeURL == nil { homeURL = url }
+        easelObservation = repository.$boards.sink { [weak self] boards in
+            let board = boards.first { $0.id == id }
+            self?.title = board.map { $0.title.isEmpty ? "Untitled Easel" : $0.title } ?? "Easel unavailable"
+        }
+        return true
+    }
+
+    func leaveEasel() {
+        guard easelSession != nil else { return }
+        easelSession?.liveItems.removeAll()
+        easelObservation = nil
+        easelSession = nil
+        suspended = false
+        parkedState = nil; parkedURL = nil
+    }
 
     /// Enough to redraw the strip and to come back exactly where the user left off.
     var snapshot: Parked {
@@ -855,6 +898,11 @@ struct TitleReveal: Equatable, Sendable {
     /// interactionState. The failure mode is one-directional: a state that does not come
     /// back just means the tab reloads from its url.
     func suspend() {
+        if let easelSession {
+            easelSession.liveItems.removeAll()
+            suspended = true
+            return
+        }
         guard !suspended, let url = existingWeb?.url else { return }
         parkedState = web.interactionState as? Data
         parkedURL = url
@@ -936,6 +984,7 @@ struct TitleReveal: Equatable, Sendable {
     /// synchronously, so the url check below is a genuine "that state was no good".
     func resume() {
         guard suspended else { return }
+        if easelSession != nil { suspended = false; return }
         Trace.span("resume") {
             suspended = false
             if let parkedState { web.interactionState = parkedState }
@@ -965,6 +1014,8 @@ struct TitleReveal: Equatable, Sendable {
         tornDown = true
         presentationGeneration += 1
         windowSnapshot = nil
+        easelSession?.liveItems.removeAll()
+        easelObservation = nil
         if isPrivate { SitePermissions.forgetPrivate(tabID: id) }
         release(replacing: false)
         TabAudio.forget(id)
@@ -974,6 +1025,8 @@ struct TitleReveal: Equatable, Sendable {
     /// Come up already suspended, so restoring thirty tabs costs one WebContent process
     /// instead of thirty. The strip still has a title and a favicon.
     func park(url: URL, _ p: Parked) {
+        if routeEasel(url, parked: true) { return }
+        leaveEasel()
         parkedURL = url
         parkedState = p.state
         titlePlaceholderURL = Files.restorationPlaceholder(for: url)
@@ -1103,7 +1156,7 @@ struct TitleReveal: Equatable, Sendable {
         let (assistant, question) = AIChat.match(input) ?? (AIChat.preferred, input)
         guard let target = AIChat.url(for: question, using: assistant) else { return }
         editing = false
-        web.load(URLRequest(url: target))
+        go(target)
     }
 
     func go(_ input: String) {
@@ -1111,18 +1164,18 @@ struct TitleReveal: Equatable, Sendable {
         if let (assistant, question) = AIChat.match(input),
            let target = AIChat.url(for: question, using: assistant) {
             editing = false
-            web.load(URLRequest(url: target))
+            go(target)
             return
         }
         guard let target = Search.url(for: input) else { return }
         editing = false
-        web.load(URLRequest(url: target))
+        go(target)
     }
 
     /// Only ever over https — filling a saved password into a plaintext page hands it to
     /// anyone on the path, and saving one from there means it was already exposed.
     private var secureHost: String? {
-        guard let u = web.url, u.scheme == "https", let h = u.host else { return nil }
+        guard let u = existingWeb?.url, u.scheme == "https", let h = u.host else { return nil }
         return h
     }
 
@@ -1579,9 +1632,9 @@ struct TitleReveal: Equatable, Sendable {
         fillChosen(host: choice.host, account: choice.accounts[choice.selected])
     }
 
-    func reload()     { web.reload() }
-    func hardReload() { web.reloadFromOrigin() }
-    func stop()       { web.stopLoading(); loading = false }
+    func reload()     { if easelSession == nil { existingWeb?.reload() } }
+    func hardReload() { if easelSession == nil { existingWeb?.reloadFromOrigin() } }
+    func stop()       { existingWeb?.stopLoading(); loading = false }
 
     /// ⌥⌘U. ponytail: WebKit has no view-source: handler, so this is the page's own HTML
     /// in a <pre>. No syntax highlighting — that is what the inspector is for.
@@ -1599,8 +1652,8 @@ struct TitleReveal: Equatable, Sendable {
                 + "white-space:pre-wrap;word-break:break-word'>\(escaped)</pre>", baseURL: nil)
         }
     }
-    func back()    { web.goBack() }
-    func forward() { web.goForward() }
+    func back()    { existingWeb?.goBack() }
+    func forward() { existingWeb?.goForward() }
 
     /// `target="_blank"` and `window.open` — a tab beside this one, or a Little Vane for a
     /// popup that asked to be one. See Popups.swift for which, and why.
@@ -1746,6 +1799,7 @@ struct Stash {
             // The tab being left behind starts its idle clock now, not when it was opened.
             if let old = tabs.first(where: { $0.id == oldValue }) {
                 old.lastActive = .now
+                if oldValue != current { old.easelSession?.liveItems.removeAll() }
                 old.closeChooser(.tabSwitch)   // a list anchored to a page nobody is looking at
             }
             // Selecting a pane by any route at all — ⌘1–9, ⌃⇥, ⌥⌘↑↓, a favourite tile, the
@@ -2063,7 +2117,7 @@ struct Stash {
             let urls = await InstantLinks.targets(for: input, isPrivate: isPrivate)
             guard let first = urls.first else { return }
             tab.editing = false
-            tab.web.load(URLRequest(url: first))
+            tab.go(first)
             let keep = tab.id
             for u in urls.dropFirst() { newTab(u) }
             current = keep          // newTab focuses what it opens; undo that

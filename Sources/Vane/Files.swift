@@ -237,6 +237,9 @@ extension Tab {
     /// that root and do not load. Upgrade path is `NSOpenPanel` on the folder, which is the
     /// only way the sandbox hands one over.
     func go(_ url: URL) {
+        if routeEasel(url) { return }
+        if url.scheme?.lowercased() == "vane", url.host?.lowercased() == "easel" { return }
+        leaveEasel()
         // Before the load, not after it: `didStartProvisionalNavigation` is a runloop turn
         // away and `WKWebView.url` is further still, and the width of that gap is the whole
         // point of the flag. See `Tab.hasEverLoaded`.

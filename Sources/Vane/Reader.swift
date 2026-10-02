@@ -85,7 +85,7 @@ import WebKit
     static func toggle(_ tab: Tab) { isOn(tab) ? exit(tab) : enter(tab) }
 
     static func enter(_ tab: Tab) {
-        guard !isOn(tab) else { return }
+        guard tab.easelID == nil, !isOn(tab) else { return }
         let id = tab.id
         Task {
             guard let e = await extract(from: tab.web), isEnough(words: e.words) else {

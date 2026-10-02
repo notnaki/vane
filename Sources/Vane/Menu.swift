@@ -58,7 +58,7 @@ import AppKit
 /// reached whatever view was first responder — the sidebar's chrome, or the command bar's
 /// field — so this asks the active tab's web view for its own print operation instead.
 @MainActor private func printPage() {
-    guard let store = Windows.current, let web = store.active?.web,
+    guard let store = Windows.current, let web = store.active?.existingWeb,
           let window = store.window else { return }
     let op = web.printOperation(with: .shared)
     // WebKit hands back a print view with no size; left alone it prints a blank sheet.
@@ -167,10 +167,10 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 
 @MainActor private func developItems() -> [NSMenuItem] {
     let inspector = item(.showWebInspector) {
-        Inspector.show(Windows.current?.active?.web)
+        Inspector.show(Windows.current?.active?.existingWeb)
     }
     let console = item(.showJavaScriptConsole) {
-        Inspector.showConsole(Windows.current?.active?.web)
+        Inspector.showConsole(Windows.current?.active?.existingWeb)
     }
     let developer = item(.toggleDeveloperMode) {
         if let tab = Windows.current?.active { DeveloperMode.toggle(tab) }
@@ -490,7 +490,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 /// defaults to, written by WebKit itself. A "Page Source"/"PDF" picker is three more code
 /// paths for a menu item nobody visits twice.
 @MainActor private func savePageAs() {
-    guard let tab = Windows.current?.active, let url = tab.currentURL else { return }
+    guard let tab = Windows.current?.active, tab.easelID == nil, let url = tab.currentURL else { return }
     let panel = NSSavePanel()
     let base = TidyTitles.title(for: tab)
     panel.nameFieldStringValue = (base.isEmpty ? (url.host ?? "Page") : base) + ".webarchive"
