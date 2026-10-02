@@ -1252,7 +1252,9 @@ extension TabStore {
     func livePullRequest(_ id: Tab.ID) -> GitHub.MenuPR? {
         guard let tab = tabs.first(where: { $0.id == id }), tab.kind == .pinned,
               let folder = pins.folder(holding: id.uuidString),
-              let home = tab.pinnedURL?.absoluteString else { return nil }
+              let home = tab.pinnedURL?.absoluteString,
+              pins.children(of: folder.id).first(where: { rowURL($0) == home }) == id.uuidString
+        else { return nil }
         return GitHub.menuPR(row: home, in: folder)
     }
 

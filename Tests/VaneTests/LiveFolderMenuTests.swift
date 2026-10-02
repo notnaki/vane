@@ -22,6 +22,33 @@ final class LiveFolderMenuTests: XCTestCase {
 }
 
 @MainActor final class LiveFolderArchiveTests: XCTestCase {
+    func testManualDuplicateOfOwnedPRKeepsOrdinaryMenuAndCannotDismissGeneratedRow() {
+        TestEnvironment.prepare()
+        let store = TabStore(profileID: UUID(), session: [])
+        defer {
+            store.tabs.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+            Store.forget(store.profileID)
+        }
+        let url = URL(string: "https://github.com/notnaki/vane/pull/195")!
+        let generated = store.newBlankTab(focus: false, as: .pinned)
+        let manual = store.newBlankTab(focus: false, as: .pinned)
+        generated.park(url: url, Parked(title: "Generated"))
+        manual.park(url: url, Parked(title: "Manual"))
+        let folder = Folder(name: "Live", live: .github(GitHubQuery()), owned: [url.absoluteString])
+        store.pins = Pins(entries: [
+            .init(row: .folder(folder), parent: nil),
+            .init(row: .tab(generated.id.uuidString), parent: folder.id),
+            .init(row: .tab(manual.id.uuidString), parent: folder.id)
+        ])
+        XCTAssertNotNil(store.livePullRequest(generated.id))
+        XCTAssertNil(store.livePullRequest(manual.id))
+        store.archivePullRequest(manual.id)
+        XCTAssertEqual(store.tabs.count, 2)
+        XCTAssertTrue(store.pins.folder(folder.id)?.dismissed?.isEmpty ?? true)
+        XCTAssertTrue(Archive.shared(for: store.profileID).entries.isEmpty)
+    }
+
     func testArchiveRemovesParkedPRAndPersistsDismissalAndCanonicalArchive() throws {
         TestEnvironment.prepare()
         let store = TabStore(profileID: UUID(), session: [])
