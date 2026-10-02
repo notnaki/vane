@@ -1663,17 +1663,22 @@ struct Stash {
     private var suggestTask: Task<Void, Never>?
 
     func suggest(_ query: String) {
-        let local = isPrivate ? [] : history.suggest(query)
-        suggestions = local
-        suggestionIndex = -1
         suggestTask?.cancel()
-        // Remote completions land later and only widen the list; the local half is already
-        // drawn, and suggestionIndex is left alone so a late response cannot move the
-        // user's arrow-key selection out from under them.
-        suggestTask = Task { [isPrivate] in
-            let merged = await SearchSuggestions.merged(query, local: local, isPrivate: isPrivate)
+        if !suggestions.isEmpty { suggestions = [] }
+        if suggestionIndex != -1 { suggestionIndex = -1 }
+        guard !isPrivate, query.trimmingCharacters(in: .whitespaces).count >= 2 else { return }
+        let history = history
+        suggestTask = Task { [weak self] in
+            try? await Task.sleep(for: LocalSuggestionReader.debounce)
             guard !Task.isCancelled else { return }
-            suggestions = merged
+            let local = await history.suggestAsync(query)
+            guard !Task.isCancelled else { return }
+            self?.suggestions = local
+            guard SearchSuggestions.shouldSend(query) else { return }
+            // Later completions widen the list without resetting the arrow selection.
+            let merged = await SearchSuggestions.merged(query, local: local)
+            guard !Task.isCancelled else { return }
+            if self?.suggestions != merged { self?.suggestions = merged }
         }
     }
 

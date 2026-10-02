@@ -13,6 +13,7 @@ let package = Package(
                 .linkedFramework("WebKit"),
                 .linkedLibrary("sqlite3"),
             ]
-        )
+        ),
+        .testTarget(name: "VaneTests", dependencies: ["vane"])
     ]
 )
