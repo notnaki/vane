@@ -621,6 +621,8 @@ private struct Shortcuts: View {
 /// hovers over the page (find, the save-password prompt) inside its clip.
 struct WebCard: View {
     @EnvironmentObject var store: TabStore
+    /// Little Vane matches this gap to the inset above its toolbar pills.
+    var topGap: CGFloat = Look.cardGap
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -695,7 +697,8 @@ struct WebCard: View {
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
         .padding(.leading, store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap)
-        .padding([.top, .trailing, .bottom], Look.cardGap)
+        .padding(.top, topGap)
+        .padding([.trailing, .bottom], Look.cardGap)
     }
 }
 
