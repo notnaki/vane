@@ -733,7 +733,7 @@ private struct LoadingBar: View {
             Capsule().fill(Look.loadingTrack)
             GeometryReader { geo in
                 Capsule()
-                    .fill(.tint)
+                    .fill(Color(white: 0.5))
                     .frame(width: geo.size.width * tab.progress)
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: tab.progress)
             }
