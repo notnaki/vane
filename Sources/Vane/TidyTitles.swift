@@ -486,11 +486,8 @@ import Foundation
     /// swipe is built from `spaces.json`, and for the width of that swipe it used to call
     /// every row by its host. Same ladder as `title(for:)`, with the sidecar's saved title
     /// standing in for the live one, and the host only when nothing has ever named the row.
-    static func previewName(for url: URL, in profileID: UUID, saved: String?) -> String {
-        pick(override: override(for: url, in: profileID),
-             tidied: enabled ? dict(cacheKey, profileID)[url.absoluteString] : nil,
-             recorded: pinnedName(for: url, in: profileID),
-             raw: previewRaw(saved: saved, url: url), host: url.host())
+    static func previewName(for url: URL, in profileID: UUID, saved: String?, stays: Bool = true) -> String {
+        rowName(for: url, in: profileID, raw: previewRaw(saved: saved, url: url), stays: stays)
     }
 
     /// The bottom rung: the saved title when it is a real one, else the host without its
@@ -507,16 +504,21 @@ import Foundation
     /// is not us, and Arc keeps it across an unpin too.
     static func title(for tab: Tab) -> String {
         guard let url = key(for: tab) else { return tab.title }
-        let typed = override(for: url, in: tab.profileID)
+        return rowName(for: url, in: tab.profileID, raw: tab.title, stays: tab.stays)
+    }
+
+    /// The real row and its swipe preview must agree about which titles can be tidied.
+    private static func rowName(for url: URL, in profileID: UUID, raw: String, stays: Bool) -> String {
+        let typed = override(for: url, in: profileID)
         // The name a row was pinned under is not an AI feature — it is a page title, written
         // down — so the toggle does not withhold it. What the toggle withholds is the tidier:
         // the cached name, and the cleaner `pick` runs over whatever it ends up showing.
-        let recorded = tab.stays ? pinnedName(for: url, in: tab.profileID) : nil
-        guard enabled, tab.stays else { return typed ?? recorded ?? tab.title }
+        let recorded = stays ? pinnedName(for: url, in: profileID) : nil
+        guard enabled, stays else { return typed ?? recorded ?? raw }
         return pick(override: typed,
-                    tidied: dict(cacheKey, tab.profileID)[url.absoluteString],
+                    tidied: dict(cacheKey, profileID)[url.absoluteString],
                     recorded: recorded,
-                    raw: tab.title, host: url.host())
+                    raw: raw, host: url.host())
     }
 
     /// Fill the cache for a pinned tab, asking the model only if it has to. Fire and forget:

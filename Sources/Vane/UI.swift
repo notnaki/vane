@@ -3499,11 +3499,18 @@ struct LivePRTitle: View {
     let title: String
     var reveal = TitleReveal()
     var pr: GitHub.Row?
+    var developerEndpoint: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ShimmerTitle(title: title, reveal: reveal)
-            if let pr, !pr.subtitle.isEmpty {
+            if let developerEndpoint {
+                Text(developerEndpoint)
+                    .font(Look.small)
+                    .foregroundStyle(Look.inkTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } else if let pr, !pr.subtitle.isEmpty {
                 Text(pr.subtitle)
                     .font(Look.small)
                     .foregroundStyle(Look.inkTertiary)
@@ -3533,7 +3540,8 @@ private struct TabRow: View {
             if store.renamingTab == tab.id {
                 RenameField(store: store, tab: tab)
             } else {
-                LivePRTitle(title: TidyTitles.title(for: tab), reveal: tab.titleReveal, pr: pr)
+                LivePRTitle(title: TidyTitles.title(for: tab), reveal: tab.titleReveal, pr: pr,
+                            developerEndpoint: tab.developer ? DeveloperMode.endpoint(tab.currentURL) : nil)
             }
         } trailing: {
             TabRowTrailing(store: store, tab: tab)
@@ -3541,8 +3549,7 @@ private struct TabRow: View {
         // Arc's hazard tape: a Developer Mode tab is marked on its row, not on the page.
         .overlay {
             if tab.developer {
-                RoundedRectangle(cornerRadius: Look.pillRadius)
-                    .strokeBorder(Look.developerYellow, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                DeveloperTabBorder()
             }
         }
         .inStrip(tab.id, strip)
