@@ -53,6 +53,15 @@ its browsing data and download records are not restored after quitting.
 Some features depend on macOS services, site behavior, or a signed distribution
 build. The [known gaps](#known-gaps) section gives the practical limits.
 
+Capture part of a page with **⌘⇧2**, **File → Capture a Portion of This Page**,
+the camera row in Site Controls, or by searching for **Capture** in the command
+palette. Click a highlighted element or drag a rectangle over the visible page;
+**Escape** cancels. **Return** captures the highlighted region or the visible page.
+The preview offers **Copy**, **Save PNG**, and **Share**. Captures use WebKit's page
+pixels at the display's resolution and need no screen-recording permission. An
+embedded frame is selected as a whole; custom drags can crop inside it. Captures
+are saved only when you choose an output action, including in private windows.
+
 Battery Saver lives in **Settings → Advanced → Performance**. Choose **Off**,
 **Automatic** (below 20% battery while unplugged), or **Always On**. While active,
 eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar
@@ -91,6 +100,35 @@ Shift-hover previews still require Previews to be enabled; holding Command or
 Option hides the preview so it does not cover the opening hint. Floating windows
 keep their existing one-page behavior and do not grow Split Views.
 
+## AI providers and your own keys
+
+
+Settings → Max lets you choose Apple (on-device), Groq, OpenAI, OpenRouter, or an
+OpenAI-compatible HTTPS API. For a cloud provider, enter its model ID, paste your own
+API key, choose **Save Key**, then **Test Connection**. Groq defaults to
+`openai/gpt-oss-20b`; its free account is enough to get started, subject to its quotas.
+OpenAI and other providers may charge for usage. Custom providers need a base URL such
+as `https://api.example.com/v1` and support for JSON chat completions.
+
+Every person uses their own key. Keys are stored as local, non-synchronizing macOS
+Keychain items, separately for each provider and custom endpoint. No key is bundled
+with the browser, committed to the repository, or sent through a Vane server. Test
+instances use separate credential namespaces. **Remove Key** deletes the selected
+provider's local credential.
+
+Cloud AI handles pinned tab names, download names, and tab grouping. It sends titles,
+hostnames, and download naming metadata (with URL queries and fragments removed) to
+your chosen provider; it does not upload file contents. Private windows never use cloud
+AI. Page summaries continue to use Apple's on-device model. Cloud requests are bounded,
+cancellable, and fall back to ordinary title cleanup and grouping on errors or quotas.
+
+The cloud transport checks use an offline HTTP fixture:
+
+```sh
+scripts/check-cloud-ai.sh
+scripts/check-cloud-ai.sh --keychain # optional isolated local Keychain integration
+```
+
 ## Command line
 
 The executable is `.build/release/vane` after `swift build -c release`. These
@@ -121,7 +159,7 @@ provide.
 
 ## Test a change
 
-The project has one Swift executable target and no XCTest target. Its checks are
+The project has one Swift executable target, XCTest regressions, and inline checks
 run through `selfcheck`; routine CI builds the debug configuration, runs the pure
 checks, assembles the debug app, and tests the DMG packager. Debug builds avoid
 whole-module release optimization on every change. CI caches `.build` by macOS
@@ -143,7 +181,23 @@ swift build -c debug
 
 `swift test` runs isolated search regressions, including rapid typing against a
 large history database, keyboard selection, local and remote cancellation, live
-history changes, and private windows.
+history changes, and private windows. GitHub credential regressions exercise the real
+Live Folder response handler with an isolated credential-storage fixture:
+
+```sh
+swift test --filter LiveCredentialTests
+python3 scripts/check-live-credential-persistence.py
+```
+
+A rejected GitHub credential stays in Keychain while Edit Live Folder offers
+reconnection. Ordinary refreshes continue, and a successful retry clears the warning.
+Only explicit sign-out or other user-requested credential removal deletes it.
+For a real-session check, reconnect in the installed app, quit normally, relaunch the
+same signed build, and refresh the folder. If authentication fails again, Console's
+`[vane] GitHub` messages distinguish missing/inaccessible Keychain credentials from
+HTTP 401 responses and record GitHub's request ID. These diagnostics never log tokens
+or response bodies. A genuinely revoked or expired token still needs reconnection;
+retaining it does not make GitHub accept it.
 
 Before shipping, also check the release configuration:
 

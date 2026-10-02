@@ -803,8 +803,8 @@ enum Look {
     static let tileAppearScale: CGFloat = 0.6
 
     // The AI rename shimmer: a pinned row's long page title being replaced by the short name
-    // the on-device model came back with. Arc marks this the same way — the old name goes,
-    // the new one is wiped in from the left with a spark riding the edge — because a row
+    // the on-device model came back with. The old name fades and the new one is wiped
+    // in from the left, because a row
     // that renames itself silently, seconds after the page loaded, reads as the wrong tab.
     //
     // Only ever for a *model* answer. An ordinary title change — a page navigating, a
@@ -819,10 +819,6 @@ enum Look {
     /// The old name leaving. Shorter than the wipe, so the two overlap rather than queue.
     static let shimmerFadeDuration: Double = 0.18
     static let shimmerFade = Animation.easeOut(duration: shimmerFadeDuration)
-    /// The spark that rides the wiping edge, and how solid it is allowed to get. One glyph,
-    /// no particles: this is a row 36pt tall in a list of them.
-    static let shimmerSparkle = "sparkle"
-    static let shimmerSparkleOpacity: Double = 0.9
 
     // The recent tab switcher (⌃⇥): up to five cards in a row over the page, a favicon
     // over two lines of title each.
@@ -960,8 +956,6 @@ extension Look {
                     shimmerFadeDuration > 0 && shimmerFadeDuration < shimmerDuration))
         out.append(("the wiping edge is soft, and still an edge",
                     shimmerEdge > 0 && shimmerEdge < 0.5))
-        out.append(("the spark never draws over the title at full strength",
-                    shimmerSparkleOpacity > 0 && shimmerSparkleOpacity <= 1))
         // An extension action's badge, which is drawn over the 16pt icon it belongs to.
         out.append(("an action badge is shorter than the icon it sits on", badgeHeight < rowIcon))
         out.append(("…and a full one cannot reach the glyph beside it",

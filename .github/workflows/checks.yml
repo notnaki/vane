@@ -66,6 +66,9 @@ jobs:
       - name: Release workflow fixture
         run: python3 scripts/test-release-workflow.py
 
+      - name: Cloud AI transport and privacy checks
+        run: scripts/check-cloud-ai.sh
+
       - name: Bundle
         run: ./make-app.sh debug
 
