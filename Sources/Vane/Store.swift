@@ -3,7 +3,7 @@ import SQLite3
 
 private let TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-struct Suggestion: Identifiable, Equatable {
+struct Suggestion: Identifiable, Equatable, Sendable {
     var id: String { url }
     let url: String
     let title: String
@@ -115,8 +115,12 @@ struct BookmarkImportResult: Equatable, Sendable {
         return base
     }
 
+    private let suggestionReader: LocalSuggestionReader
+
     init(path: String? = nil) {
-        sqlite3_open(path ?? Store.directory.appendingPathComponent("vane.db").path, &db)
+        let path = path ?? Store.directory.appendingPathComponent("vane.db").path
+        suggestionReader = LocalSuggestionReader(path: path)
+        sqlite3_open(path, &db)
         exec("""
         PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS visits (
@@ -522,31 +526,12 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// Bookmarks first, then history ranked by visit count and recency — the ordering that
     /// makes an address bar feel like it knows you. Duplicates of a bookmarked url are dropped.
     func suggest(_ query: String, limit: Int = 8) -> [Suggestion] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard q.count >= 2 else { return [] }
-        // LIKE with escaped wildcards: a user typing "100%" must not match everything.
-        let like = "%" + q.replacingOccurrences(of: "\\", with: "\\\\")
-                          .replacingOccurrences(of: "%", with: "\\%")
-                          .replacingOccurrences(of: "_", with: "\\_") + "%"
-        var out: [Suggestion] = []
-        var seen = Set<String>()
-        run("""
-            SELECT url, title FROM bookmarks
-            WHERE url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
-            ORDER BY at DESC LIMIT ?
-            """, [like, like, limit]) {
-            let s = Suggestion(url: self.text($0, 0), title: self.text($0, 1), bookmarked: true)
-            if seen.insert(s.url).inserted { out.append(s) }
-        }
-        run("""
-            SELECT url, title, COUNT(*) AS hits, MAX(at) AS last FROM visits
-            WHERE url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
-            GROUP BY url ORDER BY hits DESC, last DESC LIMIT ?
-            """, [like, like, limit]) {
-            let s = Suggestion(url: self.text($0, 0), title: self.text($0, 1), bookmarked: false)
-            if seen.insert(s.url).inserted { out.append(s) }
-        }
-        return Array(out.prefix(limit))
+        LocalSuggestionReader.read(db, query: query, limit: limit)
+    }
+
+    /// The address bar uses its own read-only connection, away from the input thread.
+    func suggestAsync(_ query: String, limit: Int = 8) async -> [Suggestion] {
+        await suggestionReader.suggest(query, limit: limit)
     }
 }
 

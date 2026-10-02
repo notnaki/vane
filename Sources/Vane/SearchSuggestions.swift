@@ -130,8 +130,9 @@ import Foundation
     /// Completions for `query` from the current engine. Empty — never a throw — for a
     /// suppressed query, an engine with no endpoint, a timeout, a broken body, or a
     /// response that a newer query has already made stale.
-    static func fetch(_ query: String, isPrivate: Bool = false) async -> [String] {
-        guard shouldSend(query, isPrivate: isPrivate) else { return [] }
+    static func fetch(_ query: String, isPrivate: Bool = false,
+                      using requestSession: URLSession? = nil) async -> [String] {
+        guard !Task.isCancelled, shouldSend(query, isPrivate: isPrivate) else { return [] }
         let id = Search.current.id
         guard let endpoint = endpoints[id],
               let url = URL(string: endpoint.prefix + encode(query)) else { return [] }
@@ -142,12 +143,19 @@ import Foundation
             // The debounce sits inside the cancellable Task, so a keystroke superseded
             // within the window never opens a connection at all.
             try? await Task.sleep(for: debounce)
-            guard !Task.isCancelled, let (data, _) = try? await session.data(from: url) else { return [] }
+            guard !Task.isCancelled,
+                  let (data, _) = try? await (requestSession ?? session).data(from: url) else { return [] }
             return parse(data, engine: id)
         }
         inFlight = task
-        let phrases = await task.value
-        guard isCurrent(token) else { return [] }
+        // This task is unstructured, so cancellation of the bar's originating task
+        // must explicitly cancel both its debounce and any active URLSession request.
+        let phrases = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        guard !Task.isCancelled, isCurrent(token) else { return [] }
         return phrases
     }
 

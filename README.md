@@ -112,6 +112,10 @@ swift build -c debug
 ./scripts/test-build-dmg.sh
 ```
 
+`swift test` runs isolated search regressions, including rapid typing against a
+large history database, keyboard selection, local and remote cancellation, live
+history changes, and private windows.
+
 Before shipping, also check the release configuration:
 
 ```sh

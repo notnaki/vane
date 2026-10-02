@@ -141,6 +141,13 @@ enum Palette {
         commandHeld || mode == .newTab || !hasActiveTab
     }
 
+    /// Selection after a result refresh. Query changes reset; later results retain selection.
+    static func selectedIndex(previous: Int, selectedID: String?, rowIDs: [String], reset: Bool) -> Int {
+        if reset { return 0 }
+        if let selectedID, let kept = rowIDs.firstIndex(of: selectedID) { return kept }
+        return min(previous, max(0, rowIDs.count - 1))
+    }
+
     static func check() -> [(String, Bool)] {
         // Force-unwrapped inside the assertions on purpose: a nil here is the failure the
         // line above it already checks for, so it can only fire if the checks disagree.
@@ -549,8 +556,7 @@ struct CommandField: NSViewRepresentable {
 
     @State private var query = ""
     @State private var index = 0
-    /// Recomputed on each keystroke rather than per render: `Store.suggest` is a LIKE over
-    /// history, and the body runs far more often than the query changes.
+    /// In-memory rows refresh immediately; database suggestions arrive separately.
     @State private var rows: [PaletteRow] = []
     @State private var hover: String?
     /// Arc's ⇥: the bar narrows to its actions catalogue and says so with a scope chip in
@@ -892,6 +898,7 @@ struct CommandField: NSViewRepresentable {
     // MARK: The list
 
     private func refresh(reset: Bool = true) {
+        let selectedID = rows.indices.contains(index) ? rows[index].id : nil
         var out: [PaletteRow] = []
         func matchingTabs() -> [PaletteRow] {
             Palette.rank(query, tabRows(), key: { $0.title + " " + $0.detail })
@@ -934,8 +941,15 @@ struct CommandField: NSViewRepresentable {
         }
         // A cap so a bar over a hundred open tabs stays a list and not a scroll marathon —
         // but not while ⇥ is on, where the tail of the catalogue is the whole point.
-        rows = actionsOnly ? out : Array(out.prefix(24))
-        index = reset ? 0 : min(index, max(0, rows.count - 1))
+        rows = (actionsOnly ? out : Array(out.prefix(24))).map { row in
+            var row = row
+            if row.id.hasPrefix("archived:") {
+                row.image = URL(string: row.detail).flatMap(store.favicons.icon)
+            }
+            return row
+        }
+        index = Palette.selectedIndex(previous: index, selectedID: selectedID,
+                                      rowIDs: rows.map(\.id), reset: reset)
         guard reset else { return }
         axAnnounce(rows.isEmpty ? "No results" : "\(rows.count) result\(rows.count == 1 ? "" : "s")")
     }
@@ -1049,7 +1063,7 @@ struct CommandField: NSViewRepresentable {
         let archive = Archive.shared(for: store.profileID)
         return archive.entries.map { entry in
             PaletteRow(id: "archived:" + entry.url, icon: "archivebox",
-                       image: URL(string: entry.url).flatMap(store.favicons.icon),
+                       // Resolve icons only after ranking and the displayed-row cap.
                        title: entry.title.isEmpty ? entry.url : entry.title,
                        detail: entry.url,
                        trailing: "Restore Tab", kind: "Archived tab") { _ in

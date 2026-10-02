@@ -57,6 +57,9 @@ jobs:
       - name: Checks
         run: ./.build/debug/vane selfcheck --pure
 
+      - name: Search typing regressions
+        run: swift test
+
       - name: CLI password import errors
         run: bash scripts/test-cli-import.sh .build/debug/vane
 
