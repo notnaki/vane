@@ -34,9 +34,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .build
-          key: swift-debug-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
+          key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
           restore-keys: |
-            swift-debug-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+            swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+
+      # Checkout gives even unchanged inputs new mtimes. Restore only content-matching
+      # timestamps so Swift can reuse their object files without hiding source changes.
+      - name: Restore unchanged source timestamps
+        run: python3 scripts/ci-source-state.py restore
+
+      - name: Source timestamp cache fixture
+        run: python3 scripts/test-ci-source-state.py
 
       # Debug avoids whole-module release optimization on every PR. Always ask SwiftPM
       # to build, even on an exact cache hit, so it validates the restored outputs.
@@ -57,6 +65,9 @@ jobs:
 
       - name: Bundle
         run: ./make-app.sh debug
+
+      - name: Save source timestamps for the build cache
+        run: python3 scripts/ci-source-state.py save
 
       - name: DMG package
         run: ./scripts/test-build-dmg.sh

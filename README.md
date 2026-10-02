@@ -98,7 +98,9 @@ checks, assembles the debug app, and tests the DMG packager. Debug builds avoid
 whole-module release optimization on every change. CI caches `.build` by macOS
 architecture, Swift/Xcode/SDK versions, and package/source hashes, and cancels
 superseded runs for the same branch or PR. SwiftPM still validates the build on
-every cache hit. The release workflow builds and smoke-tests the optimized app;
+every cache hit. A timestamp snapshot in the cache restores the previous modification
+time only when an input's SHA-256 still matches, letting unchanged files stay
+incremental across fresh checkouts. The release workflow builds and smoke-tests the optimized app;
 its build products are never cached because they can contain the OAuth secret.
 
 To run the same checks configuration locally:
