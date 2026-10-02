@@ -237,10 +237,11 @@ struct ToastHost: View {
             Button(action.title) { toasts.act(toast) }
                 .buttonStyle(.plain)
                 .font(Look.rowText)
-                .fixedSize()            // a verb is a word; it never truncates
+                .lineLimit(2)
+                .fixedSize(horizontal: sidebar.width >= 250, vertical: true)
                 .foregroundStyle(Look.barText)
                 .padding(.horizontal, Look.inset)
-                .frame(height: Look.control)
+                .frame(minHeight: Look.control)
                 .background(Look.barSelected, in: .capsule)
         }
         // Every toast, not only the sticky one: the pointer resting on a pill already stops

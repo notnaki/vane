@@ -1040,7 +1040,7 @@ extension Look {
         }
         let column = SidebarWidth.minimum - inset * 2 - pillInset - inset / 2
         out.append(("a narrow toast's controls fit below its sentence",
-                    measure("Undo") + inset * 3 + rowTarget < column))
+                    measure("Releases") + inset * 3 + rowTarget < column))
         for sentence in ["Vane v10.10.100 is available", "Restart to update", "Update failed",
                          "Couldn't move Vane to Applications",
                          "This copy isn't signed for updates",
