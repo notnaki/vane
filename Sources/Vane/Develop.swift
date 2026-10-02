@@ -29,16 +29,37 @@ import WebKit
         _ = inspector.perform(sel)
     }
 
-    /// WebKit persists the inspector's dock side in the host app's own defaults.
+    /// WebKit persists the inspector's dock side and size in the host app's own defaults.
     /// 0 = bottom, 1 = right, 2 = left. Registered rather than set, so dragging the
-    /// inspector somewhere else writes a real value that wins from then on.
+    /// inspector or resizing it writes a real value that wins from then on.
+    /// 500pt is WebKit’s minimum side-docked width; bottom docking starts at 300pt.
     /// `.standard` and not `UserDefaults.vane`: WebKit reads this key out of the host app's
     /// own domain itself, so registering it anywhere else registers it where nobody looks.
     /// It is a default, never a write, so a test instance leaves nothing behind either way.
     static func configure() {
         UserDefaults.standard.register(defaults: [
-            "__WebInspectorPageGroupLevel1__.WebKit2InspectorAttachmentSide": 1
+            "__WebInspectorPageGroupLevel1__.WebKit2InspectorAttachmentSide": 1,
+            "__WebInspectorPageGroupLevel1__.WebKit2InspectorAttachedWidth": 500,
+            "__WebInspectorPageGroupLevel1__.WebKit2InspectorAttachedHeight": 300
         ])
+    }
+
+    /// WebKit mounts a docked inspector beside its page. Remove that sibling before
+    /// the page leaves its host; detached inspector windows can keep inspecting.
+    static func hideAttached(to web: WKWebView, in host: NSView) {
+        let selector = Selector(("_inspector"))
+        guard web.responds(to: selector),
+              let inspector = web.perform(selector)?.takeUnretainedValue(),
+              inspector.responds(to: Selector(("inspectorWebView"))),
+              let frontend = inspector.value(forKey: "inspectorWebView") as? WKWebView,
+              frontend.superview === host,
+              inspector.responds(to: Selector(("hide"))) else { return }
+        if inspector.responds(to: Selector(("isElementSelectionActive"))),
+           inspector.value(forKey: "elementSelectionActive") as? Bool == true,
+           inspector.responds(to: Selector(("toggleElementSelection"))) {
+            _ = inspector.perform(Selector(("toggleElementSelection")))
+        }
+        _ = inspector.perform(Selector(("hide")))
     }
 
     static func show(_ web: WKWebView?)        { web.map { call($0, "show") } }
