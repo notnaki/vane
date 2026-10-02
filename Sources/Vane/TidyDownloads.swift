@@ -165,14 +165,14 @@ import WebKit
     /// only sees the leftovers — a junk name on a page with no usable title and no usable
     /// URL. Its answer is re-validated here rather than trusted, because it has just read a
     /// page that wanted it to say something else.
-    static func suggest(suggested: String, pageTitle: String?, sourceURL: URL) async -> String? {
+    static func suggest(suggested: String, pageTitle: String?, sourceURL: URL, isPrivate: Bool = false) async -> String? {
         if let deterministic = clean(suggested: suggested, pageTitle: pageTitle, sourceURL: sourceURL) {
             return deterministic
         }
         let (stem, suffix) = parts(of: suggested)
         guard isJunk(withoutTrailingHash(decoded(stem))) else { return nil }  // fine as-is: do not spend 8s
-        guard let answer = await AppleAI.filename(for: suggested, pageTitle: pageTitle,
-                                                  sourceURL: sourceURL) else { return nil }
+        guard let answer = await BrowserAI.filename(for: suggested, pageTitle: pageTitle,
+                                                  sourceURL: sourceURL, isPrivate: isPrivate) else { return nil }
         // AppleAI.safeFilename already ran. It is not the thing to rely on: it re-derives the
         // extension from a string *it* was handed, and it allows an interior dot. Take only
         // the stem out of its answer and put our own extension back.
@@ -256,14 +256,15 @@ import WebKit
     /// title comes from whatever `remember` parked.
     @discardableResult
     static func rename(_ item: Downloads.Item, pageTitle: String? = nil,
-                       in downloads: Downloads? = nil) async -> Bool {
+                       in downloads: Downloads? = nil, isPrivate: Bool = false) async -> Bool {
         guard let from = item.url, FileManager.default.fileExists(atPath: from.path) else { return false }
         let title = pageTitle ?? itemTitles.removeValue(forKey: item.id)
         // Deliberately the name **on disk**, not the name the server suggested: between the
         // two, Downloads may already have uniquified it, and the file we are about to move is
         // the truth.
         guard let better = await suggest(suggested: from.lastPathComponent, pageTitle: title,
-                                         sourceURL: item.source ?? from) else { return false }
+                                         sourceURL: item.source ?? from,
+                                         isPrivate: isPrivate || downloads?.profileID == Profile.incognito.id) else { return false }
         return apply(better, to: item, in: downloads)
     }
 

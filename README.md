@@ -100,6 +100,35 @@ Shift-hover previews still require Previews to be enabled; holding Command or
 Option hides the preview so it does not cover the opening hint. Floating windows
 keep their existing one-page behavior and do not grow Split Views.
 
+## AI providers and your own keys
+
+
+Settings → Max lets you choose Apple (on-device), Groq, OpenAI, OpenRouter, or an
+OpenAI-compatible HTTPS API. For a cloud provider, enter its model ID, paste your own
+API key, choose **Save Key**, then **Test Connection**. Groq defaults to
+`openai/gpt-oss-20b`; its free account is enough to get started, subject to its quotas.
+OpenAI and other providers may charge for usage. Custom providers need a base URL such
+as `https://api.example.com/v1` and support for JSON chat completions.
+
+Every person uses their own key. Keys are stored as local, non-synchronizing macOS
+Keychain items, separately for each provider and custom endpoint. No key is bundled
+with the browser, committed to the repository, or sent through a Vane server. Test
+instances use separate credential namespaces. **Remove Key** deletes the selected
+provider's local credential.
+
+Cloud AI handles pinned tab names, download names, and tab grouping. It sends titles,
+hostnames, and download naming metadata (with URL queries and fragments removed) to
+your chosen provider; it does not upload file contents. Private windows never use cloud
+AI. Page summaries continue to use Apple's on-device model. Cloud requests are bounded,
+cancellable, and fall back to ordinary title cleanup and grouping on errors or quotas.
+
+The cloud transport checks use an offline HTTP fixture:
+
+```sh
+scripts/check-cloud-ai.sh
+scripts/check-cloud-ai.sh --keychain # optional isolated local Keychain integration
+```
+
 ## Command line
 
 The executable is `.build/release/vane` after `swift build -c release`. These
