@@ -755,6 +755,7 @@ private struct LoadingBar: View {
 
 private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @ObservedObject private var sidebar = SidebarWidth.shared
     /// The scroll viewport's height, so its content can be made to fill it. See below.
     @State private var scrollHeight: CGFloat = 0
@@ -808,6 +809,14 @@ private struct Sidebar: View {
             BottomRow()
         }
         .environment(\.strip, strip)
+        // SwiftUI's accessibility motion environment is read-only. Stop decorative
+        // animations here without changing the user's system accessibility setting.
+        .transaction { transaction in
+            if batterySaver.isActive {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        }
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.footerInset)
         .padding(.top, Look.topInset)
@@ -4295,11 +4304,23 @@ private struct TabIcon: View {
 
 private struct BottomRow: View {
     @EnvironmentObject var store: TabStore
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         HStack(spacing: 8) {
             LibraryButton(archive: Archive.shared(for: store.profileID),
                           downloads: Downloads.manager(for: store.profileID))
+            if batterySaver.isActive {
+                Button { SettingsWindow.show(tab: "advanced") } label: {
+                    Image(systemName: "leaf.fill")
+                        .foregroundStyle(.green)
+                        .rowTarget()
+                }
+                .buttonStyle(TactileButtonStyle())
+                .help("Battery Saver is active. Click to change it in Settings.")
+                .accessibilityLabel("Battery Saver")
+                .accessibilityValue("Active")
+            }
             Spacer(minLength: 0)
             // A private window has no Spaces — Arc's incognito has none either — so there
             // is nothing to draw dots for and nothing a `+` could make. The row keeps its

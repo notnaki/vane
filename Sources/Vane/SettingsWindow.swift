@@ -1165,6 +1165,7 @@ private struct IconPane: View {
 // MARK: - Advanced
 
 private struct AdvancedPane: View {
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @AppStorage("userAgent") private var userAgent = safariUA
     @AppStorage("inspector") private var inspector = true
     @AppStorage("homepage") private var homepage = ""
@@ -1176,6 +1177,27 @@ private struct AdvancedPane: View {
 
     var body: some View {
         Pane {
+            SettingsSection("Performance") {
+                SettingsCard {
+                    SettingsRow("Battery Saver") {
+                        Picker("Battery Saver", selection: Binding(
+                            get: { batterySaver.mode }, set: { batterySaver.setMode($0) }
+                        )) {
+                            ForEach(BatterySaver.Mode.allCases, id: \.self) {
+                                Text($0.title).tag($0)
+                            }
+                        }
+                        .labelsHidden().fixedSize()
+                    }
+                    SettingsRow("Status") {
+                        Label(batterySaver.isActive ? "Active" : "Inactive",
+                              systemImage: batterySaver.isActive ? "leaf.fill" : "leaf")
+                            .foregroundStyle(batterySaver.isActive ? Color.green : Color.secondary)
+                    }
+                    Footnote("Automatic turns on below 20% battery while unplugged. Always On keeps it active on any power source; Off disables it.")
+                    Footnote("While active, eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar motion is reduced. Active pages, pinned tabs, media, private tabs, and unfinished forms stay protected. Sleeping tabs reload when you return.")
+                }
+            }
             SettingsSection("Windows and Tabs") {
                 SettingsCard {
                     SettingsRow("Reopen windows and tabs on launch") {

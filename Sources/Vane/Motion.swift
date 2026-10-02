@@ -21,7 +21,9 @@ import SwiftUI
 
     /// System-wide Reduce Motion. Read from AppKit rather than the SwiftUI environment
     /// because the writes this guards happen in the model, where there is no environment.
-    static var reduced: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    static var reduced: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || BatterySaver.shared.isActive
+    }
 
     // MARK: Sweeping
 

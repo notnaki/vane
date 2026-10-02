@@ -36,7 +36,7 @@ a Developer ID signature and notarization; see [releasing](#releasing).
 | Browsing | Tabs, pinned tabs, multiple windows, private windows, session restore, find on page, reader mode, picture in picture, and Web Inspector. |
 | Organization | Spaces, sidebar folders, bookmarks, a searchable history window, Library, and a command palette. |
 | Data | Separate profiles, downloads, saved passwords, and import of bookmarks, history, and password CSV exports. |
-| Controls | Custom search engines and `!bang` shortcuts, per-site controls, keyboard shortcut settings, and appearance settings. |
+| Controls | Battery Saver, custom search engines and `!bang` shortcuts, per-site controls, keyboard shortcut settings, and appearance settings. |
 | Protection | WebKit content blocking, HTTPS-only mode, certificate warnings, and site permission prompts. |
 | Extras | Unpacked WebExtensions, GitHub-backed live folders, and an in-app update check for published releases. |
 
@@ -52,6 +52,14 @@ its browsing data and download records are not restored after quitting.
 
 Some features depend on macOS services, site behavior, or a signed distribution
 build. The [known gaps](#known-gaps) section gives the practical limits.
+
+Battery Saver lives in **Settings → Advanced → Performance**. Choose **Off**,
+**Automatic** (below 20% battery while unplugged), or **Always On**. While active,
+eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar
+motion is reduced. Active pages, pinned tabs, media/Picture in Picture, private tabs,
+and unfinished forms keep their existing suspension protections. A green leaf in
+the sidebar opens the setting; sleeping tabs reload when selected. The mode respects
+the existing idle-suspension preference and preserves an already shorter timeout.
 
 ### A few shortcuts
 
