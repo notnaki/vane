@@ -146,6 +146,7 @@ struct Keybinding: Codable, Hashable, Sendable {
 enum Command: String, CaseIterable, Codable, Sendable {
     // File
     case newWindow, newPrivateWindow, newTab, reopenClosedTab, closeTab, closeWindow
+    case newEasel, captureToEasel, showEasels
     case newLittleArc
     case printPage, settings
     case openFile, savePageAs, sharePage, capturePage
@@ -200,6 +201,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
 
     var title: String {
         switch self {
+        case .newEasel: "New Easel"
+        case .captureToEasel: "Capture Page to Easel"
+        case .showEasels: "Show Easels"
         case .newWindow: "New Window"
         case .newPrivateWindow: "New Private Window"
         case .newLittleArc: "New Little Vane Window"
@@ -302,7 +306,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
 
     var category: Category {
         switch self {
-        case .newWindow, .newPrivateWindow, .newTab, .newLittleArc, .reopenClosedTab,
+        case .newEasel, .captureToEasel, .showEasels, .newWindow, .newPrivateWindow, .newTab, .newLittleArc, .reopenClosedTab,
              .closeTab, .closeWindow, .printPage, .settings, .openFile, .savePageAs,
              .sharePage, .capturePage: .file
         case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious,
@@ -333,6 +337,9 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// and UI.swift hardcode today, or upgrading would silently move somebody's keys.
     var defaultBinding: Keybinding {
         switch self {
+        case .newEasel:         Keybinding("e", [.command, .option])
+        case .captureToEasel:   Keybinding("e", [.command, .shift])
+        case .showEasels:       .unassigned
         case .newWindow:        Keybinding("n", .command)
         case .newPrivateWindow: Keybinding("n", [.command, .shift])
         // Arc's ⌥⌘N. See LittleArc.swift for why it is not a system-wide hotkey.

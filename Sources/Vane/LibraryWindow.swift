@@ -16,17 +16,16 @@ import UniformTypeIdentifiers
 // MARK: - Sections
 
 /// The rail's tiles, in Arc's own order, minus the sections Vane has no feature behind —
-/// Easels and Boosts are whole features, and a tile that opens an apology is worse than no
-/// tile. `history` is the odd one: it is a button, not a pane. The searchable history
-/// already exists as a window (⌘Y) and a second copy of it would be a second thing to keep
-/// honest, so picking it raises that window and leaves the rail on whatever it was showing.
+/// Boosts remain outside the rail until implemented. `history` raises the existing
+/// searchable history window (⌘Y) and leaves the rail on its previous section.
 enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
-    case media, downloads, spaces, archived, history
+    case media, downloads, easels, spaces, archived, history
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .easels:    "Easels"
         case .media:     "Media"
         case .archived:  "Archived Tabs"
         case .downloads: "Downloads"
@@ -38,6 +37,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// Outlined symbols, at tile size: Arc's rail draws the thing itself, not a badge.
     var icon: String {
         switch self {
+        case .easels:    "paintpalette"
         case .media:     "photo.on.rectangle"
         // Not `archivebox`: that is the footer glyph that opens the Library, and a section
         // wearing the same symbol as the button that got you here reads as the same thing.
@@ -63,7 +63,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
 
     /// A private window is in no Space and owns no profile furniture, so the Spaces cards
     /// would have nothing to show and nothing they could safely move.
-    func available(private isPrivate: Bool) -> Bool { !(isPrivate && self == .spaces) }
+    func available(private isPrivate: Bool) -> Bool { !(isPrivate && (self == .spaces || self == .easels)) }
 }
 
 // MARK: - State
@@ -637,6 +637,7 @@ struct LibraryPanel: View {
         switch library.section {
         case .media:     MediaPane(downloads: Downloads.manager(for: store.profileID))
         case .downloads: DownloadsPane(downloads: Downloads.manager(for: store.profileID))
+        case .easels where !store.isPrivate: EaselsPane(repository: EaselStore.shared(profileID: store.profileID, directory: Store.directory))
         case .spaces where !store.isPrivate: SpacesPane()
         // History never becomes the section, and Spaces is not offered in a private
         // window — either way the archive is what a Library with nothing else shows.
@@ -2004,7 +2005,7 @@ extension Library {
              LibrarySection.allCases.allSatisfy { !$0.icon.isEmpty && !$0.title.isEmpty }),
             ("the rail is in Arc's order, Media first and History last",
              LibrarySection.allCases.map(\.rawValue)
-                == ["media", "downloads", "spaces", "archived", "history"]),
+                == ["media", "downloads", "easels", "spaces", "archived", "history"]),
             ("every section's search field names what it is searching",
              LibrarySection.allCases.allSatisfy { $0.searchPrompt.hasPrefix("Search ") }),
             ("…and the archive's says Archive, which is what fits the column",
@@ -2013,10 +2014,10 @@ extension Library {
             ("only the two lists with a filter offer a Filter chip",
              LibrarySection.allCases.filter(\.filterable).map(\.rawValue)
                 == ["downloads", "archived"]),
-            ("a private window is offered no Spaces section",
-             !LibrarySection.spaces.available(private: true)
+            ("a private window is offered no saved boards or Spaces",
+             !LibrarySection.spaces.available(private: true) && !LibrarySection.easels.available(private: true)
                 && LibrarySection.allCases.filter { $0.available(private: true) }.count == 4),
-            ("an ordinary window is offered all five",
+            ("an ordinary window is offered every section",
              LibrarySection.allCases.allSatisfy { $0.available(private: false) }),
         ]
 
