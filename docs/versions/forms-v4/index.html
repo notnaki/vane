@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vane · A native Mac browser</title>
+<meta name="description" content="Vane is a native macOS browser in the shape of Arc: sidebar tabs, Spaces, splits, Little Vane windows, and Live Folders.">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="styles.css?v=13">
+
+<meta name="theme-color" content="#06090d">
+<script src="space.js?v=4" defer></script>
+</head>
+<body class="home-page"><a class="skip-link" href="#main-content">Skip to content</a>
+<header class="site-nav">
+  <a class="brand" href="./" aria-label="Vane home"><img src="icon.png" alt="" width="32" height="32">Vane</a>
+  <nav class="links" aria-label="Main navigation">
+    <a href="features.html">Features</a>
+    <a href="docs.html">Guide</a>
+    <a class="primary" href="download.html" aria-label="Download for macOS">Download<span class="download-platform">&nbsp;for macOS</span></a>
+  </nav>
+</header>
+<main id="main-content" class="home-main">
+  <section class="galaxy-journey" aria-label="Discover Vane">
+    <div class="journey-marker" id="galaxy-home" style="top:0"></div>
+    <div class="journey-marker" id="galaxy-spaces" style="top:100svh"></div>
+    <div class="journey-marker" id="galaxy-split" style="top:200svh"></div>
+    <div class="journey-marker" id="galaxy-little" style="top:300svh"></div>
+    <div class="galaxy-hero">
+      <div class="galaxy-stage">
+        <canvas class="galaxy-canvas" data-galaxy="hero" tabindex="0" role="img" aria-label="A flowing galaxy surrounding the Vane logo" aria-describedby="galaxy-instructions"></canvas>
+        <p id="galaxy-instructions" class="visually-hidden">Scroll to explore Vane’s features. Drag or use the arrow keys to rotate the galaxy. Press Home to reset its rotation. Use the animation button to pause motion.</p>
+      </div>
+      <svg class="galaxy-v" viewBox="0 0 200 230" fill="none" aria-hidden="true"><defs><linearGradient id="v-metal" x1="30" y1="0" x2="165" y2="200" gradientUnits="userSpaceOnUse"><stop stop-color="#fffdf5"/><stop offset=".45" stop-color="#e5e9f7"/><stop offset=".7" stop-color="#a4aec7"/><stop offset="1" stop-color="#fffdf5"/></linearGradient></defs><path d="M8 10H66L118 153Q123 165 128 153L136 10H192Q177 128 101 219Z" fill="url(#v-metal)" stroke="#f6f7ff" stroke-opacity=".65" stroke-width="2"/></svg>
+      <div class="journey-panels">
+        <section class="journey-panel journey-intro" data-chapter="0" aria-labelledby="hero-heading">
+          <p class="eyebrow">A native browser for macOS</p>
+          <h1 id="hero-heading">Your internet.<br>A little more you.</h1>
+          <p class="intro">Your tabs, your Spaces, your own way of browsing.</p>
+          <nav class="hero-actions" aria-label="Get Vane"><a class="primary" href="download.html">Download for macOS <span aria-hidden="true">↓</span></a><a href="#galaxy-spaces">Take a look <span aria-hidden="true">↓</span></a></nav>
+          <small>macOS 26 or later · Free &amp; open source</small>
+        </section>
+        <section class="journey-panel journey-feature" data-chapter="1" aria-labelledby="spaces-heading">
+          <div class="journey-copy"><p class="eyebrow">01 / Spaces</p><h2 id="spaces-heading">All your worlds.<br>In their own place.</h2><p>Work tabs here. Weekend plans there. Give each part of your day its own sidebar, favorites, and personality.</p><a class="scene-link" href="features.html#spaces">Explore Spaces <span aria-hidden="true">↗</span></a></div>
+
+        </section>
+        <section class="journey-panel journey-feature" data-chapter="2" aria-labelledby="split-heading">
+          <div class="journey-copy"><p class="eyebrow">02 / Split View</p><h2 id="split-heading">Two tabs.<br>One train of thought.</h2><p>Keep the reference next to the work. Browse side by side, without the back-and-forth.</p><a class="scene-link" href="features.html#split">Meet Split View <span aria-hidden="true">↗</span></a></div>
+
+        </section>
+        <section class="journey-panel journey-feature" data-chapter="3" aria-labelledby="little-heading">
+          <div class="journey-copy"><p class="eyebrow">03 / Little Vane</p><h2 id="little-heading">A small detour.<br>Stay in your flow.</h2><p>A little window for that one link. Take a quick look, then bring it into your main window whenever you’re ready.</p><a class="scene-link" href="features.html#little">Meet Little Vane <span aria-hidden="true">↗</span></a></div>
+
+        </section>
+      </div>
+
+      <div class="product-stage" aria-hidden="true">
+        <div class="product-shell journey-window" role="img" aria-label="Illustrative browser preview">
+          <div class="window-top"><div class="window-controls" aria-hidden="true"><span></span><span></span><span></span></div><span class="product-address">vane / your everyday</span><span>＋</span></div>
+          <div class="product-pages">
+            <div class="product-page" data-product="1"><div class="mini-browser"><aside><div class="mini-space-title">Work <span>⌄</span></div><div class="mini-tab active">◈ &nbsp; The next big idea</div><div class="mini-tab">▤ &nbsp; Project notes</div><div class="mini-tab">↗ &nbsp; Design references</div><div class="mini-space-switch"><span>Personal</span><strong>Work</strong><span>Explore</span></div></aside><div class="mini-document"><span class="mini-label">A PLACE TO MAKE</span><h3>Something<br>good starts here.</h3><div class="document-lines"><i></i><i></i><i></i></div><div class="document-swatch"><span></span><span></span><span></span></div></div></div></div>
+            <div class="product-page" data-product="2"><div class="mini-split"><div><span class="mini-label">THE REFERENCE</span><div class="split-art"><i></i><i></i><i></i></div><h3>A fresh perspective.</h3></div><div><span class="mini-label">YOUR NOTES</span><h3>Keep the<br>idea going.</h3><div class="document-lines"><i></i><i></i><i></i><i></i></div><span class="mini-caret">|</span></div></div></div>
+            <div class="product-page product-little" data-product="3"><div class="mini-document"><span class="mini-label">YOUR MAIN WINDOW</span><h3>The big picture.</h3><div class="document-lines"><i></i><i></i><i></i></div></div><div class="little-inset"><div class="window-top"><div class="window-controls" aria-hidden="true"><span></span><span></span><span></span></div><span>Little Vane</span></div><div class="mini-document"><span class="mini-label">JUST A QUICK LOOK</span><h3>Oh, that’s<br>interesting.</h3><span class="mini-pill">Bring into Vane ↗</span></div></div></div>
+          </div>
+        </div>
+      </div>
+      <nav class="form-switch" aria-label="Galaxy shape"><span>Form</span><button type="button" data-shape="halo" aria-pressed="false">Halo</button><button type="button" data-shape="ribbon" aria-pressed="true">Ribbon</button><button type="button" data-shape="nebula" aria-pressed="false">Nebula</button></nav>
+      <div class="galaxy-footer"><nav class="journey-nav" aria-label="Galaxy chapters"><a href="#galaxy-home" aria-current="step"><span>00</span> Vane</a><a href="#galaxy-spaces"><span>01</span> Spaces</a><a href="#galaxy-split"><span>02</span> Split View</a><a href="#galaxy-little"><span>03</span> Little Vane</a></nav><div class="galaxy-controls"><span class="drag-hint">Scroll to explore</span><button class="galaxy-toggle" type="button" aria-pressed="false" aria-label="Pause galaxy animation"><svg class="state-pause" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg><svg class="state-play" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m9 5 10 7-10 7Z"/></svg></button><button class="galaxy-reset" type="button" aria-label="Reset galaxy rotation"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 9a8 8 0 1 1-1 6M5 3v6h6"/></svg></button></div></div>
+    </div>
+  </section>
+  <section class="browser-preview" aria-label="Illustrative preview of Vane's sidebar and browsing space">
+    <aside class="preview-sidebar">
+      <div class="window-controls" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="address">Search or enter URL</div>
+      <div class="space-label">Your everyday</div>
+      <div class="preview-tab"><span>▤</span>Reading list</div>
+      <div class="preview-tab"><span>▧</span>Projects</div>
+      <div class="preview-tab selected"><span>V</span>A little breathing room</div>
+      <div class="preview-tab"><span>＋</span>New tab</div>
+      <div class="sidebar-bottom">Personal · Work · Explore</div>
+    </aside>
+    <div class="preview-page home-preview-page">
+      <div class="page-label">A place to start</div>
+      <div class="preview-orbit" aria-hidden="true"></div>
+      <h2>A little breathing room.<br>A world of possibilities.</h2>
+      <div class="page-links"><span>Something to read</span><span>Something to make</span><span>Somewhere to go</span></div>
+    </div>
+  </section>
+  <p class="preview-caption">An illustrative preview. Sidebar tabs keep your pages close and your view clear.</p>
+<section class="home-invitation"><span class="eyebrow">A place for every part of your day</span><h2>Work. Life.<br><em>Whatever you’re into.</em></h2><p>Spaces keep your worlds together, without mixing them up.</p><div class="space-cards"><a href="features.html#spaces"><canvas class="orbit-art" data-orbit="0" aria-hidden="true"></canvas><span>01</span><strong>Make something.</strong><small>Your project, notes, and next big idea.</small></a><a href="features.html#spaces"><canvas class="orbit-art" data-orbit="1" aria-hidden="true"></canvas><span>02</span><strong>Go somewhere.</strong><small>The plan, the place, and the good coffee.</small></a><a href="features.html#spaces"><canvas class="orbit-art" data-orbit="2" aria-hidden="true"></canvas><span>03</span><strong>Get curious.</strong><small>One question. Quite a few tabs.</small></a></div><a class="primary" href="features.html">Take Vane for a spin</a></section><section class="home-guide"><h2>Little windows.<br>Live Folders.<br>Room for the details.</h2><p>Meet Little Vane, Live Folders, Split View, and the rest of the details that make browsing feel like your own.</p><a class="scene-link" href="features.html">Meet the features</a><a class="scene-link" href="docs.html">Read the field guide</a></section></main><footer><a href="./">Vane · Made for the Mac.</a><div><a href="features.html">Features</a><a href="https://github.com/notnaki/vane">Source</a><a href="docs.html">Guide</a><a href="https://github.com/notnaki/vane/issues">Feedback</a></div></footer>
+</body>
+</html>
