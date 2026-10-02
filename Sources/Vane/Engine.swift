@@ -633,16 +633,11 @@ struct TitleReveal: Equatable, Sendable {
         c.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
-        // Document *start*: the media-session wrapper has to be in place before the page
-        // registers its handlers. See MediaPlayer.swift. Main frame only, unlike the PiP
-        // script above: this one is a wrapper around `navigator.mediaSession` installed
-        // before any of the frame's own script runs, and a page with thirty ad iframes paid
-        // for thirty of them at the moment it could least afford to. Ceiling: a player
-        // embedded in an iframe no longer names the track in the tray — it still plays, it
-        // still pops out, and it is still what the mute button mutes.
+        // Media controls must run in the frame that owns the player. Empty frames post
+        // no retained state; capture listeners do no work until a media event arrives.
         c.addUserScript(
             WKUserScript(source: MediaTray.script, injectionTime: .atDocumentStart,
-                         forMainFrameOnly: true))
+                         forMainFrameOnly: false))
         // Main frame only: a link hovered inside an iframe does not show its url in the
         // status capsule, which is not worth two mouse listeners in every advert on the page.
         c.addUserScript(
@@ -1399,6 +1394,7 @@ struct TitleReveal: Equatable, Sendable {
         DeveloperMode.apply(to: self)   // localhost → deployed site, and back
         closeChooser(.navigate)       // a redirect lands here without a fresh provisional
         pipFrame = nil                // main-frame navigation: every frame it named has gone
+        MediaState.shared.forget(id)   // old documents and their rate limits have gone too
     }
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1579,6 +1575,7 @@ struct TitleReveal: Equatable, Sendable {
         }
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
         if m.name == MediaTray.messageName {
+            guard m.webView === web else { return }
             MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
             return
         }
@@ -1595,11 +1592,25 @@ struct TitleReveal: Equatable, Sendable {
             return
         }
         if m.name == PictureInPicture.messageName {
+            guard m.webView === web else { return }
             // Not a mode: the frame this page's video is in, so the toggle can be aimed at it.
-            if m.body as? String == "has-video" { pipFrame = m.frameInfo; return }
+            if m.body as? String == "has-video" {
+                // A later ad/player announcement must not steal the video already detached
+                // or collapsed into the tray. Its actual frame was fixed on PiP entry.
+                if !pictureInPicture && !MediaState.shared.minimized.contains(id) { pipFrame = m.frameInfo }
+                return
+            }
             // Nor this: the PiP window's ⤢, which wants the tab as well as the video back.
             if m.body as? String == "return" { PictureInPicture.returnToTab(self); return }
-            if let active = PictureInPicture.state(from: m.body) { pictureInPicture = active }
+            if let active = PictureInPicture.state(from: m.body) {
+                pictureInPicture = active
+                if active {
+                    pipFrame = m.frameInfo
+                    MediaState.shared.restored(id, source: (m.body as? [String: Any])?["source"] as? String)
+                    PiPMinimizeControls.install(for: self)
+                }
+                else { PiPMinimizeControls.remove(id); MediaState.shared.leftPiP(id) }
+            }
             return
         }
         guard let body = m.body as? [String: Any] else { return }

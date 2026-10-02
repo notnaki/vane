@@ -19,7 +19,7 @@ import WebKit
       // Whether *we* detached this page's video on the way out of the tab. Kept in the page
       // rather than in Swift because it dies with the video it is about: a navigation takes
       // both away, and coming back to a tab must never yank a PiP window the user opened.
-      var autoed = false;
+      var autoed = false, minimized = false, presented = null;
       // Whether the inline that is about to happen is one *we* asked for. The PiP window's
       // ⤢ leaves picture-in-picture still playing, which is the user asking for the tab
       // back; this is how that is told apart from our own auto-exit.
@@ -40,6 +40,7 @@ import WebKit
       document.addEventListener('webkitpresentationmodechanged', function (e) {
         var mode = e.target && e.target.webkitPresentationMode;
         if (!mode) { return; }
+        if (mode === 'picture-in-picture') { presented = e.target; }
         var mine = ours;
         ours = false;
         var from = last;
@@ -48,7 +49,7 @@ import WebKit
         // page's controls, going fullscreen — so our claim on it is over. Without this a
         // detach the *user* started next would be read as ours and yanked back inline.
         if (mode !== 'picture-in-picture') { autoed = false; }
-        webkit.messageHandlers.vanepip.postMessage(mode);
+        webkit.messageHandlers.vanepip.postMessage({mode: mode, source: e.target.getAttribute('data-vane-media-source')});
         // The PiP window has two buttons and the page cannot see either. WebCore tells them
         // apart for us: -pipActionStop: (×) pauses the element and *then* exits, while
         // -pipShouldClose: (⤢) exits still playing. So an inline nobody here asked for, with
@@ -65,6 +66,7 @@ import WebKit
         var v = biggest();
         if (!v || !v.webkitSetPresentationMode) { return 'unsupported'; }
         if (enter) {
+          if (minimized) { return 'minimized'; }
           if (v.paused || v.ended) { return 'idle'; }
           // An <audio> is never a candidate, and neither is a <video> carrying an
           // audio-only stream: videoWidth is 0 until there are actual frames.
@@ -76,6 +78,7 @@ import WebKit
           autoed = true;
           return 'pip';
         }
+        minimized = false;
         if (autoed && v.webkitPresentationMode === 'picture-in-picture') {
           ours = true;
           v.webkitSetPresentationMode('inline');
@@ -87,13 +90,36 @@ import WebKit
       // ⌥⌘P. Whatever it does, this detach is the user's from here on: coming back to the
       // tab must not undo a picture-in-picture they asked for by hand.
       function toggle() {
-        var v = biggest();
+        minimized = false;
+        var v = (presented && presented.isConnected) ? presented : biggest();
         if (!v || !v.webkitSetPresentationMode) { return 'unsupported'; }
         var next = v.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture';
         ours = (next === 'inline');
         v.webkitSetPresentationMode(next);
         autoed = false;
         return next;
+      }
+      async function minimize() {
+        var v = (presented && presented.isConnected) ? presented : biggest();
+        if (!v || v.webkitPresentationMode !== 'picture-in-picture') { return 'idle'; }
+        var playing = !v.paused && !v.ended;
+        // Programmatic inline keeps playback and does not request the tab back.
+        ours = true;
+        minimized = true;
+        autoed = false;
+        // A request during the native opening animation can be ignored. Confirm the
+        // inline transition, retrying while that animation finishes, before claiming success.
+        for (var i = 0; i < 20; i++) {
+          if (v.webkitPresentationMode !== 'picture-in-picture') {
+            if (playing && v.paused) { await v.play(); }
+            return 'minimized';
+          }
+          ours = true;
+          v.webkitSetPresentationMode('inline');
+          await new Promise(function (resolve) { setTimeout(resolve, 50); });
+        }
+        minimized = false;
+        return 'busy';
       }
       // evaluateJavaScript(in: nil) only ever reaches the main frame, and the video worth
       // detaching is usually in an iframe, so a frame that holds one says so and Swift
@@ -111,6 +137,7 @@ import WebKit
       // not free.
       Object.defineProperty(window, '__vanePiP', { value: toggle });
       Object.defineProperty(window, '__vanePiPAuto', { value: auto });
+      Object.defineProperty(window, '__vanePiPMinimize', { value: minimize });
     })();
     """
 
@@ -121,7 +148,18 @@ import WebKit
 
     static func toggle(_ tab: Tab?) {
         guard let tab else { return }
+        PiPMinimizeControls.prepare(for: tab)
         run("window.__vanePiP && window.__vanePiP()", in: tab)
+    }
+
+    static func minimize(_ tab: Tab, then: (@MainActor (Bool) -> Void)? = nil) {
+        let web = tab.web
+        web.callAsyncJavaScript("return await (window.__vanePiPMinimize && window.__vanePiPMinimize());",
+                                arguments: [:], in: tab.pipFrame, in: world) { [weak tab] result in
+            guard let tab, tab.web === web else { return }
+            if case .success(let reply) = result { then?(reply as? String == "minimized") }
+            else { then?(false) }
+        }
     }
 
     /// Runs `js` in the frame that announced a video. A frame that has gone without a
@@ -177,6 +215,7 @@ import WebKit
     /// what keeps it mounted (`OffscreenPages`), and unmarked the moment it replies.
     static func enterIfPlaying(_ tab: Tab?) {
         guard autoEnabled, let tab, !tab.suspended else { return }
+        PiPMinimizeControls.prepare(for: tab)
         let id = tab.id                 // the closure carries a UUID, never the Tab
         MediaState.shared.asking.insert(id)
         run(autoCommand(enter: true), in: tab) { _ = MediaState.shared.asking.remove(id) }
@@ -192,7 +231,8 @@ import WebKit
     /// WebKit reports `inline`, `fullscreen` or `picture-in-picture`. Anything else is a
     /// message we did not send.
     static func state(from body: Any) -> Bool? {
-        switch body as? String {
+        let mode = (body as? [String: Any])?["mode"] as? String ?? body as? String
+        return switch mode {
         case "picture-in-picture": true
         case "inline", "fullscreen": false
         default: nil

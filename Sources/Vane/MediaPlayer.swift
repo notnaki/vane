@@ -36,8 +36,9 @@ enum MediaTray {
     /// looking at its player), a tab that stopped or was closed is not in `tabs` as playing
     /// any more, and when several are playing the tray follows the one the user was in most
     /// recently, which is the one they are most likely to want back.
-    static func showing(_ tabs: [Playing], current: UUID?, held: Set<UUID> = []) -> UUID? {
-        tabs.filter { ($0.playing || held.contains($0.id)) && $0.id != current }
+    static func showing(_ tabs: [Playing], current: UUID?, held: Set<UUID> = [],
+                        minimized: Set<UUID> = []) -> UUID? {
+        tabs.filter { ($0.playing || held.contains($0.id)) && ($0.id != current || minimized.contains($0.id)) }
             // Ties broken on the id so two tabs activated in the same millisecond still
             // pick the same one every time this is evaluated.
             .max { ($0.lastActive, $0.id.uuidString) < ($1.lastActive, $1.id.uuidString) }?.id
@@ -55,6 +56,7 @@ enum MediaTray {
         /// handler. No handler, no button: a skip button that does nothing is a lie.
         var next = false
         var prev = false
+        var video = false
 
         /// What the tray shows. Arc puts the track and the artist on one line.
         var line: String {
@@ -99,13 +101,14 @@ enum MediaTray {
                     artist: clean(d["artist"] as? String ?? ""),
                     playing: playing,
                     next: d["next"] as? Bool ?? false,
-                    prev: d["prev"] as? Bool ?? false)
+                    prev: d["prev"] as? Bool ?? false,
+                    video: d["video"] as? Bool ?? false)
     }
 
     /// The three things the tray can ask the page to do. An enum, so the only strings that
     /// ever reach `evaluateJavaScript` are these three literals — nothing from the page and
     /// nothing from a title is ever evaluated.
-    enum Command: String { case playpause, next, prev }
+    enum Command: String { case playpause, next, prev, pause }
 
     /// How fast one frame is allowed to talk. A gate on the interval was wrong: a page
     /// legitimately reports three or four times in the same millisecond as it loads — one
@@ -152,7 +155,10 @@ enum MediaTray {
     /// the cache and already says which site this is. Ceiling: real album art.
     static let script = """
     (function () {
-      var handlers = {}, last = null;
+      var handlers = {}, last = null, lastMedia = null, pipMedia = null;
+      var source = Array.from(crypto.getRandomValues(new Uint8Array(16)), function (b) {
+        return b.toString(16).padStart(2, '0');
+      }).join('');
       var ms = navigator.mediaSession;
       function post(msg) {
         var key = JSON.stringify(msg);
@@ -163,22 +169,35 @@ enum MediaTray {
       // The element the tray's play/pause drives: whatever is running, or failing that the
       // first one on the page, which is what a paused player is.
       function media() {
+        if (pipMedia && pipMedia.isConnected) { return pipMedia; }
         var list = document.querySelectorAll('video,audio');
         for (var i = 0; i < list.length; i++) {
-          if (!list[i].paused && !list[i].ended) { return list[i]; }
+          if (!list[i].paused && !list[i].ended) { lastMedia = list[i]; return list[i]; }
         }
+        if (lastMedia && lastMedia.isConnected) { return lastMedia; }
         return list.length ? list[0] : null;
       }
       function report() {
         var m = ms && ms.metadata, e = media();
+        if (e && e.getAttribute('data-vane-media-source') !== source) {
+          e.setAttribute('data-vane-media-source', source);
+        }
         post({
+          source: source, hasMedia: !!e,
+          video: !!(e && e.tagName === 'VIDEO' && e.videoWidth),
           title: m && m.title ? String(m.title) : '',
           artist: m && m.artist ? String(m.artist) : '',
-          playing: !!(e && !e.paused && !e.ended),
+          playing: e ? !e.paused && !e.ended : !!(ms && ms.playbackState === 'playing'),
           next: !!handlers.nexttrack,
           prev: !!handlers.previoustrack
         });
       }
+      document.addEventListener('webkitpresentationmodechanged', function (e) {
+        if (e.target && e.target.webkitPresentationMode === 'picture-in-picture') {
+          pipMedia = e.target;
+          report();
+        }
+      }, true);
       if (ms && ms.setActionHandler) {
         var orig = ms.setActionHandler.bind(ms);
         // Remembered, not intercepted: there is no way to read back a registered handler,
@@ -192,26 +211,41 @@ enum MediaTray {
       // A track change writes `metadata` and fires no DOM event, so the setter is where the
       // new title is. The page's own setter still runs first.
       var proto = ms && Object.getPrototypeOf(ms);
-      var desc = proto && Object.getOwnPropertyDescriptor(proto, 'metadata');
-      if (desc && desc.set) {
-        Object.defineProperty(ms, 'metadata', {
-          configurable: true,
-          get: function () { return desc.get.call(this); },
-          set: function (v) { desc.set.call(this, v); report(); }
-        });
-      }
-      function drive(cmd) {
+      ['metadata', 'playbackState'].forEach(function (name) {
+        var desc = proto && Object.getOwnPropertyDescriptor(proto, name);
+        if (desc && desc.set) {
+          Object.defineProperty(ms, name, {
+            configurable: true,
+            get: function () { return desc.get.call(this); },
+            set: function (v) { desc.set.call(this, v); report(); }
+          });
+        }
+      });
+      async function drive(cmd) {
+        if (cmd === 'release') {
+          pipMedia = null;
+          report();
+          return 'released';
+        }
         var e = media();
-        if (cmd === 'playpause') {
-          // The element first: it is the truth, and a page with no play/pause handler
-          // registered still has to answer the button.
-          if (e) { if (e.paused) { e.play(); } else { e.pause(); } return 'element'; }
-          var h = handlers.play || handlers.pause;
-          if (h) { h(); return 'session'; }
+        if (cmd === 'playpause' || cmd === 'pause') {
+          var action = cmd === 'pause' ? 'pause' :
+            ((e ? e.paused : !ms || ms.playbackState !== 'playing') ? 'play' : 'pause');
+          if (handlers[action]) {
+            await handlers[action]({ action: action });
+            report();
+            return 'session';
+          }
+          if (e) {
+            if (action === 'play') { await e.play(); } else { e.pause(); }
+            report();
+            return 'element';
+          }
           return 'none';
         }
-        var skip = cmd === 'next' ? handlers.nexttrack : handlers.previoustrack;
-        if (skip) { skip(); return 'session'; }
+        var action = cmd === 'next' ? 'nexttrack' : 'previoustrack';
+        var skip = handlers[action];
+        if (skip) { await skip({ action: action }); report(); return 'session'; }
         return 'none';
       }
       // Non-writable and non-enumerable, so a page cannot swap it for its own function and
@@ -222,6 +256,8 @@ enum MediaTray {
       ['play', 'pause', 'ended', 'emptied', 'loadedmetadata'].forEach(function (e) {
         document.addEventListener(e, report, true);
       });
+      window.addEventListener('pagehide', function () { post({source: source, playing: false, gone: true}); });
+      window.addEventListener('pageshow', function () { last = null; report(); });
     })();
     """
 }
@@ -234,28 +270,31 @@ enum MediaTray {
 @MainActor final class MediaState: ObservableObject {
     static let shared = MediaState()
 
-    /// Which frame of which tab a report came from. The script runs in every frame, so a
-    /// page with three ad iframes sends four reports; keeping them apart is what stops an
-    /// advert's empty `{playing: false}` wiping the real player's title.
-    /// ponytail: the origin stands in for frame identity, because `WKFrameInfo` is not
-    /// stably hashable across messages. Two same-origin iframes therefore share a slot,
-    /// which costs nothing: they are the same site, and the playing one wins below.
+    /// A document token distinguishes even same-origin sibling frames. The WKFrameInfo
+    /// that delivered its latest report is also the destination for its controls.
+    private struct Origin: Hashable {
+        let main: Bool
+        let address: String
+    }
     private struct Source: Hashable {
         let main: Bool
         let origin: String
+        let token: String
     }
-
-    /// A page with more frames than this reporting media is not a media page.
+    private struct Report {
+        let info: MediaTray.Info
+        let frame: WKFrameInfo
+        let at: Date
+    }
     private static let maxSources = 8
-
-    @Published private var reports: [UUID: [Source: MediaTray.Info]] = [:]
-    /// The tabs the user paused from the tray. See `MediaTray.showing`.
+    @Published private var reports: [UUID: [Source: Report]] = [:]
     @Published var held: Set<UUID> = []
-    /// Tabs whose page is mid-answer to auto picture-in-picture. They stay in the window
-    /// until they reply — a page whose view has left the hierarchy has already stopped its
-    /// video, and would answer `idle`. See `PictureInPicture.enterIfPlaying`.
+    @Published private(set) var minimized: Set<UUID> = []
+    @Published private var dismissed: Set<UUID> = []
     @Published var asking: Set<UUID> = []
-    private var buckets: [UUID: [Source: MediaTray.Bucket]] = [:]
+    private var preferred: [UUID: Source] = [:]
+    private var pipSources: [UUID: String] = [:]
+    private var buckets: [UUID: [Origin: MediaTray.Bucket]] = [:]
 
     private init() {
         // The tray draws a tab it is not observing, so a `@ObservedObject` on the row would
@@ -263,60 +302,177 @@ enum MediaTray {
         TabAudio.observe { [weak self] _ in self?.objectWillChange.send() }
     }
 
-    /// What the tray shows for a tab: the frame that says it is playing, the main frame if
-    /// none does, and nothing if the tab has said nothing at all. The advert in the corner
-    /// never outranks the player the user started.
+    private func source(for id: UUID) -> Source? {
+        guard let rows = reports[id] else { return nil }
+        if let token = pipSources[id], let selected = rows.keys.first(where: { $0.token == token }) { return selected }
+        if held.contains(id), let selected = preferred[id], rows[selected] != nil { return selected }
+        let running = rows.filter { $0.value.info.playing }
+        if !running.isEmpty {
+            return running.max {
+                if $0.key.main != $1.key.main { return !$0.key.main }
+                return $0.value.at < $1.value.at
+            }?.key
+        }
+        if let held = preferred[id], rows[held] != nil { return held }
+        return rows.max {
+            if $0.key.main != $1.key.main { return !$0.key.main }
+            return $0.value.at < $1.value.at
+        }?.key
+    }
+
     func info(for id: UUID) -> MediaTray.Info? {
-        guard let byFrame = reports[id] else { return nil }
-        if let playing = byFrame.first(where: { $0.key.main && $0.value.playing })?.value { return playing }
-        if let playing = byFrame.first(where: { $0.value.playing })?.value { return playing }
-        return byFrame.first(where: { $0.key.main })?.value ?? byFrame.values.first
+        guard let source = source(for: id) else { return nil }
+        return reports[id]?[source]?.info
     }
 
-    /// Does this tab's page have to stay in the window even though it is not on screen?
-    /// WebKit stops a media element the moment its web view leaves the view hierarchy.
+    func isPlaying(_ tab: Tab) -> Bool {
+        info(for: tab.id)?.playing == true || TabAudio.isPlaying(tab)
+    }
+
+    func isDismissed(_ id: UUID) -> Bool { dismissed.contains(id) }
+
     func keepsRunning(_ tab: Tab) -> Bool {
-        TabAudio.isPlaying(tab) || tab.pictureInPicture || asking.contains(tab.id)
+        isPlaying(tab) || tab.pictureInPicture || asking.contains(tab.id) || held.contains(tab.id)
     }
 
-    /// A message from the injected script, from one frame of one tab.
     func handle(_ body: Any, for tab: Tab, from frame: WKFrameInfo) {
-        guard let i = MediaTray.info(from: body) else { return }
+        guard let i = MediaTray.info(from: body), let d = body as? [String: Any],
+              let token = d["source"] as? String, !token.isEmpty, token.count <= 80 else { return }
         let o = frame.securityOrigin
         let source = Source(main: frame.isMainFrame,
-                            origin: "\(o.protocol)://\(o.host):\(o.port)")
+                            origin: "\(o.protocol)://\(o.host):\(o.port)", token: token)
+        // Ignore first reports from empty documents before they can consume origin slots.
+        if d["gone"] as? Bool != true && d["hasMedia"] as? Bool != true && !i.playing
+            && i.title.isEmpty && i.artist.isEmpty && reports[tab.id]?[source] == nil { return }
+        // Rate limits use WebKit's trusted origin, independent of the document token.
+        // Quiet reports and pagehide must not reset this bucket.
+        let origin = Origin(main: frame.isMainFrame, address: source.origin)
+        if buckets[tab.id]?[origin] == nil && (buckets[tab.id]?.count ?? 0) >= 64 { return }
         let now = Date.now
-        var bucket = buckets[tab.id]?[source] ?? MediaTray.Bucket(at: now)
+        var bucket = buckets[tab.id]?[origin] ?? MediaTray.Bucket(at: now)
         let allowed = bucket.take(now)
-        buckets[tab.id, default: [:]][source] = bucket
+        buckets[tab.id, default: [:]][origin] = bucket
         guard allowed else { return }
-
-        var byFrame = reports[tab.id] ?? [:]
-        // A frame with nothing playing and nothing to say is not worth a slot.
-        if !i.playing && i.title.isEmpty && i.artist.isEmpty {
-            byFrame[source] = nil
+        var rows = reports[tab.id] ?? [:]
+        if d["gone"] as? Bool == true {
+            rows[source] = nil
+            reports[tab.id] = rows.isEmpty ? nil : rows
+            if preferred[tab.id] == source { preferred[tab.id] = nil }
+            return
+        }
+        if rows[source] == nil && rows.count >= Self.maxSources {
+            guard let quiet = rows.first(where: { !$0.value.info.playing && $0.key != preferred[tab.id] })?.key else { return }
+            rows[quiet] = nil
+        }
+        // Empty advert documents need no retained frame or bucket.
+        if d["hasMedia"] as? Bool != true && !i.playing && i.title.isEmpty && i.artist.isEmpty {
+            rows[source] = nil
         } else {
-            byFrame[source] = i
+            if i.playing && rows[source]?.info.playing != true { dismissed.remove(tab.id) }
+            rows[source] = Report(info: i, frame: frame, at: now)
         }
-        if byFrame.count > MediaState.maxSources,
-           let drop = byFrame.first(where: { !$0.key.main && !$0.value.playing })?.key {
-            byFrame[drop] = nil
+        reports[tab.id] = rows.isEmpty ? nil : rows
+        if let selected = self.source(for: tab.id), rows[selected]?.info.playing == true {
+            preferred[tab.id] = selected
         }
-        reports[tab.id] = byFrame.isEmpty ? nil : byFrame
     }
 
-    /// The tab is gone. Without this the maps grow by one entry per tab ever opened.
     func forget(_ id: UUID) {
         reports[id] = nil
         buckets[id] = nil
+        preferred[id] = nil
+        pipSources[id] = nil
         held.remove(id)
+        minimized.remove(id)
+        dismissed.remove(id)
         asking.remove(id)
+        PiPMinimizeControls.remove(id)
     }
 
-    func send(_ c: MediaTray.Command, to tab: Tab) {
-        if c == .playpause { held.insert(tab.id) }   // the user is driving this tray now
-        tab.web.evaluateJavaScript(MediaTray.command(c))
+    func minimize(_ tab: Tab, then: (@MainActor (Bool) -> Void)? = nil) {
+        let wasHeld = held.contains(tab.id)
+        held.insert(tab.id)
+        minimized.insert(tab.id)
+        PictureInPicture.minimize(tab) { [weak tab] ok in
+            guard let tab else { return }
+            if !ok {
+                self.minimized.remove(tab.id)
+                if !wasHeld { self.held.remove(tab.id) }
+                Toasts.show("Couldn’t minimize the video. Try again after Picture in Picture opens.")
+            }
+            then?(ok)
+        }
     }
+
+    func restore(_ tab: Tab) {
+        guard !tab.pictureInPicture else { return }
+        PictureInPicture.toggle(tab)
+    }
+
+    func restored(_ id: UUID, source: String?) {
+        minimized.remove(id)
+        pipSources[id] = source
+        if let selected = self.source(for: id) { preferred[id] = selected }
+    }
+
+    private func releaseSelection(_ id: UUID) {
+        guard let selected = source(for: id), let frame = reports[id]?[selected]?.frame,
+              let web = frame.webView else { return }
+        web.callAsyncJavaScript("return await (window.__vaneMedia && window.__vaneMedia('release'));",
+                                arguments: [:], in: frame, in: .page) { _ in }
+    }
+
+    func leftPiP(_ id: UUID) {
+        if !minimized.contains(id) { releaseSelection(id); pipSources[id] = nil }
+    }
+
+    func returned(to tab: Tab) {
+        let id = tab.id
+        if !tab.pictureInPicture { releaseSelection(id); pipSources[id] = nil }
+        held.remove(id)
+        minimized.remove(id)
+    }
+
+    func dismiss(_ tab: Tab) {
+        dismissed.insert(tab.id)
+        send(.pause, to: tab) { [weak tab] ok in
+            guard let tab else { return }
+            if !ok { self.dismissed.remove(tab.id); return }
+            if tab.pictureInPicture {
+                PictureInPicture.minimize(tab) { ok in
+                    if !ok { self.dismissed.remove(tab.id) }
+                    else { self.releaseSelection(tab.id) }
+                }
+            } else { self.releaseSelection(tab.id) }
+        }
+        held.remove(tab.id)
+        minimized.remove(tab.id)
+    }
+
+    func send(_ c: MediaTray.Command, to tab: Tab, then: (@MainActor (Bool) -> Void)? = nil) {
+        if c == .playpause { held.insert(tab.id) }
+        let source = source(for: tab.id)
+        if let source { preferred[tab.id] = source }
+        let frame = source.flatMap { reports[tab.id]?[$0]?.frame }
+        // callAsyncJavaScript awaits play() and gives failures a real completion path.
+        tab.web.callAsyncJavaScript("return await \(MediaTray.command(c));", arguments: [:],
+                                    in: frame, in: .page) { [weak tab] result in
+            guard let tab else { return }
+            let ok: Bool
+            if case .success(let reply) = result { ok = ["element", "session"].contains(reply as? String ?? "") }
+            else { ok = false }
+            if !ok {
+                // A removed frame must never send a later click to a main-frame decoy.
+                if let source {
+                    self.reports[tab.id]?[source] = nil
+                    self.preferred[tab.id] = nil
+                }
+                Toasts.show("Couldn’t control playback. Open the playing tab to try again.")
+            }
+            then?(ok)
+        }
+    }
+
 }
 
 // MARK: - Pages kept running off screen
@@ -377,18 +533,21 @@ struct OffscreenPages: View {
 struct MediaTrayView: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var media = MediaState.shared
-    @ObservedObject private var sidebar = SidebarWidth.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovered = false
+    @AccessibilityFocusState private var focused: Bool
 
     /// The tab on the tray, resolved through the pure rule above. `everyTab`, because the
     /// page playing in the Space you have just swiped off is exactly the one this tray is a
     /// player for; its title is still the way back to it. See `TabStore.reveal`.
     private var tab: Tab? {
-        let all = store.everyTab
-        let rows = all.map {
-            MediaTray.Playing(id: $0.id, playing: TabAudio.isPlaying($0), lastActive: $0.lastActive)
+        let all = store.everyTab.filter {
+            !$0.pictureInPicture && (media.info(for: $0.id)?.video != true || media.minimized.contains($0.id))
         }
-        guard let id = MediaTray.showing(rows, current: store.current, held: media.held)
+        let rows = all.filter { !media.isDismissed($0.id) }.map {
+            MediaTray.Playing(id: $0.id, playing: media.isPlaying($0), lastActive: $0.lastActive)
+        }
+        guard let id = MediaTray.showing(rows, current: store.current, held: media.held, minimized: media.minimized)
         else { return nil }
         return all.first { $0.id == id }
     }
@@ -402,70 +561,82 @@ struct MediaTrayView: View {
         .animation(reduceMotion ? nil : Look.list, value: tab?.id)
         // Going back to the tab ends the tray's claim on it: the page's own player is on
         // screen again, and a stale hold would bring the tray back on the next switch.
-        .onChange(of: store.current) { if let id = store.current { media.held.remove(id) } }
+        .onChange(of: store.current) { if let tab = store.everyTab.first(where: { $0.id == store.current }) { media.returned(to: tab) } }
+        .onChange(of: tab?.id) { hovered = false }
         // Let the card's shadow extend beyond the tray's layout bounds, like the toast.
     }
 
     private func player(_ tab: Tab) -> some View {
-        let info = media.info(for: tab.id) ?? MediaTray.Info(playing: TabAudio.isPlaying(tab))
-        let muted = TabAudio.isMuted(tab)
+        let info = media.info(for: tab.id) ?? MediaTray.Info(playing: media.isPlaying(tab))
         let title = info.title.isEmpty ? TidyTitles.title(for: tab) : info.line
-        return Group {
-            if sidebar.width < 220 {
-                VStack(spacing: Look.inset / 2) {
-                    titleRow(tab, title: title).frame(height: Look.control)
-                    HStack(spacing: Look.inset) {
-                        Spacer(minLength: 0)
-                        transport(tab, info: info, muted: muted)
-                    }
-                }
-                .padding(.vertical, Look.inset)
-            } else {
+        let expanded = hovered || focused
+        return VStack(spacing: 0) {
+            if expanded {
                 HStack(spacing: Look.rowSpacing) {
-                    titleRow(tab, title: title)
-                    transport(tab, info: info, muted: muted)
+                    Button {
+                        PictureInPicture.exitIfAuto(tab)
+                        media.returned(to: tab)
+                        store.reveal(tab.id)
+                    } label: {
+                        Marquee(text: title).foregroundStyle(Look.barText)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open \(title)")
+                    if info.video {
+                        glyph("pip", "Show Picture in Picture", enabled: !tab.pictureInPicture) { media.restore(tab) }
+                    }
+                    glyph("xmark", "Close player and pause") { media.dismiss(tab) }
                 }
                 .frame(height: Look.trayHeight)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
+            HStack(spacing: 0) {
+                Button {
+                    PictureInPicture.exitIfAuto(tab)
+                    media.returned(to: tab)
+                    store.reveal(tab.id)
+                } label: {
+                    SiteIcon(icon: tab.favicon, fallback: "waveform", size: Look.rowIcon)
+                        .frame(width: Look.control, height: Look.control)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open \(title)")
+                Spacer(minLength: 0)
+                glyph("backward.fill", "Previous", enabled: info.prev) { media.send(.prev, to: tab) }
+                Spacer(minLength: 0)
+                glyph(info.playing ? "pause.fill" : "play.fill", info.playing ? "Pause" : "Play") {
+                    media.send(.playpause, to: tab)
+                }
+                Spacer(minLength: 0)
+                glyph("forward.fill", "Next", enabled: info.next) { media.send(.next, to: tab) }
+                Spacer(minLength: 0)
+                glyph(TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                      TabAudio.isMuted(tab) ? "Unmute" : "Mute") { TabAudio.toggleMute(tab) }
+            }
+            .frame(height: Look.trayHeight)
         }
         .padding(.horizontal, Look.rowInset)
         .background(Look.barFill, in: RoundedRectangle(cornerRadius: Look.pillRadius))
         .hairline(radius: Look.pillRadius, Look.barStroke)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
+        .onHover { hovered = $0 }
+        .animation(reduceMotion ? nil : Look.list, value: expanded)
         .transition(.opacity)
         .id(tab.id)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Mini audio player")
-    }
-
-    private func titleRow(_ tab: Tab, title: String) -> some View {
-        HStack(spacing: Look.rowSpacing) {
-            SiteIcon(icon: tab.favicon, fallback: "waveform", size: Look.rowIcon)
-            Button { store.reveal(tab.id) } label: {
-                Marquee(text: title).foregroundStyle(Look.barText)
+        .accessibilityLabel("Mini player, \(title)")
+        .accessibilityFocused($focused)
+        // Keyboard and VoiceOver users can reach the same actions without a pointer hover.
+        .contextMenu {
+            Button("Open Playing Tab") { PictureInPicture.exitIfAuto(tab); media.returned(to: tab); store.reveal(tab.id) }
+            if info.video {
+                Button("Show Picture in Picture") { media.restore(tab) }.disabled(tab.pictureInPicture)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(title), playing in another tab")
-            .accessibilityHint("Go to the tab")
+            Button("Close Player and Pause") { media.dismiss(tab) }
         }
     }
 
-    @ViewBuilder private func transport(_ tab: Tab, info: MediaTray.Info, muted: Bool) -> some View {
-        if muted {
-            glyph("speaker.slash.fill", "Unmute") { TabAudio.toggleMute(tab) }
-        }
-        if info.prev {
-            glyph("backward.fill", "Previous") { media.send(.prev, to: tab) }
-        }
-        glyph(info.playing ? "pause.fill" : "play.fill", info.playing ? "Pause" : "Play") {
-            media.send(.playpause, to: tab)
-        }
-        if info.next {
-            glyph("forward.fill", "Next") { media.send(.next, to: tab) }
-        }
-    }
-
-    private func glyph(_ name: String, _ label: String, _ run: @escaping () -> Void) -> some View {
+    private func glyph(_ name: String, _ label: String, enabled: Bool = true, _ run: @escaping () -> Void) -> some View {
         Button(action: run) {
             Image(systemName: name)
                 .font(Look.trayGlyph)
@@ -475,6 +646,9 @@ struct MediaTrayView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
+        .help(label)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
     }
 }
 
@@ -655,7 +829,7 @@ extension MediaTray {
         assert("the listeners are capturing, so late players are caught",
                script.contains("document.addEventListener(e, report, true)"))
         assert("skip only fires a handler the page actually registered",
-               script.contains("if (skip) { skip(); return 'session'; }"))
+               script.contains("await skip({ action: action })"))
         assert("the bridge is exposed under one name, and cannot be overwritten",
                script.contains("Object.defineProperty(window, '__vaneMedia', { value: drive })"))
         return out

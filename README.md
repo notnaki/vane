@@ -35,6 +35,12 @@ release builds packaged with `SIGN_ID` offer it once. You can still use the manu
 
 ## What Vane can do
 
+The floating Picture in Picture video has a minus button that hides it while
+playback continues. The sidebar video player appears after minimizing PiP.
+It keeps the site icon and transport controls visible; hover over it to see the title, restore Picture in Picture,
+or close the player and pause. Embedded players use their own frame and
+Media Session play/pause and skip handlers.
+
 | Area | Available now |
 | --- | --- |
 | Browsing | Tabs, pinned tabs, multiple windows, private windows, Split View, Peek, Little Vane, session restore, find on page, reader mode, picture in picture, page capture, and Web Inspector. |
