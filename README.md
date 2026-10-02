@@ -29,6 +29,10 @@ swift build -c release
 An ad hoc signed local build is for development on your Mac. Distribution requires
 a Developer ID signature and notarization; see [releasing](#releasing).
 
+Local, debug, and prerelease builds skip the startup default-browser prompt. Stable
+release builds packaged with `SIGN_ID` offer it once. You can still use the manual
+“Make Vane Default…” action in Settings.
+
 ## What Vane can do
 
 | Area | Available now |

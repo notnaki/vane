@@ -72,6 +72,9 @@ jobs:
       - name: Bundle
         run: ./make-app.sh debug
 
+      - name: Default browser prompt build policy
+        run: python3 scripts/test-default-browser-prompt.py
+
       - name: Save source timestamps for the build cache
         run: python3 scripts/ci-source-state.py save
 
