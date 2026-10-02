@@ -303,6 +303,8 @@
     const logo = document.querySelector('.galaxy-v');
     const heroMessage = document.querySelector('.hero-message');
     const heroLines = [...(heroMessage.querySelectorAll?.('.hero-line') || [])];
+    const featureCopies = panels.slice(1).map(panel => panel.querySelector?.('.journey-copy')).filter(Boolean);
+    const navigation = document.querySelector('.site-nav');
     const introSupport = document.querySelector('.intro-support');
     journey.classList.add('journey-ready');
     // Activating the sticky scene changes its height from the no-JS document flow.
@@ -319,8 +321,10 @@
       const segment = Math.min(2,Math.floor(distance/2));
       progress = segment + ease((distance-segment*2-1.2)/.8);
       const compact = surface.width <= 600;
+      const shortWide = !compact && surface.height<=520;
+      const openingZoom=compact && surface.height<=520 ? 55/Math.min(surface.width*.44,surface.height*.42) : shortWide ? .65 : .92;
       const stops = [
-        {x:0,y:0,zoom:.92,ax:.5,ay:compact ? .36 : .40,rotation:0,tilt:.75},
+        {x:0,y:0,zoom:openingZoom,ax:shortWide ? .73 : .5,ay:shortWide ? .48 : compact ? (surface.height<=520 ? .33 : .36) : .40,rotation:0,tilt:.75},
         {x:.42,y:-.2,zoom:2.6,ax:compact ? .5 : .72,ay:compact ? .65 : .5,rotation:.3,tilt:.68},
         {x:-.38,y:.24,zoom:1.8,ax:compact ? .5 : .7,ay:compact ? .62 : .5,rotation:-.35,tilt:.4},
         {x:.25,y:.42,zoom:3.1,ax:compact ? .5 : .72,ay:compact ? .65 : .5,rotation:.55,tilt:.7}
@@ -348,11 +352,24 @@
       });
       // The headline stays in the scene; only its placement changes with the first transition.
       const smallScreen = compact && surface.height<=720;
-      const baseTop=surface.height*(compact ? (smallScreen ? .48 : .51) : (surface.height<=640 ? .54 : .59));
-      const titleTop=compact ? (smallScreen ? 136 : 144) : surface.height*.32;
+      let baseTop=surface.height*(compact ? (smallScreen ? .48 : .51) : (surface.height<=640 ? .54 : .59));
+      if (shortWide) baseTop=surface.height*.32;
+      if (compact) baseTop=Math.min(baseTop,surface.height-(heroMessage.offsetHeight || 80)-(introSupport.offsetHeight || 110)-86);
+      const titleTop=compact ? ((navigation?.getBoundingClientRect().bottom || 70)+(surface.height<=520 ? 20 : 48)) : surface.height*.32;
+      const featureTop=titleTop+(heroMessage.offsetHeight || 80)*(compact ? .57 : .82)+(surface.height<=520 ? 14 : 24);
+      panels.slice(1).forEach(panel => { panel.style.paddingTop=compact || surface.height<=520 ? featureTop+'px' : ''; });
+      const previewWidth=productStage.offsetWidth || 552;
+      const previewHeight=productShell.offsetHeight || 369;
+      const availableHeight=compact ? surface.height-110-featureTop-Math.max(0,...featureCopies.map(copy => copy.offsetHeight))-20 : surface.height-180;
+      const previewScale=Math.min(1,previewWidth/552,Math.max(1,availableHeight)/previewHeight);
+      productShell.style.transform=`scale(${previewScale})`;
+      productShell.style.marginLeft=(previewWidth-552*previewScale)/2+'px';
+      productStage.style.height=previewHeight*previewScale+'px';
+      if (compact || shortWide) { heroMessage.style.top=baseTop+'px'; introSupport.style.top=baseTop+(heroMessage.offsetHeight || 80)+16+'px'; }
+      else { heroMessage.style.top=''; introSupport.style.top=''; }
       const textWidth=heroMessage.offsetWidth || Math.min(480,surface.width-80);
       const textLeft=panels[0].getBoundingClientRect?.().left ?? Math.max(40,(surface.width-1120)/2);
-      const shiftX=compact ? 0 : (textLeft+textWidth*.82/2-surface.width/2)*arrival;
+      const shiftX=compact ? 0 : shortWide ? textLeft+textWidth*(1-.18*arrival)/2-surface.width/2 : (textLeft+textWidth*.82/2-surface.width/2)*arrival;
       heroLines.forEach(line => {
         const inset=Math.max(0,(textWidth-line.offsetWidth)/2);
         line.style.transform=`translateX(${inset*(compact ? 1 : 1-arrival)}px)`;
