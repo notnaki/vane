@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
     @Published var pull: CGFloat = 0
     @Published var swiping = false
     var strip: [Space]?
+    var previews: [UUID: SpacePreviewList] = [:]
 }
 
 /// The Spaces chrome: the header row's two clicks, the footer's dots and its `+`, the inline
@@ -279,7 +280,8 @@ private struct SpaceSlide: ViewModifier {
     @ViewBuilder private var preview: some View {
         let drag = gesture.drag
         if drag != 0, let space = neighbour(of: drag) {
-            SpacePreviewList(space: space, liveTabs: store.previewTabs(in: space))
+            store.swipePreview(in: space)
+                .equatable()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .offset(x: drag + (drag < 0 ? sidebar.width : -sidebar.width))
                 .allowsHitTesting(false)
@@ -307,9 +309,27 @@ private struct SpaceSlide: ViewModifier {
 /// Ceiling: a site never visited has no cached favicon. The label climbs the same ladder the
 /// real row does — a typed name, the tidied name, the name it was pinned under, the title
 /// the sidecar saved — and only a row nothing has ever named is its host.
-struct SpacePreviewList: View {
+struct SpacePreviewList: View, Equatable {
     let space: Space
     let liveTabs: [Tab]?
+    private let identity = UUID()
+    private let saved: [String: Parked]
+    let rows: (pinned: [Row], today: [Row])
+    private let todayCount: Int
+
+    /// Capture once, before the preview moves. Decoding interaction states and rebuilding
+    /// folders in body would repeat disk work on every frame of a populated Space swipe.
+    init(space: Space, liveTabs: [Tab]?) {
+        self.space = space
+        self.liveTabs = liveTabs
+        saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
+                                            in: Store.directory)
+        let today = Self.todayRows(space: space, liveTabs: liveTabs)
+        todayCount = today.count
+        rows = Self.rows(space: space, today: today)
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
 
     /// What a preview row can be. A folder is one row whether it is open or shut: the
     /// sidebar under the fingers is a shape, and a folder that unpacked itself here would
@@ -320,9 +340,6 @@ struct SpacePreviewList: View {
     }
 
     var body: some View {
-        let rows = self.rows
-        let saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
-                                               in: Store.directory)
         VStack(alignment: .leading, spacing: Look.rowGap) {
             // The same metrics as `SpaceRow`, glyph for glyph: the ghost slides under the real
             // heading and any difference in size or ink reads as the row jumping on landing.
@@ -347,7 +364,7 @@ struct SpacePreviewList: View {
     /// The Space's Pinned section in the shape it was left in, then its Today tabs. The
     /// shape comes from the same defaults key the real sidebar restores from, so a folder
     /// previews where it will actually be.
-    var rows: (pinned: [Row], today: [Row]) {
+    private static func rows(space: Space, today: [Row]) -> (pinned: [Row], today: [Row]) {
         let urls = space.pinnedTabURLs ?? []
         var pinned: [Row] = []
         if let shape = TabStore.savedShape(space: space.id, profileID: space.profileID) {
@@ -366,10 +383,10 @@ struct SpacePreviewList: View {
         }
         let room = max(0, Look.spacePreviewRows - pinned.count)
         return (Array(pinned.prefix(Look.spacePreviewRows)),
-                Array(todayRows.prefix(room)))
+                Array(today.prefix(room)))
     }
 
-    private var todayRows: [Row] {
+    private static func todayRows(space: Space, liveTabs: [Tab]?) -> [Row] {
         guard let liveTabs else { return space.tabURLs.map { .site($0, .today) } }
         // Two pages at the same URL can have different live titles. Keep the tab itself
         // rather than looking both rows up by URL and finding the first one twice.
@@ -385,7 +402,7 @@ struct SpacePreviewList: View {
     private var tidy: some View {
         HStack(spacing: 8) {
             Hairline()
-            if todayRows.count >= Look.tidyThreshold {
+            if todayCount >= Look.tidyThreshold {
                 Text("Tidy | Clear").font(Look.sectionCaption).foregroundStyle(Look.inkTertiary)
             }
         }
@@ -463,6 +480,18 @@ struct SpacePreviewList: View {
 }
 
 extension TabStore {
+    /// A gesture can reverse direction, so keep each encountered neighbour until it ends.
+    /// Live-stash validation and sidecar reads run once, never as the offset changes.
+    func swipePreview(in space: Space) -> SpacePreviewList {
+        guard spaceSwiping else {
+            return SpacePreviewList(space: space, liveTabs: previewTabs(in: space))
+        }
+        if let preview = spaceGesture.previews[space.id] { return preview }
+        let preview = SpacePreviewList(space: space, liveTabs: previewTabs(in: space))
+        spaceGesture.previews[space.id] = preview
+        return preview
+    }
+
     /// Mirror the switch's choice of live rows; a stale stash must not override disk edits.
     func previewTabs(in space: Space) -> [Tab]? {
         guard space.profileID == profileID else { return nil }

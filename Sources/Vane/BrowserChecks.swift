@@ -467,6 +467,8 @@ import WebKit
             }
             store.palette = nil
             store.spaceSwiping = true
+            let neighbour = manager.createSpace(name: "Neighbour", in: profile.id)
+            let preview = store.swipePreview(in: neighbour)
             var windowInvalidations = 0
             var gestureInvalidations = 0
             let subscription = store.objectWillChange.sink { windowInvalidations += 1 }
@@ -477,6 +479,8 @@ import WebKit
             }
             subscription.cancel()
             gestureSubscription.cancel()
+            try require(store.swipePreview(in: neighbour) == preview,
+                        "swipe frames reuse the neighbour's captured preview")
             try require(windowInvalidations == 0,
                         "swipe frames do not invalidate the whole browser window (got \(windowInvalidations))")
             try require(gestureInvalidations > 0 && store.spaceDrag == -20 && store.spacePull == 0.2,
@@ -495,6 +499,9 @@ import WebKit
             monitor.remove()
             try require(store.spaceDrag == 0 && store.spacePull == 0 && !store.spaceSwiping,
                         "an interrupted swipe resets offset, pull and gesture state")
+            try require(store.spaceGesture.previews.isEmpty
+                        && store.swipePreview(in: neighbour) != preview,
+                        "an interrupted swipe releases previews before the next gesture")
             try require(store.swipeSpace?.name == renamed.name
                         && store.swipeStrip.contains { $0.id == added.id },
                         "ending a swipe releases its snapshot and reveals fresh Space edits")

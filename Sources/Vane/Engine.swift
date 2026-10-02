@@ -2859,7 +2859,10 @@ struct Stash {
             guard newValue != spaceGesture.swiping else { return }
             if newValue { spaceGesture.strip = strip }
             spaceGesture.swiping = newValue
-            if !newValue { spaceGesture.strip = nil }
+            if !newValue {
+                spaceGesture.strip = nil
+                spaceGesture.previews.removeAll()
+            }
         }
     }
 
