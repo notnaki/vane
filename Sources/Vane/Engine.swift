@@ -2198,7 +2198,7 @@ struct Stash {
         // and then reassigned `current` to the most recently used Today tab, and `current`'s
         // didSet *resumes* whatever it lands on — so one click on a pinned row's × swapped
         // the window's web view, woke a suspended tab and reloaded its page, all on the main
-        // actor before the click returned. Unloading in place moves nothing and wakes
+        // actor before the click returned. Clearing the closed page's selection wakes
         // nothing.
         //
         // `tab.suspended` alone, and not "or it has no url": `resume` hands the web view a
@@ -2217,6 +2217,9 @@ struct Stash {
             // what closing a favourite has always done.
             if tab.stays, !asPaneClose { sendHome(tab) }
         case .unload:
+            // Both parking in place and sending home close the page being shown. Leave
+            // the content column bare without selecting (and waking) another tab.
+            defer { if current == id { current = nil } }
             // Arc's rule: a pinned row remembers the url it was pinned at, and this press
             // puts it back there. It is the middle step of three — page → home → unpin.
             if sendHome(tab) { return }
