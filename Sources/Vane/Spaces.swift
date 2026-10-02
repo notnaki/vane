@@ -37,7 +37,7 @@ enum Spaces {
     static func firstSpace(id: UUID = UUID(), profileID: UUID, name: String, colorHex: String?,
                            pinned: [URL], today: [URL]) -> Space {
         func web(_ list: [URL], skipping seen: inout Set<String>) -> [URL] {
-            list.filter { $0.scheme?.hasPrefix("http") == true && seen.insert($0.absoluteString).inserted }
+            list.filter { TabAddress.restorable($0) && seen.insert($0.absoluteString).inserted }
         }
         var seen = Set<String>()
         // Pinned first, so a url that was both a pinned row and an open tab stays pinned:
@@ -57,7 +57,7 @@ enum Spaces {
     static func mergedPins(_ existing: [URL], _ stranded: [URL]) -> [URL] {
         var seen = Set(existing.map(\.absoluteString))
         return existing + stranded.filter {
-            $0.scheme?.hasPrefix("http") == true && seen.insert($0.absoluteString).inserted
+            TabAddress.restorable($0) && seen.insert($0.absoluteString).inserted
         }
     }
 
@@ -129,8 +129,8 @@ enum Spaces {
         (defaults.dictionary(forKey: lastTabKey) as? [String: String])?[space.uuidString]
     }
 
-    /// A `url` of nil is "nothing worth coming back to" — a blank tab, a local file, a
-    /// `vane:` page — and forgets the Space's row rather than writing one that never matches.
+    /// A `url` of nil forgets the Space's row. Callers retain web pages and local
+    /// Easels, while blank tabs, files and other internal addresses remain transient.
     static func rememberTab(_ url: String?, in space: UUID, defaults: UserDefaults = .vane) {
         var all = (defaults.dictionary(forKey: lastTabKey) as? [String: String]) ?? [:]
         all[space.uuidString] = url
@@ -200,7 +200,7 @@ enum Spaces {
         // a Space would put a page the user asked not to be remembered into spaces.json.
         guard !store.isPrivate,
               let tab = store.tabs.first(where: { $0.id == id }),
-              let url = tab.pinnedURL, url.scheme?.hasPrefix("http") == true,   // home, not the wander
+              let url = tab.pinnedURL, TabAddress.restorable(url),   // home, not the wander
               var space = store.spaces.first(where: { $0.id == spaceID }),
               space.id != store.currentSpaceID
         else { return }
@@ -279,7 +279,7 @@ enum Spaces {
     @MainActor static func archiveContents(of space: Space) {
         let archive = Archive.shared(for: space.profileID)
         for url in space.tabURLs + (space.pinnedTabURLs ?? []) {
-            guard url.scheme?.hasPrefix("http") == true else { continue }
+            guard TabAddress.restorable(url) else { continue }
             archive.add(url: url, title: url.host ?? url.absoluteString)
         }
     }

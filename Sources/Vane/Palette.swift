@@ -1020,7 +1020,7 @@ struct CommandField: NSViewRepresentable {
                 guard let u = URL(string: s.url) else { return }
                 let tab = target()
                 tab.editing = false
-                tab.web.load(URLRequest(url: u))
+                tab.go(u)
             }
         }
     }

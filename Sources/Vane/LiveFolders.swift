@@ -618,16 +618,51 @@ enum GitHubOAuth {
         return r
     }
 
-    private struct Grant: Decodable { let accessToken: String? }
-
-    /// nil for GitHub's `{"error": "bad_verification_code"}`, which comes back 200.
-    nonisolated static func token(_ data: Data) -> String? {
-        let d = JSONDecoder()
-        d.keyDecodingStrategy = .convertFromSnakeCase
-        return (try? d.decode(Grant.self, from: data))?.accessToken.flatMap {
-            $0.isEmpty ? nil : $0
-        }
+    private struct Grant: Decodable {
+        let accessToken: String?
+        let refreshToken: String?
+        let expiresIn: Double?
+        let refreshTokenExpiresIn: Double?
+        let error: String?
     }
+
+    nonisolated static func grant(_ data: Data, now: Date = .now) -> GitHubCredential? {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let reply = try? decoder.decode(Grant.self, from: data), reply.error == nil,
+              let access = reply.accessToken, !access.isEmpty else { return nil }
+        let refresh = reply.refreshToken.flatMap { $0.isEmpty ? nil : $0 }
+        if (reply.expiresIn != nil || reply.refreshTokenExpiresIn != nil) && refresh == nil { return nil }
+        for duration in [reply.expiresIn, reply.refreshTokenExpiresIn].compactMap({ $0 }) {
+            guard duration.isFinite && duration > 0 else { return nil }
+        }
+        return GitHubCredential(accessToken: access, refreshToken: refresh,
+                                expiresAt: reply.expiresIn.map { now.addingTimeInterval($0) },
+                                refreshExpiresAt: reply.refreshTokenExpiresIn.map { now.addingTimeInterval($0) })
+    }
+
+    /// A refresh consumes the previous pair. An incomplete rotation must never be saved
+    /// as a supposedly non-expiring token; initial non-expiring sign-ins stay compatible.
+    nonisolated static func refreshedGrant(_ data: Data, now: Date = .now) -> GitHubCredential? {
+        guard let next = grant(data, now: now), next.refreshToken != nil,
+              next.expiresAt != nil, next.refreshExpiresAt != nil else { return nil }
+        return next
+    }
+
+    nonisolated static func token(_ data: Data) -> String? { grant(data)?.accessToken }
+
+    nonisolated static func refresh(refreshToken: String, secret: String) -> URLRequest? {
+        guard var request = exchange(code: "", secret: secret) else { return nil }
+        var components = URLComponents()
+        components.queryItems = [URLQueryItem(name: "client_id", value: clientID),
+                                 URLQueryItem(name: "client_secret", value: secret),
+                                 URLQueryItem(name: "grant_type", value: "refresh_token"),
+                                 URLQueryItem(name: "refresh_token", value: refreshToken)]
+        // Query encoding leaves '+' alone, but form decoding interprets it as a space.
+        request.httpBody = Data((components.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").utf8)
+        return request
+    }
+
 }
 
 // MARK: - The live part
@@ -713,14 +748,39 @@ enum GitHubOAuth {
 
     private let readCredential: () -> Passwords.CredentialRead
     private let deleteCredential: (String) -> Bool
+    private let storeCredential: (String, String) -> Bool
+    private let fetchPullRequests: (GitHubQuery, String) async -> Result<[GitHub.PR], GitHub.Trouble>
+    private let renewal: GitHubTokenRenewal
+    private var credentialVersion = 0
+    private var signingOut = false
 
     init(profileID: UUID,
          readCredential: (() -> Passwords.CredentialRead)? = nil,
-         deleteCredential: ((String) -> Bool)? = nil) {
+         deleteCredential: ((String) -> Bool)? = nil,
+         storeCredential: ((String, String) -> Bool)? = nil,
+         oauthSecret: (() -> String?)? = nil,
+         sendRefresh: GitHubTokenRenewal.Send? = nil,
+         fetchPullRequests: ((GitHubQuery, String) async -> Result<[GitHub.PR], GitHub.Trouble>)? = nil) {
         self.profileID = profileID
-        self.readCredential = readCredential ?? {
+        let read = readCredential ?? {
             Passwords.readCredential(host: LiveFolders.host, profileID: profileID)
         }
+        let write = storeCredential ?? { login, value in
+            guard Passwords.savePreferredCredential(host: LiveFolders.host, account: login,
+                                                    password: value, profileID: profileID) else { return false }
+            if case .unavailable(let status) = Passwords.deleteOtherCredentials(
+                host: LiveFolders.host, keeping: login, profileID: profileID
+            ) {
+                NSLog("[vane] GitHub credential saved but duplicate cleanup failed (status %d)", status)
+            }
+            return true
+        }
+        self.readCredential = read
+        self.storeCredential = write
+        self.fetchPullRequests = fetchPullRequests ?? { await LiveFolders.fetch($0, token: $1) }
+        self.renewal = GitHubTokenRenewal(
+            lockURL: Store.directory.appendingPathComponent("github-refresh-" + profileID.uuidString + ".lock"),
+            read: read, write: write, secret: oauthSecret ?? { OAuthSecret.github }, send: sendRefresh)
         self.deleteCredential = deleteCredential ?? { account in
             Passwords.delete(host: LiveFolders.host, account: account, profileID: profileID)
         }
@@ -738,6 +798,7 @@ enum GitHubOAuth {
     @Published private(set) var needsReconnect = false
 
     var signIn: (login: String, token: String)? {
+        guard !signingOut else { return nil }
         let saved = credential.read(readCredential)
         if needsReconnect != credential.needsReconnect { needsReconnect = credential.needsReconnect }
         return saved
@@ -753,14 +814,15 @@ enum GitHubOAuth {
     func save(login: String, token: String) -> Bool {
         // One token per profile: a second login would mean asking which one every folder
         // meant, and Arc asks once.
-        let ok = Passwords.savePreferredCredential(host: LiveFolders.host, account: login,
-                                                   password: token, profileID: profileID)
+        guard let lock = try? GitHubRefreshLock.tryAcquire(renewal.lockURL) else {
+            say("GitHub sign-in is updating. Try connecting again shortly.")
+            return false
+        }
+        defer { withExtendedLifetime(lock) {} }
+        let ok = storeCredential(login, token)
         if ok {
-            if case .unavailable(let status) = Passwords.deleteOtherCredentials(
-                host: LiveFolders.host, keeping: login, profileID: profileID
-            ) {
-                NSLog("[vane] GitHub credential saved but duplicate cleanup failed (status %d)", status)
-            }
+            credentialVersion += 1
+            signingOut = false
             credential = LiveCredentialCache(login: login, token: token)
             needsReconnect = false
             NSLog("[vane] GitHub credential saved (profile %@, isolated data %d)",
@@ -776,11 +838,37 @@ enum GitHubOAuth {
     /// deleting the user's tabs.
     func signOut() {
         guard let old = signIn else { return }
-        NSLog("[vane] GitHub sign-out requested (profile %@)", profileID.uuidString)
-        if !deleteCredential(old.login) {
-            // Explicit sign-out must report an item that could not be removed.
-            NSLog("[vane] GitHub credential could not be deleted from Keychain")
+        credentialVersion += 1
+        let version = credentialVersion
+        if let lock = try? GitHubRefreshLock.tryAcquire(renewal.lockURL) {
+            removeCredential(old.login, holding: lock)
+            return
         }
+        // A refresh is spending its one-use token. Complete sign-out once it releases the
+        // lock, and hide the cached token immediately so late responses cannot revive it.
+        signingOut = true
+        needsReconnect = false
+        Task {
+            guard let lock = try? await GitHubRefreshLock.acquire(renewal.lockURL) else {
+                if credentialVersion == version {
+                    signingOut = false
+                    say("Vane couldn’t remove your GitHub sign-in. Try signing out again.")
+                }
+                return
+            }
+            guard credentialVersion == version else { return }
+            removeCredential(old.login, holding: lock)
+        }
+    }
+
+    private func removeCredential(_ login: String, holding lock: GitHubRefreshLock) {
+        defer { withExtendedLifetime(lock) {} }
+        NSLog("[vane] GitHub sign-out requested (profile %@)", profileID.uuidString)
+        if !deleteCredential(login) {
+            NSLog("[vane] GitHub credential could not be deleted from Keychain")
+            say("Vane couldn’t remove your GitHub sign-in. Try signing out again.")
+        }
+        signingOut = false
         credential = LiveCredentialCache()
         needsReconnect = false
     }
@@ -912,15 +1000,15 @@ enum GitHubOAuth {
         // GitHub answers 200 with `{"error": …}` for a code that has been used or has
         // expired, so the body is what says whether this worked, not the status.
         guard let data = try? await session.data(for: request).0,
-              let token = GitHubOAuth.token(data) else {
+              let grant = GitHubOAuth.grant(data) else {
             say("GitHub would not finish the sign-in. Try New Live Folder again.")
             return
         }
-        guard case .success(let who) = await LiveFolders.identify(token: token) else {
+        guard case .success(let who) = await LiveFolders.identify(token: grant.accessToken) else {
             say("GitHub signed Vane in, but would not say who to. Nothing was stored.")
             return
         }
-        guard save(login: who, token: token) else {
+        guard save(login: who, token: grant.stored) else {
             say("The keychain would not store the GitHub token.")
             return
         }
@@ -1078,15 +1166,9 @@ enum GitHubOAuth {
         busy.insert(folder)
         last[folder] = .now
         Task {
-            var requestedToken = token
-            var answer = await LiveFolders.fetch(query, token: requestedToken)
-            if case .failure(.unauthorised) = answer,
-               let replacement = credential.replacement(after: requestedToken, load: readCredential) {
-                // Another window/process may have saved a new credential while this
-                // request was in flight. Retry once only when the credential changed.
-                requestedToken = replacement.token
-                answer = await LiveFolders.fetch(query, token: requestedToken)
-            }
+            let response = await fetchAuthorized(query, token: token)
+            let requestedToken = response.token
+            let answer = response.answer
             defer { busy.remove(folder) }
             var details: [String: GitHub.Row] = [:]
             if case .success(let prs) = answer, signIn?.token == requestedToken {
@@ -1121,6 +1203,43 @@ enum GitHubOAuth {
                 guard live()[folder] == query else { return }
             }
             receive(answer, for: folder, token: requestedToken, details: details)
+        }
+    }
+
+    /// Renew before expiry; a rejection also allows one renewal/replacement and retry.
+    /// Keeping this path testable verifies the same token selection used by folder refresh.
+    func fetchAuthorized(_ query: GitHubQuery, token: String) async
+        -> (answer: Result<[GitHub.PR], GitHub.Trouble>, token: String) {
+        var requested = token
+        if credential.grant?.needsRenewal(at: .now) == true {
+            switch await renewedToken(after: requested, force: false) {
+            case .success(let next): requested = next
+            case .failure(let trouble): return (.failure(trouble), requested)
+            }
+        }
+        var answer = await fetchPullRequests(query, requested)
+        if case .failure(.unauthorised) = answer {
+            switch await renewedToken(after: requested, force: true) {
+            case .success(let next) where next != requested:
+                requested = next
+                answer = await fetchPullRequests(query, requested)
+            case .failure(let trouble): answer = .failure(trouble)
+            default: break
+            }
+        }
+        return (answer, requested)
+    }
+
+    private func renewedToken(after token: String, force: Bool) async -> Result<String, GitHub.Trouble> {
+        let version = credentialVersion
+        let answer = await renewal.token(after: token, force: force)
+        guard credentialVersion == version else {
+            return signIn.map { .success($0.token) } ?? .failure(.offline)
+        }
+        return answer.map { session in
+            credential = LiveCredentialCache(login: session.login, token: session.credential.stored)
+            needsReconnect = false
+            return session.token
         }
     }
 
@@ -1469,19 +1588,27 @@ extension TabStore {
 /// than turning an intact on-disk credential into a process-long signed-out state.
 struct LiveCredentialCache {
     private var hit: (login: String, token: String)?
+    private(set) var grant: GitHubCredential?
     private var rejectedToken: String?
     var needsReconnect: Bool { rejectedToken != nil && rejectedToken == hit?.token }
     private(set) var unavailableStatus: OSStatus?
 
     init(login: String? = nil, token: String? = nil) {
-        if let login, let token { hit = (login, token) }
+        if let login, let token, let saved = GitHubCredential.restore(token) {
+            grant = saved
+            hit = (login, saved.accessToken)
+        }
     }
 
     mutating func read(_ load: () -> Passwords.CredentialRead) -> (login: String, token: String)? {
         if let hit { return hit }
         unavailableStatus = nil
         switch load() {
-        case let .found(account, password): hit = (account, password)
+        case let .found(account, password):
+            if let saved = GitHubCredential.restore(password) {
+                grant = saved
+                hit = (account, saved.accessToken)
+            } else { unavailableStatus = errSecDecode }
         case .missing: break
         case let .unavailable(status): unavailableStatus = status
         }
@@ -1493,6 +1620,7 @@ struct LiveCredentialCache {
         // Preserve a new sign-in that arrived while an old request was pending.
         if let hit, hit.token != rejected { return hit }
         hit = nil
+        grant = nil
         guard let fresh = read(load), fresh.token != rejected else { return nil }
         return fresh
     }

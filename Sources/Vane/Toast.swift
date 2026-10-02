@@ -405,7 +405,7 @@ extension TabStore {
         archive(tab.id)
         guard leaving else { return }
         // Only what `archiveNow` actually wrote down can be brought back from the archive.
-        let restorable = !isPrivate && url?.scheme?.hasPrefix("http") == true
+        let restorable = !isPrivate && TabAddress.restorable(url)
         var undo: (title: String, run: @MainActor () -> Void)?
         if restorable {
             undo = ("Undo", { [weak self] in

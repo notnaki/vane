@@ -518,7 +518,10 @@ private struct Pane: View {
             // A pane is on screen whether or not the keyboard is in it, so a pane that comes
             // back from the session parked has to wake up rather than sit there blank.
             .onAppear { tab.resume() }
-            .background(PaneFocus(web: tab.web, focus: focus))
+            .background {
+                if tab.easelID == nil { PaneFocus(web: tab.web, focus: focus) }
+            }
+            .simultaneousGesture(TapGesture().onEnded { if tab.easelID != nil { focus() } })
             .clipShape(.rect(cornerRadius: Look.paneRadius))
             .overlay {
                 RoundedRectangle(cornerRadius: Look.paneRadius)

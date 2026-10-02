@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import WebKit
 
 /// Safari's UA string. WKWebView's own UA gets Netflix/Disney+ bounced on sight, and
@@ -375,6 +376,9 @@ struct TitleReveal: Equatable, Sendable {
         return fresh
     }
     @Published var title = "New Tab"
+    @Published private(set) var easelSession: EaselSession?
+    var easelID: UUID? { easelSession?.selected }
+    private var easelObservation: AnyCancellable?
     /// The page whose persisted title is standing in while a parked web view wakes. WebKit
     /// briefly reports an empty title during reconstruction; that is not a page title.
     private var titlePlaceholderURL: URL?
@@ -629,16 +633,11 @@ struct TitleReveal: Equatable, Sendable {
         c.addUserScript(
             WKUserScript(source: TabAudio.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: false))
-        // Document *start*: the media-session wrapper has to be in place before the page
-        // registers its handlers. See MediaPlayer.swift. Main frame only, unlike the PiP
-        // script above: this one is a wrapper around `navigator.mediaSession` installed
-        // before any of the frame's own script runs, and a page with thirty ad iframes paid
-        // for thirty of them at the moment it could least afford to. Ceiling: a player
-        // embedded in an iframe no longer names the track in the tray — it still plays, it
-        // still pops out, and it is still what the mute button mutes.
+        // Media controls must run in the frame that owns the player. Empty frames post
+        // no retained state; capture listeners do no work until a media event arrives.
         c.addUserScript(
             WKUserScript(source: MediaTray.script, injectionTime: .atDocumentStart,
-                         forMainFrameOnly: true))
+                         forMainFrameOnly: false))
         // Main frame only: a link hovered inside an iframe does not show its url in the
         // status capsule, which is not worth two mouse listeners in every advert on the page.
         c.addUserScript(
@@ -848,7 +847,46 @@ struct TitleReveal: Equatable, Sendable {
     /// The url this tab is on, live or parked. Everything that writes a tab down — pins,
     /// the session, spaces — has to come through here, or a suspended tab quietly vanishes
     /// from all of them.
-    var currentURL: URL? { existingWeb?.url ?? parkedURL }
+    var currentURL: URL? { easelID.map(EaselAddress.url) ?? existingWeb?.url ?? parkedURL }
+
+    /// Internal canvases never pass through WebKit or the history database.
+    /// Missing boards remain identifiable so the page can offer the Library.
+    @discardableResult func routeEasel(_ url: URL, parked: Bool = false) -> Bool {
+        guard let id = EaselAddress.boardID(url) else { return false }
+        guard !isPrivate else { return true }
+        release()
+        let repository = EaselStore.shared(profileID: profileID, directory: Store.directory)
+        let session = EaselSession(repository)
+        session.selected = id
+        easelSession = session
+        parkedState = nil
+        parkedURL = nil
+        suspended = parked
+        hasEverLoaded = true
+        address = url.absoluteString
+        progress = 0; loading = false
+        canGoBack = false; canGoForward = false
+        favicon = nil
+        developer = false; readerAvailable = false
+        pendingSave = nil; passwordChoice = nil
+        editableFrames.removeAll()
+        titlePlaceholderURL = nil
+        if stays, homeURL == nil { homeURL = url }
+        easelObservation = repository.$boards.sink { [weak self] boards in
+            let board = boards.first { $0.id == id }
+            self?.title = board.map { $0.title.isEmpty ? "Untitled Easel" : $0.title } ?? "Easel unavailable"
+        }
+        return true
+    }
+
+    func leaveEasel() {
+        guard easelSession != nil else { return }
+        easelSession?.liveItems.removeAll()
+        easelObservation = nil
+        easelSession = nil
+        suspended = false
+        parkedState = nil; parkedURL = nil
+    }
 
     /// Enough to redraw the strip and to come back exactly where the user left off.
     var snapshot: Parked {
@@ -862,6 +900,11 @@ struct TitleReveal: Equatable, Sendable {
     /// interactionState. The failure mode is one-directional: a state that does not come
     /// back just means the tab reloads from its url.
     func suspend() {
+        if let easelSession {
+            easelSession.liveItems.removeAll()
+            suspended = true
+            return
+        }
         guard !suspended, let url = existingWeb?.url else { return }
         parkedState = web.interactionState as? Data
         parkedURL = url
@@ -945,6 +988,7 @@ struct TitleReveal: Equatable, Sendable {
     /// synchronously, so the url check below is a genuine "that state was no good".
     func resume() {
         guard suspended else { return }
+        if easelSession != nil { suspended = false; return }
         Trace.span("resume") {
             suspended = false
             if let parkedState { web.interactionState = parkedState }
@@ -974,6 +1018,8 @@ struct TitleReveal: Equatable, Sendable {
         tornDown = true
         presentationGeneration += 1
         windowSnapshot = nil
+        easelSession?.liveItems.removeAll()
+        easelObservation = nil
         if isPrivate { SitePermissions.forgetPrivate(tabID: id) }
         release(replacing: false)
         TabAudio.forget(id)
@@ -983,6 +1029,8 @@ struct TitleReveal: Equatable, Sendable {
     /// Come up already suspended, so restoring thirty tabs costs one WebContent process
     /// instead of thirty. The strip still has a title and a favicon.
     func park(url: URL, _ p: Parked) {
+        if routeEasel(url, parked: true) { return }
+        leaveEasel()
         parkedURL = url
         parkedState = p.state
         titlePlaceholderURL = Files.restorationPlaceholder(for: url)
@@ -1046,7 +1094,8 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func isPlayingMedia() async -> Bool {
-        await web.requestMediaPlaybackState() == .playing
+        guard let web = existingWeb else { return false }
+        return await web.requestMediaPlaybackState() == .playing
     }
 
     /// ponytail: one evaluateJavaScript, main frame only, `value != defaultValue` so a page
@@ -1054,6 +1103,7 @@ struct TitleReveal: Equatable, Sendable {
     /// an iframe or a shadow root counts, and a page that stores its draft in JS state
     /// rather than in the DOM looks empty.
     func hasUnsubmittedInput() async -> Bool {
+        guard let web = existingWeb else { return false }
         let js = """
         (function(){for(const e of document.querySelectorAll('input,textarea')){\
         const t=(e.type||'').toLowerCase();\
@@ -1112,7 +1162,7 @@ struct TitleReveal: Equatable, Sendable {
         let (assistant, question) = AIChat.match(input) ?? (AIChat.preferred, input)
         guard let target = AIChat.url(for: question, using: assistant) else { return }
         editing = false
-        web.load(URLRequest(url: target))
+        go(target)
     }
 
     func go(_ input: String) {
@@ -1120,18 +1170,18 @@ struct TitleReveal: Equatable, Sendable {
         if let (assistant, question) = AIChat.match(input),
            let target = AIChat.url(for: question, using: assistant) {
             editing = false
-            web.load(URLRequest(url: target))
+            go(target)
             return
         }
         guard let target = Search.url(for: input) else { return }
         editing = false
-        web.load(URLRequest(url: target))
+        go(target)
     }
 
     /// Only ever over https — filling a saved password into a plaintext page hands it to
     /// anyone on the path, and saving one from there means it was already exposed.
     private var secureHost: String? {
-        guard let u = web.url, u.scheme == "https", let h = u.host else { return nil }
+        guard let u = existingWeb?.url, u.scheme == "https", let h = u.host else { return nil }
         return h
     }
 
@@ -1344,6 +1394,7 @@ struct TitleReveal: Equatable, Sendable {
         DeveloperMode.apply(to: self)   // localhost → deployed site, and back
         closeChooser(.navigate)       // a redirect lands here without a fresh provisional
         pipFrame = nil                // main-frame navigation: every frame it named has gone
+        MediaState.shared.forget(id)   // old documents and their rate limits have gone too
     }
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1524,6 +1575,7 @@ struct TitleReveal: Equatable, Sendable {
         }
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
         if m.name == MediaTray.messageName {
+            guard m.webView === web else { return }
             MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
             return
         }
@@ -1540,11 +1592,25 @@ struct TitleReveal: Equatable, Sendable {
             return
         }
         if m.name == PictureInPicture.messageName {
+            guard m.webView === web else { return }
             // Not a mode: the frame this page's video is in, so the toggle can be aimed at it.
-            if m.body as? String == "has-video" { pipFrame = m.frameInfo; return }
+            if m.body as? String == "has-video" {
+                // A later ad/player announcement must not steal the video already detached
+                // or collapsed into the tray. Its actual frame was fixed on PiP entry.
+                if !pictureInPicture && !MediaState.shared.minimized.contains(id) { pipFrame = m.frameInfo }
+                return
+            }
             // Nor this: the PiP window's ⤢, which wants the tab as well as the video back.
             if m.body as? String == "return" { PictureInPicture.returnToTab(self); return }
-            if let active = PictureInPicture.state(from: m.body) { pictureInPicture = active }
+            if let active = PictureInPicture.state(from: m.body) {
+                pictureInPicture = active
+                if active {
+                    pipFrame = m.frameInfo
+                    MediaState.shared.restored(id, source: (m.body as? [String: Any])?["source"] as? String)
+                    PiPMinimizeControls.install(for: self)
+                }
+                else { PiPMinimizeControls.remove(id); MediaState.shared.leftPiP(id) }
+            }
             return
         }
         guard let body = m.body as? [String: Any] else { return }
@@ -1618,9 +1684,9 @@ struct TitleReveal: Equatable, Sendable {
         fillChosen(host: choice.host, account: choice.accounts[choice.selected])
     }
 
-    func reload()     { web.reload() }
-    func hardReload() { web.reloadFromOrigin() }
-    func stop()       { web.stopLoading(); loading = false }
+    func reload()     { if easelSession == nil { existingWeb?.reload() } }
+    func hardReload() { if easelSession == nil { existingWeb?.reloadFromOrigin() } }
+    func stop()       { existingWeb?.stopLoading(); loading = false }
 
     /// ⌥⌘U. ponytail: WebKit has no view-source: handler, so this is the page's own HTML
     /// in a <pre>. No syntax highlighting — that is what the inspector is for.
@@ -1638,8 +1704,8 @@ struct TitleReveal: Equatable, Sendable {
                 + "white-space:pre-wrap;word-break:break-word'>\(escaped)</pre>", baseURL: nil)
         }
     }
-    func back()    { web.goBack() }
-    func forward() { web.goForward() }
+    func back()    { existingWeb?.goBack() }
+    func forward() { existingWeb?.goForward() }
 
     /// `target="_blank"` and `window.open` — a tab beside this one, or a Little Vane for a
     /// popup that asked to be one. See Popups.swift for which, and why.
@@ -1785,6 +1851,7 @@ struct Stash {
             // The tab being left behind starts its idle clock now, not when it was opened.
             if let old = tabs.first(where: { $0.id == oldValue }) {
                 old.lastActive = .now
+                if oldValue != current { old.easelSession?.liveItems.removeAll() }
                 old.closeChooser(.tabSwitch)   // a list anchored to a page nobody is looking at
             }
             // Selecting a pane by any route at all — ⌘1–9, ⌃⇥, ⌥⌘↑↓, a favourite tile, the
@@ -1805,6 +1872,19 @@ struct Stash {
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
     @Published var sidebarShown = true
+    /// Presentation only, per Space and window: hiding pins never changes their contents.
+    @Published private(set) var collapsedPinnedSpaces: Set<UUID> = []
+    var pinnedSectionCollapsed: Bool {
+        collapsedPinnedSpaces.contains(currentSpaceID ?? profileID)
+    }
+    func togglePinnedSection() {
+        Motion.list {
+            let id = currentSpaceID ?? profileID
+            if !collapsedPinnedSpaces.insert(id).inserted { collapsedPinnedSpaces.remove(id) }
+            if pinnedSectionCollapsed, selection.section == .pinned { selection.clear() }
+            spaceGesture.previews.removeAll()
+        }
+    }
     /// The command bar. Set to open it in a mode, nil to close. Per window: two windows can
     /// each have their own open. `.address` is what ⌘L, ⌘T and clicking the address pill
     /// open — the place to type a url or a search.
@@ -1866,19 +1946,6 @@ struct Stash {
     let profileID: UUID
     /// Which space this window is showing, if any. A window shows one space at a time.
     @Published private(set) var currentSpaceID: UUID?
-    /// Disclosure belongs to this window's Space, without closing or unloading its tabs.
-    @Published private(set) var collapsedSpaceCards: Set<UUID> = []
-
-    var spaceCardCollapsed: Bool {
-        currentSpaceID.map { collapsedSpaceCards.contains($0) } ?? false
-    }
-
-    func toggleSpaceCard() {
-        guard !isPrivate, let id = currentSpaceID else { return }
-        Motion.list {
-            if !collapsedSpaceCards.insert(id).inserted { collapsedSpaceCards.remove(id) }
-        }
-    }
     weak var window: NSWindow?
     /// The window this store is parked behind while that window shows another profile.
     ///
@@ -2115,7 +2182,7 @@ struct Stash {
             let urls = await InstantLinks.targets(for: input, isPrivate: isPrivate)
             guard let first = urls.first else { return }
             tab.editing = false
-            tab.web.load(URLRequest(url: first))
+            tab.go(first)
             let keep = tab.id
             for u in urls.dropFirst() { newTab(u) }
             current = keep          // newTab focuses what it opens; undo that
@@ -2312,7 +2379,7 @@ struct Stash {
         let stashed = space(stashing: id)
         guard let tab = everyTab.first(where: { $0.id == id }) else { return }
         if tab.kind == .today, !isPrivate, let u = tab.currentURL,
-           u.scheme?.hasPrefix("http") == true {
+           TabAddress.restorable(u) {
             // The Space it was in and whether it was a Little Arc go down with it, so the
             // Library can put it back where it came from and filter on where it came from.
             Archive.shared(for: profileID).add(url: u, title: TidyTitles.title(for: tab),
@@ -2730,11 +2797,11 @@ struct Stash {
         ProfileManager.defaultsKey(kind == .favourite ? "pinnedTabs" : "pinnedRows", profileID)
     }
 
-    /// What is written down for a favourite or a pinned tab: the page it is on. Only web
-    /// pages; a blank or file tab is not a place to come back to.
+    /// Web pages and profile-local Easels can return as saved tabs. Blank and file
+    /// tabs remain transient.
     static func pinURL(_ current: URL?) -> String? {
-        guard let s = current?.absoluteString, s.hasPrefix("http") else { return nil }
-        return s
+        guard let current, TabAddress.restorable(current) else { return nil }
+        return current.absoluteString
     }
 
     /// The home a row takes on when it changes section: the page it is on as it enters
@@ -2773,17 +2840,16 @@ struct Stash {
     /// where it is, because the key is the page.
     ///
     /// nil for a row there is nothing to file: one with no page at all, and one on a page
-    /// that is not web — a dropped `file://` PDF has no business becoming a key in a file
-    /// every reader hands http urls to.
+    /// that is not restorable — a dropped `file://` PDF remains transient.
     ///
     /// Pure, so `selfcheck --pure` can drive it with no tab in the room: it is the write
     /// half of the round trip `restore(_:as:parked:)` reads, and the two drifting apart is
     /// a rebuilt Space full of rows named after their host.
     nonisolated static func sidecarEntry(page: URL?, home: URL?,
                                          snapshot: Parked) -> (key: String, parked: Parked)? {
-        guard let page, page.scheme?.hasPrefix("http") == true,
+        guard let page, TabAddress.restorable(page),
               let key = pinned(home: home, at: page),
-              key.scheme?.hasPrefix("http") == true else { return nil }
+              TabAddress.restorable(key) else { return nil }
         return (key.absoluteString, key == page ? snapshot : snapshot.on(page))
     }
 
@@ -3066,7 +3132,7 @@ struct Stash {
         // back in. A Today tab has no home, so for those it is `currentURL` exactly as
         // before. See `Tab.homeURL`.
         func urls(_ keep: (Tab) -> Bool) -> [URL] {
-            tabs.filter(keep).compactMap(\.pinnedURL).filter { $0.scheme?.hasPrefix("http") == true }
+            tabs.filter(keep).compactMap(\.pinnedURL).filter { TabAddress.restorable($0) }
         }
         space.tabURLs = urls { $0.kind == .today }
         space.pinnedURLs = []              // Favourites are the profile's; see `savePins`
@@ -3107,7 +3173,7 @@ struct Stash {
         // And which tab the Space is being left on, so switching back lands on it rather
         // than on whatever is first. Written here rather than in `switchTo` so the swipe
         // commit, the Spaces menu, ⌥⌘←/→ and ⌃1–9 all get it — every one of them saves
-        // first. Only a web page is worth coming back to (see `Spaces.rememberTab`), and
+        // first. Only a restorable tab is worth coming back to (see `Spaces.rememberTab`), and
         // never a favourite: the grid is the profile's, so every Space would remember the
         // same tile and land on it. See `Spaces.landing`.
         // `pinnedURL`, and the same in `landing(in:)`: a Space rebuilt from disk brings a
@@ -3115,7 +3181,7 @@ struct Stash {
         // every list — this one included — names it by.
         let leftOn = active.flatMap { $0.kind == .favourite ? nil : $0.pinnedURL }
         Spaces.rememberTab(leftOn.flatMap {
-            $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
+            TabAddress.restorable($0) ? $0.absoluteString : nil
         }, in: id)
         if savedSpace { SharedTabs.didSave(space: id, from: self) }
         return savedSpace && savedState
@@ -3147,7 +3213,7 @@ struct Stash {
         guard var space = spaces.first(where: { $0.id == id }) else { return false }
         func urls(_ kind: TabKind) -> [URL] {
             stash.tabs.filter { $0.kind == kind }.compactMap(\.pinnedURL)
-                .filter { $0.scheme?.hasPrefix("http") == true }
+                .filter { TabAddress.restorable($0) }
         }
         space.tabURLs = urls(.today)
         space.pinnedTabURLs = urls(.pinned)
@@ -3166,7 +3232,7 @@ struct Stash {
                            space: id, profileID: profileID, ownsSection: true)
         let selected = stash.tabs.first { $0.id == stash.current }?.pinnedURL
         Spaces.rememberTab(selected.flatMap {
-            $0.scheme?.hasPrefix("http") == true ? $0.absoluteString : nil
+            TabAddress.restorable($0) ? $0.absoluteString : nil
         }, in: id)
         return true
     }

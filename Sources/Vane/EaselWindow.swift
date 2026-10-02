@@ -54,85 +54,80 @@ import UniformTypeIdentifiers
     }
 }
 
-/// Separate native windows let a board stay beside the page being collected.
+/// Browser entry points and image/export utilities shared by Easel tabs.
 @MainActor enum EaselWindow {
-    private final class Delegate: NSObject, NSWindowDelegate {
-        let session: EaselSession
-        init(_ session: EaselSession) { self.session = session }
-        func windowWillClose(_ notification: Notification) { session.liveItems.removeAll() }
-    }
-    private struct Entry { let window: NSWindow; let session: EaselSession; let delegate: Delegate }
-    private static var windows: [UUID: Entry] = [:]
+    private static var capturing: Set<UUID> = []
 
-    @discardableResult static func show(profileID: UUID, boardID: UUID? = nil, create: Bool = false) -> EaselSession {
-        let entry: Entry
-        if let existing = windows[profileID] { entry = existing }
-        else {
-            let repository = EaselStore.shared(profileID: profileID, directory: Store.directory)
-            let session = EaselSession(repository)
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 740),
-                                  styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                                  backing: .buffered, defer: false)
-            window.title = "Easels"
-            window.minSize = NSSize(width: 760, height: 500)
-            window.isReleasedWhenClosed = false
-            window.contentView = EaselHostingView(rootView: EaselWorkspace(session: session))
-            if !window.setFrameUsingName("VaneEasels-\(profileID)") { window.center() }
-            window.setFrameAutosaveName("VaneEasels-\(profileID)")
-            let delegate = Delegate(session)
-            window.delegate = delegate
-            entry = Entry(window: window, session: session, delegate: delegate)
-            windows[profileID] = entry
-        }
-        if create { entry.session.create() }
-        else if let boardID { entry.session.selected = boardID }
-        entry.window.makeKeyAndOrderFront(nil)
-        entry.window.makeFirstResponder(entry.window.contentView)
-        NSApp.activate()
-        return entry.session
+    @discardableResult static func show(profileID: UUID, boardID: UUID? = nil, create: Bool = false,
+                                       in origin: TabStore? = nil) -> EaselSession? {
+        guard let store = origin ?? BookmarkManager.browserWindow(for: profileID),
+              store.profileID == profileID, !store.isPrivate, !store.isLittle,
+              let tab = store.openEasel(boardID, create: create) else { return nil }
+        store.window?.makeKeyAndOrderFront(nil)
+        return tab.easelSession
     }
 
-    static var focused: EaselSession? { windows.values.first { $0.window.isKeyWindow }?.session }
-    static var canOpen: Bool { focused != nil || Windows.current?.isPrivate == false }
+    static var focused: EaselSession? { Windows.current?.active?.easelSession }
+    static var canOpen: Bool { Windows.current.map { !$0.isPrivate && !$0.isLittle } ?? false }
     static func open(in store: TabStore?, create: Bool = false) {
-        if let session = focused { show(profileID: session.repository.profileID, create: create); return }
-        guard let store, !store.isPrivate else { return }
-        show(profileID: store.profileID, create: create)
+        guard let store, !store.isPrivate, !store.isLittle else { return }
+        if create { store.openEasel(create: true) }
+        else { Library.open(.easels, in: store) }
     }
     static func canCapture(in store: TabStore?) -> Bool {
         guard let store, !store.isPrivate, store.window?.isKeyWindow == true,
-              let source = store.active?.web.url else { return false }
+              let source = store.active?.existingWeb?.url, store.active?.easelID == nil else { return false }
         return EaselItem.webURL(source.absoluteString) != nil
     }
     static func forget(_ profileID: UUID) {
-        windows.removeValue(forKey: profileID)?.window.close()
+        for tab in TabStore.all.filter({ $0.profileID == profileID }).flatMap(\.everyTab) {
+            tab.easelSession?.liveItems.removeAll()
+        }
+    }
+
+    /// Save first, then reveal the board. The capture preview chooses its destination.
+    @discardableResult static func addCapture(_ image: NSImage, title: String, source: String,
+                                             to boardID: UUID?, in store: TabStore) -> Bool {
+        guard !store.isPrivate, !store.isLittle, EaselItem.webURL(source) != nil else { return false }
+        let repository = EaselStore.shared(profileID: store.profileID, directory: Store.directory)
+        do {
+            let item = try imageItem(image, title: title, source: source)
+            var board: EaselBoard
+            if let boardID {
+                guard let existing = repository.board(boardID) else { throw EaselStore.Failure.missing }
+                board = existing
+            } else { board = try repository.create() }
+            let session = store.tabs.first { $0.easelID == board.id }?.easelSession ?? EaselSession(repository)
+            board.items.append(session.placed(item, in: board))
+            try repository.save(board)
+            return store.openEasel(board.id) != nil
+        } catch {
+            Toasts.show(error.localizedDescription)
+            return false
+        }
     }
 
     /// Capture the page's visible viewport, using its existing authenticated WebKit view.
     /// Freeze the URL and profile before the async snapshot; never save private content.
     static func capture(in store: TabStore?) {
         guard canCapture(in: store), let store, let tab = store.active,
-              let source = tab.web.url, EaselItem.webURL(source.absoluteString) != nil else { return }
-        let web = tab.web, title = tab.title, profileID = store.profileID
-        let session = show(profileID: profileID)
-        if session.board == nil { session.create() }
-        guard let targetID = session.selected, !session.capturing else { return }
-        session.capturing = true
+              let web = tab.existingWeb, let source = web.url,
+              EaselItem.webURL(source.absoluteString) != nil,
+              capturing.insert(store.windowID).inserted else { return }
+        let title = tab.title
+        let repository = EaselStore.shared(profileID: store.profileID, directory: Store.directory)
+        let recent = store.tabs.filter { $0.easelID.flatMap(repository.board) != nil }.max { $0.lastActive < $1.lastActive }?.easelID
+        let targetID = recent ?? repository.boards.first?.id
         let configuration = WKSnapshotConfiguration()
         configuration.snapshotWidth = 1400
-        web.takeSnapshot(with: configuration) { image, error in
+        web.takeSnapshot(with: configuration) { [weak store] image, error in
             Task { @MainActor in
-                defer { session.capturing = false }
+                guard let store else { return }
+                defer { capturing.remove(store.windowID) }
                 // A navigation while WebKit was capturing must not label another page's pixels.
-                guard web.url == source else { session.message = "The page changed during capture. Try again."; return }
-                guard let image else { session.message = error?.localizedDescription ?? "The page could not be captured."; return }
-                session.perform {
-                    let item = try imageItem(image, title: title, source: source.absoluteString)
-                    guard var board = session.repository.board(targetID) else { throw EaselStore.Failure.missing }
-                    board.items.append(session.placed(item, in: board))
-                    try session.repository.save(board)
-                    session.selected = targetID
-                }
+                guard web.url == source else { Toasts.show("The page changed during capture. Try again."); return }
+                guard let image else { Toasts.show(error?.localizedDescription ?? "The page could not be captured."); return }
+                addCapture(image, title: title, source: source.absoluteString, to: targetID, in: store)
             }
         }
     }
@@ -171,14 +166,18 @@ import UniformTypeIdentifiers
 }
 
 /// Standard Edit menu commands still reach text editors first, then the board's responder.
-@MainActor private final class EaselHostingView: NSHostingView<EaselWorkspace>, NSMenuItemValidation {
-    let session: EaselSession
+@MainActor final class EaselHostingView: NSHostingView<EaselWorkspace>, NSMenuItemValidation {
+    var session: EaselSession { rootView.session }
     required init(rootView: EaselWorkspace) {
-        self.session = rootView.session
         super.init(rootView: rootView)
     }
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
     override var acceptsFirstResponder: Bool { true }
+    static func find(_ session: EaselSession, in view: NSView?) -> EaselHostingView? {
+        guard let view else { return nil }
+        if let host = view as? EaselHostingView, host.session === session { return host }
+        return view.subviews.lazy.compactMap { find(session, in: $0) }.first
+    }
     @objc func undo(_ sender: Any?) { session.undo() }
     @objc func redo(_ sender: Any?) { session.redo() }
     @objc func paste(_ sender: Any?) { session.paste() }
@@ -190,49 +189,32 @@ import UniformTypeIdentifiers
     }
 }
 
-private struct EaselWorkspace: View {
+struct EaselWorkspace: View {
     @ObservedObject var session: EaselSession
     @ObservedObject var repository: EaselStore
-    @State private var query = ""
-    init(session: EaselSession) { self.session = session; repository = session.repository }
+    let browser: TabStore
+    init(session: EaselSession, browser: TabStore) {
+        self.session = session; repository = session.repository; self.browser = browser
+    }
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 16) {
-                Label("Easels", systemImage: "paintpalette").font(.title2.weight(.semibold))
-                TextField("Search Easels", text: $query).textFieldStyle(.roundedBorder)
-                ScrollView {
-                    LazyVStack(spacing: 4) {
-                        ForEach(repository.boards.filter { Library.matches([$0.title], query) }) { board in
-                            Button { session.selected = board.id } label: {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    Text(board.title.isEmpty ? "Untitled Easel" : board.title).font(.headline).lineLimit(2)
-                                    Text("\(board.items.count) items").font(.caption).foregroundStyle(.secondary)
-                                }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                                    .background(session.selected == board.id ? Color.accentColor.opacity(0.12) : .clear,
-                                                in: .rect(cornerRadius: 8))
-                            }.buttonStyle(.plain)
-                        }
-                    }
-                }
-                Button { session.create() } label: { Label("New Easel", systemImage: "plus") }
-                Button("Import Easel…") { importBoard() }
-            }.padding(18).frame(width: 220).background(.bar)
-            Divider()
+        Group {
             if let board = session.board {
-                EaselEditor(session: session, repository: repository, boardID: board.id).id(board.id)
+                EaselEditor(session: session, repository: repository, boardID: board.id,
+                            openBoard: { browser.openEasel($0) }).id(board.id)
             } else {
                 ContentUnavailableView {
-                    Label("A place for your ideas", systemImage: "paintpalette")
+                    Label("Easel unavailable", systemImage: "paintpalette")
                 } description: {
-                    Text("Collect notes, images, links, and web captures on your own canvas.")
-                } actions: { Button("Create an Easel") { session.create() } }
+                    Text("This board may have been deleted. Your other saved Easels are in Library.")
+                } actions: {
+                    Button("Open Easels") { Library.open(.easels, in: browser) }
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onChange(of: session.selected) { session.liveItems.removeAll() }
         .environment(\.openURL, OpenURLAction { url in
             guard EaselItem.webURL(url.absoluteString) != nil else { return .discarded }
-            BookmarkManager.browserWindow(for: repository.profileID)?.shown.newTab(url)
+            browser.newTab(url)
             return .handled
         })
         .overlay(alignment: .bottom) {
@@ -248,24 +230,13 @@ private struct EaselWorkspace: View {
             Button("OK") { session.message = nil }
         } message: { Text(session.message ?? "") }
     }
-    private func importBoard() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        session.perform {
-            let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard size <= EaselStore.fileLimit else { throw EaselStore.Failure.tooLarge }
-            session.selected = try repository.importBoard(Data(contentsOf: url)).id
-        }
-    }
 }
 
 private struct EaselEditor: View {
     @ObservedObject var session: EaselSession
     @ObservedObject var repository: EaselStore
     let boardID: UUID
+    var openBoard: (UUID) -> Void = { _ in }
     @State private var selected: UUID?
     @State private var zoom = 1.0
     @State private var drawing = false
@@ -343,7 +314,7 @@ private struct EaselEditor: View {
                 Divider()
                 Button("Delete Selected Item") { deleteItem() }.disabled(selected == nil)
                 Button("Duplicate Easel") {
-                    session.perform { session.selected = try repository.importBoard(JSONEncoder().encode(board)).id }
+                    session.perform { openBoard(try repository.importBoard(JSONEncoder().encode(board)).id) }
                 }
                 Button("Export PNG…") { exportPNG() }
                 Button("Export Editable Easel…") { exportBoard() }
@@ -415,7 +386,7 @@ private struct EaselEditor: View {
         alert.informativeText = "Its notes, drawings, and images will be removed. Export a copy first if you want to keep it."
         alert.addButton(withTitle: "Delete"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        session.perform { try repository.delete(boardID); session.selected = repository.boards.first?.id }
+        session.perform { try repository.delete(boardID) }
     }
 }
 
@@ -644,19 +615,21 @@ private struct EaselItemEditor: View {
 
 /// The Library uses the same repository and window as the File menu.
 struct EaselsPane: View {
+    @EnvironmentObject private var store: TabStore
     @ObservedObject var repository: EaselStore
     @ObservedObject private var library = Library.shared
     @FocusState private var searchFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             TextField("Search Easels…", text: $library.query).textFieldStyle(.roundedBorder).focused($searchFocused)
-            Button { EaselWindow.show(profileID: repository.profileID, create: true) } label: {
+            Button { store.openEasel(create: true) } label: {
                 Label("New Easel", systemImage: "plus")
             }
+            Button("Import Easel…") { importBoard() }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(repository.boards.filter { Library.matches([$0.title], library.query) }) { board in
-                        Button { EaselWindow.show(profileID: repository.profileID, boardID: board.id) } label: {
+                        Button { store.openEasel(board.id) } label: {
                             HStack {
                                 Image(systemName: "paintpalette")
                                 VStack(alignment: .leading, spacing: 4) {
@@ -675,5 +648,18 @@ struct EaselsPane: View {
         }.padding(14).frame(width: Look.libraryList).frame(maxHeight: .infinity, alignment: .top)
             .onAppear { searchFocused = true }
             .onChange(of: library.focusToken) { searchFocused = true }
+    }
+    private func importBoard() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            guard try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= EaselStore.fileLimit else {
+                throw EaselStore.Failure.tooLarge
+            }
+            store.openEasel(try repository.importBoard(Data(contentsOf: url)).id)
+        } catch { Toasts.show(error.localizedDescription) }
     }
 }

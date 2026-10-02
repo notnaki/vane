@@ -379,6 +379,10 @@ import Foundation
     }
 
     static func rename(_ tab: Tab, to name: String?) {
+        if let session = tab.easelSession, let name {
+            session.edit { $0.title = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)) }
+            return
+        }
         // `key(for:)`, not `currentURL`: a rename typed on a wandered pinned row has to be
         // written under the url the chip reads it back from, or it lands on the page the row
         // went to and the row goes on wearing its old name.
@@ -503,6 +507,7 @@ import Foundation
     /// is a rule about *us* inventing a name behind the user's back; a name the user typed
     /// is not us, and Arc keeps it across an unpin too.
     static func title(for tab: Tab) -> String {
+        if tab.easelID != nil { return tab.title }
         guard let url = key(for: tab) else { return tab.title }
         return rowName(for: url, in: tab.profileID, raw: tab.title, stays: tab.stays)
     }

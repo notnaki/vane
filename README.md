@@ -35,6 +35,12 @@ release builds packaged with `SIGN_ID` offer it once. You can still use the manu
 
 ## What Vane can do
 
+The floating Picture in Picture video has a minus button that hides it while
+playback continues. The sidebar video player appears after minimizing PiP.
+It keeps the site icon and transport controls visible; hover over it to see the title, restore Picture in Picture,
+or close the player and pause. Embedded players use their own frame and
+Media Session play/pause and skip handlers.
+
 | Area | Available now |
 | --- | --- |
 | Browsing | Tabs, pinned tabs, multiple windows, private windows, Split View, Peek, Little Vane, session restore, find on page, reader mode, picture in picture, page capture, and Web Inspector. |
@@ -79,7 +85,9 @@ Capture part of a page with **⌘⇧2**, **File → Capture a Portion of This Pa
 the camera row in Site Controls, or by searching for **Capture** in the command
 palette. Click a highlighted element or drag a rectangle over the visible page;
 **Escape** cancels. **Return** captures the highlighted region or the visible page.
-The preview offers **Copy**, **Save PNG**, and **Share**. Captures use WebKit's page
+The preview offers **Copy**, **Save PNG**, **Share**, and **Add to Easel**. In an ordinary
+browser window, **Add to Easel** saves the region with its source link to a new or existing
+board and opens that board's tab. Captures use WebKit's page
 pixels at the display's resolution and need no screen-recording permission. An
 embedded frame is selected as a whole; custom drags can crop inside it. Captures
 are saved only when you choose an output action, including in private windows.
@@ -103,11 +111,17 @@ executable has no bundled icon catalogue; build `Vane.app` to use these finishes
 
 ### Easels
 
-Open **Library → Easels** or **Window → Show Easels**. **File → New Easel**
-(`⌥⌘E`) creates a board; **File → Capture Page to Easel** (`⇧⌘E`) collects the
-visible page into the selected board with its source link. Boards belong to the
-browser window's profile and save locally after each edit. Private windows cannot
-create boards or save captures.
+Easels open as native tabs inside the browser. Choose **New Easel** from the sidebar's
+**+** menu, type **New Easel** in the command palette (`⌘T`), or use **File → New Easel**
+(`⌥⌘E`). New boards are pinned in the current Space and return after relaunch. Find
+all saved boards under **Library → Easels** or **Window → Show Easels**; opening a board
+already in this Space focuses its existing tab. Closing or unpinning a tab keeps its
+board in Library. **File → Capture Page to Easel** (`⇧⌘E`) collects the visible webpage
+into the most recently used Easel in this Space, or the latest saved board, with its
+source link. Boards belong to the browser window's profile and save locally after
+each edit. Private windows cannot create boards or save captures.
+To move a Space to another profile, remove its Easel tabs first; their boards stay
+in the original profile's Library. Export/import a board to copy it to another profile.
 
 Add notes, links, images, or paste from the clipboard. Drag items to arrange them,
 use the selected item's corner to resize, and double-click to edit or crop an image.
@@ -118,11 +132,11 @@ Standard Undo/Redo work on the board and inside its text editors.
 A web capture's play button opens its source page as an interactive live view using
 that profile's cookies and content blocker. Pause returns to the saved image. Live
 views are temporary, limited to four at once, and stop when switching boards or
-closing the window. They show the source page rather than a live cropped region;
+leaving the Easel tab or closing the window. They show the source page rather than a live cropped region;
 permission prompts, popups, password autofill, and downloads belong in browser tabs.
 
 The `…` menu duplicates or deletes a board, exports a PNG, or exports an editable
-JSON document with embedded images. Import the JSON from the Easels sidebar. The
+JSON document with embedded images. Import the JSON from **Library → Easels**. The
 canvas is 6,000 × 4,000 points; a board holds up to 256 items, and PNG export scales
 the entire occupied canvas to at most 4,096 pixels. Easels do not include cloud
 sharing or collaboration.
@@ -251,7 +265,7 @@ regressions exercise the real Live Folder response handler with an isolated
 credential-storage fixture:
 
 ```sh
-swift test --filter LiveCredentialTests
+swift test --filter 'LiveCredentialTests|GitHubRenewalTests'
 python3 scripts/check-live-credential-persistence.py
 ```
 
@@ -262,8 +276,25 @@ For a real-session check, reconnect in the installed app, quit normally, relaunc
 same signed build, and refresh the folder. If authentication fails again, Console's
 `[vane] GitHub` messages distinguish missing/inaccessible Keychain credentials from
 HTTP 401 responses and record GitHub's request ID. These diagnostics never log tokens
-or response bodies. A genuinely revoked or expired token still needs reconnection;
-retaining it does not make GitHub accept it.
+or response bodies.
+
+OAuth sign-ins store the access token, refresh token, and expiry together in the same
+scoped Keychain item. Live Folders renews shortly before the access token expires and
+can renew after an early rejection, then retries the API request once. Concurrent
+folders and app processes sharing a profile serialize token rotation and use the
+persisted replacement. A temporary network or Keychain failure retains the credentials;
+an unsaved rotated pair is kept in memory while Vane retries its Keychain write.
+The regression tests advance expiry and inject OAuth/network/storage responses without
+using a real GitHub account. The fresh-process Keychain check verifies both tokens and
+expiry survive relaunch with disposable fixture credentials.
+
+Sign-ins saved by older builds need one reconnect because those builds discarded the
+refresh token. A revoked or expired refresh token also needs reconnection. Source builds
+without the OAuth client secret can still use personal access tokens; they cannot renew
+a web-flow OAuth grant. A signed release includes the secret required for renewal.
+For a live check, reconnect using that release, quit/relaunch, and refresh after eight
+hours: the folder should renew automatically, and Console should record
+`[vane] GitHub OAuth credential renewed` without requiring another sign-in.
 
 Before shipping, also check the release configuration:
 

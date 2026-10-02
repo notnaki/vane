@@ -88,7 +88,7 @@ extension PaletteCommand {
 
         // The page in front of you. Everything here needs somewhere to act, and a window
         // showing nothing has nowhere.
-        if let tab = store.active {
+        if let tab = store.active, tab.easelID == nil {
             out += [
                 PaletteCommand(.copyPageURL, icon: "link", title: "Copy URL"),
                 PaletteCommand("Copy URL as Markdown", icon: "doc.on.clipboard") {
@@ -104,8 +104,8 @@ extension PaletteCommand {
             }
             // Back and Forward are the two rows whose absence is information: with nothing
             // behind the page, Arc does not offer to go there.
-            if tab.web.canGoBack { out.append(PaletteCommand(.back, icon: "chevron.left")) }
-            if tab.web.canGoForward { out.append(PaletteCommand(.forward, icon: "chevron.right")) }
+            if tab.canGoBack { out.append(PaletteCommand(.back, icon: "chevron.left")) }
+            if tab.canGoForward { out.append(PaletteCommand(.forward, icon: "chevron.right")) }
             out += [
                 PaletteCommand(.showReader, icon: "doc.plaintext", title: "Reader Mode"),
                 PaletteCommand(.pictureInPicture, icon: "pip"),
@@ -137,6 +137,27 @@ extension PaletteCommand {
             if Inspector.available, Settings.inspectorEnabled {
                 out.append(PaletteCommand(.showWebInspector, icon: "hammer"))
             }
+        }
+
+        if !store.isPrivate, !store.isLittle {
+            out += [
+                PaletteCommand(.newEasel, icon: "paintpalette") { store.openEasel(create: true) },
+                PaletteCommand(.showEasels, icon: "paintpalette") { Library.open(.easels, in: store) },
+            ]
+            if EaselWindow.canCapture(in: store) {
+                out.append(PaletteCommand(.captureToEasel, icon: "camera") {
+                    EaselWindow.capture(in: store)
+                })
+            }
+        }
+        if let tab = store.active, tab.easelID != nil {
+            out += [
+                PaletteCommand(.closeTab, icon: "archivebox"),
+                PaletteCommand("Duplicate Easel", icon: "plus.square.on.square") {
+                    guard let session = tab.easelSession, let board = session.board else { return }
+                    session.perform { store.openEasel(try session.repository.importBoard(JSONEncoder().encode(board)).id) }
+                },
+            ]
         }
 
         // The sidebar's own actions. A Little Arc is one page in a window with no sidebar,
@@ -194,7 +215,7 @@ extension PaletteCommand {
             }
             // Arc's "Move to Space ▸" is a submenu, and a search bar has no submenus — so it
             // is one row per Space, which is also the row typing the Space's name lands on.
-            if let tab = store.active, tab.currentURL?.scheme?.hasPrefix("http") == true {
+            if let tab = store.active, TabAddress.restorable(tab.currentURL) {
                 for space in store.spaces where space.id != store.currentSpaceID {
                     out.append(PaletteCommand("Move Tab to \(space.name)",
                                               icon: space.icon ?? "square.on.square",
@@ -266,6 +287,7 @@ extension PaletteCommand {
     /// This is the list Menu.swift must keep registering. It is written down rather than
     /// derived because there is nothing to derive it from — see the ceiling on `init`.
     static let registered: [Command] = [
+        .newEasel, .showEasels, .captureToEasel,
         .newTab, .newLittleArc, .reopenClosedTab, .newWindow, .newPrivateWindow,
         .copyPageURL, .reload, .hardReload, .find, .closeTab, .back, .forward,
         .showReader, .pictureInPicture, .muteTab, .zoomIn, .zoomOut, .actualSize,

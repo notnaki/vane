@@ -115,6 +115,8 @@ struct NewSpaceButton: View {
                     store.newSpace()
                 },
                 ChromeMenuItem(title: "New Folder", symbol: "folder") { store.newFolder() },
+                ChromeMenuItem(title: "New Easel", symbol: "paintpalette",
+                               shortcut: Keybindings.binding(for: .newEasel).display) { store.openEasel(create: true) },
                 ChromeMenuItem(title: "New Tab", symbol: "plus.square",
                                shortcut: shortcut == .unassigned ? "" : shortcut.display,
                                startsGroup: true) { store.newTab(nil) },
@@ -126,8 +128,8 @@ struct NewSpaceButton: View {
             .buttonStyle(.plain)
             .background(ChromeMenuAnchorView(anchor: menuAnchor))
             .foregroundStyle(Look.inkSecondary)
-            .help("New Space, Folder, or Tab")
-            .accessibilityLabel("New Space, Folder, or Tab")
+            .help("New Space, Folder, Easel, or Tab")
+            .accessibilityLabel("New Space, Folder, Easel, or Tab")
             .popover(isPresented: Binding(get: { store.editingSpace != nil },
                                           set: { if !$0 { store.editingSpace = nil } }),
                      arrowEdge: .top) {
@@ -227,7 +229,7 @@ struct MoveToSpaceMenu: View {
                     }
                 }
             }
-            .disabled(tab.currentURL?.scheme?.hasPrefix("http") != true)
+            .disabled(!TabAddress.restorable(tab.currentURL))
         }
     }
 }
@@ -341,6 +343,7 @@ struct SpacePreviewList: View, Equatable {
     private let todayCount: Int
     let favorites: [URL]
     let includingFavorites: Bool
+    let pinnedCollapsed: Bool
 
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
@@ -350,10 +353,11 @@ struct SpacePreviewList: View, Equatable {
         self.liveTabs = state?.tabs ?? liveTabs
         self.favorites = favorites
         self.includingFavorites = includingFavorites
+        self.pinnedCollapsed = pinnedCollapsed
         saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
                                             in: Store.directory)
         let pinned = pinnedCollapsed ? [] : Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
-                                  liveShape: state?.pins, splits: state?.splits ?? [])
+                                                         liveShape: state?.pins, splits: state?.splits ?? [])
         let today = Self.section(space: space, kind: .today, tabs: self.liveTabs,
                                  liveShape: state?.todayShape, splits: state?.splits ?? [])
         todayCount = self.liveTabs?.filter { $0.kind == .today }.count ?? space.tabURLs.count
@@ -379,15 +383,21 @@ struct SpacePreviewList: View, Equatable {
             if includingFavorites { favoriteGrid }
             // The same metrics as `SpaceRow`, glyph for glyph: the ghost slides under the real
             // heading and any difference in size or ink reads as the row jumping on landing.
-            HStack(spacing: Look.rowSpacing) {
-                Image(systemName: (space.icon ?? "cloud") == "cloud" ? "cloud.fill" : (space.icon ?? "cloud"))
-                    .font(Look.spaceIcon).foregroundStyle(Look.inkPrimary).frame(width: Look.tileIcon)
-                Text(space.name).font(Look.spaceTitle)
-                Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                HStack(spacing: Look.rowSpacing) {
+                    Image(systemName: (space.icon ?? "cloud") == "cloud" ? "cloud.fill" : (space.icon ?? "cloud"))
+                        .font(Look.spaceIcon).foregroundStyle(Look.inkPrimary).frame(width: Look.tileIcon)
+                    Text(space.name).font(Look.spaceTitle).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity)
+                Color.clear.frame(width: Look.rowTarget)
             }
             .foregroundStyle(Look.inkTertiary)
-            .padding(.horizontal, Look.rowInset)
+            .padding(.leading, Look.rowInset)
+            .padding(.trailing, Look.rowInset / 2)
             .frame(height: Look.rowHeight)
+            .padding(.bottom, rows.pinned.isEmpty ? 0 : Look.sectionGap / 2 - Look.rowGap)
             // Offsets, not the url: the same page can be pinned and open at once, and two
             // rows sharing an id makes SwiftUI draw one of them.
             ForEach(Array(rows.pinned.enumerated()), id: \.offset) { row($0.element) }
@@ -454,8 +464,7 @@ struct SpacePreviewList: View, Equatable {
         }
         .padding(.horizontal, Look.rowInset)
         .frame(height: Look.tidyRow)
-        .padding(.top, -Look.rowGap)
-        .padding(.bottom, Look.sectionGap - Look.rowGap)
+        .padding(.vertical, Look.sectionGap / 2 - Look.rowGap)
     }
 
     private var newTab: some View {
@@ -545,17 +554,16 @@ extension TabStore {
         if spaceSwiping, let preview = spaceGesture.previews[space.id] { return preview }
         let state = previewState(in: space)
         let owner = previewOwner(for: space)
+        // Shared content can come from another window; presentation must come from this one.
+        let presentationOwner = space.profileID == profileID ? self : TabStore.all.first {
+            $0.profileID == space.profileID && window != nil && $0.parkedIn === window
+        }
         let favorites = owner?.tabs.filter { $0.kind == .favourite }.compactMap(\.pinnedURL)
             ?? (UserDefaults.vane.stringArray(forKey: TabStore.defaultsKey(.favourite, space.profileID)) ?? [])
                 .compactMap { URL(string: $0) }
-        // A foreign profile's shared pages may come from another window; its disclosure
-        // state belongs only to a store parked in this window.
-        let disclosureOwner = space.profileID == profileID ? self : TabStore.all.first {
-            $0.profileID == space.profileID && $0.parkedIn === window && window != nil
-        }
         let preview = SpacePreviewList(space: space, liveTabs: state?.tabs, state: state,
                                        favorites: favorites, includingFavorites: space.profileID != profileID,
-                                       pinnedCollapsed: disclosureOwner?.collapsedSpaceCards.contains(space.id) ?? false)
+                                       pinnedCollapsed: presentationOwner?.collapsedPinnedSpaces.contains(space.id) ?? false)
         if spaceSwiping { spaceGesture.previews[space.id] = preview }
         return preview
     }

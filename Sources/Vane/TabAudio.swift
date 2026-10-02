@@ -276,6 +276,7 @@ import WebKit
     static func toggleMute(_ tab: Tab) { setMuted(tab, !isMuted(tab)) }
 
     static func setMuted(_ tab: Tab, _ on: Bool) {
+        guard tab.easelID == nil else { return }
         setMuted(tab.id, on)
         apply(tab)
         // Muting does not stop the player, which is exactly why the tray stays up for it.
