@@ -154,7 +154,6 @@ import SwiftUI
 struct ToastHost: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var toasts = Toasts.shared
-    @ObservedObject private var sidebar = SidebarWidth.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -163,7 +162,7 @@ struct ToastHost: View {
         // depth, where the second one is simply invisible.
         VStack(alignment: .leading, spacing: Look.rowGap) {
             ForEach(mine) { toast in
-                pill(toast)
+                ToastPill(toast: toast, tint: tint)
             }
         }
         // Never wider than the rows above it. The pill takes this width and lays itself out
@@ -175,22 +174,46 @@ struct ToastHost: View {
         // top and bottom flush with the pill, leaving a hard rectangular edge.
     }
 
-    /// Narrow sidebars put the action below the message, leaving the text enough
-    /// room to wrap and keeping the action and dismiss targets fully visible.
-    private func pill(_ toast: Toasts.Toast) -> some View {
-        Group {
-            if sidebar.width < 250, toast.action != nil {
+    /// The toasts this window is the one to draw: its own, plus the ones about the app
+    /// itself, which have no window of their own.
+    private var mine: [Toasts.Toast] {
+        toasts.showing.filter { $0.owner == nil || $0.owner == ObjectIdentifier(store) }
+    }
+
+    /// The space's colour, or the profile's outside any space.
+    private var tint: Color {
+        Color(hex: store.currentSpace?.colorHex ?? ProfileManager.shared.active.colorHex) ?? .clear
+    }
+}
+
+/// The toast surface, sized to the space its host offers.
+struct ToastPill: View {
+    let toast: Toasts.Toast
+    let tint: Color
+    @ObservedObject private var toasts = Toasts.shared
+
+    /// Try the content's natural width first. A short message and Undo fit even in
+    /// the default sidebar; only content that cannot fit needs a second row.
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Look.inset) {
+                text(toast)
+                controls(toast, fixed: true)
+            }
+            .fixedSize(horizontal: true, vertical: false)
+
+            if toast.action != nil {
                 VStack(alignment: .leading, spacing: Look.inset / 2) {
                     text(toast)
                     HStack(spacing: Look.inset) {
                         Spacer(minLength: 0)
-                        controls(toast)
+                        controls(toast, fixed: false)
                     }
                 }
             } else {
                 HStack(spacing: Look.inset) {
                     text(toast)
-                    controls(toast)
+                    controls(toast, fixed: false)
                 }
             }
         }
@@ -215,12 +238,6 @@ struct ToastHost: View {
         .accessibilityLabel(Toasts.spoken(toast.text))
     }
 
-    /// The toasts this window is the one to draw: its own, plus the ones about the app
-    /// itself, which have no window of their own.
-    private var mine: [Toasts.Toast] {
-        toasts.showing.filter { $0.owner == nil || $0.owner == ObjectIdentifier(store) }
-    }
-
     private func text(_ toast: Toasts.Toast) -> some View {
         // No `.font` modifier — a font on the view replaces the one a bold run carries, and
         // the version would stop being the bold half of "Vane v0.2.0 is available";
@@ -232,13 +249,13 @@ struct ToastHost: View {
             .foregroundStyle(Look.barSelectedText)
     }
 
-    @ViewBuilder private func controls(_ toast: Toasts.Toast) -> some View {
+    @ViewBuilder private func controls(_ toast: Toasts.Toast, fixed: Bool) -> some View {
         if let action = toast.action {
             Button(action.title) { toasts.act(toast) }
                 .buttonStyle(.plain)
                 .font(Look.rowText)
                 .lineLimit(2)
-                .fixedSize(horizontal: sidebar.width >= 250, vertical: true)
+                .fixedSize(horizontal: fixed, vertical: true)
                 .foregroundStyle(Look.barText)
                 .padding(.horizontal, Look.inset)
                 .frame(minHeight: Look.control)
@@ -269,11 +286,6 @@ struct ToastHost: View {
             out[run.range].font = Look.rowText.bold()
         }
         return out
-    }
-
-    /// The space's colour, or the profile's outside any space.
-    private var tint: Color {
-        Color(hex: store.currentSpace?.colorHex ?? ProfileManager.shared.active.colorHex) ?? .clear
     }
 }
 
