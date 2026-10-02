@@ -3082,6 +3082,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     /// Secondary rather than primary type: "New Tab" is an action among places, and Arc
     /// sets it a step quieter than the tabs around it.
     var dimmed = false
+    var spacing: CGFloat = Look.rowSpacing
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let label: () -> Label
@@ -3090,7 +3091,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: Look.rowSpacing) {
+        HStack(spacing: spacing) {
             leading()
             // Every tab title in the same ink, selected or not — Arc's list is one grey on
             // dark all the way down, and the selection is the fill, not a change of ink.
@@ -3533,12 +3534,22 @@ private struct TabRow: View {
     var body: some View {
         let selected = store.current == tab.id
         let ticked = store.selection.contains(tab.id)
-        SidebarRow(selected: selected, ticked: ticked, action: select) {
+        let returning = tab.kind == .pinned && !tab.atHome
+        let title = returning ? (TabActions.rename(tab) ?? tab.title) : TidyTitles.title(for: tab)
+        SidebarRow(selected: selected, ticked: ticked,
+                   spacing: returning ? Look.returnRowSpacing : Look.rowSpacing, action: select) {
             TabHomeIcon(store: store, tab: tab)
         } label: {
             // Arc's in-row rename: the title becomes a field and the row keeps its shape.
             if store.renamingTab == tab.id {
-                RenameField(store: store, tab: tab)
+                RenameField(store: store, tab: tab, initialTitle: title)
+            } else if returning {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title).truncationMode(.tail)
+                    Text("Return to Pinned Tab")
+                        .font(Look.small)
+                        .foregroundStyle(Look.inkTertiary)
+                }
             } else {
                 LivePRTitle(title: TidyTitles.title(for: tab), reveal: tab.titleReveal, pr: pr,
                             developerEndpoint: tab.developer ? DeveloperMode.endpoint(tab.currentURL) : nil)
@@ -3593,7 +3604,7 @@ private struct TabRow: View {
         // state is the value, and the close button becomes an action rather than a second
         // element the user has to find and then guess the meaning of.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(TidyTitles.title(for: tab))
+        .accessibilityLabel(title)
         .accessibilityValue(tabState(tab, in: store)
                             + selectionSuffix(ticked, store.selection.count))
         .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
@@ -3612,7 +3623,9 @@ private struct TabRow: View {
         // of them is worse than no action at all. Same words as the glyph's own label.
         .accessibilityActions {
             if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: true) {
-                Button("Go back to pinned page") { store.goHome(tab.id) }
+                Button(returning ? "Return to Pinned Tab" : "Go back to pinned page") {
+                    store.goHome(tab.id)
+                }
             }
         }
         .accessibilityAction(named: "Rename Tab") { store.renamingTab = tab.id }
@@ -4244,10 +4257,9 @@ private struct TabRowTrailing: View {
     }
 }
 
-/// A row's favicon, with Arc's go-home under the pointer: a row that stays and has been
-/// browsed off the page it was pinned at trades its icon for a return arrow, and pressing
-/// it is the middle step of that row's × asked for on its own. Every other row — at home,
-/// or in Today — is the favicon it always was, and nothing moves when the pointer arrives.
+/// A wandered pin keeps its favicon on a rounded Return tile beside its two-line label.
+/// Favourites keep their compact return arrow under the pointer. Rows at home and Today
+/// keep their ordinary favicon.
 /// See `TabRowGlyph.showsGoHome`, where that is decided.
 private struct TabHomeIcon: View {
     let store: TabStore
@@ -4256,7 +4268,9 @@ private struct TabHomeIcon: View {
     @Environment(\.rowHovering) private var hovering
 
     var body: some View {
-        if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
+        if tab.kind == .pinned && !tab.atHome {
+            GoHomeGlyph(store: store, tab: tab, tiled: true)
+        } else if TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: hovering) {
             // The favicon's box, so the row's text starts exactly where it always did. The
             // glyph's hit target is bigger than this and is allowed to spill past it — a
             // frame is a layout box, not a clip — which is what `rowTarget` is for.
@@ -4273,22 +4287,34 @@ private struct TabHomeIcon: View {
 private struct GoHomeGlyph: View {
     let store: TabStore
     let tab: Tab
+    var tiled = false
+    @Environment(\.rowHovering) private var hovering
 
     var body: some View {
         Button { store.goHome(tab.id) } label: {
-            // The sidebar's own glyph size and ink — this stands where a favicon stands, so
-            // it has to sit at the same weight as the × at the other end of the row.
-            // `rowTarget`, the same square the × and the speaker at the other end of the row
-            // aim with: a 16pt glyph inside a row that answers a click of its own is a
-            // target you have to hunt for, and half the misses land on "show this tab".
-            Image(systemName: "arrow.uturn.backward")
-                .font(Look.rowGlyph)
-                .foregroundStyle(Look.inkSecondary)
-                .rowTarget()
+            if tiled {
+                Group {
+                    if hovering {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(Look.rowGlyph)
+                            .foregroundStyle(Look.inkSecondary)
+                    } else {
+                        TabIcon(tab: tab)
+                    }
+                }
+                .frame(width: Look.returnTileSize, height: Look.returnTileSize)
+                .background(Look.hovered, in: .rect(cornerRadius: Look.pillRadius))
+                .contentShape(.rect(cornerRadius: Look.pillRadius))
+            } else {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(Look.rowGlyph)
+                    .foregroundStyle(Look.inkSecondary)
+                    .rowTarget()
+            }
         }
         .buttonStyle(TactileButtonStyle())
-        .help("Go back to pinned page")
-        .accessibilityLabel("Go back to pinned page")
+        .help(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
+        .accessibilityLabel(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
     }
 }
 
