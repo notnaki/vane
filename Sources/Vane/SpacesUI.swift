@@ -8,7 +8,10 @@ import UniformTypeIdentifiers
     @Published var drag: CGFloat = 0
     @Published var pull: CGFloat = 0
     @Published var swiping = false
+    @Published var travelsFavorites = false
     var strip: [Space]?
+    var neighbour: Space?
+    var previewDirection = 0
     var previews: [UUID: SpacePreviewList] = [:]
 }
 
@@ -247,32 +250,55 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
     let store: TabStore
     let favorites: Favorites
     let sections: Sections
+    private let favoriteCount: Int
     @ObservedObject private var gesture: SpaceGesture
+    @ObservedObject private var sidebar = SidebarWidth.shared
 
     init(store: TabStore, favorites: Favorites, sections: Sections) {
         self.store = store
         self.favorites = favorites
         self.sections = sections
+        favoriteCount = store.tabs.filter { $0.kind == .favourite }.count
         gesture = store.spaceGesture
     }
 
     var body: some View {
-        if let neighbour = store.swipeNeighbour, neighbour.profileID != store.profileID {
-            VStack(spacing: Look.rowGap) { favorites; sections }
-                .spaceSlide(store)
-        } else {
-            VStack(spacing: Look.rowGap) {
-                favorites
-                sections.spaceSlide(store)
-            }
+        // Keep both sections in one tree when a gesture starts, reverses or springs back.
+        // Only profile boundaries move the grid; ordinary Space switches leave it fixed.
+        VStack(spacing: Look.rowGap) {
+            favorites.offset(x: gesture.travelsFavorites ? gesture.drag : 0)
+            sections.spaceSlide(store)
         }
+        .overlay(alignment: .topLeading) { preview }
+    }
+
+    @ViewBuilder private var preview: some View {
+        let drag = gesture.drag
+        if gesture.swiping, let space = gesture.neighbour {
+            let preview = store.swipePreview(in: space)
+            preview.equatable()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Within a profile the grid stays put, so its ghost starts below it.
+                // Across profiles the ghost includes its own grid and starts at the top.
+                .padding(.top, preview.includingFavorites ? 0 : favoriteHeight)
+                .offset(x: drag + CGFloat(gesture.previewDirection) * sidebar.width)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var favoriteHeight: CGFloat {
+        guard favoriteCount > 0 else { return 0 }
+        let columns = SidebarWidth.favouriteColumns(favoriteCount, width: sidebar.width)
+        let rows = (favoriteCount + columns - 1) / columns
+        // Tile rows, their gaps, and the inset before the Space heading. Matches Favorites.
+        return CGFloat(rows) * (Look.tileHeight + Look.inset)
     }
 }
 
 private struct SpaceSlide: ViewModifier {
     @ObservedObject var store: TabStore
     @ObservedObject private var gesture: SpaceGesture
-    @ObservedObject private var sidebar = SidebarWidth.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(store: TabStore) {
@@ -295,28 +321,6 @@ private struct SpaceSlide: ViewModifier {
             .animation(reduceMotion || gesture.swiping ? nil : Look.spaceSlide,
                        value: store.currentSpaceID)
             .offset(x: gesture.drag)
-            // An overlay, not a second row in a stack: the preview must not be allowed to
-            // make the scroll view's content taller or wider than the Space's own sections.
-            // The scroll view clips it, which is what turns it into a strip coming in from
-            // off the sidebar's edge.
-            .overlay(alignment: .topLeading) { preview }
-    }
-
-    /// The Space the fingers are pulling in, drawn one sidebar width from the current one so
-    /// the two move as a single strip. Nothing at either end of the list: the rubber band's
-    /// whole point is that there is nothing over there to show.
-    @ViewBuilder private var preview: some View {
-        let drag = gesture.drag
-        if drag != 0, let space = store.swipeNeighbour {
-            store.swipePreview(in: space)
-                .equatable()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .offset(x: drag + (drag < 0 ? sidebar.width : -sidebar.width))
-                .allowsHitTesting(false)
-                // Decorative: it is the Space the user is *about* to be in, and VoiceOver
-                // announcing a list that may spring straight back is noise.
-                .accessibilityHidden(true)
-        }
     }
 }
 
@@ -529,8 +533,7 @@ struct SpacePreviewList: View, Equatable {
 }
 
 extension TabStore {
-    var swipeNeighbour: Space? {
-        let drag = spaceGesture.drag
+    func swipeNeighbour(for drag: CGFloat) -> Space? {
         guard drag != 0, let index = swipeStrip.firstIndex(where: { $0.id == currentSpaceID }) else { return nil }
         let next = drag < 0 ? index + 1 : index - 1
         return swipeStrip.indices.contains(next) ? swipeStrip[next] : nil

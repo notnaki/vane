@@ -900,7 +900,10 @@ extension TabStore {
             if page.window === window { window.makeFirstResponder(page) }
             let stillNobody = window.firstResponder === window
                 || (window.firstResponder as? NSView).map { $0.window !== window } ?? false
-            if stillNobody && remaining > 1 { focusPageAfterHop(remaining: remaining - 1) }
+            let stillStalePage = window.firstResponder is WKWebView && window.firstResponder !== page
+            if (stillNobody || stillStalePage) && remaining > 1 {
+                focusPageAfterHop(remaining: remaining - 1)
+            }
         }
     }
 }

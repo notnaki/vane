@@ -1236,6 +1236,7 @@ import WebKit
                 window.standardWindowButton($0)?.isHidden == true
             }, "a cached profile restores its own sidebar and window controls")
             firstStore.spaceSwiping = true
+            firstStore.spaceGesture.strip = [firstSpace, secondSpace]
             firstStore.spaceDrag = -20
             let foreignPreview = firstStore.swipePreview(in: secondSpace)
             try require(foreignPreview.includingFavorites && foreignPreview.favorites == [firstURL]
@@ -1248,7 +1249,14 @@ import WebKit
             try require(firstStore.swipePreview(in: secondSpace) == foreignPreview
                         && foreignPreview.rows.today.count == 2,
                         "a moving ghost keeps its captured collapse state until the gesture ends")
+            firstStore.spaceDrag = 0
+            try require(firstStore.spaceGesture.travelsFavorites
+                        && firstStore.spaceGesture.neighbour?.id == secondSpace.id
+                        && firstStore.spaceGesture.previewDirection == 1,
+                        "cross-profile favourites and the ghost retain their motion through the spring-back target")
             firstStore.spaceSwiping = false
+            try require(!firstStore.spaceGesture.travelsFavorites,
+                        "the completed spring releases the favourites motion mode")
             let closedPreview = firstStore.swipePreview(in: secondSpace)
             try require(closedPreview.rows.today.count == 1
                         && closedPreview.title(for: closedPreview.rows.today[0]) == previewFolder.name,
