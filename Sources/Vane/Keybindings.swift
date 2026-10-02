@@ -148,7 +148,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case newWindow, newPrivateWindow, newTab, reopenClosedTab, closeTab, closeWindow
     case newLittleArc
     case printPage, settings
-    case openFile, savePageAs, sharePage
+    case openFile, savePageAs, sharePage, capturePage
     // View
     case reload, hardReload, openLocation, find, toggleSidebar
     case findNext, findPrevious
@@ -212,6 +212,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .openFile: "Open File…"
         case .savePageAs: "Save Page As…"
         case .sharePage: "Share…"
+        case .capturePage: "Capture a Portion of This Page"
         case .reload: "Reload Page"
         case .hardReload: "Reload Ignoring Cache"
         case .openLocation: "Open Location…"
@@ -303,7 +304,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         switch self {
         case .newWindow, .newPrivateWindow, .newTab, .newLittleArc, .reopenClosedTab,
              .closeTab, .closeWindow, .printPage, .settings, .openFile, .savePageAs,
-             .sharePage: .file
+             .sharePage, .capturePage: .file
         case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious,
              .toggleSidebar, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
@@ -348,6 +349,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .openFile:         Keybinding("o", .command)
         // Arc's ⌘S is the sidebar, and Save Page As is one modifier up — see §G.
         case .savePageAs:       Keybinding("s", [.command, .shift])
+        case .capturePage:      Keybinding("2", [.command, .shift])
         case .find:             Keybinding("f", .command)
         case .findNext:         Keybinding("g", .command)
         case .findPrevious:     Keybinding("g", [.command, .shift])

@@ -65,7 +65,7 @@ extension SiteControlModel {
 
     /// Which row, so the view can act on one without matching on its title.
     enum RowID: Hashable, Sendable {
-        case camera, microphone, pictureInPicture, zoom, blocker, reader, clearData, developer
+        case camera, microphone, pictureInPicture, zoom, blocker, reader, capture, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
@@ -203,6 +203,8 @@ extension SiteControlModel {
                            control: .toggle(true),
                            note: "Always opens " + app.scheme + ": links from this site."))
         }
+        out.append(Row(id: .capture, title: "Capture a Portion of This Page",
+                       glyph: "camera.viewfinder", control: .action))
         out.append(Row(id: .clearData, title: "Clear Site Data…", glyph: "trash",
                        control: .action))
         out.append(Row(id: .developer, title: "Developer Mode", glyph: "hammer",
@@ -303,6 +305,7 @@ extension SiteControlModel {
         case .zoom: Zoom.reset(tab)
         case .blocker: Blocker.setEnabled(!Blocker.enabled(for: tab.profileID), for: tab.profileID)
         case .reader: Reader.toggle(tab)
+        case .capture: PageCapture.start(tab)
         case .ext(let i): toggleExtension(i, on: tab)
         // The switch is on because the answer exists; the only thing it can do is take it
         // back, which puts the site back to being asked.
@@ -804,6 +807,8 @@ private struct SiteControlRow: View {
         }
         switch row.control {
         case .zoom:   return "Resets the page to actual size. Zoom In and Zoom Out are also available."
+        case .action where row.id == .capture:
+            return "Click an element or drag a region to capture. Escape cancels."
         case .action: return "Signs you out of this site and forgets what it stored. This cannot be undone."
         default:      return row.note ?? ""
         }
