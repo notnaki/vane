@@ -88,28 +88,63 @@ enum QuitAsk {
 /// the Dock icon did nothing, and the Dock's own menu offered Quit and nothing else. ⌘N was
 /// the only route, and only if a window happened to have focus to receive it.
 ///
-/// ponytail: a delegate that answers two questions and holds no state. Everything else
+/// A small delegate for application events. Everything else
 /// `NSApplicationDelegate` can do is already done in `main.swift`, and moving it here would
 /// be a refactor rather than a fix.
 @MainActor final class AppLifecycle: NSObject, NSApplicationDelegate {
     static let shared = AppLifecycle()
 
-    /// Clicking the Dock icon with no windows on screen. `flag` is false exactly when there
-    /// is nothing showing — no windows at all, or every one of them in the Dock — which is
-    /// the case worth answering. False back means "handled": AppKit's own reopen would
-    /// otherwise go looking for a window to raise as well.
+    private final class MinimizedWindow {
+        weak var window: NSWindow?
+        init(_ window: NSWindow) { self.window = window }
+    }
+    private var minimized: [MinimizedWindow] = []
+
+    override init() {
+        super.init()
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(didMiniaturize(_:)),
+                           name: NSWindow.didMiniaturizeNotification, object: nil)
+        for name in [NSWindow.didDeminiaturizeNotification, NSWindow.willCloseNotification] {
+            center.addObserver(self, selector: #selector(forgetMinimized(_:)), name: name, object: nil)
+        }
+    }
+
+    @objc private func didMiniaturize(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, !(window is NSPanel) else { return }
+        forgetMinimized(notification)
+        minimized.append(MinimizedWindow(window))
+    }
+
+    @objc private func forgetMinimized(_ notification: Notification) {
+        let window = notification.object as? NSWindow
+        minimized.removeAll { $0.window == nil || $0.window === window }
+    }
+
+    /// AppKit's `flag` includes windows in the Dock. Check the actual windows instead;
+    /// floating panels (such as PiP) do not count, matching AppKit's reopen behavior.
+    /// The offscreen link-preview renderer is excluded from the Window menu and must
+    /// not count as an open user window either.
+    /// False back means "handled", so AppKit does not raise a second window.
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard !flag else { return true }
-        AppLifecycle.reopen()
+        guard !app.windows.contains(where: {
+            !($0 is NSPanel) && !$0.isExcludedFromWindowsMenu && $0.isVisible && !$0.isMiniaturized
+        })
+        else { return true }
+        reopen(in: app)
         return false
     }
 
-    /// The window the user last had, the session they last had, or a new one — in that order,
-    /// which is the same ladder `main.swift` climbs at launch.
-    /// `Windows.main`, not the last store: a miniaturised Little Arc is not the window
-    /// somebody clicking the Dock icon is asking for, and raising it would leave the session
-    /// unrestored for good.
-    static func reopen() {
+    /// Restore the last minimized window, including private, Little Vane and utility
+    /// windows. With none minimized, keep the existing browser/session/new-window ladder.
+    private func reopen(in app: NSApplication) {
+        let lastMinimized = minimized.reversed().compactMap(\.window).first { $0.isMiniaturized }
+            ?? app.windows.last { !($0 is NSPanel) && $0.isMiniaturized }
+        if let last = lastMinimized {
+            last.deminiaturize(nil)
+            last.makeKeyAndOrderFront(nil)
+            return
+        }
         if let last = Windows.main?.window {
             // A window in the Dock has to be taken out of it: `makeKeyAndOrderFront` on a
             // miniaturised window orders the Dock tile, not the window.
