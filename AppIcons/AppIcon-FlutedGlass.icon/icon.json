@@ -1,6 +1,6 @@
 {
   "fill": {
-    "solid": "srgb:0.93,0.925,0.905,1"
+    "solid": "srgb:0.965,0.950,0.930,1"
   },
   "groups": [
     {
@@ -23,17 +23,17 @@
       ],
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.12
+        "opacity": 0.06
       },
       "translucency": {
         "enabled": true,
-        "value": 0.65
+        "value": 0.78
       },
-      "blur-material": 0.22,
+      "blur-material": 0.07,
       "refractivity": {
         "enabled": true,
-        "strength": 0.65,
-        "depth": 0.25
+        "strength": 0.45,
+        "depth": 0.2
       }
     },
     {
@@ -45,6 +45,33 @@
           "hidden": false,
           "image-name": "refracted-v.svg",
           "name": "refracted-v",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.25
+      }
+    },
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
+          "glass": false,
+          "hidden": false,
+          "image-name": "logo-halo.svg",
+          "name": "logo-halo",
           "position": {
             "scale": 1.0,
             "translation-in-points": [

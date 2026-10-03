@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "AppIcons"
-FLUTE_PITCH = 48
+FLUTE_PITCH = 32
 # Rounded corners retain the distinctive curved right arm and tapered Vane silhouette.
 V = ("M 289,258 H 410 Q 420,258 424,270 L 551,574 Q 560,599 568,576 "
      "Q 590,444 596,278 Q 596,258 616,258 H 728 Q 752,258 748,282 "
@@ -38,11 +38,13 @@ def group(name, glass=True, shadow=0.3):
             "translucency": {"enabled": False, "value": 0.25}}
 
 
-def fluted_mark(dark=False):
+def fluted_mark(dark=False, outline=False):
     """Each flute refracts five narrow bands; overlapping vector samples soften edges."""
-    definitions = [gradient("mark", ["#ABBFF3", "#879BF0", "#E4E9FA"] if dark
-                           else ["#333B62", "#6E7DD2", "#273052"]),
-                   path(fill="url(#mark)", extra='transform="translate(512,512) scale(1.15) translate(-512,-512)"').replace('<path ', '<path id="mark-shape" ')]
+    colors = ["#BCDFFF", "#9C9AFF", "#F0D9FF"] if dark else ["#303D87", "#6356BB", "#344385"]
+    mark = path(fill="none" if outline else "url(#mark)",
+                extra=('stroke="url(#mark)" stroke-width="34" stroke-linejoin="round" ' if outline else '') +
+                'transform="translate(512,512) scale(1.15) translate(-512,-512)"')
+    definitions = [gradient("mark", colors), mark.replace('<path ', '<path id="mark-shape" ')]
     bands = []
     pitch = FLUTE_PITCH
     for rib in range(math.ceil(1024 / pitch)):
@@ -52,39 +54,66 @@ def fluted_mark(dark=False):
             definitions.append(f'<clipPath id="{clip}"><rect x="{x:.2f}" y="0" '
                                f'width="{pitch / 5 + .12:.2f}" height="1024"/></clipPath>')
             # A cylindrical lens displaces the image most on its shoulders.
-            shift = 13 * math.sin((band + .5) / 5 * math.tau)
+            shift = 9 * math.sin((band + .5) / 5 * math.tau)
             samples = ''.join(f'<use href="#mark-shape" transform="translate({shift + blur:.2f},0)" '
                               f'opacity="{opacity}"/>' for blur, opacity in
-                              [(-12, .08), (-6, .12), (0, .46), (6, .12), (12, .08)])
+                              [(-6, .06), (-3, .10), (0, .64), (3, .10), (6, .06)])
             bands.append(f'<g clip-path="url(#{clip})">{samples}</g>')
     return svg(''.join(bands), ''.join(definitions))
 
 
 def fluted_pane(dark=False):
     # Wide cylindrical ribs: bright shoulder, clear center, soft shaded edge, hairline glint.
-    definitions = ('<linearGradient id="rib"><stop stop-color="#FFFFFF" stop-opacity=".60"/>'
-                   '<stop offset=".18" stop-color="#FFFFFF" stop-opacity=".34"/>'
+    definitions = ('<linearGradient id="rib"><stop stop-color="#FFFFFF" stop-opacity=".40"/>'
+                   '<stop offset=".18" stop-color="#FFFFFF" stop-opacity=".20"/>'
                    '<stop offset=".43" stop-color="#F2EDE4" stop-opacity=".08"/>'
-                   '<stop offset=".78" stop-color="#65708E" stop-opacity=".13"/>'
-                   '<stop offset=".91" stop-color="#FFFFFF" stop-opacity=".47"/>'
-                   '<stop offset="1" stop-color="#FFFFFF" stop-opacity=".76"/></linearGradient>')
+                   '<stop offset=".78" stop-color="#65708E" stop-opacity=".17"/>'
+                   '<stop offset=".91" stop-color="#FFFFFF" stop-opacity=".36"/>'
+                   '<stop offset="1" stop-color="#FFFFFF" stop-opacity=".56"/></linearGradient>')
     if dark:
-        definitions = ('<linearGradient id="rib"><stop stop-color="#A6B7E6" stop-opacity=".26"/>'
-                       '<stop offset=".18" stop-color="#91A6D8" stop-opacity=".10"/>'
+        definitions = ('<linearGradient id="rib"><stop stop-color="#A6B7E6" stop-opacity=".19"/>'
+                       '<stop offset=".18" stop-color="#91A6D8" stop-opacity=".06"/>'
                        '<stop offset=".43" stop-color="#172039" stop-opacity=".04"/>'
-                       '<stop offset=".78" stop-color="#020611" stop-opacity=".42"/>'
-                       '<stop offset=".91" stop-color="#8196D4" stop-opacity=".16"/>'
-                       '<stop offset="1" stop-color="#B4C4EF" stop-opacity=".34"/></linearGradient>')
+                       '<stop offset=".78" stop-color="#020611" stop-opacity=".27"/>'
+                       '<stop offset=".91" stop-color="#8196D4" stop-opacity=".12"/>'
+                       '<stop offset="1" stop-color="#B4C4EF" stop-opacity=".25"/></linearGradient>')
     glint = "#A6B7E6" if dark else "#FFFFFF"
-    glint_opacity = ".28" if dark else ".68"
+    glint_opacity = ".23" if dark else ".54"
     ribs = ''.join(f'<rect x="{x}" width="{FLUTE_PITCH}" height="1024" fill="url(#rib)"/>'
                    f'<rect x="{x+FLUTE_PITCH-1.5}" width="1.5" height="1024" fill="{glint}" opacity="{glint_opacity}"/>'
                    for x in range(0, 1024, FLUTE_PITCH))
     return svg(ribs, definitions)
 
 
-for finish in ["Candy", "Neon", "FlutedGlass", "FlutedGlassDark", "Schoolbook", "Luminous"]:
-    folder = ROOT / ("AppIcon-" + finish + ".icon")
+def fluted_bloom(dark=False):
+    """Broad colored light remains visible between ribs at Dock sizes."""
+    pools = [("blue", .30, .43, .49, "#558AFF", .58 if dark else .50),
+             ("lilac", .60, .46, .46, "#AE72FF", .54 if dark else .40),
+             ("warm", .67, .70, .42, "#FFB47E", .36 if dark else .48)]
+    definitions = ''.join(
+        f'<radialGradient id="{name}" cx="{cx}" cy="{cy}" r="{radius}">'
+        f'<stop stop-color="{color}" stop-opacity="{opacity}"/>'
+        f'<stop offset=".42" stop-color="{color}" stop-opacity="{opacity * .64:.3f}"/>'
+        f'<stop offset="1" stop-color="{color}" stop-opacity="0"/></radialGradient>'
+        for name, cx, cy, radius, color, opacity in pools)
+    return svg(''.join(f'<rect width="1024" height="1024" fill="url(#{name})"/>'
+                       for name, *_ in pools), definitions)
+
+
+def fluted_halo(dark=False):
+    colors = ["#76B9FF", "#BA98FF", "#FFCFAD"] if dark else ["#6A95FF", "#A78BEA", "#FFD0A9"]
+    return svg(''.join(path(extra=f'stroke="url(#halo)" stroke-width="{width}" '
+                                  f'stroke-linejoin="round" opacity="{opacity}" '
+                                  'transform="translate(512,512) scale(1.15) translate(-512,-512)"')
+                       for width, opacity in [(180, .025), (128, .04), (80, .07), (44, .12)]),
+               gradient("halo", colors))
+
+
+for finish in ["Candy", "Neon", "FlutedGlass", "FlutedGlassDark", "Schoolbook", "Luminous",
+               "FlutedGlassOutline", "FlutedGlassDarkOutline"]:
+    # Outline studies stay outside the production catalogue until visually approved.
+    parent = ROOT / "Experiments" if finish.endswith("Outline") else ROOT
+    folder = parent / ("AppIcon-" + finish + ".icon")
     assets = folder / "Assets"
     assets.mkdir(parents=True, exist_ok=True)
     for old in assets.glob("*.svg"):
@@ -114,22 +143,22 @@ for finish in ["Candy", "Neon", "FlutedGlass", "FlutedGlassDark", "Schoolbook", 
             '<stop stop-color="#6E7DD2" stop-opacity=".45"/>'
             '<stop offset="1" stop-color="#6E7DD2" stop-opacity="0"/></radialGradient>')
         config["groups"] = [group("tube", False, 0), group("halo", False, 0), group("ambient", False, 0)]
-    elif finish in ["FlutedGlass", "FlutedGlassDark"]:
-        dark = finish == "FlutedGlassDark"
-        config["fill"] = {"solid": "srgb:0.047,0.061,0.112,1" if dark else "srgb:0.93,0.925,0.905,1"}
-        content["refracted-v"] = fluted_mark(dark)
+    elif finish.startswith("FlutedGlass"):
+        dark = "Dark" in finish
+        outline = finish.endswith("Outline")
+        config["fill"] = {"solid": "srgb:0.047,0.061,0.112,1" if dark else "srgb:0.965,0.950,0.930,1"}
+        content["refracted-v"] = fluted_mark(dark, outline=outline)
         content["fluted-pane"] = fluted_pane(dark)
-        content["diffused-light"] = svg('<rect width="1024" height="1024" fill="url(#light)"/>',
-            '<radialGradient id="light" cx=".37" cy=".49" r=".54">'
-            '<stop stop-color="#6E7DD2" stop-opacity=".20"/>'
-            '<stop offset="1" stop-color="#6E7DD2" stop-opacity="0"/></radialGradient>')
-        pane = group("fluted-pane", True, .12)
+        content["diffused-light"] = fluted_bloom(dark)
+        content["logo-halo"] = fluted_halo(dark)
+        pane = group("fluted-pane", True, .06)
         # These properties are saved by Icon Composer's native material controls.
-        pane["blur-material"] = .22
-        pane["refractivity"] = {"enabled": True, "strength": .65, "depth": .25}
-        pane["translucency"] = {"enabled": True, "value": .65}
+        pane["blur-material"] = .025 if outline else .07
+        pane["refractivity"] = {"enabled": True, "strength": .45, "depth": .20}
+        pane["translucency"] = {"enabled": True, "value": .78}
         config["features"] = ["refractivity"]
-        config["groups"] = [pane, group("refracted-v", False, 0), group("diffused-light", False, 0)]
+        config["groups"] = [pane, group("refracted-v", False, 0), group("logo-halo", False, 0),
+                            group("diffused-light", False, 0)]
     elif finish == "Schoolbook":
         config["fill"] = {"solid": "srgb:0.949,0.929,0.894,1"}
         content["sticker"] = svg(path(fill="#6E7DD2", extra='stroke="#FFFCF6" stroke-width="24" stroke-linejoin="round"') +
