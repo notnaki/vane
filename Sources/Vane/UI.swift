@@ -807,18 +807,20 @@ private struct Sidebar: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
             ScrollView {
-                SpaceSidebarStrip(store: store, favorites: Favorites(), sections:
-                    VStack(spacing: Look.rowGap) {
-                        SpaceRow()
-                        PinnedTabs()
-                        TidyRow()
-                        NewTabRow()
-                        OpenTabs()
-                    })
-                // The list is at least as tall as what it is scrolling in, so the emptiness
-                // under the last tab is part of the *content* — which is what lets the drag
-                // ground behind it see the pointer. A scroll view claims the hover over its
-                // own frame, so a ground laid behind the scroll view never gets it.
+                VStack(spacing: Look.rowGap) {
+                    SpaceSidebarStrip(store: store, favorites: Favorites(), sections:
+                        VStack(spacing: Look.rowGap) {
+                            SpaceRow()
+                            PinnedTabs()
+                            TidyRow()
+                            NewTabRow()
+                            OpenTabs()
+                        })
+                    TodayEndDropArea()
+                }
+                // The drop area fills the blank content below Today and keeps at least
+                // one row of room when the list is taller than the viewport. It stays
+                // outside every folder, including the last collapsed folder.
                 .frame(minHeight: scrollHeight, alignment: .top)
                 .background(WindowDragArea())
             }
@@ -2061,6 +2063,8 @@ private struct TabDrop: DropDelegate {
     /// Which section this target is in. With a `target` it is the target's own kind and is
     /// unused; with none it is the empty section's, and is what the drop moves the tab into.
     let into: TabKind
+    /// The whitespace below Today appends at the root rather than taking tabs at its head.
+    var atEnd = false
     let axis: Axis
     /// How wide the target is across: a tile's width, and a row's — which is what says which
     /// half of the row a split was dropped on. Zero for the placeholders, which have no
@@ -2088,7 +2092,7 @@ private struct TabDrop: DropDelegate {
         // grid has nowhere to draw a folder row, and refuses rather than dropping one where
         // it cannot be seen.
         if let dragged = Dragging.shared.folder {
-            guard let shape = TabStore.shape(of: target?.kind ?? into) else { return false }
+            guard !atEnd, let shape = TabStore.shape(of: target?.kind ?? into) else { return false }
             return store.canDrag(folder: dragged, into: shape)
         }
         // The dragged row's own slot takes the drop too, and answers "nothing to do".
@@ -2180,7 +2184,7 @@ private struct TabDrop: DropDelegate {
             return true
         }
         if target == nil {
-            store.dropAtSectionRoot(dragged, into: into)
+            store.dropAtSectionRoot(dragged, into: into, atEnd: atEnd)
             return true
         }
         // A dropped selection lands as a run in the order its rows were drawn. Dropping
@@ -2225,7 +2229,7 @@ private struct TabDrop: DropDelegate {
                 let filed = TabStore.shape(of: into).map { store[keyPath: $0].filed } ?? []
                 guard ids.contains(where: { id in
                     store.tabs.first(where: { $0.id == id }).map {
-                        $0.kind != into || filed.contains(id.uuidString)
+                        atEnd || $0.kind != into || filed.contains(id.uuidString)
                     } ?? false
                 }) else { return nil }
             }
@@ -3372,6 +3376,24 @@ private struct NewTabRow: View {
             .accessibilityLabel("New Tab")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { store.newTab(nil) }
+    }
+}
+
+/// Permanent room below the last Today row. Clear content keeps the sidebar's window
+/// dragging behavior; during a tab drag the line marks the root-level insertion point.
+private struct TodayEndDropArea: View {
+    @EnvironmentObject var store: TabStore
+    @State private var lit: Landing.Band?
+
+    var body: some View {
+        Color.clear
+            .frame(maxWidth: .infinity, minHeight: Look.rowHeight)
+            .contentShape(.rect)
+            .overlay(alignment: .top) { DropLine(on: lit != nil, axis: .vertical) }
+            .onDrop(of: [.plainText],
+                    delegate: TabDrop(store: store, target: nil, into: .today, atEnd: true,
+                                      axis: .horizontal, extent: 0, side: $lit))
+            .accessibilityHidden(true)
     }
 }
 

@@ -59,9 +59,12 @@ their own pages. Split View shows two to four pages side by side or stacked, wit
 resizable dividers. Peek opens a link over the current page; Little Vane opens it
 in a separate compact window.
 
-After Tidy groups Today tabs into folders, drag a tab or selection onto **New Tab**
-to move it outside the folders. You can also right-click and choose **Remove from
-Folder**. Tabs stay in their section; an empty Today folder disappears.
+After Tidy groups Today tabs into folders, drag a tab or selection into the blank
+space below the last row to move it outside the folders at the bottom of Today.
+That drop area remains available when the last row is a collapsed folder or the
+list fills the sidebar. Dropping onto **New Tab** moves tabs to the top of Today;
+right-click → **Remove from Folder** keeps tabs in their section. An empty Today
+folder disappears.
 
 Pinned tabs keep their saved name as you navigate within them. When a pinned tab
 leaves its saved page, its sidebar row offers **Return to Pinned Tab**; returning

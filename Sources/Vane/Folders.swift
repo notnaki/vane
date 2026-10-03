@@ -1174,8 +1174,9 @@ extension TabStore {
 
     /// Section headings and "Remove from Folder" land outside every folder, even when
     /// the tabs already belong to this section. Today takes the run at its head; Pinned
-    /// takes it at its end. Placing Today's run backwards keeps its visible order.
-    func dropAtSectionRoot(_ ids: [Tab.ID], into kind: TabKind) {
+    /// takes it at its end. The whitespace below Today also takes the run at its end.
+    /// Placing a run at the head backwards keeps its visible order.
+    func dropAtSectionRoot(_ ids: [Tab.ID], into kind: TabKind, atEnd: Bool = false) {
         if sharingReady { SharedTabs.flush() }
         let live = ids.filter { id in tabs.contains { $0.id == id } }
         guard !live.isEmpty else { return }
@@ -1183,9 +1184,10 @@ extension TabStore {
             live.forEach { move($0, to: kind) }
             guard let shape = TabStore.shape(of: kind) else { return }
             syncShapes()
-            for id in kind == .today ? Array(live.reversed()) : live {
+            let atHead = kind == .today && !atEnd
+            for id in atHead ? Array(live.reversed()) : live {
                 self[keyPath: shape].put(id.uuidString,
-                                        at: Pins.Spot(parent: nil, index: kind == .today ? 0 : .max))
+                                        at: Pins.Spot(parent: nil, index: atHead ? 0 : .max))
             }
             applyOrder(kind)
         }
