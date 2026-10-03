@@ -5,7 +5,33 @@ import math
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "AppIcons"
-FLUTE_PITCH = 32
+FLUTE_PITCH = 64
+FLUTED_PALETTES = {
+    "Cool": {
+        "bloom": ["#7197D6", "#9DAFD2", "#C2D9EE"],
+        "light-mark": ["#35467C", "#5367A0", "#334476"],
+        "dark-mark": ["#C6DDF5", "#9EB9E9", "#DBE7F6"],
+        "light-halo": ["#8FAAD8", "#A9BCE2", "#D8E5F3"],
+        "dark-halo": ["#93B9F0", "#B5CCEE", "#DFEBF8"],
+        "glint": "#B6CBE9",
+    },
+    "Silver": {
+        "bloom": ["#ADB8C6", "#CDD3DD", "#FFFFFF"],
+        "light-mark": ["#36435E", "#52617E", "#35435F"],
+        "dark-mark": ["#DFE6EF", "#BAC7D9", "#F5F7FA"],
+        "light-halo": ["#B3BDCC", "#D0D7E2", "#FFFFFF"],
+        "dark-halo": ["#D2DBE8", "#E5EAF2", "#FFFFFF"],
+        "glint": "#DAE0E8",
+    },
+    "Champagne": {
+        "bloom": ["#C6B799", "#E1CEAB", "#FFF1D5"],
+        "light-mark": ["#3E435D", "#656883", "#3D435D"],
+        "dark-mark": ["#F0E4D0", "#D8CAA9", "#FFF4DE"],
+        "light-halo": ["#CFC1A7", "#E6D5B8", "#FFF4DF"],
+        "dark-halo": ["#E4CFAB", "#F0DFC2", "#FFF4DF"],
+        "glint": "#EADCC4",
+    },
+}
 # Rounded corners retain the distinctive curved right arm and tapered Vane silhouette.
 V = ("M 289,258 H 410 Q 420,258 424,270 L 551,574 Q 560,599 568,576 "
      "Q 590,444 596,278 Q 596,258 616,258 H 728 Q 752,258 748,282 "
@@ -38,9 +64,9 @@ def group(name, glass=True, shadow=0.3):
             "translucency": {"enabled": False, "value": 0.25}}
 
 
-def fluted_mark(dark=False, outline=False):
+def fluted_mark(dark=False, outline=False, palette="Cool"):
     """Each flute refracts five narrow bands; overlapping vector samples soften edges."""
-    colors = ["#BCDFFF", "#9C9AFF", "#F0D9FF"] if dark else ["#303D87", "#6356BB", "#344385"]
+    colors = FLUTED_PALETTES[palette]["dark-mark" if dark else "light-mark"]
     mark = path(fill="none" if outline else "url(#mark)",
                 extra=('stroke="url(#mark)" stroke-width="34" stroke-linejoin="round" ' if outline else '') +
                 'transform="translate(512,512) scale(1.15) translate(-512,-512)"')
@@ -62,7 +88,7 @@ def fluted_mark(dark=False, outline=False):
     return svg(''.join(bands), ''.join(definitions))
 
 
-def fluted_pane(dark=False):
+def fluted_pane(dark=False, palette="Cool"):
     # Wide cylindrical ribs: bright shoulder, clear center, soft shaded edge, hairline glint.
     definitions = ('<linearGradient id="rib"><stop stop-color="#FFFFFF" stop-opacity=".40"/>'
                    '<stop offset=".18" stop-color="#FFFFFF" stop-opacity=".20"/>'
@@ -77,7 +103,11 @@ def fluted_pane(dark=False):
                        '<stop offset=".78" stop-color="#020611" stop-opacity=".27"/>'
                        '<stop offset=".91" stop-color="#8196D4" stop-opacity=".12"/>'
                        '<stop offset="1" stop-color="#B4C4EF" stop-opacity=".25"/></linearGradient>')
-    glint = "#A6B7E6" if dark else "#FFFFFF"
+    glint = FLUTED_PALETTES[palette]["glint"] if dark else "#FFFFFF"
+    if dark:
+        # Neutral and warm studies tint the glass shoulders as well as the bloom.
+        for tint in ["#A6B7E6", "#91A6D8", "#8196D4", "#B4C4EF"]:
+            definitions = definitions.replace(tint, glint)
     glint_opacity = ".23" if dark else ".54"
     ribs = ''.join(f'<rect x="{x}" width="{FLUTE_PITCH}" height="1024" fill="url(#rib)"/>'
                    f'<rect x="{x+FLUTE_PITCH-1.5}" width="1.5" height="1024" fill="{glint}" opacity="{glint_opacity}"/>'
@@ -85,11 +115,12 @@ def fluted_pane(dark=False):
     return svg(ribs, definitions)
 
 
-def fluted_bloom(dark=False):
+def fluted_bloom(dark=False, palette="Cool"):
     """Broad colored light remains visible between ribs at Dock sizes."""
-    pools = [("blue", .30, .43, .49, "#558AFF", .58 if dark else .50),
-             ("lilac", .60, .46, .46, "#AE72FF", .54 if dark else .40),
-             ("warm", .67, .70, .42, "#FFB47E", .36 if dark else .48)]
+    colors = FLUTED_PALETTES[palette]["bloom"]
+    pools = [("left", .30, .43, .49, colors[0], .50 if dark else .42),
+             ("right", .60, .46, .46, colors[1], .42 if dark else .32),
+             ("base", .57, .70, .42, colors[2], .30 if dark else .38)]
     definitions = ''.join(
         f'<radialGradient id="{name}" cx="{cx}" cy="{cy}" r="{radius}">'
         f'<stop stop-color="{color}" stop-opacity="{opacity}"/>'
@@ -100,8 +131,8 @@ def fluted_bloom(dark=False):
                        for name, *_ in pools), definitions)
 
 
-def fluted_halo(dark=False):
-    colors = ["#76B9FF", "#BA98FF", "#FFCFAD"] if dark else ["#6A95FF", "#A78BEA", "#FFD0A9"]
+def fluted_halo(dark=False, palette="Cool"):
+    colors = FLUTED_PALETTES[palette]["dark-halo" if dark else "light-halo"]
     return svg(''.join(path(extra=f'stroke="url(#halo)" stroke-width="{width}" '
                                   f'stroke-linejoin="round" opacity="{opacity}" '
                                   'transform="translate(512,512) scale(1.15) translate(-512,-512)"')
@@ -109,10 +140,14 @@ def fluted_halo(dark=False):
                gradient("halo", colors))
 
 
-for finish in ["Candy", "Neon", "FlutedGlass", "FlutedGlassDark", "Schoolbook", "Luminous",
-               "FlutedGlassOutline", "FlutedGlassDarkOutline"]:
-    # Outline studies stay outside the production catalogue until visually approved.
-    parent = ROOT / "Experiments" if finish.endswith("Outline") else ROOT
+production_finishes = ["Candy", "Neon", "FlutedGlass", "FlutedGlassDark", "Schoolbook", "Luminous"]
+fluted_studies = ["FlutedGlassOutline", "FlutedGlassDarkOutline"] + [
+    "FlutedGlass" + tone + palette + style
+    for palette in ["Silver", "Champagne"]
+    for tone in ["", "Dark"] for style in ["", "Outline"]]
+for finish in production_finishes + fluted_studies:
+    # Palette and outline studies stay outside production until visually approved.
+    parent = ROOT if finish in production_finishes else ROOT / "Experiments"
     folder = parent / ("AppIcon-" + finish + ".icon")
     assets = folder / "Assets"
     assets.mkdir(parents=True, exist_ok=True)
@@ -146,11 +181,14 @@ for finish in ["Candy", "Neon", "FlutedGlass", "FlutedGlassDark", "Schoolbook", 
     elif finish.startswith("FlutedGlass"):
         dark = "Dark" in finish
         outline = finish.endswith("Outline")
-        config["fill"] = {"solid": "srgb:0.047,0.061,0.112,1" if dark else "srgb:0.965,0.950,0.930,1"}
-        content["refracted-v"] = fluted_mark(dark, outline=outline)
-        content["fluted-pane"] = fluted_pane(dark)
-        content["diffused-light"] = fluted_bloom(dark)
-        content["logo-halo"] = fluted_halo(dark)
+        palette = next((name for name in ["Silver", "Champagne"] if name in finish), "Cool")
+        backgrounds = {"Cool": "srgb:0.950,0.955,0.965,1", "Silver": "srgb:0.960,0.960,0.960,1",
+                       "Champagne": "srgb:0.965,0.950,0.920,1"}
+        config["fill"] = {"solid": "srgb:0.047,0.061,0.112,1" if dark else backgrounds[palette]}
+        content["refracted-v"] = fluted_mark(dark, outline=outline, palette=palette)
+        content["fluted-pane"] = fluted_pane(dark, palette=palette)
+        content["diffused-light"] = fluted_bloom(dark, palette=palette)
+        content["logo-halo"] = fluted_halo(dark, palette=palette)
         pane = group("fluted-pane", True, .06)
         # These properties are saved by Icon Composer's native material controls.
         pane["blur-material"] = .025 if outline else .07
