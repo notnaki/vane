@@ -2179,6 +2179,10 @@ private struct TabDrop: DropDelegate {
             }
             return true
         }
+        if target == nil {
+            store.dropAtSectionRoot(dragged, into: into)
+            return true
+        }
         // A dropped selection lands as a run in the order its rows were drawn. Dropping
         // *before* the target means each next tab goes after the one just placed, so the run
         // keeps its order instead of arriving inside out.
@@ -2212,13 +2216,19 @@ private struct TabDrop: DropDelegate {
         // tile it is what stops the grid drawing a drop line on the tile in your hand.
         if let id = Dragging.shared.tab, id == target?.id { return nil }
         guard axis == .vertical, let target else {
-            // A placeholder stands for a whole section rather than for a row in one, and
-            // `move(_:to:)` refuses a tab that is already in that section — so offering the
-            // drop would be a target that lights up and then does nothing. Nil is the same
-            // answer the dragged row's own slot gives: there is nothing to do, and the row
-            // in the air glides back into the slot the list is holding for it.
-            if target == nil, let id = Dragging.shared.tab,
-               store.tabs.first(where: { $0.id == id })?.kind == into { return nil }
+            // A section heading also lets tabs leave its folders. A loose tab already
+            // in this section still has nothing to do; a selection offers the drop if
+            // any member changes section or leaves a folder.
+            if target == nil, Dragging.shared.folder == nil {
+                let drag = Dragging.shared
+                let ids = drag.tabs.isEmpty ? [drag.tab].compactMap { $0 } : drag.tabs
+                let filed = TabStore.shape(of: into).map { store[keyPath: $0].filed } ?? []
+                guard ids.contains(where: { id in
+                    store.tabs.first(where: { $0.id == id }).map {
+                        $0.kind != into || filed.contains(id.uuidString)
+                    } ?? false
+                }) else { return nil }
+            }
             return Offer(band: info.location.x > extent / 2 ? .after : .before, to: nil)
         }
         let band = Landing.band(y: info.location.y, height: Look.rowHeight)
@@ -3346,15 +3356,13 @@ private struct TidyRow: View {
 
 private struct NewTabRow: View {
     @EnvironmentObject var store: TabStore
-    /// Set while a pinned tab is over this row — the only drag it has anything to do with.
+    /// Set while a tab can land at the head of Today, outside its folders.
     @State private var lit: Landing.Band?
 
     var body: some View {
         SidebarRow(icon: "plus", title: "New Tab", selected: false, dimmed: true) { store.newTab(nil) }
-            // The other side of the same hole: this row heads the Today list, and a pinned
-            // tab let go on it comes back down to the top of it — where `move(_:to:)` puts a
-            // tab it un-pins, which is directly under this row. So the line goes at the
-            // bottom, on the gap the tab will land in.
+            // This row heads Today: tabs land directly under it, outside every folder,
+            // including tabs already in Today. The line marks that gap at the bottom.
             .overlay(alignment: .bottom) { DropLine(on: lit != nil, axis: .vertical) }
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: nil, into: .today,
@@ -3828,6 +3836,9 @@ struct TabMenu: View {
         // pinned on the way in, exactly as it always was.
         let shape = TabStore.shape(of: tab.kind) ?? \.pins
         Button("New Folder") { store.newFolder(from: tab.id, in: shape) }
+        if store[keyPath: shape].filed.contains(tab.id.uuidString) {
+            Button("Remove from Folder") { store.dropAtSectionRoot([tab.id], into: tab.kind) }
+        }
         let folders = store[keyPath: shape].entries.compactMap(\.folder)
         if !folders.isEmpty {
             Menu("Move to Folder") {

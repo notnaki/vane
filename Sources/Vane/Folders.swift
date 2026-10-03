@@ -1172,6 +1172,27 @@ extension TabStore {
         axAnnounce("Moved to \(self[keyPath: shape].folder(folder)?.name ?? "folder").")
     }
 
+    /// Section headings and "Remove from Folder" land outside every folder, even when
+    /// the tabs already belong to this section. Today takes the run at its head; Pinned
+    /// takes it at its end. Placing Today's run backwards keeps its visible order.
+    func dropAtSectionRoot(_ ids: [Tab.ID], into kind: TabKind) {
+        if sharingReady { SharedTabs.flush() }
+        let live = ids.filter { id in tabs.contains { $0.id == id } }
+        guard !live.isEmpty else { return }
+        Motion.list {
+            live.forEach { move($0, to: kind) }
+            guard let shape = TabStore.shape(of: kind) else { return }
+            syncShapes()
+            for id in kind == .today ? Array(live.reversed()) : live {
+                self[keyPath: shape].put(id.uuidString,
+                                        at: Pins.Spot(parent: nil, index: kind == .today ? 0 : .max))
+            }
+            applyOrder(kind)
+        }
+        savePins()
+        axAnnounce("Moved to \(TabMenu.name(kind)).")
+    }
+
     /// A tab dropped on the top or bottom edge of a folder row: beside the folder, not in
     /// it — and after it means after everything the folder holds.
     func drop(_ id: Tab.ID, beside folder: UUID, after: Bool,

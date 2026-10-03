@@ -389,6 +389,12 @@ struct BulkMenu: View {
         Button(kind == .pinned ? "Unpin \(count) Tabs" : "Pin \(count) Tabs") {
             store.moveSelection(to: kind == .pinned ? .today : .pinned)
         }
+        if let shape = TabStore.shape(of: kind),
+           store.selectedTabs.contains(where: { store[keyPath: shape].filed.contains($0.id.uuidString) }) {
+            Button("Remove from Folder") {
+                store.dropAtSectionRoot(store.selectedTabs.map(\.id), into: kind)
+            }
+        }
         if kind == .pinned {
             let folders = store.pins.entries.compactMap(\.folder)
             if !folders.isEmpty {
