@@ -155,6 +155,91 @@ import XCTest
         XCTAssertEqual(oldPaused, true, "The old video must not restart")
     }
 
+    func testPiPControlsHideOutsideVideoAndFollowItsFrame() async throws {
+        let (tab, window) = try await fixture("<p>Hover geometry</p>")
+        let controls = PiPMinimizeControls.Attachment(window: window, tab: tab)
+        defer { controls.remove() }
+        let center = NSPoint(x: window.frame.midX, y: window.frame.midY)
+        controls.update(pointer: center)
+        XCTAssertTrue(controls.panel.isVisible)
+        XCTAssertTrue(window.frame.contains(controls.panel.frame))
+        window.setFrame(NSRect(x: 400, y: 200, width: 500, height: 300), display: false)
+        controls.update(pointer: NSPoint(x: 650, y: 350))
+        XCTAssertEqual(controls.panel.frame.maxX, 892)
+        XCTAssertEqual(controls.panel.frame.maxY, 494)
+        controls.update(pointer: NSPoint(x: 0, y: 0))
+        XCTAssertFalse(controls.panel.isVisible, "Minimize must disappear when the pointer leaves the video")
+        controls.update(pointer: NSPoint(x: 650, y: 350))
+        window.orderOut(nil)
+        controls.update(pointer: NSPoint(x: 650, y: 350))
+        XCTAssertFalse(controls.panel.isVisible, "A closed or hidden video cannot leave floating controls behind")
+    }
+
+    func testPiPRestoreControlReturnsTheVideoWithoutPausing() async throws {
+        let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        let store = TabStore(isPrivate: true)
+        defer { TabStore.all.removeAll { $0 === store } }
+        store.tabs = [tab]
+        store.current = tab.id
+        store.window = window
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        store.current = store.newBlankTab(focus: false).id
+        func restore(in view: NSView) -> NSButton? {
+            if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
+            return view.subviews.lazy.compactMap { restore(in: $0) }.first
+        }
+        var control: NSButton?
+        try await wait {
+            control = NSApp.windows.compactMap(\.contentView).compactMap { restore(in: $0) }.first
+            return control != nil
+        }
+        let panel = try XCTUnwrap(control?.window)
+        control?.performClick(nil)
+        try await wait { !tab.pictureInPicture }
+        try await wait { !panel.isVisible && store.current == tab.id }
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        let paused = try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool
+        XCTAssertEqual(paused, false)
+        XCTAssertEqual(store.current, tab.id)
+        XCTAssertFalse(MediaState.shared.minimized.contains(tab.id))
+    }
+
+    func testRestoringSelectedTabKeepsAutomaticPiPEnabled() async throws {
+        let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        let store = TabStore(isPrivate: true)
+        defer { TabStore.all.removeAll { $0 === store } }
+        store.tabs = [tab]
+        store.current = tab.id
+        store.window = window
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        window.orderOut(nil)
+        func restore(in view: NSView) -> NSButton? {
+            if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
+            return view.subviews.lazy.compactMap { restore(in: $0) }.first
+        }
+        var control: NSButton?
+        try await wait {
+            control = NSApp.windows.compactMap(\.contentView).compactMap { restore(in: $0) }.first
+            return control != nil
+        }
+        control?.performClick(nil)
+        try await wait { !tab.pictureInPicture && window.isVisible }
+        let reply: String? = try await withCheckedThrowingContinuation { continuation in
+            tab.web.evaluateJavaScript(PictureInPicture.autoCommand(enter: true),
+                                       in: tab.pipFrame, in: PictureInPicture.world) { result in
+                continuation.resume(with: result.map { $0 as? String })
+            }
+        }
+        XCTAssertEqual(reply, "pip", "Restoring the already selected tab must release minimize suppression")
+        // Reopening during the native close animation can be ignored. The helper's
+        // decision verifies suppression was cleared without testing that OS animation.
+        PictureInPicture.exitIfAuto(tab)
+    }
+
     func testNativePiPMinimizeButtonKeepsVideoPlaying() async throws {
         let (tab, _) = try await fixture("<video id='player' width='640' height='360' loop autoplay muted src='data:video/mp4;base64,\(Self.video)'></video>")
         try await wait { (try await tab.web.evaluateJavaScript("document.getElementById('player').readyState") as? Int ?? 0) >= 3 }
@@ -168,10 +253,16 @@ import XCTest
             return view.subviews.lazy.compactMap { minimize(in: $0) }.first
         }
         let button = try XCTUnwrap(NSApp.windows.compactMap { $0.contentView }.compactMap { minimize(in: $0) }.first,
-                                   "Minimize must be a real control inside the native PiP window")
-        let content = try XCTUnwrap(button.window?.contentView)
-        XCTAssertTrue(content.bounds.contains(button.convert(button.bounds, to: content)), "The minimize button must be inside the visible video panel")
-        XCTAssertGreaterThanOrEqual(content.bounds.maxX - button.frame.maxX, 50, "Minimize leaves space for native restore controls")
+                                   "Minimize must be a real control above the native PiP window")
+        let videoWindow = try XCTUnwrap(NSApp.windows.first {
+            NSStringFromClass(type(of: $0)) == "PIPPanel" && $0.isVisible
+        })
+        let controlWindow = try XCTUnwrap(button.window)
+        XCTAssertFalse(controlWindow === videoWindow,
+                       "The remote PiP overlay intercepts clicks on controls inside the video host")
+        XCTAssertGreaterThan(controlWindow.level.rawValue, Int(CGWindowLevelForKey(.utilityWindow)),
+                             "Custom controls must receive mouse events above the remote PiP chrome")
+        let content = try XCTUnwrap(videoWindow.contentView)
         let videoView = try XCTUnwrap(content.subviews.first { NSStringFromClass(type(of: $0)) == "WebVideoViewContainer" })
         let originalSize = content.frame.size
         content.setFrameSize(NSSize(width: originalSize.width * 0.8, height: originalSize.height * 0.8))
