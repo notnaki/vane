@@ -29,7 +29,7 @@
         "enabled": true,
         "value": 0.78
       },
-      "blur-material": 0.025,
+      "blur-material": 0.07,
       "refractivity": {
         "enabled": true,
         "strength": 0.45,

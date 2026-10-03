@@ -141,12 +141,12 @@ def fluted_halo(dark=False, palette="Cool"):
 
 
 production_finishes = ["Candy", "Neon", "FlutedGlass", "FlutedGlassDark", "Schoolbook", "Luminous"]
-fluted_studies = ["FlutedGlassOutline", "FlutedGlassDarkOutline"] + [
+fluted_studies = ["FlutedGlassFilled", "FlutedGlassDarkFilled"] + [
     "FlutedGlass" + tone + palette + style
     for palette in ["Silver", "Champagne"]
     for tone in ["", "Dark"] for style in ["", "Outline"]]
 for finish in production_finishes + fluted_studies:
-    # Palette and outline studies stay outside production until visually approved.
+    # Alternative palettes and filled-logo studies stay outside production.
     parent = ROOT if finish in production_finishes else ROOT / "Experiments"
     folder = parent / ("AppIcon-" + finish + ".icon")
     assets = folder / "Assets"
@@ -180,7 +180,7 @@ for finish in production_finishes + fluted_studies:
         config["groups"] = [group("tube", False, 0), group("halo", False, 0), group("ambient", False, 0)]
     elif finish.startswith("FlutedGlass"):
         dark = "Dark" in finish
-        outline = finish.endswith("Outline")
+        outline = finish.endswith("Outline") or finish in ["FlutedGlass", "FlutedGlassDark"]
         palette = next((name for name in ["Silver", "Champagne"] if name in finish), "Cool")
         backgrounds = {"Cool": "srgb:0.950,0.955,0.965,1", "Silver": "srgb:0.960,0.960,0.960,1",
                        "Champagne": "srgb:0.965,0.950,0.920,1"}
