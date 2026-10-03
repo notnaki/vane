@@ -1,0 +1,127 @@
+{
+  "fill": {
+    "solid": "srgb:0.960,0.960,0.960,1"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
+          "glass": true,
+          "hidden": false,
+          "image-name": "fluted-pane.svg",
+          "name": "fluted-pane",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.06
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.78
+      },
+      "blur-material": 0.07,
+      "refractivity": {
+        "enabled": true,
+        "strength": 0.45,
+        "depth": 0.2
+      }
+    },
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
+          "glass": false,
+          "hidden": false,
+          "image-name": "refracted-v.svg",
+          "name": "refracted-v",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.25
+      }
+    },
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
+          "glass": false,
+          "hidden": false,
+          "image-name": "logo-halo.svg",
+          "name": "logo-halo",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.25
+      }
+    },
+    {
+      "layers": [
+        {
+          "blend-mode": "normal",
+          "fill": "none",
+          "glass": false,
+          "hidden": false,
+          "image-name": "diffused-light.svg",
+          "name": "diffused-light",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.25
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  },
+  "features": [
+    "refractivity"
+  ]
+}
