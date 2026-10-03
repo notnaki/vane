@@ -123,9 +123,13 @@ enum QuitAsk {
 
     /// AppKit's `flag` includes windows in the Dock. Check the actual windows instead;
     /// floating panels (such as PiP) do not count, matching AppKit's reopen behavior.
+    /// The offscreen link-preview renderer is excluded from the Window menu and must
+    /// not count as an open user window either.
     /// False back means "handled", so AppKit does not raise a second window.
     func applicationShouldHandleReopen(_ app: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard !app.windows.contains(where: { !($0 is NSPanel) && $0.isVisible && !$0.isMiniaturized })
+        guard !app.windows.contains(where: {
+            !($0 is NSPanel) && !$0.isExcludedFromWindowsMenu && $0.isVisible && !$0.isMiniaturized
+        })
         else { return true }
         reopen(in: app)
         return false

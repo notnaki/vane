@@ -74,6 +74,22 @@ import XCTest
         try await reopen(lifecycle, restoring: minimized)
     }
 
+    func testOffscreenPreviewHostDoesNotPreventRestoringAMinimizedWindow() async throws {
+        let lifecycle = AppLifecycle()
+        let minimized = window()
+        // Match the persistent renderer host created by Previews.webView(for:).
+        let host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200),
+                            styleMask: [.borderless], backing: .buffered, defer: false)
+        host.isReleasedWhenClosed = false
+        host.isExcludedFromWindowsMenu = true
+        host.setFrameOrigin(NSPoint(x: -12_000, y: -12_000))
+        host.orderFront(nil)
+        addTeardownBlock { @MainActor in host.close() }
+        XCTAssertTrue(host.isVisible)
+        try await minimize(minimized)
+        try await reopen(lifecycle, restoring: minimized)
+    }
+
     func testClosingTheLastMinimizedWindowRestoresThePreviousOne() async throws {
         let lifecycle = AppLifecycle()
         let first = window(), second = window()
