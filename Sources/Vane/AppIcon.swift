@@ -74,29 +74,7 @@ import AppKit
         // same thing as assigning the catalogue render, which is why Dark exists.
         let image = overrides(name) ? v.image : nil
         NSApp.applicationIconImage = image
-        // Minimized-window badges derive from the application Dock tile. Supplying its
-        // view explicitly keeps them on the selected finish, including on macOS versions
-        // that keep using the shipped icon for badges after applicationIconImage changes.
-        let tile = NSApp.dockTile
-        if let image {
-            let view = NSImageView(frame: NSRect(origin: .zero, size: tile.size))
-            view.image = image
-            view.imageScaling = .scaleProportionallyUpOrDown
-            view.autoresizingMask = [.width, .height]
-            tile.contentView = view
-        } else {
-            tile.contentView = nil
-        }
-        tile.display()
-        // Rebuild cached badges on windows already in the Dock. Keep their native
-        // thumbnails and respect windows that intentionally hide the application badge.
-        for window in NSApp.windows where window.isMiniaturized {
-            let windowTile = window.dockTile
-            guard windowTile.showsApplicationBadge else { continue }
-            windowTile.showsApplicationBadge = false
-            windowTile.showsApplicationBadge = true
-            windowTile.display()
-        }
+        MinimizedWindowIcon.apply(image)
         UserDefaults.vane.set(name, forKey: key)
         guard canPersist else { return false }
         if isSandboxed {
@@ -120,6 +98,7 @@ import AppKit
     /// whole bundle on an in-place update, which takes any stamped Finder icon with it.
     /// Dark clears any previous stamp and hands the running tile back to AppKit.
     static func restoreAtLaunch() {
+        MinimizedWindowIcon.start()
         let name = current
         if let saved = UserDefaults.vane.string(forKey: key), saved != canonicalName(saved) {
             UserDefaults.vane.set(canonicalName(saved), forKey: key)

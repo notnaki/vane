@@ -141,7 +141,8 @@ the existing idle-suspension preference and preserves an already shorter timeout
 
 Settings → Icon offers Normal, Dark, Galaxy, Candy, Neon, Fluted Glass,
 Fluted Glass Dark, Schoolbook, and Luminous. The choice persists across launches and changes the running
-app's Dock and Finder icons, including while Vane is quit. A signed helper stamps
+app's Dock and Finder icons, including while Vane is quit. Minimized-window previews
+also use the selected icon and update when the choice changes. A signed helper stamps
 the containing app bundle outside the browser sandbox; read-only or translocated
 copies retain the live Dock choice and restore it on launch. The bare SwiftPM
 executable has no bundled icon catalogue; build `Vane.app` to use these finishes.

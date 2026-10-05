@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 FIXTURE="$(mktemp -d -t vane-icon-check)"
 trap 'rm -rf "$FIXTURE"' EXIT
-xcrun swiftc -swift-version 6 Sources/Vane/AppIcon.swift Sources/Vane/AppIconPersistence.swift Tests/AppIcons/MigrationHarness.swift \
+xcrun swiftc -swift-version 6 Sources/Vane/AppIcon.swift Sources/Vane/MinimizedWindowIcon.swift Sources/Vane/AppIconPersistence.swift Tests/AppIcons/MigrationHarness.swift \
   -o "$FIXTURE/Check"
 "$FIXTURE/Check"
 # A translocation-shaped fixture path prevents Finder stamping during selections.
