@@ -29,3 +29,31 @@ scripts/compile-app-icons.sh
 `Prebuilt/Assets.car` contains all eight catalogue images. `Prebuilt/AppIcon.icns` is the compatibility plate for the bundle’s default icon. Commit both after changing a source when their contents change. `make-app.sh` prefers these renders and falls back to compiling the sources when they are missing.
 
 Verify migration and every bundled selection with `scripts/check-app-icons.sh`.
+
+### Blocky Vane studies
+
+`Experiments/AppIcon-BlockyPixel.icon`, `AppIcon-BlockyBlock.icon`, and
+`AppIcon-BlockyScatter.icon` adapt Vane's curved V to the stepped square-grid
+style of the Vesta terminal's pixel/glitch icon studies. Pixel uses a 40 px
+grid; Block and Scatter use 64 px blocks. Scatter displaces two chips and adds
+faint satellite blocks. The ivory mark, slate-blue tile, and native glass
+finish retain the Vane palette. These are editable experiments outside the
+production catalogue and Settings picker.
+
+Regenerate the SVG silhouettes and Icon Composer documents with:
+
+```sh
+python3 scripts/generate-blocky-icons.py
+```
+
+`Previews/Blocky Pixel.png`, `Blocky Block.png`, and `Blocky Scatter.png` are
+native 1024 px macOS renders. `Previews/blocky-comparison.png` shows all three,
+with 80 px previews below each to check the Dock silhouette. Refresh a native
+render with the Icon Composer CLI bundled in Xcode:
+
+```sh
+ICTOOL="$(xcode-select -p)/../Applications/Icon Composer.app/Contents/Executables/ictool"
+"$ICTOOL" AppIcons/Experiments/AppIcon-BlockyPixel.icon --export-image \
+  --output-file "AppIcons/Previews/Blocky Pixel.png" --platform macOS \
+  --rendition Default --width 1024 --height 1024 --scale 1
+```
