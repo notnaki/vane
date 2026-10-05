@@ -598,23 +598,29 @@ struct MediaTrayView: View {
         let title = info.title.isEmpty ? TidyTitles.title(for: tab) : info.line
         let expanded = hovered || focused
         return VStack(spacing: 0) {
-            if expanded {
-                HStack(spacing: Look.rowSpacing) {
-                    Button {
-                        open(tab)
-                    } label: {
-                        Marquee(text: title).foregroundStyle(Look.barText)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Open \(title)")
-                    if info.video {
-                        glyph("pip", "Show Picture in Picture", enabled: !tab.pictureInPicture) { media.restore(tab) }
-                    }
-                    glyph("xmark", "Close player and pause") { media.dismiss(tab) }
+            HStack(spacing: Look.rowSpacing) {
+                Button {
+                    open(tab)
+                } label: {
+                    Marquee(text: title).foregroundStyle(Look.barText)
                 }
-                .frame(height: Look.trayHeight)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open \(title)")
+                if info.video {
+                    glyph("pip", "Show Picture in Picture", enabled: !tab.pictureInPicture) { media.restore(tab) }
+                }
+                glyph("xmark", "Close player and pause") { media.dismiss(tab) }
             }
+            // Keep the title's layout stable as its available space grows. Clipping the
+            // shrinking row prevents its text from sliding through the transport glyphs.
+            .frame(height: Look.trayHeight)
+            .opacity(expanded ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: expanded ? 0.18 : 0.10), value: expanded)
+            .frame(height: expanded ? Look.trayHeight : 0, alignment: .top)
+            .clipped()
+            .allowsHitTesting(expanded)
+            .disabled(!expanded)
+            .accessibilityHidden(!expanded)
             HStack(spacing: 0) {
                 Button {
                     open(tab)
