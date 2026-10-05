@@ -302,6 +302,7 @@ struct TabPage: View {
 /// tinted by the current space. Nothing here is opaque — `WindowGlass` is the only ground,
 /// so the desktop shows through everything the sidebar does not cover.
 struct BrowserWindow: View {
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var profiles: ProfileManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -386,10 +387,10 @@ struct BrowserWindow: View {
         .onChange(of: store.libraryOpen) { if store.libraryOpen { spaceCount = profiles.allSpaces.count } }
         // The page slides over as the panel takes its width, and back when it gives it up —
         // including when the Spaces section widens the panel to fit another card.
-        .animation(reduceMotion ? nil : Look.appear, value: libraryWidth)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: libraryWidth)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.sidebarShown)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: peeking)
-        .animation(reduceMotion ? nil : Look.appear, value: store.libraryOpen)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
         .animation(reduceMotion ? nil : Look.appear, value: store.palette == nil)
         // Arc hides the traffic lights along with the sidebar: a collapsed window is the
         // page and nothing else. They come back the moment either sidebar does.
@@ -405,6 +406,7 @@ struct BrowserWindow: View {
             if store.libraryOpen { peekTask?.cancel(); peeking = false }
             showTrafficLights(chrome)
         }
+        .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
         .environmentObject(store.spaceGesture)
         // In .background so it costs no layout: the buttons are still in the view tree and

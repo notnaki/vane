@@ -140,7 +140,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         open(section, in: store)
     }
 
-    /// Escape, the back arrow, and opening a page out of the Library. The key view goes back
+    /// Escape, a leftward swipe, the back arrow, and opening a page out of the Library. The key view goes back
     /// to the page, so the next keystroke is the page's rather than falling on a rail that is
     /// not there any more.
     static func close(_ store: TabStore) {
