@@ -79,6 +79,8 @@ leaves its saved page, its sidebar row shows `/` before its title and offers
 **Return to Pinned Tab**; returning
 loads the pinned URL again. Favorites belong to a profile, while pinned and Today
 tabs belong to a Space. Library lists Spaces across all profiles.
+Swipe right to left anywhere in the window to close Library, or use Escape or its
+back button. Vertical scrolling still scrolls the Library.
 
 Hover the Space card to reveal its chevron and `…` menu. Click the card to collapse
 or expand its pinned tabs; Today stays visible. Double-click its name to rename
