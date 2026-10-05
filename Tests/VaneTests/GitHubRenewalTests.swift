@@ -194,7 +194,12 @@ import XCTest
         fixture.duringRequest = { [unowned live] in live.signOut() }
         let response = await live.fetchAuthorized(GitHubQuery(), token: old)
         live.receive(response.answer, for: UUID(), token: response.token)
-        try await Task.sleep(for: .milliseconds(100))
+        // Sign-out waits for the refresh lock asynchronously. Observe completion rather
+        // than assume its retry and deletion have run within 100 ms on a loaded runner.
+        let deadline = ContinuousClock.now + .seconds(3)
+        while fixture.stored != nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertNil(fixture.stored)
         XCTAssertNil(live.connectedLogin)
         XCTAssertFalse(live.needsReconnect)

@@ -1451,7 +1451,7 @@ private struct FavoriteTile: View {
             .onHover { hovering = $0 }
             .onTapGesture { InteractionSounds.play(.press); store.current = tab.id }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-            .help(tab.title)
+            .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil)
             .onDrag { dragPayload(tab) } preview: { TabIcon(tab: tab, size: Look.tileIcon).padding(6) }
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: tab, into: .favourite,
@@ -1464,7 +1464,7 @@ private struct FavoriteTile: View {
             .accessibilityLabel(TidyTitles.title(for: tab))
             .accessibilityValue(tabState(tab, in: store))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-            .accessibilityHint("Shows this tab.")
+            .accessibilityHint("Shows this tab. Double-click to rename.")
             // Only on a tile that has wandered — see `TabRow`, where the same action is
             // offered on the same terms.
             .accessibilityActions {
@@ -2011,7 +2011,7 @@ private struct PaneStrip: View {
 /// page you can go to and a row with four of them is four places, not one.
 private struct PanePill: View {
     /// See `PaneStrip`: handed in, because this is drawn in the drag preview too.
-    let store: TabStore
+    @ObservedObject var store: TabStore
     @ObservedObject var tab: Tab
     let active: Bool
     let index: Int
@@ -2020,11 +2020,15 @@ private struct PanePill: View {
     var body: some View {
         HStack(spacing: Look.rowSpacing) {
             TabIcon(tab: tab, size: Look.rowIcon)
-            Text(TidyTitles.title(for: tab))
-                .font(Look.rowTitle)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundStyle(Look.inkPrimary)
+            if store.renamingTab == tab.id {
+                RenameField(store: store, tab: tab)
+            } else {
+                Text(TidyTitles.title(for: tab))
+                    .font(Look.rowTitle)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(Look.inkPrimary)
+            }
         }
         .padding(.horizontal, Look.paneInset)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -2035,12 +2039,14 @@ private struct PanePill: View {
                     in: .rect(cornerRadius: Look.panePillRadius))
         .contentShape(.rect)
         .onTapGesture { store.focusPane(tab.id) }
-        .help(tab.title)
+        .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
+        .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(TidyTitles.title(for: tab))
         .accessibilityValue("Pane \(index + 1) of \(of)" + (active ? ", showing" : ""))
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
-        .accessibilityHint("Shows this pane of the split view.")
+        .accessibilityHint("Shows this pane of the split view. Double-click to rename.")
+        .accessibilityAction(named: "Rename Tab") { store.renamingTab = tab.id }
     }
 }
 
@@ -3536,7 +3542,6 @@ private struct SplitRow: View {
         // Everything a tab's row does with a drag, keyed on the pane whose place this is: a
         // split is one item in the strip, so it reorders and takes drops like one.
         .inStrip(lead.id, strip)
-        .help("Split view of \(panes.count) tabs")
         .onDrag {
             dragPayload(lead, in: store, at: spot)
         } preview: {
@@ -3677,7 +3682,7 @@ private struct TabRow: View {
             }
         }
         .inStrip(tab.id, strip)
-        .help(tab.title)
+        .tabTooltip(title, enabled: store.renamingTab == nil)
         .onDrag {
             dragPayload(tab, in: store, at: spot)
         } preview: {
@@ -3721,7 +3726,7 @@ private struct TabRow: View {
         .accessibilityValue(tabState(tab, in: store)
                             + selectionSuffix(ticked, store.selection.count))
         .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
-        .accessibilityHint("Shows this tab.")
+        .accessibilityHint("Shows this tab. Double-click to rename.")
         // The same words the row's own glyph is showing — a pinned row's ⌘W unloads before
         // it unpins, and an action named "Close Tab" that does neither is a lie.
         .accessibilityAction(named: tab.kind == .today ? "Archive Tab" : closeVerb) {

@@ -9,6 +9,15 @@ import XCTest
         return defaults
     }
 
+    private func waitForNoticeExpiry(_ saver: BatterySaver) async throws {
+        // CI can delay a main-actor timer's first turn beyond the nominal duration.
+        // Keep a deadline so a notice that never expires still fails the assertion.
+        let deadline = ContinuousClock.now + .seconds(3)
+        while saver.notice != nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     func testAutomaticTracksBatteryAndCharger() {
         let saver = BatterySaver(defaults: defaults())
         XCTAssertEqual(saver.mode, .automatic)
@@ -102,7 +111,7 @@ import XCTest
         let saver = BatterySaver(defaults: defaults(), noticeDuration: .milliseconds(40))
         saver.setMode(.alwaysOn)
         XCTAssertNotNil(saver.notice)
-        try await Task.sleep(for: .milliseconds(160))
+        try await waitForNoticeExpiry(saver)
         XCTAssertNil(saver.notice)
         XCTAssertTrue(saver.isActive, "Dismissing the notification must not turn saving off")
     }
@@ -128,18 +137,60 @@ import XCTest
         try await Task.sleep(for: .milliseconds(160))
         XCTAssertNotNil(saver.notice)
         saver.holdNotice(false, by: secondWindow)
-        try await Task.sleep(for: .milliseconds(160))
+        try await waitForNoticeExpiry(saver)
         XCTAssertNil(saver.notice)
     }
 
     func testReplacementGetsItsOwnExpiryEvenWhenOldTimerWasRunning() async throws {
-        let saver = BatterySaver(defaults: defaults(), noticeDuration: .milliseconds(200))
+        let timer = NoticeTimerFixture()
+        defer { timer.finish() }
+        let saver = BatterySaver(defaults: defaults(), noticeDuration: .milliseconds(200),
+                                 noticeSleep: { try await timer.sleep($0) })
         saver.setMode(.alwaysOn)
-        try await Task.sleep(for: .milliseconds(140))
+        try await timer.waitUntil { timer.waits.count == 1 }
         saver.setMode(.off)
-        try await Task.sleep(for: .milliseconds(100))
+        try await timer.waitUntil { timer.waits.count == 2 }
+        // Finish the cancelled activation timer while deactivation is still waiting.
+        timer.release(0)
+        try await timer.waitUntil { timer.completed.contains(0) }
         XCTAssertEqual(saver.notice?.isActive, false, "The old activation clock cannot dismiss deactivation")
-        try await Task.sleep(for: .milliseconds(180))
+        timer.release(1)
+        try await waitForNoticeExpiry(saver)
         XCTAssertNil(saver.notice)
+        XCTAssertEqual(timer.durations, [.milliseconds(200), .milliseconds(200)])
     }
+}
+
+@MainActor private final class NoticeTimerFixture {
+    var waits: [CheckedContinuation<Void, Error>] = []
+    var durations: [Duration] = []
+    var completed: Set<Int> = []
+    private var released: Set<Int> = []
+    private var stopped = false
+
+    func sleep(_ duration: Duration) async throws {
+        if stopped { return }
+        let index = waits.count
+        durations.append(duration)
+        try await withCheckedThrowingContinuation { waits.append($0) }
+        completed.insert(index)
+    }
+
+    func release(_ index: Int) {
+        if released.insert(index).inserted { waits[index].resume() }
+    }
+
+    func finish() {
+        stopped = true
+        for index in waits.indices { release(index) }
+    }
+
+    func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        if !condition() { throw TimerError.didNotRun }
+    }
+    private enum TimerError: Error { case didNotRun }
 }
