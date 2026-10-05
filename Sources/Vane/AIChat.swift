@@ -49,8 +49,8 @@ struct AIAssistant: Identifiable, Codable, Hashable {
     /// append without this file learning about it. There is no custom-assistant editor and
     /// no need for one: an assistant that took a `%s` template would just be a search engine.
     static var all: [Assistant] = [
-        .init(id: "claude",     name: "Claude",     template: "https://claude.ai/new?q=%s"),
         .init(id: "chatgpt",    name: "ChatGPT",    template: "https://chatgpt.com/?q=%s"),
+        .init(id: "claude",     name: "Claude",     template: "https://claude.ai/new?q=%s"),
         .init(id: "perplexity", name: "Perplexity", template: "https://www.perplexity.ai/search?q=%s"),
         .init(id: "grok",       name: "Grok",       template: "https://grok.com/?q=%s"),
     ]
