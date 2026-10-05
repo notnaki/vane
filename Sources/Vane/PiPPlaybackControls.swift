@@ -37,7 +37,7 @@ import AppKit
         appearance = NSAppearance(named: .darkAqua)
         for button in [back, self.minimize, self.close] {
             let glass = NSGlassEffectView()
-            glass.cornerRadius = 10
+            glass.cornerRadius = 8
             glass.style = .regular
             glass.contentView = button
             addSubview(glass)
@@ -45,7 +45,7 @@ import AppKit
         }
         for button in [backward, play, forward] { addSubview(button) }
         hostname.stringValue = MediaTray.clean(tab.currentURL?.host ?? "")
-        hostname.font = .systemFont(ofSize: 13, weight: .semibold)
+        hostname.font = .systemFont(ofSize: 12, weight: .semibold)
         hostname.textColor = .white
         hostname.alignment = .center
         hostname.lineBreakMode = .byTruncatingMiddle
@@ -68,21 +68,22 @@ import AppKit
         super.layout()
         let compact = bounds.width < 480
         let inset: CGFloat = 14
-        let height: CGFloat = 32
-        let widths: [CGFloat] = compact ? [32, 32, 32] : [128, 104, 84]
+        let height: CGFloat = 28
+        let widths: [CGFloat] = compact ? [28, 28, 28] : [104, 86, 68]
         let x = [inset, bounds.width - inset - widths[2] - 8 - widths[1], bounds.width - inset - widths[2]]
         for (i, button) in [back, minimize, close].enumerated() {
             header[i].frame = NSRect(x: x[i], y: bounds.height - inset - height, width: widths[i], height: height)
             button.frame = header[i].bounds
             button.title = compact ? "" : ["Back to Tab", "Minimize", "Close"][i]
             button.imagePosition = compact ? .imageOnly : .imageLeading
-            button.setSymbolSize(14)
+            button.setSymbolSize(12)
         }
-        let titleStart = header[0].frame.maxX + 8
-        let titleWidth = max(0, header[1].frame.minX - titleStart - 8)
-        hostname.frame = NSRect(x: titleStart, y: bounds.height - inset - height, width: titleWidth, height: height)
-        hostname.isHidden = titleWidth < 90
-        let playSize = min(90, max(42, bounds.height * 0.22))
+        let titleRadius = max(0, min(bounds.midX - header[0].frame.maxX,
+                                    header[1].frame.minX - bounds.midX) - 8)
+        hostname.frame = NSRect(x: bounds.midX - titleRadius, y: bounds.height - inset - height,
+                               width: titleRadius * 2, height: height)
+        hostname.isHidden = titleRadius * 2 < 90
+        let playSize = min(72, max(36, bounds.height * 0.18))
         let skipSize = playSize * 0.65
         play.frame = NSRect(x: bounds.midX - playSize / 2, y: bounds.midY - playSize / 2, width: playSize, height: playSize)
         backward.frame = NSRect(x: play.frame.minX - skipSize - 20, y: bounds.midY - skipSize / 2, width: skipSize, height: skipSize)
@@ -178,9 +179,10 @@ private final class PiPSeekCell: NSSliderCell {
         self.symbol = symbol
         clickedAction = action
         super.init(frame: .zero)
+        cell = PiPButtonCell()
         identifier = NSUserInterfaceItemIdentifier("vane.pip.\(id)")
         isBordered = false
-        font = .systemFont(ofSize: 13, weight: .semibold)
+        font = .systemFont(ofSize: 12, weight: .semibold)
         contentTintColor = .white
         imagePosition = .imageOnly
         imageScaling = .scaleNone
@@ -202,4 +204,27 @@ private final class PiPSeekCell: NSSliderCell {
     }
 
     @objc private func clicked() { clickedAction() }
+}
+
+/// AppKit's image-leading layout anchors the icon to the cell edge while centering
+/// its title separately. Center their combined width so both outer pads stay equal.
+private final class PiPButtonCell: NSButtonCell {
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        let text = NSAttributedString(string: title, attributes: [
+            .font: font ?? NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.white.withAlphaComponent(isEnabled ? 1 : 0.4)
+        ])
+        let textSize = title.isEmpty ? .zero : text.size()
+        let imageSize = image?.size ?? .zero
+        let gap: CGFloat = title.isEmpty || image == nil ? 0 : 6
+        let start = cellFrame.midX - (imageSize.width + gap + textSize.width) / 2
+        if let image {
+            drawImage(image, withFrame: NSRect(x: start, y: cellFrame.midY - imageSize.height / 2,
+                                              width: imageSize.width, height: imageSize.height), in: controlView)
+        }
+        if !title.isEmpty {
+            text.draw(in: NSRect(x: start + imageSize.width + gap, y: cellFrame.midY - textSize.height / 2,
+                                width: textSize.width, height: textSize.height))
+        }
+    }
 }

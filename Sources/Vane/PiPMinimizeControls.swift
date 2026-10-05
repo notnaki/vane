@@ -42,7 +42,7 @@ import WebKit
                     close: { [weak tab] in guard let tab else { return }; Self.perform(.close, tab: tab) })
                 panel = CustomPiPWindow(frame: window.frame, videoView: video, controlsView: content)
                 window.orderOut(nil)
-                panel.orderFrontRegardless()
+                (panel as? CustomPiPWindow)?.show()
                 nativeSession = session
                 controls.close()
             } else {

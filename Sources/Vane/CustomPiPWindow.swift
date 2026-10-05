@@ -12,6 +12,7 @@ import Combine
         self.controlsView = controlsView
         super.init(contentRect: frame, styleMask: [.borderless, .resizable, .nonactivatingPanel],
                    backing: .buffered, defer: false)
+        animationBehavior = .none
         identifier = NSUserInterfaceItemIdentifier("vane.pip.window")
         title = "Picture in Picture"
         isExcludedFromWindowsMenu = false
@@ -66,6 +67,16 @@ import Combine
         let scale = min(1, screen.width / frame.width, screen.height / frame.height)
         let size = NSSize(width: frame.width * scale, height: frame.height * scale)
         return NSRect(x: screen.midX - size.width / 2, y: screen.midY - size.height / 2, width: size.width, height: size.height)
+    }
+
+    func show() {
+        // Use only opacity, so AppKit cannot zoom the panel out of a source window.
+        alphaValue = 0
+        orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.12
+            animator().alphaValue = 1
+        }
     }
 
     func fadeOut(completion: @escaping @MainActor () -> Void) {
