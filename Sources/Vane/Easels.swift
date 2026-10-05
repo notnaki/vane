@@ -5,7 +5,7 @@ import ImageIO
 struct EaselPoint: Codable, Equatable { var x: Double; var y: Double }
 
 struct EaselItem: Identifiable, Codable, Equatable {
-    enum Kind: String, Codable { case note, link, image, drawing, text, ellipse, rectangle, arrow }
+    enum Kind: String, Codable { case note, link, image, drawing, text, ellipse, rectangle, diamond, arrow, line }
     var id = UUID()
     var kind: Kind
     var text = ""
@@ -13,12 +13,19 @@ struct EaselItem: Identifiable, Codable, Equatable {
     var image: Data?
     var points: [EaselPoint] = []
     var color = "yellow"
+    var strokeWidth: Double?
+    var fillColor: String?
     var fontSize: Double?
+    var style: EaselObjectStyle?
     var x: Double = 160
     var y: Double = 160
     var width: Double = 280
     var height: Double = 200
 
+    static func validColor(_ value: String) -> Bool {
+        ["yellow", "pink", "blue", "green", "ink", "orange", "red", "cyan", "purple", "white", "gray"].contains(value)
+            || (value.count == 7 && value.first == "#" && UInt32(value.dropFirst(), radix: 16) != nil)
+    }
     static func webURL(_ value: String) -> URL? {
         guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               url.host?.isEmpty == false else { return nil }
@@ -178,6 +185,7 @@ struct EaselBoard: Identifiable, Codable, Equatable {
         guard board.version == 1, board.title.count <= 200, board.modified.timeIntervalSince1970.isFinite,
               board.items.count <= 256, Set(board.items.map(\.id)).count == board.items.count else { throw Failure.invalid }
         for item in board.items {
+            try item.style?.validate()
             guard [item.x, item.y, item.width, item.height].allSatisfy(\.isFinite),
                   item.x >= 0, item.y >= 0, item.width >= 80, item.height >= 60,
                   item.width <= 4096, item.height <= 4096,
@@ -185,7 +193,9 @@ struct EaselBoard: Identifiable, Codable, Equatable {
                   item.text.count <= 100_000, item.source.count <= 8192,
                   item.points.count <= 5000,
                   item.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.x >= 0 && $0.y >= 0 && $0.x <= item.width && $0.y <= item.height }),
-                  ["yellow", "pink", "blue", "green", "ink", "orange", "red", "cyan", "purple", "white", "gray"].contains(item.color),
+                  EaselItem.validColor(item.color),
+                  item.strokeWidth.map({ $0.isFinite && (1...8).contains($0) }) ?? true,
+                  item.fillColor.map(EaselItem.validColor) ?? true,
                   item.fontSize.map({ $0.isFinite && (12...96).contains($0) }) ?? true
             else { throw Failure.invalid }
             if item.kind == .link && EaselItem.webURL(item.source) == nil { throw Failure.invalid }

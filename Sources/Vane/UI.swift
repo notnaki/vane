@@ -4516,7 +4516,7 @@ private struct TabIcon: View {
                 // here it is only ever drawn on a row a GitHub folder owns.
                 GitHubMark().fill(Look.inkPrimary)
             } else if tab.easelID != nil {
-                Image(systemName: "paintpalette").foregroundStyle(Look.inkPrimary)
+                EaselIcon().frame(width: 16, height: 16)
             } else if let icon = tab.favicon {
                 Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
             } else {
