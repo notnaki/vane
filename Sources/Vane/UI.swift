@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WebKit
+import Combine
 
 /// Speak something that otherwise only ever changes colour, appears silently, or lives in
 /// an overlay VoiceOver has no reason to visit.
@@ -794,6 +795,7 @@ private struct Sidebar: View {
     @State private var previewItems: [LibraryHoverItem] = []
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ObservedObject private var sidebar = SidebarWidth.shared
+    @ObservedObject private var previewProfiles = ProfileManager.shared
     /// The scroll viewport's height, so its content can be made to fill it. See below.
     @State private var scrollHeight: CGFloat = 0
     @State private var sidebarHeight: CGFloat = 0
@@ -897,6 +899,18 @@ private struct Sidebar: View {
         .onChange(of: store.currentSpaceID) { downloadsHover.dismiss() }
         .onChange(of: store.profileID) { downloadsHover.dismiss(); _ = preparePreview() }
         .onChange(of: hoverCategory) { downloadsHover.dismiss(); _ = preparePreview() }
+        .onChange(of: previewProfiles.spacesRevision) {
+            if LibraryHoverCategory.resolve(hoverCategory) == .spaces { refreshPreview() }
+        }
+        .onReceive(easelChanges) { boards in
+            previewItems = LibraryHoverItem.recent(.easels, boards: boards, isPrivate: store.isPrivate)
+            if previewItems.isEmpty { downloadsHover.dismiss() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Store.historyChanged)) { notification in
+            guard LibraryHoverCategory.resolve(hoverCategory) == .history, !store.isPrivate,
+                  notification.object as? Store === Store.store(for: store.profileID) else { return }
+            refreshPreview()
+        }
         .onChange(of: store.palette != nil) { downloadsHover.dismiss() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             downloadsHover.dismiss()
@@ -940,6 +954,18 @@ private struct Sidebar: View {
             history: category == .history ? Store.store(for: store.profileID).history(limit: 4) : [],
             isPrivate: store.isPrivate)
         return !previewItems.isEmpty
+    }
+
+    private func refreshPreview() {
+        if !preparePreview() { downloadsHover.dismiss() }
+    }
+
+    private var easelChanges: AnyPublisher<[EaselBoard], Never> {
+        guard LibraryHoverCategory.resolve(hoverCategory) == .easels, !store.isPrivate else {
+            return Empty().eraseToAnyPublisher()
+        }
+        return EaselStore.shared(profileID: store.profileID, directory: Store.directory)
+            .$boards.dropFirst().eraseToAnyPublisher()
     }
 }
 
@@ -4686,10 +4712,12 @@ private struct LibraryButton: View {
             }
             .animation(reduceMotion ? nil : Look.quick, value: hovered)
             .onChange(of: downloads.items.map(\.id)) {
-                if hover.isVisible && !preparePreview() { hover.dismiss() }
+                let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
+                if (category == .downloads || category == .media) && !preparePreview() { hover.dismiss() }
             }
             .onChange(of: archive.entries) {
-                if hover.isVisible && !preparePreview() { hover.dismiss() }
+                let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
+                if category == .archived && !preparePreview() { hover.dismiss() }
             }
             .accessibilityLabel("Library")
             .accessibilityValue("\(archive.entries.count) archived, \(downloads.items.count) download\(downloads.items.count == 1 ? "" : "s")")

@@ -67,6 +67,7 @@ struct BookmarkImportResult: Equatable, Sendable {
 /// connection, used from the main thread — writes are a single row and reads are indexed.
 /// If that ever shows up in a profile the fix is a serial queue, not a different database.
 @MainActor final class Store {
+    static let historyChanged = Notification.Name("vane.historyChanged")
     /// The active profile's store. Still spelled `Store.shared` everywhere; it just resolves
     /// per profile now, and the default profile's file is still `vane.db`.
     static var shared: Store { store(for: ProfileManager.shared.active.id) }
@@ -228,6 +229,7 @@ struct BookmarkImportResult: Equatable, Sendable {
         guard url.scheme == "http" || url.scheme == "https" else { return }
         run("INSERT INTO visits (url, title, at) VALUES (?, ?, ?)",
             [url.absoluteString, title, Date.now.timeIntervalSince1970])
+        NotificationCenter.default.post(name: Self.historyChanged, object: self)
     }
 
     /// Titles arrive after the visit row is written, so backfill the newest row for that url.
@@ -235,6 +237,7 @@ struct BookmarkImportResult: Equatable, Sendable {
         guard !title.isEmpty else { return }
         run("UPDATE visits SET title = ? WHERE id = (SELECT id FROM visits WHERE url = ? ORDER BY at DESC LIMIT 1)",
             [title, url.absoluteString])
+        NotificationCenter.default.post(name: Self.historyChanged, object: self)
     }
 
     /// The last title this profile saw for a page. For a row that has to be redrawn as a
@@ -305,17 +308,24 @@ struct BookmarkImportResult: Equatable, Sendable {
     }
 
     /// ⌫ in the History window: one line, not every visit to that page.
-    func deleteVisit(_ id: Int64) { run("DELETE FROM visits WHERE id = ?", [Int(id)]) }
+    func deleteVisit(_ id: Int64) {
+        run("DELETE FROM visits WHERE id = ?", [Int(id)])
+        NotificationCenter.default.post(name: Self.historyChanged, object: self)
+    }
 
     /// ⌥⌘⌫ on a suggestion in the command bar, which is the opposite gesture: the bar rolls
     /// every visit to a page up into one row, so forgetting that row has to forget them all
     /// or the suggestion comes straight back. Bookmarks are untouched — deleting a
     /// suggestion is not the same as unbookmarking, and the bar does not offer it on one.
-    func forget(url: String) { run("DELETE FROM visits WHERE url = ?", [url]) }
+    func forget(url: String) {
+        run("DELETE FROM visits WHERE url = ?", [url])
+        NotificationCenter.default.post(name: Self.historyChanged, object: self)
+    }
 
     /// `since: nil` is "all time", which is a DELETE with no WHERE rather than a very old
     /// date — a stored visit with a broken timestamp must not survive "clear everything".
     func clearHistory(since: Date? = nil) {
+        defer { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
         guard let since else { exec("DELETE FROM visits"); return }
         run("DELETE FROM visits WHERE at >= ?", [since.timeIntervalSince1970])
     }

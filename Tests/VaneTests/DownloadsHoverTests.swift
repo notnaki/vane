@@ -1,7 +1,26 @@
 import XCTest
+import Combine
 @testable import vane
 
 @MainActor final class DownloadsHoverTests: XCTestCase {
+    func testHistoryChangesPublishAfterWritesAndStayScopedToTheirStore() {
+        let history = Store(path: ":memory:")
+        let otherProfile = Store(path: ":memory:")
+        var counts: [Int] = []
+        let subscription = NotificationCenter.default.publisher(for: Store.historyChanged).sink { notification in
+            MainActor.assumeIsolated {
+                if notification.object as? Store === history { counts.append(history.history().count) }
+            }
+        }
+        defer { subscription.cancel() }
+        let url = URL(string: "https://example.com")!
+        history.record(url, title: "Page")
+        otherProfile.record(url, title: "Another profile")
+        history.retitle(url, title: "New title")
+        history.clearHistory()
+        XCTAssertEqual(counts, [1, 1, 0])
+    }
+
     func testDownloadsAndMediaFilterBeforeTakingFourNewestItems() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
