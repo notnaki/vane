@@ -3383,14 +3383,14 @@ private struct NewTabRow: View {
     }
 }
 
-/// Permanent room below the last Today row. Clear content keeps the sidebar's window
-/// dragging behavior; during a tab drag the line marks the root-level insertion point.
+/// Permanent room below the last Today row. The drop target owns hover here, so it must
+/// also report window-drag ground; during a tab drag the line marks the insertion point.
 private struct TodayEndDropArea: View {
     @EnvironmentObject var store: TabStore
     @State private var lit: Landing.Band?
 
     var body: some View {
-        Color.clear
+        WindowDragArea()
             .frame(maxWidth: .infinity, minHeight: Look.rowHeight)
             .contentShape(.rect)
             .overlay(alignment: .top) { DropLine(on: lit != nil, axis: .vertical) }

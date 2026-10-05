@@ -64,7 +64,7 @@ space below the last row to move it outside the folders at the bottom of Today.
 That drop area remains available when the last row is a collapsed folder or the
 list fills the sidebar. Dropping onto **New Tab** moves tabs to the top of Today;
 right-click → **Remove from Folder** keeps tabs in their section. An empty Today
-folder disappears.
+folder disappears. Click and drag the blank area below Today tabs to move the window.
 
 Pinned tabs keep their saved name as you navigate within them. When a pinned tab
 leaves its saved page, its sidebar row shows `/` before its title and offers
