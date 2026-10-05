@@ -366,6 +366,7 @@ struct BrowserWindow: View {
                     // The bar fades itself in; this is the way out — Escape and a click
                     // on the scrim dissolve it rather than cutting to the page.
                     .transition(.opacity)
+                    .zIndex(2)
             }
         }
         // The window is `.fullSizeContentView`, but SwiftUI still keeps a titlebar-sized
@@ -439,6 +440,9 @@ struct BrowserWindow: View {
                 .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                 .padding(Look.cardGap)
                 .transition(.move(edge: .leading).combined(with: .opacity))
+                // A removed ZStack child otherwise falls behind the page immediately,
+                // hiding the slide-and-fade while it is still running.
+                .zIndex(1)
                 .onHover { $0 ? peekTask?.cancel() : endPeek() }
         }
     }
