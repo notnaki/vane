@@ -444,18 +444,24 @@ enum MediaTray {
         if minimized.remove(id) != nil { PictureInPicture.exitIfAuto(tab) }
     }
 
-    func dismiss(_ tab: Tab) {
+    func dismiss(_ tab: Tab, then: (@MainActor (Bool) -> Void)? = nil) {
         dismissed.insert(tab.id)
-        send(.pause, to: tab) { [weak tab] ok in
-            guard let tab else { return }
-            if !ok { self.dismissed.remove(tab.id); return }
+        let web = tab.existingWeb
+        let frame = tab.pipFrame
+        let wasPiP = tab.pictureInPicture
+        let paused: @MainActor (Bool) -> Void = { [weak tab] ok in
+            guard let tab, tab.existingWeb === web, !wasPiP || tab.pipFrame === frame else { then?(false); return }
+            if !ok { self.dismissed.remove(tab.id); then?(false); return }
             if tab.pictureInPicture {
                 PictureInPicture.minimize(tab) { ok in
                     if !ok { self.dismissed.remove(tab.id) }
                     else { self.releaseSelection(tab.id) }
+                    then?(ok)
                 }
-            } else { self.releaseSelection(tab.id) }
+            } else { self.releaseSelection(tab.id); then?(true) }
         }
+        if wasPiP { PictureInPicture.control(.pause, tab: tab, then: paused) }
+        else { send(.pause, to: tab, then: paused) }
         held.remove(tab.id)
         minimized.remove(tab.id)
     }

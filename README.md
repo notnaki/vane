@@ -35,14 +35,25 @@ release builds packaged with `SIGN_ID` offer it once. You can still use the manu
 
 ## What Vane can do
 
-The floating Picture in Picture video has a minus button that hides it while
-playback continues. The sidebar video player appears after minimizing PiP.
+Picture in Picture uses a custom floating window that you can drag anywhere and
+resize, with Back to Tab, minimize, close, play/pause, 15-second skips, and a seek
+bar. Hold the seek knob and drag upward for finer horizontal seeking; the center
+shows the current precision (2×, 4×, 8× and up) while you scrub. The corners have
+larger resize targets that preserve the video's proportions and opposite corner. It remembers
+its last position and size when reopened. Entry moves the live video from its
+on-page position to the saved placement in one short motion. Back to Tab reveals
+the source tab and moves the live video back to its current on-page position.
+Reduce Motion keeps these transitions in place. Minimize
+hides it while playback continues. The sidebar video player appears after minimizing PiP.
 It stays available across this window's Spaces, including Spaces in other profiles.
 Returning to its source Space keeps the minimized player visible until you open its tab,
 restore Picture in Picture, or close the player.
 It keeps the site icon and transport controls visible; hover over it to see the title, restore Picture in Picture,
 or close the player and pause. Embedded players use their own frame and
 Media Session play/pause and skip handlers.
+The custom window keeps WebKit's original live video presentation, including
+embedded players; when its presentation view cannot be safely attached, Vane
+keeps the native Picture in Picture window as a fallback.
 
 | Area | Available now |
 | --- | --- |

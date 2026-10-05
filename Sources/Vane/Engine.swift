@@ -661,6 +661,7 @@ struct TitleReveal: Equatable, Sendable {
     /// and the KVO that republishes WebKit's state. Runs at init and again on every resume,
     /// because suspension swaps the web view out from under all of it.
     private func attach() {
+        NativePiPHostBridge.register(tab: self, web: web)
         if let linkView = web as? LinkContextWebView {
             linkView.openBackground = { [weak self] url in self?.onOpenLinkInBackground?(url) }
             linkView.openDestination = { [weak self] url, destination in self?.onOpenContextLink?(url, destination) }
@@ -1302,6 +1303,13 @@ struct TitleReveal: Equatable, Sendable {
         certificateNavigation = nil
     }
 
+    func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
+        guard w === existingWeb else { return }
+        pictureInPicture = false
+        pipFrame = nil
+        MediaState.shared.forget(id)
+    }
+
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         if w === existingWeb {
             certificateNavigation = navigation
@@ -1597,7 +1605,8 @@ struct TitleReveal: Equatable, Sendable {
             if m.body as? String == "has-video" {
                 // A later ad/player announcement must not steal the video already detached
                 // or collapsed into the tray. Its actual frame was fixed on PiP entry.
-                if !pictureInPicture && !MediaState.shared.minimized.contains(id) { pipFrame = m.frameInfo }
+                if !pictureInPicture && !PiPMinimizeControls.isReturningToTab(self),
+                   !MediaState.shared.minimized.contains(id) { pipFrame = m.frameInfo }
                 return
             }
             // Nor this: the PiP window's ⤢, which wants the tab as well as the video back.
@@ -1609,7 +1618,7 @@ struct TitleReveal: Equatable, Sendable {
                     MediaState.shared.restored(id, source: (m.body as? [String: Any])?["source"] as? String)
                     PiPMinimizeControls.install(for: self)
                 }
-                else { PiPMinimizeControls.remove(id); MediaState.shared.leftPiP(id) }
+                else { PiPMinimizeControls.returnedInline(self); MediaState.shared.leftPiP(id) }
             }
             return
         }

@@ -19,7 +19,7 @@ import WebKit
       // Whether *we* detached this page's video on the way out of the tab. Kept in the page
       // rather than in Swift because it dies with the video it is about: a navigation takes
       // both away, and coming back to a tab must never yank a PiP window the user opened.
-      var autoed = false, minimized = false, presented = null;
+      var autoed = false, minimized = false, presented = null, presentationRequest = 0, presentationEvent = null;
       // Whether the inline that is about to happen is one *we* asked for. The PiP window's
       // ⤢ leaves picture-in-picture still playing, which is the user asking for the tab
       // back; this is how that is told apart from our own auto-exit.
@@ -40,6 +40,8 @@ import WebKit
       document.addEventListener('webkitpresentationmodechanged', function (e) {
         var mode = e.target && e.target.webkitPresentationMode;
         if (!mode) { return; }
+        presentationRequest++;
+        presentationEvent = { request: presentationRequest, mode: mode, video: e.target };
         if (mode === 'picture-in-picture') { presented = e.target; }
         var mine = ours;
         ours = false;
@@ -89,7 +91,8 @@ import WebKit
       }
       // ⌥⌘P. Whatever it does, this detach is the user's from here on: coming back to the
       // tab must not undo a picture-in-picture they asked for by hand.
-      function toggle() {
+      async function toggle() {
+        var request = ++presentationRequest;
         minimized = false;
         var v = (presented && presented.isConnected) ? presented : biggest();
         if (!v || !v.webkitSetPresentationMode) { return 'unsupported'; }
@@ -97,9 +100,22 @@ import WebKit
         ours = (next === 'inline');
         v.webkitSetPresentationMode(next);
         autoed = false;
+        // WebKit can still be completing the previous host's cleanup when the user
+        // reopens PiP. Confirm entry rather than losing that request in the transition.
+        if (next === 'picture-in-picture') {
+          for (var i = 0; i < 40; i++) {
+            if (v.webkitPresentationMode === next) { return next; }
+            await new Promise(function (resolve) { setTimeout(resolve, 50); });
+            if (v.webkitPresentationMode === next) { return next; }
+            if (!v.isConnected || request !== presentationRequest) { return 'idle'; }
+            v.webkitSetPresentationMode(next);
+          }
+          return 'busy';
+        }
         return next;
       }
       async function minimize() {
+        var request = ++presentationRequest;
         var v = (presented && presented.isConnected) ? presented : biggest();
         if (!v || v.webkitPresentationMode !== 'picture-in-picture') { return 'idle'; }
         var playing = !v.paused && !v.ended;
@@ -110,6 +126,14 @@ import WebKit
         // A request during the native opening animation can be ignored. Confirm the
         // inline transition, retrying while that animation finishes, before claiming success.
         for (var i = 0; i < 20; i++) {
+          // Only this request's inline event can settle it. A newer entry/command
+          // owns playback now and must not be closed or resumed by this old exit.
+          var expectedInline = presentationEvent && presentationEvent.request === request + 1 &&
+            presentationEvent.video === v && presentationEvent.mode === 'inline';
+          if (presentationRequest !== request &&
+              !(expectedInline && presentationRequest === request + 1 && v.webkitPresentationMode === 'inline')) {
+            return 'busy';
+          }
           if (v.webkitPresentationMode !== 'picture-in-picture') {
             if (playing && v.paused) { await v.play(); }
             return 'minimized';
@@ -120,6 +144,41 @@ import WebKit
         }
         minimized = false;
         return 'busy';
+      }
+      function playback() {
+        var v = presented && presented.isConnected ? presented : null;
+        if (!v || v.webkitPresentationMode !== 'picture-in-picture') { return null; }
+        var ranges = [];
+        for (var i = 0; i < Math.min(v.seekable.length, 32); i++) {
+          ranges.push([v.seekable.start(i), v.seekable.end(i)]);
+        }
+        return { playing: !v.paused && !v.ended,
+          position: Number.isFinite(v.currentTime) ? v.currentTime : 0,
+          duration: Number.isFinite(v.duration) ? v.duration : null, ranges: ranges };
+      }
+      async function control(command, value) {
+        var v = presented && presented.isConnected ? presented : null;
+        if (!v || v.webkitPresentationMode !== 'picture-in-picture') { return false; }
+        if (command === 'pause') { presentationRequest++; v.pause(); return true; }
+        if (command === 'playpause') {
+          presentationRequest++;
+          if (v.paused || v.ended) { await v.play(); } else { v.pause(); }
+          return true;
+        }
+        if (!Number.isFinite(value) || !v.seekable.length) { return false; }
+        if (command !== 'skip' && command !== 'seek') { return false; }
+        var wanted = command === 'skip' ? v.currentTime + value : value;
+        if (!Number.isFinite(wanted)) { return false; }
+        var best = null, distance = Infinity;
+        for (var i = 0; i < v.seekable.length; i++) {
+          var candidate = Math.min(v.seekable.end(i), Math.max(v.seekable.start(i), wanted));
+          if (Math.abs(candidate - wanted) < distance) {
+            best = candidate; distance = Math.abs(candidate - wanted);
+          }
+        }
+        if (!Number.isFinite(best)) { return false; }
+        v.currentTime = best;
+        return true;
       }
       // evaluateJavaScript(in: nil) only ever reaches the main frame, and the video worth
       // detaching is usually in an iframe, so a frame that holds one says so and Swift
@@ -138,6 +197,11 @@ import WebKit
       Object.defineProperty(window, '__vanePiP', { value: toggle });
       Object.defineProperty(window, '__vanePiPAuto', { value: auto });
       Object.defineProperty(window, '__vanePiPMinimize', { value: minimize });
+      Object.defineProperty(window, '__vanePiPPlayback', { value: playback });
+      Object.defineProperty(window, '__vanePiPControl', { value: control });
+      Object.defineProperty(window, '__vanePiPAutoOwned', { value: function () {
+        return !!(autoed && presented && presented.isConnected && presented.webkitPresentationMode === 'picture-in-picture');
+      } });
     })();
     """
 
@@ -146,19 +210,89 @@ import WebKit
     /// `__vanePiP` cannot reach us. The media bridge cannot do this — see MediaPlayer.swift.
     static let world = WKContentWorld.world(name: "vane")
 
+    struct Playback: Equatable {
+        let playing: Bool
+        let position: Double
+        let duration: Double?
+        let ranges: [ClosedRange<Double>]
+
+        init?(from body: Any) {
+            guard let value = body as? [String: Any], let playing = value["playing"] as? Bool,
+                  let position = value["position"] as? Double, position.isFinite, position >= 0,
+                  let raw = value["ranges"] as? [[Double]], raw.count <= 32 else { return nil }
+            self.playing = playing
+            self.position = position
+            let duration = value["duration"] as? Double
+            self.duration = duration.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            ranges = raw.compactMap {
+                guard $0.count == 2, $0[0].isFinite, $0[1].isFinite,
+                      $0[0] >= 0, $0[1] > $0[0] else { return nil }
+                return $0[0]...$0[1]
+            }
+        }
+    }
+
+    enum Control { case playpause, pause, skip(Double), seek(Double) }
+
+    static func playback(_ tab: Tab, then: @escaping @MainActor (Playback?) -> Void) {
+        guard tab.pictureInPicture, let web = tab.existingWeb, let frame = tab.pipFrame else { then(nil); return }
+        web.callAsyncJavaScript("return window.__vanePiPPlayback && window.__vanePiPPlayback();",
+                                arguments: [:], in: frame, in: world) { [weak tab] result in
+            guard let tab, tab.existingWeb === web, tab.pictureInPicture, tab.pipFrame === frame else { then(nil); return }
+            if case .success(let body) = result { then(Playback(from: body)) }
+            else { then(nil) }
+        }
+    }
+
+    static func control(_ command: Control, tab: Tab, then: (@MainActor (Bool) -> Void)? = nil) {
+        guard tab.pictureInPicture, let web = tab.existingWeb, let frame = tab.pipFrame else { then?(false); return }
+        let name: String
+        let value: Double
+        switch command {
+        case .playpause: name = "playpause"; value = 0
+        case .pause: name = "pause"; value = 0
+        case .skip(let seconds): name = "skip"; value = seconds
+        case .seek(let position): name = "seek"; value = position
+        }
+        guard value.isFinite else { then?(false); return }
+        web.callAsyncJavaScript("return await (window.__vanePiPControl && window.__vanePiPControl(command, value));",
+                                arguments: ["command": name, "value": value], in: frame, in: world) { [weak tab] result in
+            guard let tab, tab.existingWeb === web, tab.pictureInPicture, tab.pipFrame === frame else { then?(false); return }
+            if case .success(let reply) = result { then?(reply as? Bool == true) }
+            else { then?(false) }
+        }
+    }
+
     static func toggle(_ tab: Tab?) {
         guard let tab else { return }
+        if tab.pictureInPicture {
+            minimize(tab) { [weak tab] ok in
+                if ok, let tab { exitIfAuto(tab) }
+            }
+            return
+        }
         PiPMinimizeControls.prepare(for: tab)
-        run("window.__vanePiP && window.__vanePiP()", in: tab)
+        let web = tab.web
+        let frame = tab.pipFrame
+        web.callAsyncJavaScript("return await (window.__vanePiP && window.__vanePiP());",
+                                arguments: [:], in: frame, in: world) { [weak tab] result in
+            guard let tab, tab.existingWeb === web, tab.pipFrame === frame else { return }
+            if case .failure = result { tab.pipFrame = nil }
+        }
     }
 
     static func minimize(_ tab: Tab, then: (@MainActor (Bool) -> Void)? = nil) {
+        PiPMinimizeControls.prepareToExit(tab)
         let web = tab.web
+        let frame = tab.pipFrame
         web.callAsyncJavaScript("return await (window.__vanePiPMinimize && window.__vanePiPMinimize());",
                                 arguments: [:], in: tab.pipFrame, in: world) { [weak tab] result in
-            guard let tab, tab.web === web else { return }
-            if case .success(let reply) = result { then?(reply as? String == "minimized") }
-            else { then?(false) }
+            guard let tab, tab.existingWeb === web, tab.pipFrame === frame else { then?(false); return }
+            let ok: Bool
+            if case .success(let reply) = result { ok = reply as? String == "minimized" }
+            else { ok = false }
+            if !ok { PiPMinimizeControls.resumeAfterFailedExit(tab) }
+            then?(ok)
         }
     }
 
@@ -213,7 +347,7 @@ import WebKit
     /// the hierarchy has already stopped — so the tab is marked as being asked, which is
     /// what keeps it mounted (`OffscreenPages`), and unmarked the moment it replies.
     static func enterIfPlaying(_ tab: Tab?) {
-        guard autoEnabled, let tab, !tab.suspended else { return }
+        guard autoEnabled, let tab, !tab.suspended, !PiPMinimizeControls.isReturningToTab(tab) else { return }
         PiPMinimizeControls.prepare(for: tab)
         let id = tab.id                 // the closure carries a UUID, never the Tab
         MediaState.shared.asking.insert(id)
@@ -223,10 +357,24 @@ import WebKit
     /// The tab the user just came back to. Deliberately *not* gated on `autoEnabled`: a
     /// video detached before the preference was turned off still has to come home.
     static func exitIfAuto(_ tab: Tab?) {
-        // An incidental return must not release the user's minimized-player choice.
-        // Explicitly opening its tab removes that choice before calling us.
+        if let tab, PiPMinimizeControls.isReturningToTab(tab) { return }
+        // Preserve main's minimized-player ownership across incidental tab returns.
         guard let tab, !tab.suspended, !MediaState.shared.minimized.contains(tab.id) else { return }
-        run(autoCommand(enter: false), in: tab)
+        guard tab.pictureInPicture else { run(autoCommand(enter: false), in: tab); return }
+        guard let web = tab.existingWeb else { return }
+        let frame = tab.pipFrame
+        web.evaluateJavaScript("window.__vanePiPAutoOwned && window.__vanePiPAutoOwned()",
+                               in: frame, in: world) { [weak tab] result in
+            guard let tab, tab.existingWeb === web, tab.pipFrame === frame else { return }
+            if case .success(let owned) = result, owned as? Bool == true {
+                // Restore WebKit's presentation hierarchy before dismissal, and retain
+                // the playing state across the system's asynchronous closing animation.
+                minimize(tab) { [weak tab] ok in
+                    guard ok, let tab, tab.existingWeb === web, tab.pipFrame === frame else { return }
+                    run(autoCommand(enter: false), in: tab)
+                }
+            } else { run(autoCommand(enter: false), in: tab) }
+        }
     }
 
     /// WebKit reports `inline`, `fullscreen` or `picture-in-picture`. Anything else is a
