@@ -9,6 +9,15 @@ import XCTest
         return defaults
     }
 
+    private func waitForNoticeExpiry(_ saver: BatterySaver) async throws {
+        // CI can delay a main-actor timer's first turn beyond the nominal duration.
+        // Keep a deadline so a notice that never expires still fails the assertion.
+        let deadline = ContinuousClock.now + .seconds(3)
+        while saver.notice != nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     func testAutomaticTracksBatteryAndCharger() {
         let saver = BatterySaver(defaults: defaults())
         XCTAssertEqual(saver.mode, .automatic)
@@ -102,7 +111,7 @@ import XCTest
         let saver = BatterySaver(defaults: defaults(), noticeDuration: .milliseconds(40))
         saver.setMode(.alwaysOn)
         XCTAssertNotNil(saver.notice)
-        try await Task.sleep(for: .milliseconds(160))
+        try await waitForNoticeExpiry(saver)
         XCTAssertNil(saver.notice)
         XCTAssertTrue(saver.isActive, "Dismissing the notification must not turn saving off")
     }
@@ -128,7 +137,7 @@ import XCTest
         try await Task.sleep(for: .milliseconds(160))
         XCTAssertNotNil(saver.notice)
         saver.holdNotice(false, by: secondWindow)
-        try await Task.sleep(for: .milliseconds(160))
+        try await waitForNoticeExpiry(saver)
         XCTAssertNil(saver.notice)
     }
 
@@ -139,7 +148,7 @@ import XCTest
         saver.setMode(.off)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(saver.notice?.isActive, false, "The old activation clock cannot dismiss deactivation")
-        try await Task.sleep(for: .milliseconds(180))
+        try await waitForNoticeExpiry(saver)
         XCTAssertNil(saver.notice)
     }
 }
