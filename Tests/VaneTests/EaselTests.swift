@@ -96,4 +96,64 @@ import WebKit
         XCTAssertLessThan(pixel.blueComponent, 0.8, "The far-edge note must be rendered, not clipped to empty paper")
     }
 
+    func testCanvasObjectsSurviveSaveExportAndImport() throws {
+        let repository = repository()
+        for kind in ["text", "ellipse", "rectangle", "arrow"] {
+            var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(EaselItem(kind: .note))) as? [String: Any])
+            payload["kind"] = kind
+            payload["color"] = "cyan"
+            payload["fontSize"] = 36
+            let item = try JSONDecoder().decode(EaselItem.self, from: JSONSerialization.data(withJSONObject: payload))
+            var board = try repository.create(title: kind)
+            board.items = [item]
+            try repository.save(board)
+            let copied = try repository.importBoard(JSONEncoder().encode(board))
+            let reopened = EaselStore(profileID: repository.profileID, directory: repository.directory)
+            XCTAssertEqual(reopened.board(copied.id)?.items.first?.kind.rawValue, kind)
+            XCTAssertEqual(reopened.board(copied.id)?.items.first?.color, "cyan")
+            XCTAssertEqual(reopened.board(copied.id)?.items.first?.fontSize, 36)
+        }
+    }
+
+    func testInvalidTextSizeCannotReplaceSavedBoard() throws {
+        let repository = repository()
+        let board = try repository.create()
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(EaselItem(kind: .note))) as? [String: Any])
+        payload["fontSize"] = 1000
+        var changed = board
+        changed.items = [try JSONDecoder().decode(EaselItem.self, from: JSONSerialization.data(withJSONObject: payload))]
+        XCTAssertThrowsError(try repository.save(changed))
+        XCTAssertEqual(repository.board(board.id), board)
+    }
+
+    func testFailedDeletionKeepsTheBoardAndUndoHistory() throws {
+        let repository = repository()
+        var board = try repository.create()
+        board.title = "Keep me"
+        try repository.save(board)
+        try FileManager.default.removeItem(at: repository.directory)
+        try Data().write(to: repository.directory)
+        XCTAssertThrowsError(try repository.delete(board.id))
+        XCTAssertEqual(repository.board(board.id)?.title, "Keep me")
+        XCTAssertTrue(repository.canUndo(board.id))
+    }
+
+    func testOldItemsDecodeWithoutTextSize() throws {
+        let data = try JSONEncoder().encode(EaselItem(kind: .note, text: "Existing note"))
+        let item = try JSONDecoder().decode(EaselItem.self, from: data)
+        XCTAssertEqual(item.text, "Existing note")
+        XCTAssertNil(item.fontSize)
+    }
+
+    func testDrawingToolsKeepTheDraggedPositionInsteadOfViewportInsertionPoint() {
+        let session = EaselSession(repository()); session.create()
+        session.insertionPoint = CGPoint(x: 80, y: 140)
+        for kind in [EaselItem.Kind.drawing, .ellipse, .rectangle, .arrow] {
+            let item = EaselItem(kind: kind, color: "cyan", x: 450, y: 320, width: 200, height: 120)
+            XCTAssertTrue(session.add(item))
+            XCTAssertEqual(session.board?.items.last?.x, 450, "\(kind) must stay where it was drawn")
+            XCTAssertEqual(session.board?.items.last?.y, 320)
+        }
+    }
+
 }

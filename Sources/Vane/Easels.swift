@@ -5,7 +5,7 @@ import ImageIO
 struct EaselPoint: Codable, Equatable { var x: Double; var y: Double }
 
 struct EaselItem: Identifiable, Codable, Equatable {
-    enum Kind: String, Codable { case note, link, image, drawing }
+    enum Kind: String, Codable { case note, link, image, drawing, text, ellipse, rectangle, arrow }
     var id = UUID()
     var kind: Kind
     var text = ""
@@ -13,6 +13,7 @@ struct EaselItem: Identifiable, Codable, Equatable {
     var image: Data?
     var points: [EaselPoint] = []
     var color = "yellow"
+    var fontSize: Double?
     var x: Double = 160
     var y: Double = 160
     var width: Double = 280
@@ -184,7 +185,8 @@ struct EaselBoard: Identifiable, Codable, Equatable {
                   item.text.count <= 100_000, item.source.count <= 8192,
                   item.points.count <= 5000,
                   item.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && $0.x >= 0 && $0.y >= 0 && $0.x <= item.width && $0.y <= item.height }),
-                  ["yellow", "pink", "blue", "green", "ink"].contains(item.color)
+                  ["yellow", "pink", "blue", "green", "ink", "orange", "red", "cyan", "purple", "white", "gray"].contains(item.color),
+                  item.fontSize.map({ $0.isFinite && (12...96).contains($0) }) ?? true
             else { throw Failure.invalid }
             if item.kind == .link && EaselItem.webURL(item.source) == nil { throw Failure.invalid }
             if !item.source.isEmpty && EaselItem.webURL(item.source) == nil { throw Failure.invalid }

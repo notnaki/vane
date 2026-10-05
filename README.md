@@ -145,9 +145,12 @@ each edit. Private windows cannot create boards or save captures.
 To move a Space to another profile, remove its Easel tabs first; their boards stay
 in the original profile's Library. Export/import a board to copy it to another profile.
 
-Add notes, links, images, or paste from the clipboard. Drag items to arrange them,
+Use the floating toolbar to add plain text, images, circles, rectangles, arrows, or
+freehand drawing. Select an object for its color palette; text also offers size
+controls. Double-click text to edit it on the canvas. Notes, links, and clipboard
+paste are available in the toolbar’s **+** menu. Drag items to arrange them,
 use the selected item's corner to resize, and double-click to edit or crop an image.
-The Pen draws on the canvas; turn it off to move items. Scroll in either direction
+Choose Select to move items after drawing. Scroll in either direction
 and choose a zoom level. New items appear near the current canvas viewport.
 Standard Undo/Redo work on the board and inside its text editors.
 
@@ -158,7 +161,9 @@ leaving the Easel tab or closing the window. They show the source page rather th
 permission prompts, popups, password autofill, and downloads belong in browser tabs.
 
 The `…` menu duplicates or deletes a board, exports a PNG, or exports an editable
-JSON document with embedded images. Import the JSON from **Library → Easels**. The
+JSON document with embedded images. **Library → Easels** shows a searchable card
+grid; each card’s **… → Delete Easel…** removes the local board after confirmation.
+Import JSON from the Library’s bottom **…** menu. The
 canvas is 6,000 × 4,000 points; a board holds up to 256 items, and PNG export scales
 the entire occupied canvas to at most 4,096 pixels. Easels do not include cloud
 sharing or collaboration.

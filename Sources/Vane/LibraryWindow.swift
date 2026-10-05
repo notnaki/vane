@@ -37,7 +37,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// Outlined symbols, at tile size: Arc's rail draws the thing itself, not a badge.
     var icon: String {
         switch self {
-        case .easels:    "paintpalette"
+        case .easels:    "scribble.variable"
         case .media:     "photo.on.rectangle"
         // Not `archivebox`: that is the footer glyph that opens the Library, and a section
         // wearing the same symbol as the button that got you here reads as the same thing.
@@ -283,7 +283,7 @@ extension Library {
     }
 
     /// How wide the whole panel is. Every section but Spaces is the rail and one list
-    /// column; Spaces is the rail plus a card per Space and the `+` that makes another, so
+    /// column; Easels gets a wider grid, and Spaces is the rail plus a card per Space and the `+` that makes another, so
     /// the panel grows with the profile and the page gives up the difference.
     ///
     /// Capped, because a profile with ten Spaces would otherwise push the page off the
@@ -295,6 +295,7 @@ extension Library {
         let ordinary = Look.libraryRail + Look.libraryList
         // A private window draws no Spaces cards — `open` falls it back to the archive — so
         // it must not widen for cards another window happens to be looking at.
+        if section == .easels, section.available(private: isPrivate) { return Look.libraryRail + Look.easelLibraryList }
         guard section == .spaces, section.available(private: isPrivate) else { return ordinary }
         let cards = CGFloat(max(spaces, 1)) * (Look.spaceCard + Look.spaceCardGap)
         let wanted = Look.libraryRail + Look.spaceCardGap + cards
@@ -572,6 +573,7 @@ extension Look {
     /// and one grey line, and a title that runs half a window wide is not read, it is
     /// scanned past.
     static let libraryList: CGFloat = 246
+    static let easelLibraryList: CGFloat = 330
     /// What the page keeps, however many Spaces the Spaces section wants to show side by
     /// side. Past this the cards scroll instead of the panel growing. The card's own gaps are
     /// in it, so this is the width of the *page*, not of the space it is given.
@@ -2064,14 +2066,18 @@ extension Library {
              isImage(name: "holiday.zip/photo.png") && !isImage(name: "photo.png/notes.txt")),
         ]
 
-        // How wide the panel is. The Spaces section is the only one that grows.
+        // Easels gets a two-column grid; Spaces grows with the number of cards.
         let list = Look.libraryRail + Look.libraryList
         let step = Look.spaceCard + Look.spaceCardGap
         out += [
             ("a list section is the rail and one column, whatever the profile holds",
-             LibrarySection.allCases.filter { $0 != .spaces }.allSatisfy {
+             LibrarySection.allCases.filter { $0 != .spaces && $0 != .easels }.allSatisfy {
                  panelWidth(section: $0, spaces: 7, available: 2000) == list
              }),
+            ("Easels has room for two title cards",
+             panelWidth(section: .easels, spaces: 7, available: 2000) == Look.libraryRail + Look.easelLibraryList),
+            ("private windows do not widen for local Easels",
+             panelWidth(section: .easels, spaces: 7, private: true, available: 2000) == list),
             ("Spaces is wider than a list section", panelWidth(section: .spaces, spaces: 2,
                                                                available: 2000) > list),
             ("…and grows by exactly one card per Space",
