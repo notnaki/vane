@@ -489,9 +489,20 @@ private struct GeneralPane: View {
 private struct PreviewsPane: View {
     @AppStorage("linkPreviews") private var previews = true
     @AppStorage(Peek.prefKey) private var peekLinks = true
+    @AppStorage(LibraryHoverCategory.key) private var libraryPreview = "downloads"
 
     var body: some View {
         Pane {
+            SettingsCard {
+                SettingsRow("Library hover preview") {
+                    Picker("Library hover preview", selection: $libraryPreview) {
+                        ForEach(LibraryHoverCategory.allCases) { category in
+                            Text(category.title).tag(category.rawValue)
+                        }
+                    }.labelsHidden().frame(width: 160)
+                }
+                Footnote("Hover the sidebar bucket to see up to four items from this section, with the newest at the bottom. Downloads is the default. Off hides the preview. Private windows show only their own downloads, media, and archived tabs.")
+            }
             SettingsCard {
                 SettingsRow("Preview links on hover") {
                     Toggle("Preview links on hover", isOn: $previews).labelsHidden()

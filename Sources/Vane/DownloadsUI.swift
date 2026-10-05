@@ -46,6 +46,7 @@ extension Downloads.Item {
 /// and the ring is the only thing on the row that moves.
 struct DownloadIcon: View {
     @ObservedObject var item: Downloads.Item
+    var size: CGFloat = Look.libraryThumb
     @ObservedObject private var thumbnails = Thumbnails.shared
 
     var body: some View {
@@ -58,7 +59,7 @@ struct DownloadIcon: View {
                 .aspectRatio(contentMode: .fill)
                 // Sized *before* it is clipped: filled to the box and then cut to it, or a
                 // wide photo spills out of the row and over the title beside it.
-                .frame(width: Look.libraryThumb, height: Look.libraryThumb)
+                .frame(width: size, height: size)
                 .clipShape(.rect(cornerRadius: Look.captionGap))
                 .accessibilityHidden(true)
         } else {
