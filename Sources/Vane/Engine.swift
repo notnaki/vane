@@ -1302,6 +1302,13 @@ struct TitleReveal: Equatable, Sendable {
         certificateNavigation = nil
     }
 
+    func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
+        guard w === existingWeb else { return }
+        pictureInPicture = false
+        pipFrame = nil
+        MediaState.shared.forget(id)
+    }
+
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         if w === existingWeb {
             certificateNavigation = navigation

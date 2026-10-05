@@ -8,7 +8,7 @@ placement, and Back to Tab to fade the window out in place before revealing the
 source tab. Preserve playback on sites that currently support Vane PiP.
 
 The user approved this direction on 2026-10-05 and asked whether existing site
-compatibility will be preserved. This document is awaiting their review.
+compatibility will be preserved. The working build must be shown to the user and explicitly approved before merging.
 
 ## User experience
 
@@ -114,5 +114,6 @@ compatibility from a plain-video fixture.
 
 Run the relevant README build and checks. Carry the change through a PR,
 independent review of the latest diff, fixes, passing required CI and approvals,
-and squash-merge under the repository workflow. Track and quit every task-owned
+and, after the user has inspected and explicitly approved the working build,
+squash-merge under the repository workflow. Track and quit every task-owned
 test application after merge or abandonment.

@@ -28,6 +28,9 @@ import XCTest
         addTeardownBlock { @MainActor in
             tab.tearDown()
             window.close()
+            // PiPAgent completes dismissal asynchronously. The next fixture must not
+            // open a new presentation while the preceding one is still closing.
+            try await Task.sleep(for: .milliseconds(400))
         }
         try await wait { !tab.web.isLoading }
         return (tab, window)
@@ -155,6 +158,112 @@ import XCTest
         XCTAssertEqual(oldPaused, true, "The old video must not restart")
     }
 
+    func testPiPUsesAVisibleCustomHostInsteadOfVisibleNativeChrome() async throws {
+        let priorShells = Self.visibleSystemPiPWindows()
+        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        try await wait {
+            try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false
+        }
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        try await wait {
+            NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible }
+        }
+        XCTAssertFalse(NSApp.windows.contains {
+            NSStringFromClass(type(of: $0)) == "PIPPanel" && $0.isVisible
+        })
+        let custom = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible
+        })
+        custom.setFrame(NSRect(x: 350, y: 260, width: 480, height: 270), display: true)
+        try await Task.sleep(for: .seconds(5))
+        XCTAssertTrue(Self.visibleSystemPiPWindows().subtracting(priorShells).isEmpty,
+                      "The system PiPAgent shell must disappear, not only Vane's local PIPPanel")
+        XCTAssertEqual(custom.frame.origin, NSPoint(x: 350, y: 260))
+        XCTAssertTrue(tab.pictureInPicture)
+        var minimized = false
+        PictureInPicture.minimize(tab) { minimized = $0 }
+        try await wait { minimized && !tab.pictureInPicture }
+        XCTAssertFalse(custom.isVisible)
+        let paused = try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool
+        XCTAssertEqual(paused, false)
+    }
+
+    private static func visibleSystemPiPWindows() -> Set<Int> {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        return Set(windows.compactMap { row in
+            guard let pid = row[kCGWindowOwnerPID as String] as? Int32,
+                  NSRunningApplication(processIdentifier: pid)?.bundleIdentifier == "com.apple.PIPAgent",
+                  (row[kCGWindowAlpha as String] as? Double ?? 0) > 0 else { return nil }
+            return row[kCGWindowNumber as String] as? Int
+        })
+    }
+
+    func testImmediateKeyboardExitAndRepeatedCustomEntryKeepPlayback() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        for _ in 0..<3 {
+            PictureInPicture.toggle(tab)
+            try await wait { tab.pictureInPicture }
+            try await wait { NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible } }
+            PictureInPicture.toggle(tab)
+            try await wait { !tab.pictureInPicture }
+            try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+            XCTAssertFalse(NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    func testPendingEntryDoesNotReopenAfterPageReturnsInline() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='640' height='360'></video>")
+        let reopened = try await pipJS("""
+            const video = document.getElementById('player');
+            let mode = 'inline', entries = 0;
+            // Model native entry/exit events arriving within the helper's retry delay.
+            Object.defineProperty(video, 'webkitPresentationMode', { get: () => mode });
+            video.webkitSetPresentationMode = function(next) {
+                if (next !== 'picture-in-picture') { return; }
+                entries++;
+                if (entries > 1) { return; }
+                setTimeout(() => {
+                    mode = 'picture-in-picture';
+                    video.dispatchEvent(new Event('webkitpresentationmodechanged', { bubbles: true }));
+                    mode = 'inline';
+                    video.dispatchEvent(new Event('webkitpresentationmodechanged', { bubbles: true }));
+                }, 10);
+            };
+            await window.__vanePiP();
+            return entries > 1;
+            """, tab: tab)
+        XCTAssertEqual(reopened, false)
+    }
+
+    func testContentProcessTerminationRemovesOnlyItsCustomHost() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        try await wait { NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible } }
+        tab.webViewWebContentProcessDidTerminate(WKWebView())
+        XCTAssertTrue(tab.pictureInPicture)
+        tab.webViewWebContentProcessDidTerminate(tab.web)
+        XCTAssertFalse(tab.pictureInPicture)
+        XCTAssertNil(tab.pipFrame)
+        XCTAssertFalse(NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
+    }
+
+    func testPageInlineExitRemovesCustomHostWithoutPausing() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        try await wait { NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible } }
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('player').webkitSetPresentationMode('inline')")
+        try await wait { !tab.pictureInPicture }
+        XCTAssertFalse(NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
+        let paused = try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool
+        XCTAssertEqual(paused, false)
+    }
+
     func testPiPControlsHideOutsideVideoAndFollowItsFrame() async throws {
         let (tab, window) = try await fixture("<p>Hover geometry</p>")
         let controls = PiPMinimizeControls.Attachment(window: window, tab: tab)
@@ -196,7 +305,12 @@ import XCTest
             return control != nil
         }
         let panel = try XCTUnwrap(control?.window)
+        let originalFrame = panel.frame
         control?.performClick(nil)
+        for _ in 0..<8 {
+            if panel.isVisible { XCTAssertEqual(panel.frame, originalFrame, "Return fades in place") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
         try await wait { !tab.pictureInPicture }
         try await wait { !panel.isVisible && store.current == tab.id }
         try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
@@ -240,7 +354,7 @@ import XCTest
         PictureInPicture.exitIfAuto(tab)
     }
 
-    func testNativePiPMinimizeButtonKeepsVideoPlaying() async throws {
+    func testCustomPiPMinimizeButtonKeepsVideoPlaying() async throws {
         let (tab, _) = try await fixture("<video id='player' width='640' height='360' loop autoplay muted src='data:video/mp4;base64,\(Self.video)'></video>")
         try await wait { (try await tab.web.evaluateJavaScript("document.getElementById('player').readyState") as? Int ?? 0) >= 3 }
         try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
@@ -253,15 +367,13 @@ import XCTest
             return view.subviews.lazy.compactMap { minimize(in: $0) }.first
         }
         let button = try XCTUnwrap(NSApp.windows.compactMap { $0.contentView }.compactMap { minimize(in: $0) }.first,
-                                   "Minimize must be a real control above the native PiP window")
+                                   "Minimize must be a real control in the custom PiP window")
         let videoWindow = try XCTUnwrap(NSApp.windows.first {
-            NSStringFromClass(type(of: $0)) == "PIPPanel" && $0.isVisible
+            $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible
         })
         let controlWindow = try XCTUnwrap(button.window)
-        XCTAssertFalse(controlWindow === videoWindow,
-                       "The remote PiP overlay intercepts clicks on controls inside the video host")
-        XCTAssertGreaterThan(controlWindow.level.rawValue, Int(CGWindowLevelForKey(.utilityWindow)),
-                             "Custom controls must receive mouse events above the remote PiP chrome")
+        XCTAssertTrue(controlWindow === videoWindow, "Controls and live video share the custom window")
+        XCTAssertGreaterThan(controlWindow.level.rawValue, NSWindow.Level.normal.rawValue)
         let content = try XCTUnwrap(videoWindow.contentView)
         let videoView = try XCTUnwrap(content.subviews.first { NSStringFromClass(type(of: $0)) == "WebVideoViewContainer" })
         let originalSize = content.frame.size
@@ -281,5 +393,123 @@ import XCTest
         let paused = try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool
         XCTAssertEqual(paused, false, "Minimize must preserve playback")
         XCTAssertTrue(MediaState.shared.held.contains(tab.id), "Sidebar controls remain available after minimizing")
+    }
+
+    func testClosingTabRemovesCustomPiPWindow() async throws {
+        let (tab, _) = try await fixture("<video width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        PictureInPicture.toggle(tab)
+        try await wait {
+            NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible }
+        }
+        tab.tearDown()
+        try await wait {
+            !NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible }
+        }
+    }
+
+    private func pipJS(_ code: String, tab: Tab) async throws -> Bool? {
+        try await withCheckedThrowingContinuation { continuation in
+            tab.web.callAsyncJavaScript(code, arguments: [:], in: tab.pipFrame, in: PictureInPicture.world) {
+                continuation.resume(with: $0.map { $0 as? Bool })
+            }
+        }
+    }
+
+    func testPiPCommandsControlSelectedVideoAndRejectInvalidSeek() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video><video id='decoy' muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        let paused = try await pipJS("return await (window.__vanePiPControl && window.__vanePiPControl('playpause', 0));", tab: tab)
+        XCTAssertEqual(paused, true)
+        let playing = try await pipJS("return window.__vanePiPPlayback && window.__vanePiPPlayback().playing;", tab: tab)
+        XCTAssertEqual(playing, false)
+        let sought = try await pipJS("return await (window.__vanePiPControl && window.__vanePiPControl('seek', 0.75));", tab: tab)
+        XCTAssertEqual(sought, true)
+        let position = try await tab.web.evaluateJavaScript("document.getElementById('player').currentTime") as? Double
+        XCTAssertEqual(try XCTUnwrap(position), 0.75, accuracy: 0.1)
+        let invalid = try await pipJS("return await (window.__vanePiPControl && window.__vanePiPControl('seek', NaN));", tab: tab)
+        XCTAssertEqual(invalid, false)
+        let decoy = try await tab.web.evaluateJavaScript("document.getElementById('decoy').paused") as? Bool
+        XCTAssertEqual(decoy, true)
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('player').remove()")
+        let removed = try await pipJS("return await (window.__vanePiPControl && window.__vanePiPControl('playpause', 0));", tab: tab)
+        XCTAssertEqual(removed, false)
+    }
+
+    func testSwiftPiPControlsKeepEmbeddedSourceAndRejectRemovedFrame() async throws {
+        let player = "<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>"
+        let quoted = player.replacingOccurrences(of: "\"", with: "&quot;")
+        let (tab, _) = try await fixture("<video id='decoy'></video><iframe id='embedded' srcdoc=\"\(quoted)\"></iframe>")
+        let paused = "document.getElementById('embedded').contentDocument.getElementById('player').paused"
+        try await wait { try await tab.web.evaluateJavaScript(paused) as? Bool == false }
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('embedded').contentDocument.getElementById('player').webkitSetPresentationMode('picture-in-picture'); true;")
+        try await wait { tab.pictureInPicture }
+        var answer: Bool?
+        PictureInPicture.control(.playpause, tab: tab) { answer = $0 }
+        try await wait { answer != nil }
+        XCTAssertEqual(answer, true)
+        let nowPaused = try await tab.web.evaluateJavaScript(paused) as? Bool
+        XCTAssertEqual(nowPaused, true)
+        var playing: Bool?
+        PictureInPicture.playback(tab) { playing = $0?.playing }
+        try await wait { playing != nil }
+        XCTAssertEqual(playing, false)
+        answer = nil
+        PictureInPicture.control(.seek(.nan), tab: tab) { answer = $0 }
+        XCTAssertEqual(answer, false)
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('embedded').remove()")
+        answer = nil
+        PictureInPicture.control(.playpause, tab: tab) { answer = $0 }
+        try await wait { answer != nil }
+        XCTAssertEqual(answer, false)
+        let decoy = try await tab.web.evaluateJavaScript("document.getElementById('decoy').paused") as? Bool
+        XCTAssertEqual(decoy, true)
+    }
+
+    func testAutomaticCustomPiPReturnsInlineWithoutPausing() async throws {
+        let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        window.makeKeyAndOrderFront(nil)
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        PictureInPicture.enterIfPlaying(tab)
+        try await wait { tab.pictureInPicture }
+        try await wait {
+            NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible }
+        }
+        XCTAssertFalse(NSApp.windows.first { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible }?.isKeyWindow == true,
+                       "Automatic PiP must not steal keyboard focus")
+        PictureInPicture.exitIfAuto(tab)
+        try await wait { !tab.pictureInPicture }
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        let paused = try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool
+        XCTAssertEqual(paused, false)
+    }
+
+    func testNavigationDuringPiPFadeDoesNotRevealReplacementPage() async throws {
+        let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        let store = TabStore(isPrivate: true)
+        store.tabs = [tab]
+        store.current = tab.id
+        store.window = window
+        defer { TabStore.all.removeAll { $0 === store } }
+        PictureInPicture.toggle(tab)
+        func restore(in view: NSView) -> NSButton? {
+            if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
+            return view.subviews.lazy.compactMap { restore(in: $0) }.first
+        }
+        var button: NSButton?
+        try await wait {
+            button = NSApp.windows.filter { $0.identifier?.rawValue == "vane.pip.window" }
+                .compactMap(\.contentView).compactMap { restore(in: $0) }.first
+            return button != nil
+        }
+        let other = store.newBlankTab(focus: false)
+        store.current = other.id
+        button?.performClick(nil)
+        tab.web.loadHTMLString("<p>Replacement page</p>", baseURL: URL(string: "https://replacement.example.test/"))
+        try await wait { !tab.web.isLoading && tab.pipFrame == nil }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(store.current, other.id)
+        XCTAssertFalse(NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
     }
 }

@@ -1,7 +1,8 @@
 import AppKit
+import WebKit
 
-/// WebKit's video stays in its native PiP panel, including its protected video layer.
-/// A small non-activating panel sits above the system's remote controls while hovered.
+/// Moves WebKit's live presentation view into a Vane-owned floating panel.
+/// The native controls remain the fallback when that host cannot be identified safely.
 ///
 /// PIPPanel and WebVideoViewContainer are WebKit/PIP implementation details. Discover
 /// both defensively; an OS change must leave the ordinary native player intact.
@@ -9,15 +10,58 @@ import AppKit
     @MainActor final class Attachment {
         weak var window: NSWindow?
         let panel: NSPanel
+        private let originalParent: NSView?
+        private let originalFrame: NSRect?
+        private let videoView: NSView?
+        private weak var tab: Tab?
+        private weak var sourceWeb: WKWebView?
+        private let sourceFrame: WKFrameInfo?
+        private var querying = false
+        private var ending = false
+        private var removed = false
         private var tracking: Task<Void, Never>?
+        private var nativeSession: NativePiPHostBridge.Session?
 
         init(window: NSWindow, tab: Tab) {
             self.window = window
-            panel = ControlsPanel(tab: tab)
+            self.tab = tab
+            sourceWeb = tab.existingWeb
+            sourceFrame = tab.pipFrame
+            let controls = ControlsPanel(tab: tab)
+            if let parent = window.contentView,
+               let video = parent.subviews.first(where: {
+                   NSStringFromClass(type(of: $0)) == "WebVideoViewContainer"
+               }), video.layer != nil, window.frame.width > 0, window.frame.height > 0,
+               let session = NativePiPHostBridge.session(parent: parent) {
+                originalParent = parent
+                originalFrame = video.frame
+                videoView = video
+                let content = PiPPlaybackControls(tab: tab,
+                    returnToTab: { [weak tab] in guard let tab else { return }; Self.perform(.back, tab: tab) },
+                    minimize: { [weak tab] in guard let tab else { return }; Self.perform(.minimize, tab: tab) },
+                    close: { [weak tab] in guard let tab else { return }; Self.perform(.close, tab: tab) })
+                panel = CustomPiPWindow(frame: window.frame, videoView: video, controlsView: content)
+                window.orderOut(nil)
+                panel.orderFrontRegardless()
+                nativeSession = session
+                controls.close()
+            } else {
+                originalParent = nil
+                originalFrame = nil
+                videoView = nil
+                panel = controls
+            }
             tracking = Task { @MainActor [weak self] in
                 while !Task.isCancelled {
                     guard let self else { return }
-                    guard let window = self.window, window.isVisible else {
+                    if self.videoView != nil {
+                        guard let tab = self.tab, tab.existingWeb === self.sourceWeb,
+                              tab.pipFrame === self.sourceFrame, tab.pictureInPicture else {
+                            self.remove()
+                            return
+                        }
+                    }
+                    guard self.videoView != nil || self.window?.isVisible == true else {
                         self.panel.orderOut(nil)
                         return
                     }
@@ -25,9 +69,27 @@ import AppKit
                     try? await Task.sleep(for: .milliseconds(100))
                 }
             }
+            nativeSession?.closeShell { [weak self] ok in
+                guard let self, !self.removed else { return }
+                if !ok { self.remove() }
+            }
         }
 
         func update(pointer: NSPoint) {
+            if let custom = panel as? CustomPiPWindow {
+                if let controls = custom.controlsView as? PiPPlaybackControls {
+                    controls.updateVisibility(pointer: pointer)
+                    if !querying, !ending, let tab {
+                        querying = true
+                        PictureInPicture.playback(tab) { [weak self, weak controls] state in
+                            guard let self else { return }
+                            self.querying = false
+                            if !self.removed, let state { controls?.update(state) }
+                        }
+                    }
+                }
+                return
+            }
             guard let window, window.isVisible else {
                 panel.orderOut(nil)
                 return
@@ -45,15 +107,77 @@ import AppKit
         }
 
         func remove() {
+            guard !removed else { return }
+            removed = true
             tracking?.cancel()
             tracking = nil
+            restoreVideo()
+            nativeSession?.endPresentation()
             panel.orderOut(nil)
             panel.close()
+        }
+
+        func restoreVideo() {
+            if let videoView, let originalParent, videoView.superview === panel.contentView {
+                videoView.removeFromSuperview()
+                if let originalFrame { videoView.frame = originalFrame }
+                originalParent.addSubview(videoView)
+            }
+        }
+
+        func resumeVideo() {
+            guard !removed, let videoView, let custom = panel as? CustomPiPWindow,
+                  let content = custom.contentView else { return }
+            content.addSubview(videoView, positioned: .below, relativeTo: custom.controlsView)
+            videoView.frame = content.bounds
+            ending = false
+            custom.alphaValue = 1
+            custom.orderFrontRegardless()
+        }
+
+        private static func perform(_ action: ExitAction, tab: Tab) {
+            attachments[tab.id]?.finish(action, tab: tab)
+        }
+
+        private func finish(_ action: ExitAction, tab: Tab) {
+            guard !ending, !removed, tab.existingWeb === sourceWeb,
+                  tab.pipFrame === sourceFrame, let custom = panel as? CustomPiPWindow else { return }
+            ending = true
+            custom.fadeOut { [weak self, weak tab] in
+                guard let self, let tab, !self.removed, tab.existingWeb === self.sourceWeb,
+                      tab.pipFrame === self.sourceFrame else { return }
+                self.restoreVideo()
+                let web = tab.existingWeb
+                let frame = tab.pipFrame
+                let completed: @MainActor (Bool) -> Void = { [weak self, weak tab] ok in
+                    guard let tab, tab.existingWeb === web, tab.pipFrame === frame else { return }
+                    if !ok {
+                        guard let self, !self.removed, let video = self.videoView else { return }
+                        custom.contentView?.addSubview(video, positioned: .below, relativeTo: custom.controlsView)
+                        video.frame = custom.contentView?.bounds ?? .zero
+                        self.ending = false
+                        custom.alphaValue = 1
+                        custom.orderFrontRegardless()
+                        return
+                    }
+                    if action == .back {
+                        PictureInPicture.exitIfAuto(tab)
+                        MediaState.shared.returned(to: tab)
+                        PictureInPicture.returnToTab(tab)
+                    }
+                }
+                switch action {
+                case .back: PictureInPicture.minimize(tab, then: completed)
+                case .minimize: MediaState.shared.minimize(tab, then: completed)
+                case .close: MediaState.shared.dismiss(tab, then: completed)
+                }
+            }
         }
     }
     private static var attachments: [UUID: Attachment] = [:]
     private static var before: [UUID: Set<ObjectIdentifier>] = [:]
     private static var pending: [UUID: (token: UUID, task: Task<Void, Never>)] = [:]
+    private enum ExitAction { case back, minimize, close }
 
     private static var panels: [NSWindow] {
         NSApp.windows.filter {
@@ -100,6 +224,14 @@ import AppKit
         pending.removeValue(forKey: id)?.task.cancel()
         before[id] = nil
         attachments.removeValue(forKey: id)?.remove()
+    }
+
+    static func prepareToExit(_ tab: Tab) {
+        attachments[tab.id]?.restoreVideo()
+    }
+
+    static func resumeAfterFailedExit(_ tab: Tab) {
+        attachments[tab.id]?.resumeVideo()
     }
 
     private final class ControlsPanel: NSPanel {
