@@ -3553,7 +3553,6 @@ private struct SplitRow: View {
         // Everything a tab's row does with a drag, keyed on the pane whose place this is: a
         // split is one item in the strip, so it reorders and takes drops like one.
         .inStrip(lead.id, strip)
-        .help("Split view of \(panes.count) tabs")
         .onDrag {
             dragPayload(lead, in: store, at: spot)
         } preview: {

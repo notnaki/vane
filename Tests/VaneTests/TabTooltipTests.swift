@@ -3,6 +3,12 @@ import XCTest
 @testable import vane
 
 final class TabTooltipTests: XCTestCase {
+    func testShortTitlesFitTheirTextAndLongTitlesHaveAWidthCap() {
+        XCTAssertLessThan(TabTooltipLayout.width(title: "Docs"), 180)
+        XCTAssertLessThan(TabTooltipLayout.width(title: "Desmos | Graphing Calculator"), 250)
+        XCTAssertEqual(TabTooltipLayout.width(title: String(repeating: "Long title ", count: 50)), 300)
+    }
+
     func testTooltipCanExtendPastTheSidebarButStaysOnScreen() {
         let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
         let anchor = CGRect(x: 20, y: 600, width: 220, height: 32)

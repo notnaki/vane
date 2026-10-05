@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 
 enum TabTooltipLayout {
+    static func width(title: String) -> CGFloat {
+        let titleWidth = (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)]).width
+        let hintWidth = ("Double-click to rename" as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width
+        return min(300, ceil(max(titleWidth, hintWidth)) + 24)
+    }
+
     static func frame(anchor: CGRect, size: CGSize, screen: CGRect) -> CGRect {
         let safe = screen.insetBy(dx: 8, dy: 8)
         let width = min(size.width, safe.width)
@@ -126,16 +132,18 @@ private struct TabTooltipSurface: View {
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.94))
+                .lineLimit(2)
+                .truncationMode(.tail)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Double-click to rename")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color(red: 0.66, green: 0.65, blue: 0.83))
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 10)
-        .frame(width: 300, alignment: .leading)
-        .background(Color(red: 0.045, green: 0.035, blue: 0.24), in: .rect(cornerRadius: 14))
-        .overlay { RoundedRectangle(cornerRadius: 14).strokeBorder(.white.opacity(0.14), lineWidth: 1) }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(width: TabTooltipLayout.width(title: title), alignment: .leading)
+        .background(Color(red: 0.045, green: 0.035, blue: 0.24), in: .rect(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.14), lineWidth: 1) }
         .accessibilityHidden(true)
     }
 }
