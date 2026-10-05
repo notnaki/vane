@@ -287,6 +287,63 @@ import QuartzCore
         alphaValue = 1
     }
 
+    enum ResizeCorner: CaseIterable {
+        case topLeft, topRight, bottomLeft, bottomRight
+        var isLeft: Bool { self == .topLeft || self == .bottomLeft }
+        var isTop: Bool { self == .topLeft || self == .topRight }
+        var cursor: NSCursor {
+            switch self {
+            case .topLeft: .frameResize(position: .topLeft, directions: .all)
+            case .topRight: .frameResize(position: .topRight, directions: .all)
+            case .bottomLeft: .frameResize(position: .bottomLeft, directions: .all)
+            case .bottomRight: .frameResize(position: .bottomRight, directions: .all)
+            }
+        }
+    }
+
+    private static let cornerTargetSize: CGFloat = 24
+
+    static func resizeCorner(at point: NSPoint, in bounds: NSRect) -> ResizeCorner? {
+        guard bounds.contains(point) else { return nil }
+        return ResizeCorner.allCases.first { cornerRect($0, in: bounds).contains(point) }
+    }
+
+    private static func cornerRect(_ corner: ResizeCorner, in bounds: NSRect) -> NSRect {
+        NSRect(x: corner.isLeft ? bounds.minX : bounds.maxX - cornerTargetSize,
+               y: corner.isTop ? bounds.maxY - cornerTargetSize : bounds.minY,
+               width: cornerTargetSize, height: cornerTargetSize)
+    }
+
+    static func resizedFrame(_ original: NSRect, corner: ResizeCorner, delta: NSSize,
+                             aspect: CGFloat, minimum: NSSize) -> NSRect {
+        let width = original.width + (corner.isLeft ? -delta.width : delta.width)
+        let height = original.height + (corner.isTop ? delta.height : -delta.height)
+        // Project the pointer's two axes onto one aspect-preserving diagonal.
+        let wantedHeight = (width * aspect + height) / (aspect * aspect + 1)
+        let size = NSSize(width: max(minimum.height, minimum.width / aspect, wantedHeight) * aspect,
+                          height: max(minimum.height, minimum.width / aspect, wantedHeight))
+        return NSRect(x: corner.isLeft ? original.maxX - size.width : original.minX,
+                      y: corner.isTop ? original.minY : original.maxY - size.height,
+                      width: size.width, height: size.height)
+    }
+
+    private func resize(from event: NSEvent, corner: ResizeCorner) {
+        let original = frame
+        let start = convertPoint(toScreen: event.locationInWindow)
+        let aspect = contentAspectRatio.width / contentAspectRatio.height
+        let minimum = contentMinSize
+        corner.cursor.push()
+        defer { NSCursor.pop(); rememberPlacement() }
+        while let next = nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture,
+                                   inMode: .eventTracking, dequeue: true) {
+            if next.type == .leftMouseUp { break }
+            let point = convertPoint(toScreen: next.locationInWindow)
+            setFrame(Self.resizedFrame(original, corner: corner,
+                                      delta: NSSize(width: point.x - start.x, height: point.y - start.y),
+                                      aspect: aspect, minimum: minimum), display: true)
+        }
+    }
+
     override func sendEvent(_ event: NSEvent) {
         var settleTinyInteraction = false
         defer {
@@ -300,6 +357,11 @@ import QuartzCore
         if event.type == .keyDown { (controlsView as? PiPPlaybackControls)?.showForKeyboard() }
         if event.type == .leftMouseDown, event.window === self, let contentView {
             let point = contentView.convert(event.locationInWindow, from: nil)
+            if let corner = Self.resizeCorner(at: point, in: contentView.bounds) {
+                stopEntry(keepDestination: false)
+                resize(from: event, corner: corner)
+                return
+            }
             var target = contentView.hitTest(point)
             var interactive = false
             var exitControl = false
@@ -337,6 +399,12 @@ import QuartzCore
         }
 
         required init?(coder: NSCoder) { nil }
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            for corner in ResizeCorner.allCases {
+                addCursorRect(CustomPiPWindow.cornerRect(corner, in: bounds), cursor: corner.cursor)
+            }
+        }
         override func resizeSubviews(withOldSize oldSize: NSSize) {
             super.resizeSubviews(withOldSize: oldSize)
             video.frame = bounds

@@ -37,7 +37,9 @@ release builds packaged with `SIGN_ID` offer it once. You can still use the manu
 
 Picture in Picture uses a custom floating window that you can drag anywhere and
 resize, with Back to Tab, minimize, close, play/pause, 15-second skips, and a seek
-bar. Hold the seek knob and drag upward for finer horizontal seeking. It remembers
+bar. Hold the seek knob and drag upward for finer horizontal seeking; the center
+shows the current precision (2×, 4×, 8× and up) while you scrub. The corners have
+larger resize targets that preserve the video's proportions and opposite corner. It remembers
 its last position and size when reopened. Entry moves the live video from its
 on-page position to the saved placement in one short motion. Back to Tab reveals
 the source tab and moves the live video back to its current on-page position.

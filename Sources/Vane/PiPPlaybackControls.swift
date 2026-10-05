@@ -11,6 +11,7 @@ import AppKit
     private let forward: PiPButton
     private let seek = PiPSeekSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let hostname = NSTextField(labelWithString: "")
+    private let precision = NSTextField(labelWithString: "")
     private var header: [NSGlassEffectView] = []
     private var tracking: NSTrackingArea?
     private var keyboardInteraction = false
@@ -50,6 +51,12 @@ import AppKit
         hostname.alignment = .center
         hostname.lineBreakMode = .byTruncatingMiddle
         addSubview(hostname)
+        precision.identifier = NSUserInterfaceItemIdentifier("vane.pip.precision")
+        precision.font = .monospacedDigitSystemFont(ofSize: 20, weight: .semibold)
+        precision.textColor = .white
+        precision.alignment = .center
+        precision.isHidden = true
+        addSubview(precision)
         seek.identifier = NSUserInterfaceItemIdentifier("vane.pip.seek")
         seek.cell = PiPSeekCell()
         seek.minValue = 0
@@ -61,6 +68,15 @@ import AppKit
         seek.target = self
         seek.action = #selector(seekChanged)
         seek.isEnabled = false
+        seek.onPrecisionChange = { [weak self] factor in
+            guard let self else { return }
+            for button in [self.backward, self.play, self.forward] { button.isHidden = factor != nil }
+            self.precision.isHidden = factor == nil
+            if let factor {
+                self.precision.stringValue = "\(Int(factor))× precision"
+                self.setControlsVisible(true)
+            }
+        }
         addSubview(seek)
     }
 
@@ -69,7 +85,8 @@ import AppKit
     override func layout() {
         super.layout()
         let compact = bounds.width < 480
-        let inset: CGFloat = 14
+        // Keep actual controls clear of the enlarged 24-point resize corners.
+        let inset: CGFloat = 26
         let height: CGFloat = 28
         let widths: [CGFloat] = compact ? [28, 28, 28] : [104, 86, 68]
         let x = [inset, bounds.width - inset - widths[2] - 8 - widths[1], bounds.width - inset - widths[2]]
@@ -93,6 +110,7 @@ import AppKit
         play.setSymbolSize(playSize * 0.7)
         backward.setSymbolSize(skipSize * 0.8)
         forward.setSymbolSize(skipSize * 0.8)
+        precision.frame = NSRect(x: inset, y: bounds.midY - 14, width: max(0, bounds.width - inset * 2), height: 28)
         seek.frame = NSRect(x: inset, y: 10, width: max(0, bounds.width - inset * 2), height: 20)
     }
 
@@ -158,11 +176,16 @@ import AppKit
 
 @MainActor final class PiPSeekSlider: NSSlider {
     private(set) var isScrubbing = false
+    var onPrecisionChange: ((Double?) -> Void)?
+
+    static func precisionFactor(lift: CGFloat) -> Double {
+        pow(2, min(6, floor(Double(max(0, lift)) / 40)))
+    }
 
     static func scrubValue(_ current: Double, delta: CGFloat, lift: CGFloat, width: CGFloat,
                            range: ClosedRange<Double>) -> Double {
         guard width > 0 else { return current }
-        let precision = min(50, 1 + pow(Double(max(0, lift)) / 40, 2))
+        let precision = precisionFactor(lift: lift)
         let change = Double(delta / width) * (range.upperBound - range.lowerBound) / precision
         return min(range.upperBound, max(range.lowerBound, current + change))
     }
@@ -171,7 +194,8 @@ import AppKit
         guard isEnabled, maxValue > minValue, let window, let cell = cell as? NSSliderCell else { return }
         window.makeFirstResponder(self)
         isScrubbing = true
-        defer { isScrubbing = false }
+        onPrecisionChange?(1)
+        defer { isScrubbing = false; onPrecisionChange?(nil) }
         let start = convert(event.locationInWindow, from: nil)
         let knob = cell.knobRect(flipped: isFlipped)
         let width = max(1, bounds.width - knob.width)
@@ -186,6 +210,7 @@ import AppKit
             if next.type == .leftMouseUp { break }
             let point = convert(next.locationInWindow, from: nil)
             let lift = isFlipped ? start.y - point.y : point.y - start.y
+            onPrecisionChange?(Self.precisionFactor(lift: lift))
             let value = Self.scrubValue(doubleValue, delta: point.x - previous.x, lift: lift,
                                        width: width, range: minValue...maxValue)
             previous = point

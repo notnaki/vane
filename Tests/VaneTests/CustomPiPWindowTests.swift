@@ -200,11 +200,125 @@ import XCTest
     func testUpwardScrubbingIsMorePreciseWithoutJumping() {
         let ordinary = PiPSeekSlider.scrubValue(50, delta: 100, lift: 0, width: 500, range: 0...100)
         let precise = PiPSeekSlider.scrubValue(50, delta: 100, lift: 120, width: 500, range: 0...100)
+        XCTAssertEqual(PiPSeekSlider.scrubValue(50, delta: 100, lift: 80, width: 500, range: 0...100), 55)
+        XCTAssertEqual(PiPSeekSlider.scrubValue(50, delta: 100, lift: 120, width: 500, range: 0...100), 52.5)
         XCTAssertGreaterThan(ordinary, precise)
         XCTAssertGreaterThan(precise, 50)
         XCTAssertEqual(PiPSeekSlider.scrubValue(50, delta: 0, lift: 200, width: 500, range: 0...100), 50)
         XCTAssertEqual(PiPSeekSlider.scrubValue(99, delta: 500, lift: 0, width: 500, range: 0...100), 100)
         XCTAssertEqual(PiPSeekSlider.scrubValue(1, delta: -500, lift: 0, width: 500, range: 0...100), 0)
+    }
+
+    func testScrubbingShowsItsActualPrecisionInPlaceOfTransportButtons() throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let tab = Tab(isPrivate: true)
+        defer { tab.tearDown() }
+        let controls = PiPPlaybackControls(tab: tab, returnToTab: {}, minimize: {}, close: {})
+        let window = ScrubFixtureWindow(contentRect: NSRect(x: 100, y: 100, width: 640, height: 360),
+                                        styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = controls
+        controls.layoutSubtreeIfNeeded()
+        let state = try XCTUnwrap(PictureInPicture.Playback(from: ["playing": true, "position": 50.0, "duration": 100.0, "ranges": [[0.0, 100.0]]]))
+        controls.update(state)
+        let slider = try XCTUnwrap(controls.subviews.compactMap { $0 as? PiPSeekSlider }.first)
+        let precision = try XCTUnwrap(controls.subviews.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "vane.pip.precision" })
+        let transports = controls.subviews.compactMap { $0 as? NSButton }
+        let knob = try XCTUnwrap(slider.cell as? NSSliderCell).knobRect(flipped: slider.isFlipped)
+        let point = slider.convert(NSPoint(x: knob.midX, y: knob.midY), to: nil)
+        func event(_ type: NSEvent.EventType, _ position: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: position, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        }
+        window.events = [try event(.leftMouseDragged, NSPoint(x: point.x, y: point.y + 80)),
+                         try event(.leftMouseUp, NSPoint(x: point.x, y: point.y + 80))]
+        var observed: [String] = []
+        window.beforeNext = {
+            observed.append(precision.stringValue)
+            XCTAssertFalse(precision.isHidden)
+            XCTAssertTrue(transports.allSatisfy(\.isHidden))
+            XCTAssertEqual(precision.frame.midX, controls.bounds.midX, accuracy: 0.1)
+            XCTAssertEqual(precision.frame.midY, controls.bounds.midY, accuracy: 0.1)
+        }
+        slider.mouseDown(with: try event(.leftMouseDown, point))
+        XCTAssertEqual(observed, ["1× precision", "4× precision"])
+        XCTAssertTrue(precision.isHidden)
+        XCTAssertTrue(transports.allSatisfy { !$0.isHidden })
+        XCTAssertEqual(slider.doubleValue, 50, "Lifting changes precision without seeking by itself")
+    }
+
+    func testCornerResizeTargetsAreGenerousAndKeepTheOppositeCornerFixed() {
+        let bounds = NSRect(x: 0, y: 0, width: 640, height: 360)
+        XCTAssertEqual(CustomPiPWindow.resizeCorner(at: NSPoint(x: 20, y: 340), in: bounds), .topLeft)
+        XCTAssertEqual(CustomPiPWindow.resizeCorner(at: NSPoint(x: 620, y: 340), in: bounds), .topRight)
+        XCTAssertEqual(CustomPiPWindow.resizeCorner(at: NSPoint(x: 20, y: 20), in: bounds), .bottomLeft)
+        XCTAssertEqual(CustomPiPWindow.resizeCorner(at: NSPoint(x: 620, y: 20), in: bounds), .bottomRight)
+        XCTAssertNil(CustomPiPWindow.resizeCorner(at: NSPoint(x: 32, y: 332), in: bounds), "Header icons must keep their own hit targets")
+        XCTAssertNil(CustomPiPWindow.resizeCorner(at: NSPoint(x: 320, y: 180), in: bounds))
+        let original = NSRect(x: 100, y: 200, width: 640, height: 360)
+        let minimum = NSSize(width: 320, height: 180)
+        let delta = NSSize(width: 160, height: 90)
+        XCTAssertEqual(CustomPiPWindow.resizedFrame(original, corner: .topRight, delta: delta, aspect: 16.0 / 9, minimum: minimum),
+                       NSRect(x: 100, y: 200, width: 800, height: 450))
+        XCTAssertEqual(CustomPiPWindow.resizedFrame(original, corner: .topLeft, delta: NSSize(width: -160, height: 90), aspect: 16.0 / 9, minimum: minimum),
+                       NSRect(x: -60, y: 200, width: 800, height: 450))
+        XCTAssertEqual(CustomPiPWindow.resizedFrame(original, corner: .bottomLeft, delta: NSSize(width: -160, height: -90), aspect: 16.0 / 9, minimum: minimum),
+                       NSRect(x: -60, y: 110, width: 800, height: 450))
+        XCTAssertEqual(CustomPiPWindow.resizedFrame(original, corner: .bottomRight, delta: NSSize(width: 160, height: -90), aspect: 16.0 / 9, minimum: minimum),
+                       NSRect(x: 100, y: 110, width: 800, height: 450))
+        XCTAssertEqual(CustomPiPWindow.resizedFrame(original, corner: .topLeft, delta: NSSize(width: 1000, height: -1000), aspect: 16.0 / 9, minimum: minimum),
+                       NSRect(x: 420, y: 200, width: 320, height: 180))
+    }
+
+    func testCornerTargetsDoNotStealHeaderClicksOrEndKnobScrubbing() throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let held = UserDefaults.vane.object(forKey: CustomPiPWindow.placementKey)
+        defer { UserDefaults.vane.set(held, forKey: CustomPiPWindow.placementKey) }
+        let tab = Tab(isPrivate: true)
+        defer { tab.tearDown() }
+        let controls = PiPPlaybackControls(tab: tab, returnToTab: {}, minimize: {}, close: {})
+        let window = CustomPiPWindow(frame: NSRect(x: 100, y: 100, width: 640, height: 360), videoView: NSView(), controlsView: controls)
+        defer { window.close() }
+        window.show()
+        window.setFrame(NSRect(x: 100, y: 100, width: 640, height: 360), display: true)
+        controls.layoutSubtreeIfNeeded()
+        func click(_ point: NSPoint) throws {
+            func event(_ type: NSEvent.EventType) throws -> NSEvent {
+                try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime + (type == .leftMouseUp ? 1 : 0),
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            }
+            NSApp.postEvent(try event(.leftMouseUp), atStart: true)
+            window.sendEvent(try event(.leftMouseDown))
+        }
+        func buttons(_ view: NSView) -> [NSButton] {
+            (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons)
+        }
+        for id in ["vane.pip.restore", "vane.pip.close"] {
+            let button = try XCTUnwrap(buttons(controls).first { $0.identifier?.rawValue == id })
+            let point = button.convert(NSPoint(x: id == "vane.pip.restore" ? 8 : button.bounds.maxX - 8,
+                                              y: button.bounds.maxY - 8), to: nil)
+            let hit = window.contentView?.hitTest(point)
+            XCTAssertTrue(hit === button, "Header event must reach its actual button")
+            XCTAssertNil(CustomPiPWindow.resizeCorner(at: point, in: controls.bounds), "Header padding must not start a resize")
+            try click(point)
+        }
+        let slider = try XCTUnwrap(controls.subviews.compactMap { $0 as? PiPSeekSlider }.first)
+        var scrubStarts = 0
+        let notify = slider.onPrecisionChange
+        slider.onPrecisionChange = { factor in
+            if factor != nil { scrubStarts += 1 }
+            notify?(factor)
+        }
+        for position in [0.0, 100.0] {
+            controls.update(try XCTUnwrap(PictureInPicture.Playback(from: ["playing": true, "position": position, "duration": 100.0, "ranges": [[0.0, 100.0]]])))
+            let knob = try XCTUnwrap(slider.cell as? NSSliderCell).knobRect(flipped: slider.isFlipped)
+            try click(slider.convert(NSPoint(x: knob.midX, y: knob.midY), to: nil))
+        }
+        XCTAssertEqual(scrubStarts, 2, "The seek knob must work at both ends of the timeline")
+        XCTAssertEqual(window.frame, NSRect(x: 100, y: 100, width: 640, height: 360))
     }
 
     func testReopeningKeepsTheLastCustomPlacement() {
@@ -254,4 +368,13 @@ import XCTest
 @MainActor private final class EntryFixtureControl: NSControl {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {}
+}
+
+@MainActor private final class ScrubFixtureWindow: NSWindow {
+    var events: [NSEvent] = []
+    var beforeNext: (() -> Void)?
+    override func nextEvent(matching mask: NSEvent.EventTypeMask, until expiration: Date?, inMode mode: RunLoop.Mode, dequeue flag: Bool) -> NSEvent? {
+        beforeNext?()
+        return events.isEmpty ? nil : events.removeFirst()
+    }
 }
