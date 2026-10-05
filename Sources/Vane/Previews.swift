@@ -85,8 +85,8 @@ import WebKit
     /// re-loads anything; short enough that a preview never shows a headline that has since
     /// changed.
     static let cacheTTL: TimeInterval = 300
-    /// Long enough that a pointer sweeping across a paragraph of links does not fire the
-    /// neural engine once per link; short enough that it is not a "hold still" gesture.
+    /// Long enough that a pointer sweeping across links does not start a full background
+    /// page load and model request for each one; short enough to still feel like a hover.
     /// 220ms is roughly one deliberate pause.
     static let summaryDebounce = Duration.milliseconds(220)
     /// Stop asking for snapshots after this. A page that has painted nothing by now is
@@ -186,16 +186,17 @@ import WebKit
         p.favicon = tab.isPrivate ? nil : tab.favicons.icon(for: url)
         publish(p, for: id)
 
-        let web = webView(for: tab)
-        web.load(URLRequest(url: url))
-
-        debounceTask = Task { [weak self] in
+        debounceTask = Task { [weak self, weak tab] in
             try? await Task.sleep(for: Previews.summaryDebounce)
-            guard !Task.isCancelled, let self, self.latest == id else { return }
+            guard !Task.isCancelled, let self, let tab, self.latest == id else { return }
+            // Keep speculative WebKit setup, network traffic, rendering and snapshots
+            // behind the same settle gate as the summary. The shell/cache stays instant.
+            let web = self.webView(for: tab)
+            web.load(URLRequest(url: url))
             self.settled = true
             self.startSummary(id: id)
+            self.paintTask = Task { [weak self] in await self?.paint(id: id, web: web) }
         }
-        paintTask = Task { [weak self] in await self?.paint(id: id, web: web) }
     }
 
     /// The pointer left. Everything stops: the load, the snapshots, the inference.

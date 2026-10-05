@@ -788,7 +788,9 @@ struct PasswordChoice: Equatable {
         return true;   // never auto-submit
       };
       // DOMContentLoaded precedes slow images/iframes. Newly mounted SPA forms get the
-      // same notification, coalesced and only when added nodes can contain inputs.
+      // same notification. Mutation callbacks only schedule work: searching each added
+      // subtree here competes with the framework's page construction in its microtasks.
+      // One discovery pass after a burst also avoids searching nested additions twice.
       var seen = new WeakSet(), pending = false;
       function ready() {
         var p = targetPair(), field = p && (p.pass || p.user);
@@ -801,7 +803,7 @@ struct PasswordChoice: Equatable {
       new MutationObserver(function (records) {
         if (pending || !records.some(function (r) {
           return Array.from(r.addedNodes).some(function (n) {
-            return n.nodeType === 1 && (n.matches('input') || !!n.querySelector('input'));
+            return n.nodeType === 1;
           });
         })) return;
         pending = true;

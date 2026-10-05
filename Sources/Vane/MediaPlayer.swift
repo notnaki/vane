@@ -160,6 +160,10 @@ enum MediaTray {
         return b.toString(16).padStart(2, '0');
       }).join('');
       var ms = navigator.mediaSession;
+      // Live collections track SPA player replacements without a subtree observer or
+      // a document-wide selector on every Media Session setter and player event.
+      var videos = document.getElementsByTagName('video');
+      var audios = document.getElementsByTagName('audio');
       function post(msg) {
         var key = JSON.stringify(msg);
         if (key === last) { return; }     // one message per real change, not per event
@@ -170,12 +174,19 @@ enum MediaTray {
       // first one on the page, which is what a paused player is.
       function media() {
         if (pipMedia && pipMedia.isConnected) { return pipMedia; }
-        var list = document.querySelectorAll('video,audio');
-        for (var i = 0; i < list.length; i++) {
-          if (!list[i].paused && !list[i].ended) { lastMedia = list[i]; return list[i]; }
+        var first = null, running = null;
+        function earlier(a, b) {
+          return !a || (b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) ? b : a;
         }
+        for (var list of [videos, audios]) {
+          for (var i = 0; i < list.length; i++) {
+            first = earlier(first, list[i]);
+            if (!list[i].paused && !list[i].ended) { running = earlier(running, list[i]); }
+          }
+        }
+        if (running) { lastMedia = running; return running; }
         if (lastMedia && lastMedia.isConnected) { return lastMedia; }
-        return list.length ? list[0] : null;
+        return first;
       }
       function report() {
         var m = ms && ms.metadata, e = media();
@@ -825,7 +836,8 @@ extension MediaTray {
                script.contains("desc.set.call(this, v)"))
         assert("the metadata wrapper reads, never writes",
                script.contains("get: function () { return desc.get.call(this); }"))
-        assert("the script covers both media elements", script.contains("'video,audio'"))
+        assert("the script covers both media elements",
+               script.contains("getElementsByTagName('video')") && script.contains("getElementsByTagName('audio')"))
         assert("the listeners are capturing, so late players are caught",
                script.contains("document.addEventListener(e, report, true)"))
         assert("skip only fires a handler the page actually registered",
