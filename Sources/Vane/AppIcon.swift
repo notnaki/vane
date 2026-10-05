@@ -72,10 +72,11 @@ import AppKit
         guard let v = variants.first(where: { $0.name == name }) else { return false }
         // nil hands the tile back to AppKit, which composes the bundle's own icon — not the
         // same thing as assigning the catalogue render, which is why Dark exists.
-        NSApp.applicationIconImage = overrides(name) ? v.image : nil
+        let image = overrides(name) ? v.image : nil
+        NSApp.applicationIconImage = image
+        MinimizedWindowIcon.apply(image)
         UserDefaults.vane.set(name, forKey: key)
         guard canPersist else { return false }
-        let image = overrides(name) ? v.image : nil
         if isSandboxed {
             // Send a bounded raster payload while still on the main actor.
             let data: Data?
@@ -97,6 +98,7 @@ import AppKit
     /// whole bundle on an in-place update, which takes any stamped Finder icon with it.
     /// Dark clears any previous stamp and hands the running tile back to AppKit.
     static func restoreAtLaunch() {
+        MinimizedWindowIcon.start()
         let name = current
         if let saved = UserDefaults.vane.string(forKey: key), saved != canonicalName(saved) {
             UserDefaults.vane.set(canonicalName(saved), forKey: key)
