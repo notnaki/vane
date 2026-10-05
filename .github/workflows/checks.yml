@@ -30,8 +30,10 @@ jobs:
 
       # Only checks builds go into this cache. Release builds compile an OAuth secret
       # into the app, so their build products must never enter a PR-readable cache.
-      - name: Cache Swift debug build
-        uses: actions/cache@v4
+      # PRs reuse main's cache without leaving a separate archive for every revision.
+      - name: Restore Swift debug build
+        id: swift-cache
+        uses: actions/cache/restore@v4
         with:
           path: .build
           key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
@@ -86,3 +88,31 @@ jobs:
 
       - name: Update installer rejection and quarantine cleanup
         run: bash scripts/test-update-installer.sh Vane.app --unsigned
+
+      - name: Save Swift debug build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swift-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .build
+          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
+
+  prune-caches:
+    # Keep deletion credentials away from the build and from pull request runs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Keep the two newest Swift debug caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh cache list --ref refs/heads/main --key swift-debug-v2- \
+            --limit 10000 --sort created_at --order desc --json id \
+            --jq '.[2:] | .[].id' > "$RUNNER_TEMP/stale-cache-ids"
+          while IFS= read -r cache_id; do
+            gh cache delete "$cache_id"
+          done < "$RUNNER_TEMP/stale-cache-ids"
