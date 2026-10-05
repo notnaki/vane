@@ -17,6 +17,7 @@ enum ChromeMenuLayout {
     static let rowHeight: CGFloat = 44
     static let inset: CGFloat = 8
     static let groupHeight: CGFloat = 17
+    static let pointerHeight: CGFloat = 8
 
     /// Keep the entire surface inside both the owner's content and the visible screen.
     static func frame(anchor: CGRect, size: CGSize, window: CGRect, screen: CGRect, above: Bool) -> CGRect {
@@ -69,6 +70,7 @@ struct ChromeMenuTypeahead {
     static let shared = ChromeMenu()
     private var panel: NSPanel?
     private weak var owner: NSWindow?
+    private weak var source: ChromeMenuAnchor?
     private var items: [ChromeMenuItem] = []
     private var selection = ChromeMenuSelection()
     private var typeahead = ChromeMenuTypeahead()
@@ -76,19 +78,22 @@ struct ChromeMenuTypeahead {
     private var observers: [NSObjectProtocol] = []
 
     func show(_ items: [ChromeMenuItem], in owner: NSWindow, anchor: CGRect,
-              above: Bool = false, title: String) {
+              above: Bool = false, title: String, source: ChromeMenuAnchor? = nil,
+              showsPointer: Bool = false) {
         dismiss()
         guard !items.isEmpty, let screen = owner.screen ?? NSScreen.main else { return }
         let size = CGSize(width: ChromeMenuLayout.width,
                           height: CGFloat(items.count) * ChromeMenuLayout.rowHeight
                             + CGFloat(items.filter(\.startsGroup).count) * ChromeMenuLayout.groupHeight
-                            + ChromeMenuLayout.inset * 2)
+                            + ChromeMenuLayout.inset * 2
+                            + (showsPointer ? ChromeMenuLayout.pointerHeight : 0))
         let frame = ChromeMenuLayout.frame(anchor: anchor, size: size,
                                            window: owner.convertToScreen(owner.contentLayoutRect),
                                            screen: screen.visibleFrame, above: above)
         guard !frame.isEmpty else { return }
         self.items = items
         self.owner = owner
+        self.source = source
         selection = ChromeMenuSelection()
         typeahead = ChromeMenuTypeahead()
         let panel = ChromeMenuPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel],
@@ -101,13 +106,22 @@ struct ChromeMenuTypeahead {
         panel.level = .popUpMenu
         panel.title = title
         panel.contentView = NSHostingView(rootView: ChromeMenuSurface(
-            items: items, selection: selection, title: title, choose: { [weak self] in self?.choose($0) }))
+            items: items, selection: selection, title: title,
+            pointerX: showsPointer ? min(max(anchor.midX - frame.minX, 24), frame.width - 24) : nil,
+            pointerBelow: frame.minY >= anchor.maxY,
+            choose: { [weak self] in self?.choose($0) }))
         self.panel = panel
         owner.addChildWindow(panel, ordered: .above)
         panel.makeKeyAndOrderFront(nil)
+        source?.isPresented = true
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: {
             [weak self, weak panel] event in
-            if event.window !== panel { self?.dismiss() }
+            if event.window !== panel {
+                // Consume the trigger's mouse-down so its mouse-up cannot reopen the menu.
+                let onTrigger = self?.containsTrigger(event) == true
+                self?.dismiss()
+                if onTrigger { return nil }
+            }
             return event
         }) { monitors.append(monitor) }
         if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown],
@@ -123,6 +137,11 @@ struct ChromeMenuTypeahead {
                      NSWindow.didResizeNotification] { watch(name, object: owner) }
     }
 
+    private func containsTrigger(_ event: NSEvent) -> Bool {
+        guard event.window === owner, let view = source?.view, view.window === owner else { return false }
+        return view.bounds.contains(view.convert(event.locationInWindow, from: nil))
+    }
+
     private func watch(_ name: Notification.Name, object: AnyObject?) {
         observers.append(NotificationCenter.default.addObserver(forName: name, object: object,
             queue: .main) { [weak self] _ in
@@ -133,6 +152,8 @@ struct ChromeMenuTypeahead {
     func dismiss() {
         guard let panel else { return }
         self.panel = nil
+        source?.isPresented = false
+        source = nil
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
         observers.forEach(NotificationCenter.default.removeObserver)
@@ -194,9 +215,29 @@ private struct ChromeMenuSurface: View {
     let items: [ChromeMenuItem]
     @ObservedObject var selection: ChromeMenuSelection
     let title: String
+    let pointerX: CGFloat?
+    let pointerBelow: Bool
     let choose: (Int) -> Void
 
     var body: some View {
+        VStack(spacing: 0) {
+            if pointerX != nil && !pointerBelow { pointer }
+            surface
+            if pointerX != nil && pointerBelow { pointer }
+        }
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+    }
+
+    private var pointer: some View {
+        ChromeMenuPointer(x: pointerX ?? 0, below: pointerBelow)
+            .fill(.black)
+            .frame(height: ChromeMenuLayout.pointerHeight)
+            .accessibilityHidden(true)
+    }
+
+    private var surface: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 0) {
@@ -216,13 +257,8 @@ private struct ChromeMenuSurface: View {
             }
         }
         .padding(ChromeMenuLayout.inset)
-        .background(Color(red: 0.055, green: 0.055, blue: 0.06),
-                    in: .rect(cornerRadius: 16))
-        .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.09), lineWidth: 1) }
+        .background(.black, in: .rect(cornerRadius: 16))
         .clipShape(.rect(cornerRadius: 16))
-        .environment(\.colorScheme, .dark)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(title)
     }
 
     private func row(_ index: Int) -> some View {
@@ -247,7 +283,7 @@ private struct ChromeMenuSurface: View {
             .padding(.horizontal, 12)
             .frame(height: ChromeMenuLayout.rowHeight)
             .contentShape(.rect)
-            .background(selection.index == index ? .white.opacity(0.10) : .clear,
+            .background(selection.index == index ? .white.opacity(0.14) : .clear,
                         in: .rect(cornerRadius: 10))
         }
         .buttonStyle(.plain)
@@ -261,13 +297,37 @@ private struct ChromeMenuSurface: View {
     }
 }
 
+private struct ChromeMenuPointer: Shape {
+    let x: CGFloat
+    let below: Bool
+
+    func path(in rect: CGRect) -> Path {
+        Path { path in
+            let base = below ? rect.minY : rect.maxY
+            let tip = below ? rect.maxY : rect.minY
+            path.move(to: CGPoint(x: x - 8, y: base))
+            path.addLine(to: CGPoint(x: x, y: tip))
+            path.addLine(to: CGPoint(x: x + 8, y: base))
+            path.closeSubpath()
+        }
+    }
+}
+
 /// A noninteractive anchor lets the SwiftUI button retain its normal accessibility.
 @MainActor final class ChromeMenuAnchor: ObservableObject {
     fileprivate weak var view: NSView?
-    func show(_ items: [ChromeMenuItem], above: Bool = false, title: String) {
+    @Published fileprivate(set) var isPresented = false
+
+    func show(_ items: [ChromeMenuItem], above: Bool = false, title: String,
+              showsPointer: Bool = false) {
+        if isPresented {
+            ChromeMenu.shared.dismiss()
+            return
+        }
         guard let view, let window = view.window else { return }
         let rect = window.convertToScreen(view.convert(view.bounds, to: nil))
-        ChromeMenu.shared.show(items, in: window, anchor: rect, above: above, title: title)
+        ChromeMenu.shared.show(items, in: window, anchor: rect, above: above, title: title,
+                               source: self, showsPointer: showsPointer)
     }
 }
 
