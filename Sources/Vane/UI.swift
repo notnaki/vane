@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WebKit
+import Combine
 
 /// Speak something that otherwise only ever changes colour, appears silently, or lives in
 /// an overlay VoiceOver has no reason to visit.
@@ -790,10 +791,22 @@ private struct LoadingBar: View {
 
 private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var downloadsHover = DownloadsHover()
+    @AppStorage(LibraryHoverCategory.key, store: .vane) private var hoverCategory = "downloads"
+    @State private var previewItems: [LibraryHoverItem] = []
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ObservedObject private var sidebar = SidebarWidth.shared
+    @ObservedObject private var previewProfiles = ProfileManager.shared
     /// The scroll viewport's height, so its content can be made to fill it. See below.
     @State private var scrollHeight: CGFloat = 0
+    @State private var sidebarHeight: CGFloat = 0
+
+    private var downloads: Downloads { Downloads.manager(for: store.profileID) }
+    private var previewHeight: CGFloat {
+        min(CGFloat(previewItems.count) * 56 - 8,
+            max(0, sidebarHeight - Look.footer - Look.footerInset - Look.topInset - 48))
+    }
     /// One geometry group for the whole strip, so a tab changing section — a row becoming a
     /// tile, a tile a row — travels from where it was to where it is going.
     @Namespace private var strip
@@ -838,17 +851,27 @@ private struct Sidebar: View {
             // On the stack, not the list: the swipe has to keep working while the form is
             // standing where the list was, because swiping back is how the form is left.
             .spaceSwipe(store)
-            BottomRow()
+            .mask {
+                GeometryReader { geometry in
+                    let height = max(1, geometry.size.height)
+                    let covered = max(0, previewHeight)
+                    ZStack {
+                        Color.white.opacity(downloadsHover.isVisible ? 0 : 1)
+                        LinearGradient(stops: [
+                            .init(color: .white, location: 0),
+                            .init(color: .white, location: max(0, 1 - (covered + 40) / height)),
+                            .init(color: .clear, location: max(0, 1 - covered / height)),
+                            .init(color: .clear, location: 1)
+                        ], startPoint: .top, endPoint: .bottom)
+                    }
+                }
+            }
+            BottomRow(downloadsHover: downloadsHover, hasPreviewItems: !previewItems.isEmpty,
+                      preparePreview: preparePreview)
         }
         .environment(\.strip, strip)
         // SwiftUI's accessibility motion environment is read-only. Stop decorative
         // animations here without changing the user's system accessibility setting.
-        .transaction { transaction in
-            if batterySaver.isActive {
-                transaction.animation = nil
-                transaction.disablesAnimations = true
-            }
-        }
         .padding(.horizontal, Look.inset)
         .padding(.bottom, Look.footerInset)
         .padding(.top, Look.topInset)
@@ -857,7 +880,47 @@ private struct Sidebar: View {
         .overlay(alignment: .bottom) {
             VStack(spacing: Look.inset) { ToastHost(); MediaTrayView() }
                 .padding(.bottom, Look.footer + Look.footerInset + Look.inset)
+                .opacity(downloadsHover.isVisible ? 0 : 1)
+                .allowsHitTesting(!downloadsHover.isVisible)
         }
+        .overlay(alignment: .bottom) {
+            if downloadsHover.isVisible && !previewItems.isEmpty {
+                RecentLibraryPreview(items: previewItems, category: LibraryHoverCategory.resolve(hoverCategory),
+                                     downloads: downloads, store: store, close: downloadsHover.dismiss)
+                    .frame(height: max(0, previewHeight))
+                    .contentShape(.rect)
+                    .onHover { downloadsHover.setHovered($0, over: .preview) }
+                    .padding(.bottom, Look.footer + Look.footerInset + Look.inset)
+                    .transition(.opacity.combined(with: .offset(y: 4)))
+            }
+        }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
+                   value: downloadsHover.isVisible)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { sidebarHeight = $0 }
+        .onAppear { _ = preparePreview() }
+        .onChange(of: store.currentSpaceID) { downloadsHover.dismiss() }
+        .onChange(of: store.profileID) { downloadsHover.dismiss(); _ = preparePreview() }
+        .onChange(of: hoverCategory) { downloadsHover.dismiss(); _ = preparePreview() }
+        .onChange(of: previewProfiles.spacesRevision) {
+            if LibraryHoverCategory.resolve(hoverCategory) == .spaces { refreshPreview() }
+        }
+        .onReceive(easelChanges) { boards in
+            previewItems = LibraryHoverItem.recent(.easels, boards: boards, isPrivate: store.isPrivate)
+            if previewItems.isEmpty { downloadsHover.dismiss() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Store.historyChanged)) { notification in
+            guard LibraryHoverCategory.resolve(hoverCategory) == .history, !store.isPrivate,
+                  notification.object as? Store === Store.store(for: store.profileID) else { return }
+            refreshPreview()
+        }
+        .onChange(of: store.palette != nil) { downloadsHover.dismiss() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            downloadsHover.dismiss()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
+            downloadsHover.dismiss()
+        }
+        .onDisappear { downloadsHover.dismiss() }
         .frame(width: sidebar.width, alignment: .leading)
         // Under everything in the sidebar, so a row, a button or the pill takes the pointer
         // first and only the bare ground picks the window up.
@@ -867,6 +930,44 @@ private struct Sidebar: View {
         .onDrop(of: [.url, .fileURL, .plainText], delegate: SidebarDrop(store: store))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
+        .transaction { transaction in
+            if batterySaver.isActive {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        }
+    }
+
+    private func preparePreview() -> Bool {
+        let category = LibraryHoverCategory.resolve(hoverCategory)
+        guard category != .off, category.available(isPrivate: store.isPrivate) else {
+            previewItems = []
+            return false
+        }
+        if category == .downloads || category == .media { downloads.refreshMissing() }
+        // Resolve only the selected source, once per hover, rather than querying history
+        // or loading boards on every frame of a sidebar animation.
+        previewItems = LibraryHoverItem.recent(category,
+            downloads: downloads.items,
+            boards: category == .easels
+                ? EaselStore.shared(profileID: store.profileID, directory: Store.directory).boards : [],
+            spaces: category == .spaces ? store.spaces : [],
+            archived: category == .archived ? Archive.shared(for: store.profileID).entries : [],
+            history: category == .history ? Store.store(for: store.profileID).history(limit: 4) : [],
+            isPrivate: store.isPrivate)
+        return !previewItems.isEmpty
+    }
+
+    private func refreshPreview() {
+        if !preparePreview() { downloadsHover.dismiss() }
+    }
+
+    private var easelChanges: AnyPublisher<[EaselBoard], Never> {
+        guard LibraryHoverCategory.resolve(hoverCategory) == .easels, !store.isPrivate else {
+            return Empty().eraseToAnyPublisher()
+        }
+        return EaselStore.shared(profileID: store.profileID, directory: Store.directory)
+            .$boards.dropFirst().eraseToAnyPublisher()
     }
 }
 
@@ -4535,11 +4636,16 @@ private struct TabIcon: View {
 
 private struct BottomRow: View {
     @EnvironmentObject var store: TabStore
+    @ObservedObject var downloadsHover: DownloadsHover
+    let hasPreviewItems: Bool
+    let preparePreview: () -> Bool
 
     var body: some View {
         HStack(spacing: 8) {
             LibraryButton(archive: Archive.shared(for: store.profileID),
-                          downloads: Downloads.manager(for: store.profileID))
+                          downloads: Downloads.manager(for: store.profileID),
+                          hover: downloadsHover, hasPreviewItems: hasPreviewItems,
+                          preparePreview: preparePreview)
             Spacer(minLength: 0)
             // A private window has no Spaces — Arc's incognito has none either — so there
             // is nothing to draw dots for and nothing a `+` could make. The row keeps its
@@ -4575,12 +4681,25 @@ private struct LibraryButton: View {
     /// of another profile would show — and act on — the wrong lists.
     @ObservedObject var archive: Archive
     @ObservedObject var downloads: Downloads
+    @ObservedObject var hover: DownloadsHover
+    let hasPreviewItems: Bool
+    let preparePreview: () -> Bool
+    @State private var hovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var filled: Bool { !archive.entries.isEmpty || !downloads.items.isEmpty || hasPreviewItems }
 
     var body: some View {
         // Never disabled any more: the panel has this profile's Spaces and its history in
         // it as well as the two lists, so there is always something behind the glyph.
-        Button { Library.toggle(Library.shared.section, in: store) } label: {
-            Image(systemName: "archivebox")
+        Button {
+            hover.dismiss()
+            Library.toggle(Library.shared.section, in: store)
+        } label: {
+            LibraryBucket(filled: filled, hovered: hovered)
+                .frame(width: 32, height: 32)
+                .background(hovered ? Look.hovered : .clear, in: .rect(cornerRadius: 8))
+                .contentShape(.rect)
         }
             // A ring around the glyph while anything is downloading, so progress is visible
             // without opening the Library to look for it.
@@ -4589,9 +4708,21 @@ private struct LibraryButton: View {
             // Always the footer's own ink: the Library stands where this whole row is, so
             // there is no state in which the glyph is on screen *and* the Library is open.
             .foregroundStyle(Look.inkSecondary)
-            .help("Library (\(Keybindings.binding(for: .showLibrary).display))")
+            .onHover {
+                hovered = $0
+                hover.setHovered($0 && preparePreview(), over: .button)
+            }
+            .animation(reduceMotion ? nil : Look.quick, value: hovered)
+            .onChange(of: downloads.items.map(\.id)) {
+                let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
+                if (category == .downloads || category == .media) && !preparePreview() { hover.dismiss() }
+            }
+            .onChange(of: archive.entries) {
+                let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
+                if category == .archived && !preparePreview() { hover.dismiss() }
+            }
             .accessibilityLabel("Library")
             .accessibilityValue("\(archive.entries.count) archived, \(downloads.items.count) download\(downloads.items.count == 1 ? "" : "s")")
-            .accessibilityHint("Shows archived tabs, downloads, Spaces and history.")
+            .accessibilityHint("Click to open Library. Hover to preview up to four items from the section selected in Previews Settings.")
     }
 }

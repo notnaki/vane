@@ -74,6 +74,18 @@ Double-click a Today tab, pinned tab, favourite, or split pane to edit its name 
 place. Press **Return** to save or **Escape** to cancel; an empty name restores the
 page’s title.
 
+Hover the Library bucket in the sidebar footer to preview the last four downloads,
+with the newest at the bottom. Thumbnails, filenames, and relative times appear over
+the lower Today tabs; click a finished file to open it or right-click to show it in
+Finder. **Settings → General → Previews → Library hover preview** selects Downloads
+(the default), Media, Easels, Spaces, Archived Tabs, History, or Off. Each preview
+shows up to four items from this window's profile; private windows show only their
+own downloads, media, and archived tabs. The bucket is empty when downloads,
+archived tabs, and the selected preview are empty, and always highlights on hover.
+A filled bucket lifts its contents without changing their shape; an empty one lifts its lid.
+Reduce Motion and Battery Saver keep these changes immediate. Click the bucket to
+open the full Library.
+
 Pinned tabs keep their saved name as you navigate within them. When a pinned tab
 leaves its saved page, its sidebar row shows `/` before its title and offers
 **Return to Pinned Tab**; returning
