@@ -9,7 +9,7 @@ import AppKit
     private let play: PiPButton
     private let backward: PiPButton
     private let forward: PiPButton
-    private let seek = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
+    private let seek = PiPSeekSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let hostname = NSTextField(labelWithString: "")
     private var header: [NSGlassEffectView] = []
     private var tracking: NSTrackingArea?
@@ -55,6 +55,8 @@ import AppKit
         seek.minValue = 0
         seek.maxValue = 1
         seek.setAccessibilityLabel("Video playback position")
+        seek.toolTip = "Hold and drag upward for finer seeking"
+        seek.setAccessibilityHelp("Hold the seek knob and drag upward to seek more precisely.")
         seek.isContinuous = true
         seek.target = self
         seek.action = #selector(seekChanged)
@@ -107,7 +109,7 @@ import AppKit
             seek.minValue = first
             seek.maxValue = last
             // Do not overwrite the user's drag with periodic playback reports.
-            if !(NSApp.currentEvent?.type == .leftMouseDragged) { seek.doubleValue = state.position }
+            if !seek.isScrubbing && !(NSApp.currentEvent?.type == .leftMouseDragged) { seek.doubleValue = state.position }
         }
     }
 
@@ -115,7 +117,7 @@ import AppKit
         if window?.isKeyWindow != true { keyboardInteraction = false }
         let hovered = window?.frame.contains(pointer) == true
         let focusedControl = window?.isKeyWindow == true && window?.firstResponder is NSControl
-        setControlsVisible(hovered || focusedControl || keyboardInteraction)
+        setControlsVisible(hovered || focusedControl || keyboardInteraction || seek.isScrubbing)
     }
 
     private func setControlsVisible(_ visible: Bool) {
@@ -154,14 +156,56 @@ import AppKit
     }
 }
 
+@MainActor final class PiPSeekSlider: NSSlider {
+    private(set) var isScrubbing = false
+
+    static func scrubValue(_ current: Double, delta: CGFloat, lift: CGFloat, width: CGFloat,
+                           range: ClosedRange<Double>) -> Double {
+        guard width > 0 else { return current }
+        let precision = min(50, 1 + pow(Double(max(0, lift)) / 40, 2))
+        let change = Double(delta / width) * (range.upperBound - range.lowerBound) / precision
+        return min(range.upperBound, max(range.lowerBound, current + change))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled, maxValue > minValue, let window, let cell = cell as? NSSliderCell else { return }
+        window.makeFirstResponder(self)
+        isScrubbing = true
+        defer { isScrubbing = false }
+        let start = convert(event.locationInWindow, from: nil)
+        let knob = cell.knobRect(flipped: isFlipped)
+        let width = max(1, bounds.width - knob.width)
+        if !knob.insetBy(dx: -4, dy: -4).contains(start) {
+            let fraction = min(1, max(0, (start.x - bounds.minX - knob.width / 2) / width))
+            doubleValue = minValue + Double(fraction) * (maxValue - minValue)
+            sendAction(action, to: target)
+        }
+        var previous = start
+        while let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp],
+                                          until: .distantFuture, inMode: .eventTracking, dequeue: true) {
+            if next.type == .leftMouseUp { break }
+            let point = convert(next.locationInWindow, from: nil)
+            let lift = isFlipped ? start.y - point.y : point.y - start.y
+            let value = Self.scrubValue(doubleValue, delta: point.x - previous.x, lift: lift,
+                                       width: width, range: minValue...maxValue)
+            previous = point
+            if value != doubleValue {
+                doubleValue = value
+                sendAction(action, to: target)
+            }
+            needsDisplay = true
+        }
+    }
+}
+
 private final class PiPSeekCell: NSSliderCell {
     override func drawBar(inside rect: NSRect, flipped: Bool) {
         let track = NSRect(x: rect.minX, y: rect.midY - 2, width: rect.width, height: 4)
         NSColor.white.withAlphaComponent(0.3).setFill()
         NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
-        let fraction = maxValue > minValue ? min(1, max(0, (doubleValue - minValue) / (maxValue - minValue))) : 0
+        let end = min(track.maxX, max(track.minX, knobRect(flipped: flipped).midX))
         NSColor.white.setFill()
-        NSBezierPath(roundedRect: NSRect(x: track.minX, y: track.minY, width: track.width * fraction, height: track.height),
+        NSBezierPath(roundedRect: NSRect(x: track.minX, y: track.minY, width: end - track.minX, height: track.height),
                      xRadius: 2, yRadius: 2).fill()
     }
     override func drawKnob(_ knobRect: NSRect) {

@@ -22,26 +22,27 @@ import WebKit
         private var tracking: Task<Void, Never>?
         private var nativeSession: NativePiPHostBridge.Session?
 
-        init(window: NSWindow, tab: Tab) {
+        init(window: NSWindow?, tab: Tab, direct: NativePiPHostBridge.DirectCapture? = nil) {
             self.window = window
             self.tab = tab
             sourceWeb = tab.existingWeb
             sourceFrame = tab.pipFrame
             let controls = ControlsPanel(tab: tab)
-            if let parent = window.contentView,
-               let video = parent.subviews.first(where: {
+            if let parent = direct?.parent ?? window?.contentView,
+               let video = direct?.video ?? parent.subviews.first(where: {
                    NSStringFromClass(type(of: $0)) == "WebVideoViewContainer"
-               }), video.layer != nil, window.frame.width > 0, window.frame.height > 0,
-               let session = NativePiPHostBridge.session(parent: parent) {
+               }), video.layer != nil,
+               let frame = direct?.frame ?? window?.frame, frame.width > 0, frame.height > 0,
+               let session = direct?.session ?? NativePiPHostBridge.session(parent: parent) {
                 originalParent = parent
-                originalFrame = video.frame
+                originalFrame = direct?.originalFrame ?? video.frame
                 videoView = video
                 let content = PiPPlaybackControls(tab: tab,
                     returnToTab: { [weak tab] in guard let tab else { return }; Self.perform(.back, tab: tab) },
                     minimize: { [weak tab] in guard let tab else { return }; Self.perform(.minimize, tab: tab) },
                     close: { [weak tab] in guard let tab else { return }; Self.perform(.close, tab: tab) })
-                panel = CustomPiPWindow(frame: window.frame, videoView: video, controlsView: content)
-                window.orderOut(nil)
+                panel = CustomPiPWindow(frame: frame, videoView: video, controlsView: content)
+                window?.orderOut(nil)
                 (panel as? CustomPiPWindow)?.show()
                 nativeSession = session
                 controls.close()
@@ -196,6 +197,11 @@ import WebKit
 
     static func install(for tab: Tab) {
         guard attachments[tab.id] == nil, pending[tab.id] == nil else { return }
+        if let capture = NativePiPHostBridge.claim(for: tab) {
+            attachments[tab.id] = Attachment(window: nil, tab: tab, direct: capture)
+            before[tab.id] = nil
+            return
+        }
         let token = UUID()
         let task = Task { @MainActor [weak tab] in
             guard let tab else { return }
@@ -204,6 +210,12 @@ import WebKit
             }
             for _ in 0..<20 {
                 guard !Task.isCancelled, tab.pictureInPicture else { return }
+                // The page's mode event can precede WebKit's native presentation call.
+                // Retry direct discovery throughout entry, just like native discovery.
+                if let capture = NativePiPHostBridge.claim(for: tab) {
+                    attachments[tab.id] = Attachment(window: nil, tab: tab, direct: capture)
+                    return
+                }
                 let used = Set(attachments.values.compactMap(\.window).map(ObjectIdentifier.init))
                 let candidates = panels.filter {
                     !used.contains(ObjectIdentifier($0))
@@ -221,6 +233,7 @@ import WebKit
     }
 
     static func remove(_ id: UUID) {
+        NativePiPHostBridge.cancel(for: id)
         pending.removeValue(forKey: id)?.task.cancel()
         before[id] = nil
         attachments.removeValue(forKey: id)?.remove()

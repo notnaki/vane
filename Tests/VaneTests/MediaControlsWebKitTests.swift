@@ -161,15 +161,21 @@ import XCTest
 
     func testPiPUsesAVisibleCustomHostInsteadOfVisibleNativeChrome() async throws {
         let priorShells = Self.visibleSystemPiPWindows()
+        var entryShells: Set<Int> = []
         let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
         try await wait {
             try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false
         }
         PictureInPicture.toggle(tab)
-        try await wait { tab.pictureInPicture }
         try await wait {
-            NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible }
+            entryShells.formUnion(Self.visibleSystemPiPWindows().subtracting(priorShells))
+            return tab.pictureInPicture
         }
+        try await wait {
+            entryShells.formUnion(Self.visibleSystemPiPWindows().subtracting(priorShells))
+            return NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible }
+        }
+        XCTAssertTrue(entryShells.isEmpty, "Entry must bypass the native flying window as well as hide its final shell")
         XCTAssertFalse(NSApp.windows.contains {
             NSStringFromClass(type(of: $0)) == "PIPPanel" && $0.isVisible
         })
@@ -188,6 +194,33 @@ import XCTest
         XCTAssertFalse(custom.isVisible)
         let paused = try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool
         XCTAssertEqual(paused, false)
+    }
+
+    func testCustomPiPUsesNaturalAspectRatherThanInlineCSSBox() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='320' height='320' style='object-fit:cover' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        PictureInPicture.toggle(tab)
+        try await wait { NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible } }
+        let custom = try XCTUnwrap(NSApp.windows.first { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
+        let measured = try await tab.web.evaluateJavaScript("document.getElementById('player').videoWidth / document.getElementById('player').videoHeight")
+        let natural = try XCTUnwrap(measured as? Double)
+        XCTAssertEqual(custom.frame.width / custom.frame.height, natural, accuracy: 0.01)
+    }
+
+    func testCollapsedInlineVideoStillGetsAVisiblePiPHost() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='0' height='0' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        try await wait {
+            NSApp.windows.contains {
+                $0.isVisible && ($0.identifier?.rawValue == "vane.pip.window" || NSStringFromClass(type(of: $0)) == "PIPPanel")
+            }
+        }
+        var returned = false
+        PictureInPicture.minimize(tab) { returned = $0 }
+        try await wait { returned && !tab.pictureInPicture }
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
     }
 
     private static func visibleSystemPiPWindows() -> Set<Int> {

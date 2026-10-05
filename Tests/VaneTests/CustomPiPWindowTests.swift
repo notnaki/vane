@@ -67,6 +67,16 @@ import XCTest
         XCTAssertNil(PictureInPicture.Playback(from: ["playing": false, "position": Double.nan, "ranges": []]))
     }
 
+    func testUpwardScrubbingIsMorePreciseWithoutJumping() {
+        let ordinary = PiPSeekSlider.scrubValue(50, delta: 100, lift: 0, width: 500, range: 0...100)
+        let precise = PiPSeekSlider.scrubValue(50, delta: 100, lift: 120, width: 500, range: 0...100)
+        XCTAssertGreaterThan(ordinary, precise)
+        XCTAssertGreaterThan(precise, 50)
+        XCTAssertEqual(PiPSeekSlider.scrubValue(50, delta: 0, lift: 200, width: 500, range: 0...100), 50)
+        XCTAssertEqual(PiPSeekSlider.scrubValue(99, delta: 500, lift: 0, width: 500, range: 0...100), 100)
+        XCTAssertEqual(PiPSeekSlider.scrubValue(1, delta: -500, lift: 0, width: 500, range: 0...100), 0)
+    }
+
     func testReopeningKeepsTheLastCustomPlacement() {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -95,5 +105,18 @@ import XCTest
         XCTAssertTrue(screen.contains(recovered))
         XCTAssertEqual(recovered.size, lost.size)
         XCTAssertEqual(CustomPiPWindow.recoverFrame(lost, screens: []), lost)
+        let tiny = CustomPiPWindow.initialFrame(NSRect(x: 100, y: 100, width: 150, height: 80), saved: nil, screens: [screen])
+        XCTAssertGreaterThanOrEqual(tiny.width, 280)
+        XCTAssertGreaterThanOrEqual(tiny.height, 160)
+        XCTAssertEqual(tiny.width / tiny.height, 150.0 / 80, accuracy: 0.001)
+        let landscape = NSRect(x: 100, y: 125, width: 1200, height: 675)
+        let portrait = CustomPiPWindow.initialFrame(NSRect(x: 0, y: 0, width: 360, height: 640),
+                                                   saved: landscape, screens: [screen])
+        XCTAssertTrue(screen.contains(portrait), "Aspect changes must not put bottom controls offscreen")
+        XCTAssertEqual(portrait.width / portrait.height, 9.0 / 16, accuracy: 0.001)
+        let smallerScreen = NSRect(x: 0, y: 0, width: 800, height: 600)
+        let resized = CustomPiPWindow.recoverFrame(landscape, screens: [smallerScreen])
+        XCTAssertTrue(smallerScreen.contains(resized))
+        XCTAssertEqual(resized.width / resized.height, landscape.width / landscape.height, accuracy: 0.001)
     }
 }

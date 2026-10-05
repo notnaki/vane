@@ -661,6 +661,7 @@ struct TitleReveal: Equatable, Sendable {
     /// and the KVO that republishes WebKit's state. Runs at init and again on every resume,
     /// because suspension swaps the web view out from under all of it.
     private func attach() {
+        NativePiPHostBridge.register(tab: self, web: web)
         if let linkView = web as? LinkContextWebView {
             linkView.openBackground = { [weak self] url in self?.onOpenLinkInBackground?(url) }
             linkView.openDestination = { [weak self] url, destination in self?.onOpenContextLink?(url, destination) }

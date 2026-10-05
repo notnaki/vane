@@ -37,7 +37,9 @@ release builds packaged with `SIGN_ID` offer it once. You can still use the manu
 
 Picture in Picture uses a custom floating window that you can drag anywhere and
 resize, with Back to Tab, minimize, close, play/pause, 15-second skips, and a seek
-bar. It remembers its last position and size when reopened. Back to Tab fades the window in place and reveals the source tab. Minimize
+bar. Hold the seek knob and drag upward for finer horizontal seeking. It remembers
+its last position and size when reopened. Entry and Back to Tab fade the window
+in place; Back to Tab reveals the source tab. Minimize
 hides it while playback continues. The sidebar video player appears after minimizing PiP.
 It stays available across this window's Spaces, including Spaces in other profiles.
 Returning to its source Space keeps the minimized player visible until you open its tab,

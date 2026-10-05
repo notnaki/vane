@@ -29,7 +29,8 @@ import Combine
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         contentAspectRatio = frame.size
         let aspect = frame.width / frame.height
-        contentMinSize = NSSize(width: max(280, 160 * aspect), height: max(160, 280 / aspect))
+        contentMinSize = NSSize(width: min(initialFrame.width, max(280, 160 * aspect)),
+                                height: min(initialFrame.height, max(160, 280 / aspect)))
         isMovableByWindowBackground = true
         let content = VideoContent(frame: NSRect(origin: .zero, size: initialFrame.size), video: videoView, controls: controlsView)
         content.wantsLayer = true
@@ -64,12 +65,17 @@ import Combine
     }
 
     static func initialFrame(_ proposed: NSRect, saved: NSRect?, screens: [NSRect]) -> NSRect {
-        guard let saved, [saved.minX, saved.minY, saved.width, saved.height].allSatisfy(\.isFinite),
-              saved.width > 0, saved.height > 0, proposed.width > 0, proposed.height > 0 else { return proposed }
+        guard proposed.width > 0, proposed.height > 0 else { return proposed }
+        let validSaved = saved.flatMap { rect -> NSRect? in
+            guard [rect.minX, rect.minY, rect.width, rect.height].allSatisfy(\.isFinite),
+                  rect.width > 0, rect.height > 0 else { return nil }
+            return rect
+        }
+        let placement = validSaved ?? proposed
         let aspect = proposed.width / proposed.height
-        let width = max(saved.width, 280, 160 * aspect)
+        let width = max(placement.width, 280, 160 * aspect)
         let height = width / aspect
-        let wanted = NSRect(x: saved.minX, y: saved.maxY - height, width: width, height: height)
+        let wanted = NSRect(x: placement.minX, y: placement.maxY - height, width: width, height: height)
         return recoverFrame(wanted, screens: screens)
     }
 
@@ -79,14 +85,27 @@ import Combine
     }
 
     static func recoverFrame(_ frame: NSRect, screens: [NSRect]) -> NSRect {
-        guard let screen = screens.first, frame.width > 0, frame.height > 0 else { return frame }
-        if screens.contains(where: {
-            let visible = $0.intersection(frame)
-            return visible.width >= 80 && visible.height >= 50
-        }) { return frame }
+        guard let first = screens.first, frame.width > 0, frame.height > 0 else { return frame }
+        let visible = screens.filter {
+            let intersection = $0.intersection(frame)
+            return intersection.width >= 80 && intersection.height >= 50
+        }
+        let screen = visible.max {
+            let left = $0.intersection(frame), right = $1.intersection(frame)
+            return left.width * left.height < right.width * right.height
+        } ?? first
         let scale = min(1, screen.width / frame.width, screen.height / frame.height)
-        let size = NSSize(width: frame.width * scale, height: frame.height * scale)
-        return NSRect(x: screen.midX - size.width / 2, y: screen.midY - size.height / 2, width: size.width, height: size.height)
+        if scale < 1 {
+            // A remembered landscape width can otherwise put portrait controls below
+            // the display. Fit size before accepting any partial-screen placement.
+            let size = NSSize(width: frame.width * scale, height: frame.height * scale)
+            return NSRect(x: min(max(frame.minX, screen.minX), screen.maxX - size.width),
+                          y: min(max(frame.maxY - size.height, screen.minY), screen.maxY - size.height),
+                          width: size.width, height: size.height)
+        }
+        if !visible.isEmpty { return frame }
+        return NSRect(x: screen.midX - frame.width / 2, y: screen.midY - frame.height / 2,
+                      width: frame.width, height: frame.height)
     }
 
     func show() {
