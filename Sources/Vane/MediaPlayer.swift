@@ -441,7 +441,7 @@ enum MediaTray {
         let id = tab.id
         if !tab.pictureInPicture { releaseSelection(id); pipSources[id] = nil }
         held.remove(id)
-        minimized.remove(id)
+        if minimized.remove(id) != nil { PictureInPicture.exitIfAuto(tab) }
     }
 
     func dismiss(_ tab: Tab) {
@@ -548,11 +548,16 @@ struct MediaTrayView: View {
     @State private var hovered = false
     @AccessibilityFocusState private var focused: Bool
 
-    /// The tab on the tray, resolved through the pure rule above. `everyTab`, because the
-    /// page playing in the Space you have just swiped off is exactly the one this tray is a
-    /// player for; its title is still the way back to it. See `TabStore.reveal`.
+    /// Include profiles parked behind this window when its Spaces strip crosses profiles.
+    /// Their pages keep playing in their original hosts; only the controls follow us.
+    private var stores: [TabStore] {
+        guard let window = store.window ?? store.parkedIn else { return [store] }
+        return [store] + TabStore.all.filter { $0 !== store && $0.parkedIn === window }
+    }
+
+    /// The tab on the tray, including stashed Spaces and this window's parked profiles.
     private var tab: Tab? {
-        let all = store.everyTab.filter {
+        let all = stores.flatMap(\.everyTab).filter {
             !$0.pictureInPicture && (media.info(for: $0.id)?.video != true || media.minimized.contains($0.id))
         }
         let rows = all.filter { !media.isDismissed($0.id) }.map {
@@ -570,11 +575,22 @@ struct MediaTrayView: View {
         // Never wider than the rows above it, same as the toast.
         .padding(.horizontal, Look.inset)
         .animation(reduceMotion ? nil : Look.list, value: tab?.id)
-        // Going back to the tab ends the tray's claim on it: the page's own player is on
-        // screen again, and a stale hold would bring the tray back on the next switch.
-        .onChange(of: store.current) { if let tab = store.everyTab.first(where: { $0.id == store.current }) { media.returned(to: tab) } }
+        // Ordinary audio returns to the page, but minimized video controls persist even
+        // when a Space switch lands on their source tab. Opening the player is explicit.
+        .onChange(of: store.current) {
+            if let tab = store.everyTab.first(where: { $0.id == store.current }),
+               !media.minimized.contains(tab.id) { media.returned(to: tab) }
+        }
         .onChange(of: tab?.id) { hovered = false }
         // Let the card's shadow extend beyond the tray's layout bounds, like the toast.
+    }
+
+    private func open(_ tab: Tab) {
+        guard let owner = stores.first(where: { $0.everyTab.contains { $0 === tab } }) else { return }
+        PictureInPicture.exitIfAuto(tab)
+        media.returned(to: tab)
+        if owner === store { store.reveal(tab.id) }
+        else { Windows.reveal(tab, in: owner) }
     }
 
     private func player(_ tab: Tab) -> some View {
@@ -585,9 +601,7 @@ struct MediaTrayView: View {
             if expanded {
                 HStack(spacing: Look.rowSpacing) {
                     Button {
-                        PictureInPicture.exitIfAuto(tab)
-                        media.returned(to: tab)
-                        store.reveal(tab.id)
+                        open(tab)
                     } label: {
                         Marquee(text: title).foregroundStyle(Look.barText)
                     }
@@ -603,9 +617,7 @@ struct MediaTrayView: View {
             }
             HStack(spacing: 0) {
                 Button {
-                    PictureInPicture.exitIfAuto(tab)
-                    media.returned(to: tab)
-                    store.reveal(tab.id)
+                    open(tab)
                 } label: {
                     SiteIcon(icon: tab.favicon, fallback: "waveform", size: Look.rowIcon)
                         .frame(width: Look.control, height: Look.control)
@@ -639,7 +651,7 @@ struct MediaTrayView: View {
         .accessibilityFocused($focused)
         // Keyboard and VoiceOver users can reach the same actions without a pointer hover.
         .contextMenu {
-            Button("Open Playing Tab") { PictureInPicture.exitIfAuto(tab); media.returned(to: tab); store.reveal(tab.id) }
+            Button("Open Playing Tab") { open(tab) }
             if info.video {
                 Button("Show Picture in Picture") { media.restore(tab) }.disabled(tab.pictureInPicture)
             }

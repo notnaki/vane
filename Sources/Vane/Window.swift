@@ -591,20 +591,21 @@ extension VaneWindow {
         return open(profile: profile)
     }
 
-    /// Select an open tab, including one held behind another profile in this same window.
+    /// Select an open tab, including stashed Spaces behind another profile in this window.
     /// The command bar lists tabs from every store; a parked store has no `window` to raise,
     /// so bring its profile to the front before selecting its tab.
     @discardableResult
     static func reveal(_ tab: Tab, in owner: TabStore) -> Bool {
-        guard owner.tabs.contains(where: { $0 === tab }) else { return false }
+        guard owner.everyTab.contains(where: { $0 === tab }) else { return false }
         if let window = owner.parkedIn {
             guard let showing = TabStore.all.first(where: { $0.window === window }),
-                  let space = owner.currentSpace,
+                  let spaceID = owner.space(stashing: tab.id) ?? owner.currentSpaceID,
+                  let space = owner.spaces.first(where: { $0.id == spaceID }),
                   hop(showing, to: space) === owner else { return false }
         } else if owner.window == nil {
             return false
         }
-        owner.current = tab.id
+        owner.reveal(tab.id)
         owner.window?.makeKeyAndOrderFront(nil)
         owner.focusPageAfterHop()
         return true

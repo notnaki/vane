@@ -1,4 +1,5 @@
 import AppKit
+import class SwiftUI.NSHostingView
 import WebKit
 import XCTest
 @testable import vane
@@ -155,6 +156,56 @@ import XCTest
         XCTAssertEqual(oldPaused, true, "The old video must not restart")
     }
 
+    func testLandingOnSourceTabKeepsTheMinimizedPlayerUntilExplicitlyOpened() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        let store = TabStore(isPrivate: true)
+        let trayWindow = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 250, height: 150),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+        trayWindow.isReleasedWhenClosed = false
+        store.tabs = [tab]
+        store.current = tab.id
+        trayWindow.contentView = NSHostingView(rootView: MediaTrayView().environmentObject(store))
+        trayWindow.orderFront(nil)
+        defer {
+            trayWindow.close()
+            TabStore.all.removeAll { $0 === store }
+        }
+        try await wait { MediaState.shared.info(for: tab.id)?.playing == true }
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        var collapsed = false
+        MediaState.shared.minimize(tab) { collapsed = $0 }
+        try await wait { collapsed && !tab.pictureInPicture }
+        store.current = nil
+        try await Task.sleep(for: .milliseconds(100))
+        store.current = tab.id
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(MediaState.shared.minimized.contains(tab.id),
+                      "Landing in the source Space must not dismiss its minimized player")
+        XCTAssertTrue(MediaState.shared.held.contains(tab.id))
+        let departure: String? = try await withCheckedThrowingContinuation { continuation in
+            tab.web.evaluateJavaScript(PictureInPicture.autoCommand(enter: true),
+                                       in: tab.pipFrame, in: PictureInPicture.world) { result in
+                continuation.resume(with: result.map { $0 as? String })
+            }
+        }
+        XCTAssertEqual(departure, "minimized",
+                       "Leaving the source tab again must not reopen PiP and replace the tray")
+        MediaState.shared.returned(to: tab)
+        XCTAssertFalse(MediaState.shared.minimized.contains(tab.id),
+                       "Explicitly opening the playing tab still releases the player")
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        let reopened: String? = try await withCheckedThrowingContinuation { continuation in
+            tab.web.evaluateJavaScript(PictureInPicture.autoCommand(enter: true),
+                                       in: tab.pipFrame, in: PictureInPicture.world) { result in
+                continuation.resume(with: result.map { $0 as? String })
+            }
+        }
+        XCTAssertEqual(reopened, "pip", "Explicit opening restores ordinary automatic PiP behavior")
+        PictureInPicture.exitIfAuto(tab)
+    }
+
     func testPiPControlsHideOutsideVideoAndFollowItsFrame() async throws {
         let (tab, window) = try await fixture("<p>Hover geometry</p>")
         let controls = PiPMinimizeControls.Attachment(window: window, tab: tab)
@@ -228,6 +279,9 @@ import XCTest
         }
         control?.performClick(nil)
         try await wait { !tab.pictureInPicture && window.isVisible }
+        // The native inline transition can finish before playback resumes. An idle
+        // response would test that timing rather than whether minimize suppression cleared.
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
         let reply: String? = try await withCheckedThrowingContinuation { continuation in
             tab.web.evaluateJavaScript(PictureInPicture.autoCommand(enter: true),
                                        in: tab.pipFrame, in: PictureInPicture.world) { result in
