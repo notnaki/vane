@@ -14,9 +14,13 @@ import XCTest
             let first = preview(store, live: live, space: space)
             let firstPixels = try pixels(first)
             refresh(author: "second-author")
-            XCTAssertEqual(try pixels(first), firstPixels,
+            // SF Symbol rasterization can differ by one alpha level at a few edge pixels
+            // between ImageRenderer instances. A content change exceeds that rounding noise.
+            XCTAssertLessThanOrEqual(pixelDifference(try pixels(first), firstPixels), 1,
                            "A refresh must not change a ghost in the middle of a swipe")
             let second = preview(store, live: live, space: space)
+            XCTAssertGreaterThan(pixelDifference(try pixels(second), firstPixels), 1,
+                                 "The next gesture must render the refreshed author")
             XCTAssertEqual(first.rows.pinned.compactMap(\.pr).map(\.subtitle), ["first-author"])
             XCTAssertEqual(second.rows.pinned.compactMap(\.pr).map(\.subtitle), ["second-author"])
         }
@@ -61,6 +65,11 @@ import XCTest
         let renderer = ImageRenderer(content: preview.frame(width: 250, height: 320))
         let image = try XCTUnwrap(renderer.cgImage)
         return try XCTUnwrap(image.dataProvider?.data) as Data
+    }
+
+    private func pixelDifference(_ first: Data, _ second: Data) -> Int {
+        guard first.count == second.count else { return 255 }
+        return zip(first, second).reduce(0) { max($0, abs(Int($1.0) - Int($1.1))) }
     }
 
     private func withFixture(_ body: (TabStore, LiveFolders, Folder, Space, URL) throws -> Void) throws {
