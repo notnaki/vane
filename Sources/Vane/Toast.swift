@@ -192,11 +192,11 @@ struct ToastPill: View {
     let tint: Color
     @ObservedObject private var toasts = Toasts.shared
 
-    /// Try the content's natural width first. A short message and Undo fit even in
-    /// the default sidebar; only content that cannot fit needs a second row.
+    /// Compact text and gaps keep short update prompts beside their controls.
+    /// Only content that cannot fit at its natural width needs a second row.
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: Look.inset) {
+            HStack(spacing: Look.inset / 2) {
                 text(toast)
                 controls(toast, fixed: true)
             }
@@ -205,13 +205,13 @@ struct ToastPill: View {
             if toast.action != nil {
                 VStack(alignment: .leading, spacing: Look.inset / 2) {
                     text(toast)
-                    HStack(spacing: Look.inset) {
+                    HStack(spacing: Look.inset / 2) {
                         Spacer(minLength: 0)
                         controls(toast, fixed: false)
                     }
                 }
             } else {
-                HStack(spacing: Look.inset) {
+                HStack(spacing: Look.inset / 2) {
                     text(toast)
                     controls(toast, fixed: false)
                 }
@@ -253,11 +253,11 @@ struct ToastPill: View {
         if let action = toast.action {
             Button(action.title) { toasts.act(toast) }
                 .buttonStyle(.plain)
-                .font(Look.rowText)
+                .font(Look.Typography.shortcut.font)
                 .lineLimit(2)
                 .fixedSize(horizontal: fixed, vertical: true)
                 .foregroundStyle(Look.barText)
-                .padding(.horizontal, Look.inset)
+                .padding(.horizontal, Look.inset / 2)
                 .frame(minHeight: Look.control)
                 .background(Look.barSelected, in: .capsule)
         }
@@ -281,9 +281,9 @@ struct ToastPill: View {
     private func styled(_ text: String, emphasis: Bool) -> AttributedString {
         var out = emphasis ? ((try? AttributedString(markdown: text)) ?? AttributedString(text))
                            : AttributedString(text)
-        out.font = Look.rowText
+        out.font = Look.Typography.secondary.font
         for run in out.runs where run.inlinePresentationIntent?.contains(.stronglyEmphasized) == true {
-            out[run.range].font = Look.rowText.bold()
+            out[run.range].font = Look.Typography.secondary.font.bold()
         }
         return out
     }
