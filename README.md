@@ -37,6 +37,9 @@ release builds packaged with `SIGN_ID` offer it once. You can still use the manu
 
 The floating Picture in Picture video has a minus button that hides it while
 playback continues. The sidebar video player appears after minimizing PiP.
+It stays available across this window's Spaces, including Spaces in other profiles.
+Returning to its source Space keeps the minimized player visible until you open its tab,
+restore Picture in Picture, or close the player.
 It keeps the site icon and transport controls visible; hover over it to see the title, restore Picture in Picture,
 or close the player and pause. Embedded players use their own frame and
 Media Session play/pause and skip handlers.

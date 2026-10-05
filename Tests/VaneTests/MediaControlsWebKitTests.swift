@@ -1,4 +1,5 @@
 import AppKit
+import class SwiftUI.NSHostingView
 import WebKit
 import XCTest
 @testable import vane
@@ -153,6 +154,39 @@ import XCTest
         let oldPaused = try await tab.web.evaluateJavaScript("document.getElementById('old').paused") as? Bool
         XCTAssertEqual(newPaused, true, "Returning to the tab releases the former PiP video selection")
         XCTAssertEqual(oldPaused, true, "The old video must not restart")
+    }
+
+    func testLandingOnSourceTabKeepsTheMinimizedPlayerUntilExplicitlyOpened() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        let store = TabStore(isPrivate: true)
+        let trayWindow = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 250, height: 150),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+        trayWindow.isReleasedWhenClosed = false
+        store.tabs = [tab]
+        store.current = tab.id
+        trayWindow.contentView = NSHostingView(rootView: MediaTrayView().environmentObject(store))
+        trayWindow.orderFront(nil)
+        defer {
+            trayWindow.close()
+            TabStore.all.removeAll { $0 === store }
+        }
+        try await wait { MediaState.shared.info(for: tab.id)?.playing == true }
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        var collapsed = false
+        MediaState.shared.minimize(tab) { collapsed = $0 }
+        try await wait { collapsed && !tab.pictureInPicture }
+        store.current = nil
+        try await Task.sleep(for: .milliseconds(100))
+        store.current = tab.id
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(MediaState.shared.minimized.contains(tab.id),
+                      "Landing in the source Space must not dismiss its minimized player")
+        XCTAssertTrue(MediaState.shared.held.contains(tab.id))
+        MediaState.shared.returned(to: tab)
+        XCTAssertFalse(MediaState.shared.minimized.contains(tab.id),
+                       "Explicitly opening the playing tab still releases the player")
     }
 
     func testPiPControlsHideOutsideVideoAndFollowItsFrame() async throws {
