@@ -12,18 +12,17 @@ struct BatterySaverPopup: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 Image(systemName: "bolt.fill")
-                    .font(.system(size: 25, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .accessibilityHidden(true)
                 Text(notice.text)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 18)
-            .background(green, in: .rect(cornerRadius: 18))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(green, in: .rect(cornerRadius: 12))
 
             Button {
                 saver.dismissNotice(notice.id)
@@ -33,19 +32,19 @@ struct BatterySaverPopup: View {
                     Text("Edit this setting")
                     Image(systemName: "arrow.up.right")
                 }
-                .font(.system(size: 14, weight: .semibold))
-                .padding(.horizontal, 12)
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(buttonGreen, in: .capsule)
                 .contentShape(.capsule)
             }
             .buttonStyle(.plain)
-            .padding(.trailing, 18)
+            .padding(.trailing, 12)
             .accessibilityHint("Open Battery Saver in Advanced settings")
         }
         .foregroundStyle(.white)
-        .frame(maxWidth: 430, alignment: .trailing)
-        .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+        .frame(maxWidth: 320, alignment: .trailing)
+        .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
         .onHover { saver.holdNotice($0, by: host) }
         .onDisappear { saver.holdNotice(false, by: host) }
     }
