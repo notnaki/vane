@@ -184,9 +184,26 @@ import XCTest
         XCTAssertTrue(MediaState.shared.minimized.contains(tab.id),
                       "Landing in the source Space must not dismiss its minimized player")
         XCTAssertTrue(MediaState.shared.held.contains(tab.id))
+        let departure: String? = try await withCheckedThrowingContinuation { continuation in
+            tab.web.evaluateJavaScript(PictureInPicture.autoCommand(enter: true),
+                                       in: tab.pipFrame, in: PictureInPicture.world) { result in
+                continuation.resume(with: result.map { $0 as? String })
+            }
+        }
+        XCTAssertEqual(departure, "minimized",
+                       "Leaving the source tab again must not reopen PiP and replace the tray")
         MediaState.shared.returned(to: tab)
         XCTAssertFalse(MediaState.shared.minimized.contains(tab.id),
                        "Explicitly opening the playing tab still releases the player")
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        let reopened: String? = try await withCheckedThrowingContinuation { continuation in
+            tab.web.evaluateJavaScript(PictureInPicture.autoCommand(enter: true),
+                                       in: tab.pipFrame, in: PictureInPicture.world) { result in
+                continuation.resume(with: result.map { $0 as? String })
+            }
+        }
+        XCTAssertEqual(reopened, "pip", "Explicit opening restores ordinary automatic PiP behavior")
+        PictureInPicture.exitIfAuto(tab)
     }
 
     func testPiPControlsHideOutsideVideoAndFollowItsFrame() async throws {
@@ -262,6 +279,9 @@ import XCTest
         }
         control?.performClick(nil)
         try await wait { !tab.pictureInPicture && window.isVisible }
+        // The native inline transition can finish before playback resumes. An idle
+        // response would test that timing rather than whether minimize suppression cleared.
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
         let reply: String? = try await withCheckedThrowingContinuation { continuation in
             tab.web.evaluateJavaScript(PictureInPicture.autoCommand(enter: true),
                                        in: tab.pipFrame, in: PictureInPicture.world) { result in

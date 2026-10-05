@@ -75,5 +75,13 @@ import XCTest
         XCTAssertEqual(owner.currentSpaceID, sourceSpace.id)
         XCTAssertEqual(owner.current, player.id)
         XCTAssertTrue(owner.tabs.contains { $0 === player })
+
+        owner.switchTo(space: otherSpace)
+        XCTAssertNotNil(Windows.hop(owner, to: destinationSpace))
+        PictureInPicture.returnToTab(player)
+        XCTAssertTrue(owner.window === window,
+                      "Returning a restored PiP video must also reveal its parked profile")
+        XCTAssertEqual(owner.currentSpaceID, sourceSpace.id)
+        XCTAssertEqual(owner.current, player.id)
     }
 }

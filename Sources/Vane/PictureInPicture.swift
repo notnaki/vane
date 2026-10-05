@@ -182,8 +182,7 @@ import WebKit
     static func returnToTab(_ tab: Tab) {
         guard let store = TabStore.all.first(where: { $0.everyTab.contains { $0 === tab } })
         else { return }
-        store.reveal(tab.id)           // goes to its Space first if the window is stashing it
-        guard let window = store.window else { return }
+        guard Windows.reveal(tab, in: store), let window = store.window else { return }
         if window.isMiniaturized { window.deminiaturize(nil) }
         window.makeKeyAndOrderFront(nil)
         // The PiP panel is non-activating by design, so Vane is very often not the app in
@@ -224,7 +223,9 @@ import WebKit
     /// The tab the user just came back to. Deliberately *not* gated on `autoEnabled`: a
     /// video detached before the preference was turned off still has to come home.
     static func exitIfAuto(_ tab: Tab?) {
-        guard let tab, !tab.suspended else { return }
+        // An incidental return must not release the user's minimized-player choice.
+        // Explicitly opening its tab removes that choice before calling us.
+        guard let tab, !tab.suspended, !MediaState.shared.minimized.contains(tab.id) else { return }
         run(autoCommand(enter: false), in: tab)
     }
 

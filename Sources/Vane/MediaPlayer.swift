@@ -430,7 +430,7 @@ enum MediaTray {
         let id = tab.id
         if !tab.pictureInPicture { releaseSelection(id); pipSources[id] = nil }
         held.remove(id)
-        minimized.remove(id)
+        if minimized.remove(id) != nil { PictureInPicture.exitIfAuto(tab) }
     }
 
     func dismiss(_ tab: Tab) {
