@@ -393,8 +393,8 @@ import XCTest
         XCTAssertFalse(controls.panel.isVisible, "A closed or hidden video cannot leave floating controls behind")
     }
 
-    func testPiPRestoreControlReturnsTheVideoWithoutPausing() async throws {
-        let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+    func testPiPRestoreAnimatesToTheCurrentVideoPositionWithoutPausing() async throws {
+        let (tab, window) = try await fixture("<style>body { margin: 0 } video { position: absolute; left: 90px; top: 80px; width: 480px; height: 270px }</style><video id='player' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
         let store = TabStore(isPrivate: true)
         defer { TabStore.all.removeAll { $0 === store } }
         store.tabs = [tab]
@@ -414,12 +414,32 @@ import XCTest
             return control != nil
         }
         let panel = try XCTUnwrap(control?.window)
-        let originalFrame = panel.frame
+        try await Task.sleep(for: .milliseconds(350))
+        let placement = NSRect(x: 50, y: 50, width: 640, height: 360)
+        panel.setFrame(placement, display: true)
+        // Neither the entry rectangle nor its window position is still current.
+        window.setFrameOrigin(NSPoint(x: 180, y: 170))
+        _ = try await tab.web.evaluateJavaScript("player.style.left='140px'; player.style.top='100px'; player.style.width='128px'; player.style.height='72px'; true")
+        try await Task.sleep(for: .milliseconds(100))
+        let destination = window.convertToScreen(tab.web.convert(NSRect(x: 140, y: 100, width: 128, height: 72), to: nil))
         control?.performClick(nil)
-        for _ in 0..<8 {
-            if panel.isVisible { XCTAssertEqual(panel.frame, originalFrame, "Return fades in place") }
+        var moved = false
+        for _ in 0..<25 {
+            if panel.isVisible {
+                let progress = (panel.frame.minX - placement.minX) / (destination.minX - placement.minX)
+                if progress > 0.01 && progress < 0.99 { moved = true }
+                XCTAssertEqual(progress, (panel.frame.minY - placement.minY) / (destination.minY - placement.minY), accuracy: 0.03)
+                XCTAssertEqual(progress, (panel.frame.width - placement.width) / (destination.width - placement.width), accuracy: 0.03)
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
+        XCTAssertTrue(moved, "Back to Tab must move the live video into the page, rather than only fading")
+        XCTAssertEqual(panel.frame.minX, destination.minX, accuracy: 1)
+        XCTAssertEqual(panel.frame.minY, destination.minY, accuracy: 1)
+        XCTAssertEqual(panel.frame.width, destination.width, accuracy: 1)
+        XCTAssertEqual(panel.frame.height, destination.height, accuracy: 1)
+        let remembered = UserDefaults.vane.string(forKey: CustomPiPWindow.placementKey).map(NSRectFromString)
+        XCTAssertEqual(remembered, placement, "Returning must preserve the user's floating placement")
         try await wait { !tab.pictureInPicture }
         try await wait { !panel.isVisible && store.current == tab.id }
         try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
@@ -427,6 +447,42 @@ import XCTest
         XCTAssertEqual(paused, false)
         XCTAssertEqual(store.current, tab.id)
         XCTAssertFalse(MediaState.shared.minimized.contains(tab.id))
+    }
+
+    func testEmbeddedPiPReturnsToItsScrolledFrame() async throws {
+        let player = "<style>body {margin:0} video {position:absolute;left:20px;top:30px;width:320px;height:180px}</style><video autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>"
+        let quoted = player.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;")
+        let (tab, window) = try await fixture("<style>body{margin:0;height:1500px} iframe{position:absolute;left:100px;top:70px;width:500px;height:300px;border:0}</style><iframe id='embedded' sandbox='allow-scripts' srcdoc=\"" + quoted + "\"></iframe>")
+        try await wait { tab.pipFrame?.isMainFrame == false }
+        PictureInPicture.toggle(tab)
+        try await wait { tab.pictureInPicture }
+        var panel: CustomPiPWindow?
+        try await wait {
+            panel = NSApp.windows.first { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible } as? CustomPiPWindow
+            return panel != nil
+        }
+        let custom = try XCTUnwrap(panel)
+        try await Task.sleep(for: .milliseconds(350))
+        let placement = NSRect(x: 50, y: 50, width: 640, height: 360)
+        custom.setFrame(placement, display: true)
+        _ = try await tab.web.evaluateJavaScript("embedded.style.top='600px'; window.scrollTo(0,400); true")
+        try await Task.sleep(for: .milliseconds(100))
+        let destination = window.convertToScreen(tab.web.convert(NSRect(x: 120, y: 230, width: 320, height: 180), to: nil))
+        func restore(_ view: NSView) -> NSButton? {
+            if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
+            return view.subviews.lazy.compactMap(restore).first
+        }
+        try XCTUnwrap(restore(custom.controlsView)).performClick(nil)
+        var moved = false
+        for _ in 0..<25 {
+            if custom.isVisible && custom.frame != placement { moved = true }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(moved, "An opaque-origin iframe must receive the same return motion")
+        XCTAssertEqual(custom.frame.minX, destination.minX, accuracy: 1)
+        XCTAssertEqual(custom.frame.minY, destination.minY, accuracy: 1)
+        XCTAssertEqual(custom.frame.size, destination.size)
+        try await wait { !tab.pictureInPicture && !custom.isVisible }
     }
 
     func testRestoringSelectedTabKeepsAutomaticPiPEnabled() async throws {
@@ -450,7 +506,7 @@ import XCTest
             return control != nil
         }
         control?.performClick(nil)
-        try await wait { !tab.pictureInPicture && window.isVisible }
+        try await wait { !tab.pictureInPicture && window.isVisible && !PiPMinimizeControls.isReturningToTab(tab) }
         // The native inline transition can finish before playback resumes. An idle
         // response would test that timing rather than whether minimize suppression cleared.
         try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
@@ -597,7 +653,44 @@ import XCTest
         XCTAssertEqual(paused, false)
     }
 
-    func testNavigationDuringPiPFadeDoesNotRevealReplacementPage() async throws {
+    func testImmediateReentryDuringReturnDoesNotLeaveAnEmptyPanel() async throws {
+        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        func restore(_ view: NSView) -> NSButton? {
+            if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
+            return view.subviews.lazy.compactMap(restore).first
+        }
+        PictureInPicture.toggle(tab)
+        var old: CustomPiPWindow?
+        try await wait {
+            old = NSApp.windows.first { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible } as? CustomPiPWindow
+            return old != nil
+        }
+        let original = try XCTUnwrap(old)
+        try await Task.sleep(for: .milliseconds(350))
+        let placement = NSRect(x: 50, y: 50, width: 640, height: 360)
+        original.setFrame(placement, display: true)
+        try XCTUnwrap(restore(original.controlsView)).performClick(nil)
+        // Supersede the page's pending 50ms inline confirmation.
+        try await wait { !tab.pictureInPicture }
+        // A stale failed async request may arrive after native exit has started.
+        try await wait { original.frame != placement }
+        PiPMinimizeControls.resumeAfterFailedExit(tab)
+        if original.isVisible {
+            XCTAssertTrue(original.videoView.superview === original.contentView, "A stale failure cannot reopen an empty live host")
+        }
+        PictureInPicture.toggle(tab)
+        try await wait { !original.isVisible }
+        try await wait { tab.pictureInPicture && NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible && $0 !== original } }
+        let visible = NSApp.windows.filter { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible }
+        XCTAssertEqual(visible.count, 1, "The newer entry must survive the old native return")
+        XCTAssertFalse(original.isVisible, "A failed old request must not resurrect its closed panel")
+        for case let custom as CustomPiPWindow in visible {
+            XCTAssertTrue(custom.videoView.superview === custom.contentView, "Any reopened PiP must contain its live WebKit host")
+        }
+        try await wait { try await tab.web.evaluateJavaScript("player.paused") as? Bool == false }
+    }
+
+    func testTabSelectionDuringPiPReturnIsNotOverridden() async throws {
         let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
         let store = TabStore(isPrivate: true)
         store.tabs = [tab]
@@ -618,6 +711,37 @@ import XCTest
         let other = store.newBlankTab(focus: false)
         store.current = other.id
         button?.performClick(nil)
+        // Return reveals the source first; the user then selects a different tab.
+        store.current = other.id
+        try await wait { !tab.pictureInPicture }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(store.current, other.id)
+        XCTAssertFalse(NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
+    }
+
+    func testNavigationDuringPiPReturnDoesNotRevealReplacementPage() async throws {
+        let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        let store = TabStore(isPrivate: true)
+        store.tabs = [tab]
+        store.current = tab.id
+        store.window = window
+        defer { TabStore.all.removeAll { $0 === store } }
+        PictureInPicture.toggle(tab)
+        func restore(in view: NSView) -> NSButton? {
+            if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
+            return view.subviews.lazy.compactMap { restore(in: $0) }.first
+        }
+        var button: NSButton?
+        try await wait {
+            button = NSApp.windows.filter { $0.identifier?.rawValue == "vane.pip.window" }
+                .compactMap(\.contentView).compactMap { restore(in: $0) }.first
+            return button != nil
+        }
+        let other = store.newBlankTab(focus: false)
+        store.current = other.id
+        button?.performClick(nil)
+        // Return reveals the source first; the user then selects a different tab.
+        store.current = other.id
         tab.web.loadHTMLString("<p>Replacement page</p>", baseURL: URL(string: "https://replacement.example.test/"))
         try await wait { !tab.web.isLoading && tab.pipFrame == nil }
         try await Task.sleep(for: .milliseconds(300))

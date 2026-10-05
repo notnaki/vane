@@ -203,6 +203,8 @@ import WebKit
         private let delegate: NSObject
         private let close: Close?
         private var timeout: Task<Void, Never>?
+        var returnAnimation: (@MainActor (NSRect?, NSWindow?, @escaping @MainActor () -> Void) -> Void)?
+        var isExiting: Bool { requestedExit || phase == .finishing || phase == .finished }
         fileprivate init(controller: NSViewController, delegate: NSObject, close: Close?) {
             self.controller = controller; self.delegate = delegate; self.close = close
             if close == nil { phase = .hidden }
@@ -259,8 +261,25 @@ import WebKit
             // exitPIP marks itself ExitingPIP after requesting dismissal. Match native
             // callback ordering so returning to the tab preserves playing state.
             Task { @MainActor [self] in
-                _ = delegate.perform(NSSelectorFromString("pipDidClose:"), with: controller)
-                phase = .finished
+                let finish: @MainActor () -> Void = { [self] in
+                    guard phase == .finishing else { return }
+                    _ = delegate.perform(NSSelectorFromString("pipDidClose:"), with: controller)
+                    phase = .finished
+                }
+                let animation = returnAnimation
+                returnAnimation = nil
+                if let animation {
+                    // WebKit computes this rectangle at exit, including iframe offsets,
+                    // scrolling and the current browser-window position. Validate the
+                    // private getters before touching their values on a different OS.
+                    let rectGetter = class_getInstanceMethod(type(of: controller), NSSelectorFromString("replacementRect"))
+                    let windowGetter = class_getInstanceMethod(type(of: controller), NSSelectorFromString("replacementWindow"))
+                    let valid = rectGetter.map(signature) == "{CGRect={CGPoint=dd}{CGSize=dd}}16@0:8"
+                        && windowGetter.map(signature) == "@16@0:8"
+                    let rect = valid ? (controller.value(forKey: "replacementRect") as? NSValue)?.rectValue : nil
+                    let window = valid ? controller.value(forKey: "replacementWindow") as? NSWindow : nil
+                    animation(rect, window, finish)
+                } else { finish() }
             }
         }
     }

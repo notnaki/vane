@@ -18,6 +18,7 @@ import WebKit
         private let sourceFrame: WKFrameInfo?
         private var querying = false
         private var ending = false
+        fileprivate var returningToTab = false
         private var removed = false
         private var tracking: Task<Void, Never>?
         private var nativeSession: NativePiPHostBridge.Session?
@@ -57,7 +58,7 @@ import WebKit
                     guard let self else { return }
                     if self.videoView != nil {
                         guard let tab = self.tab, tab.existingWeb === self.sourceWeb,
-                              tab.pipFrame === self.sourceFrame, tab.pictureInPicture else {
+                              tab.pipFrame === self.sourceFrame, tab.pictureInPicture || self.returningToTab else {
                             self.remove()
                             return
                         }
@@ -129,10 +130,15 @@ import WebKit
         func resumeVideo() {
             guard !removed, let videoView, let custom = panel as? CustomPiPWindow,
                   let content = custom.contentView else { return }
+            // A superseded page request cannot undo a native exit already in flight.
+            if returningToTab && (tab?.pictureInPicture != true || nativeSession?.isExiting == true) { return }
             content.addSubview(videoView, positioned: .below, relativeTo: custom.controlsView)
             videoView.frame = content.bounds
             ending = false
-            custom.alphaValue = 1
+            returningToTab = false
+            nativeSession?.returnAnimation = nil
+            custom.resumeAfterReturn()
+            guard !removed else { return }
             custom.orderFrontRegardless()
         }
 
@@ -144,24 +150,20 @@ import WebKit
             guard !ending, !removed, tab.existingWeb === sourceWeb,
                   tab.pipFrame === sourceFrame, let custom = panel as? CustomPiPWindow else { return }
             ending = true
-            custom.fadeOut { [weak self, weak tab] in
+            let animatedBack = action == .back && nativeSession != nil
+            let exit: @MainActor () -> Void = { [weak self, weak tab] in
                 guard let self, let tab, !self.removed, tab.existingWeb === self.sourceWeb,
                       tab.pipFrame === self.sourceFrame else { return }
-                self.restoreVideo()
+                if !self.returningToTab { self.restoreVideo() }
                 let web = tab.existingWeb
                 let frame = tab.pipFrame
                 let completed: @MainActor (Bool) -> Void = { [weak self, weak tab] ok in
                     guard let tab, tab.existingWeb === web, tab.pipFrame === frame else { return }
                     if !ok {
-                        guard let self, !self.removed, let video = self.videoView else { return }
-                        custom.contentView?.addSubview(video, positioned: .below, relativeTo: custom.controlsView)
-                        video.frame = custom.contentView?.bounds ?? .zero
-                        self.ending = false
-                        custom.alphaValue = 1
-                        custom.orderFrontRegardless()
+                        self?.resumeVideo()
                         return
                     }
-                    if action == .back {
+                    if action == .back && !animatedBack {
                         PictureInPicture.exitIfAuto(tab)
                         MediaState.shared.returned(to: tab)
                         PictureInPicture.returnToTab(tab)
@@ -173,6 +175,31 @@ import WebKit
                 case .close: MediaState.shared.dismiss(tab, then: completed)
                 }
             }
+            if animatedBack, let nativeSession {
+                returningToTab = true
+                custom.prepareReturn()
+                nativeSession.returnAnimation = { [weak self] rect, window, finish in
+                    guard let self, !self.removed else { finish(); return }
+                    let valid = self.tab?.existingWeb === self.sourceWeb
+                        && self.tab?.pipFrame === self.sourceFrame
+                        && window != nil && window === self.sourceWeb?.window
+                        && window?.isVisible == true && window?.isMiniaturized == false
+                    let destination = valid ? rect.map { window!.convertToScreen($0) } : nil
+                    custom.animateReturn(to: destination) { [weak self] in
+                        self?.restoreVideo()
+                        custom.orderOut(nil)
+                        finish()
+                        guard let self, !self.removed, let tab = self.tab,
+                              tab.existingWeb === self.sourceWeb, tab.pipFrame === self.sourceFrame else { return }
+                        self.returningToTab = false
+                        PictureInPicture.exitIfAuto(tab)
+                        MediaState.shared.returned(to: tab)
+                        if !tab.pictureInPicture { PiPMinimizeControls.remove(tab.id) }
+                    }
+                }
+                PictureInPicture.returnToTab(tab)
+                exit()
+            } else { custom.fadeOut(completion: exit) }
         }
     }
     private static var attachments: [UUID: Attachment] = [:]
@@ -196,6 +223,11 @@ import WebKit
     }
 
     static func install(for tab: Tab) {
+        if let attachment = attachments[tab.id], attachment.returningToTab {
+            // A fresh entry owns the host now. Cancel only the old attachment;
+            // remove(id) would also discard the newly captured native presentation.
+            attachments.removeValue(forKey: tab.id)?.remove()
+        }
         guard attachments[tab.id] == nil, pending[tab.id] == nil else { return }
         if let capture = NativePiPHostBridge.claim(for: tab) {
             attachments[tab.id] = Attachment(window: nil, tab: tab, direct: capture)
@@ -239,9 +271,18 @@ import WebKit
         attachments.removeValue(forKey: id)?.remove()
     }
 
-    static func prepareToExit(_ tab: Tab) {
-        attachments[tab.id]?.restoreVideo()
+    static func returnedInline(_ tab: Tab) {
+        // The page's inline event precedes the native exit rectangle. Keep the
+        // original live view until its custom flight has actually landed.
+        if !isReturningToTab(tab) { remove(tab.id) }
     }
+
+    static func prepareToExit(_ tab: Tab) {
+        guard let attachment = attachments[tab.id], !attachment.returningToTab else { return }
+        attachment.restoreVideo()
+    }
+
+    static func isReturningToTab(_ tab: Tab) -> Bool { attachments[tab.id]?.returningToTab == true }
 
     static func resumeAfterFailedExit(_ tab: Tab) {
         attachments[tab.id]?.resumeVideo()

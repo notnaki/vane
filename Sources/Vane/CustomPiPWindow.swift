@@ -14,6 +14,13 @@ import QuartzCore
     private var entryStarted: CFTimeInterval = 0
     private var applyingEntryFrame = false
     private var entryMinimumSize: NSSize?
+    private var returnPlacement: NSRect?
+    private var returnMinimumSize: NSSize?
+    private var returnOrigin: NSRect = .zero
+    private var returnDestination: NSRect = .zero
+    private var returnStarted: CFTimeInterval = 0
+    private var returnLink: CADisplayLink?
+    private var returnCompletion: (@MainActor () -> Void)?
     static let placementKey = "customPiPFrame"
 
     init(frame: NSRect, sourceFrame: NSRect? = nil, videoView: NSView, controlsView: NSView) {
@@ -66,6 +73,7 @@ import QuartzCore
     override var canBecomeMain: Bool { false }
 
     override func close() {
+        finishReturn()
         stopEntry(keepDestination: true)
         rememberPlacement()
         NSApp.removeWindowsItem(self)
@@ -90,7 +98,7 @@ import QuartzCore
 
     private func rememberPlacement() {
         guard hasBeenShown else { return }
-        UserDefaults.vane.set(NSStringFromRect(entryDestination ?? frame), forKey: Self.placementKey)
+        UserDefaults.vane.set(NSStringFromRect(returnPlacement ?? entryDestination ?? frame), forKey: Self.placementKey)
     }
 
     static func recoverFrame(_ frame: NSRect, screens: [NSRect]) -> NSRect {
@@ -191,7 +199,10 @@ import QuartzCore
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
         // A drag, resize, or display recovery owns placement as soon as it begins.
-        if !applyingEntryFrame { stopEntry(keepDestination: false) }
+        if !applyingEntryFrame {
+            finishReturn()
+            stopEntry(keepDestination: false)
+        }
         super.setFrame(frameRect, display: flag)
     }
 
@@ -207,6 +218,73 @@ import QuartzCore
                 completion()
             }
         }
+    }
+
+    /// Freeze the live host while WebKit obtains the current inline destination.
+    func prepareReturn() {
+        returnPlacement = entryDestination ?? frame
+        stopEntry(keepDestination: true)
+        rememberPlacement()
+        ignoresMouseEvents = true
+    }
+
+    func animateReturn(to destination: NSRect?, completion: @escaping @MainActor () -> Void) {
+        guard let destination,
+              [destination.minX, destination.minY, destination.width, destination.height].allSatisfy(\.isFinite),
+              destination.width > 0, destination.height > 0,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              let display = NSScreen.screens.first(where: { $0.frame.intersects(frame) }),
+              NSScreen.screens.contains(where: { $0.frame.intersects(destination) }) else {
+            fadeOut(completion: completion)
+            return
+        }
+        returnMinimumSize = entryMinimumSize ?? contentMinSize
+        entryMinimumSize = nil
+        entryDestination = nil
+        contentMinSize = .zero
+        returnOrigin = frame
+        returnDestination = destination
+        returnCompletion = completion
+        returnStarted = CACurrentMediaTime()
+        alphaValue = 1
+        let link = display.displayLink(target: self, selector: #selector(advanceReturn(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+        returnLink = link
+        link.add(to: .main, forMode: .common)
+    }
+
+    @objc private func advanceReturn(_ link: CADisplayLink) {
+        guard returnLink === link else { return }
+        let time = min(1, max(0, (CACurrentMediaTime() - returnStarted) / 0.28))
+        let progress = CGFloat(1 - pow(1 - time, 3))
+        applyEntryFrame(NSRect(
+            x: returnOrigin.minX + (returnDestination.minX - returnOrigin.minX) * progress,
+            y: returnOrigin.minY + (returnDestination.minY - returnOrigin.minY) * progress,
+            width: returnOrigin.width + (returnDestination.width - returnOrigin.width) * progress,
+            height: returnOrigin.height + (returnDestination.height - returnOrigin.height) * progress))
+        controlsView.alphaValue = max(0, 1 - time / 0.3)
+        // Keep the video visible throughout the flight, then hand it back inline.
+        if time >= 1 { finishReturn() }
+    }
+
+    private func finishReturn() {
+        returnLink?.invalidate()
+        returnLink = nil
+        let completion = returnCompletion
+        returnCompletion = nil
+        completion?()
+    }
+
+    func resumeAfterReturn() {
+        finishReturn()
+        if let returnPlacement { applyEntryFrame(returnPlacement) }
+        if let returnMinimumSize { contentMinSize = returnMinimumSize }
+        returnPlacement = nil
+        returnMinimumSize = nil
+        stopEntry(keepDestination: false)
+        ignoresMouseEvents = false
+        controlsView.alphaValue = 1
+        alphaValue = 1
     }
 
     override func sendEvent(_ event: NSEvent) {

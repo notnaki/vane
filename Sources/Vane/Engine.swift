@@ -1605,7 +1605,8 @@ struct TitleReveal: Equatable, Sendable {
             if m.body as? String == "has-video" {
                 // A later ad/player announcement must not steal the video already detached
                 // or collapsed into the tray. Its actual frame was fixed on PiP entry.
-                if !pictureInPicture && !MediaState.shared.minimized.contains(id) { pipFrame = m.frameInfo }
+                if !pictureInPicture && !PiPMinimizeControls.isReturningToTab(self),
+                   !MediaState.shared.minimized.contains(id) { pipFrame = m.frameInfo }
                 return
             }
             // Nor this: the PiP window's ⤢, which wants the tab as well as the video back.
@@ -1617,7 +1618,7 @@ struct TitleReveal: Equatable, Sendable {
                     MediaState.shared.restored(id, source: (m.body as? [String: Any])?["source"] as? String)
                     PiPMinimizeControls.install(for: self)
                 }
-                else { PiPMinimizeControls.remove(id); MediaState.shared.leftPiP(id) }
+                else { PiPMinimizeControls.returnedInline(self); MediaState.shared.leftPiP(id) }
             }
             return
         }
