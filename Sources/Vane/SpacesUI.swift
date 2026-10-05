@@ -106,6 +106,7 @@ struct SpaceName: View {
 /// The footer's creation menu. Its trigger becomes a close button while the menu is open.
 struct NewSpaceButton: View {
     @EnvironmentObject var store: TabStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var menuAnchor = ChromeMenuAnchor()
 
     var body: some View {
@@ -128,7 +129,10 @@ struct NewSpaceButton: View {
                                startsGroup: true) { store.newSpace() },
             ], above: true, title: "Create", showsPointer: true)
         } label: {
-            Image(systemName: menuAnchor.isPresented ? "xmark" : "plus")
+            Image(systemName: "plus")
+                .rotationEffect(.degrees(menuAnchor.isPresented ? 45 : 0))
+                .animation(reduceMotion || Motion.reduced ? nil : Look.quick,
+                           value: menuAnchor.isPresented)
                 .frame(width: Look.rowTarget, height: Look.rowTarget).contentShape(.rect)
         }
             .buttonStyle(.plain)
