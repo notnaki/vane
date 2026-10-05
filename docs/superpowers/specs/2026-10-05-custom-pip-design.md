@@ -14,7 +14,8 @@ compatibility will be preserved. The working build must be shown to the user and
 
 - Drag the video background to any position on any connected display. Do not snap
   to corners. Keep the window above ordinary application windows and available
-  alongside full-screen applications.
+  alongside full-screen applications. Reopening remembers the custom position and size,
+  recovering onto a connected display when necessary.
 - Resize with a stable video aspect ratio. Preserve a usable minimum size and
   adapt the control labels to compact sizes rather than overlapping them.
 - Show rounded glass controls on hover: Back to Tab at the upper left, the source

@@ -180,6 +180,7 @@ private final class PiPSeekCell: NSSliderCell {
         clickedAction = action
         super.init(frame: .zero)
         cell = PiPButtonCell()
+        title = ""
         identifier = NSUserInterfaceItemIdentifier("vane.pip.\(id)")
         isBordered = false
         font = .systemFont(ofSize: 12, weight: .semibold)

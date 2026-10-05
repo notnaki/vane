@@ -36,6 +36,17 @@ import XCTest
             controls.layoutSubtreeIfNeeded()
             let visible = buttons(controls)
             XCTAssertEqual(visible.count, 7)
+            let transports = visible.compactMap { $0 as? NSButton }.filter {
+                ["vane.pip.backward", "vane.pip.playpause", "vane.pip.forward"].contains($0.identifier?.rawValue ?? "")
+            }
+            XCTAssertEqual(transports.count, 3)
+            XCTAssertTrue(transports.allSatisfy { $0.title.isEmpty }, "Transport icons must not gain a default Button label")
+            let play = transports.first { $0.identifier?.rawValue == "vane.pip.playpause" }!
+            XCTAssertEqual(play.frame.midX, controls.bounds.midX, accuracy: 0.1)
+            let skips = transports.filter { $0 !== play }.sorted { $0.frame.midX < $1.frame.midX }
+            XCTAssertEqual(controls.bounds.midX - skips[0].frame.midX, skips[1].frame.midX - controls.bounds.midX, accuracy: 0.1)
+            let hostname = controls.subviews.compactMap { $0 as? NSTextField }.first!
+            XCTAssertEqual(hostname.frame.midX, controls.bounds.midX, accuracy: 0.1)
             for button in visible {
                 let frame = controls.convert(button.bounds, from: button)
                 XCTAssertTrue(controls.bounds.contains(frame), "\(button.identifier?.rawValue ?? "control") must fit")
@@ -54,6 +65,25 @@ import XCTest
         XCTAssertNil(live?.duration)
         XCTAssertEqual(live?.ranges, [30.0...50.0, 70.0...90.0])
         XCTAssertNil(PictureInPicture.Playback(from: ["playing": false, "position": Double.nan, "ranges": []]))
+    }
+
+    func testReopeningKeepsTheLastCustomPlacement() {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let held = UserDefaults.vane.object(forKey: CustomPiPWindow.placementKey)
+        defer { UserDefaults.vane.set(held, forKey: CustomPiPWindow.placementKey) }
+        UserDefaults.vane.removeObject(forKey: CustomPiPWindow.placementKey)
+        let initial = NSRect(x: 20, y: 20, width: 480, height: 270)
+        let first = CustomPiPWindow(frame: initial, videoView: NSView(), controlsView: NSView())
+        first.show()
+        let placed = NSRect(x: 350, y: 260, width: 640, height: 360)
+        first.setFrame(placed, display: true)
+        first.close()
+        let reopened = CustomPiPWindow(frame: initial, videoView: NSView(), controlsView: NSView())
+        defer { reopened.close() }
+        XCTAssertEqual(reopened.frame, placed, "Reentry must keep the custom position and size rather than the native corner")
+        let malformed = NSRect(x: CGFloat.infinity, y: 0, width: 480, height: 270)
+        XCTAssertEqual(CustomPiPWindow.initialFrame(initial, saved: malformed, screens: []), initial)
     }
 
     func testPlayerRecoversWhenItsDisplayDisappears() {

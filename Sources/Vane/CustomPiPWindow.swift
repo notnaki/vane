@@ -6,11 +6,15 @@ import Combine
     let videoView: NSView
     let controlsView: NSView
     private var screenChanges: AnyCancellable?
+    private var hasBeenShown = false
+    static let placementKey = "customPiPFrame"
 
     init(frame: NSRect, videoView: NSView, controlsView: NSView) {
         self.videoView = videoView
         self.controlsView = controlsView
-        super.init(contentRect: frame, styleMask: [.borderless, .resizable, .nonactivatingPanel],
+        let saved = UserDefaults.vane.string(forKey: Self.placementKey).map(NSRectFromString)
+        let initialFrame = Self.initialFrame(frame, saved: saved, screens: NSScreen.screens.map(\.visibleFrame))
+        super.init(contentRect: initialFrame, styleMask: [.borderless, .resizable, .nonactivatingPanel],
                    backing: .buffered, defer: false)
         animationBehavior = .none
         identifier = NSUserInterfaceItemIdentifier("vane.pip.window")
@@ -27,7 +31,7 @@ import Combine
         let aspect = frame.width / frame.height
         contentMinSize = NSSize(width: max(280, 160 * aspect), height: max(160, 280 / aspect))
         isMovableByWindowBackground = true
-        let content = VideoContent(frame: NSRect(origin: .zero, size: frame.size), video: videoView, controls: controlsView)
+        let content = VideoContent(frame: NSRect(origin: .zero, size: initialFrame.size), video: videoView, controls: controlsView)
         content.wantsLayer = true
         content.layer?.backgroundColor = NSColor.black.cgColor
         content.layer?.cornerRadius = 12
@@ -53,9 +57,25 @@ import Combine
     override var canBecomeMain: Bool { false }
 
     override func close() {
+        rememberPlacement()
         NSApp.removeWindowsItem(self)
         screenChanges = nil
         super.close()
+    }
+
+    static func initialFrame(_ proposed: NSRect, saved: NSRect?, screens: [NSRect]) -> NSRect {
+        guard let saved, [saved.minX, saved.minY, saved.width, saved.height].allSatisfy(\.isFinite),
+              saved.width > 0, saved.height > 0, proposed.width > 0, proposed.height > 0 else { return proposed }
+        let aspect = proposed.width / proposed.height
+        let width = max(saved.width, 280, 160 * aspect)
+        let height = width / aspect
+        let wanted = NSRect(x: saved.minX, y: saved.maxY - height, width: width, height: height)
+        return recoverFrame(wanted, screens: screens)
+    }
+
+    private func rememberPlacement() {
+        guard hasBeenShown else { return }
+        UserDefaults.vane.set(NSStringFromRect(frame), forKey: Self.placementKey)
     }
 
     static func recoverFrame(_ frame: NSRect, screens: [NSRect]) -> NSRect {
@@ -70,6 +90,7 @@ import Combine
     }
 
     func show() {
+        hasBeenShown = true
         // Use only opacity, so AppKit cannot zoom the panel out of a source window.
         alphaValue = 0
         orderFrontRegardless()
@@ -80,6 +101,7 @@ import Combine
     }
 
     func fadeOut(completion: @escaping @MainActor () -> Void) {
+        rememberPlacement()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.16
             animator().alphaValue = 0
