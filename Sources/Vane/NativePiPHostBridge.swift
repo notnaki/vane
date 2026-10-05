@@ -27,11 +27,12 @@ import WebKit
         let video: NSView
         let originalFrame: NSRect
         let frame: NSRect
+        let sourceFrame: NSRect
         let session: Session
         fileprivate var ready = false
-        init(web: WKWebView, parent: NSView, video: NSView, frame: NSRect, session: Session) {
+        init(web: WKWebView, parent: NSView, video: NSView, frame: NSRect, sourceFrame: NSRect, session: Session) {
             self.web = web; self.parent = parent; self.video = video
-            self.originalFrame = video.frame; self.frame = frame; self.session = session
+            self.originalFrame = video.frame; self.frame = frame; self.sourceFrame = sourceFrame; self.session = session
         }
     }
 
@@ -80,7 +81,7 @@ import WebKit
     private static func capture(controller: NSViewController, child: NSViewController) -> Bool {
         let video = child.view
         guard NSStringFromClass(type(of: video)) == "WebVideoViewContainer", video.layer != nil,
-              let parent = video.superview, let window = video.window,
+              let parent = video.superview, let window = video.window, parent === window.contentView,
               let delegate = validatedDelegate(controller),
               let getter = class_getInstanceMethod(type(of: video), NSSelectorFromString("videoViewContainerDelegate")),
               signature(getter) == "@16@0:8",
@@ -93,14 +94,17 @@ import WebKit
               signature(boundsChanged) == "v24@0:8@16" else { return false }
         // Visible split views can share a window. Only consume a presentation whose
         // inline rectangle identifies one registered source; ambiguous hosts stay native.
-        let rect = video.convert(video.bounds, to: window.contentView)
+        // WebKit passes rootViewToWindow's rectangle unchanged to this container.
+        // Its frame is already in window coordinates, even under a flipped host.
+        let rect = video.frame
         let candidates = sources.values.filter {
             guard let tab = $0.tab, let web = $0.web, tab.existingWeb === web, web.window === window else { return false }
-            return web.convert(web.bounds, to: window.contentView).contains(NSPoint(x: rect.midX, y: rect.midY))
+            return web.convert(web.bounds, to: nil).contains(NSPoint(x: rect.midX, y: rect.midY))
         }
         guard candidates.count == 1, let source = candidates.first, let tab = source.tab, let web = source.web,
               captures[tab.id] == nil else { return false }
-        var frame = window.convertToScreen(video.convert(video.bounds, to: nil))
+        let sourceFrame = window.convertToScreen(rect)
+        var frame = sourceFrame
         guard frame.width > 0, frame.height > 0,
               [frame.origin.x, frame.origin.y, frame.width, frame.height].allSatisfy({ $0.isFinite }),
               let aspectGetter = class_getInstanceMethod(type(of: controller), NSSelectorFromString("aspectRatio")),
@@ -116,7 +120,7 @@ import WebKit
         let session = Session(controller: controller, delegate: delegate, close: nil)
         owners = owners.filter { $0.value.session != nil }
         owners[ObjectIdentifier(controller)] = Owner(session)
-        let capture = DirectCapture(web: web, parent: parent, video: video, frame: frame, session: session)
+        let capture = DirectCapture(web: web, parent: parent, video: video, frame: frame, sourceFrame: sourceFrame, session: session)
         captures[tab.id] = capture
         Task { @MainActor [weak tab, weak web] in
             // WebKit sets EnteringPIP after this intercepted call returns. Its normal

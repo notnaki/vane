@@ -196,6 +196,30 @@ import XCTest
         XCTAssertEqual(paused, false)
     }
 
+    func testEntryOriginMatchesInlineVideoInAFlippedBrowserHost() async throws {
+        let (tab, window) = try await fixture("<video id='player' style='position:absolute;left:123px;top:40px;width:480px;height:270px' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        let root = FlippedPiPFixtureView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
+        window.contentView = root
+        tab.web.frame = NSRect(x: 50, y: 20, width: 700, height: 400)
+        root.addSubview(tab.web)
+        try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
+        let box = try await tab.web.evaluateJavaScript("var r=document.getElementById('player').getBoundingClientRect(); ({x:r.x,y:r.y,w:r.width,h:r.height})") as? [String: Double]
+        let rect = try XCTUnwrap(box)
+        let webRect = NSRect(x: rect["x"]!, y: rect["y"]!, width: rect["w"]!, height: rect["h"]!)
+        let inline = window.convertToScreen(tab.web.convert(webRect, to: nil))
+        let held = UserDefaults.vane.object(forKey: CustomPiPWindow.placementKey)
+        defer { UserDefaults.vane.set(held, forKey: CustomPiPWindow.placementKey) }
+        let destination = NSRect(x: 350, y: 350, width: 640, height: 360)
+        UserDefaults.vane.set(NSStringFromRect(destination), forKey: CustomPiPWindow.placementKey)
+        PictureInPicture.toggle(tab)
+        try await wait { NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible } }
+        let custom = try XCTUnwrap(NSApp.windows.first { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
+        let x = (custom.frame.minX - inline.minX) / (destination.minX - inline.minX)
+        let y = (custom.frame.minY - inline.minY) / (destination.minY - inline.minY)
+        XCTAssertLessThan(x, 0.8, "Observe the flight before it finishes")
+        XCTAssertEqual(x, y, accuracy: 0.03, "Entry must follow the line from the media's real on-page position")
+    }
+
     func testCustomPiPUsesNaturalAspectRatherThanInlineCSSBox() async throws {
         let (tab, _) = try await fixture("<video id='player' width='320' height='320' style='object-fit:cover' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
         try await wait { try await tab.web.evaluateJavaScript("document.getElementById('player').paused") as? Bool == false }
@@ -204,6 +228,7 @@ import XCTest
         let custom = try XCTUnwrap(NSApp.windows.first { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
         let measured = try await tab.web.evaluateJavaScript("document.getElementById('player').videoWidth / document.getElementById('player').videoHeight")
         let natural = try XCTUnwrap(measured as? Double)
+        try await Task.sleep(for: .milliseconds(350))
         XCTAssertEqual(custom.frame.width / custom.frame.height, natural, accuracy: 0.01)
     }
 
@@ -599,4 +624,8 @@ import XCTest
         XCTAssertEqual(store.current, other.id)
         XCTAssertFalse(NSApp.windows.contains { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
     }
+}
+
+@MainActor private final class FlippedPiPFixtureView: NSView {
+    override var isFlipped: Bool { true }
 }

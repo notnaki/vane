@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import QuartzCore
 
 /// Owns placement and input while WebKit continues decoding the original video.
 @MainActor final class CustomPiPWindow: NSPanel {
@@ -7,11 +8,18 @@ import Combine
     let controlsView: NSView
     private var screenChanges: AnyCancellable?
     private var hasBeenShown = false
+    private let sourceFrame: NSRect
+    private var entryDestination: NSRect?
+    private var entryLink: CADisplayLink?
+    private var entryStarted: CFTimeInterval = 0
+    private var applyingEntryFrame = false
+    private var entryMinimumSize: NSSize?
     static let placementKey = "customPiPFrame"
 
-    init(frame: NSRect, videoView: NSView, controlsView: NSView) {
+    init(frame: NSRect, sourceFrame: NSRect? = nil, videoView: NSView, controlsView: NSView) {
         self.videoView = videoView
         self.controlsView = controlsView
+        self.sourceFrame = sourceFrame ?? frame
         let saved = UserDefaults.vane.string(forKey: Self.placementKey).map(NSRectFromString)
         let initialFrame = Self.initialFrame(frame, saved: saved, screens: NSScreen.screens.map(\.visibleFrame))
         super.init(contentRect: initialFrame, styleMask: [.borderless, .resizable, .nonactivatingPanel],
@@ -49,7 +57,7 @@ import Combine
             .sink { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
-                    self.setFrame(Self.recoverFrame(self.frame, screens: NSScreen.screens.map(\.visibleFrame)), display: true)
+                    self.setFrame(Self.recoverFrame(self.entryDestination ?? self.frame, screens: NSScreen.screens.map(\.visibleFrame)), display: true)
                 }
             }
     }
@@ -58,6 +66,7 @@ import Combine
     override var canBecomeMain: Bool { false }
 
     override func close() {
+        stopEntry(keepDestination: true)
         rememberPlacement()
         NSApp.removeWindowsItem(self)
         screenChanges = nil
@@ -81,7 +90,7 @@ import Combine
 
     private func rememberPlacement() {
         guard hasBeenShown else { return }
-        UserDefaults.vane.set(NSStringFromRect(frame), forKey: Self.placementKey)
+        UserDefaults.vane.set(NSStringFromRect(entryDestination ?? frame), forKey: Self.placementKey)
     }
 
     static func recoverFrame(_ frame: NSRect, screens: [NSRect]) -> NSRect {
@@ -110,16 +119,84 @@ import Combine
 
     func show() {
         hasBeenShown = true
-        // Use only opacity, so AppKit cannot zoom the panel out of a source window.
-        alphaValue = 0
+        stopEntry(keepDestination: false)
+        let destination = frame
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, sourceFrame != destination,
+              let display = NSScreen.screens.first(where: { $0.frame.intersects(sourceFrame) }) else {
+            alphaValue = 0
+            orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.12
+                animator().alphaValue = 1
+            }
+            return
+        }
+        entryDestination = destination
+        entryMinimumSize = contentMinSize
+        contentMinSize = .zero
+        applyEntryFrame(sourceFrame)
+        controlsView.alphaValue = 0
+        alphaValue = 0.01
         orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.12
-            animator().alphaValue = 1
+        entryStarted = CACurrentMediaTime()
+        // A fixed display keeps ticking if a path crosses a gap between monitors.
+        let link = display.displayLink(target: self, selector: #selector(advanceEntry(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+        entryLink = link
+        link.add(to: .main, forMode: .common)
+    }
+
+    @objc private func advanceEntry(_ link: CADisplayLink) {
+        guard entryLink === link, let destination = entryDestination else { return }
+        let time = min(1, max(0, (CACurrentMediaTime() - entryStarted) / 0.28))
+        let progress = CGFloat(1 - pow(1 - time, 3))
+        // Apply one rectangle per display refresh. Position and size share this
+        // progress, so the panel cannot move vertically and then horizontally.
+        applyEntryFrame(NSRect(
+            x: sourceFrame.minX + (destination.minX - sourceFrame.minX) * progress,
+            y: sourceFrame.minY + (destination.minY - sourceFrame.minY) * progress,
+            width: sourceFrame.width + (destination.width - sourceFrame.width) * progress,
+            height: sourceFrame.height + (destination.height - sourceFrame.height) * progress))
+        alphaValue = min(1, time / 0.22)
+        controlsView.alphaValue = max(0, (time - 0.7) / 0.3)
+        if time >= 1 {
+            applyEntryFrame(destination)
+            stopEntry(keepDestination: false)
         }
     }
 
+    private func applyEntryFrame(_ rect: NSRect) {
+        applyingEntryFrame = true
+        defer { applyingEntryFrame = false }
+        super.setFrame(rect, display: true)
+    }
+
+    private func stopEntry(keepDestination: Bool) {
+        guard entryLink != nil || entryDestination != nil else { return }
+        entryLink?.invalidate()
+        entryLink = nil
+        controlsView.alphaValue = 1
+        if let minimum = entryMinimumSize,
+           !keepDestination || (frame.width >= minimum.width && frame.height >= minimum.height) {
+            entryMinimumSize = nil
+            applyingEntryFrame = true
+            contentMinSize = minimum
+            applyingEntryFrame = false
+        }
+        if !keepDestination {
+            entryDestination = nil
+            alphaValue = 1
+        }
+    }
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        // A drag, resize, or display recovery owns placement as soon as it begins.
+        if !applyingEntryFrame { stopEntry(keepDestination: false) }
+        super.setFrame(frameRect, display: flag)
+    }
+
     func fadeOut(completion: @escaping @MainActor () -> Void) {
+        stopEntry(keepDestination: true)
         rememberPlacement()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.16
@@ -133,14 +210,34 @@ import Combine
     }
 
     override func sendEvent(_ event: NSEvent) {
+        var settleTinyInteraction = false
+        defer {
+            // Let the control receive its click at the original coordinates first.
+            // A continuing interaction then needs the full usable player size.
+            if settleTinyInteraction, isVisible, let destination = entryDestination {
+                applyEntryFrame(destination)
+                stopEntry(keepDestination: false)
+            }
+        }
         if event.type == .keyDown { (controlsView as? PiPPlaybackControls)?.showForKeyboard() }
         if event.type == .leftMouseDown, event.window === self, let contentView {
             let point = contentView.convert(event.locationInWindow, from: nil)
             var target = contentView.hitTest(point)
             var interactive = false
+            var exitControl = false
             while let view = target {
-                if view is NSControl { interactive = true; break }
+                if let control = view as? NSControl {
+                    interactive = true
+                    exitControl = ["vane.pip.restore", "vane.pip.minimize", "vane.pip.close"]
+                        .contains(control.identifier?.rawValue ?? "")
+                    break
+                }
                 target = view.superview
+            }
+            stopEntry(keepDestination: interactive)
+            if interactive && !exitControl {
+                alphaValue = 1
+                settleTinyInteraction = entryMinimumSize != nil
             }
             // Keep the native resize border; all remaining video ground is a drag handle.
             if !interactive && contentView.bounds.insetBy(dx: 8, dy: 8).contains(point) {

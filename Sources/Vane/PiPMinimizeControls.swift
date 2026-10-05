@@ -41,7 +41,7 @@ import WebKit
                     returnToTab: { [weak tab] in guard let tab else { return }; Self.perform(.back, tab: tab) },
                     minimize: { [weak tab] in guard let tab else { return }; Self.perform(.minimize, tab: tab) },
                     close: { [weak tab] in guard let tab else { return }; Self.perform(.close, tab: tab) })
-                panel = CustomPiPWindow(frame: frame, videoView: video, controlsView: content)
+                panel = CustomPiPWindow(frame: frame, sourceFrame: direct?.sourceFrame, videoView: video, controlsView: content)
                 window?.orderOut(nil)
                 (panel as? CustomPiPWindow)?.show()
                 nativeSession = session

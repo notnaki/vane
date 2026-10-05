@@ -16,6 +16,11 @@ compatibility will be preserved. The working build must be shown to the user and
   to corners. Keep the window above ordinary application windows and available
   alongside full-screen applications. Reopening remembers the custom position and size,
   recovering onto a connected display when necessary.
+- Entry moves the original live video from its actual inline rectangle to the
+  saved placement in a single 280 ms motion. Both axes and size share progress,
+  without bounce. Preserve raw source geometry separately from the natural-aspect,
+  minimum-sized destination. Reduce Motion retains an in-place appearance. Dragging
+  takes over immediately; an early exit must not save an intermediate flight frame.
 - Resize with a stable video aspect ratio. Preserve a usable minimum size and
   adapt the control labels to compact sizes rather than overlapping them.
 - Show rounded glass controls on hover: Back to Tab at the upper left, the source
@@ -118,3 +123,6 @@ independent review of the latest diff, fixes, passing required CI and approvals,
 and, after the user has inspected and explicitly approved the working build,
 squash-merge under the repository workflow. Track and quit every task-owned
 test application after merge or abandonment.
+
+The user-approved fade-only checkpoint is `a1865392a931d401d9a33741c5140992eda685a1`,
+saved on `codex/custom-pip-fade-checkpoint` before the requested movement experiment.
