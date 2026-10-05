@@ -4,7 +4,7 @@ All icon sources and compiled assets live here. Open any `.icon` document in Ico
 
 Settings → Icon offers **Normal, Dark, Galaxy, Candy, Neon, Fluted Glass, Fluted Glass Dark, Schoolbook, and Luminous**. Normal is the original glass catalogue render (`AppIcon.icon`). Dark is the Dock’s original composition of that same source, with no image override. Galaxy has open blue/ivory spiral arms behind the silver V. The new finishes use a larger folded V and retain Vane’s slate-blue, periwinkle, and ivory palette. Candy has an ivory rim and a blue glass fold; Neon has a bright outline and a blue bloom; Schoolbook uses paper color blocks; Luminous uses a sculpted blue gradient. Fluted Glass places a refracted indigo V outline beneath wide cylindrical glass ribs, with soft silver-blue lighting spreading beyond the logo. Fluted Glass Dark uses the same ribs and lighting over deep slate, with a luminous blue outline. Both use native blur, refraction, and translucency controls, with reduced blur to retain the silhouette at Dock sizes.
 
-Old saved labels migrate: Default → Dark, Glass → Normal, Navy → Normal. Galaxy and custom images retain their selections.
+Old saved labels migrate: Default → Dark, Glass → Normal, Navy → Normal. Galaxy retains its selection. Previously saved custom-image selections return to Dark.
 
 To regenerate Galaxy’s deterministic editable starfield:
 

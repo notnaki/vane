@@ -30,6 +30,11 @@ xcrun swiftc -O Sources/Vane/BundleReplacement.swift Sources/Vane/UpdateVersion.
   Sources/UpdateInstaller/UpdateInstallation.swift Sources/UpdateInstaller/InstallerService.swift \
   Sources/UpdateInstaller/main.swift -o "$INSTALLER_BIN"
 
+echo ">> building icon persistence service..."
+ICON_SERVICE_BIN=".build/$CONF/VaneIconService"
+xcrun swiftc -swift-version 6 -O Sources/Vane/AppIconPersistence.swift Sources/IconService/main.swift \
+  -o "$ICON_SERVICE_BIN"
+
 echo ">> compiling app icon..."
 ICONOUT="$(mktemp -d)"
 # Committed renders keep builds working on hosts without the Icon Composer compiler.
@@ -52,6 +57,10 @@ INSTALLER="$APP/Contents/XPCServices/io.github.notnaki.vane.UpdateInstaller.xpc"
 mkdir -p "$INSTALLER/Contents/MacOS"
 cp installer/UpdateInstaller-Info.plist "$INSTALLER/Contents/Info.plist"
 cp "$INSTALLER_BIN" "$INSTALLER/Contents/MacOS/VaneUpdateInstaller"
+ICON_SERVICE="$APP/Contents/XPCServices/io.github.notnaki.vane.IconService.xpc"
+mkdir -p "$ICON_SERVICE/Contents/MacOS"
+cp installer/IconService-Info.plist "$ICON_SERVICE/Contents/Info.plist"
+cp "$ICON_SERVICE_BIN" "$ICON_SERVICE/Contents/MacOS/VaneIconService"
 # The Icon Composer output. Assets.car carries the Tahoe icon the system shapes itself
 # (read via CFBundleIconName); the .icns is the compatibility plate. The .icns alone would
 # make Tahoe draw a second squircle under an already-rounded bitmap, so both ship.
@@ -136,11 +145,13 @@ if [ -n "${SIGN_ID:-}" ]; then
   # Sign inside out. The installer intentionally has no App Sandbox entitlement;
   # signing it with the browser's entitlements would reproduce update quarantine.
   codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$INSTALLER"
+  codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$ICON_SERVICE"
   codesign --force --options runtime --timestamp --entitlements "$ENT" \
     --sign "$SIGN_ID" "$APP"
   echo "OK: signed with Developer ID ($SIGN_ID)"
 else
   codesign --force --sign - "$INSTALLER"
+  codesign --force --sign - "$ICON_SERVICE"
   codesign --force --entitlements "$ENT" --sign - "$APP"
   echo "OK: signed (ad-hoc)"
 fi
@@ -159,6 +170,11 @@ codesign --verify --deep --strict "$APP"
 INSTALLER_ENTS="$(codesign -d --entitlements - --xml "$INSTALLER" 2>&1)"
 if echo "$INSTALLER_ENTS" | grep -q "com.apple.security.app-sandbox"; then
   echo "FAIL: update installer must run outside the browser sandbox"; exit 1
+fi
+
+ICON_SERVICE_ENTS="$(codesign -d --entitlements - --xml "$ICON_SERVICE" 2>&1)"
+if echo "$ICON_SERVICE_ENTS" | grep -q "com.apple.security.app-sandbox"; then
+  echo "FAIL: icon persistence service must run outside the browser sandbox"; exit 1
 fi
 
 # Deliberately no `lsregister -f`: it force-registers whatever bundle was just built under
