@@ -78,7 +78,19 @@ extension UserDefaults {
             for variant in AppIcon.catalogue {
                 AppIcon.apply(variant.name)
                 expect(AppIcon.current == variant.name, "selecting \(variant.name) persists its choice")
+                if AppIcon.overrides(variant.name) {
+                    let dockImage = (NSApp.dockTile.contentView as? NSImageView)?.image
+                    let selected = AppIcon.variants.first { $0.name == variant.name }!.image
+                    expect(dockImage === selected,
+                           "\(variant.name) supplies the selected image for minimized-window badges")
+                } else {
+                    expect(NSApp.dockTile.contentView == nil,
+                           "Dark restores AppKit's original Dock composition")
+                }
             }
+            AppIcon.apply("Dark")
+            expect(NSApp.dockTile.contentView == nil,
+                   "returning to Dark clears the alternate Dock image")
         }
         failures.forEach { print("FAIL: \($0)") }
         if !failures.isEmpty { exit(1) }

@@ -72,10 +72,33 @@ import AppKit
         guard let v = variants.first(where: { $0.name == name }) else { return false }
         // nil hands the tile back to AppKit, which composes the bundle's own icon — not the
         // same thing as assigning the catalogue render, which is why Dark exists.
-        NSApp.applicationIconImage = overrides(name) ? v.image : nil
+        let image = overrides(name) ? v.image : nil
+        NSApp.applicationIconImage = image
+        // Minimized-window badges derive from the application Dock tile. Supplying its
+        // view explicitly keeps them on the selected finish, including on macOS versions
+        // that keep using the shipped icon for badges after applicationIconImage changes.
+        let tile = NSApp.dockTile
+        if let image {
+            let view = NSImageView(frame: NSRect(origin: .zero, size: tile.size))
+            view.image = image
+            view.imageScaling = .scaleProportionallyUpOrDown
+            view.autoresizingMask = [.width, .height]
+            tile.contentView = view
+        } else {
+            tile.contentView = nil
+        }
+        tile.display()
+        // Rebuild cached badges on windows already in the Dock. Keep their native
+        // thumbnails and respect windows that intentionally hide the application badge.
+        for window in NSApp.windows where window.isMiniaturized {
+            let windowTile = window.dockTile
+            guard windowTile.showsApplicationBadge else { continue }
+            windowTile.showsApplicationBadge = false
+            windowTile.showsApplicationBadge = true
+            windowTile.display()
+        }
         UserDefaults.vane.set(name, forKey: key)
         guard canPersist else { return false }
-        let image = overrides(name) ? v.image : nil
         if isSandboxed {
             // Send a bounded raster payload while still on the main actor.
             let data: Data?
