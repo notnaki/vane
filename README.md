@@ -85,6 +85,9 @@ or expand its pinned tabs; Today stays visible. Double-click its name to rename
 the Space. Each window remembers the collapsed state for each Space while open.
 Swipe horizontally over the sidebar to move between Spaces, including while the
 search bar (`⌘T`) is open.
+Click the Space buttons in the sidebar footer for the same sliding change, including
+between profiles. Each button shows a rounded highlight on hover. Reduce Motion and
+Battery Saver keep click changes immediate.
 
 Incognito uses a temporary identity of its own, with a glasses icon and a near-black
 theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and

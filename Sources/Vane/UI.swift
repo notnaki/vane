@@ -575,12 +575,9 @@ struct SpaceGround: View {
         let idle = (colors(of: here), here?.grain ?? 0, 0.0)
         let width = SidebarWidth.shared.width
         guard gesture.drag != 0, width > 0 else { return idle }
-        let list = store.swipeStrip
-        guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return idle }
-        let f = Double(max(-1, min(1, gesture.drag / width)))
-        let n = f < 0 ? i + 1 : i - 1
-        guard list.indices.contains(n) else { return idle }
-        return (colors(of: list[n]), list[n].grain ?? 0, abs(f))
+        guard let target = gesture.neighbour else { return idle }
+        let f = Double(min(1, abs(gesture.drag / width)))
+        return (colors(of: target), target.grain ?? 0, f)
     }
 }
 
@@ -2718,6 +2715,7 @@ private struct SpaceDots: View {
     @State private var live: UUID?
     /// Which dot a drag is over, so only that one lights up.
     @State private var dropTarget: UUID?
+    @State private var hovered: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -2725,7 +2723,7 @@ private struct SpaceDots: View {
         // profile files here would decode them again on every icon-blend frame.
         let list = store.swipeStrip
         let lit = weights(list)
-        HStack(spacing: 8) {
+        HStack(spacing: 0) {
             ForEach(list) { dot($0, lit: lit[$0.id] ?? 0).id($0.id) }
             // The Space a pull is making gets a dot of its own before it exists: it fills
             // with the pull, and on the form it is simply the one you are on.
@@ -2755,6 +2753,7 @@ private struct SpaceDots: View {
     /// mid-swipe the answer to "which Space are you in" genuinely is "between two".
     @ViewBuilder private func dot(_ space: Space, lit: Double) -> some View {
         let here = store.currentSpaceID == space.id
+        let icon = space.icon ?? "cloud"
         let over = Binding(get: { dropTarget == space.id },
                            set: { dropTarget = $0 ? space.id : nil })
         let showIcons = Binding(get: { icons == space.id },
@@ -2767,16 +2766,23 @@ private struct SpaceDots: View {
             Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
                 .opacity(1 - lit)
                 .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - lit))
-            Image(systemName: space.icon ?? "cloud").font(Look.small)
+            Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
+                .font(Look.small)
                 .foregroundStyle(Look.inkPrimary)
                 .opacity(lit)
                 .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * lit)
         }
         .animation(reduceMotion ? nil : Look.quick, value: here)
         .frame(width: Look.spaceDotHit, height: Look.spaceDotHit)
-        .background(dropTarget == space.id ? Look.selected : .clear, in: .circle)
+        .background(dropTarget == space.id ? Look.selected : hovered == space.id ? Look.hovered : .clear,
+                    in: .rect(cornerRadius: Look.pillRadius))
+        .animation(Motion.reduced ? nil : Look.quick, value: hovered == space.id)
         .contentShape(.rect)
-        .onTapGesture { store.switchTo(space: space) }
+        .onHover { over in
+            if over { hovered = space.id }
+            else if hovered == space.id { hovered = nil }
+        }
+        .onTapGesture { gesture.monitor.select(space, in: store) }
         .onDrag { spaceDragPayload(space) }
         .onDrop(of: [.plainText], delegate: SpaceDrop(store: store, space: space, over: over))
         .help(space.name)
@@ -2791,10 +2797,11 @@ private struct SpaceDots: View {
         .sheet(isPresented: showLive) {
             LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
         }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(space.name)
         .accessibilityAddTraits(here ? [.isButton, .isSelected] : .isButton)
         .accessibilityHint("Switches to this space.")
-        .accessibilityAction { store.switchTo(space: space) }
+        .accessibilityAction { gesture.monitor.select(space, in: store) }
     }
 
     /// How lit each dot is, 0…1. Idle that is 1 for the current Space and 0 for the rest;
@@ -2802,13 +2809,11 @@ private struct SpaceDots: View {
     /// heading for, in step with them, so the footer says where the gesture will land before
     /// it lands. At the ends nothing is handed over — the strip is only rubber-banding.
     private func weights(_ list: [Space]) -> [UUID: Double] {
-        guard let i = list.firstIndex(where: { $0.id == store.currentSpaceID }) else { return [:] }
+        guard let current = store.currentSpaceID, list.contains(where: { $0.id == current }) else { return [:] }
         let width = SidebarWidth.shared.width
-        guard gesture.drag != 0, width > 0 else { return [list[i].id: 1] }
-        let f = Double(max(-1, min(1, gesture.drag / width)))
-        let towards = f < 0 ? i + 1 : i - 1
-        guard list.indices.contains(towards) else { return [list[i].id: 1] }
-        return [list[i].id: 1 - abs(f), list[towards].id: abs(f)]
+        guard gesture.drag != 0, width > 0, let target = gesture.neighbour else { return [current: 1] }
+        let f = Double(min(1, abs(gesture.drag / width)))
+        return [current: 1 - f, target.id: f]
     }
 }
 
