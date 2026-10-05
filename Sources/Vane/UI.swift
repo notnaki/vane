@@ -2835,13 +2835,7 @@ private struct PinnedSection: View {
         // actually draw a row are counted — a pinned pane that is not its split's lead, and
         // an entry whose tab has gone, draw nothing, and a place in the list counted in
         // entries rather than rows lands beside the wrong one. See `OpenTabs`.
-        let available = store.pins.visible.filter { row in
-            if row.entry.folder != nil { return true }
-            guard let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab })
-            else { return false }
-            guard let split = store.split(containing: tab.id) else { return true }
-            return store.leadPane(split) == tab.id
-        }
+        let available = SidebarRows(tabs: store.tabs, splits: store.splits, shape: store.pins).rows
         // Empty is nothing, as in Arc: the divider follows the space’s name, and this
         // section draws no row at all — not even an empty one while a drag is in flight,
         // which would push the whole strip down a pitch under the pointer and take
@@ -2851,8 +2845,8 @@ private struct PinnedSection: View {
         if !available.isEmpty {
             VStack(spacing: Look.rowGap) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    ShapeRow(row: row, index: index, rows: rows.count,
-                             shape: \.pins, pr: presentation(of: row))
+                    ShapeRow(row: row.visible, tab: row.tab, index: index, rows: rows.count,
+                             shape: \.pins, pr: presentation(of: row.visible))
                         .transition(.rowCollapse)
                 }
             }
@@ -2891,6 +2885,7 @@ private struct PinnedSection: View {
 private struct ShapeRow: View {
     @EnvironmentObject var store: TabStore
     let row: Pins.Visible
+    let tab: Tab?
     /// Its place among the section's rows, and how many there are — see `TabDrop.row`.
     let index: Int
     let rows: Int
@@ -2905,7 +2900,7 @@ private struct ShapeRow: View {
         Group {
             if let folder = row.entry.folder {
                 FolderRow(folder: folder, shape: shape)
-            } else if let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab }) {
+            } else if let tab {
                 // StripRow, not TabRow: a tab that is a pane of a split is drawn as the
                 // split's one row, at its lead pane's place.
                 StripRow(tab: tab, index: index, rows: rows)
@@ -3410,16 +3405,10 @@ private struct OpenTabs: View {
         // tidy's folders live here now, and a folder is not a tab. Only the entries that
         // actually draw a row are counted — a pane that is not its split's lead, and an
         // entry whose tab has gone, draw nothing. See `PinnedSection`.
-        let rows = store.todayShape.visible.filter { row in
-            if row.entry.folder != nil { return true }
-            guard let tab = store.tabs.first(where: { $0.id.uuidString == row.entry.tab })
-            else { return false }
-            guard let split = store.split(containing: tab.id) else { return true }
-            return store.leadPane(split) == tab.id
-        }
+        let rows = SidebarRows(tabs: store.tabs, splits: store.splits, shape: store.todayShape).rows
         VStack(spacing: Look.rowGap) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                ShapeRow(row: row, index: index, rows: rows.count, shape: \.todayShape)
+                ShapeRow(row: row.visible, tab: row.tab, index: index, rows: rows.count, shape: \.todayShape)
                     .transition(.rowCollapse)
             }
         }

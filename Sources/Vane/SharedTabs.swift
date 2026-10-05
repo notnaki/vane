@@ -129,7 +129,8 @@ import WebKit
                 other.stashes[id] = kept
             }
             reconcileSelection(in: other, previously: previous)
-            displaced += heldBefore.filter { tab in !other.everyTab.contains { $0 === tab } }
+            let heldAfter = Set(other.everyTab.map(ObjectIdentifier.init))
+            displaced += heldBefore.filter { !heldAfter.contains(ObjectIdentifier($0)) }
             other.extensions.sync()
         }
         release(displaced)
@@ -196,29 +197,48 @@ import WebKit
 
     /// Closing a window or dropping a stash releases only pages nobody else holds.
     static func release(_ tabs: [Tab], excluding store: TabStore? = nil) {
-        for tab in tabs where !TabStore.all.contains(where: {
-            $0 !== store && $0.everyTab.contains { $0 === tab }
-        }) { tab.tearDown() }
+        guard !tabs.isEmpty else { return }
+        let retained = Set(TabStore.all.filter { $0 !== store }.flatMap(\.everyTab)
+            .map(ObjectIdentifier.init))
+        for tab in tabs where !retained.contains(ObjectIdentifier(tab)) { tab.tearDown() }
     }
 
     /// Elect one host per page. Different pages in background windows stay live; only
     /// another presentation of the same tab needs a snapshot.
     static func refreshPresentation() {
         let stores = TabStore.all.filter { $0.window != nil }
+        // Build membership once per window, including stashed Spaces. Focus changes used
+        // to rebuild everyTab and search the whole session once for each individual tab.
+        // Object identity matters here: distinct objects can carry the same restored ID.
+        var holdersByTab: [ObjectIdentifier: [Int]] = [:]
+        var ordered: [Tab] = []
         var seen = Set<UUID>()
-        for tab in stores.flatMap(\.everyTab) where seen.insert(tab.id).inserted {
-            let holders = stores.filter { $0.everyTab.contains { $0 === tab } }
-            if holders.count == 1, tab.windowSnapshot != nil { tab.windowSnapshot = nil }
-            let visible = holders.filter {
-                $0.window?.isMiniaturized == false && $0.onScreenTabs.contains { $0 === tab }
+        let onScreen = stores.map { store in
+            store.window?.isMiniaturized == false
+                ? Set(store.onScreenTabs.map(ObjectIdentifier.init)) : []
+        }
+        let keyWindows = stores.map { $0.window?.isKeyWindow == true }
+        for (index, store) in stores.enumerated() {
+            var held = Set<ObjectIdentifier>()
+            for tab in store.everyTab {
+                if held.insert(ObjectIdentifier(tab)).inserted {
+                    holdersByTab[ObjectIdentifier(tab), default: []].append(index)
+                }
+                if seen.insert(tab.id).inserted { ordered.append(tab) }
             }
-            let owner = visible.first { $0.window?.isKeyWindow == true }
-                ?? visible.first { $0.windowID == tab.presentationOwner }
+        }
+        for tab in ordered {
+            let identity = ObjectIdentifier(tab)
+            let holders = holdersByTab[identity] ?? []
+            if holders.count == 1, tab.windowSnapshot != nil { tab.windowSnapshot = nil }
+            let visible = holders.filter { onScreen[$0].contains(identity) }
+            let owner = visible.first { keyWindows[$0] }
+                ?? visible.first { stores[$0].windowID == tab.presentationOwner }
                 ?? visible.first
-                ?? holders.first { $0.windowID == tab.presentationOwner }
+                ?? holders.first { stores[$0].windowID == tab.presentationOwner }
                 ?? holders.first
             guard let owner else { continue }
-            claim(tab, in: owner)
+            claim(tab, in: stores[owner])
         }
     }
 
