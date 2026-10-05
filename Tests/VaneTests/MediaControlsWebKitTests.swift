@@ -126,11 +126,18 @@ import XCTest
         _ = try await tab.web.evaluateJavaScript("document.getElementById('embedded').contentDocument.getElementById('player').webkitSetPresentationMode('picture-in-picture'); true;")
         try await wait { tab.pictureInPicture }
         try await Task.sleep(for: .milliseconds(150))
-        MediaState.shared.minimize(tab)
+        // The mode event arrives before minimize's playback restoration finishes.
+        // Drive collapsed controls after the actual minimize acknowledgement.
+        let minimized = await withCheckedContinuation { continuation in
+            MediaState.shared.minimize(tab) { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(minimized)
         try await wait { !tab.pictureInPicture }
         try await wait { try await tab.web.evaluateJavaScript(paused) as? Bool == false }
-        MediaState.shared.send(.playpause, to: tab)
-        try await Task.sleep(for: .milliseconds(200))
+        let controlled = await withCheckedContinuation { continuation in
+            MediaState.shared.send(.playpause, to: tab) { continuation.resume(returning: $0) }
+        }
+        XCTAssertTrue(controlled)
         let videoPaused = try await tab.web.evaluateJavaScript(paused) as? Bool
         let backgroundPaused = try await tab.web.evaluateJavaScript("document.getElementById('background').paused") as? Bool
         XCTAssertEqual(videoPaused, true, "Collapsed controls must continue targeting the former PiP video")

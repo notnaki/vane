@@ -237,13 +237,13 @@ import XCTest
         var observed: [String] = []
         window.beforeNext = {
             observed.append(precision.stringValue)
-            XCTAssertFalse(precision.isHidden)
+            XCTAssertEqual(precision.isHidden, observed.count == 1, "Normal seeking has no precision caption")
             XCTAssertTrue(transports.allSatisfy(\.isHidden))
             XCTAssertEqual(precision.frame.midX, controls.bounds.midX, accuracy: 0.1)
             XCTAssertEqual(precision.frame.midY, controls.bounds.midY, accuracy: 0.1)
         }
         slider.mouseDown(with: try event(.leftMouseDown, point))
-        XCTAssertEqual(observed, ["1× precision", "4× precision"])
+        XCTAssertEqual(observed, ["", "4× precision"])
         XCTAssertTrue(precision.isHidden)
         XCTAssertTrue(transports.allSatisfy { !$0.isHidden })
         XCTAssertEqual(slider.doubleValue, 50, "Lifting changes precision without seeking by itself")
@@ -285,6 +285,10 @@ import XCTest
         window.show()
         window.setFrame(NSRect(x: 100, y: 100, width: 640, height: 360), display: true)
         controls.layoutSubtreeIfNeeded()
+        let root = try XCTUnwrap(window.contentView)
+        root.updateTrackingAreas()
+        XCTAssertTrue(root.trackingAreas.contains { $0.options.contains([.mouseMoved, .activeAlways]) },
+                      "Resize feedback must work while the floating panel is inactive")
         func click(_ point: NSPoint) throws {
             func event(_ type: NSEvent.EventType) throws -> NSEvent {
                 try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime + (type == .leftMouseUp ? 1 : 0),
@@ -300,9 +304,12 @@ import XCTest
             let button = try XCTUnwrap(buttons(controls).first { $0.identifier?.rawValue == id })
             let point = button.convert(NSPoint(x: id == "vane.pip.restore" ? 8 : button.bounds.maxX - 8,
                                               y: button.bounds.maxY - 8), to: nil)
+            let buttonFrame = button.convert(button.bounds, to: controls)
+            XCTAssertEqual(id == "vane.pip.restore" ? buttonFrame.minX : controls.bounds.maxX - buttonFrame.maxX, 14,
+                           "Top controls should retain their old edge spacing")
             let hit = window.contentView?.hitTest(point)
             XCTAssertTrue(hit === button, "Header event must reach its actual button")
-            XCTAssertNil(CustomPiPWindow.resizeCorner(at: point, in: controls.bounds), "Header padding must not start a resize")
+            XCTAssertNil(window.resizeCorner(at: point), "Header padding must not start a resize")
             try click(point)
         }
         let slider = try XCTUnwrap(controls.subviews.compactMap { $0 as? PiPSeekSlider }.first)

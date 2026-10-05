@@ -79,14 +79,18 @@ import WebKit
 
         func update(pointer: NSPoint) {
             if let custom = panel as? CustomPiPWindow {
+                // Let WindowServer move the live video without periodic JavaScript
+                // replies, control redraws, or hover fades competing with the drag.
+                custom.updateInteraction()
+                guard !custom.isInteracting else { return }
                 if let controls = custom.controlsView as? PiPPlaybackControls {
                     controls.updateVisibility(pointer: pointer)
                     if !querying, !ending, let tab {
                         querying = true
-                        PictureInPicture.playback(tab) { [weak self, weak controls] state in
+                        PictureInPicture.playback(tab) { [weak self, weak controls, weak custom] state in
                             guard let self else { return }
                             self.querying = false
-                            if !self.removed, let state { controls?.update(state) }
+                            if !self.removed, custom?.isInteracting == false, let state { controls?.update(state) }
                         }
                     }
                 }

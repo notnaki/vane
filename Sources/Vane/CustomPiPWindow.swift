@@ -21,6 +21,8 @@ import QuartzCore
     private var returnStarted: CFTimeInterval = 0
     private var returnLink: CADisplayLink?
     private var returnCompletion: (@MainActor () -> Void)?
+    private(set) var isInteracting = false
+    private var isDragging = false
     static let placementKey = "customPiPFrame"
 
     init(frame: NSRect, sourceFrame: NSRect? = nil, videoView: NSView, controlsView: NSView) {
@@ -46,7 +48,9 @@ import QuartzCore
         let aspect = frame.width / frame.height
         contentMinSize = NSSize(width: min(initialFrame.width, max(280, 160 * aspect)),
                                 height: min(initialFrame.height, max(160, 280 / aspect)))
-        isMovableByWindowBackground = true
+        // Input routing below chooses controls, corner resize, or native window drag.
+        isMovableByWindowBackground = false
+        acceptsMouseMovedEvents = true
         let content = VideoContent(frame: NSRect(origin: .zero, size: initialFrame.size), video: videoView, controls: controlsView)
         content.wantsLayer = true
         content.layer?.backgroundColor = NSColor.black.cgColor
@@ -308,6 +312,20 @@ import QuartzCore
         return ResizeCorner.allCases.first { cornerRect($0, in: bounds).contains(point) }
     }
 
+    func resizeCorner(at point: NSPoint) -> ResizeCorner? {
+        guard let contentView, Self.interactiveControl(at: point, in: contentView) == nil else { return nil }
+        return Self.resizeCorner(at: point, in: contentView.bounds)
+    }
+
+    private static func interactiveControl(at point: NSPoint, in content: NSView) -> NSControl? {
+        var target = content.hitTest(point)
+        while let view = target {
+            if let control = view as? NSControl { return control }
+            target = view.superview
+        }
+        return nil
+    }
+
     private static func cornerRect(_ corner: ResizeCorner, in bounds: NSRect) -> NSRect {
         NSRect(x: corner.isLeft ? bounds.minX : bounds.maxX - cornerTargetSize,
                y: corner.isTop ? bounds.maxY - cornerTargetSize : bounds.minY,
@@ -328,6 +346,8 @@ import QuartzCore
     }
 
     private func resize(from event: NSEvent, corner: ResizeCorner) {
+        isInteracting = true
+        defer { isInteracting = false }
         let original = frame
         let start = convertPoint(toScreen: event.locationInWindow)
         let aspect = contentAspectRatio.width / contentAspectRatio.height
@@ -344,7 +364,21 @@ import QuartzCore
         }
     }
 
+    func updateInteraction() {
+        // performDrag hands off to WindowServer and returns immediately; it may
+        // consume mouseUp. The existing playback timer observes release instead.
+        if isDragging && NSEvent.pressedMouseButtons & 1 == 0 { finishDrag() }
+    }
+
+    private func finishDrag() {
+        isDragging = false
+        isInteracting = false
+        rememberPlacement()
+    }
+
     override func sendEvent(_ event: NSEvent) {
+        if isDragging && (event.type == .leftMouseDown || event.type == .leftMouseUp) { finishDrag() }
+        updateInteraction()
         var settleTinyInteraction = false
         defer {
             // Let the control receive its click at the original coordinates first.
@@ -357,23 +391,15 @@ import QuartzCore
         if event.type == .keyDown { (controlsView as? PiPPlaybackControls)?.showForKeyboard() }
         if event.type == .leftMouseDown, event.window === self, let contentView {
             let point = contentView.convert(event.locationInWindow, from: nil)
-            if let corner = Self.resizeCorner(at: point, in: contentView.bounds) {
+            if let corner = resizeCorner(at: point) {
                 stopEntry(keepDestination: false)
                 resize(from: event, corner: corner)
                 return
             }
-            var target = contentView.hitTest(point)
-            var interactive = false
-            var exitControl = false
-            while let view = target {
-                if let control = view as? NSControl {
-                    interactive = true
-                    exitControl = ["vane.pip.restore", "vane.pip.minimize", "vane.pip.close"]
-                        .contains(control.identifier?.rawValue ?? "")
-                    break
-                }
-                target = view.superview
-            }
+            let control = Self.interactiveControl(at: point, in: contentView)
+            let interactive = control != nil
+            let exitControl = ["vane.pip.restore", "vane.pip.minimize", "vane.pip.close"]
+                .contains(control?.identifier?.rawValue ?? "")
             stopEntry(keepDestination: interactive)
             if interactive && !exitControl {
                 alphaValue = 1
@@ -381,6 +407,8 @@ import QuartzCore
             }
             // Keep the native resize border; all remaining video ground is a drag handle.
             if !interactive && contentView.bounds.insetBy(dx: 8, dy: 8).contains(point) {
+                isDragging = true
+                isInteracting = true
                 performDrag(with: event)
                 return
             }
@@ -391,6 +419,7 @@ import QuartzCore
     private final class VideoContent: NSView {
         let video: NSView
         let controls: NSView
+        private var tracking: NSTrackingArea?
 
         init(frame: NSRect, video: NSView, controls: NSView) {
             self.video = video
@@ -399,12 +428,23 @@ import QuartzCore
         }
 
         required init?(coder: NSCoder) { nil }
-        override func resetCursorRects() {
-            super.resetCursorRects()
-            for corner in ResizeCorner.allCases {
-                addCursorRect(CustomPiPWindow.cornerRect(corner, in: bounds), cursor: corner.cursor)
-            }
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let tracking { removeTrackingArea(tracking) }
+            // cursorUpdate is only supported for active windows. This panel also
+            // needs resize feedback when the browser (or another app) is active.
+            let area = NSTrackingArea(rect: .zero,
+                options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+            tracking = area
+            addTrackingArea(area)
         }
+        override func mouseMoved(with event: NSEvent) {
+            guard let window = window as? CustomPiPWindow, !window.isInteracting else { return }
+            let point = convert(event.locationInWindow, from: nil)
+            (window.resizeCorner(at: point)?.cursor ?? .arrow).set()
+        }
+        override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+        override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
         override func resizeSubviews(withOldSize oldSize: NSSize) {
             super.resizeSubviews(withOldSize: oldSize)
             video.frame = bounds

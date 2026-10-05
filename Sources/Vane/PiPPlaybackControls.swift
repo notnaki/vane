@@ -71,11 +71,9 @@ import AppKit
         seek.onPrecisionChange = { [weak self] factor in
             guard let self else { return }
             for button in [self.backward, self.play, self.forward] { button.isHidden = factor != nil }
-            self.precision.isHidden = factor == nil
-            if let factor {
-                self.precision.stringValue = "\(Int(factor))× precision"
-                self.setControlsVisible(true)
-            }
+            self.precision.isHidden = (factor ?? 1) <= 1
+            self.precision.stringValue = factor.flatMap { $0 > 1 ? "\(Int($0))× precision" : nil } ?? ""
+            if factor != nil { self.setControlsVisible(true) }
         }
         addSubview(seek)
     }
@@ -85,8 +83,9 @@ import AppKit
     override func layout() {
         super.layout()
         let compact = bounds.width < 480
-        // Keep actual controls clear of the enlarged 24-point resize corners.
-        let inset: CGFloat = 26
+        let inset: CGFloat = 14
+        // Leave the timeline ends clear of the lower resize targets.
+        let seekInset: CGFloat = 26
         let height: CGFloat = 28
         let widths: [CGFloat] = compact ? [28, 28, 28] : [104, 86, 68]
         let x = [inset, bounds.width - inset - widths[2] - 8 - widths[1], bounds.width - inset - widths[2]]
@@ -111,7 +110,7 @@ import AppKit
         backward.setSymbolSize(skipSize * 0.8)
         forward.setSymbolSize(skipSize * 0.8)
         precision.frame = NSRect(x: inset, y: bounds.midY - 14, width: max(0, bounds.width - inset * 2), height: 28)
-        seek.frame = NSRect(x: inset, y: 10, width: max(0, bounds.width - inset * 2), height: 20)
+        seek.frame = NSRect(x: seekInset, y: 10, width: max(0, bounds.width - seekInset * 2), height: 20)
     }
 
     func update(_ state: PictureInPicture.Playback) {
