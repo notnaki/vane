@@ -807,10 +807,19 @@ private struct SpaceSwipe: ViewModifier {
         // clear the last one's verdict, or a swipe made over the sidebar goes on claiming
         // events long after the fingers have moved somewhere else.
         if event.phase.contains(.began) { forget() }
-        guard event.hasPreciseScrollingDeltas, event.window === store.window,
-              store.sidebarShown, !store.libraryOpen,
-              event.locationInWindow.x < SidebarWidth.shared.width
+        guard event.hasPreciseScrollingDeltas, let window = event.window,
+              window === store.window, !store.libraryOpen,
+              store.sidebarShown || (window as? VaneWindow)?.peekingSidebar == true
         else { return false }
+        // The floating panel is inset on every side and extends that much further right
+        // than the docked rail. Its surrounding gaps still belong to the page.
+        let inset = store.sidebarShown ? 0 : Look.cardGap
+        let bounds = window.contentView.map { $0.convert($0.bounds, to: nil) }
+            ?? NSRect(origin: .zero, size: window.frame.size)
+        let sidebar = NSRect(x: bounds.minX + inset, y: bounds.minY + inset,
+                             width: SidebarWidth.shared.width,
+                             height: max(0, bounds.height - 2 * inset))
+        guard sidebar.contains(event.locationInWindow) else { return false }
         switch claim {
         case .mine:   return true
         case .theirs: return false
