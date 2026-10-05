@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import vane
 
@@ -85,5 +87,79 @@ final class ChromeMenuTests: XCTestCase {
         let frame = ChromeMenuLayout.frame(anchor: anchor, size: size, window: screen, screen: screen, above: true)
         XCTAssertLessThan(frame.maxY, anchor.minY)
         XCTAssertLessThanOrEqual(frame.maxX, screen.maxX - 8)
+    }
+}
+
+@MainActor final class ChromeMenuPresentationTests: XCTestCase {
+    private func fixture() -> (NSWindow, ChromeMenuAnchor) {
+        _ = NSApplication.shared
+        let anchor = ChromeMenuAnchor()
+        let window = MenuEventWindow(contentRect: CGRect(x: 200, y: 200, width: 800, height: 600),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: ChromeMenuAnchorView(anchor: anchor))
+        window.contentView?.layoutSubtreeIfNeeded()
+        addTeardownBlock { @MainActor in
+            ChromeMenu.shared.dismiss()
+            window.close()
+        }
+        return (window, anchor)
+    }
+
+    func testPressingTheSameMenuAnchorAgainClosesItsMenu() {
+        let (_, anchor) = fixture()
+        let items = [ChromeMenuItem(title: "New Tab", symbol: "plus.square") {}]
+        anchor.show(items, above: true, title: "Create")
+        XCTAssertTrue(anchor.isPresented)
+        XCTAssertTrue(NSApp.windows.contains { $0.title == "Create" && $0.isVisible })
+        anchor.show(items, above: true, title: "Create")
+        XCTAssertFalse(NSApp.windows.contains { $0.title == "Create" && $0.isVisible },
+                       "The close button must dismiss rather than replace the open menu")
+        XCTAssertFalse(anchor.isPresented)
+    }
+
+    func testClickingTheCloseTriggerIsConsumedBeforeItsButtonCanReopenTheMenu() throws {
+        let (window, anchor) = fixture()
+        anchor.show([ChromeMenuItem(title: "New Tab", symbol: "plus.square") {}], title: "Create")
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown,
+            location: CGPoint(x: 400, y: 300), modifierFlags: [], timestamp: 1,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        NSApp.sendEvent(event)
+        XCTAssertFalse(anchor.isPresented)
+        XCTAssertEqual((window as? MenuEventWindow)?.mouseDownCount, 0,
+                       "Dismissal must consume mouse-down so the underlying button cannot fire on mouse-up")
+    }
+
+    func testEscapeClearsTheTriggersOpenState() throws {
+        let (_, anchor) = fixture()
+        anchor.show([ChromeMenuItem(title: "New Tab", symbol: "plus.square") {}], title: "Create")
+        let panel = try XCTUnwrap(NSApp.windows.first { $0.title == "Create" && $0.isVisible })
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [], timestamp: 1, windowNumber: panel.windowNumber, context: nil,
+            characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        NSApp.sendEvent(event)
+        XCTAssertFalse(anchor.isPresented)
+        XCTAssertFalse(panel.isVisible)
+    }
+
+    func testOpeningAnotherMenuClearsThePreviousTriggersOpenState() {
+        let (_, first) = fixture()
+        let (_, second) = fixture()
+        let items = [ChromeMenuItem(title: "New Tab", symbol: "plus.square") {}]
+        first.show(items, title: "Create")
+        second.show(items, title: "Spaces")
+        XCTAssertFalse(first.isPresented)
+        XCTAssertTrue(second.isPresented)
+        ChromeMenu.shared.dismiss()
+        XCTAssertFalse(second.isPresented)
+    }
+}
+
+private final class MenuEventWindow: NSWindow {
+    var mouseDownCount = 0
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown { mouseDownCount += 1 }
+        super.sendEvent(event)
     }
 }

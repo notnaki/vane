@@ -103,9 +103,7 @@ struct SpaceName: View {
 
 // MARK: - Creating a Space
 
-/// The footer's `+`. Arc does not ask for a name first: the Space appears, and its name,
-/// icon and colour are edited in place in a small panel hanging off the button. This is that
-/// button and that panel.
+/// The footer's creation menu. Its trigger becomes a close button while the menu is open.
 struct NewSpaceButton: View {
     @EnvironmentObject var store: TabStore
     @StateObject private var menuAnchor = ChromeMenuAnchor()
@@ -114,25 +112,31 @@ struct NewSpaceButton: View {
         Button {
             let shortcut = Keybindings.binding(for: .newTab)
             menuAnchor.show([
-                ChromeMenuItem(title: "New Space", symbol: "rectangle.stack.badge.plus") {
-                    store.newSpace()
-                },
                 ChromeMenuItem(title: "New Folder", symbol: "folder") { store.newFolder() },
-                ChromeMenuItem(title: "New Easel", symbol: "paintpalette",
-                               shortcut: Keybindings.binding(for: .newEasel).display) { store.openEasel(create: true) },
+                ChromeMenuItem(title: "New Easel", symbol: "scribble.variable",
+                               shortcut: Keybindings.binding(for: .newEasel).display,
+                               startsGroup: true) { store.openEasel(create: true) },
+                ChromeMenuItem(title: "New Split", symbol: "rectangle.split.2x1",
+                               shortcut: Keybindings.binding(for: .addSplit).display,
+                               startsGroup: true) {
+                    if store.current == nil { _ = store.newBlankTab() }
+                    store.addSplit()
+                },
                 ChromeMenuItem(title: "New Tab", symbol: "plus.square",
-                               shortcut: shortcut == .unassigned ? "" : shortcut.display,
-                               startsGroup: true) { store.newTab(nil) },
-            ], above: true, title: "Create")
+                               shortcut: shortcut == .unassigned ? "" : shortcut.display) { store.newTab(nil) },
+                ChromeMenuItem(title: "New Space", symbol: "rectangle.stack.badge.plus",
+                               startsGroup: true) { store.newSpace() },
+            ], above: true, title: "Create", showsPointer: true)
         } label: {
-            Image(systemName: "plus")
+            Image(systemName: menuAnchor.isPresented ? "xmark" : "plus")
                 .frame(width: Look.rowTarget, height: Look.rowTarget).contentShape(.rect)
         }
             .buttonStyle(.plain)
             .background(ChromeMenuAnchorView(anchor: menuAnchor))
             .foregroundStyle(Look.inkSecondary)
-            .help("New Space, Folder, Easel, or Tab")
-            .accessibilityLabel("New Space, Folder, Easel, or Tab")
+            .help(menuAnchor.isPresented ? "Close creation menu" : "New Folder, Easel, Split, Tab, or Space")
+            .accessibilityLabel(menuAnchor.isPresented ? "Close creation menu" : "New Folder, Easel, Split, Tab, or Space")
+            .onDisappear { if menuAnchor.isPresented { ChromeMenu.shared.dismiss() } }
             .popover(isPresented: Binding(get: { store.editingSpace != nil },
                                           set: { if !$0 { store.editingSpace = nil } }),
                      arrowEdge: .top) {
