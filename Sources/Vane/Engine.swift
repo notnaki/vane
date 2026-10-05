@@ -3520,9 +3520,11 @@ struct Stash {
         switchTo(space: list[n - 1])
     }
 
-    /// The Library popover in the sidebar's footer, so ⇧⌘L can open it — it is a popover on
-    /// a button, and AppKit has no way to press a SwiftUI button from a menu item.
+    /// The Library panel in this window, opened from the footer, ⇧⌘L, or an edge swipe.
     @Published var libraryOpen = false
+    /// Shared by the window and sidebar event monitors so Library gets first refusal
+    /// on its gestures regardless of AppKit's local-monitor ordering.
+    let librarySwipeMonitor = LibrarySwipeMonitor()
 
     /// Convenience for a menu that has an id rather than the struct. Off the strip, so a row
     /// naming another profile's Space works the same way the dot for it does.
