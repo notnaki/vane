@@ -53,6 +53,7 @@ struct EaselStylePanel: View {
     let shape: Bool
     let text: Bool
     var closedShape = true
+    var supportsEdges = true
     var filled = false
     var fontSize = 20.0
     var strokeWidth = 2.0
@@ -81,7 +82,7 @@ struct EaselStylePanel: View {
                 choices("Stroke style", values: EaselObjectStyle.Stroke.allCases, selected: style.stroke) { $0.stroke = $1 }
                 choices("Sloppiness", values: [0.0, 1, 2], selected: style.roughness,
                         names: ["Architect", "Artist", "Cartoonist"]) { $0.roughness = $1 }
-                if closedShape { choices("Edges", values: EaselObjectStyle.Edges.allCases, selected: style.edges) { $0.edges = $1 } }
+                if supportsEdges { choices("Edges", values: EaselObjectStyle.Edges.allCases, selected: style.edges) { $0.edges = $1 } }
             }
             if text {
                 choices("Font family", values: EaselObjectStyle.FontFamily.allCases, selected: style.fontFamily) { $0.fontFamily = $1 }

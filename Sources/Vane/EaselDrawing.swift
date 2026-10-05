@@ -5,6 +5,7 @@ struct EaselPalette: View {
     let choose: (String) -> Void
     var colors = ["ink", "red", "green", "blue", "orange"]
     var fill = false
+    var allowsTransparent = true
     @State private var expanded = false
     var body: some View {
         HStack(spacing: 4) {
@@ -16,7 +17,7 @@ struct EaselPalette: View {
                 .popover(isPresented: $expanded) {
                     VStack(alignment: .leading, spacing: 14) {
                         LazyVGrid(columns: Array(repeating: GridItem(.fixed(26), spacing: 6), count: 6), spacing: 6) {
-                            ForEach(["none"] + EaselColors.palette, id: \.self) { value in swatch(value, size: 26, selectable: true) }
+                            ForEach((fill && allowsTransparent ? ["none"] : []) + EaselColors.palette, id: \.self) { value in swatch(value, size: 26, selectable: true) }
                         }
                         ColorPicker("Custom color", selection: Binding(get: { EaselColors.object(color) }, set: { choose(EaselColors.hex($0)) }), supportsOpacity: false)
                     }.padding(14)
@@ -48,6 +49,29 @@ struct EaselShape: View {
     var strokeWidth = 3.0
     var fillColor: String?
     var style = EaselObjectStyle()
+    static func diamondPath(in bounds: CGRect, edges: EaselObjectStyle.Edges) -> Path {
+        let corners = [CGPoint(x: bounds.midX, y: bounds.minY), CGPoint(x: bounds.maxX, y: bounds.midY),
+                       CGPoint(x: bounds.midX, y: bounds.maxY), CGPoint(x: bounds.minX, y: bounds.midY)]
+        func inset(_ corner: CGPoint, toward next: CGPoint) -> CGPoint {
+            let distance = hypot(next.x - corner.x, next.y - corner.y)
+            let amount = min(20, distance / 4) / max(1, distance)
+            return CGPoint(x: corner.x + (next.x - corner.x) * amount, y: corner.y + (next.y - corner.y) * amount)
+        }
+        return Path { path in
+            if edges == .round {
+                path.move(to: inset(corners[0], toward: corners[3]))
+                for index in corners.indices {
+                    let corner = corners[index]
+                    path.addQuadCurve(to: inset(corner, toward: corners[(index + 1) % 4]), control: corner)
+                    path.addLine(to: inset(corners[(index + 1) % 4], toward: corner))
+                }
+            } else {
+                path.move(to: corners[0])
+                for corner in corners.dropFirst() { path.addLine(to: corner) }
+            }
+            path.closeSubpath()
+        }
+    }
     var body: some View {
         GeometryReader { geometry in
             let shape = Path { path in
@@ -58,10 +82,7 @@ struct EaselShape: View {
                     if style.edges == .round { path.addRoundedRect(in: bounds, cornerSize: CGSize(width: min(20, bounds.width / 4), height: min(20, bounds.height / 4))) }
                     else { path.addRect(bounds) }
                 case .diamond:
-                    path.move(to: CGPoint(x: bounds.midX, y: bounds.minY))
-                    path.addLine(to: CGPoint(x: bounds.maxX, y: bounds.midY))
-                    path.addLine(to: CGPoint(x: bounds.midX, y: bounds.maxY))
-                    path.addLine(to: CGPoint(x: bounds.minX, y: bounds.midY)); path.closeSubpath()
+                    path.addPath(Self.diamondPath(in: bounds, edges: style.edges))
                 case .arrow, .line:
                     guard let first = points.first, let last = points.last else { return }
                     let start = CGPoint(x: first.x / width * bounds.width, y: first.y / height * bounds.height)

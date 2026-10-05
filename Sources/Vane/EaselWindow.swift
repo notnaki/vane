@@ -137,7 +137,7 @@ import UniformTypeIdentifiers
         let height = min(EaselStore.canvasHeight, max(600, (board.items.map { $0.y + $0.height }.max() ?? 0) + 40))
         let scale = min(1, 4096 / width, 4096 / height)
         let renderer = ImageRenderer(content: EaselCanvas(items: board.items, selected: nil, drawing: false,
-                                    profileID: profileID, liveItems: [], toggleLive: { _ in }, stroke: [], zoom: 1, select: { _ in }, edit: { _ in }, change: { _ in true }, draw: { _, _ in })
+                                    profileID: profileID, liveItems: [], toggleLive: { _ in }, stroke: [], zoom: 1, select: { _ in }, edit: { _ in }, change: { _ in true }, draw: { _, _ in }, interactive: false)
                                     .frame(width: width, height: height, alignment: .topLeading).clipped()
                                     .scaleEffect(scale, anchor: .topLeading)
                                     .frame(width: width * scale, height: height * scale, alignment: .topLeading).clipped())
@@ -374,10 +374,10 @@ private struct EaselEditor: View {
             let kind = drawing ? drawingKind : item?.kind
             if kind != .image && kind != .link {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("Stroke").font(.caption)
-                    EaselPalette(color: item?.color ?? drawingColor) { color in
+                    Text(kind == .note ? "Background" : "Stroke").font(.caption)
+                    EaselPalette(color: item?.color ?? drawingColor, choose: { color in
                         if var item { item.color = color; _ = changeItem(item) } else { drawingColor = color }
-                    }
+                    }, colors: kind == .note ? ["yellow", "pink", "blue", "green"] : ["ink", "red", "green", "blue", "orange"], fill: kind == .note, allowsTransparent: false)
                     if kind == .rectangle || kind == .diamond || kind == .ellipse {
                         Text("Background").font(.caption)
                         EaselPalette(color: (item == nil ? fillColor : item?.fillColor) ?? "none", choose: { color in
@@ -404,6 +404,7 @@ private struct EaselEditor: View {
                                     shape: kind != .text && kind != .note,
                                     text: kind == .text || kind == .note || item?.text.isEmpty == false,
                                     closedShape: kind == .rectangle || kind == .ellipse || kind == .diamond,
+                                    supportsEdges: kind == .rectangle || kind == .diamond,
                                     filled: (item == nil ? fillColor : item?.fillColor) != nil,
                                     fontSize: item?.fontSize ?? drawingFontSize,
                                     strokeWidth: item?.strokeWidth ?? (item == nil ? strokeWidth : 3),
@@ -568,7 +569,8 @@ enum EaselColors {
         case "pink": Color(red: 1, green: 0.84, blue: 0.86)
         case "blue": Color(red: 0.82, green: 0.9, blue: 0.98)
         case "green": Color(red: 0.84, green: 0.92, blue: 0.81)
-        default: Color(red: 1, green: 0.93, blue: 0.68)
+        case "yellow": Color(red: 1, green: 0.93, blue: 0.68)
+        default: fill(color)
         }
     }
 }
@@ -594,12 +596,13 @@ private struct EaselCanvas: View {
     let change: (EaselItem) -> Bool
     var textEditingChanged: (UUID, Bool) -> Void = { _, _ in }
     let draw: (CGPoint?, Bool) -> Void
+    var interactive = true
     var body: some View {
         ZStack(alignment: .topLeading) {
             EaselColors.paper.onTapGesture { select(nil) }
             ForEach(items) { item in
                 EaselCard(item: item, selected: selected == item.id, profileID: profileID,
-                          live: liveItems.contains(item.id), zoom: zoom, editRequest: editRequest, toggleLive: { toggleLive(item.id) }, select: { select(item.id) }, edit: { edit(item) }, change: change, textEditingChanged: { textEditingChanged(item.id, $0) })
+                          live: liveItems.contains(item.id), zoom: zoom, editRequest: editRequest, toggleLive: { toggleLive(item.id) }, select: { select(item.id) }, edit: { edit(item) }, change: change, textEditingChanged: { textEditingChanged(item.id, $0) }, interactive: interactive)
                     .offset(x: item.x, y: item.y)
                     .allowsHitTesting(!drawing && !hand)
             }
@@ -638,6 +641,7 @@ private struct EaselCard: View {
     let edit: () -> Void
     let change: (EaselItem) -> Bool
     let textEditingChanged: (Bool) -> Void
+    var interactive = true
     @State private var textEditing = false
     @State private var textDraft = ""
     @FocusState private var textFocused: Bool
@@ -646,18 +650,21 @@ private struct EaselCard: View {
     @State private var resizeCorner = EaselItemLayout.Corner.bottomTrailing
     private var layout: EaselItem { EaselItemLayout.resized(item, corner: resizeCorner, translation: resizing, zoom: zoom) }
     private var arrangedContent: some View {
-        content.opacity(item.style?.opacity ?? 1)
+        content
             .frame(width: layout.width, height: layout.height, alignment: .topLeading)
             .background([.drawing, .text, .ellipse, .rectangle, .diamond, .arrow, .line].contains(item.kind) ? Color.clear : (item.kind == .note ? EaselColors.card(item.color) : .white),
                         in: .rect(cornerRadius: 10))
             .clipShape(.rect(cornerRadius: 10))
+            .opacity(item.style?.opacity ?? 1)
             .contentShape(Rectangle())
             .overlay {
-                EaselPointer(selected: selected, editing: textEditing, footer: item.kind == .image || item.kind == .link, live: live,
-                             select: select, edit: editContent, drag: pointerDrag)
+                if interactive {
+                    EaselPointer(selected: selected, editing: textEditing, footer: item.kind == .image || item.kind == .link, live: live,
+                                 select: select, edit: editContent, drag: pointerDrag)
+                }
             }
     }
-    var body: some View {
+    private var selectionContent: some View {
         arrangedContent
             .overlay {
                 if selected {
@@ -668,6 +675,9 @@ private struct EaselCard: View {
             .overlay(alignment: .topTrailing) { if selected { handle(.topTrailing) } }
             .overlay(alignment: .bottomLeading) { if selected { handle(.bottomLeading) } }
             .overlay(alignment: .bottomTrailing) { if selected { handle(.bottomTrailing) } }
+    }
+    private var interactiveContent: some View {
+        selectionContent
             .onAppear {
                 if selected && item.kind == .text && item.text.isEmpty { editContent() }
             }
@@ -682,6 +692,9 @@ private struct EaselCard: View {
                     Button(live ? "Pause Live View" : "View Source Page Live") { toggleLive() }
                 }
             }
+    }
+    var body: some View {
+        interactiveContent
             .accessibilityElement(children: .contain)
             .accessibilityLabel(item.text.isEmpty ? item.kind.rawValue.capitalized : item.text)
             .accessibilityAddTraits(selected ? [.isSelected] : [])
@@ -736,7 +749,8 @@ private struct EaselCard: View {
         case .note:
             Text(item.text.isEmpty ? "Double-click to write a note" : item.text)
                 .font(EaselTypography.font(item.style?.fontFamily ?? .normal, size: item.fontSize ?? 18)).foregroundStyle(EaselColors.ink)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(18)
+                .multilineTextAlignment(item.style?.alignment ?? .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: textAlignment(centered: false)).padding(18)
         case .link:
             VStack(alignment: .leading, spacing: 12) {
                 Image(systemName: "link").font(.title2)

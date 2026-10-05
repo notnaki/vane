@@ -1,9 +1,31 @@
 import XCTest
 import AppKit
 import WebKit
+import SwiftUI
 @testable import vane
 
 @MainActor final class EaselTests: XCTestCase {
+    func testRoundedDiamondSoftensAllFourCorners() {
+        let bounds = CGRect(x: 0, y: 0, width: 300, height: 180)
+        let sharp = EaselShape.diamondPath(in: bounds, edges: .sharp)
+        let rounded = EaselShape.diamondPath(in: bounds, edges: .round)
+        var corners = 0
+        rounded.forEach { if case .quadCurve = $0 { corners += 1 } }
+        XCTAssertEqual(corners, 4)
+        XCTAssertNotEqual(sharp, rounded)
+        XCTAssertTrue(bounds.contains(rounded.boundingRect))
+    }
+    func testZeroOpacityHidesTheEntireNoteInPNGExport() throws {
+        var note = EaselItem(kind: .note, text: "Hidden", x: 100, y: 100)
+        note.style = EaselObjectStyle(opacity: 0)
+        let hidden = try XCTUnwrap(NSBitmapImageRep(data: EaselWindow.png(for: EaselBoard(items: [note]), profileID: UUID())))
+        let empty = try XCTUnwrap(NSBitmapImageRep(data: EaselWindow.png(for: EaselBoard(), profileID: UUID())))
+        let pixel = try XCTUnwrap(hidden.colorAt(x: 200, y: 200)?.usingColorSpace(.deviceRGB))
+        let paper = try XCTUnwrap(empty.colorAt(x: 200, y: 200)?.usingColorSpace(.deviceRGB))
+        XCTAssertEqual(pixel.redComponent, paper.redComponent, accuracy: 0.01)
+        XCTAssertEqual(pixel.greenComponent, paper.greenComponent, accuracy: 0.01)
+        XCTAssertEqual(pixel.blueComponent, paper.blueComponent, accuracy: 0.01)
+    }
     private func repository() -> EaselStore {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
@@ -93,6 +115,7 @@ import WebKit
         let scale = 4096.0 / 5720.0
         let pixel = try XCTUnwrap(bitmap.colorAt(x: Int(5500 * scale), y: Int(3520 * scale))?.usingColorSpace(.deviceRGB))
         XCTAssertGreaterThan(pixel.redComponent, 0.95)
+        XCTAssertGreaterThan(pixel.greenComponent, 0.85, "Export must render the note, without a native-view placeholder")
         XCTAssertLessThan(pixel.blueComponent, 0.8, "The far-edge note must be rendered, not clipped to empty paper")
     }
 
