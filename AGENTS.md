@@ -1,5 +1,11 @@
 # Project workflow
 
+## UI animation defaults
+
+- Animate UI interactions and state changes by default unless the user explicitly requests otherwise. Keep motion brief, responsive, and consistent with Vane's existing motion styles.
+- When a control changes shape or orientation, animate the transition continuously instead of swapping between static icons. For example, the creation menu's + should rotate into × when opened and rotate back when closed.
+- Respect system Reduce Motion and Vane's Battery Saver motion policy; use immediate state changes when motion is reduced.
+
 ## PR, review, and squash-merge cycle
 
 - For requested project changes, carry the work through implementation, validation, a pull request, review, fixes, and squash-merge by default, unless the user explicitly requests a different stopping point.
