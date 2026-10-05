@@ -17,8 +17,9 @@ import Combine
         history.record(url, title: "Page")
         otherProfile.record(url, title: "Another profile")
         history.retitle(url, title: "New title")
+        history.record([(url: url, title: "Imported page", at: .now)])
         history.clearHistory()
-        XCTAssertEqual(counts, [1, 1, 0])
+        XCTAssertEqual(counts, [1, 1, 2, 0])
     }
 
     func testDownloadsAndMediaFilterBeforeTakingFourNewestItems() throws {

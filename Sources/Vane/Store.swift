@@ -270,6 +270,7 @@ struct BookmarkImportResult: Equatable, Sendable {
             sqlite3_reset(statement)
         }
         exec("COMMIT")
+        NotificationCenter.default.post(name: Self.historyChanged, object: self)
     }
 
     func recent(limit: Int = 100) -> [Suggestion] {

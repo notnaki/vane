@@ -238,15 +238,26 @@ struct LibraryBucket: View {
         ZStack {
             BucketShape().fill(style: FillStyle(eoFill: true))
                 .rotationEffect(.degrees(hovered && !filled && !reduceMotion ? -9 : 0), anchor: .bottom)
-                .offset(y: hovered && !reduceMotion ? -1 : 0)
+                .offset(y: hovered && !filled && !reduceMotion ? -1 : 0)
+            RoundedRectangle(cornerRadius: 0.75)
+                .frame(width: 14, height: 1.5).offset(y: -0.5)
+                .opacity(filled ? 0 : 1)
             if filled {
                 ZStack {
-                    BucketSparkle().frame(width: 7, height: 7).offset(x: -3, y: -6)
-                    BucketSparkle().frame(width: 3, height: 3).offset(x: 5, y: -5)
-                    Circle().frame(width: 2, height: 2).offset(x: 1, y: -11)
+                    BucketConfetti(points: 5)
+                        .frame(width: 10, height: 9)
+                        .scaleEffect(x: 1, y: hovered && !reduceMotion ? 0.9 : 0.45)
+                        .rotationEffect(.degrees(-14))
+                        .offset(x: -2, y: hovered && !reduceMotion ? -2.5 : -1.5)
+                    BucketConfetti(points: 3)
+                        .frame(width: 3.5, height: 3.5)
+                        .rotationEffect(.degrees(18))
+                        .scaleEffect(hovered && !reduceMotion ? 1 : 0.75)
+                        .offset(x: 6.5, y: hovered && !reduceMotion ? -2 : 0)
+                    Circle().frame(width: 2, height: 2)
+                        .offset(x: 2.5, y: hovered && !reduceMotion ? -6.5 : -4.5)
                 }
-                .scaleEffect(hovered && !reduceMotion ? 1.15 : 0.8, anchor: .bottom)
-                .offset(y: hovered && !reduceMotion ? -2 : 0)
+                .foregroundStyle(hovered ? Look.inkPrimary : Look.inkSecondary)
                 .shadow(color: .white.opacity(hovered ? 0.7 : 0), radius: hovered ? 5 : 0)
             }
         }
@@ -260,25 +271,36 @@ struct LibraryBucket: View {
 private struct BucketShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        path.addRoundedRect(in: CGRect(x: 6, y: 14, width: 12, height: 10),
-                            cornerSize: CGSize(width: 3, height: 3))
-        path.addRoundedRect(in: CGRect(x: 5, y: 11, width: 14, height: 2),
-                            cornerSize: CGSize(width: 1, height: 1))
-        path.addRoundedRect(in: CGRect(x: 10, y: 16, width: 4, height: 2),
+        path.addPath(UnevenRoundedRectangle(topLeadingRadius: 1, bottomLeadingRadius: 3,
+                                            bottomTrailingRadius: 3, topTrailingRadius: 1)
+            .path(in: CGRect(x: 6, y: 14, width: 12, height: 9)))
+        path.addRoundedRect(in: CGRect(x: 10, y: 15, width: 4, height: 2),
                             cornerSize: CGSize(width: 1, height: 1))
         return path
     }
 }
 
-private struct BucketSparkle: Shape {
+private struct BucketConfetti: Shape {
+    let points: Int
+
     func path(in rect: CGRect) -> Path {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let count = points == 5 ? 10 : 3
+        let vertices = (0..<count).map { index -> CGPoint in
+            let angle = Double(index) * 2 * .pi / Double(count) - .pi / 2
+            let radius = points == 5 && index % 2 == 1 ? 0.48 : 1.0
+            return CGPoint(x: rect.midX + cos(angle) * radius * rect.width / 2,
+                           y: rect.midY + sin(angle) * radius * rect.height / 2)
+        }
+        func toward(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+            CGPoint(x: a.x + (b.x - a.x) * 0.22, y: a.y + (b.y - a.y) * 0.22)
+        }
         var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.midY), control: center)
-        path.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.maxY), control: center)
-        path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.midY), control: center)
-        path.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.minY), control: center)
+        path.move(to: toward(vertices[0], vertices[count - 1]))
+        for index in vertices.indices {
+            let vertex = vertices[index]
+            path.addLine(to: toward(vertex, vertices[(index + count - 1) % count]))
+            path.addQuadCurve(to: toward(vertex, vertices[(index + 1) % count]), control: vertex)
+        }
         path.closeSubpath()
         return path
     }
