@@ -171,11 +171,20 @@ each edit. Private windows cannot create boards or save captures.
 To move a Space to another profile, remove its Easel tabs first; their boards stay
 in the original profile's Library. Export/import a board to copy it to another profile.
 
-Use the floating toolbar to add plain text, images, circles, rectangles, arrows, or
-freehand drawing. Select an object for its color palette; text also offers size
-controls. Double-click text to edit it on the canvas. Notes, links, and clipboard
-paste are available in the toolbar’s **+** menu. Drag items to arrange them,
-use the selected item's corner to resize, and double-click to edit or crop an image.
+The centered toolbar follows Excalidraw's tool order: selection, rectangle, diamond,
+ellipse, arrow, line, drawing, text, and image. Click an object once to select it;
+drag anywhere inside its box to move it, including the empty interior of an outlined
+shape. All four corner handles resize. Double-click text to edit it inline, or a
+rectangle, diamond, or ellipse to add its label. With the Text tool, drag out the text
+box before typing, or click for a default size. Colors, shape fills, stroke widths,
+and text sizes live in the left panel. Text supports Excalidraw's bundled Excalifont,
+normal and code faces, and left/center/right alignment. Shapes offer sharp/rounded
+edges, solid/dashed/dotted strokes, solid/hachure/crosshatch fills, three sloppiness
+levels, and opacity. The hand tool pans the canvas; the lock keeps
+a drawing tool active. Tool shortcuts are shown in the toolbar. Arrow keys nudge a
+selected item (Shift moves ten points), Enter edits its text, and ⌘D duplicates it.
+Notes, links, and clipboard paste are in the **…** menu. Double-click an image to edit
+its caption or crop it. Undo/redo and zoom controls sit at the bottom left.
 Choose Select to move items after drawing. Scroll in either direction
 and choose a zoom level. New items appear near the current canvas viewport.
 Standard Undo/Redo work on the board and inside its text editors.

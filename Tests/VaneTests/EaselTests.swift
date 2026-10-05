@@ -1,9 +1,37 @@
 import XCTest
 import AppKit
 import WebKit
+import SwiftUI
 @testable import vane
 
 @MainActor final class EaselTests: XCTestCase {
+    func testLegacyTextSizeMatchesTheSelectedObjectControls() {
+        XCTAssertEqual(EaselItem(kind: .note).textSize, 18)
+        XCTAssertEqual(EaselItem(kind: .text).textSize, 28)
+        XCTAssertEqual(EaselItem(kind: .diamond).textSize, 20)
+        XCTAssertEqual(EaselItem(kind: .rectangle, fontSize: 36).textSize, 36)
+    }
+    func testRoundedDiamondSoftensAllFourCorners() {
+        let bounds = CGRect(x: 0, y: 0, width: 300, height: 180)
+        let sharp = EaselShape.diamondPath(in: bounds, edges: .sharp)
+        let rounded = EaselShape.diamondPath(in: bounds, edges: .round)
+        var corners = 0
+        rounded.forEach { if case .quadCurve = $0 { corners += 1 } }
+        XCTAssertEqual(corners, 4)
+        XCTAssertNotEqual(sharp, rounded)
+        XCTAssertTrue(bounds.contains(rounded.boundingRect))
+    }
+    func testZeroOpacityHidesTheEntireNoteInPNGExport() throws {
+        var note = EaselItem(kind: .note, text: "Hidden", x: 100, y: 100)
+        note.style = EaselObjectStyle(opacity: 0)
+        let hidden = try XCTUnwrap(NSBitmapImageRep(data: EaselWindow.png(for: EaselBoard(items: [note]), profileID: UUID())))
+        let empty = try XCTUnwrap(NSBitmapImageRep(data: EaselWindow.png(for: EaselBoard(), profileID: UUID())))
+        let pixel = try XCTUnwrap(hidden.colorAt(x: 200, y: 200)?.usingColorSpace(.deviceRGB))
+        let paper = try XCTUnwrap(empty.colorAt(x: 200, y: 200)?.usingColorSpace(.deviceRGB))
+        XCTAssertEqual(pixel.redComponent, paper.redComponent, accuracy: 0.01)
+        XCTAssertEqual(pixel.greenComponent, paper.greenComponent, accuracy: 0.01)
+        XCTAssertEqual(pixel.blueComponent, paper.blueComponent, accuracy: 0.01)
+    }
     private func repository() -> EaselStore {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
@@ -93,16 +121,20 @@ import WebKit
         let scale = 4096.0 / 5720.0
         let pixel = try XCTUnwrap(bitmap.colorAt(x: Int(5500 * scale), y: Int(3520 * scale))?.usingColorSpace(.deviceRGB))
         XCTAssertGreaterThan(pixel.redComponent, 0.95)
+        XCTAssertGreaterThan(pixel.greenComponent, 0.85, "Export must render the note, without a native-view placeholder")
         XCTAssertLessThan(pixel.blueComponent, 0.8, "The far-edge note must be rendered, not clipped to empty paper")
     }
 
     func testCanvasObjectsSurviveSaveExportAndImport() throws {
         let repository = repository()
-        for kind in ["text", "ellipse", "rectangle", "arrow"] {
+        for kind in ["text", "ellipse", "rectangle", "diamond", "arrow", "line"] {
             var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(EaselItem(kind: .note))) as? [String: Any])
             payload["kind"] = kind
             payload["color"] = "cyan"
             payload["fontSize"] = 36
+            payload["strokeWidth"] = 4
+            payload["fillColor"] = "blue"
+            payload["style"] = ["fontFamily": "handwritten", "textAlignment": "right", "stroke": "dashed", "fill": "crosshatch", "edges": "round", "roughness": 2, "opacity": 0.5]
             let item = try JSONDecoder().decode(EaselItem.self, from: JSONSerialization.data(withJSONObject: payload))
             var board = try repository.create(title: kind)
             board.items = [item]
@@ -112,6 +144,11 @@ import WebKit
             XCTAssertEqual(reopened.board(copied.id)?.items.first?.kind.rawValue, kind)
             XCTAssertEqual(reopened.board(copied.id)?.items.first?.color, "cyan")
             XCTAssertEqual(reopened.board(copied.id)?.items.first?.fontSize, 36)
+            XCTAssertEqual(reopened.board(copied.id)?.items.first?.strokeWidth, 4)
+            XCTAssertEqual(reopened.board(copied.id)?.items.first?.fillColor, "blue")
+            XCTAssertEqual(reopened.board(copied.id)?.items.first?.style?.fontFamily, .handwritten)
+            XCTAssertEqual(reopened.board(copied.id)?.items.first?.style?.edges, .round)
+            XCTAssertEqual(reopened.board(copied.id)?.items.first?.style?.opacity, 0.5)
         }
     }
 
@@ -143,17 +180,171 @@ import WebKit
         let item = try JSONDecoder().decode(EaselItem.self, from: data)
         XCTAssertEqual(item.text, "Existing note")
         XCTAssertNil(item.fontSize)
+        XCTAssertNil(item.strokeWidth)
+        XCTAssertNil(item.fillColor)
+        XCTAssertNil(item.style)
     }
 
     func testDrawingToolsKeepTheDraggedPositionInsteadOfViewportInsertionPoint() {
         let session = EaselSession(repository()); session.create()
         session.insertionPoint = CGPoint(x: 80, y: 140)
-        for kind in [EaselItem.Kind.drawing, .ellipse, .rectangle, .arrow] {
+        for kind in [EaselItem.Kind.drawing, .text, .ellipse, .rectangle, .arrow] {
             let item = EaselItem(kind: kind, color: "cyan", x: 450, y: 320, width: 200, height: 120)
             XCTAssertTrue(session.add(item))
             XCTAssertEqual(session.board?.items.last?.x, 450, "\(kind) must stay where it was drawn")
             XCTAssertEqual(session.board?.items.last?.y, 320)
         }
+    }
+
+    func testObjectMovementUsesScreenTranslationAtEveryZoom() {
+        let item = EaselItem(kind: .rectangle, x: 520, y: 360)
+        for zoom in [0.5, 1.0, 2.0] {
+            let moved = EaselItemLayout.moved(item, translation: CGSize(width: 100, height: 50), zoom: zoom)
+            XCTAssertEqual(moved.x, 520 + 100 / zoom)
+            XCTAssertEqual(moved.y, 360 + 50 / zoom)
+        }
+    }
+
+    func testEveryResizeCornerKeepsTheOppositeCornerAnchored() {
+        let item = EaselItem(kind: .text, x: 200, y: 200, width: 300, height: 160)
+        for corner in EaselItemLayout.Corner.allCases {
+            let resized = EaselItemLayout.resized(item, corner: corner, translation: CGSize(width: 40, height: 20), zoom: 1)
+            XCTAssertEqual(corner.leading ? resized.x + resized.width : resized.x, corner.leading ? 500 : 200)
+            XCTAssertEqual(corner.top ? resized.y + resized.height : resized.y, corner.top ? 360 : 200)
+            XCTAssertEqual(resized.width, corner.leading ? 260 : 340)
+            XCTAssertEqual(resized.height, corner.top ? 140 : 180)
+        }
+    }
+
+    func testTextToolUsesTheDraggedBoxAndKeepsItOnCanvas() throws {
+        let item = try XCTUnwrap(EaselItemLayout.created(kind: .text, color: "ink", points: [EaselPoint(x: 750, y: 400), EaselPoint(x: 350, y: 180)]))
+        XCTAssertEqual(item.x, 350)
+        XCTAssertEqual(item.y, 180)
+        XCTAssertEqual(item.width, 400)
+        XCTAssertEqual(item.height, 220)
+        XCTAssertEqual(item.fontSize, 20)
+        try EaselStore.validate(EaselBoard(items: [item]))
+    }
+
+    func testResizeClampsAtCanvasEdgesAndScalesArrowPoints() throws {
+        let item = EaselItem(kind: .arrow, points: [EaselPoint(x: 0, y: 120), EaselPoint(x: 300, y: 0)], x: 100, y: 100, width: 300, height: 120)
+        let resized = EaselItemLayout.resized(item, corner: .topLeading, translation: CGSize(width: -500, height: -500), zoom: 1)
+        XCTAssertEqual(resized.x, 0)
+        XCTAssertEqual(resized.y, 0)
+        XCTAssertEqual(resized.width, 400)
+        XCTAssertEqual(resized.height, 220)
+        XCTAssertEqual(resized.points.last?.x, 400)
+        XCTAssertEqual(resized.points.first?.y, 220)
+        try EaselStore.validate(EaselBoard(items: [resized]))
+    }
+
+    func testObjectSurfaceAcceptsInteriorHitsButEditingTextKeepsItsEditor() {
+        let view = EaselPointerView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
+        XCTAssertTrue(view.hitTest(NSPoint(x: 150, y: 80)) === view)
+        view.editing = true
+        XCTAssertNil(view.hitTest(NSPoint(x: 150, y: 80)))
+        view.selected = true
+        XCTAssertTrue(view.hitTest(NSPoint(x: 4, y: 80)) === view)
+        XCTAssertTrue(view.hitTest(NSPoint(x: 8, y: 8)) === view)
+    }
+
+    func testSingleClickSelectsAndOnlyDoubleClickEdits() throws {
+        let view = EaselPointerView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
+        var selections = 0, edits = 0
+        view.select = { selections += 1 }
+        view.edit = { edits += 1 }
+        func event(_ count: Int) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 150, y: 80),
+                modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: count, pressure: 1))
+        }
+        view.mouseDown(with: try event(1))
+        XCTAssertEqual(selections, 1)
+        XCTAssertEqual(edits, 0)
+        view.mouseDown(with: try event(2))
+        XCTAssertEqual(selections, 2)
+        XCTAssertEqual(edits, 1)
+    }
+
+    func testInvalidShapeStyleCannotReplaceSavedBoard() throws {
+        let repository = repository()
+        let board = try repository.create()
+        for item in [EaselItem(kind: .rectangle, strokeWidth: .nan), EaselItem(kind: .rectangle, strokeWidth: 100), EaselItem(kind: .rectangle, fillColor: "invalid")] {
+            var changed = board; changed.items = [item]
+            XCTAssertThrowsError(try repository.save(changed))
+            XCTAssertEqual(repository.board(board.id), board)
+        }
+    }
+
+    func testPointerDragUsesWindowCoordinatesAndCommitsOnce() throws {
+        let view = EaselPointerView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
+        var updates: [CGSize] = [], commits: [CGSize] = []
+        var edits = 0
+        view.edit = { edits += 1 }
+        view.drag = { delta, corner, finished in
+            XCTAssertNil(corner)
+            if finished { commits.append(delta) } else { updates.append(delta) }
+        }
+        func event(_ type: NSEvent.EventType, _ x: Double, _ y: Double) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: y),
+                modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        view.mouseDown(with: try event(.leftMouseDown, 100, 100))
+        view.mouseDragged(with: try event(.leftMouseDragged, 101, 99))
+        XCTAssertTrue(updates.isEmpty)
+        view.mouseDragged(with: try event(.leftMouseDragged, 130, 60))
+        view.mouseUp(with: try event(.leftMouseUp, 130, 60))
+        XCTAssertEqual(updates, [CGSize(width: 30, height: 40)])
+        XCTAssertEqual(commits, [CGSize(width: 30, height: 40)])
+        XCTAssertEqual(edits, 0)
+    }
+
+    func testCaptureAndLinkControlsRemainClickableThroughThePointerSurface() {
+        let view = EaselPointerView(frame: NSRect(x: 0, y: 0, width: 300, height: 160))
+        view.footer = true
+        XCTAssertTrue(view.hitTest(NSPoint(x: 150, y: 80)) === view)
+        XCTAssertNil(view.hitTest(view.convert(NSPoint(x: 150, y: 140), to: nil)))
+        view.live = true
+        XCTAssertNil(view.hitTest(NSPoint(x: 150, y: 80)))
+        view.selected = true
+        XCTAssertTrue(view.hitTest(NSPoint(x: 4, y: 80)) === view)
+    }
+
+    func testFractionalResizeKeepsBoundaryPointsValid() throws {
+        let width = 2292.1306576537336
+        let item = EaselItem(kind: .line, points: [EaselPoint(x: width, y: 100)], x: 0, y: 0, width: width, height: 100)
+        let resized = EaselItemLayout.resized(item, corner: .bottomTrailing,
+            translation: CGSize(width: 3999.548176939395 - width, height: 0), zoom: 1)
+        try EaselStore.validate(EaselBoard(items: [resized]))
+        XCTAssertLessThanOrEqual(try XCTUnwrap(resized.points.first?.x), resized.width)
+    }
+
+    func testExcalidrawHandwrittenFontIsBundledAndRegistersWithCoreText() throws {
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(EaselTypography.fontURL).path))
+        _ = EaselTypography.font(.handwritten, size: 28)
+        let font = try XCTUnwrap(NSFont(name: "Excalifont-Regular", size: 28))
+        XCTAssertEqual(font.familyName, "Excalifont")
+        XCTAssertNotNil(NSFont(name: "NunitoExtraLight-Medium", size: 20))
+        XCTAssertNotNil(NSFont(name: "ComicShanns-Regular", size: 20))
+    }
+
+    func testInvalidOpacityAndRoughnessDoNotReplaceTheSavedBoard() throws {
+        let repository = repository()
+        let board = try repository.create()
+        // Validate model styles before they reach JSON serialization or publication.
+        for style in [EaselObjectStyle(roughness: .nan), EaselObjectStyle(roughness: 3), EaselObjectStyle(opacity: 1.1), EaselObjectStyle(opacity: -1)] {
+            var changed = board; changed.items = [EaselItem(kind: .rectangle, style: style)]
+            XCTAssertThrowsError(try repository.save(changed))
+            XCTAssertEqual(repository.board(board.id), board)
+        }
+    }
+
+    func testCustomColorsValidateAndSurviveImport() throws {
+        let repository = repository()
+        let board = EaselBoard(items: [EaselItem(kind: .rectangle, color: "#123ABC", fillColor: "#abcdef")])
+        let imported = try repository.importBoard(JSONEncoder().encode(board))
+        XCTAssertEqual(imported.items.first?.color, "#123ABC")
+        XCTAssertEqual(imported.items.first?.fillColor, "#abcdef")
+        for value in ["#123", "#12345Z", "unknown"] { XCTAssertFalse(EaselItem.validColor(value)) }
     }
 
 }

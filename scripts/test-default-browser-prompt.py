@@ -28,6 +28,8 @@ with tempfile.TemporaryDirectory(prefix="vane-default-browser-") as directory:
         binary = fixture / ".build" / configuration / "vane"
         binary.parent.mkdir(parents=True)
         executable(binary, "exit 0\n")
+        fonts = binary.parent / "Vane_vane.bundle/Contents/Resources/EaselFonts"
+        shutil.copytree(ROOT / "Sources/Vane/EaselFonts", fonts)
 
     # Replace only toolchain/signing boundaries; the real shell script emits the plist.
     commands = fixture / "commands"
@@ -66,5 +68,8 @@ fi
             info = plistlib.load(file)
         actual = info.get("VaneDefaultBrowserPromptEnabled")
         assert actual is expected, (configuration, identity, version, expected, actual)
+        bundled = fixture / "Vane.app/Contents/Resources/Vane_vane.bundle/Contents/Resources/EaselFonts"
+        for font in ("Excalifont-Regular.ttf", "Nunito-Regular.ttf", "ComicShanns-Regular.ttf"):
+            assert (bundled / font).read_bytes() == (ROOT / "Sources/Vane/EaselFonts" / font).read_bytes()
 
 print("PASS: local, debug, ad-hoc, and prerelease bundles suppress the default-browser prompt")

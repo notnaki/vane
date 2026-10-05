@@ -8,6 +8,7 @@ let package = Package(
         .executableTarget(
             name: "vane",
             path: "Sources/Vane",
+            resources: [.copy("EaselFonts")],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("WebKit"),
