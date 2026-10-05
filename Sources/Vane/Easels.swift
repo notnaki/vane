@@ -22,6 +22,8 @@ struct EaselItem: Identifiable, Codable, Equatable {
     var width: Double = 280
     var height: Double = 200
 
+    var textSize: Double { fontSize ?? (kind == .note ? 18 : kind == .text ? 28 : 20) }
+
     static func validColor(_ value: String) -> Bool {
         ["yellow", "pink", "blue", "green", "ink", "orange", "red", "cyan", "purple", "white", "gray"].contains(value)
             || (value.count == 7 && value.first == "#" && UInt32(value.dropFirst(), radix: 16) != nil)

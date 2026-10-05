@@ -406,7 +406,7 @@ private struct EaselEditor: View {
                                     closedShape: kind == .rectangle || kind == .ellipse || kind == .diamond,
                                     supportsEdges: kind == .rectangle || kind == .diamond,
                                     filled: (item == nil ? fillColor : item?.fillColor) != nil,
-                                    fontSize: item?.fontSize ?? drawingFontSize,
+                                    fontSize: item?.textSize ?? drawingFontSize,
                                     strokeWidth: item?.strokeWidth ?? (item == nil ? strokeWidth : 3),
                                     change: { style in
                         if var item { item.style = style; _ = changeItem(item) } else { drawingStyle = style }
@@ -748,7 +748,7 @@ private struct EaselCard: View {
         switch item.kind {
         case .note:
             Text(item.text.isEmpty ? "Double-click to write a note" : item.text)
-                .font(EaselTypography.font(item.style?.fontFamily ?? .normal, size: item.fontSize ?? 18)).foregroundStyle(EaselColors.ink)
+                .font(EaselTypography.font(item.style?.fontFamily ?? .normal, size: item.textSize)).foregroundStyle(EaselColors.ink)
                 .multilineTextAlignment(item.style?.alignment ?? .leading)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: textAlignment(centered: false)).padding(18)
         case .link:
@@ -799,7 +799,7 @@ private struct EaselCard: View {
             } else {
                 Text(item.text.isEmpty ? "Start typing to enter text" : item.text)
             }
-        }.font(EaselTypography.font(item.style?.fontFamily ?? .normal, size: item.fontSize ?? (centered ? 20 : 28)))
+        }.font(EaselTypography.font(item.style?.fontFamily ?? .normal, size: item.textSize))
             .foregroundStyle(EaselColors.object(item.color))
             .multilineTextAlignment(item.style?.alignment ?? (centered ? .center : .leading))
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: textAlignment(centered: centered)).padding(12)

@@ -5,6 +5,12 @@ import SwiftUI
 @testable import vane
 
 @MainActor final class EaselTests: XCTestCase {
+    func testLegacyTextSizeMatchesTheSelectedObjectControls() {
+        XCTAssertEqual(EaselItem(kind: .note).textSize, 18)
+        XCTAssertEqual(EaselItem(kind: .text).textSize, 28)
+        XCTAssertEqual(EaselItem(kind: .diamond).textSize, 20)
+        XCTAssertEqual(EaselItem(kind: .rectangle, fontSize: 36).textSize, 36)
+    }
     func testRoundedDiamondSoftensAllFourCorners() {
         let bounds = CGRect(x: 0, y: 0, width: 300, height: 180)
         let sharp = EaselShape.diamondPath(in: bounds, edges: .sharp)
