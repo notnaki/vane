@@ -114,9 +114,10 @@ the existing idle-suspension preference and preserves an already shorter timeout
 ### Appearance and icons
 
 Settings → Icon offers Normal, Dark, Galaxy, Candy, Neon, Fluted Glass,
-Fluted Glass Dark, Schoolbook, and Luminous, plus **Choose Custom Icon…** for
-your own image. The choice persists across launches and changes the running
-app's Dock icon. Sandboxed builds keep the bundled Finder icon. The bare SwiftPM
+Fluted Glass Dark, Schoolbook, and Luminous. The choice persists across launches and changes the running
+app's Dock and Finder icons, including while Vane is quit. A signed helper stamps
+the containing app bundle outside the browser sandbox; read-only or translocated
+copies retain the live Dock choice and restore it on launch. The bare SwiftPM
 executable has no bundled icon catalogue; build `Vane.app` to use these finishes.
 
 ### Easels

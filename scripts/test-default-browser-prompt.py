@@ -22,6 +22,7 @@ with tempfile.TemporaryDirectory(prefix="vane-default-browser-") as directory:
     shutil.copy2(ROOT / "make-app.sh", fixture / "make-app.sh")
     (fixture / "installer").mkdir()
     shutil.copy2(ROOT / "installer/UpdateInstaller-Info.plist", fixture / "installer")
+    shutil.copy2(ROOT / "installer/IconService-Info.plist", fixture / "installer")
     shutil.copy2(ROOT / "Vane.entitlements", fixture)
     for configuration in ("debug", "release"):
         binary = fixture / ".build" / configuration / "vane"
