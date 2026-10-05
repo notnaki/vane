@@ -82,7 +82,7 @@ Finder. **Settings → General → Previews → Library hover preview** selects 
 shows up to four items from this window's profile; private windows show only their
 own downloads, media, and archived tabs. The bucket is empty when downloads,
 archived tabs, and the selected preview are empty, and always highlights on hover.
-A filled bucket lifts its sparkles; an empty one tilts.
+A filled bucket lifts its contents without changing their shape; an empty one lifts its lid.
 Reduce Motion and Battery Saver keep these changes immediate. Click the bucket to
 open the full Library.
 

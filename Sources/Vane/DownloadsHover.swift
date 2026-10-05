@@ -228,7 +228,7 @@ private struct RecentDownloadRow: View {
 }
 
 /// The open bucket stays recognizable as its contents lift toward the pointer.
-/// An empty bucket rocks gently; a full one lifts its stars and glows on hover.
+/// An empty bucket lifts its lid; a full one lifts its contents and glows on hover.
 struct LibraryBucket: View {
     let filled: Bool
     let hovered: Bool
@@ -237,26 +237,25 @@ struct LibraryBucket: View {
     var body: some View {
         ZStack {
             BucketShape().fill(style: FillStyle(eoFill: true))
-                .rotationEffect(.degrees(hovered && !filled && !reduceMotion ? -9 : 0), anchor: .bottom)
-                .offset(y: hovered && !filled && !reduceMotion ? -1 : 0)
             RoundedRectangle(cornerRadius: 0.75)
-                .frame(width: 14, height: 1.5).offset(y: -0.5)
+                .frame(width: 14, height: 1.5).offset(y: hovered ? -3.5 : -0.5)
                 .opacity(filled ? 0 : 1)
             if filled {
                 ZStack {
                     BucketConfetti(points: 5)
                         .frame(width: 10, height: 9)
-                        .scaleEffect(x: 1, y: hovered && !reduceMotion ? 0.9 : 0.45)
                         .rotationEffect(.degrees(-14))
-                        .offset(x: -2, y: hovered && !reduceMotion ? -2.5 : -1.5)
+                        .offset(x: -2, y: hovered ? -2.5 : 0.5)
                     BucketConfetti(points: 3)
                         .frame(width: 3.5, height: 3.5)
                         .rotationEffect(.degrees(18))
-                        .scaleEffect(hovered && !reduceMotion ? 1 : 0.75)
-                        .offset(x: 6.5, y: hovered && !reduceMotion ? -2 : 0)
+                        .offset(x: hovered ? 6.5 : 4.5, y: hovered ? -2 : 0)
                     Circle().frame(width: 2, height: 2)
-                        .offset(x: 2.5, y: hovered && !reduceMotion ? -6.5 : -4.5)
+                        .offset(x: hovered ? 3 : 2, y: hovered ? -6.5 : -4.5)
                 }
+                .frame(width: 24, height: 24)
+                // Contents sit behind the opening, then lift out at their original size.
+                .mask(alignment: .top) { Rectangle().frame(height: 13) }
                 .foregroundStyle(hovered ? Look.inkPrimary : Look.inkSecondary)
                 .shadow(color: .white.opacity(hovered ? 0.7 : 0), radius: hovered ? 5 : 0)
             }
