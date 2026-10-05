@@ -3469,7 +3469,8 @@ struct Stash {
         // Only when the landing found nothing at all. A Space of pinned rows and no Today
         // tabs lands on a row, and the command bar over the page it just opened would be a
         // bar nobody asked for.
-        if current == nil { openPalette(.newTab) }
+        // Keep an existing bar open when a sidebar swipe lands in an empty Space.
+        if current == nil, palette == nil { openPalette(.newTab) }
         rememberSpace()
         extensions.sync()
     }

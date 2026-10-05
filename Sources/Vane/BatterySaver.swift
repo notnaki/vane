@@ -67,14 +67,17 @@ import IOKit.ps
     private var source: CFRunLoopSource?
     private var started = false
     private let noticeDuration: Duration
+    private let noticeSleep: @MainActor (Duration) async throws -> Void
     private var noticeTimer: Task<Void, Never>?
     private var noticeHolds: Set<UUID> = []
 
     init(defaults: UserDefaults, noticeDuration: Duration = .seconds(4),
+         noticeSleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          onNotice: @escaping (Notice) -> Void = { _ in },
          onActivation: @escaping () -> Void = {}) {
         self.defaults = defaults
         self.noticeDuration = noticeDuration
+        self.noticeSleep = noticeSleep
         self.onActivation = onActivation
         self.onNotice = onNotice
         let mode = Mode(rawValue: defaults.string(forKey: Self.key) ?? "") ?? .automatic
@@ -133,8 +136,9 @@ import IOKit.ps
         noticeTimer?.cancel()
         guard noticeHolds.isEmpty, let id = notice?.id else { return }
         let duration = noticeDuration
+        let sleep = noticeSleep
         noticeTimer = Task { [weak self] in
-            do { try await Task.sleep(for: duration) } catch { return }
+            do { try await sleep(duration) } catch { return }
             guard !Task.isCancelled else { return }
             self?.dismissNotice(id)
         }

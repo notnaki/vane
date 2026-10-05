@@ -4,9 +4,9 @@ import XCTest
 @testable import vane
 
 @MainActor final class ToastLayoutTests: XCTestCase {
-    private func render(_ message: String, action: String? = "Undo", width: CGFloat) throws -> NSBitmapImageRep {
+    private func render(_ message: String, action: String? = "Undo", width: CGFloat, sticky: Bool = false) throws -> NSBitmapImageRep {
         TestEnvironment.prepare()
-        let toast = Toasts.Toast(text: message, action: action.map { ($0, {}) })
+        let toast = Toasts.Toast(text: message, action: action.map { ($0, {}) }, sticky: sticky)
         let renderer = ImageRenderer(content: ToastPill(toast: toast, tint: .green)
             .environment(\.colorScheme, .dark))
         renderer.proposedSize = ProposedViewSize(width: width - Look.inset * 2, height: nil)
@@ -19,6 +19,19 @@ import XCTest
             XCTAssertLessThanOrEqual(image.pixelsHigh, Int(Look.toastHeight),
                 "A short message and Undo fit beside each other at \(width)pt")
             XCTAssertLessThanOrEqual(image.pixelsWide, Int(width - Look.inset * 2))
+        }
+    }
+
+    func testShortUpdatePromptsStayOneRow() throws {
+        for width in [220, SidebarWidth.standard, 249, SidebarWidth.maximum] {
+            for phase in [Updater.Phase.ready, .failed(nil)] {
+                let message = Updater.text(for: phase)
+                let action = try XCTUnwrap(Updater.action(for: phase)).title
+                let image = try render(message, action: action, width: width, sticky: true)
+                XCTAssertLessThanOrEqual(image.pixelsHigh, 32,
+                    "\(message) and \(action) should share one row at \(width)pt")
+                XCTAssertLessThanOrEqual(image.pixelsWide, Int(width - Look.inset * 2))
+            }
         }
     }
 

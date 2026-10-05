@@ -39,6 +39,9 @@ Picture in Picture uses a custom floating window that you can drag anywhere and
 resize, with Back to Tab, minimize, close, play/pause, 15-second skips, and a seek
 bar. Back to Tab fades the window in place and reveals the source tab. Minimize
 hides it while playback continues. The sidebar video player appears after minimizing PiP.
+It stays available across this window's Spaces, including Spaces in other profiles.
+Returning to its source Space keeps the minimized player visible until you open its tab,
+restore Picture in Picture, or close the player.
 It keeps the site icon and transport controls visible; hover over it to see the title, restore Picture in Picture,
 or close the player and pause. Embedded players use their own frame and
 Media Session play/pause and skip handlers.
@@ -69,16 +72,27 @@ space below the last row to move it outside the folders at the bottom of Today.
 That drop area remains available when the last row is a collapsed folder or the
 list fills the sidebar. Dropping onto **New Tab** moves tabs to the top of Today;
 right-click → **Remove from Folder** keeps tabs in their section. An empty Today
-folder disappears.
+folder disappears. Click and drag the blank area below Today tabs to move the window.
+
+Hover a sidebar tab to see a compact name tooltip and a **Double-click to rename** hint.
+Double-click a Today tab, pinned tab, favourite, or split pane to edit its name in
+place. Press **Return** to save or **Escape** to cancel; an empty name restores the
+page’s title.
 
 Pinned tabs keep their saved name as you navigate within them. When a pinned tab
-leaves its saved page, its sidebar row offers **Return to Pinned Tab**; returning
+leaves its saved page, its sidebar row shows `/` before its title and offers
+**Return to Pinned Tab**; returning
 loads the pinned URL again. Favorites belong to a profile, while pinned and Today
 tabs belong to a Space. Library lists Spaces across all profiles.
 
 Hover the Space card to reveal its chevron and `…` menu. Click the card to collapse
 or expand its pinned tabs; Today stays visible. Double-click its name to rename
 the Space. Each window remembers the collapsed state for each Space while open.
+Swipe horizontally over the sidebar to move between Spaces, including while the
+search bar (`⌘T`) is open.
+Click the Space buttons in the sidebar footer for the same sliding change, including
+between profiles. Each button shows a rounded highlight on hover. Reduce Motion and
+Battery Saver keep click changes immediate.
 
 Incognito uses a temporary identity of its own, with a glasses icon and a near-black
 theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and
@@ -116,9 +130,10 @@ the existing idle-suspension preference and preserves an already shorter timeout
 ### Appearance and icons
 
 Settings → Icon offers Normal, Dark, Galaxy, Candy, Neon, Fluted Glass,
-Fluted Glass Dark, Schoolbook, and Luminous, plus **Choose Custom Icon…** for
-your own image. The choice persists across launches and changes the running
-app's Dock icon. Sandboxed builds keep the bundled Finder icon. The bare SwiftPM
+Fluted Glass Dark, Schoolbook, and Luminous. The choice persists across launches and changes the running
+app's Dock and Finder icons, including while Vane is quit. A signed helper stamps
+the containing app bundle outside the browser sandbox; read-only or translocated
+copies retain the live Dock choice and restore it on launch. The bare SwiftPM
 executable has no bundled icon catalogue; build `Vane.app` to use these finishes.
 
 ### Easels

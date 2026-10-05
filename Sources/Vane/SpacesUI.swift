@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// Only the sliding sections, tint and footer track these per-frame gesture values.
 /// Publishing them on TabStore would invalidate the entire browser on every scroll event.
 @MainActor final class SpaceGesture: ObservableObject {
+    let monitor = SwipeMonitor()
     @Published var drag: CGFloat = 0
     @Published var pull: CGFloat = 0
     @Published var swiping = false
@@ -30,12 +31,14 @@ extension Look {
     /// gesture handed it a velocity and an ease throws that away — the strip has to leave the
     /// fingers at the speed they left it at.
     static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
+    /// A committed swipe should hand focus to the destination promptly. Keep its final
+    /// travel short; canceled gestures still use the more forgiving return spring.
+    static let spaceLanding = Animation.spring(response: 0.16, dampingFraction: 0.9)
     /// How many rows the neighbouring Space's preview draws. Past what a sidebar shows at
     /// once the rows are scrolled-off content nobody sees, costing a favicon lookup each.
     static let spacePreviewRows = 16
-    /// The dot's hit target — `Look.dot` is 6pt, which is not a thing anyone can hit or
-    /// drop a tab onto.
-    static let spaceDotHit: CGFloat = 20
+    /// A footer-height target leaves room for a rounded hover fill around the glyph.
+    static let spaceDotHit: CGFloat = Look.footer
 }
 
 // MARK: - The Space's name
@@ -348,7 +351,8 @@ struct SpacePreviewList: View, Equatable {
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
     init(space: Space, liveTabs: [Tab]?, state: Stash? = nil,
-         favorites: [URL] = [], includingFavorites: Bool = false, pinnedCollapsed: Bool = false) {
+         favorites: [URL] = [], includingFavorites: Bool = false, pinnedCollapsed: Bool = false,
+         live: LiveFolders? = nil) {
         self.space = space
         self.liveTabs = state?.tabs ?? liveTabs
         self.favorites = favorites
@@ -356,10 +360,11 @@ struct SpacePreviewList: View, Equatable {
         self.pinnedCollapsed = pinnedCollapsed
         saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
                                             in: Store.directory)
+        let live = live ?? LiveFolders.existing(for: space.profileID)
         let pinned = pinnedCollapsed ? [] : Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
-                                                         liveShape: state?.pins, splits: state?.splits ?? [])
+                                                         liveShape: state?.pins, splits: state?.splits ?? [], live: live)
         let today = Self.section(space: space, kind: .today, tabs: self.liveTabs,
-                                 liveShape: state?.todayShape, splits: state?.splits ?? [])
+                                 liveShape: state?.todayShape, splits: state?.splits ?? [], live: nil)
         todayCount = self.liveTabs?.filter { $0.kind == .today }.count ?? space.tabURLs.count
         let room = max(0, Look.spacePreviewRows - pinned.count)
         rows = (Array(pinned.prefix(Look.spacePreviewRows)), Array(today.prefix(room)))
@@ -369,12 +374,17 @@ struct SpacePreviewList: View, Equatable {
 
     enum Row {
         case folder(Folder, depth: Int = 0)
-        case site(URL, TabKind, Tab? = nil, depth: Int = 0)
+        case site(URL, TabKind, Tab? = nil, depth: Int = 0, pr: GitHub.Row? = nil)
 
         var depth: Int {
             switch self {
-            case .folder(_, let depth), .site(_, _, _, let depth): return depth
+            case .folder(_, let depth), .site(_, _, _, let depth, _): return depth
             }
+        }
+
+        var pr: GitHub.Row? {
+            guard case .site(_, _, _, _, let pr) = self else { return nil }
+            return pr
         }
     }
 
@@ -412,7 +422,7 @@ struct SpacePreviewList: View, Equatable {
     /// Disk shapes name URLs; live shapes name Tab IDs, so restore the former with the
     /// same counted URL mapping as the real section (duplicates remain distinct).
     private static func section(space: Space, kind: TabKind, tabs: [Tab]?,
-                                liveShape: Pins?, splits: [Split]) -> [Row] {
+                                liveShape: Pins?, splits: [Split], live: LiveFolders?) -> [Row] {
         let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
         let loaded = tabs?.filter { $0.kind == kind }
         let opened: [(url: String, id: String)] = loaded.map { tabs in
@@ -430,7 +440,11 @@ struct SpacePreviewList: View, Equatable {
             let tab = liveByID[id]
             if let tab, let split = splits.first(where: { $0.contains(tab.id) }),
                Split.lead(of: split.tabs, strip: strip) != tab.id { return nil }
-            return .site(url, kind, tab, depth: visible.depth)
+            // Match the live pinned section's ownership lookup, using the row's saved URL.
+            // Capture metadata here so a refresh cannot change the label during a swipe.
+            let folder = shape.folder(holding: id)
+            let pr = folder.flatMap { $0.live == nil ? nil : live?.row(of: name, in: $0) }
+            return .site(url, kind, tab, depth: visible.depth, pr: pr)
         }
     }
 
@@ -498,10 +512,10 @@ struct SpacePreviewList: View, Equatable {
                     }
                 }
                 Text(f.name).font(Look.folderTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
-            case .site(let url, _, _, _):
+            case .site(let url, _, _, _, _):
                 SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
                 LivePRTitle(title: title(for: row),
-                            pr: nil, developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
+                            pr: row.pr, developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
                     .font(Look.rowTitle).lineLimit(1)
                     .foregroundStyle(Look.inkPrimary)
             }
@@ -524,7 +538,7 @@ struct SpacePreviewList: View, Equatable {
     func title(for row: Row, saved: [String: Parked]) -> String {
         switch row {
         case .folder(let folder, _): return folder.name
-        case .site(let url, let kind, _, _):
+        case .site(let url, let kind, _, _, _):
             return liveTab(for: row).map { TidyTitles.title(for: $0) }
                 ?? TidyTitles.previewName(for: url, in: space.profileID,
                     saved: saved[url.absoluteString]?.title, stays: kind != .today)
@@ -532,17 +546,36 @@ struct SpacePreviewList: View, Equatable {
     }
 
     private func liveTab(for row: Row) -> Tab? {
-        guard case .site(let url, let kind, let live, _) = row else { return nil }
+        guard case .site(let url, let kind, let live, _, _) = row else { return nil }
         return live ?? liveTabs?.first { $0.kind == kind && $0.pinnedURL == url }
     }
 
     private func pageURL(for row: Row, saved: [String: Parked], tab: Tab?) -> URL? {
-        guard case .site(let url, _, _, _) = row else { return nil }
+        guard case .site(let url, _, _, _, _) = row else { return nil }
         return tab?.currentURL ?? saved[url.absoluteString]?.page ?? url
     }
 }
 
 extension TabStore {
+    /// Clicks use the swipe preview so the outgoing sidebar survives until the slide ends,
+    /// including when the destination skips Spaces or belongs to another profile.
+    func beginSpaceSelection(_ requested: Space) -> Int? {
+        guard !isPrivate, !isLittle, !isParked, !spaceSwiping,
+              requested.id != currentSpaceID else { return nil }
+        let list = strip
+        guard let target = list.first(where: { $0.id == requested.id }),
+              list.contains(where: { $0.id == currentSpaceID }) else { return nil }
+        let direction = Spaces.direction(from: currentSpaceID, to: target.id, in: list.map(\.id))
+        creatingSpace = false
+        spaceSwiping = true
+        spaceGesture.strip = list
+        spaceGesture.neighbour = target
+        spaceGesture.previewDirection = direction
+        spaceGesture.travelsFavorites = target.profileID != profileID
+        _ = swipePreview(in: target)
+        return direction
+    }
+
     func swipeNeighbour(for drag: CGFloat) -> Space? {
         guard drag != 0, let index = swipeStrip.firstIndex(where: { $0.id == currentSpaceID }) else { return nil }
         let next = drag < 0 ? index + 1 : index - 1
@@ -592,9 +625,9 @@ extension TabStore {
 
 private struct SpaceSwipe: ViewModifier {
     let store: TabStore
-    @State private var monitor = SwipeMonitor()
 
     func body(content: Content) -> some View {
+        let monitor = store.spaceGesture.monitor
         content
             .onAppear { monitor.install(store) }
             .onDisappear { monitor.remove() }
@@ -621,6 +654,7 @@ private struct SpaceSwipe: ViewModifier {
     /// True while the landing spring is running, so a stray second fingers-up cannot spring
     /// the strip home over the top of it.
     private var landing = false
+    private var pendingSelection: UUID?
     /// The strip as it was when this gesture was claimed — every profile's Spaces, which is
     /// what a swipe walks. `store.strip` reads and decodes one `spaces.json` per profile every
     /// time it is touched, and a gesture is a hundred events.
@@ -631,6 +665,47 @@ private struct SpaceSwipe: ViewModifier {
     private enum Claim { case undecided, mine, theirs }
     private var claim = Claim.undecided
     private var travelled = (h: CGFloat(0), v: CGFloat(0))
+
+    func select(_ space: Space, in store: TabStore) {
+        guard !store.spaceSwiping else { return }
+        guard !Motion.reduced, store.window != nil else {
+            store.cancelCreatingSpace()
+            store.switchTo(space: space)
+            rebuild()
+            return
+        }
+        guard let direction = store.beginSpaceSelection(space),
+              let target = store.spaceGesture.neighbour else {
+            // Deleting the last Space can leave no outgoing sidebar to animate. The
+            // remaining profiles' footer buttons must still take the window into a Space.
+            store.cancelCreatingSpace()
+            store.switchTo(space: space)
+            rebuild()
+            return
+        }
+        // Mount the preview offscreen before animating it into place. In the same update
+        // as its insertion, SwiftUI would draw it at the final offset and skip the travel.
+        let from = store.currentSpaceID
+        // Own the landing from preparation onward. Sidebar removal and resign-key
+        // notifications use this same monitor and must not release it for a second switch.
+        landing = true
+        let selectionID = UUID()
+        pendingSelection = selectionID
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16)) { [weak store] in
+            guard self.pendingSelection == selectionID else { return }
+            self.pendingSelection = nil
+            guard let store else { self.landing = false; return }
+            guard store.spaceSwiping, store.currentSpaceID == from,
+                  store.spaceGesture.neighbour?.id == target.id else {
+                self.landing = false
+                store.spaceDrag = 0
+                store.spaceSwiping = false
+                return
+            }
+            self.land(direction, to: target, width: SidebarWidth.shared.width, store: store,
+                      animation: Look.spaceSlide)
+        }
+    }
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
@@ -666,7 +741,11 @@ private struct SpaceSwipe: ViewModifier {
                 if creatable, direction > 0, index == self.list.count - 1 {
                     self.create(store)
                 } else {
-                    self.land(direction, from: index, width: width, store: store)
+                    if self.list.indices.contains(index + direction) {
+                        self.land(direction, to: self.list[index + direction], width: width, store: store)
+                    } else {
+                        self.settle(store)
+                    }
                 }
             } else if phase == .ended || phase == .cancelled, !self.landing {
                 // Not while landing: a `.cancelled` followed by an `.ended` would otherwise
@@ -715,10 +794,10 @@ private struct SpaceSwipe: ViewModifier {
     /// has it. A cut, not a spring — the fingers have already left, and there is nothing
     /// left for a spring to be the tail of.
     func abort() {
-        let landed = landing
-        landing = false
         forget()
-        guard let store, !landed, store.spaceDrag != 0 || store.spaceSwiping else { return }
+        // Several teardown notifications can arrive for the same window. A committed
+        // landing keeps ownership until its completion, even after the monitor is removed.
+        guard let store, !landing, store.spaceDrag != 0 || store.spaceSwiping else { return }
         store.spaceDrag = 0
         store.spacePull = 0
         store.spaceSwiping = false
@@ -735,12 +814,12 @@ private struct SpaceSwipe: ViewModifier {
     /// Over the line: run the rest of the travel out under the spring and swap the Space at
     /// the far end, where the preview is already standing exactly where the real sections
     /// are about to be — which is the whole reason the swap is invisible.
-    private func land(_ direction: Int, from index: Int, width: CGFloat, store: TabStore) {
-        guard list.indices.contains(index + direction) else { return settle(store) }
-        let target = list[index + direction]
+    func land(_ direction: Int, to target: Space, width: CGFloat, store: TabStore,
+              animation: Animation = Look.spaceLanding) {
         // Finish the preview's travel before swapping hosts, including across profiles.
         // Cached profile interfaces can be attached at rest without tearing down the page.
         guard !Motion.reduced else {
+            landing = false
             store.spaceDrag = 0
             store.spaceSwiping = false
             store.switchTo(space: target)
@@ -749,8 +828,9 @@ private struct SpaceSwipe: ViewModifier {
         }
         let from = store.currentSpaceID
         landing = true
-        withAnimation(Look.spaceSpring) {
-            store.spaceDrag = -CGFloat(direction) * width
+        withAnimation(animation) {
+            // The prepared preview is authoritative: a clicked dot can skip a neighbour.
+            store.spaceGesture.drag = -CGFloat(direction) * width
         } completion: { [weak store] in
             self.landing = false
             guard let store, store.window != nil, store.currentSpaceID == from else {
@@ -795,17 +875,27 @@ private struct SpaceSwipe: ViewModifier {
 
     /// A horizontal trackpad swipe, over this window's sidebar, decided once per gesture.
     /// Everything else — a mouse wheel, a scroll down the tab list, a scroll over the page,
-    /// anything while the command bar or the Library panel is over the sidebar — is left
+    /// anything while the Library panel is over the sidebar — is left
     /// alone for whoever it was meant for.
     private func mine(_ event: NSEvent, _ store: TabStore) -> Bool {
         // Above the guard on purpose: a gesture that starts over the page card still has to
         // clear the last one's verdict, or a swipe made over the sidebar goes on claiming
         // events long after the fingers have moved somewhere else.
         if event.phase.contains(.began) { forget() }
-        guard event.hasPreciseScrollingDeltas, event.window === store.window,
-              store.sidebarShown, !store.libraryOpen, store.palette == nil,
-              event.locationInWindow.x < SidebarWidth.shared.width
+        guard !store.spaceSwiping || claim == .mine,
+              event.hasPreciseScrollingDeltas, let window = event.window,
+              window === store.window, !store.libraryOpen,
+              store.sidebarShown || (window as? VaneWindow)?.peekingSidebar == true
         else { return false }
+        // The floating panel is inset on every side and extends that much further right
+        // than the docked rail. Its surrounding gaps still belong to the page.
+        let inset = store.sidebarShown ? 0 : Look.cardGap
+        let bounds = window.contentView.map { $0.convert($0.bounds, to: nil) }
+            ?? NSRect(origin: .zero, size: window.frame.size)
+        let sidebar = NSRect(x: bounds.minX + inset, y: bounds.minY + inset,
+                             width: SidebarWidth.shared.width,
+                             height: max(0, bounds.height - 2 * inset))
+        guard sidebar.contains(event.locationInWindow) else { return false }
         switch claim {
         case .mine:   return true
         case .theirs: return false

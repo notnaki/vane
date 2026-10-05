@@ -1113,9 +1113,6 @@ private struct SearchPane: View {
 
 private struct IconPane: View {
     @State private var chosen = AppIcon.current
-    @State private var revision = 0
-    @State private var problem: String?
-
     var body: some View {
         Pane {
             SettingsCard {
@@ -1125,26 +1122,6 @@ private struct IconPane: View {
                         chosen = AppIcon.current
                     }
                 }
-            }
-            .id(revision)
-
-            HStack(alignment: .top, spacing: 20) {
-                Text("Make Vane feel like yours. Choose an image for its Dock icon.")
-                    .font(Look.text).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                Button("Choose Custom Icon…") {
-                    do {
-                        if try CustomAppIcon.choose() {
-                            chosen = AppIcon.current
-                            revision += 1
-                            problem = nil
-                        }
-                    } catch { problem = error.localizedDescription }
-                }
-            }
-            if let problem {
-                Text(problem).font(Look.text).foregroundStyle(Look.warning)
             }
         }
     }

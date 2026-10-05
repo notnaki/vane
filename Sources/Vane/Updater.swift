@@ -986,7 +986,7 @@ extension Release {
         }
     }
 
-    private static func action(for phase: Phase) -> (title: String, run: @MainActor () -> Void)? {
+    static func action(for phase: Phase) -> (title: String, run: @MainActor () -> Void)? {
         switch phase {
         case .available:
             return ("Update", { Updater.shared.startDownload() })
@@ -995,7 +995,7 @@ extension Release {
         case .ready:
             return ("Restart", { Updater.shared.restart() })
         case .failed:
-            return ("Open Releases", { NSWorkspace.shared.open(Updater.releasesPage) })
+            return ("Releases", { NSWorkspace.shared.open(Updater.releasesPage) })
         }
     }
 

@@ -160,6 +160,10 @@ enum MediaTray {
         return b.toString(16).padStart(2, '0');
       }).join('');
       var ms = navigator.mediaSession;
+      // Live collections track SPA player replacements without a subtree observer or
+      // a document-wide selector on every Media Session setter and player event.
+      var videos = document.getElementsByTagName('video');
+      var audios = document.getElementsByTagName('audio');
       function post(msg) {
         var key = JSON.stringify(msg);
         if (key === last) { return; }     // one message per real change, not per event
@@ -170,12 +174,19 @@ enum MediaTray {
       // first one on the page, which is what a paused player is.
       function media() {
         if (pipMedia && pipMedia.isConnected) { return pipMedia; }
-        var list = document.querySelectorAll('video,audio');
-        for (var i = 0; i < list.length; i++) {
-          if (!list[i].paused && !list[i].ended) { lastMedia = list[i]; return list[i]; }
+        var first = null, running = null;
+        function earlier(a, b) {
+          return !a || (b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) ? b : a;
         }
+        for (var list of [videos, audios]) {
+          for (var i = 0; i < list.length; i++) {
+            first = earlier(first, list[i]);
+            if (!list[i].paused && !list[i].ended) { running = earlier(running, list[i]); }
+          }
+        }
+        if (running) { lastMedia = running; return running; }
         if (lastMedia && lastMedia.isConnected) { return lastMedia; }
-        return list.length ? list[0] : null;
+        return first;
       }
       function report() {
         var m = ms && ms.metadata, e = media();
@@ -430,7 +441,7 @@ enum MediaTray {
         let id = tab.id
         if !tab.pictureInPicture { releaseSelection(id); pipSources[id] = nil }
         held.remove(id)
-        minimized.remove(id)
+        if minimized.remove(id) != nil { PictureInPicture.exitIfAuto(tab) }
     }
 
     func dismiss(_ tab: Tab, then: (@MainActor (Bool) -> Void)? = nil) {
@@ -543,11 +554,16 @@ struct MediaTrayView: View {
     @State private var hovered = false
     @AccessibilityFocusState private var focused: Bool
 
-    /// The tab on the tray, resolved through the pure rule above. `everyTab`, because the
-    /// page playing in the Space you have just swiped off is exactly the one this tray is a
-    /// player for; its title is still the way back to it. See `TabStore.reveal`.
+    /// Include profiles parked behind this window when its Spaces strip crosses profiles.
+    /// Their pages keep playing in their original hosts; only the controls follow us.
+    private var stores: [TabStore] {
+        guard let window = store.window ?? store.parkedIn else { return [store] }
+        return [store] + TabStore.all.filter { $0 !== store && $0.parkedIn === window }
+    }
+
+    /// The tab on the tray, including stashed Spaces and this window's parked profiles.
     private var tab: Tab? {
-        let all = store.everyTab.filter {
+        let all = stores.flatMap(\.everyTab).filter {
             !$0.pictureInPicture && (media.info(for: $0.id)?.video != true || media.minimized.contains($0.id))
         }
         let rows = all.filter { !media.isDismissed($0.id) }.map {
@@ -565,11 +581,22 @@ struct MediaTrayView: View {
         // Never wider than the rows above it, same as the toast.
         .padding(.horizontal, Look.inset)
         .animation(reduceMotion ? nil : Look.list, value: tab?.id)
-        // Going back to the tab ends the tray's claim on it: the page's own player is on
-        // screen again, and a stale hold would bring the tray back on the next switch.
-        .onChange(of: store.current) { if let tab = store.everyTab.first(where: { $0.id == store.current }) { media.returned(to: tab) } }
+        // Ordinary audio returns to the page, but minimized video controls persist even
+        // when a Space switch lands on their source tab. Opening the player is explicit.
+        .onChange(of: store.current) {
+            if let tab = store.everyTab.first(where: { $0.id == store.current }),
+               !media.minimized.contains(tab.id) { media.returned(to: tab) }
+        }
         .onChange(of: tab?.id) { hovered = false }
         // Let the card's shadow extend beyond the tray's layout bounds, like the toast.
+    }
+
+    private func open(_ tab: Tab) {
+        guard let owner = stores.first(where: { $0.everyTab.contains { $0 === tab } }) else { return }
+        PictureInPicture.exitIfAuto(tab)
+        media.returned(to: tab)
+        if owner === store { store.reveal(tab.id) }
+        else { Windows.reveal(tab, in: owner) }
     }
 
     private func player(_ tab: Tab) -> some View {
@@ -577,30 +604,32 @@ struct MediaTrayView: View {
         let title = info.title.isEmpty ? TidyTitles.title(for: tab) : info.line
         let expanded = hovered || focused
         return VStack(spacing: 0) {
-            if expanded {
-                HStack(spacing: Look.rowSpacing) {
-                    Button {
-                        PictureInPicture.exitIfAuto(tab)
-                        media.returned(to: tab)
-                        store.reveal(tab.id)
-                    } label: {
-                        Marquee(text: title).foregroundStyle(Look.barText)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Open \(title)")
-                    if info.video {
-                        glyph("pip", "Show Picture in Picture", enabled: !tab.pictureInPicture) { media.restore(tab) }
-                    }
-                    glyph("xmark", "Close player and pause") { media.dismiss(tab) }
+            HStack(spacing: Look.rowSpacing) {
+                Button {
+                    open(tab)
+                } label: {
+                    Marquee(text: title).foregroundStyle(Look.barText)
                 }
-                .frame(height: Look.trayHeight)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open \(title)")
+                if info.video {
+                    glyph("pip", "Show Picture in Picture", enabled: !tab.pictureInPicture) { media.restore(tab) }
+                }
+                glyph("xmark", "Close player and pause") { media.dismiss(tab) }
             }
+            // Keep the title's layout stable as its available space grows. Clipping the
+            // shrinking row prevents its text from sliding through the transport glyphs.
+            .frame(height: Look.trayHeight)
+            .opacity(expanded ? 1 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: expanded ? 0.18 : 0.10), value: expanded)
+            .frame(height: expanded ? Look.trayHeight : 0, alignment: .top)
+            .clipped()
+            .allowsHitTesting(expanded)
+            .disabled(!expanded)
+            .accessibilityHidden(!expanded)
             HStack(spacing: 0) {
                 Button {
-                    PictureInPicture.exitIfAuto(tab)
-                    media.returned(to: tab)
-                    store.reveal(tab.id)
+                    open(tab)
                 } label: {
                     SiteIcon(icon: tab.favicon, fallback: "waveform", size: Look.rowIcon)
                         .frame(width: Look.control, height: Look.control)
@@ -634,7 +663,7 @@ struct MediaTrayView: View {
         .accessibilityFocused($focused)
         // Keyboard and VoiceOver users can reach the same actions without a pointer hover.
         .contextMenu {
-            Button("Open Playing Tab") { PictureInPicture.exitIfAuto(tab); media.returned(to: tab); store.reveal(tab.id) }
+            Button("Open Playing Tab") { open(tab) }
             if info.video {
                 Button("Show Picture in Picture") { media.restore(tab) }.disabled(tab.pictureInPicture)
             }
@@ -831,7 +860,8 @@ extension MediaTray {
                script.contains("desc.set.call(this, v)"))
         assert("the metadata wrapper reads, never writes",
                script.contains("get: function () { return desc.get.call(this); }"))
-        assert("the script covers both media elements", script.contains("'video,audio'"))
+        assert("the script covers both media elements",
+               script.contains("getElementsByTagName('video')") && script.contains("getElementsByTagName('audio')"))
         assert("the listeners are capturing, so late players are caught",
                script.contains("document.addEventListener(e, report, true)"))
         assert("skip only fires a handler the page actually registered",
