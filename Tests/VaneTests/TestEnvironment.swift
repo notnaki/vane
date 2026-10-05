@@ -17,10 +17,11 @@ import XCTest
     static func supportsPiPMotion(in frames: [NSRect]) -> Bool {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let screens = NSScreen.screens.map(\.frame)
-        let available = !reduceMotion && frames.allSatisfy { frame in
+        let batterySaver = BatterySaver.shared.isActive
+        let available = !reduceMotion && !batterySaver && frames.allSatisfy { frame in
             screens.contains { $0.intersects(frame) }
         }
-        print("PiP motion prerequisites: reduceMotion=\(reduceMotion), screens=\(screens), frames=\(frames), available=\(available)")
+        print("PiP motion prerequisites: reduceMotion=\(reduceMotion), batterySaver=\(batterySaver), screens=\(screens), frames=\(frames), available=\(available)")
         return available
     }
 }

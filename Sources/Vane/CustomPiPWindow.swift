@@ -23,6 +23,9 @@ import QuartzCore
     private var returnCompletion: (@MainActor () -> Void)?
     private(set) var isInteracting = false
     private var isDragging = false
+    static var reducesMotion: Bool {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || BatterySaver.shared.isActive
+    }
     static let placementKey = "customPiPFrame"
 
     init(frame: NSRect, sourceFrame: NSRect? = nil, videoView: NSView, controlsView: NSView) {
@@ -133,12 +136,17 @@ import QuartzCore
         hasBeenShown = true
         stopEntry(keepDestination: false)
         let destination = frame
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, sourceFrame != destination,
+        if Self.reducesMotion {
+            alphaValue = 1
+            orderFrontRegardless()
+            return
+        }
+        guard sourceFrame != destination,
               let display = NSScreen.screens.first(where: { $0.frame.intersects(sourceFrame) }) else {
             alphaValue = 0
             orderFrontRegardless()
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.12
+                context.duration = 0.12
                 animator().alphaValue = 1
             }
             return
@@ -213,8 +221,14 @@ import QuartzCore
     func fadeOut(completion: @escaping @MainActor () -> Void) {
         stopEntry(keepDestination: true)
         rememberPlacement()
+        if Self.reducesMotion {
+            alphaValue = 0
+            orderOut(nil)
+            completion()
+            return
+        }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.16
+            context.duration = 0.16
             animator().alphaValue = 0
         } completionHandler: {
             Task { @MainActor in
@@ -236,7 +250,7 @@ import QuartzCore
         guard let destination,
               [destination.minX, destination.minY, destination.width, destination.height].allSatisfy(\.isFinite),
               destination.width > 0, destination.height > 0,
-              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              !Self.reducesMotion,
               let display = NSScreen.screens.first(where: { $0.frame.intersects(frame) }),
               NSScreen.screens.contains(where: { $0.frame.intersects(destination) }) else {
             fadeOut(completion: completion)

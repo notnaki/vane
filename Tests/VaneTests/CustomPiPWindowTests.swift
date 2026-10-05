@@ -20,6 +20,41 @@ import XCTest
         XCTAssertFalse(window.isVisible)
     }
 
+    func testBatterySaverMakesPiPTransitionsImmediate() throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let mode = BatterySaver.shared.mode
+        let held = UserDefaults.vane.object(forKey: CustomPiPWindow.placementKey)
+        defer {
+            BatterySaver.shared.setMode(mode)
+            UserDefaults.vane.set(held, forKey: CustomPiPWindow.placementKey)
+        }
+        BatterySaver.shared.setMode(.alwaysOn)
+        let source = NSRect(x: 120, y: 120, width: 480, height: 270)
+        let destination = NSRect(x: 350, y: 260, width: 640, height: 360)
+        UserDefaults.vane.set(NSStringFromRect(destination), forKey: CustomPiPWindow.placementKey)
+        let tab = Tab(isPrivate: true)
+        defer { tab.tearDown() }
+        let controls = PiPPlaybackControls(tab: tab, returnToTab: {}, minimize: {}, close: {})
+        let window = CustomPiPWindow(frame: source, videoView: NSView(), controlsView: controls)
+        defer { window.close() }
+        window.show()
+        XCTAssertEqual(window.frame, destination, "Battery Saver opens directly at the saved placement")
+        XCTAssertEqual(window.alphaValue, 1)
+        controls.updateVisibility(pointer: NSPoint(x: -1000, y: -1000))
+        XCTAssertTrue(controls.isHidden, "Battery Saver hides controls without a pending fade")
+        XCTAssertEqual(controls.alphaValue, 0)
+        controls.updateVisibility(pointer: NSPoint(x: window.frame.midX, y: window.frame.midY))
+        XCTAssertFalse(controls.isHidden)
+        XCTAssertEqual(controls.alphaValue, 1)
+        window.prepareReturn()
+        var returned = false
+        window.animateReturn(to: source) { returned = true }
+        XCTAssertTrue(returned, "Battery Saver completes return without waiting for a flight or fade")
+        XCTAssertFalse(window.isVisible)
+        XCTAssertEqual(window.frame, destination, "Immediate return must preserve floating placement")
+    }
+
     func testEntryMovesFromSourceToSavedFrameInOneMotion() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared

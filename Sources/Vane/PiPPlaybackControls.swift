@@ -142,9 +142,14 @@ import AppKit
         controlsVisible = visible
         visibilityGeneration += 1
         let generation = visibilityGeneration
+        if CustomPiPWindow.reducesMotion {
+            alphaValue = visible ? 1 : 0
+            isHidden = !visible
+            return
+        }
         if visible { isHidden = false }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.12
+            context.duration = 0.12
             animator().alphaValue = visible ? 1 : 0
         } completionHandler: { [weak self] in
             Task { @MainActor in
