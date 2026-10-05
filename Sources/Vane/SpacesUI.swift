@@ -351,7 +351,8 @@ struct SpacePreviewList: View, Equatable {
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
     init(space: Space, liveTabs: [Tab]?, state: Stash? = nil,
-         favorites: [URL] = [], includingFavorites: Bool = false, pinnedCollapsed: Bool = false) {
+         favorites: [URL] = [], includingFavorites: Bool = false, pinnedCollapsed: Bool = false,
+         live: LiveFolders? = nil) {
         self.space = space
         self.liveTabs = state?.tabs ?? liveTabs
         self.favorites = favorites
@@ -359,10 +360,11 @@ struct SpacePreviewList: View, Equatable {
         self.pinnedCollapsed = pinnedCollapsed
         saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
                                             in: Store.directory)
+        let live = live ?? LiveFolders.existing(for: space.profileID)
         let pinned = pinnedCollapsed ? [] : Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
-                                                         liveShape: state?.pins, splits: state?.splits ?? [])
+                                                         liveShape: state?.pins, splits: state?.splits ?? [], live: live)
         let today = Self.section(space: space, kind: .today, tabs: self.liveTabs,
-                                 liveShape: state?.todayShape, splits: state?.splits ?? [])
+                                 liveShape: state?.todayShape, splits: state?.splits ?? [], live: nil)
         todayCount = self.liveTabs?.filter { $0.kind == .today }.count ?? space.tabURLs.count
         let room = max(0, Look.spacePreviewRows - pinned.count)
         rows = (Array(pinned.prefix(Look.spacePreviewRows)), Array(today.prefix(room)))
@@ -372,12 +374,17 @@ struct SpacePreviewList: View, Equatable {
 
     enum Row {
         case folder(Folder, depth: Int = 0)
-        case site(URL, TabKind, Tab? = nil, depth: Int = 0)
+        case site(URL, TabKind, Tab? = nil, depth: Int = 0, pr: GitHub.Row? = nil)
 
         var depth: Int {
             switch self {
-            case .folder(_, let depth), .site(_, _, _, let depth): return depth
+            case .folder(_, let depth), .site(_, _, _, let depth, _): return depth
             }
+        }
+
+        var pr: GitHub.Row? {
+            guard case .site(_, _, _, _, let pr) = self else { return nil }
+            return pr
         }
     }
 
@@ -415,7 +422,7 @@ struct SpacePreviewList: View, Equatable {
     /// Disk shapes name URLs; live shapes name Tab IDs, so restore the former with the
     /// same counted URL mapping as the real section (duplicates remain distinct).
     private static func section(space: Space, kind: TabKind, tabs: [Tab]?,
-                                liveShape: Pins?, splits: [Split]) -> [Row] {
+                                liveShape: Pins?, splits: [Split], live: LiveFolders?) -> [Row] {
         let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
         let loaded = tabs?.filter { $0.kind == kind }
         let opened: [(url: String, id: String)] = loaded.map { tabs in
@@ -433,7 +440,11 @@ struct SpacePreviewList: View, Equatable {
             let tab = liveByID[id]
             if let tab, let split = splits.first(where: { $0.contains(tab.id) }),
                Split.lead(of: split.tabs, strip: strip) != tab.id { return nil }
-            return .site(url, kind, tab, depth: visible.depth)
+            // Match the live pinned section's ownership lookup, using the row's saved URL.
+            // Capture metadata here so a refresh cannot change the label during a swipe.
+            let folder = shape.folder(holding: id)
+            let pr = folder.flatMap { $0.live == nil ? nil : live?.row(of: name, in: $0) }
+            return .site(url, kind, tab, depth: visible.depth, pr: pr)
         }
     }
 
@@ -501,10 +512,10 @@ struct SpacePreviewList: View, Equatable {
                     }
                 }
                 Text(f.name).font(Look.folderTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
-            case .site(let url, _, _, _):
+            case .site(let url, _, _, _, _):
                 SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
                 LivePRTitle(title: title(for: row),
-                            pr: nil, developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
+                            pr: row.pr, developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
                     .font(Look.rowTitle).lineLimit(1)
                     .foregroundStyle(Look.inkPrimary)
             }
@@ -527,7 +538,7 @@ struct SpacePreviewList: View, Equatable {
     func title(for row: Row, saved: [String: Parked]) -> String {
         switch row {
         case .folder(let folder, _): return folder.name
-        case .site(let url, let kind, _, _):
+        case .site(let url, let kind, _, _, _):
             return liveTab(for: row).map { TidyTitles.title(for: $0) }
                 ?? TidyTitles.previewName(for: url, in: space.profileID,
                     saved: saved[url.absoluteString]?.title, stays: kind != .today)
@@ -535,12 +546,12 @@ struct SpacePreviewList: View, Equatable {
     }
 
     private func liveTab(for row: Row) -> Tab? {
-        guard case .site(let url, let kind, let live, _) = row else { return nil }
+        guard case .site(let url, let kind, let live, _, _) = row else { return nil }
         return live ?? liveTabs?.first { $0.kind == kind && $0.pinnedURL == url }
     }
 
     private func pageURL(for row: Row, saved: [String: Parked], tab: Tab?) -> URL? {
-        guard case .site(let url, _, _, _) = row else { return nil }
+        guard case .site(let url, _, _, _, _) = row else { return nil }
         return tab?.currentURL ?? saved[url.absoluteString]?.page ?? url
     }
 }
