@@ -824,12 +824,6 @@ a.scene-link:hover { color:#fff; }
 
 /* Reserve a clear strip for chapter controls on compact screens. */
 .galaxy-journey:not(.journey-ready) .hero-line { margin-inline:auto; }
-@media(min-width:901px) {
- .journey-ready[data-chapter="3"] .galaxy-footer { justify-content:flex-start; gap:24px; }
-}
-@media(min-width:601px) and (max-width:900px) {
- .journey-ready[data-chapter="3"] .galaxy-footer { bottom:52px; }
-}
 @media(max-width:600px) {
  .journey-ready .product-stage { top:auto; bottom:110px; }
  .journey-ready .product-pages { height:clamp(100px,calc(100svh - 464px),235px); }
@@ -844,7 +838,8 @@ a.scene-link:hover { color:#fff; }
 .galaxy-toggle .toggle-label { display:none; }
 .galaxy-controls .galaxy-toggle { width:44px; padding:8px; }
 .galaxy-toggle svg { width:14px; height:14px; }
-@media(min-width:901px) { .galaxy-footer { justify-content:flex-start; gap:24px; } }
+/* Share the end links' baseline whenever the footer fits on one row. */
+@media(min-width:601px) { .galaxy-footer { justify-content:flex-start; gap:24px; } }
 
 /* Keep narrow headlines on two lines and scale the complete browser illustration. */
 @media(max-width:600px) {
@@ -902,7 +897,6 @@ a.scene-link:hover { color:#fff; }
 @media(max-height:520px) and (min-width:601px) {
  .hero-message, .intro-support { width:min(340px,calc(50% - 56px)); }
  .intro-support { right:auto; }
- .journey-ready[data-chapter="3"] .galaxy-footer { bottom:46px; }
  .journey-intro .intro { font-size:.75rem; line-height:1.4; }
  .journey-intro .hero-actions a { font-size:.75rem; padding:10px 14px; }
 }
