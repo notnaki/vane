@@ -30,6 +30,9 @@ extension Look {
     /// gesture handed it a velocity and an ease throws that away — the strip has to leave the
     /// fingers at the speed they left it at.
     static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
+    /// A committed swipe should hand focus to the destination promptly. Keep its final
+    /// travel short; canceled gestures still use the more forgiving return spring.
+    static let spaceLanding = Animation.spring(response: 0.16, dampingFraction: 0.9)
     /// How many rows the neighbouring Space's preview draws. Past what a sidebar shows at
     /// once the rows are scrolled-off content nobody sees, costing a favicon lookup each.
     static let spacePreviewRows = 16
@@ -666,7 +669,11 @@ private struct SpaceSwipe: ViewModifier {
                 if creatable, direction > 0, index == self.list.count - 1 {
                     self.create(store)
                 } else {
-                    self.land(direction, from: index, width: width, store: store)
+                    if self.list.indices.contains(index + direction) {
+                        self.land(direction, to: self.list[index + direction], width: width, store: store)
+                    } else {
+                        self.settle(store)
+                    }
                 }
             } else if phase == .ended || phase == .cancelled, !self.landing {
                 // Not while landing: a `.cancelled` followed by an `.ended` would otherwise
@@ -735,9 +742,7 @@ private struct SpaceSwipe: ViewModifier {
     /// Over the line: run the rest of the travel out under the spring and swap the Space at
     /// the far end, where the preview is already standing exactly where the real sections
     /// are about to be — which is the whole reason the swap is invisible.
-    private func land(_ direction: Int, from index: Int, width: CGFloat, store: TabStore) {
-        guard list.indices.contains(index + direction) else { return settle(store) }
-        let target = list[index + direction]
+    func land(_ direction: Int, to target: Space, width: CGFloat, store: TabStore) {
         // Finish the preview's travel before swapping hosts, including across profiles.
         // Cached profile interfaces can be attached at rest without tearing down the page.
         guard !Motion.reduced else {
@@ -749,7 +754,7 @@ private struct SpaceSwipe: ViewModifier {
         }
         let from = store.currentSpaceID
         landing = true
-        withAnimation(Look.spaceSpring) {
+        withAnimation(Look.spaceLanding) {
             store.spaceDrag = -CGFloat(direction) * width
         } completion: { [weak store] in
             self.landing = false
