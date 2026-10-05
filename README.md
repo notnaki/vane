@@ -67,7 +67,8 @@ right-click → **Remove from Folder** keeps tabs in their section. An empty Tod
 folder disappears.
 
 Pinned tabs keep their saved name as you navigate within them. When a pinned tab
-leaves its saved page, its sidebar row offers **Return to Pinned Tab**; returning
+leaves its saved page, its sidebar row shows `/` before its title and offers
+**Return to Pinned Tab**; returning
 loads the pinned URL again. Favorites belong to a profile, while pinned and Today
 tabs belong to a Space. Library lists Spaces across all profiles.
 

@@ -3652,19 +3652,27 @@ private struct TabRow: View {
         SidebarRow(selected: selected, highlightSelection: !returning, ticked: ticked, action: select) {
             TabHomeIcon(store: store, tab: tab, returnHovering: $returnHovering)
         } label: {
-            // Arc's in-row rename: the title becomes a field and the row keeps its shape.
-            if store.renamingTab == tab.id {
-                RenameField(store: store, tab: tab, initialTitle: title)
-            } else if returning && returnHovering {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(title).truncationMode(.tail)
-                    Text("Return to Pinned Tab")
-                        .font(Look.small)
-                        .foregroundStyle(Look.inkTertiary)
+            HStack(spacing: 6) {
+                if returning {
+                    Text("/")
+                        .foregroundStyle(Look.inkSecondary)
+                        .fixedSize()
+                        .accessibilityHidden(true)
                 }
-            } else {
-                LivePRTitle(title: TidyTitles.title(for: tab), reveal: tab.titleReveal, pr: pr,
-                            developerEndpoint: tab.developer ? DeveloperMode.endpoint(tab.currentURL) : nil)
+                // Keep the away marker visible during rename and Return hover too.
+                if store.renamingTab == tab.id {
+                    RenameField(store: store, tab: tab, initialTitle: title)
+                } else if returning && returnHovering {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(title).truncationMode(.tail)
+                        Text("Return to Pinned Tab")
+                            .font(Look.small)
+                            .foregroundStyle(Look.inkTertiary)
+                    }
+                } else {
+                    LivePRTitle(title: title, reveal: tab.titleReveal, pr: pr,
+                                developerEndpoint: tab.developer ? DeveloperMode.endpoint(tab.currentURL) : nil)
+                }
             }
         } trailing: {
             TabRowTrailing(store: store, tab: tab)
