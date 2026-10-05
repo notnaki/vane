@@ -66,6 +66,11 @@ list fills the sidebar. Dropping onto **New Tab** moves tabs to the top of Today
 right-click → **Remove from Folder** keeps tabs in their section. An empty Today
 folder disappears.
 
+Hover a sidebar tab to see its full name and a **Double-click to rename** hint.
+Double-click a Today tab, pinned tab, favourite, or split pane to edit its name in
+place. Press **Return** to save or **Escape** to cancel; an empty name restores the
+page’s title.
+
 Pinned tabs keep their saved name as you navigate within them. When a pinned tab
 leaves its saved page, its sidebar row shows `/` before its title and offers
 **Return to Pinned Tab**; returning
