@@ -24,7 +24,9 @@ import XCTest
 
     func testShortUpdatePromptsStayOneRow() throws {
         for width in [220, SidebarWidth.standard, 249, SidebarWidth.maximum] {
-            for (message, action) in [("Restart to update", "Restart"), ("Update failed", "Releases")] {
+            for phase in [Updater.Phase.ready, .failed(nil)] {
+                let message = Updater.text(for: phase)
+                let action = try XCTUnwrap(Updater.action(for: phase)).title
                 let image = try render(message, action: action, width: width, sticky: true)
                 XCTAssertLessThanOrEqual(image.pixelsHigh, 32,
                     "\(message) and \(action) should share one row at \(width)pt")
