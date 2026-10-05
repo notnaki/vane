@@ -13,9 +13,8 @@ enum Look {
     /// 5–6pt fitted to the 2x corner profile — while their rows are round; they are not one
     /// family.
     static let cardRadius: CGFloat = 6
-    /// The floating sidebar is an outer surface, matching the generous native window
-    /// rounding on macOS 26 rather than the small cards inside it.
-    static let floatingSidebarRadius: CGFloat = 26
+    /// The floating sidebar has Arc's tighter panel corners, just rounder than its rows.
+    static let floatingSidebarRadius: CGFloat = 14
     /// The page card — the sheet a page is drawn on, and the outline standing where one will
     /// go. Its own number, and a generous one: it is the only corner in the window that is
     /// read *against* the window's own, which macOS 26 rounds hard, and a settings card's
