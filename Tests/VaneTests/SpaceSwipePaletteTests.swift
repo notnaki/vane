@@ -56,10 +56,10 @@ import XCTest
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began, x: 800))
         NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -40, x: 800))
         XCTAssertFalse(store.spaceSwiping)
-        // Library still owns its column's gestures.
+        // A rightward Library gesture must not become a Space swipe.
         store.libraryOpen = true
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
-        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -40))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: 40))
         XCTAssertFalse(store.spaceSwiping)
         XCTAssertEqual(store.spaceDrag, 0)
         XCTAssertEqual(window.scrolls, 7, "Every non-Space gesture reaches its original recipient")
@@ -110,6 +110,7 @@ private final class ScrollEvent: NSEvent, @unchecked Sendable {
     override var windowNumber: Int { ownerNumber }
     override var locationInWindow: NSPoint { NSPoint(x: x, y: 150) }
     override var hasPreciseScrollingDeltas: Bool { true }
+    override var isDirectionInvertedFromDevice: Bool { true }
     override var scrollingDeltaX: CGFloat { dx }
     override var scrollingDeltaY: CGFloat { dy }
     override var phase: NSEvent.Phase { eventPhase }

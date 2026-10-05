@@ -3,18 +3,25 @@ import XCTest
 @testable import vane
 
 @MainActor final class LibrarySwipeTests: XCTestCase {
-    private func fixture() -> (TabStore, LibraryScrollWindow, LibrarySwipeMonitor) {
+    private func fixture(withSpaces: Bool = false) -> (TabStore, LibraryScrollWindow, LibrarySwipeMonitor) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
-        let profile = UUID()
-        let store = TabStore(profileID: profile,
-                             space: Space(name: "Library swipe", profileID: profile), session: [])
+        let manager = ProfileManager.shared
+        let profile = withSpaces ? manager.profiles[0].id : UUID()
+        let oldSpaces = withSpaces ? manager.spaces(for: profile) : []
+        let first = Space(name: "First", profileID: profile)
+        if withSpaces {
+            XCTAssertTrue(manager.saveSpaces([first, Space(name: "Second", profileID: profile)], for: profile))
+        }
+        let store = TabStore(profileID: profile, space: first, session: [])
+        let oldLibrary = (Library.shared.section, Library.shared.query,
+                          Library.shared.littleArcOnly, Library.shared.completedOnly)
         let window = LibraryScrollWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
                                          styleMask: .borderless, backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         store.window = window
         store.libraryOpen = true
-        let monitor = LibrarySwipeMonitor()
+        let monitor = store.librarySwipeMonitor
         monitor.install(store)
         addTeardownBlock { @MainActor in
             monitor.remove()
@@ -25,6 +32,12 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
             SharedTabs.release(tabs)
             Store.forget(profile)
+            if withSpaces { XCTAssertTrue(manager.saveSpaces(oldSpaces, for: profile)) }
+            Library.open(oldLibrary.0, in: store)
+            store.libraryOpen = false
+            Library.shared.query = oldLibrary.1
+            Library.shared.littleArcOnly = oldLibrary.2
+            Library.shared.completedOnly = oldLibrary.3
         }
         return (store, window, monitor)
     }
@@ -34,6 +47,178 @@ import XCTest
                       momentum: NSEvent.Phase = [], precise: Bool = true, inverted: Bool = true) {
         NSApplication.shared.sendEvent(LibraryScrollEvent(window: window, point: point,
             dx: dx, dy: dy, phase: phase, momentum: momentum, precise: precise, inverted: inverted))
+    }
+
+    func testRightSwipeOpensLastLibrarySectionFromFirstSpaceAnywhereInWindow() {
+        let (store, window, _) = fixture(withSpaces: true)
+        let first = store.currentSpaceID
+        Library.open(.downloads, in: store)
+        Library.shared.query = "old search"
+        store.sidebarShown = false
+        for point in [NSPoint(x: 20, y: 350), NSPoint(x: 250, y: 350),
+                      NSPoint(x: 800, y: 350), NSPoint(x: 450, y: 696)] {
+            store.libraryOpen = false
+            store.findOpen = true
+            send(window, point: point, phase: .began)
+            send(window, point: point, dx: 120)
+            XCTAssertFalse(store.libraryOpen, "Wait for fingers-up")
+            send(window, point: point, phase: .ended)
+            XCTAssertTrue(store.libraryOpen, "Open from anywhere at the first Space: \(point)")
+            XCTAssertEqual(store.currentSpaceID, first)
+            XCTAssertEqual(Library.shared.section, .downloads)
+            XCTAssertEqual(Library.shared.query, "")
+            XCTAssertFalse(store.findOpen)
+            XCTAssertFalse(store.spaceSwiping)
+        }
+    }
+
+    func testOpeningLibraryReplacesAnOpenCommandPalette() {
+        let (store, window, _) = fixture(withSpaces: true)
+        store.libraryOpen = false
+        store.palette = .newTab
+        send(window, phase: .began)
+        send(window, dx: 120)
+        send(window, phase: .ended)
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertNil(store.palette, "The palette must not obscure the opened Library")
+    }
+
+    func testRightSwipeOpensWithEitherNaturalScrollingPreference() {
+        let (store, window, _) = fixture(withSpaces: true)
+        for (inverted, rightDelta) in [(true, CGFloat(120)), (false, CGFloat(-120))] {
+            store.libraryOpen = false
+            send(window, phase: .began, inverted: inverted)
+            send(window, dx: rightDelta, inverted: inverted)
+            send(window, phase: .ended, inverted: inverted)
+            XCTAssertTrue(store.libraryOpen)
+        }
+    }
+
+    func testRightSwipeOnLaterSpaceDoesNotOpenLibraryOrConsumePageScrolls() {
+        let (store, window, _) = fixture(withSpaces: true)
+        store.switchTo(space: store.strip[1])
+        store.libraryOpen = false
+        send(window, point: NSPoint(x: 800, y: 350), phase: .began)
+        send(window, point: NSPoint(x: 800, y: 350), dx: 120)
+        send(window, point: NSPoint(x: 800, y: 350), phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertEqual(window.scrolls, 3)
+    }
+
+    func testRightSwipeOnLaterSpaceStillSelectsPreviousSpaceInSidebar() async throws {
+        let (store, window, _) = fixture(withSpaces: true)
+        let first = store.strip[0], second = store.strip[1]
+        store.switchTo(space: second)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        let spaceMonitor = store.spaceGesture.monitor
+        spaceMonitor.install(store)
+        defer { spaceMonitor.remove() }
+        send(window, phase: .began)
+        send(window, dx: 120)
+        send(window, phase: .ended)
+        let deadline = Date.now.addingTimeInterval(2)
+        while store.currentSpaceID != first.id && Date.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(store.currentSpaceID, first.id)
+        XCTAssertFalse(store.libraryOpen, "A Space gesture must not also open Library")
+    }
+
+    func testRejectedOpeningGesturesKeepFirstSpaceAndLibraryClosed() {
+        let (store, window, _) = fixture(withSpaces: true)
+        store.libraryOpen = false
+        for (out, back, end) in [(CGFloat(-120), CGFloat(0), NSEvent.Phase.ended),
+                                 (15, 0, .ended), (120, 0, .cancelled),
+                                 (120, -115, .ended)] {
+            send(window, phase: .began)
+            send(window, dx: out)
+            send(window, dx: back)
+            send(window, phase: end)
+            XCTAssertFalse(store.libraryOpen)
+        }
+        send(window, phase: .began)
+        send(window, dx: 1, dy: 20)
+        send(window, dx: 200)
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+    }
+
+    func testOpeningGestureMomentumCannotCloseLibraryAgain() {
+        let (store, window, _) = fixture(withSpaces: true)
+        store.libraryOpen = false
+        send(window, phase: .began)
+        send(window, dx: 120)
+        send(window, phase: .ended)
+        XCTAssertTrue(store.libraryOpen)
+        let scrolls = window.scrolls
+        send(window, dx: -300, phase: [], momentum: .began)
+        send(window, dx: -300, phase: [], momentum: .changed)
+        send(window, phase: [], momentum: .ended)
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertEqual(window.scrolls, scrolls)
+        send(window, phase: .began)
+        send(window, dx: -120)
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen, "A fresh leftward gesture can still close")
+    }
+
+    func testFirstSpaceOpeningWinsRegardlessOfMonitorInstallationOrder() {
+        let (store, window, libraryMonitor) = fixture(withSpaces: true)
+        let spaceMonitor = store.spaceGesture.monitor
+        defer { spaceMonitor.remove() }
+        store.sidebarShown = true
+        for libraryFirst in [true, false] {
+            libraryMonitor.remove()
+            spaceMonitor.remove()
+            if libraryFirst { libraryMonitor.install(store); spaceMonitor.install(store) }
+            else { spaceMonitor.install(store); libraryMonitor.install(store) }
+            for (inverted, rightDelta) in [(true, CGFloat(120)), (false, CGFloat(-120))] {
+                store.libraryOpen = false
+                send(window, phase: .began, inverted: inverted)
+                send(window, dx: rightDelta, inverted: inverted)
+                XCTAssertFalse(store.spaceSwiping, "The sidebar must not claim Library's gesture")
+                send(window, phase: .ended, inverted: inverted)
+                XCTAssertTrue(store.libraryOpen)
+                XCTAssertEqual(store.spaceDrag, 0)
+            }
+        }
+    }
+
+    func testSmallOpeningSamplesAreNotCountedTwiceByBothMonitors() {
+        let (store, window, _) = fixture(withSpaces: true)
+        let spaceMonitor = store.spaceGesture.monitor
+        spaceMonitor.install(store)
+        defer { spaceMonitor.remove() }
+        store.sidebarShown = true
+        store.libraryOpen = false
+        send(window, phase: .began)
+        // 54 points is below the 60-point dismissal/opening threshold.
+        for _ in 0..<18 { send(window, dx: 3) }
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertFalse(store.spaceSwiping)
+        send(window, phase: .began)
+        for _ in 0..<22 { send(window, dx: 3) }
+        send(window, phase: .ended)
+        XCTAssertTrue(store.libraryOpen, "66 points should open it")
+    }
+
+    func testSpaceChangeOrCreationDuringOpeningGestureCancelsIt() {
+        let (store, window, _) = fixture(withSpaces: true)
+        let first = store.strip[0], second = store.strip[1]
+        store.libraryOpen = false
+        send(window, phase: .began)
+        send(window, dx: 120)
+        store.switchTo(space: second)
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+        store.switchTo(space: first)
+        send(window, phase: .began)
+        send(window, dx: 120)
+        store.creatingSpace = true
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
     }
 
     func testLeftSwipeClosesLibraryAcrossWindowWithSidebarHidden() {

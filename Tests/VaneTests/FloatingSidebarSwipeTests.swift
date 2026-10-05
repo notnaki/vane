@@ -126,6 +126,7 @@ private final class SidebarScrollEvent: NSEvent, @unchecked Sendable {
     override var windowNumber: Int { targetNumber }
     override var locationInWindow: NSPoint { point }
     override var hasPreciseScrollingDeltas: Bool { true }
+    override var isDirectionInvertedFromDevice: Bool { true }
     override var scrollingDeltaX: CGFloat { dx }
     override var scrollingDeltaY: CGFloat { dy }
     override var phase: NSEvent.Phase { scrollPhase }
