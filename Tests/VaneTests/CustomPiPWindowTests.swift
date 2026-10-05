@@ -20,13 +20,16 @@ import XCTest
         XCTAssertFalse(window.isVisible)
     }
 
-    func testEntryMovesFromSourceToSavedFrameInOneMotion() async {
+    func testEntryMovesFromSourceToSavedFrameInOneMotion() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let held = UserDefaults.vane.object(forKey: CustomPiPWindow.placementKey)
         defer { UserDefaults.vane.set(held, forKey: CustomPiPWindow.placementKey) }
         let source = NSRect(x: 120, y: 120, width: 480, height: 270)
         let destination = NSRect(x: 350, y: 260, width: 640, height: 360)
+        guard TestEnvironment.supportsPiPMotion(in: [source, destination]) else {
+            throw XCTSkip("Intermediate entry frames require motion enabled and visible source/destination screens")
+        }
         UserDefaults.vane.set(NSStringFromRect(destination), forKey: CustomPiPWindow.placementKey)
         let window = CustomPiPWindow(frame: source, videoView: NSView(), controlsView: NSView())
         defer { window.close() }
@@ -63,7 +66,11 @@ import XCTest
         window.show()
         try? await Task.sleep(for: .milliseconds(30))
         let interrupted = window.frame
-        XCTAssertNotEqual(interrupted, destination)
+        if TestEnvironment.supportsPiPMotion(in: [NSRect(x: 120, y: 120, width: 480, height: 270), destination]) {
+            XCTAssertNotEqual(interrupted, destination)
+        } else {
+            XCTAssertEqual(interrupted, destination, "No-motion entry uses the saved placement immediately")
+        }
         let done = expectation(description: "Interrupted entry fades in place")
         window.fadeOut { done.fulfill() }
         await fulfillment(of: [done], timeout: 1)
@@ -124,7 +131,11 @@ import XCTest
         let window = CustomPiPWindow(frame: source, videoView: NSView(), controlsView: NSView())
         defer { window.close() }
         window.show()
-        XCTAssertEqual(window.frame, source, "Minimum size applies to the final player, not the original media")
+        if TestEnvironment.supportsPiPMotion(in: [source, destination]) {
+            XCTAssertEqual(window.frame, source, "Minimum size applies to the final player, not the original media")
+        } else {
+            XCTAssertEqual(window.frame, destination, "No-motion entry opens directly at the saved placement")
+        }
         try? await Task.sleep(for: .milliseconds(350))
         XCTAssertEqual(window.frame, destination)
         XCTAssertGreaterThanOrEqual(window.contentMinSize.width, 280)

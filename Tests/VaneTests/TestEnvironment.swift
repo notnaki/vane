@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import vane
 
@@ -12,6 +13,16 @@ import XCTest
     }()
 
     static func prepare() { _ = cleanup }
+
+    static func supportsPiPMotion(in frames: [NSRect]) -> Bool {
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let screens = NSScreen.screens.map(\.frame)
+        let available = !reduceMotion && frames.allSatisfy { frame in
+            screens.contains { $0.intersects(frame) }
+        }
+        print("PiP motion prerequisites: reduceMotion=\(reduceMotion), screens=\(screens), frames=\(frames), available=\(available)")
+        return available
+    }
 }
 
 private final class FixtureCleanup: NSObject, XCTestObservation {

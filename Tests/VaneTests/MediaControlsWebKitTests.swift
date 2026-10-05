@@ -223,8 +223,12 @@ import XCTest
         let custom = try XCTUnwrap(NSApp.windows.first { $0.identifier?.rawValue == "vane.pip.window" && $0.isVisible })
         let x = (custom.frame.minX - inline.minX) / (destination.minX - inline.minX)
         let y = (custom.frame.minY - inline.minY) / (destination.minY - inline.minY)
-        XCTAssertLessThan(x, 0.8, "Observe the flight before it finishes")
-        XCTAssertEqual(x, y, accuracy: 0.03, "Entry must follow the line from the media's real on-page position")
+        if TestEnvironment.supportsPiPMotion(in: [inline, destination]) {
+            XCTAssertLessThan(x, 0.8, "Observe the flight before it finishes")
+            XCTAssertEqual(x, y, accuracy: 0.03, "Entry must follow the line from the media's real on-page position")
+        } else {
+            XCTAssertEqual(custom.frame, destination, "No-motion entry opens directly at the saved placement")
+        }
     }
 
     func testCustomPiPUsesNaturalAspectRatherThanInlineCSSBox() async throws {
@@ -440,11 +444,16 @@ import XCTest
             }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(moved, "Back to Tab must move the live video into the page, rather than only fading")
-        XCTAssertEqual(panel.frame.minX, destination.minX, accuracy: 1)
-        XCTAssertEqual(panel.frame.minY, destination.minY, accuracy: 1)
-        XCTAssertEqual(panel.frame.width, destination.width, accuracy: 1)
-        XCTAssertEqual(panel.frame.height, destination.height, accuracy: 1)
+        if TestEnvironment.supportsPiPMotion(in: [placement, destination]) {
+            XCTAssertTrue(moved, "Back to Tab must move the live video into the page, rather than only fading")
+            XCTAssertEqual(panel.frame.minX, destination.minX, accuracy: 1)
+            XCTAssertEqual(panel.frame.minY, destination.minY, accuracy: 1)
+            XCTAssertEqual(panel.frame.width, destination.width, accuracy: 1)
+            XCTAssertEqual(panel.frame.height, destination.height, accuracy: 1)
+        } else {
+            XCTAssertFalse(moved)
+            XCTAssertEqual(panel.frame, placement, "No-motion return fades at the existing placement")
+        }
         let remembered = UserDefaults.vane.string(forKey: CustomPiPWindow.placementKey).map(NSRectFromString)
         XCTAssertEqual(remembered, placement, "Returning must preserve the user's floating placement")
         try await wait { !tab.pictureInPicture }
@@ -485,10 +494,15 @@ import XCTest
             if custom.isVisible && custom.frame != placement { moved = true }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(moved, "An opaque-origin iframe must receive the same return motion")
-        XCTAssertEqual(custom.frame.minX, destination.minX, accuracy: 1)
-        XCTAssertEqual(custom.frame.minY, destination.minY, accuracy: 1)
-        XCTAssertEqual(custom.frame.size, destination.size)
+        if TestEnvironment.supportsPiPMotion(in: [placement, destination]) {
+            XCTAssertTrue(moved, "An opaque-origin iframe must receive the same return motion")
+            XCTAssertEqual(custom.frame.minX, destination.minX, accuracy: 1)
+            XCTAssertEqual(custom.frame.minY, destination.minY, accuracy: 1)
+            XCTAssertEqual(custom.frame.size, destination.size)
+        } else {
+            XCTAssertFalse(moved)
+            XCTAssertEqual(custom.frame, placement, "No-motion return fades at the existing placement")
+        }
         try await wait { !tab.pictureInPicture && !custom.isVisible }
     }
 
@@ -661,7 +675,7 @@ import XCTest
     }
 
     func testImmediateReentryDuringReturnDoesNotLeaveAnEmptyPanel() async throws {
-        let (tab, _) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
+        let (tab, window) = try await fixture("<video id='player' width='640' height='360' autoplay muted loop src='data:video/mp4;base64,\(Self.video)'></video>")
         func restore(_ view: NSView) -> NSButton? {
             if let button = view as? NSButton, button.identifier?.rawValue == "vane.pip.restore" { return button }
             return view.subviews.lazy.compactMap(restore).first
@@ -680,7 +694,9 @@ import XCTest
         // Supersede the page's pending 50ms inline confirmation.
         try await wait { !tab.pictureInPicture }
         // A stale failed async request may arrive after native exit has started.
-        try await wait { original.frame != placement }
+        if TestEnvironment.supportsPiPMotion(in: [placement, window.frame]) {
+            try await wait { original.frame != placement }
+        }
         PiPMinimizeControls.resumeAfterFailedExit(tab)
         if original.isVisible {
             XCTAssertTrue(original.videoView.superview === original.contentView, "A stale failure cannot reopen an empty live host")
