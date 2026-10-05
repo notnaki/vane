@@ -31,9 +31,9 @@ import XCTest
 
     private func send(_ window: NSWindow, point: NSPoint = NSPoint(x: 100, y: 350),
                       dx: CGFloat = 0, dy: CGFloat = 0, phase: NSEvent.Phase = .changed,
-                      momentum: NSEvent.Phase = [], precise: Bool = true) {
+                      momentum: NSEvent.Phase = [], precise: Bool = true, inverted: Bool = true) {
         NSApplication.shared.sendEvent(LibraryScrollEvent(window: window, point: point,
-            dx: dx, dy: dy, phase: phase, momentum: momentum, precise: precise))
+            dx: dx, dy: dy, phase: phase, momentum: momentum, precise: precise, inverted: inverted))
     }
 
     func testLeftSwipeClosesLibraryAcrossWindowWithSidebarHidden() {
@@ -49,6 +49,23 @@ import XCTest
             XCTAssertFalse(store.libraryOpen, "Close from anywhere in the window: \(point)")
             XCTAssertFalse(store.spaceSwiping)
             XCTAssertEqual(store.spaceDrag, 0)
+        }
+    }
+
+    func testPhysicalLeftSwipeClosesWithEitherNaturalScrollingPreference() {
+        let (store, window, _) = fixture()
+        // AppKit's device direction is positive for left; Natural Scrolling inverts it.
+        for (inverted, leftDelta) in [(true, CGFloat(-120)), (false, CGFloat(120))] {
+            store.libraryOpen = true
+            send(window, phase: .began, inverted: inverted)
+            send(window, dx: leftDelta, inverted: inverted)
+            send(window, phase: .ended, inverted: inverted)
+            XCTAssertFalse(store.libraryOpen, "Physical left closes regardless of Natural Scrolling")
+            store.libraryOpen = true
+            send(window, phase: .began, inverted: inverted)
+            send(window, dx: -leftDelta, inverted: inverted)
+            send(window, phase: .ended, inverted: inverted)
+            XCTAssertTrue(store.libraryOpen, "Physical right never closes Library")
         }
     }
 
@@ -143,9 +160,10 @@ private final class LibraryScrollEvent: NSEvent, @unchecked Sendable {
     private let scrollPhase: NSEvent.Phase
     private let momentum: NSEvent.Phase
     private let precise: Bool
+    private let inverted: Bool
 
     @MainActor init(window: NSWindow, point: NSPoint, dx: CGFloat, dy: CGFloat,
-                    phase: NSEvent.Phase, momentum: NSEvent.Phase, precise: Bool) {
+                    phase: NSEvent.Phase, momentum: NSEvent.Phase, precise: Bool, inverted: Bool) {
         target = window
         targetNumber = window.windowNumber
         self.point = point
@@ -154,6 +172,7 @@ private final class LibraryScrollEvent: NSEvent, @unchecked Sendable {
         scrollPhase = phase
         self.momentum = momentum
         self.precise = precise
+        self.inverted = inverted
         super.init()
     }
     required init?(coder: NSCoder) { fatalError("Not used") }
@@ -162,6 +181,7 @@ private final class LibraryScrollEvent: NSEvent, @unchecked Sendable {
     override var windowNumber: Int { targetNumber }
     override var locationInWindow: NSPoint { point }
     override var hasPreciseScrollingDeltas: Bool { precise }
+    override var isDirectionInvertedFromDevice: Bool { inverted }
     override var scrollingDeltaX: CGFloat { dx }
     override var scrollingDeltaY: CGFloat { dy }
     override var phase: NSEvent.Phase { scrollPhase }

@@ -87,7 +87,10 @@ private struct LibrarySwipe: ViewModifier {
             }
             return claim == .mine ? nil : event
         }
-        travel.x += event.scrollingDeltaX
+        // Navigation follows the fingers, independent of the scrolling preference.
+        // Device deltas are positive for left; Natural Scrolling inverts them.
+        let dx = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        travel.x += dx
         travel.horizontal += abs(event.scrollingDeltaX)
         travel.vertical += abs(event.scrollingDeltaY)
         if claim == .undecided {
