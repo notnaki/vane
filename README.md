@@ -74,6 +74,8 @@ tabs belong to a Space. Library lists Spaces across all profiles.
 Hover the Space card to reveal its chevron and `…` menu. Click the card to collapse
 or expand its pinned tabs; Today stays visible. Double-click its name to rename
 the Space. Each window remembers the collapsed state for each Space while open.
+Swipe horizontally over the sidebar to move between Spaces, including while the
+search bar (`⌘T`) is open.
 
 Incognito uses a temporary identity of its own, with a glasses icon and a near-black
 theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and

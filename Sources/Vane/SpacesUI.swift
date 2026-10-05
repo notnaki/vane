@@ -795,7 +795,7 @@ private struct SpaceSwipe: ViewModifier {
 
     /// A horizontal trackpad swipe, over this window's sidebar, decided once per gesture.
     /// Everything else — a mouse wheel, a scroll down the tab list, a scroll over the page,
-    /// anything while the command bar or the Library panel is over the sidebar — is left
+    /// anything while the Library panel is over the sidebar — is left
     /// alone for whoever it was meant for.
     private func mine(_ event: NSEvent, _ store: TabStore) -> Bool {
         // Above the guard on purpose: a gesture that starts over the page card still has to
@@ -803,7 +803,7 @@ private struct SpaceSwipe: ViewModifier {
         // events long after the fingers have moved somewhere else.
         if event.phase.contains(.began) { forget() }
         guard event.hasPreciseScrollingDeltas, event.window === store.window,
-              store.sidebarShown, !store.libraryOpen, store.palette == nil,
+              store.sidebarShown, !store.libraryOpen,
               event.locationInWindow.x < SidebarWidth.shared.width
         else { return false }
         switch claim {
