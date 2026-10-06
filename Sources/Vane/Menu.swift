@@ -823,7 +823,8 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
             a.informativeText = "Bookmarks and saved passwords are not affected."
             a.addButton(withTitle: "Clear"); a.addButton(withTitle: "Cancel")
             if a.runModal() == .alertFirstButtonReturn {
-                Store.store(for: Windows.current?.profileID ?? ProfileManager.activeProfileID).clearHistory()
+                let history = Store.store(for: Windows.current?.profileID ?? ProfileManager.activeProfileID)
+                if !history.clearHistory() { HistoryWindow.showWriteFailure(history) }
             }
         },
         .separator(),

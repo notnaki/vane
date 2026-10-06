@@ -104,10 +104,14 @@ import WebKit
 
     /// Do it. History is Vane's own database; cookies, storage and caches belong to the
     /// profile's `WKWebsiteDataStore`, which is why this cannot be one call.
-    static func clear(_ options: Options, profileID: UUID, now: Date = .now) {
+    @discardableResult static func clear(_ options: Options, profileID: UUID, now: Date = .now) -> Bool {
         let since = options.range.since(now)
         if options.history {
-            Store.store(for: profileID).clearHistory(since: options.range == .everything ? nil : since)
+            let history = Store.store(for: profileID)
+            guard history.clearHistory(since: options.range == .everything ? nil : since) else {
+                HistoryWindow.showWriteFailure(history)
+                return false
+            }
         }
         // Being allowed to open another app is site data too: the answer was given to a
         // site, and a sweep that clears the site's cookies and leaves it standing has not
@@ -115,9 +119,10 @@ import WebKit
         // site data" is what a user picks when they mean "forget this".
         if options.cookies { ExternalApps.forgetAll() }
         let types = dataTypes(cookies: options.cookies, cache: options.cache)
-        guard !types.isEmpty else { return }
+        guard !types.isEmpty else { return true }
         ProfileManager.dataStore(for: profileID)
             .removeData(ofTypes: types, modifiedSince: since) { }
+        return true
     }
 
     // MARK: Offline check
@@ -230,7 +235,7 @@ struct ClearDataSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Clear Data") {
-                    BrowsingData.clear(options, profileID: profileID)
+                    guard BrowsingData.clear(options, profileID: profileID) else { return }
                     rebuild()          // the History menu lists what was just deleted
                     dismiss()
                 }

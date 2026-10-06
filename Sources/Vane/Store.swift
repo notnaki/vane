@@ -224,20 +224,48 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     // MARK: History
 
-    func record(_ url: URL, title: String) {
+    private(set) var lastHistoryError: String?
+
+    /// Capture the original error before rollback can replace SQLite's diagnostic.
+    @discardableResult private func historyFailure(rollingBack: Bool = false) -> Bool {
+        var details = db.map { String(cString: sqlite3_errmsg($0)) }
+            ?? lastHistoryError ?? "The history database is unavailable. Restart Vane before trying again."
+        if rollingBack, let db, sqlite3_get_autocommit(db) == 0, !exec("ROLLBACK") {
+            details += ". Rollback failed: " + String(cString: sqlite3_errmsg(db))
+            // An unresolved transaction must never be committed by a later operation.
+            sqlite3_close_v2(db)
+            self.db = nil
+            details += ". Restart Vane before trying again."
+        }
+        lastHistoryError = details
+        NSLog("Vane history write failed: %@", details)
+        return false
+    }
+
+    private func historyWritten(_ write: () -> Bool) -> Bool {
+        guard exec("BEGIN IMMEDIATE") else { return historyFailure() }
+        guard write() else { return historyFailure(rollingBack: true) }
+        let changed = sqlite3_changes(db) > 0
+        guard exec("COMMIT") else { return historyFailure(rollingBack: true) }
+        lastHistoryError = nil
+        if changed {
+            NotificationCenter.default.post(name: Self.historyChanged, object: self)
+        }
+        return true
+    }
+
+    @discardableResult func record(_ url: URL, title: String) -> Bool {
         // about:blank, the new-tab page and non-web schemes are not history.
-        guard url.scheme == "http" || url.scheme == "https" else { return }
-        run("INSERT INTO visits (url, title, at) VALUES (?, ?, ?)",
-            [url.absoluteString, title, Date.now.timeIntervalSince1970])
-        NotificationCenter.default.post(name: Self.historyChanged, object: self)
+        guard url.scheme == "http" || url.scheme == "https" else { return true }
+        return historyWritten { run("INSERT INTO visits (url, title, at) VALUES (?, ?, ?)",
+            [url.absoluteString, title, Date.now.timeIntervalSince1970]) }
     }
 
     /// Titles arrive after the visit row is written, so backfill the newest row for that url.
-    func retitle(_ url: URL, title: String) {
-        guard !title.isEmpty else { return }
-        run("UPDATE visits SET title = ? WHERE id = (SELECT id FROM visits WHERE url = ? ORDER BY at DESC LIMIT 1)",
-            [title, url.absoluteString])
-        NotificationCenter.default.post(name: Self.historyChanged, object: self)
+    @discardableResult func retitle(_ url: URL, title: String) -> Bool {
+        guard !title.isEmpty else { return true }
+        return historyWritten { run("UPDATE visits SET title = ? WHERE id = (SELECT id FROM visits WHERE url = ? ORDER BY at DESC LIMIT 1)",
+            [title, url.absoluteString]) }
     }
 
     /// The last title this profile saw for a page. For a row that has to be redrawn as a
@@ -251,26 +279,37 @@ struct BookmarkImportResult: Equatable, Sendable {
         return out
     }
 
-    /// Bulk insert in one transaction, keeping each visit's real timestamp.
-    /// ponytail: the single-row `record` above is one implicit transaction — and one fsync
+    /// Bulk insert in one checked transaction, keeping each visit's real timestamp.
+    /// Returns the committed count, or nil if the entire import failed.
+    /// ponytail: the single-row `record` above is one transaction — and one fsync
     /// — per row. That is why importing used to cap at 5000 pages and throw the real dates
     /// away. One BEGIN and one reused statement makes both limits unnecessary.
-    func record(_ visits: [(url: URL, title: String, at: Date)]) {
-        guard !visits.isEmpty else { return }
+    @discardableResult func record(_ visits: [(url: URL, title: String, at: Date)]) -> Int? {
+        let rows = visits.filter { $0.url.scheme == "http" || $0.url.scheme == "https" }
+        guard !rows.isEmpty else { return 0 }
+        guard exec("BEGIN IMMEDIATE") else { historyFailure(); return nil }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, "INSERT INTO visits (url, title, at) VALUES (?, ?, ?)",
-                                 -1, &statement, nil) == SQLITE_OK, let statement else { return }
-        defer { sqlite3_finalize(statement) }
-        exec("BEGIN")
-        for visit in visits where visit.url.scheme == "http" || visit.url.scheme == "https" {
-            sqlite3_bind_text(statement, 1, visit.url.absoluteString, -1, TRANSIENT)
-            sqlite3_bind_text(statement, 2, visit.title, -1, TRANSIENT)
-            sqlite3_bind_double(statement, 3, visit.at.timeIntervalSince1970)
-            sqlite3_step(statement)
-            sqlite3_reset(statement)
+                                 -1, &statement, nil) == SQLITE_OK, let statement else {
+            historyFailure(rollingBack: true); return nil
         }
-        exec("COMMIT")
-        NotificationCenter.default.post(name: Self.historyChanged, object: self)
+        defer { sqlite3_finalize(statement) }
+        var count = 0
+        for visit in rows {
+            guard bind([visit.url.absoluteString, visit.title, visit.at.timeIntervalSince1970], to: statement),
+                  sqlite3_step(statement) == SQLITE_DONE else {
+                historyFailure(rollingBack: true); return nil
+            }
+            count += Int(sqlite3_changes(db))
+            guard sqlite3_reset(statement) == SQLITE_OK,
+                  sqlite3_clear_bindings(statement) == SQLITE_OK else {
+                historyFailure(rollingBack: true); return nil
+            }
+        }
+        guard exec("COMMIT") else { historyFailure(rollingBack: true); return nil }
+        lastHistoryError = nil
+        if count > 0 { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
+        return count
     }
 
     func recent(limit: Int = 100) -> [Suggestion] {
@@ -309,26 +348,23 @@ struct BookmarkImportResult: Equatable, Sendable {
     }
 
     /// ⌫ in the History window: one line, not every visit to that page.
-    func deleteVisit(_ id: Int64) {
-        run("DELETE FROM visits WHERE id = ?", [Int(id)])
-        NotificationCenter.default.post(name: Self.historyChanged, object: self)
+    @discardableResult func deleteVisit(_ id: Int64) -> Bool {
+        historyWritten { run("DELETE FROM visits WHERE id = ?", [id]) }
     }
 
     /// ⌥⌘⌫ on a suggestion in the command bar, which is the opposite gesture: the bar rolls
     /// every visit to a page up into one row, so forgetting that row has to forget them all
     /// or the suggestion comes straight back. Bookmarks are untouched — deleting a
     /// suggestion is not the same as unbookmarking, and the bar does not offer it on one.
-    func forget(url: String) {
-        run("DELETE FROM visits WHERE url = ?", [url])
-        NotificationCenter.default.post(name: Self.historyChanged, object: self)
+    @discardableResult func forget(url: String) -> Bool {
+        historyWritten { run("DELETE FROM visits WHERE url = ?", [url]) }
     }
 
     /// `since: nil` is "all time", which is a DELETE with no WHERE rather than a very old
     /// date — a stored visit with a broken timestamp must not survive "clear everything".
-    func clearHistory(since: Date? = nil) {
-        defer { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
-        guard let since else { exec("DELETE FROM visits"); return }
-        run("DELETE FROM visits WHERE at >= ?", [since.timeIntervalSince1970])
+    @discardableResult func clearHistory(since: Date? = nil) -> Bool {
+        guard let since else { return historyWritten { exec("DELETE FROM visits") } }
+        return historyWritten { run("DELETE FROM visits WHERE at >= ?", [since.timeIntervalSince1970]) }
     }
 
     // MARK: Bookmarks
