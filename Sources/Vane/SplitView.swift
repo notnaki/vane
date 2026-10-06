@@ -235,7 +235,9 @@ struct Split: Equatable, Sendable {
 /// not a thing, and a dictionary keyed by tab id would need two entries per pane kept honest.
 @MainActor extension TabStore {
 
-    func split(containing id: Tab.ID) -> Split? { splits.first { $0.contains(id) } }
+    func split(containing id: Tab.ID) -> Split? {
+        splits.first { $0.contains(id) && $0.tabs.allSatisfy { !isTabLocked($0) } }
+    }
 
     /// The split the user is in right now, if any: the one holding the selected tab.
     var activeSplit: Split? { current.flatMap { split(containing: $0) } }

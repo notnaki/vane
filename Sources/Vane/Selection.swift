@@ -129,13 +129,14 @@ extension TabStore {
         guard !pinnedSectionCollapsed else { return .init(kind: .pinned, ids: []) }
         let live = Dictionary(tabs.map { ($0.id.uuidString, $0.id) }, uniquingKeysWith: { a, _ in a })
         return .init(kind: .pinned,
-                     ids: pins.visible.compactMap { $0.entry.tab.flatMap { live[$0] } }.filter(hasRow))
+                     ids: pins.visible(unlocked: unlockedFolders).compactMap { $0.entry.tab.flatMap { live[$0] } }.filter(hasRow))
     }
 
     /// Whether a tab has a row of its own. A split draws one row between all of its panes, at
     /// its lead pane's place (see `StripRow`), so the other panes are in the strip but not on
     /// screen — the same reason a tab inside a folded-up folder is left out of `pins.visible`.
     func hasRow(_ id: Tab.ID) -> Bool {
+        guard !isTabLocked(id) else { return false }
         guard let split = split(containing: id) else { return true }
         return leadPane(split) == id
     }

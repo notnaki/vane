@@ -5,6 +5,11 @@ import SwiftUI
 /// a home (`Settings` in Develop.swift, `Blocker.enabled`, `Search.current`) and is read
 /// straight from there.
 @MainActor enum Prefs {
+    static var folderUnlockMethod: FolderUnlockMethod {
+        get { FolderUnlockMethod(rawValue: UserDefaults.vane.string(forKey: FolderUnlockMethod.key) ?? "") ?? .touchID }
+        set { UserDefaults.vane.set(newValue.rawValue, forKey: FolderUnlockMethod.key) }
+    }
+
     /// Empty means "whatever the current search engine's front page is", so switching
     /// engines moves the homepage with it until the user pins one down.
     static var homepage: URL {
@@ -76,6 +81,11 @@ import SwiftUI
     static var peekLinks: Bool {
         UserDefaults.vane.object(forKey: Peek.prefKey) as? Bool ?? true
     }
+}
+
+enum FolderUnlockMethod: String, CaseIterable {
+    case touchID, system
+    static let key = "folderUnlockMethod"
 }
 
 /// The two answers the Links pane's "Open links from other apps in" offers.

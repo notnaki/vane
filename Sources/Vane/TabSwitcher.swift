@@ -72,7 +72,7 @@ struct TabSwitcher: Equatable {
         if state != nil { state?.advance(by: delta); return }
         // The switcher walks a window's strip, and a Little Arc has one page and no strip.
         guard let s = Windows.main else { return }
-        let ids = TabSwitcher.recent(s.tabs.map { ($0.id, $0.lastActive) }, current: s.current)
+        let ids = TabSwitcher.recent(s.accessibleTabs.map { ($0.id, $0.lastActive) }, current: s.current)
         guard let fresh = TabSwitcher(recent: ids, current: s.current, delta: delta) else { return }
         store = s
         state = fresh
@@ -109,7 +109,7 @@ struct TabSwitcher: Equatable {
 
     /// ⌃ came up: go to the highlighted tab.
     func commit() {
-        if let id = state?.highlighted, let store, store.tabs.contains(where: { $0.id == id }) {
+        if let id = state?.highlighted, let store, store.accessibleTabs.contains(where: { $0.id == id }) {
             store.current = id
         }
         end()
@@ -125,7 +125,7 @@ struct TabSwitcher: Equatable {
     /// is still there to switch to.
     func closeHighlighted() {
         guard let id = state?.highlighted, let store,
-              let tab = store.tabs.first(where: { $0.id == id }) else { return }
+              let tab = store.accessibleTabs.first(where: { $0.id == id }) else { return }
         store.archive(id)
         if tab.kind == .today, state?.removeHighlighted() != true { end() }
     }
@@ -156,7 +156,7 @@ struct TabSwitcherOverlay: View {
         if switching.shown, switching.store === store, let state = switching.state {
             HStack(spacing: Look.inset) {
                 ForEach(state.ids, id: \.self) { id in
-                    if let tab = store.tabs.first(where: { $0.id == id }) {
+                    if let tab = store.accessibleTabs.first(where: { $0.id == id }) {
                         SwitcherCard(tab: tab, highlighted: id == state.highlighted)
                     }
                 }

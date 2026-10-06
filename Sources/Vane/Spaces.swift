@@ -198,7 +198,7 @@ enum Spaces {
                                 from store: TabStore) {
         // A private window has no Space and writes nothing down; moving one of its tabs into
         // a Space would put a page the user asked not to be remembered into spaces.json.
-        guard !store.isPrivate,
+        guard !store.isPrivate, !store.isTabLocked(id),
               let tab = store.tabs.first(where: { $0.id == id }),
               let url = tab.pinnedURL, TabAddress.restorable(url),   // home, not the wander
               var space = store.spaces.first(where: { $0.id == spaceID }),

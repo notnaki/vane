@@ -12,7 +12,7 @@ import Foundation
 
     let rows: [Row]
 
-    init(tabs: [Tab], splits: [Split], shape: Pins) {
+    init(tabs: [Tab], splits: [Split], shape: Pins, unlocked: Set<UUID> = []) {
         let tabsByID = Dictionary(tabs.map { ($0.id.uuidString, $0) },
                                   uniquingKeysWith: { first, _ in first })
         let strip = tabs.map { ($0.id, $0.kind) }
@@ -22,7 +22,7 @@ import Foundation
             // Match the store's first containing split, even for overlapping restore data.
             for pane in split.tabs where leadsByPane[pane] == nil { leadsByPane[pane] = lead }
         }
-        rows = shape.visible.compactMap { visible in
+        rows = shape.visible(unlocked: unlocked).compactMap { visible in
             if visible.entry.folder != nil { return Row(visible: visible, tab: nil) }
             guard let id = visible.entry.tab, let tab = tabsByID[id],
                   leadsByPane[tab.id].map({ $0 == tab.id }) ?? true else { return nil }

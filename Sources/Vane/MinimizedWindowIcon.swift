@@ -9,6 +9,7 @@ import WebKit
         weak var window: NSWindow?
         let preview: Preview
         var pages: [ObjectIdentifier: Page] = [:]
+        var protected = false
         init(window: NSWindow, preview: Preview) {
             self.window = window
             self.preview = preview
@@ -51,6 +52,7 @@ import WebKit
                 guard let window = notification.object as? NSWindow else { return }
                 MainActor.assumeIsolated {
                     guard let entry = entries.removeValue(forKey: ObjectIdentifier(window)) else { return }
+                    if entry.protected { window.miniwindowImage = nil }
                     if window.dockTile.contentView === entry.preview {
                         window.dockTile.contentView = nil
                         window.dockTile.display()
@@ -67,6 +69,24 @@ import WebKit
             if entries[ObjectIdentifier(window)] == nil { capture(window) }
             update(window)
         }
+    }
+
+    /// Replace every retained pixel and reject in-flight WebKit snapshot replies.
+    static func protect(_ window: NSWindow) {
+        guard let entry = entries[ObjectIdentifier(window)] else { return }
+        entry.protected = true
+        entry.pages.removeAll()
+        let image = NSImage(size: NSSize(width: 320, height: 200))
+        image.lockFocus()
+        NSColor.windowBackgroundColor.setFill()
+        NSRect(x: 0, y: 0, width: 320, height: 200).fill()
+        if let symbol = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil) {
+            symbol.draw(in: NSRect(x: 142, y: 78, width: 36, height: 44))
+        }
+        image.unlockFocus()
+        entry.preview.thumbnail = image
+        window.miniwindowImage = image
+        update(window)
     }
 
     private static func capture(_ window: NSWindow) {
@@ -114,7 +134,7 @@ import WebKit
             web.takeSnapshot(with: configuration) { [weak window, weak web, weak root, weak preview] image, _ in
                 guard let image, let window, let web, let root, let preview,
                       web.window === window,
-                      let entry = entries[ObjectIdentifier(window)], entry.preview === preview else { return }
+                      let entry = entries[ObjectIdentifier(window)], entry.preview === preview, !entry.protected else { return }
                 entry.pages[ObjectIdentifier(web)] = Page(web: web, rect: pageRect, image: image)
                 compose(entry, root: root, window: window)
             }
