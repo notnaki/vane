@@ -91,6 +91,17 @@ final class ChromeMenuTests: XCTestCase {
 }
 
 @MainActor final class ChromeMenuPresentationTests: XCTestCase {
+    func testOpeningAMenuCancelsAPendingCustomTooltip() {
+        let (_, anchor) = fixture()
+        let tooltipAnchor = TabTooltipAnchorView()
+        TabTooltip.shared.schedule(for: tooltipAnchor)
+        addTeardownBlock { @MainActor in TabTooltip.shared.dismiss() }
+        XCTAssertTrue(TabTooltip.shared.isPending)
+        anchor.show([ChromeMenuItem(title: "New Tab", symbol: "plus.square") {}], title: "Create")
+        XCTAssertFalse(TabTooltip.shared.isPending,
+                       "A custom tooltip must not appear over the menu it describes")
+    }
+
     private func fixture() -> (NSWindow, ChromeMenuAnchor) {
         _ = NSApplication.shared
         let anchor = ChromeMenuAnchor()

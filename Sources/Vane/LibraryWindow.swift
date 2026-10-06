@@ -712,8 +712,8 @@ private struct LibraryRail: View {
             // pixel the Library glyph left.
             HStack(spacing: 0) {
                 Button { Library.close(store) } label: { Image(systemName: "arrow.left") }
-                    .buttonStyle(.plain).font(Look.icon).foregroundStyle(Look.inkSecondary)
-                    .help("Close the Library (\(Keybindings.binding(for: .showLibrary).display))")
+                    .buttonStyle(TactileButtonStyle()).font(Look.icon).foregroundStyle(Look.inkSecondary)
+                    .vaneTooltip("Close the Library", shortcut: Keybindings.binding(for: .showLibrary).display)
                     .accessibilityLabel("Close the Library")
                 Spacer(minLength: 0)
             }
@@ -741,10 +741,12 @@ private struct LibraryTile: View {
     let action: () -> Void
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         VStack(spacing: Look.captionGap * 2) {
             Image(systemName: section.icon).font(Look.libraryTileIcon)
+                .scaleEffect(hovering && !reduceMotion && !batterySaver.isActive ? 1.06 : 1)
             // Two lines rather than one squeezed: "Archived Tabs" at this size is wider than
             // the tile with any air left around it, and shrinking it ran the "s" into the
             // edge. A name that needs the second line takes it; the rest stay on one.
@@ -757,7 +759,7 @@ private struct LibraryTile: View {
         .frame(minHeight: Look.libraryTile)
         .background(selected ? Look.selected : (hovering ? Look.hovered : .clear),
                     in: .rect(cornerRadius: Look.cardRadius))
-        .animation(reduceMotion ? nil : Look.quick, value: hovering)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture(perform: action)
@@ -813,7 +815,7 @@ private struct LibraryHead<Filter: View, Actions: View>: View {
                     }
                     .accessibilityLabel("Filter")
                     .accessibilityValue(filtering ? "On" : "Off")
-                    .help("Filter")
+                    .vaneTooltip("Filter")
                 }
                 // Its own control, beside Filter and not inside it. Clear is a destructive
                 // verb, and nobody goes looking for one in a menu called Filter.
@@ -1325,7 +1327,7 @@ private struct MediaTile: View {
         .onTapGesture { downloads.open(item) }
         .onDrag { dragPayload(item, downloads) }
         .contextMenu { DownloadVerbs(item: item, downloads: downloads) }
-        .help(item.name)
+        .vaneTooltip(item.name)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(item.name)
         .accessibilityValue(item.subtitle)
@@ -1460,7 +1462,7 @@ private struct NewSpaceCard: View {
         .buttonStyle(.plain)
         .frame(maxHeight: .infinity)
         .onHover { hovering = $0 }
-        .help("New Space")
+        .vaneTooltip("New Space")
         .accessibilityLabel("New Space")
     }
 
@@ -1636,7 +1638,7 @@ private struct SpaceCard: View {
             }
             Button { editing = true } label: { Image(systemName: "pencil") }
                 .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkTertiary)
-                .help("Rename this Space, or change its icon and colour")
+                .vaneTooltip("Edit Space", hint: "Rename, icon, and colour")
                 .accessibilityLabel("Edit \(space.name)")
                 .popover(isPresented: $editing, arrowEdge: .bottom) {
                     ThemeEditor(store: live ?? store, space: space, naming: true)
@@ -1657,7 +1659,7 @@ private struct SpaceCard: View {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
             }
             .buttonStyle(.plain).font(Look.caption).foregroundStyle(Look.inkTertiary)
-            .help("Go to \(space.name)")
+            .vaneTooltip("Go to \(space.name)")
             .accessibilityLabel("Go to \(space.name)")
             Spacer(minLength: 0)
             // ponytail: no Delete here. The sidebar's Space menu already deletes one, with

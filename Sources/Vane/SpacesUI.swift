@@ -135,10 +135,10 @@ struct NewSpaceButton: View {
                            value: menuAnchor.isPresented)
                 .frame(width: Look.rowTarget, height: Look.rowTarget).contentShape(.rect)
         }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileButtonStyle())
             .background(ChromeMenuAnchorView(anchor: menuAnchor))
             .foregroundStyle(Look.inkSecondary)
-            .help(menuAnchor.isPresented ? "Close creation menu" : "New Folder, Easel, Split, Tab, or Space")
+            .vaneTooltip("Create Something", hint: "Folder, Easel, Split, Tab, or Space", enabled: !menuAnchor.isPresented)
             .accessibilityLabel(menuAnchor.isPresented ? "Close creation menu" : "New Folder, Easel, Split, Tab, or Space")
             .onDisappear { if menuAnchor.isPresented { ChromeMenu.shared.dismiss() } }
             .popover(isPresented: Binding(get: { store.editingSpace != nil },

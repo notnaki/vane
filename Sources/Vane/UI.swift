@@ -847,7 +847,7 @@ private struct Sidebar: View {
             .transition(.move(edge: .leading).combined(with: .opacity))
             }
             }
-            .animation(Look.spaceSlide, value: store.creatingSpace)
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.spaceSlide, value: store.creatingSpace)
             // On the stack, not the list: the swipe has to keep working while the form is
             // standing where the list was, because swiping back is how the form is left.
             .spaceSwipe(store)
@@ -985,7 +985,7 @@ private struct TopRow: View {
             Spacer().frame(width: Look.trafficLights)   // traffic lights
             Button { store.sidebarShown.toggle() } label: { Image(systemName: "sidebar.left") }
                 .frame(width: compact ? 22 : nil)
-                .help("Toggle Sidebar (\(Keybindings.binding(for: .toggleSidebar).display))")
+                .vaneTooltip("Toggle Sidebar", shortcut: Keybindings.binding(for: .toggleSidebar).display)
                 .accessibilityLabel("Toggle Sidebar")
                 .accessibilityValue(store.sidebarShown ? "Shown" : "Hidden")
             Spacer(minLength: 0)
@@ -1046,8 +1046,8 @@ private struct NavGlyphs: View {
                 Image(systemName: "arrow.left")
                     .modifier(NavigationTarget(compact: compact))
             }
+                .vaneTooltip("Back", hint: "Hold for recent pages", shortcut: "⌘[")
                 .disabled(!back)
-                .help("Back (⌘[)")
                 .accessibilityLabel("Back")
                 // Arc: hold it, or right-click it, for the pages behind this one.
                 .holdMenu(backMenu, enabled: back, named: "Show History") {
@@ -1057,8 +1057,8 @@ private struct NavGlyphs: View {
                 Image(systemName: "arrow.right")
                     .modifier(NavigationTarget(compact: compact))
             }
+                .vaneTooltip("Forward", hint: "Hold for recent pages", shortcut: "⌘]")
                 .disabled(!forward)
-                .help("Forward (⌘])")
                 .accessibilityLabel("Forward")
                 .holdMenu(forwardMenu, enabled: forward, named: "Show History") {
                     tab.flatMap { NavHistory.menu(for: $0, back: false) }
@@ -1072,8 +1072,8 @@ private struct NavGlyphs: View {
                     .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: loading)
                     .modifier(NavigationTarget(compact: compact))
             }
+            .vaneTooltip(loading ? "Stop Loading" : "Reload Page", shortcut: loading ? nil : "⌘R")
             .disabled(tab == nil)
-            .help(loading ? "Stop Loading" : "Reload Page (⌘R)")
             .accessibilityLabel(loading ? "Stop Loading" : "Reload Page")
         }
         .buttonStyle(TactileButtonStyle())
@@ -1177,7 +1177,6 @@ private struct PillBody: View {
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: nil, into: .favourite,
                                   axis: .horizontal, extent: 0, side: .constant(nil)))
-        .help(address.isEmpty ? "Search or Enter URL" : address)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Address and Search")
         .accessibilityValue(axValue)
@@ -1203,6 +1202,7 @@ private struct PillBody: View {
                     Text("Search or Enter URL…").font(Look.heading).lineLimit(1)
                 } else {
                     Text(host).font(Look.text).lineLimit(1)
+                    .vaneTooltip(address)
                 }
                 Spacer(minLength: 0)
                 overflowMenu
@@ -1232,7 +1232,7 @@ private struct PillBody: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .actionAnchor(overflowAnchor)
-        .help("Page Actions")
+        .vaneTooltip("Page Actions", hint: "Copy, reader, site controls, and extensions")
         .accessibilityLabel("Page Actions")
         .popover(isPresented: $showingSiteControls, arrowEdge: .bottom) {
             if let tab { SiteControlPopover(tab: tab) }
@@ -1248,6 +1248,7 @@ private struct PillBody: View {
                 Text("Search or Enter URL…").font(Look.heading).lineLimit(1)
             } else {
                 Text(host).font(Look.text).lineLimit(1)
+                    .vaneTooltip(address)
             }
             Spacer(minLength: 4)
             if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
@@ -1302,13 +1303,13 @@ private struct PillHoverGlyphs: View {
     var body: some View {
         Button { copyLink() } label: {
             Image(systemName: copied ? "checkmark" : "link")
-                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .contentTransition(reduceMotion || Motion.reduced ? .identity : .symbolEffect(.replace))
                 .foregroundStyle(copied ? Color.accentColor : Look.inkSecondary)
-                .animation(reduceMotion ? nil : Look.quick, value: copied)
+                .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: copied)
                 .frame(width: Look.control, height: Look.control)
                 .contentShape(.rect)
         }
-            .help("Copy Link (\(Keybindings.binding(for: .copyPageURL).display))")
+            .vaneTooltip(copied ? "Link Copied" : "Copy Link", shortcut: Keybindings.binding(for: .copyPageURL).display)
             .accessibilityLabel("Copy Link")
             .accessibilityValue(copied ? "Copied" : "")
         Button { showingSiteControls.toggle() } label: {
@@ -1326,7 +1327,7 @@ private struct PillHoverGlyphs: View {
                 .contentShape(.rect)
         }
         .foregroundStyle(site.insecure ? Look.warning : Look.inkSecondary)
-        .help(site.siteless ? "Site Controls" : "\(site.title) — \(site.connection)")
+        .vaneTooltip("Site Controls", hint: site.siteless ? nil : "\(site.title) — \(site.connection)", enabled: !showingSiteControls)
         .accessibilityLabel("Site Controls")
         .accessibilityValue([site.connection, site.badge].compactMap { $0 }.joined(separator: ", "))
         .accessibilityHint("Shows what this site is allowed to do, and its zoom, extensions and data.")
@@ -1402,7 +1403,7 @@ private struct ExtensionGlyph: View {
         glyph(badge: now.badge, live: live)
             .actionAnchor(anchor)
             .contextMenu { Button("Unpin from Address Bar") { host.togglePin(context) } }
-            .help(help)
+            .vaneTooltip(help)
             // One element: the badge drawn on the icon is a `Text`, and without this it is
             // published as a second button of its own beside the glyph.
             .accessibilityElement(children: .ignore)
@@ -1459,7 +1460,7 @@ private struct ZoomChip: View {
                 .frame(height: Look.chip - 6)
                 .background(Look.selected, in: .rect(cornerRadius: Look.chipRadius))
         }
-        .help("Zoomed to \(label). Click for actual size (\(Keybindings.binding(for: .actualSize).display)).")
+        .vaneTooltip("Zoom · \(label)", hint: "Reset to actual size", shortcut: Keybindings.binding(for: .actualSize).display)
         .accessibilityLabel("Zoom \(label)")
         .accessibilityHint("Resets the page to actual size.")
     }
@@ -1504,6 +1505,7 @@ private struct FavoriteTile: View {
     @State private var side: Landing.Band?
     @State private var width: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.strip) private var strip
 
     var body: some View {
@@ -1516,6 +1518,7 @@ private struct FavoriteTile: View {
                     .padding(.horizontal, Look.rowInset)
             } else {
                 TabIcon(tab: tab, size: Look.tileIcon)
+                    .scaleEffect(hovering && !reduceMotion && !batterySaver.isActive ? 1.07 : 1)
             }
         }
             .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
@@ -1537,7 +1540,7 @@ private struct FavoriteTile: View {
                     GoHomeGlyph(store: store, tab: tab).padding(4)
                 }
             }
-            .animation(reduceMotion ? nil : Look.quick, value: hovering)
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
             .inStrip(tab.id, strip)
             .modifier(TabArrivalFeedback(feedback: store.feedback, id: tab.id))
             .contentShape(.rect)
@@ -2544,7 +2547,7 @@ private struct SpaceRow: View {
                 .accessibilityHidden(false)
                 .accessibilityLabel("Space options")
                 .accessibilityValue(space.name)
-                .help("Space options")
+                .vaneTooltip("Space Options", hint: "Rename, theme, icon, and more", enabled: hovered || optionsFocused)
             }
         }
         .foregroundStyle(Look.inkTertiary)
@@ -2881,7 +2884,7 @@ private struct SpaceDots: View {
         .onTapGesture { gesture.monitor.select(space, in: store) }
         .onDrag { spaceDragPayload(space) }
         .onDrop(of: [.plainText], delegate: SpaceDrop(store: store, space: space, over: over))
-        .help(space.name)
+        .vaneTooltip(space.name, hint: "Click to switch · Right-click to customize", enabled: icons == nil && theme == nil && live == nil)
         .contextMenu {
             SpaceMenu(store: store, space: space, icons: showIcons, theme: showTheme,
                       live: showLive)
@@ -3069,7 +3072,7 @@ private struct FolderRow: View {
         .overlay(alignment: zone == .after ? .bottom : .top) {
             DropLine(on: zone == .before || zone == .after, axis: .vertical)
         }
-        .help(folder.name)
+        .vaneTooltip(folder.name, hint: "Click to expand or collapse")
         .onDrag { folderDragPayload(folder) } preview: {
             HStack(spacing: Look.rowSpacing) {
                 FolderGlyph(folder: folder)
@@ -3411,7 +3414,7 @@ private struct TidyRow: View {
                 // The menu item owns the tidy's cancellation and its "undo" bookkeeping —
                 // this is the same closure, not a second copy of it.
                 Button("Tidy") { Keybindings.actions[.tidyTabs]?() }
-                    .help("Group tabs into folders (\(Keybindings.binding(for: .tidyTabs).display))")
+                    .vaneTooltip("Tidy Tabs", hint: "Group tabs into folders", shortcut: Keybindings.binding(for: .tidyTabs).display)
                     .accessibilityLabel("Tidy Tabs")
             case .tidying:
                 // The word "Tidy", replaced in place by a spinner — the row keeps its height
@@ -3423,13 +3426,13 @@ private struct TidyRow: View {
                     .controlSize(.small)
                     .scaleEffect(Look.tidySpinnerScale)
                     .frame(height: Look.tidyRow)
-                    .help("Tidying tabs…")
+                    .vaneTooltip("Tidying Tabs…")
                     .accessibilityLabel("Tidying tabs")
             }
             if offering {
                 if tidy != .hidden { Text("|").foregroundStyle(Look.inkQuiet) }
                 Button("Clear") { clear() }
-                    .help("Archive today's tabs (\(Keybindings.binding(for: .clearTabs).display))")
+                    .vaneTooltip("Clear Today", hint: "Move today’s tabs to the Archive", shortcut: Keybindings.binding(for: .clearTabs).display)
                     .accessibilityLabel("Clear Tabs")
             }
         }
@@ -3475,7 +3478,7 @@ private struct NewTabRow: View {
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: nil, into: .today,
                                       axis: .horizontal, extent: 0, side: $lit))
-            .help("New Tab (\(Keybindings.binding(for: .newTab).display))")
+            .vaneTooltip("New Tab", shortcut: Keybindings.binding(for: .newTab).display)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("New Tab")
             .accessibilityAddTraits(.isButton)
@@ -4426,6 +4429,9 @@ private struct TabRowTrailing: View {
     /// the row is showing, which may be a different one.
     var closes: Tab? = nil
     @Environment(\.rowHovering) private var hovering
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     var body: some View {
         let closing = closes ?? tab
@@ -4437,10 +4443,12 @@ private struct TabRowTrailing: View {
             if tab.audible || TabAudio.isMuted(tab) {
                 Button { TabAudio.toggleMute(tab) } label: {
                     Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .contentTransition(reduced ? .identity : .symbolEffect(.replace))
+                        .animation(reduced ? nil : Look.quick, value: TabAudio.isMuted(tab))
                         .font(Look.rowGlyph)
                         .rowTarget()
                 }
-                .help(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
+                .vaneTooltip(TabAudio.isMuted(tab) ? "Unmute Tab" : "Mute Tab")
                 .accessibilityLabel(TabAudio.isMuted(tab) ? "Unmute \(tab.title)" : "Mute \(tab.title)")
             }
             if hovering {
@@ -4459,13 +4467,13 @@ private struct TabRowTrailing: View {
                                 .fill(Look.controlFill)
                         }
                 }
-                .help((pane ? "Close Pane" : glyph.verb) + " (⌘W)")
+                .vaneTooltip(pane ? "Close Pane" : glyph.verb, shortcut: "⌘W")
                 .accessibilityLabel((pane ? "Close pane " : glyph.spoken)
                                     + TidyTitles.title(for: closing))
                 // A pinned row's glyph changes under the pointer the moment its page is
                 // unloaded, so the swap is the same fade the rest of the row uses rather
                 // than a cut from − to ×.
-                .contentTransition(.symbolEffect(.replace))
+                .contentTransition(reduced ? .identity : .symbolEffect(.replace))
                 // Grows in under the pointer rather than popping: the row's own hover
                 // animation carries it.
                 .transition(.scale(scale: Look.tileAppearScale).combined(with: .opacity))
@@ -4512,6 +4520,8 @@ private struct GoHomeGlyph: View {
     let tab: Tab
     var tiled = false
     var returnHovering: Binding<Bool> = .constant(false)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         Button { store.goHome(tab.id) } label: {
@@ -4521,11 +4531,15 @@ private struct GoHomeGlyph: View {
                         Image(systemName: "arrow.uturn.backward")
                             .font(Look.rowGlyph)
                             .foregroundStyle(Look.inkSecondary)
+                            .transition(.opacity)
                     } else {
                         TabIcon(tab: tab)
+                            .transition(.opacity)
                     }
                 }
                 .frame(width: Look.returnTileSize, height: Look.returnTileSize)
+                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
+                           value: returnHovering.wrappedValue)
                 .background(returnHovering.wrappedValue ? Look.hovered : .clear,
                             in: .rect(cornerRadius: Look.pillRadius))
                 .contentShape(.rect(cornerRadius: Look.pillRadius))
@@ -4539,7 +4553,7 @@ private struct GoHomeGlyph: View {
             }
         }
         .buttonStyle(TactileButtonStyle())
-        .help(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
+        .vaneTooltip(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
         .accessibilityLabel(tiled ? "Return to Pinned Tab" : "Go back to pinned page")
     }
 }

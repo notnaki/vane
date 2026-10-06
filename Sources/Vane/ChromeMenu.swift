@@ -81,6 +81,7 @@ struct ChromeMenuTypeahead {
               above: Bool = false, title: String, source: ChromeMenuAnchor? = nil,
               showsPointer: Bool = false) {
         dismiss()
+        TabTooltip.shared.dismiss()
         guard !items.isEmpty, let screen = owner.screen ?? NSScreen.main else { return }
         let size = CGSize(width: ChromeMenuLayout.width,
                           height: CGFloat(items.count) * ChromeMenuLayout.rowHeight
@@ -218,6 +219,11 @@ private struct ChromeMenuSurface: View {
     let pointerX: CGFloat?
     let pointerBelow: Bool
     let choose: (Int) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @State private var appeared = false
+
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -226,6 +232,10 @@ private struct ChromeMenuSurface: View {
             if pointerX != nil && pointerBelow { pointer }
         }
         .environment(\.colorScheme, .dark)
+        .scaleEffect(appeared || reduced ? 1 : Look.appearScale,
+                     anchor: pointerBelow ? .bottom : .top)
+        .opacity(appeared || reduced ? 1 : 0)
+        .onAppear { withAnimation(reduced ? nil : Look.appear) { appeared = true } }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(title)
     }
@@ -267,6 +277,7 @@ private struct ChromeMenuSurface: View {
             HStack(spacing: 12) {
                 Image(systemName: item.symbol).font(.system(size: 19, weight: .medium))
                     .frame(width: 24).accessibilityHidden(true)
+                    .scaleEffect(selection.index == index && !reduced ? 1.08 : 1)
                 Text(item.title).font(.system(size: 14, weight: .semibold))
                     .lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 8)
@@ -286,7 +297,8 @@ private struct ChromeMenuSurface: View {
             .background(selection.index == index ? .white.opacity(0.14) : .clear,
                         in: .rect(cornerRadius: 10))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle())
+        .animation(reduced ? nil : Look.quick, value: selection.index == index)
         .onHover { over in
             if over { selection.index = index }
             else if selection.index == index { selection.index = nil }

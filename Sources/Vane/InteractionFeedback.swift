@@ -146,16 +146,30 @@ extension InteractionSounds {
 
 /// Pointer feedback uses the button's own pressed state, preserving native activation.
 struct TactileButtonStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
+        TactileButtonBody(configuration: configuration)
+    }
+}
+
+private struct TactileButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var enabled
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @State private var hovered = false
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
+
+    var body: some View {
         configuration.label
             .contentShape(.rect)
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .scaleEffect(reduced || !enabled ? 1 : configuration.isPressed ? 0.96 : hovered ? 1.025 : 1)
             .opacity(configuration.isPressed ? 0.76 : 1)
-            .animation(reduceMotion ? nil : .spring(duration: 0.18, bounce: 0.18),
+            .animation(reduced ? nil : .spring(duration: 0.18, bounce: 0.18),
                        value: configuration.isPressed)
+            .animation(reduced ? nil : Look.quick, value: hovered)
+            .onHover { hovered = $0 }
             .onChange(of: configuration.isPressed) { _, pressed in
-                if pressed { InteractionSounds.play(.press) }
+                if pressed && enabled { InteractionSounds.play(.press) }
             }
     }
 }
