@@ -804,7 +804,7 @@ private struct Sidebar: View {
 
     private var downloads: DownloadLibrary { DownloadLibrary.library(for: store.profileID) }
     private var previewHeight: CGFloat {
-        min(CGFloat(previewItems.count) * 56 - 8,
+        min(CGFloat(previewItems.count) * (Look.rowHeight + Look.rowGap) - Look.rowGap,
             max(0, sidebarHeight - Look.footer - Look.footerInset - Look.topInset - 48))
     }
     /// One geometry group for the whole strip, so a tab changing section — a row becoming a
