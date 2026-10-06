@@ -73,6 +73,11 @@ their own pages. Split View shows two to four pages side by side or stacked, wit
 resizable dividers. Peek opens a link over the current page; Little Vane opens it
 in a separate compact window.
 
+Drag a sidebar tab to reorder it: the white line marks the nearest insertion gap,
+and the rows stay in place until you release. The held ghost matches the tab row.
+Hold Option while dropping onto the middle of another tab to make a split view.
+Dropping into a closed folder highlights it and opens its icon while you hover.
+
 After Tidy groups Today tabs into folders, drag a tab or selection into the blank
 space below the last row to move it outside the folders at the bottom of Today.
 That drop area remains available when the last row is a collapsed folder or the

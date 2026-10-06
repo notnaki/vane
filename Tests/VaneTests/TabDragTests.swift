@@ -5,6 +5,108 @@ import XCTest
 @testable import vane
 
 @MainActor final class TabDragTests: XCTestCase {
+    func testWholeRowChoosesTheNearestGapWithoutSplitting() {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let store = TabStore(isPrivate: true)
+        store.tabs = (0..<4).map { _ in Tab(isPrivate: true, profileID: store.profileID) }
+        store.syncShapes()
+        let original = store.tabs.map(\.id)
+        let drag = Dragging.shared
+        defer {
+            drag.end()
+            store.tabs.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+        }
+        drag.tab = original[0]
+        drag.at = Landing.Spot(kind: .today, index: 0)
+        var side: Landing.Band?
+        let drop = TabDrop(store: store, target: store.tabs[2], into: .today,
+                           axis: .vertical, extent: 220,
+                           side: Binding(get: { side }, set: { side = $0 }), row: 2, rows: 4)
+        for y in [CGFloat(0), Look.rowHeight * 0.3, Look.rowHeight * 0.49] {
+            drop.trackHover(at: CGPoint(x: 100, y: y))
+            XCTAssertEqual(side, .before)
+        }
+        for y in [Look.rowHeight * 0.5, Look.rowHeight * 0.7, Look.rowHeight] {
+            drop.trackHover(at: CGPoint(x: 100, y: y))
+            XCTAssertEqual(side, .after)
+        }
+        let padded = TabDrop(store: store, target: store.tabs[2], into: .today,
+                             axis: .vertical, extent: 220, verticalInset: Look.rowGap / 2,
+                             side: Binding(get: { side }, set: { side = $0 }), row: 2, rows: 4)
+        padded.trackHover(at: CGPoint(x: 100, y: 0))
+        XCTAssertEqual(side, .before)
+        padded.trackHover(at: CGPoint(x: 100, y: Look.rowHeight + Look.rowGap))
+        XCTAssertEqual(side, .after)
+        let midpoint = Look.rowGap / 2 + Look.rowHeight / 2
+        padded.trackHover(at: CGPoint(x: 100, y: midpoint - 0.1))
+        XCTAssertEqual(side, .before)
+        padded.trackHover(at: CGPoint(x: 100, y: midpoint))
+        XCTAssertEqual(side, .after)
+        padded.trackHover(at: CGPoint(x: 100, y: midpoint), splitting: true)
+        XCTAssertEqual(side, .onto)
+        XCTAssertEqual(store.tabs.map(\.id), original)
+        XCTAssertTrue(drop.performDrop(at: CGPoint(x: 100, y: Look.rowHeight * 0.6)))
+        XCTAssertEqual(store.tabs.map(\.id), [original[1], original[2], original[0], original[3]])
+        XCTAssertTrue(store.splits.isEmpty)
+
+        drag.tab = original[0]
+        drag.at = Landing.Spot(kind: .today, index: 2)
+        let splitTarget = store.tabs[3]
+        let splitDrop = TabDrop(store: store, target: splitTarget, into: .today,
+                                axis: .vertical, extent: 220,
+                                side: Binding(get: { side }, set: { side = $0 }), row: 3, rows: 4)
+        let middle = CGPoint(x: 100, y: Look.rowHeight / 2)
+        let beforeSplit = store.tabs.map(\.id)
+        splitDrop.trackHover(at: middle, splitting: true)
+        XCTAssertEqual(side, .onto)
+        XCTAssertEqual(store.tabs.map(\.id), beforeSplit)
+        XCTAssertTrue(store.splits.isEmpty)
+        XCTAssertTrue(splitDrop.performDrop(at: middle, splitting: true))
+        XCTAssertEqual(store.split(containing: original[0])?.tabs.count, 2)
+        XCTAssertTrue(store.split(containing: original[0])?.contains(splitTarget.id) == true)
+    }
+
+    func testSectionEndsAcceptTabsAlreadyInThatSection() {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let store = TabStore(isPrivate: true)
+        store.tabs = (0..<3).map { _ in Tab(isPrivate: true, profileID: store.profileID) }
+        store.syncShapes()
+        let original = store.tabs.map(\.id)
+        let drag = Dragging.shared
+        defer {
+            drag.end()
+            store.tabs.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+        }
+        var side: Landing.Band?
+        let binding = Binding<Landing.Band?>(get: { side }, set: { side = $0 })
+        let head = TabDrop(store: store, target: nil, into: .today,
+                           axis: .horizontal, extent: 0, side: binding)
+        drag.tab = original[2]
+        drag.at = Landing.Spot(kind: .today, index: 2)
+        head.trackHover(at: .zero)
+        XCTAssertNotNil(side)
+        XCTAssertEqual(store.tabs.map(\.id), original)
+        XCTAssertTrue(head.performDrop(at: .zero))
+        XCTAssertEqual(store.tabs.map(\.id), [original[2], original[0], original[1]])
+
+        store.tabs.forEach { $0.kind = .pinned }
+        store.syncShapes()
+        let pinnedOrder = store.tabs.map(\.id)
+        let tail = TabDrop(store: store, target: nil, into: .pinned,
+                           axis: .horizontal, extent: 0, side: binding)
+        drag.tab = original[2]
+        drag.at = Landing.Spot(kind: .pinned, index: 0)
+        tail.trackHover(at: .zero)
+        XCTAssertNotNil(side)
+        XCTAssertEqual(store.tabs.map(\.id), pinnedOrder)
+        XCTAssertTrue(tail.performDrop(at: .zero))
+        XCTAssertEqual(store.tabs.map(\.id), original)
+    }
+
     func testReorderingASplitMovesEveryPaneOnRelease() {
         TestEnvironment.prepare()
         _ = NSApplication.shared

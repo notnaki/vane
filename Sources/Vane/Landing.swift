@@ -1,10 +1,7 @@
 import CoreGraphics
 
-/// Where a dragged row lands. A sidebar row is three targets, not one: its top and bottom
-/// edges put the dragged tab before or after it, and its middle — most of the row — puts the
-/// two tabs side by side in a split, which is how Arc makes one. Which of the three a few
-/// pixels of pointer mean is decided here, apart from any view, rather than being something
-/// you can only find out by dragging.
+/// A normal sidebar drag picks the nearest gap. Option-drag additionally offers a split
+/// in the middle of a row; ordinary reordering never has to aim at a narrow edge.
 enum Landing {
     /// A place in one section's rows, counted as they are drawn: `index` 0 is the first row.
     /// The section is part of it because Today and Pinned are two lists whose indices would
@@ -17,12 +14,10 @@ enum Landing {
     /// Which part of a row the pointer is in.
     enum Band: Equatable, Sendable { case before, onto, after }
 
-    /// A quarter at each edge, the middle half for the split — the same shape a folder row
-    /// has, because the question is the same one: beside it, or into it? The edges are
-    /// narrow because a reorder is a move you can see happening and correct, while a split
-    /// is a thing you have to undo, so the middle is the easier target to hit.
-    nonisolated static func band(y: CGFloat, height: CGFloat) -> Band {
-        guard height > 0 else { return .onto }
+    /// The whole row offers before/after unless the user explicitly requests a split.
+    nonisolated static func band(y: CGFloat, height: CGFloat, splitting: Bool = false) -> Band {
+        guard height > 0 else { return splitting ? .onto : .before }
+        if !splitting { return y < height / 2 ? .before : .after }
         if y < height / 4 { return .before }
         if y >= height * 3 / 4 { return .after }
         return .onto
@@ -84,7 +79,7 @@ enum Landing {
 
 extension Landing {
     nonisolated static func check() -> [(String, Bool)] {
-        func at(_ y: CGFloat) -> Band { band(y: y, height: 40) }
+        func at(_ y: CGFloat) -> Band { band(y: y, height: 40, splitting: true) }
         return [
             ("the top quarter of a row drops before it", at(0) == .before && at(9) == .before),
             ("the bottom quarter drops after it", at(30) == .after && at(39) == .after),
@@ -92,9 +87,9 @@ extension Landing {
              at(10) == .onto && at(20) == .onto && at(29) == .onto),
             ("the bands meet exactly at the quarters, with no pixel between them",
              at(9.9) == .before && at(10) == .onto && at(29.9) == .onto && at(30) == .after),
-            ("the split is the easier target, because it is the one you cannot see coming",
-             [at(10), at(20), at(29)].allSatisfy { $0 == .onto }),
-            ("a row of no height is all middle, not all edge", band(y: 0, height: 0) == .onto),
+            ("ordinary dragging uses the full row for the nearest gap",
+             band(y: 19.9, height: 40) == .before && band(y: 20, height: 40) == .after),
+            ("a row of no height is all middle, not all edge", band(y: 0, height: 0, splitting: true) == .onto),
 
             // Which side of the target the split opens on. A 200pt row.
             ("the left half of the row makes the dragged tab the leading pane",
