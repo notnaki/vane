@@ -1573,7 +1573,8 @@ private struct Favorites: View {
         } else if dragging.tab != nil {
             // A real drop target before proximity sampling: the first favourite must be
             // as easy to place as every later one, including a quick drag and release.
-            slot
+            ZStack { Color.clear; slot }
+                .frame(height: Look.tileHeight)
                 .frame(maxWidth: .infinity)
                 .background(SidebarDragAnchor(preview: dragPreview, store: store, region: .favourites))
                 .padding(.bottom, Look.inset - Look.rowGap)
