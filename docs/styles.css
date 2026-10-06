@@ -909,3 +909,32 @@ body.inner-page {
 }
 .inner-page .space-background { opacity:.8; }
 body.inner-page::after { opacity:.004; }
+
+/* Real app captures: a quiet setting, with the macOS capture strip cropped out.
+   The app's sidebar, page content, proportions, and pixels remain unchanged. */
+.app-capture { overflow:hidden; border-radius:10px; background:#161b19; box-shadow:0 18px 45px rgba(0,0,0,.3); }
+.app-capture img { display:block; width:100%; height:auto; max-width:none; margin-top:-3.28125%; }
+.app-capture-little img { margin-top:-4.2%; }
+.capture-setting { padding:24px; height:100%; display:flex; align-items:center; background:#20262a; }
+.capture-setting > .app-capture, .capture-setting > .capture-composition { width:100%; }
+.capture-composition { position:relative; padding:0 24px 24px 0; }
+.capture-floating { position:absolute; width:56%; right:0; bottom:0; }
+.capture-floating .app-capture { border:1px solid rgba(255,255,255,.14); box-shadow:0 18px 48px rgba(0,0,0,.5); }
+.product-shell.screenshot-shell { border:1px solid rgba(255,255,255,.12); background:#20262a; box-shadow:0 30px 80px rgba(0,0,0,.35); }
+.screenshot-shell .product-pages, .journey-ready .screenshot-shell .product-pages { height:auto; aspect-ratio:552 / 369; }
+.screenshot-shell .product-page { opacity:1; transition:none; }
+.screenshot-tour { position:relative; margin:28px 0 0; padding:clamp(16px,4vw,48px); border:1px solid rgba(255,255,255,.09); border-radius:18px; background:#20262a; }
+.tour-capture { grid-area:1 / 1; opacity:0; visibility:hidden; transition:opacity 180ms ease, visibility 180ms; }
+.tour-capture.is-active { opacity:1; visibility:visible; }
+.screenshot-tour { display:grid; }
+.live-summary { display:block; }
+.live-summary .scene-copy { max-width:640px; }
+.scene-capture { padding:clamp(16px,3vw,36px); border-radius:16px; background:#20262a; min-width:0; }
+@media(max-width:600px) {
+ .capture-setting { padding:18px; }
+ .app-capture { border-radius:7px; }
+ .screenshot-tour { border-radius:12px; }
+ .capture-composition { padding:0 12px 20px 0; }
+ .capture-floating { width:60%; }
+}
+@media(prefers-reduced-motion:reduce) { .tour-capture { transition:none; } }
