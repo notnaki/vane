@@ -297,6 +297,29 @@ Shift-hover previews still require Previews to be enabled; holding Command or
 Option hides the preview so it does not cover the opening hint. Floating windows
 keep their existing one-page behavior and do not grow Split Views.
 
+## Extension permissions
+
+Choose **Install Extension…** and select an unpacked MV2/MV3 folder. Before it loads,
+Vane lists the requested capabilities and website access. Cancel saves nothing.
+Approvals belong to that folder in that profile; private profiles cannot install extensions.
+
+On launch, Vane compares the folder's current requested access with its last approved
+set. Added capabilities or website patterns require review, and declining leaves the
+extension disabled. Choose **Install Extension…** again to review and enable it later.
+Existing installations require one review when first opened with this version. Removing
+an extension clears its saved approval. Runtime requests for additional access still ask;
+those grants last for the current extension session.
+
+Unpacked folder changes are checked when loaded, normally on the next launch. Vane does
+not monitor or package those folders; only install code you trust. Location, screen sharing,
+and broader real-site permission lifecycle coverage remain separate readiness work.
+
+Focused regression checks:
+
+```sh
+swift test --filter 'ExtensionConsentTests|ExtensionAccessLifecycleTests|SitePermissionTests'
+```
+
 ## AI providers and your own keys
 
 Settings → Max lets you choose Apple (on-device), Groq, OpenAI, OpenRouter, or an
@@ -510,8 +533,8 @@ with `check-release-candidate.sh` before treating it as a distribution build.
 - Location and screen-capture permission work and broader real-site permission lifecycle
   verification remain deferred.
 - Extensions load from unpacked MV2/MV3 folders. This does not guarantee Chrome
-  extension compatibility; installation consent and expanded-access review remain
-  deferred.
+  extension compatibility. Installation requires permission review, and expanded
+  manifest access requires another review before the extension loads.
 - Some browser features, including the in-app inspector, depend on WebKit behavior
   or private APIs that can change with macOS releases.
 - Distribution readiness requires a real signed and notarized candidate,
