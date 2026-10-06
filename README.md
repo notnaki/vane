@@ -530,6 +530,10 @@ with `check-release-candidate.sh` before treating it as a distribution build.
   Passkey authentication was unavailable in the original fixture. Provider sign-ins, subscription
   streaming, cross-network calls, broader permission lifecycles, and macOS 26 /
   notarized-release coverage remain unverified. See the matrix for exact scope.
+- Passkeys are **known pending** until Apple approves the managed macOS browser
+  entitlement and Vane is signed with a matching provisioning profile. A Developer
+  ID certificate alone does not enable this capability. Successful registration
+  and sign-in still need testing after provisioning and user authorization.
 - Password autofill is heuristic. Multiple saved accounts have a chooser, but
   unusual, multi-step, or embedded login forms may still need manual entry.
 - Content blocking supports a documented subset of EasyList syntax. Filter

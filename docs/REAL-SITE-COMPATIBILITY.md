@@ -110,6 +110,40 @@ before interpreting its output as proof of decryption.
 
 ## Remaining work and reproduction
 
+### Known pending: authentication and compatibility
+
+Passkeys remain **pending Apple approval and provisioning** for
+`com.apple.developer.web-browser.public-key-credential`. The follow-up inspection
+on 2026-10-06 found a valid Developer ID signing identity on the test Mac, but no
+provisioning profile in Xcode's or MobileDevice's standard profile directories.
+The repository's app packager does not currently embed a provisioning profile,
+and its base entitlements omit the managed browser capability. A signing
+certificate alone does not resolve the negative passkey result.
+
+Apple's [managed browser entitlement requirements](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.web-browser.public-key-credential)
+require approval through the [macOS browser passkey request](https://developer.apple.com/contact/request/macos-browsers-passkeys/).
+After approval, enable the capability for `io.github.notnaki.vane`, generate a
+matching Developer ID provisioning profile, embed it in the app, and sign with
+the authorized certificate and entitlement. Then verify user authorization,
+registration, and successful sign-in using a test authenticator. WebKit handles
+web-content WebAuthn requests, as described in Apple's
+[browser passkey guidance](https://developer.apple.com/documentation/authenticationservices/passkey-use-in-web-browsers).
+The explicit Vane App ID was registered under the developer team on 2026-10-06
+after the request form rejected the previously unregistered bundle ID. The user
+then submitted the entitlement request, and Apple's confirmation page stated
+that the request will be reviewed. App ID registration and request submission
+do not grant the entitlement; Apple approval remains pending.
+
+Google/Microsoft/GitHub completed sign-ins, subscription streaming, and
+cross-network calls also remain **pending**. They require designated test
+accounts (and MFA where applicable), an active test subscription, and a second
+device on a separate network, respectively. No new completed live flow is claimed
+by this follow-up; the earlier passes remain scoped to the ad hoc debug build on
+macOS 27 above. Repeat these checks on macOS 26 and an unchanged signed/notarized
+candidate before making distribution compatibility claims.
+
+### Reproduction and next checks
+
 1. Broaden upload checks to full multiple-file and folder submission, cross-origin
    frames, and drag/drop. Repeat the fixed single-file picker flow on macOS 26 and
    an unchanged notarized release. Apple's [WKUIDelegate contract](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/API/Cocoa/WKUIDelegate.h)
