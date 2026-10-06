@@ -827,26 +827,28 @@ private struct Sidebar: View {
                 CreateSpaceForm(store: store)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
-            ScrollView {
+            SpaceSidebarStrip(store: store, favorites: Favorites(), sections:
                 VStack(spacing: Look.rowGap) {
-                    SpaceSidebarStrip(store: store, favorites: Favorites(), sections:
+                    // Keep the profile/Space card and everything above it fixed. Only
+                    // the tab sections below the card belong to the scroll viewport.
+                    SpaceRow()
+                    ScrollView {
                         VStack(spacing: Look.rowGap) {
-                            SpaceRow()
                             PinnedTabs()
                             TidyRow()
                             NewTabRow()
                             OpenTabs()
-                        })
-                    TodayEndDropArea()
-                }
-                // The drop area fills the blank content below Today and keeps at least
-                // one row of room when the list is taller than the viewport. It stays
-                // outside every folder, including the last collapsed folder.
-                .frame(minHeight: scrollHeight, alignment: .top)
-                .background(WindowDragArea())
-            }
-            .scrollIndicators(.never)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
+                            TodayEndDropArea()
+                        }
+                        // Fill the blank content below Today, with at least one row
+                        // beyond a full list, outside even the last collapsed folder.
+                        .frame(minHeight: scrollHeight, alignment: .top)
+                        .background(WindowDragArea())
+                    }
+                    .scrollIndicators(.never)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
+                })
+            .clipped()
             // The plus that fills as the fingers pull past the last Space.
             .overlay(alignment: .trailing) { PullPlus(store: store) }
             .transition(.move(edge: .leading).combined(with: .opacity))
