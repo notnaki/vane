@@ -978,7 +978,9 @@ extension Release {
     /// a sidebar to draw it in.
     nonisolated static func text(for phase: Phase) -> String {
         switch phase {
-        case let .available(tag):   return "Vane **\(tag)** is available"
+        // The Update button makes the offer explicit. Keep the message short enough for
+        // its version, Update button and dismiss target to share the default-width row.
+        case let .available(tag):   return "Vane **\(tag)**"
         case let .downloading(f):   return "Downloading… \(Int((f * 100).rounded()))%"
         case .installing:           return "Installing…"
         case .ready:                return "Restart to update"
