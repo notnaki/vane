@@ -4318,11 +4318,15 @@ struct SiteIcon: View {
     let icon: NSImage?
     var fallback: String? = nil
     var size: CGFloat = 16
+    var rounded = true
 
     var body: some View {
         Group {
             if let icon {
                 Image(nsImage: icon).resizable().interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: size, height: size)
+                    .clipShape(.rect(cornerRadius: rounded && !icon.isTemplate ? size / 2 : 0))
             } else if let fallback {
                 Image(systemName: fallback).resizable().foregroundStyle(.tertiary)
             } else {
@@ -4350,6 +4354,7 @@ private struct TabIcon: View {
     @ObservedObject var tab: Tab
     var size: CGFloat = 16
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     /// Set only on the rows a live folder owns — see `PinnedRow`. Every other row in the app
     /// gets nil, which is the branch below doing nothing.
     @Environment(\.livePR) private var pr
@@ -4365,7 +4370,7 @@ private struct TabIcon: View {
             } else if tab.easelID != nil {
                 EaselIcon().frame(width: 16, height: 16)
             } else if let icon = tab.favicon {
-                Image(nsImage: icon).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                SiteIcon(icon: icon, size: size, rounded: tab.currentURL?.isFileURL != true)
             } else {
                 FaviconPlaceholder(size: size)
             }
@@ -4373,7 +4378,7 @@ private struct TabIcon: View {
         .frame(width: size, height: size)
         // The swap, when it comes, is a fade rather than a cut — the same 0.15s the rest of
         // the sidebar's hovers use.
-        .animation(reduceMotion ? nil : Look.quick, value: tab.favicon)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.favicon)
         .accessibilityHidden(true)          // the row's own label and value say all of this
     }
 }
