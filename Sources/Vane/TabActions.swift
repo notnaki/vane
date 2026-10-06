@@ -347,23 +347,36 @@ extension TabActions {
 /// on — Arc puts it where the pointer is, which needs a section-aware delegate per section.
 struct SidebarDrop: DropDelegate {
     let store: TabStore
+    var favouritePreview: SidebarDragPreview? = nil
 
     func validateDrop(info: DropInfo) -> Bool {
         // Our own tab or folder, being reordered. `TabDrop` and `FolderDrop` handle those,
         // and this must not eat them.
-        guard !Dragging.shared.active else { return false }
+        guard !Dragging.shared.active else { return favouritePreview?.destination != nil }
+        guard !info.hasItemsConforming(to: [Dragging.tabType]) else { return false }
         return info.hasItemsConforming(to: [.url, .fileURL, .plainText])
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: Dragging.shared.active ? .cancel : .copy)
+        DropProposal(operation: Dragging.shared.active
+                     ? (favouritePreview?.destination != nil ? .move : .cancel) : .copy)
     }
 
     func performDrop(info: DropInfo) -> Bool {
         // A drag of ours that reached the sidebar as a whole was refused by every row it
         // passed over. End it here: the flag would otherwise outlive the gesture, and the
         // guard above would stand aside from every url and file drop from then on.
-        if Dragging.shared.active { _ = Dragging.shared.take(); return false }
+        if Dragging.shared.active {
+            favouritePreview?.refresh()
+            if let destination = favouritePreview?.destination {
+                let dragged = Dragging.shared.takeAll().tabs
+                store.dropInFavourites(dragged, at: destination.index)
+                return true
+            }
+            Dragging.shared.cancel()
+            return false
+        }
+        guard !info.hasItemsConforming(to: [Dragging.tabType]) else { return false }
         // A url first: a link dragged out of a page carries both a url and its own text, and
         // the url is the one that does not have to be guessed at.
         // Files first, and all of them: a file drag carries `.url` too, so the other branch
@@ -390,6 +403,47 @@ struct SidebarDrop: DropDelegate {
 }
 
 extension TabActions {
+    /// Links dropped on the favourites grid are saved there without interrupting the page
+    /// being read. Load in provider order so a multiple-link drag keeps its order.
+    @MainActor static func favouriteDropped(_ providers: [NSItemProvider], in store: TabStore,
+                                            beside target: Tab.ID?, after: Bool) {
+        let profile = store.profileID
+        Task { @MainActor in
+            var anchor = target
+            var follows = after
+            for provider in providers {
+                let url: URL? = await withCheckedContinuation { continuation in
+                    _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                        continuation.resume(returning: url)
+                    }
+                }
+                guard store.profileID == profile else { return }
+                guard let url,
+                      let tab = favouriteDropped(url, in: store, beside: anchor, after: follows)
+                else { continue }
+                anchor = tab.id
+                follows = true
+            }
+        }
+    }
+
+    @MainActor @discardableResult
+    static func favouriteDropped(_ url: URL, in store: TabStore,
+                                 beside target: Tab.ID? = nil, after: Bool = true) -> Tab? {
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.host != nil, !store.isLittle else { return nil }
+        let tab = store.newBlankTab(focus: false, as: .favourite)
+        tab.park(url: url, Parked(title: "", state: nil))
+        if let target, store.tabs.contains(where: { $0.id == target && $0.kind == .favourite }) {
+            store.drop(tab.id, onto: target, after: after)
+        } else {
+            store.savePins()
+        }
+        store.feedback.arrived(tab.id)
+        axAnnounce("Added to Favourites.")
+        return tab
+    }
+
     /// What a dropped payload is worth opening as. Trimmed, and a multi-line selection is
     /// flattened — a paragraph dragged out of a page arrives with its newlines, and a search
     /// query with a line break in it is not a query anyone typed.

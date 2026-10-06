@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 import Combine
 
@@ -798,6 +799,7 @@ private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var downloadsHover = DownloadsHover()
+    @StateObject private var dragPreview = SidebarDragPreview()
     @AppStorage(LibraryHoverCategory.key, store: .vane) private var hoverCategory = "downloads"
     @State private var previewItems: [LibraryHoverItem] = []
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -929,12 +931,16 @@ private struct Sidebar: View {
         }
         .onDisappear { downloadsHover.dismiss() }
         .frame(width: sidebar.width, alignment: .leading)
+        .background(SidebarDragAnchor(preview: dragPreview, store: store, region: .root))
+        .environmentObject(dragPreview)
+        .environment(\.sidebarDragPreview, dragPreview)
         // Under everything in the sidebar, so a row, a button or the pill takes the pointer
         // first and only the bare ground picks the window up.
         .background(WindowDragArea())
         // Arc's other way of making a tab: drop a link, a url or a selection anywhere on the
         // sidebar. Outermost, so the per-section drop targets keep reordering to themselves.
-        .onDrop(of: [.url, .fileURL, .plainText], delegate: SidebarDrop(store: store))
+        .onDrop(of: [.url, .fileURL, .plainText],
+                delegate: SidebarDrop(store: store, favouritePreview: dragPreview))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar")
         .transaction { transaction in
@@ -1179,6 +1185,7 @@ private struct LiveAddressPill: View {
 
 private struct PillBody: View {
     @EnvironmentObject var store: TabStore
+    @Environment(\.sidebarDragPreview) private var dragPreview
     @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var batterySaver = BatterySaver.shared
     private var compact: Bool { SidebarChromeLayout(width: sidebar.width).compact }
@@ -1209,13 +1216,17 @@ private struct PillBody: View {
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
                    value: compact)
         .contentShape(.rect)
+        .background {
+            if let dragPreview { SidebarDragAnchor(preview: dragPreview, store: store, region: .pill) }
+        }
         .onHover { hovering = $0 }
         .onTapGesture { open() }
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
-        .onDrop(of: [.plainText],
+        .onDrop(of: [.plainText, .url],
                 delegate: TabDrop(store: store, target: nil, into: .favourite,
-                                  axis: .horizontal, extent: 0, side: .constant(nil)))
+                                  axis: .horizontal, extent: 0, side: .constant(nil),
+                                  favouritePreview: dragPreview))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Address and Search")
         .accessibilityValue(axValue)
@@ -1514,27 +1525,87 @@ private struct ZoomChip: View {
 /// out. Columns follow the count (`TabStore.favouriteColumns`), so one favourite is one wide
 /// tile and seven are a 4-wide grid, never two fixed slots.
 /// Empty, it is nothing at all — Arc's fresh space is the pill and then the space's name,
-/// no placeholder — and the first favourite is made by dropping a tab on the address pill.
+/// no placeholder. Lifting a tab reveals a landing tile for the first favourite.
 private struct Favorites: View {
     @EnvironmentObject var store: TabStore
+    @EnvironmentObject var dragPreview: SidebarDragPreview
+    @ObservedObject private var dragging = Dragging.shared
     /// A narrow sidebar drops a column instead of shrinking every tile to a sliver.
     @ObservedObject private var sidebar = SidebarWidth.shared
+    @State private var side: Landing.Band?
 
     var body: some View {
-        let pinned = store.tabs.filter { $0.kind == .favourite }
+        let pinned = previewTabs
         if !pinned.isEmpty {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
                                      count: SidebarWidth.favouriteColumns(pinned.count,
                                                                           width: sidebar.width)),
                       spacing: Look.inset) {
-                ForEach(pinned) { FavoriteTile(tab: $0).transition(.tileGrow) }
+                ForEach(pinned) { tab in
+                    if tab.kind != .favourite {
+                        slot
+                    } else {
+                        // Keep the native drag source mounted while its slot moves.
+                        FavoriteTile(tab: tab)
+                            .opacity(dragPreview.destination != nil && tab.id == dragging.tab ? 0 : 1)
+                            .overlay {
+                                if dragPreview.destination != nil && tab.id == dragging.tab { slot }
+                            }
+                            .transition(.tileGrow)
+                    }
+                }
             }
+            .animation(Motion.reduced ? nil : Look.quick, value: pinned.map(\.id))
+            .background(SidebarDragAnchor(preview: dragPreview, store: store, region: .favourites))
             // The grid sits an `inset` above the space row, not a row gap.
             .padding(.bottom, Look.inset - Look.rowGap)
+            .contentShape(.rect)
+            .overlay(alignment: .bottom) {
+                DropLine(on: side != nil, axis: .vertical).allowsHitTesting(false)
+            }
+            .onDrop(of: [.plainText, .url],
+                    delegate: TabDrop(store: store, target: nil, into: .favourite,
+                                      axis: .horizontal, extent: 0, side: $side,
+                                      favouritePreview: dragPreview))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Favourites")
             .accessibilityValue("\(pinned.count) pinned")
+        } else if dragging.tab != nil {
+            // A real drop target before proximity sampling: the first favourite must be
+            // as easy to place as every later one, including a quick drag and release.
+            slot
+                .frame(maxWidth: .infinity)
+                .background(SidebarDragAnchor(preview: dragPreview, store: store, region: .favourites))
+                .padding(.bottom, Look.inset - Look.rowGap)
+                .contentShape(.rect)
+                .onDrop(of: [.plainText, .url],
+                        delegate: TabDrop(store: store, target: nil, into: .favourite,
+                                          axis: .horizontal, extent: 0, side: $side,
+                                          favouritePreview: dragPreview))
+                .transition(.tileGrow)
+                .accessibilityLabel("Add First Favourite")
         }
+    }
+
+    private var previewTabs: [Tab] {
+        var tabs = store.tabs.filter { $0.kind == .favourite }
+        guard let destination = dragPreview.destination, let id = dragging.tab,
+              let tab = store.tabs.first(where: { $0.id == id }) else { return tabs }
+        tabs.removeAll { $0.id == id }
+        tabs.insert(tab, at: min(destination.index, tabs.count))
+        return tabs
+    }
+
+    private var slot: some View {
+        RoundedRectangle(cornerRadius: Look.pillRadius)
+            .fill(Look.selected.opacity(0.4))
+            .overlay {
+                RoundedRectangle(cornerRadius: Look.pillRadius)
+                    .strokeBorder(Look.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            }
+            .frame(height: Look.tileHeight)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
@@ -1566,6 +1637,7 @@ struct FavoriteTileBackground: View {
 
 private struct FavoriteTile: View {
     @EnvironmentObject var store: TabStore
+    @EnvironmentObject var dragPreview: SidebarDragPreview
     @ObservedObject var tab: Tab
     @State private var hovering = false
     @State private var side: Landing.Band?
@@ -1612,15 +1684,17 @@ private struct FavoriteTile: View {
             .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.favicon)
             .inStrip(tab.id, strip)
             .modifier(TabArrivalFeedback(feedback: store.feedback, id: tab.id))
+            .lifted(tab.id)
             .contentShape(.rect)
             .onHover { hovering = $0 }
             .onTapGesture { InteractionSounds.play(.press); store.current = tab.id }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil)
-            .onDrag { dragPayload(tab) } preview: { TabIcon(tab: tab, size: Look.tileIcon).padding(6) }
-            .onDrop(of: [.plainText],
+            .onDrag { dragPayload(tab, in: store) } preview: { Color.clear.frame(width: 1, height: 1) }
+            .onDrop(of: [.plainText, .url],
                     delegate: TabDrop(store: store, target: tab, into: .favourite,
-                                      axis: .horizontal, extent: width, side: $side))
+                                      axis: .horizontal, extent: width, side: $side,
+                                      favouritePreview: dragPreview))
             .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
             .contextMenu { TabMenu(store: store, tab: tab) }
             // One element per favourite, the way a tab reads: the title is the label, the
@@ -1680,8 +1754,8 @@ private struct FavoriteTile: View {
 // MARK: Drag and drop
 
 /// Which side of its target a drop will land on.
-/// The tab being dragged, for the whole app. A drag never leaves the process, so a drop
-/// reads it straight back rather than round-tripping the item provider — which is
+/// The tab being dragged, for the whole app. An internal drop reads the identity here
+/// rather than round-tripping the item provider — which is
 /// asynchronous, and would leave `dropUpdated` unable to say whether this is one of ours.
 /// Observable so every drop line goes out the moment the drop lands: SwiftUI does not send
 /// `dropExited` to the target that performed the drop, and a line left behind read as a
@@ -1691,6 +1765,7 @@ private struct FavoriteTile: View {
 /// dropped on it.
 @MainActor final class Dragging: ObservableObject {
     static let shared = Dragging()
+    static let tabType = UTType(exportedAs: "io.github.notnaki.vane.dragged-tab")
     @Published var tab: Tab.ID? { didSet { watch() } }
     /// A folder row being dragged among the pinned rows. Never both at once — a drag is one
     /// thing — but two fields rather than an enum keeps every existing `dragging.tab` read
@@ -1744,6 +1819,19 @@ private struct FavoriteTile: View {
     /// what is being dragged. Ceiling: a drag ended by anything but the button coming up — a
     /// Space switch, say — still waits for the next mouse-up.
     private var monitors: [Any] = []
+    var session = UUID()
+    weak var favouriteTarget: SidebarDragPreview?
+    @Published private(set) var favouriteGhostWidth: CGFloat?
+
+    func favouriteShape(_ width: CGFloat?, from target: SidebarDragPreview) {
+        if let width {
+            favouriteTarget = target
+            if favouriteGhostWidth != width { favouriteGhostWidth = width }
+        } else if favouriteTarget === target {
+            favouriteTarget = nil
+            favouriteGhostWidth = nil
+        }
+    }
 
     private func watch() {
         guard active else {
@@ -1754,14 +1842,27 @@ private struct FavoriteTile: View {
         guard monitors.isEmpty else { return }
         let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .keyDown]) { [weak self] event in
             if event.type == .leftMouseUp || event.keyCode == 53 {
-                DispatchQueue.main.async { MainActor.assumeIsolated { self?.cancel() } }
+                MainActor.assumeIsolated { self?.cancelAfterTracking() }
             }
             return event
         }
         let global = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.cancel() } }
+            MainActor.assumeIsolated { self?.cancelAfterTracking() }
         }
         monitors = [local, global].compactMap { $0 }
+    }
+
+    private func cancelAfterTracking() {
+        let ending = session
+        // Dispatch's main queue also runs inside AppKit's drag tracking loop. Default
+        // mode resumes after the destination has received its drop, so cleanup cannot
+        // erase the identity while SwiftUI is still delivering it.
+        RunLoop.main.perform(inModes: [.default]) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.active, self.session == ending else { return }
+                self.cancel()
+            }
+        }
     }
 }
 
@@ -1771,15 +1872,13 @@ private struct FavoriteTile: View {
 /// `at` is the row's own place in its section — the one place a drop cannot move it to, and
 /// the source slot throughout the drag. The favourites grid passes none: a
 /// tile is not a row in a section's list.
-@MainActor private func dragPayload(_ tab: Tab, in store: TabStore? = nil,
+@MainActor func dragPayload(_ tab: Tab, in store: TabStore,
                                     at spot: Landing.Spot? = nil) -> NSItemProvider {
     // Published on the next turn, not now: a state change inside the drag's own start
     // re-renders the row under the pointer, and SwiftUI drops the drag with it.
     let id = tab.id
-    // Grabbing a row that is part of a selection drags the selection, in the order it is
-    // drawn; grabbing any other row drags that row alone and leaves the selection be —
-    // which is how Finder behaves, and what stops a drag quietly moving tabs off screen.
-    let set = store?.selection.contains(id) == true ? store?.selectedTabs.map(\.id) ?? [] : []
+    Dragging.shared.session = UUID()
+    let set = store.selection.contains(id) ? store.selectedTabs.map(\.id) : []
     // All of it set, so a flag left behind by a drag that ended outside any of our targets —
     // dropped on the desktop, say, where no `performDrop` ever runs — is cleared by the
     // next drag rather than outliving the session.
@@ -1791,7 +1890,19 @@ private struct FavoriteTile: View {
             Dragging.shared.at = spot
         }
     }
-    return NSItemProvider(object: id.uuidString as NSString)
+    // Internal targets read Dragging's identity; external targets get a usable link in
+    // either URL or text form. An Easel's profile-local address stays inside Vane.
+    let url = tab.currentURL.flatMap { EaselAddress.boardID($0) == nil ? $0 : nil }
+    let provider = NSItemProvider(object: (url?.absoluteString ?? id.uuidString) as NSString)
+    provider.registerDataRepresentation(forTypeIdentifier: Dragging.tabType.identifier,
+                                        visibility: .ownProcess) { completion in
+        completion(Data(id.uuidString.utf8), nil)
+        return nil
+    }
+    if let url {
+        provider.registerObject(url as NSURL, visibility: .all)
+    }
+    return provider
 }
 
 /// A split is one visible row. Commit all of its regular panes together, while a
@@ -1839,7 +1950,7 @@ private struct Lifted: ViewModifier {
 /// ponytail: equal widths rather than widths from the titles. A row whose columns move as
 /// pages load their titles is a row you cannot aim at, and four panes have to fit a sidebar
 /// either way, so the truncation is the answer at every count.
-private struct PaneStrip: View {
+struct PaneStrip: View {
     /// Passed in rather than read from the environment, as `SpaceMenu`'s is: this is also
     /// built for the drag preview, which AppKit renders outside the view hierarchy, and a
     /// missing `@EnvironmentObject` there is a crash rather than a blank row.
@@ -1993,6 +2104,7 @@ struct TabDrop: DropDelegate {
     /// Whether the window reads right to left, in which case the leading pane is drawn on
     /// the right and the two halves of the row mean the opposite sides. See `Landing.side`.
     var rtl = false
+    var favouritePreview: SidebarDragPreview? = nil
 
     func validateDrop(info: DropInfo) -> Bool {
         // A folder lands among the rows of either section that has folders — its own, which
@@ -2005,11 +2117,15 @@ struct TabDrop: DropDelegate {
         }
         // The dragged row's own slot takes the drop too, and answers "nothing to do".
         // Accept it as a no-op rather than forwarding the drop to the view underneath.
-        return Dragging.shared.tab != nil
+        return Dragging.shared.tab != nil || acceptsLink(info)
     }
     func dropEntered(info: DropInfo) { track(info) }
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        guard Dragging.shared.active else { return DropProposal(operation: .cancel) }
+        guard Dragging.shared.active else {
+            guard acceptsLink(info) else { return DropProposal(operation: .cancel) }
+            side = info.location.x > extent / 2 ? .after : .before
+            return DropProposal(operation: .copy)
+        }
         track(info)
         return DropProposal(operation: .move)
     }
@@ -2018,9 +2134,28 @@ struct TabDrop: DropDelegate {
         half.wrappedValue = nil
     }
 
-    func performDrop(info: DropInfo) -> Bool { performDrop(at: info.location) }
+    func performDrop(info: DropInfo) -> Bool {
+        if acceptsLink(info) {
+            let after = info.location.x > extent / 2
+            side = nil
+            TabActions.favouriteDropped(info.itemProviders(for: [.url]), in: store,
+                                        beside: target?.id, after: after)
+            return true
+        }
+        return performDrop(at: info.location)
+    }
+
+    private func acceptsLink(_ info: DropInfo) -> Bool {
+        !Dragging.shared.active && into == .favourite
+            && !info.hasItemsConforming(to: [Dragging.tabType])
+            && !info.hasItemsConforming(to: [.fileURL])
+            && info.hasItemsConforming(to: [.url])
+    }
 
     func performDrop(at location: CGPoint) -> Bool {
+        let preview = favouritePreview ?? store.sidebarDragPreview
+        preview?.refresh()
+        let favouriteDestination = preview?.destination
         let offer = place(location)
         let where_ = offer?.band
         let after = where_ == .after
@@ -2042,6 +2177,10 @@ struct TabDrop: DropDelegate {
             return true
         }
         guard !dragged.isEmpty else { return false }
+        if let destination = favouriteDestination {
+            store.dropInFavourites(dragged, at: destination.index)
+            return true
+        }
         defer {
             if let id = dragged.first,
                let landed = store.tabs.first(where: { $0.id == id }), landed.kind != .today {
@@ -2158,8 +2297,16 @@ struct TabDrop: DropDelegate {
 
     private func track(_ info: DropInfo) { trackHover(at: info.location) }
 
-    /// Preview only: keep the original order and section until the user releases the ghost.
+    /// Preview only: keep the original order and section until release.
     func trackHover(at location: CGPoint) {
+        if into != .favourite, let preview = store.sidebarDragPreview {
+            preview.refresh()
+            if preview.destination != nil {
+                side = nil
+                half.wrappedValue = nil
+                return
+            }
+        }
         let offer = place(location)
         side = offer?.band
         half.wrappedValue = offer?.half
@@ -2949,6 +3096,7 @@ private struct FolderMenu: View {
 /// See `dragPayload`: published on the next turn so starting the drag does not re-render the
 /// row out from under it.
 @MainActor private func folderDragPayload(_ folder: Folder) -> NSItemProvider {
+    Dragging.shared.session = UUID()
     let id = folder.id
     // All four set, for the reason `dragPayload` sets all of its: a flag left behind by a
     // drag that ended outside every target outlives the gesture otherwise.
@@ -3401,10 +3549,12 @@ private struct SplitRow: View {
         .onDrag {
             dragPayload(lead, in: store, at: spot)
         } preview: {
-            PaneStrip(store: store, split: split, panes: panes,
-                      selected: true, ticked: false, live: false)
-                .frame(width: dragWidth)
-                .liftedPreview()
+            if ticked && store.selection.count > 1 {
+                PaneStrip(store: store, split: split, panes: panes,
+                          selected: true, ticked: false, live: false)
+                    .frame(width: dragWidth)
+                    .liftedPreview()
+            } else { Color.clear.frame(width: 1, height: 1) }
         }
         // A ticked split row is one of several selected rows, and is about all of them —
         // exactly as `TabRow` is.
@@ -3539,9 +3689,10 @@ private struct TabRow: View {
         .onDrag {
             dragPayload(tab, in: store, at: spot)
         } preview: {
+            if ticked && store.selection.count > 1 {
             HStack(spacing: Look.rowSpacing) {
                 TabIcon(tab: tab)
-                Text(ticked && store.selection.count > 1 ? "\(store.selection.count) tabs" : title)
+                Text("\(store.selection.count) tabs")
                     .lineLimit(1).font(Look.rowTitle)
                 Spacer(minLength: 0)
             }
@@ -3549,6 +3700,7 @@ private struct TabRow: View {
                    height: Look.rowHeight)
             .padding(.horizontal, Look.rowInset)
             .liftedPreview()
+            } else { Color.clear.frame(width: 1, height: 1) }
         }
         // Arc's double-click-to-rename. Simultaneous, so the row's own single tap still
         // selects the tab first — which is what Arc does too, and what makes the rename
@@ -4346,7 +4498,7 @@ struct SiteIcon: View {
 ///
 /// Loading is still said, twice: the pill's 2pt progress line, and the row's accessibility
 /// value, which reads "loading" in words. In words and in a line, not in motion.
-private struct TabIcon: View {
+struct TabIcon: View {
     @ObservedObject var tab: Tab
     var size: CGFloat = 16
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
