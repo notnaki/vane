@@ -68,6 +68,8 @@ import XCTest
         let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: width, height: 400),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        hosting.appearance = NSAppearance(named: .aqua)
         window.contentView = hosting
         defer { window.close() }
         window.orderFront(nil)
@@ -166,5 +168,11 @@ import XCTest
         let bitmap = try render(PasswordsPane(settingsProfileID: profile).padding(24), width: 632, name: "manager")
         XCTAssertEqual(bitmap.pixelsWide, 632)
         XCTAssertLessThan(bitmap.pixelsHigh, 560)
+        let colors = Set(stride(from: 0, to: bitmap.pixelsHigh, by: 8).flatMap { y in
+            stride(from: 0, to: bitmap.pixelsWide, by: 8).compactMap { x in
+                bitmap.colorAt(x: x, y: y)?.description
+            }
+        })
+        XCTAssertGreaterThan(colors.count, 4, "The mounted manager must draw its rows, not just a blank background")
     }
 }
