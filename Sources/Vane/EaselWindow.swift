@@ -947,6 +947,9 @@ private struct EaselLibraryCard: View {
     let open: () -> Void
     let delete: () -> Void
     @State private var hovering = false
+    @State private var menuHovered = false
+    @StateObject private var menuAnchor = ChromeMenuAnchor()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Button(action: open) {
             VStack(alignment: .leading, spacing: 4) {
@@ -960,16 +963,35 @@ private struct EaselLibraryCard: View {
                 .background(Look.controlFill, in: .rect(cornerRadius: 15))
                 .overlay(RoundedRectangle(cornerRadius: 15).stroke(Look.inkQuiet.opacity(0.18), lineWidth: 1))
                 .padding(6).background(hovering ? Look.hovered : Look.controlFill.opacity(0.45), in: .rect(cornerRadius: 21))
-        }.buttonStyle(.plain).onHover { hovering = $0 }
+        }.buttonStyle(.plain)
             .overlay(alignment: .topTrailing) {
-                Menu {
-                    Button("Open Easel", action: open)
-                    Button("Delete Easel…", role: .destructive, action: delete)
-                } label: { Image(systemName: "ellipsis").padding(8) }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().padding(8)
+                Button {
+                    menuAnchor.show([
+                        ChromeMenuItem(title: "Open Easel", symbol: "arrow.up.right", action: open),
+                        ChromeMenuItem(title: "Delete Easel…", symbol: "trash", startsGroup: true, action: delete)
+                    ], title: "Easel actions")
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(menuHovered || menuAnchor.isPresented ? Look.inkPrimary : Look.inkSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(menuAnchor.isPresented ? Look.selected : menuHovered ? Look.hovered : Look.controlFill,
+                                    in: .rect(cornerRadius: 8))
+                        .contentShape(.rect)
+                }
+                    .buttonStyle(.plain)
+                    .background(ChromeMenuAnchorView(anchor: menuAnchor))
+                    .onHover { menuHovered = $0 }
+                    .padding(14)
+                    .help("Easel actions")
                     .accessibilityLabel("Actions for \(board.title)")
             }
+            .onHover { hovering = $0 }
+            .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: menuHovered)
+            .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: menuAnchor.isPresented)
+            .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: hovering)
             .contextMenu { Button("Delete Easel…", role: .destructive, action: delete) }
             .accessibilityAction(named: "Delete Easel", delete)
+            .onDisappear { if menuAnchor.isPresented { ChromeMenu.shared.dismiss() } }
     }
 }
