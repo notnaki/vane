@@ -37,6 +37,9 @@ import WebKit
 
     private var memory: [String: NSImage] = [:]
     private var inflight: [String: Task<Void, Never>] = [:]
+    /// Inspect loaded pages even after a root fallback has been cached. The same set of
+    /// declarations needs one fetch per session, not another fetch on every reload.
+    private var discoveries: [String: [URL]] = [:]
     private struct Pending {
         var urls: [URL] = []
         var seen: Set<URL> = []
@@ -90,32 +93,36 @@ import WebKit
         tabs.add(tab)
         if let url = tab.currentURL, url.isFileURL { tab.favicon = Files.icon(for: url); return }
         guard let url = tab.currentURL, let key = Favicons.key(for: url) else { tab.favicon = nil; return }
-        if let img = memory[key] { tab.favicon = img; return }
+        if let img = memory[key] {
+            tab.favicon = img
+            if tab.suspended { return }
+        }
         // Keep disk reads and decoding off the main actor, including during restoration.
         let file = profileID == Profile.incognito.id ? nil : dir.appendingPathComponent(key)
         let web = tab.existingWeb
         Task { @MainActor [weak self, weak tab, weak web] in
-            let diskImage = if let file { await Favicons.decoded(file) } else { nil as NSImage? }
+            let diskImage = if self?.memory[key] == nil, let file {
+                await Favicons.decoded(file)
+            } else { nil as NSImage? }
             guard let self, let tab, tab.existingWeb === web, tab.currentURL == url else { return }
             if let img = self.memory[key] ?? diskImage {
                 self.memory[key] = img
                 tab.favicon = img
-                return
             }
             if tab.suspended {
-                tab.favicon = nil
-                if !self.missed(key), let fallback = Favicons.fallback(for: url) {
+                if self.memory[key] == nil, !self.missed(key), let fallback = Favicons.fallback(for: url) {
                     self.warm(key: key, urls: [fallback], persist: !tab.isPrivate, fallback: fallback)
                 }
                 return
             }
             guard let web else { return }
             // A failed root probe says nothing about the icons declared by this page.
-            let declared = ((try? await web.evaluateJavaScript(Favicons.linkJS)) as? String ?? "")
-                .split(separator: "\n").compactMap { URL(string: String($0)) }
+            let declared = Favicons.declared(try? await web.evaluateJavaScript(Favicons.linkJS))
             guard tab.existingWeb === web, tab.currentURL == url else { return }
-            var candidates = Favicons.ordered(declared)
-            let fallback = self.missed(key) ? nil : Favicons.fallback(for: url)
+            if !declared.isEmpty, self.discoveries[key] == declared { return }
+            if !declared.isEmpty { self.discoveries[key] = declared }
+            var candidates = declared
+            let fallback = self.memory[key] != nil || self.missed(key) ? nil : Favicons.fallback(for: url)
             if let fallback { candidates.append(fallback) }
             guard !candidates.isEmpty else { tab.favicon = self.memory[key]; return }
             await self.warm(key: key, urls: candidates, persist: !tab.isPrivate, fallback: fallback).value
@@ -135,7 +142,16 @@ import WebKit
         if let running = inflight[key] { return running }
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.inflight[key] = nil; self.pending[key] = nil }
+            var received: URL?
+            defer {
+                self.inflight[key] = nil
+                self.pending[key] = nil
+                // Failed declarations remain retryable. Only a result that actually
+                // came from this declaration set makes it reusable across reloads.
+                if received.map({ self.discoveries[key]?.contains($0) == true }) != true {
+                    self.discoveries[key] = nil
+                }
+            }
             var attemptedFallback = false
             // A page may finish while a cache-only /favicon.ico probe is awaiting its
             // response. Keep its declarations in the same queue instead of losing them.
@@ -146,6 +162,7 @@ import WebKit
                 guard let data, let img = Favicons.image(from: data)
                 else { continue }
                 self.memory[key] = img
+                received = url
                 self.misses.removeValue(forKey: key)
                 // A public fallback does not authorize storing another tab's private-only
                 // declaration. Eligibility follows the successful URL, not the batch.
@@ -154,9 +171,11 @@ import WebKit
                     tab.favicon = img
                 }
                 self.generation += 1
-                return
+                // A restored row may already be fetching /favicon.ico when its page
+                // supplies better artwork. Let that queued declaration upgrade it.
+                if self.pending[key]?.fallbackURLs.contains(url) != true { return }
             }
-            self.recordMiss(key, attemptedFallback: attemptedFallback)
+            if self.memory[key] == nil { self.recordMiss(key, attemptedFallback: attemptedFallback) }
         }
         inflight[key] = task
         return task
@@ -179,18 +198,62 @@ import WebKit
         return data
     }
 
-    /// The page's own declaration. `~=` matches one word of rel, so "shortcut icon" hits.
-    private static let linkJS = """
+    /// The page's own declarations, including touch icons preloaded as images (ManageBac).
+    /// Rel and sizes are retained: the URL's filename is not its declaration type.
+    static let linkJS = """
     (function(){var o=[];document.querySelectorAll(\
-    "link[rel~='icon' i],link[rel~='apple-touch-icon' i],link[rel~='apple-touch-icon-precomposed' i]")\
-    .forEach(function(l){if(l.href)o.push(l.href)});return o.join("\\n")})()
+    "link[rel~='icon' i],link[rel~='apple-touch-icon' i],link[rel~='apple-touch-icon-precomposed' i],link[rel~='preload' i][as='image' i]")\
+    .forEach(function(l){if(!l.href)return;\
+    if(l.rel.toLowerCase().split(/\\s+/).includes('preload')&&!/apple-touch-icon/i.test(l.href))return;\
+    o.push({href:l.href,rel:l.rel,sizes:l.getAttribute('sizes')||'',type:l.type||''})});return o})()
     """
 
-    /// apple-touch-icons are big PNGs; a favicon.ico is often a 16px bitmap that looks
-    /// chewed-up on a retina display, so try the good one first.
-    static func ordered(_ hrefs: [URL]) -> [URL] {
-        let touch = { (u: URL) in u.path.lowercased().contains("apple-touch") }
-        return hrefs.filter(touch) + hrefs.filter { !touch($0) }
+    struct Declaration {
+        let url: URL
+        var rel = "icon"
+        var sizes = ""
+        var type = ""
+
+        var priority: Int {
+            // JPEG touch artwork often includes a white matte (Cialfo's crest). Prefer
+            // its transparent favicon; PNG touch artwork is usually the sharpest mark.
+            if type.lowercased() == "image/jpeg" || ["jpg", "jpeg"].contains(url.pathExtension.lowercased()) {
+                return 0
+            }
+            let touch = rel.lowercased().split(whereSeparator: \.isWhitespace).contains {
+                $0 == "apple-touch-icon" || $0 == "apple-touch-icon-precomposed"
+            } || (rel.lowercased() == "preload" && url.path.lowercased().contains("apple-touch-icon"))
+            return touch ? 2 : 1
+        }
+
+        var pixels: Int {
+            let source = sizes.isEmpty ? url.lastPathComponent.lowercased() : sizes.lowercased()
+            let pattern = "[0-9]+x[0-9]+"
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return 0 }
+            return regex.matches(in: source, range: NSRange(source.startIndex..., in: source)).compactMap { match in
+                guard let range = Range(match.range, in: source) else { return nil }
+                let dimensions = source[range].split(separator: "x").compactMap { Int($0) }
+                return dimensions.count == 2 ? dimensions.min() : nil
+            }.max() ?? 0
+        }
+    }
+
+    static func declared(_ value: Any?) -> [URL] {
+        let declarations = (value as? [[String: String]] ?? []).prefix(32).compactMap { entry -> Declaration? in
+            guard let href = entry["href"], let url = URL(string: href),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+            return Declaration(url: url, rel: entry["rel"] ?? "icon", sizes: entry["sizes"] ?? "", type: entry["type"] ?? "")
+        }
+        return ordered(declarations)
+    }
+
+    static func ordered(_ declarations: [Declaration]) -> [URL] {
+        var seen = Set<URL>()
+        return declarations.enumerated().sorted {
+            if $0.element.priority != $1.element.priority { return $0.element.priority > $1.element.priority }
+            if $0.element.pixels != $1.element.pixels { return $0.element.pixels > $1.element.pixels }
+            return $0.offset < $1.offset
+        }.map(\.element.url).filter { seen.insert($0).inserted }
     }
 
     /// Always the site's own host — never a third party's icon service.
@@ -384,10 +447,12 @@ import WebKit
              fallback(for: u("https://example.com:8443/page"))?.absoluteString
                 == "https://example.com:8443/favicon.ico"),
             ("apple-touch-icon is tried before a .ico",
-             ordered([u("https://e.com/favicon.ico"), u("https://e.com/apple-touch-icon.png")])
+             ordered([Declaration(url: u("https://e.com/favicon.ico")),
+                      Declaration(url: u("https://e.com/apple-touch-icon.png"), rel: "apple-touch-icon")])
                 .first?.lastPathComponent == "apple-touch-icon.png"),
             ("declaration order is otherwise preserved",
-             ordered([u("https://e.com/a.png"), u("https://e.com/b.png")]).last?.lastPathComponent == "b.png"),
+             ordered([Declaration(url: u("https://e.com/a.png")), Declaration(url: u("https://e.com/b.png"))])
+                .last?.lastPathComponent == "b.png"),
 
             // The stand-in a row shows while a tab has no favicon. There is no spinner to
             // fall back to any more, so this is what a brand-new tab is recognised by.

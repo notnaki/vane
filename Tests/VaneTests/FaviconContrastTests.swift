@@ -66,6 +66,19 @@ import XCTest
         XCTAssertFalse(try cachedIcon(foreground: .black, background: .black).isTemplate)
     }
 
+    func testOpaqueSiteIconRendersAsRoundBadgeAtRetinaScale() throws {
+        let image = try cachedIcon(foreground: .systemGreen, background: .systemGreen)
+        let renderer = ImageRenderer(content: SiteIcon(icon: image, size: 16))
+        renderer.scale = 2
+        let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+        XCTAssertEqual(bitmap.pixelsWide, 32)
+        XCTAssertEqual(bitmap.pixelsHigh, 32)
+        XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 0, y: 0)).alphaComponent, 0, accuracy: 0.02)
+        XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 31, y: 0)).alphaComponent, 0, accuracy: 0.02)
+        XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 16, y: 16)).alphaComponent, 1, accuracy: 0.02)
+        XCTAssertGreaterThan(try XCTUnwrap(bitmap.colorAt(x: 16, y: 1)).alphaComponent, 0.9)
+    }
+
     func testLightArtworkAndInternalDetailsAreNotFlattened() throws {
         XCTAssertFalse(try cachedIcon(foreground: .white).isTemplate)
         XCTAssertFalse(try cachedIcon(foreground: .black, detail: .white).isTemplate)
