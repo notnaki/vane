@@ -635,6 +635,7 @@ private struct Shortcuts: View {
 struct WebCard: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var batterySaver = BatterySaver.shared
+    @ObservedObject private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Little Vane matches this gap to the inset above its toolbar pills.
     var topGap: CGFloat = Look.cardGap
@@ -680,6 +681,11 @@ struct WebCard: View {
             OffscreenPages()
             if let tab = store.active { LoadingBar(tab: tab, hidden: store.findOpen) }
             VStack(spacing: 8) {
+                if !profileManager.saveFailures.isEmpty {
+                    ProfileSaveNotice(manager: profileManager)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .transition(.opacity)
+                }
                 if let notice = batterySaver.notice {
                     BatterySaverPopup(notice: notice, saver: batterySaver)
                         .id(notice.id)
@@ -704,6 +710,8 @@ struct WebCard: View {
             .padding(.horizontal, 14)
             .padding(.top, 10)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: batterySaver.notice?.id)
+            .animation(reduceMotion || batterySaver.isActive ? nil : .easeOut(duration: 0.2),
+                       value: profileManager.saveFailures)
             // Last in the stack, so it is above the page: a dragged sidebar tab lands on the
             // card's edge bands as a new pane. Only in the tree while a drag is in flight.
             SplitDropWell()

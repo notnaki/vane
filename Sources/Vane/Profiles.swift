@@ -466,6 +466,23 @@ struct Space: Identifiable, Codable, Equatable {
     let sandboxed: Bool
 
     @Published private(set) var profiles: [Profile] = []
+    struct SaveFailure: Identifiable, Equatable {
+        enum Target: Hashable { case profiles, deletion, spaces(UUID) }
+        let id: Target
+        let message: String
+        let canRetry: Bool
+        let details: String?
+
+        var title: String {
+            switch id {
+            case .profiles: canRetry ? "Profile changes aren’t saved" : "Profiles need recovery"
+            case .deletion: "Profile wasn’t deleted"
+            case .spaces: "Space changes aren’t saved"
+            }
+        }
+    }
+    @Published private(set) var saveFailures: [SaveFailure] = []
+    @Published private(set) var hasUnsavedProfileChanges = false
     /// Invalidates Library cards in every window when any profile saves its Spaces.
     @Published private(set) var spacesRevision = 0
     @Published private var activeID: UUID = ProfileManager.defaultID
@@ -523,6 +540,7 @@ struct Space: Identifiable, Codable, Equatable {
             } else {
                 profileListReadable = false
                 NSLog("Vane: could not read profiles.json; preserving it for recovery")
+                reportUnreadableProfiles()
             }
         }
         // Deliberately not called inline: `ProfileManager.shared` is first touched from
@@ -538,18 +556,77 @@ struct Space: Identifiable, Codable, Equatable {
     }
 
     @discardableResult
-    private func persist(_ disk: Disk) -> Bool {
+    private func persist(_ disk: Disk, deleting: Bool = false) -> Bool {
         guard profileListReadable else {
             NSLog("Vane: could not save profiles.json because the existing list is unreadable")
+            reportUnreadableProfiles()
             return false
         }
-        guard let data = try? JSONEncoder().encode(disk) else { return false }
-        return SnapshotPersistence.write(data, to: directory.appendingPathComponent("profiles.json"))
+        let target: SaveFailure.Target = deleting ? .deletion : .profiles
+        let message = deleting
+            ? "Your profile and its data are still here. Check storage and folder access, then try deleting it again."
+            : "Your latest changes are still here. Keep Vane open, check storage and folder access, then retry."
+        do {
+            let data = try JSONEncoder().encode(disk)
+            guard SnapshotPersistence.write(data, to: directory.appendingPathComponent("profiles.json"),
+                                            onFailure: { error in
+                self.reportSaveFailure(target, message: message, error: error,
+                                       canRetry: !deleting)
+            }) else { return false }
+            hasUnsavedProfileChanges = false
+            clearSaveFailure(.profiles)
+            if deleting { clearSaveFailure(.deletion) }
+            return true
+        } catch {
+            reportSaveFailure(target, message: message, error: error, canRetry: !deleting)
+            return false
+        }
     }
 
     @discardableResult
     private func persist() -> Bool {
-        persist(Disk(profiles: profiles, activeID: activeID))
+        hasUnsavedProfileChanges = true
+        return persist(Disk(profiles: profiles, activeID: activeID))
+    }
+
+    /// Recapture the current list, including edits made since the first failure. Never
+    /// replay a rejected deletion or overwrite a list we could not read at launch.
+    @discardableResult
+    func retryProfileSave() -> Bool {
+        guard hasUnsavedProfileChanges else { return true }
+        return persist()
+    }
+
+    /// Every quit path retries pending edits before the user must explicitly discard them.
+    func prepareToQuit(discardChanges: () -> Bool) -> Bool {
+        retryProfileSave() || discardChanges()
+    }
+
+    private func reportUnreadableProfiles() {
+        reportSaveFailure(.profiles,
+                          message: "The saved profile list couldn’t be read. The original file is safe. Check folder access or restore profiles.json from a backup, then restart Vane.",
+                          canRetry: false)
+    }
+
+    private func reportSaveFailure(_ target: SaveFailure.Target, message: String,
+                                   error: Error? = nil, canRetry: Bool = false) {
+        let failure = SaveFailure(id: target, message: message, canRetry: canRetry,
+                                  details: error?.localizedDescription)
+        if let index = saveFailures.firstIndex(where: { $0.id == target }) {
+            if saveFailures[index] != failure { saveFailures[index] = failure }
+        } else {
+            saveFailures.append(failure)
+        }
+    }
+
+    private func clearSaveFailure(_ target: SaveFailure.Target) {
+        saveFailures.removeAll { $0.id == target }
+    }
+
+    func dismissSaveFailure(_ target: SaveFailure.Target) {
+        // An unsaved or unreadable profile list needs a persistent recovery affordance.
+        guard target != .profiles else { return }
+        clearSaveFailure(target)
     }
 
     // MARK: CRUD
@@ -586,7 +663,7 @@ struct Space: Identifiable, Codable, Equatable {
         var remaining = profiles
         remaining.remove(at: i)
         let nextActiveID = activeID == id ? remaining[0].id : activeID
-        guard persist(Disk(profiles: remaining, activeID: nextActiveID)) else { return false }
+        guard persist(Disk(profiles: remaining, activeID: nextActiveID), deleting: true) else { return false }
         profiles = remaining
         activeID = nextActiveID
         Tab.discardPreparedFirstPage(for: id)
@@ -810,14 +887,25 @@ struct Space: Identifiable, Codable, Equatable {
     /// Read-only: opening the Library must not create Spaces in unused profiles.
     var allSpaces: [Space] { profiles.flatMap { spaces(for: $0.id) } }
 
-    /// Returns whether the list actually reached the disk. Almost every caller ignores it —
-    /// a failed write means the Space keeps the shape it had — but the migration below has
-    /// to know, because it deletes the only other copy of what it just wrote.
+    /// Failed writes leave the committed list intact and publish a recovery warning even
+    /// when a caller ignores the result. Transactional callers must retry their action;
+    /// queuing these bytes could later replay a cancelled deletion or profile transfer.
     @discardableResult
     func saveSpaces(_ spaces: [Space], for profileID: UUID) -> Bool {
         let owned = spaces.filter { $0.profileID == profileID }
-        guard let data = try? JSONEncoder().encode(owned),
-              SnapshotPersistence.write(data, to: Self.spacesURL(for: profileID, in: directory)) else { return false }
+        let target = SaveFailure.Target.spaces(profileID)
+        let message = "The last saved version is safe. Check storage and folder access, then make the change again."
+        do {
+            let data = try JSONEncoder().encode(owned)
+            guard SnapshotPersistence.write(data, to: Self.spacesURL(for: profileID, in: directory),
+                                            onFailure: { error in
+                self.reportSaveFailure(target, message: message, error: error)
+            }) else { return false }
+        } catch {
+            reportSaveFailure(target, message: message, error: error)
+            return false
+        }
+        clearSaveFailure(target)
         spacesRevision += 1
         return true
     }
