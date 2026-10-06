@@ -2,10 +2,28 @@ import AppKit
 import WebKit
 
 /// Camera and microphone answers are scoped to a Web origin and profile. Private tab
-/// answers live in memory only and disappear when the tab closes.
+/// answers live in memory only and disappear when the tab closes. One-time grants
+/// belong to a single tab document and are never written to defaults.
 @MainActor enum SitePermissions {
     private static var defaults: UserDefaults = .vane
     private static var privateAnswers: [UUID: [String: Bool]] = [:]
+    private static var onceAnswers: [UUID: [String: Bool]] = [:]
+    @MainActor private final class Pending {
+        let token = UUID()
+        let scope: Scope
+        let type: WKMediaCaptureType
+        let alert: NSAlert
+        var closeObserver: NSObjectProtocol?
+        weak var window: NSWindow?
+        init(scope: Scope, type: WKMediaCaptureType, alert: NSAlert, window: NSWindow) {
+            self.scope = scope; self.type = type; self.alert = alert; self.window = window
+        }
+        func stopObserving() {
+            if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+            closeObserver = nil
+        }
+    }
+    private static var pending: [UUID: Pending] = [:]
     private static let prefix = "sitePermission.v2."
 
     struct Scope: Hashable, Sendable {
@@ -75,6 +93,7 @@ import WebKit
     }
 
     static func remember(scope: Scope, type: WKMediaCaptureType, allow: Bool) {
+        cancelPrompts(scope: scope, type: type)
         let name = key(scope: scope, type: type)
         if let tabID = scope.privateTabID { privateAnswers[tabID, default: [:]][name] = allow }
         else { defaults.set(allow, forKey: name) }
@@ -87,27 +106,46 @@ import WebKit
     }
 
     /// A Block covering a requested device wins even against an older pair Allow.
-    static func effective(scope: Scope, type: WKMediaCaptureType) -> Bool? {
+    static func effective(scope: Scope, type: WKMediaCaptureType, tabID: UUID? = nil) -> Bool? {
         let pair = remembered(scope: scope, type: .cameraAndMicrophone)
         let camera = remembered(scope: scope, type: .camera)
         let microphone = remembered(scope: scope, type: .microphone)
+        let once = tabID.flatMap { onceAnswers[$0] } ?? [:]
+        let oncePair = once[key(scope: scope, type: .cameraAndMicrophone)]
+        let cameraAnswer = camera ?? pair ?? once[key(scope: scope, type: .camera)] ?? oncePair
+        let microphoneAnswer = microphone ?? pair ?? once[key(scope: scope, type: .microphone)] ?? oncePair
         switch type {
         case .camera:
             if camera == false || pair == false { return false }
-            return camera ?? pair
+            return cameraAnswer
         case .microphone:
             if microphone == false || pair == false { return false }
-            return microphone ?? pair
+            return microphoneAnswer
         case .cameraAndMicrophone:
             if pair == false || camera == false || microphone == false { return false }
             if pair == true { return true }
-            return camera == true && microphone == true ? true : nil
+            return cameraAnswer == true && microphoneAnswer == true ? true : nil
         @unknown default: return nil
         }
     }
 
     /// Preserve the untouched device's pair answer when the panel changes one device.
-    static func set(scope: Scope, type: WKMediaCaptureType, answer: Bool?) {
+    static func set(scope: Scope, type: WKMediaCaptureType, answer: Bool?, tabID: UUID? = nil) {
+        cancelPrompts(scope: scope, type: type)
+        // Split a combined one-time grant just like a saved combined answer, so changing
+        // Camera to Ask does not also discard Microphone's one-time access.
+        let owner = tabID ?? scope.privateTabID
+        for id in Array(onceAnswers.keys) where owner == nil || id == owner {
+            let pairKey = key(scope: scope, type: .cameraAndMicrophone)
+            if type != .cameraAndMicrophone, onceAnswers[id]?[pairKey] == true {
+                for kind in [WKMediaCaptureType.camera, .microphone] {
+                    onceAnswers[id, default: [:]][key(scope: scope, type: kind)] = true
+                }
+                onceAnswers[id]?.removeValue(forKey: pairKey)
+            }
+            onceAnswers[id]?.removeValue(forKey: key(scope: scope, type: type))
+            if onceAnswers[id]?.isEmpty == true { onceAnswers.removeValue(forKey: id) }
+        }
         if let pair = remembered(scope: scope, type: .cameraAndMicrophone) {
             for kind in [WKMediaCaptureType.camera, .microphone]
             where remembered(scope: scope, type: kind) == nil {
@@ -119,31 +157,118 @@ import WebKit
         else { forget(scope: scope, type: type) }
     }
 
-    static func decide(origin: WKSecurityOrigin, type: WKMediaCaptureType,
-                       profileID: UUID, privateTabID: UUID?) async -> WKPermissionDecision {
-        guard let scope = Scope(scheme: origin.protocol, host: origin.host, port: origin.port,
-                                profileID: profileID, privateTabID: privateTabID) else { return .deny }
-        if let known = effective(scope: scope, type: type) { return known ? .grant : .deny }
+    static func makePrompt(scope: Scope, type: WKMediaCaptureType) -> NSAlert {
         let alert = NSAlert()
-        alert.messageText = "Allow “\(scope.origin)” to \(phrase(type))?"
-        alert.informativeText = privateTabID == nil
-            ? "Vane will remember your answer for this site."
-            : "Vane will remember your answer until this private tab closes."
-        alert.addButton(withTitle: "Allow")
-        alert.addButton(withTitle: "Don’t Allow")
-        let allowed = alert.runModal() == .alertFirstButtonReturn
-        remember(scope: scope, type: type, allow: allowed)
+        alert.messageText = "“\(scope.origin)” wants to \(phrase(type))"
+        alert.informativeText = "Allow Once lasts until this tab navigates or closes. " +
+            (scope.privateTabID == nil ? "Always Allow remembers your choice for this site in this profile."
+             : "Private permissions are never saved and last only in this private tab.")
+        alert.addButton(withTitle: "Allow Once")
+        alert.addButton(withTitle: scope.privateTabID == nil ? "Always Allow" : "Allow for This Private Tab")
+        alert.addButton(withTitle: "Don’t Allow").keyEquivalent = "\u{1b}"
+        return alert
+    }
+
+    static func decide(origin: WKSecurityOrigin, type: WKMediaCaptureType,
+                       tab: Tab, web: WKWebView) async -> WKPermissionDecision {
+        guard let scope = Scope(scheme: origin.protocol, host: origin.host, port: origin.port,
+                                profileID: tab.profileID, privateTabID: tab.isPrivate ? tab.id : nil)
+        else { return .deny }
+        let window = web.window
+        return await request(scope: scope, type: type, tabID: tab.id, window: window,
+                             isCurrent: { [weak tab, weak web, weak window] in
+            guard let tab, let web, let window else { return false }
+            return tab.existingWeb === web && web.window === window
+                && !web.isHiddenOrHasHiddenAncestor && window.isVisible
+        })
+    }
+
+    /// The same request path is used by WebKit and popup fixtures. Only the requesting
+    /// window is blocked; detached pages, stale documents, and busy windows fail closed.
+    static func request(scope: Scope, type: WKMediaCaptureType, tabID: UUID,
+                        window: NSWindow?, isCurrent: @escaping @MainActor () -> Bool) async -> WKPermissionDecision {
+        guard !Task.isCancelled, isCurrent(), let window,
+              scope.privateTabID == nil || scope.privateTabID == tabID else { return .deny }
+        switch type {
+        case .camera, .microphone, .cameraAndMicrophone: break
+        @unknown default: return .deny
+        }
+        if let known = effective(scope: scope, type: type, tabID: tabID) { return known ? .grant : .deny }
+        guard pending[tabID] == nil, window.attachedSheet == nil else { return .deny }
+        let alert = makePrompt(scope: scope, type: type)
+        let prompt = Pending(scope: scope, type: type, alert: alert, window: window)
+        pending[tabID] = prompt
+        let token = prompt.token
+        prompt.closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main) { _ in
+                Task { @MainActor in
+                    if pending[tabID]?.token == token { endDocument(tabID: tabID) }
+                }
+            }
+        let response = await withTaskCancellationHandler {
+            await alert.beginSheetModal(for: window)
+        } onCancel: {
+            Task { @MainActor in
+                if pending[tabID] === prompt { cancel(tabID: tabID) }
+            }
+        }
+        guard pending[tabID] === prompt else { return .deny }
+        pending.removeValue(forKey: tabID)
+        prompt.stopObserving()
+        guard !Task.isCancelled, isCurrent() else { return .deny }
+        switch response {
+        case .alertFirstButtonReturn:
+            onceAnswers[tabID, default: [:]][key(scope: scope, type: type)] = true
+        case .alertSecondButtonReturn:
+            remember(scope: scope, type: type, allow: true)
+        case .alertThirdButtonReturn:
+            remember(scope: scope, type: type, allow: false)
+        default: return .deny
+        }
         SiteChanges.shared.bump()
-        return allowed ? .grant : .deny
+        return response == .alertThirdButtonReturn ? .deny : .grant
+    }
+
+    private static func cancel(tabID: UUID) {
+        guard let prompt = pending.removeValue(forKey: tabID) else { return }
+        prompt.stopObserving()
+        prompt.window?.endSheet(prompt.alert.window, returnCode: .abort)
+    }
+
+    private static func cancelPrompts(scope: Scope, type: WKMediaCaptureType? = nil) {
+        for id in Array(pending.keys) {
+            guard let prompt = pending[id], prompt.scope == scope else { continue }
+            if type == nil || type == prompt.type || type == .cameraAndMicrophone
+                || prompt.type == .cameraAndMicrophone { cancel(tabID: id) }
+        }
+    }
+
+    static func endDocument(tabID: UUID) {
+        cancel(tabID: tabID)
+        if onceAnswers.removeValue(forKey: tabID) != nil { SiteChanges.shared.bump() }
+    }
+
+    static func isAllowedOnce(scope: Scope, type: WKMediaCaptureType, tabID: UUID) -> Bool {
+        effective(scope: scope, type: type) == nil && effective(scope: scope, type: type, tabID: tabID) == true
     }
 
     static func reset(scope: Scope) {
+        cancelPrompts(scope: scope)
+        for id in Array(onceAnswers.keys) where scope.privateTabID == nil || id == scope.privateTabID {
+            for kind in [WKMediaCaptureType.camera, .microphone, .cameraAndMicrophone] {
+                onceAnswers[id]?.removeValue(forKey: key(scope: scope, type: kind))
+            }
+            if onceAnswers[id]?.isEmpty == true { onceAnswers.removeValue(forKey: id) }
+        }
         for type in [WKMediaCaptureType.camera, .microphone, .cameraAndMicrophone] {
             forget(scope: scope, type: type)
         }
     }
 
-    static func forgetPrivate(tabID: UUID) { privateAnswers.removeValue(forKey: tabID) }
+    static func forgetPrivate(tabID: UUID) {
+        endDocument(tabID: tabID)
+        privateAnswers.removeValue(forKey: tabID)
+    }
 
     struct Grant: Identifiable, Equatable, Sendable {
         let scope: Scope
@@ -182,6 +307,13 @@ import WebKit
 
     /// A global reset also removes old host-only keys. Private answers are never persisted.
     static func resetAll(profileID: UUID? = nil) {
+        for id in Array(pending.keys) where profileID == nil || pending[id]?.scope.profileID == profileID {
+            cancel(tabID: id)
+        }
+        for id in Array(onceAnswers.keys) {
+            onceAnswers[id] = onceAnswers[id]?.filter { profileID != nil && parse(key: $0.key)?.scope.profileID != profileID }
+            if onceAnswers[id]?.isEmpty == true { onceAnswers.removeValue(forKey: id) }
+        }
         for name in defaults.dictionaryRepresentation().keys where name.hasPrefix("sitePermission.") {
             if let profileID, parse(key: name)?.scope.profileID != profileID { continue }
             defaults.removeObject(forKey: name)
@@ -201,12 +333,13 @@ import WebKit
         guard let scratch = UserDefaults(suiteName: suite) else {
             return [("scratch defaults suite is available", false)]
         }
-        let real = defaults, oldPrivate = privateAnswers
+        let real = defaults, oldPrivate = privateAnswers, oldOnce = onceAnswers
         defaults = scratch
         privateAnswers = [:]
         defer {
             defaults = real
             privateAnswers = oldPrivate
+            onceAnswers = oldOnce
             UserDefaults.dropScratchSuite(suite)
         }
         let profile = UUID(), otherProfile = UUID(), privateTab = UUID()

@@ -120,6 +120,12 @@ Incognito uses a temporary identity of its own, with a glasses icon and a near-b
 theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and
 its browsing data and download records are not restored after quitting.
 
+Camera and microphone requests open a sheet on the requesting window with **Allow Once**,
+**Always Allow**, and **Don’t Allow**. Allow Once lasts until the tab navigates or closes.
+Saved choices belong to the requesting origin and profile; private-tab choices stay in
+memory and disappear when that tab closes. Site Controls shows temporary grants and lets
+you return each device to Ask.
+
 Settings → Passwords lets you search, add, edit, reveal, copy, and delete saved
 logins. When a site has multiple saved accounts, the autofill chooser lets you
 select one. Credentials stay in the local macOS Keychain and are scoped to the
@@ -324,7 +330,8 @@ bash scripts/test-update-installer.sh Vane.app --unsigned
 ```
 
 `swift test` covers search typing and cancellation, link gestures and previews,
-Space switching and deletion, tab ordering, Battery Saver, Easels, page capture,
+Space switching and deletion, tab ordering, Battery Saver, media permission popups and
+grant lifetimes, Easels, page capture,
 and other browser UI behavior. Search fixtures include a large history database,
 keyboard selection, live history changes, and private windows. GitHub credential
 regressions exercise the real Live Folder response handler with an isolated
@@ -444,9 +451,8 @@ with `check-release-candidate.sh` before treating it as a distribution build.
   lists added from disk do not update on a schedule.
 - Data does not sync between Macs. Imports do not bring over browser cookies or
   signed-in sessions.
-- Camera and microphone prompts are app-modal; certificate and HTTP authentication
-  prompts attach to the requesting window. One-time media grants and broader
-  permission lifecycle verification remain deferred.
+- Location and screen-capture permission work and broader real-site permission lifecycle
+  verification remain deferred.
 - Extensions load from unpacked MV2/MV3 folders. This does not guarantee Chrome
   extension compatibility; installation consent and expanded-access review remain
   deferred.
