@@ -40,6 +40,9 @@ if args.first == "import" {
 // relaunches it. This must happen before any browser window or storage migration begins.
 Updater.recoverAtLaunch()
 
+// Before the first browser window writes profile and session files.
+FirstLaunch.prepare()
+
 // Before the first window, and so before the Dock tile is first drawn: the tile belongs to
 // the running process, so a chosen icon has to be put back on every launch. See AppIcon.
 AppIcon.restoreAtLaunch()
@@ -93,9 +96,10 @@ app.mainMenu = buildMenu()
 // reason: Escape and ⌘O both mean something else in a window with a sidebar, and only
 // Peek knows whether one is up. See Peek.handleKey.
 NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
-    PasswordChooser.handleKey($0) || Peek.handleKey($0) || LittleArc.handleKey($0)
+    if FirstLaunch.isPresenting { return $0 }
+    return PasswordChooser.handleKey($0) || Peek.handleKey($0) || LittleArc.handleKey($0)
         || Keybindings.handle($0) ? nil : $0
 }
 app.activate(ignoringOtherApps: true)
-URLHandling.promptIfNotDefaultOnce()
+if !FirstLaunch.presentIfNeeded() { URLHandling.promptIfNotDefaultOnce() }
 app.run()

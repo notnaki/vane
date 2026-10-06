@@ -15,7 +15,7 @@ import AppKit
         // and a closure-backed item answers its own action — so without this, ⌘W and ⌘T still
         // fired behind the "Quit Vane?" card after the key monitor had stood down. See
         // `Keybindings.runs`.
-        guard Keybindings.runs(modal: NSApp.modalWindow != nil) else { return false }
+        guard !FirstLaunch.isPresenting, Keybindings.runs(modal: NSApp.modalWindow != nil) else { return false }
         return enabled?() ?? true
     }
 }
