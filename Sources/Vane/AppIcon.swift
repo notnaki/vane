@@ -1,23 +1,23 @@
 import AppKit
 
 /// The standardized app-icon picker. Layered sources and compiled assets live in AppIcons.
-/// Normal uses the catalogue's glass render; Dark leaves the Dock's original composition.
+/// Normal and Dark use explicit catalogue renders, independent of Finder stamps.
 /// macOS has no UIKit alternate-icon API, so choices use applicationIconImage.
 @MainActor enum AppIcon {
     /// Where the choice lives. `UserDefaults.vane`, so a test instance on its own data dir
     /// does not repaint the real app's Dock tile.
     static let key = "appIcon"
 
-    /// Picker order. A nil asset keeps AppKit's original composition.
+    /// Picker order and the corresponding bundled artwork.
     nonisolated static let catalogue: [(name: String, asset: String?)] = [
-        ("Normal", "AppIcon"), ("Dark", nil), ("Galaxy", "AppIcon-Galaxy"),
+        ("Normal", "AppIcon"), ("Dark", "AppIcon-Dark"), ("Galaxy", "AppIcon-Galaxy"),
         ("Candy", "AppIcon-Candy"), ("Neon", "AppIcon-Neon"),
         ("Fluted Glass", "AppIcon-FlutedGlass"), ("Fluted Glass Dark", "AppIcon-FlutedGlassDark"),
         ("Schoolbook", "AppIcon-Schoolbook"),
         ("Luminous", "AppIcon-Luminous"),
     ]
 
-    /// Preserve the original Dock composition for new installs and unavailable assets.
+    /// Use the black finish for new installs and unavailable assets.
     nonisolated static var `default`: String { "Dark" }
 
     /// Keep saved choices when the old overlapping labels are retired.
@@ -29,21 +29,17 @@ import AppKit
         }
     }
 
-    nonisolated static func overrides(_ name: String) -> Bool {
-        canonicalName(name) != `default`
-    }
-
-    /// Dark's preview comes from the shipped plate, independent of persisted Finder stamps.
+    /// Resource-free dev builds fall back to the shipped plate, independent of Finder stamps.
     private static let composed: NSImage = {
-        // Finder may already hold the last selection. Read the shipped plate for Dark's
-        // preview rather than mistaking that persisted custom icon for the default.
+        // Finder may already hold the last selection. Read the shipped plate rather
+        // than mistaking that persisted custom icon for the resource-free fallback.
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let image = NSImage(contentsOf: url) { return image }
         return NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
     }()
 
     /// Every icon that actually loaded, as the image the Dock will draw once it is chosen.
-    /// Normal, Galaxy, and the material variants come from the catalogue by name rather than from
+    /// All finishes come from the catalogue by name rather than from
     /// `NSApp.applicationIconImage`, so a bundle whose Finder icon has already been stamped
     /// still offers the real ones back.
     ///
@@ -51,8 +47,8 @@ import AppKit
     /// choice. Dark alone then, and nothing crashes.
     static var variants: [(name: String, image: NSImage)] {
         catalogue.compactMap { row in
-            guard let asset = row.asset else { return (row.name, composed) }
-            return NSImage(named: asset).map { (row.name, $0) }
+            if let asset = row.asset, let image = NSImage(named: asset) { return (row.name, image) }
+            return row.name == `default` ? (row.name, composed) : nil
         }
     }
 
@@ -70,9 +66,9 @@ import AppKit
     static func apply(_ name: String) -> Bool {
         let name = canonicalName(name)
         guard let v = variants.first(where: { $0.name == name }) else { return false }
-        // nil hands the tile back to AppKit, which composes the bundle's own icon — not the
-        // same thing as assigning the catalogue render, which is why Dark exists.
-        let image = overrides(name) ? v.image : nil
+        // Only a resource-free dev build hands the tile back to AppKit. Every bundled
+        // finish, including Dark, supplies the same artwork to the picker, Dock and Finder.
+        let image = name == `default` && NSImage(named: "AppIcon-Dark") == nil ? nil : v.image
         NSApp.applicationIconImage = image
         MinimizedWindowIcon.apply(image)
         UserDefaults.vane.set(name, forKey: key)
@@ -90,21 +86,20 @@ import AppKit
             } else { data = nil }
             return AppIconPersistence.setIcon(data)
         }
-        return NSWorkspace.shared.setIcon(image, forFile: Bundle.main.bundlePath, options: [])
+        return AppIconPersistence.stamp(image, at: Bundle.main.bundleURL)
     }
 
     /// Called once at launch, before the first window. The Dock tile belongs to the running
     /// process, so a chosen icon has to be put back every time — and `Updater` replaces the
     /// whole bundle on an in-place update, which takes any stamped Finder icon with it.
-    /// Dark clears any previous stamp and hands the running tile back to AppKit.
+    /// Restore the explicit artwork even when the bundle still carries a previous stamp.
     static func restoreAtLaunch() {
         MinimizedWindowIcon.start()
         let name = current
         if let saved = UserDefaults.vane.string(forKey: key), saved != canonicalName(saved) {
             UserDefaults.vane.set(canonicalName(saved), forKey: key)
         }
-        // Also clear an old stamp for Dark after relaunch or an update.
-        guard overrides(name) || canPersist else { return }
+        guard NSImage(named: "AppIcon-Dark") != nil || name != `default` || canPersist else { return }
         // An unavailable asset is a temporary fallback; retain its saved selection.
         guard canonicalName(UserDefaults.vane.string(forKey: key) ?? `default`) == name else { return }
         apply(name)
@@ -130,16 +125,15 @@ import AppKit
           !shouldPersist(bundlePath: "/private/var/folders/q3/AppTranslocation/9F1/d/Vane.app")),
          ("the bare dev binary has no bundle to stamp",
           !shouldPersist(bundlePath: "/Users/ada/vane/.build/release/vane")),
-         ("Dark preserves the Dock's original composition",
-          `default` == "Dark" && !overrides("Dark")
-              && catalogue.first { $0.name == "Dark" }?.asset == nil),
+         ("Dark has explicit black artwork independent of the bundle's previous icon",
+          `default` == "Dark" && catalogue.first { $0.name == "Dark" }?.asset == "AppIcon-Dark"),
          ("Normal and Galaxy remain explicit bundled choices",
           catalogue.contains { $0.name == "Normal" && $0.asset == "AppIcon" }
               && catalogue.contains { $0.name == "Galaxy" && $0.asset == "AppIcon-Galaxy" }),
          ("legacy names keep the closest finish after standardization",
           canonicalName("Default") == "Dark" && canonicalName("Glass") == "Normal"
               && canonicalName("Navy") == "Normal" && canonicalName("Galaxy") == "Galaxy"
-              && canonicalName("Custom") == "Dark" && !overrides("Default")),
+              && canonicalName("Custom") == "Dark"),
          ("the standardized picker has nine finishes and no old duplicate labels",
           catalogue.map(\.name) == ["Normal", "Dark", "Galaxy", "Candy", "Neon",
                                     "Fluted Glass", "Fluted Glass Dark", "Schoolbook", "Luminous"])]

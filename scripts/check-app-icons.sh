@@ -31,7 +31,10 @@ cp -R "$BUNDLE" "$PERSIST"
 "$PERSIST/Contents/MacOS/Check" --persistence verify
 "$PERSIST/Contents/MacOS/Check" --persistence restore
 GALAXY_STAMP=$(shasum "$PERSIST/Icon"$'\r'"/..namedfork/rsrc" | cut -d ' ' -f 1)
+"$PERSIST/Contents/MacOS/Check" --persistence "Fluted Glass Dark"
+"$PERSIST/Contents/MacOS/Check" --persistence verify
 "$PERSIST/Contents/MacOS/Check" --persistence Dark
+"$PERSIST/Contents/MacOS/Check" --persistence verify
 "$PERSIST/Contents/MacOS/Check" --persistence Candy
 CANDY_STAMP=$(shasum "$PERSIST/Icon"$'\r'"/..namedfork/rsrc" | cut -d ' ' -f 1)
 [ "$GALAXY_STAMP" != "$CANDY_STAMP" ] || { echo "FAIL: changing finish must replace the stamped image"; exit 1; }
@@ -49,7 +52,10 @@ codesign --force --sign - "$SERVICE"
 codesign --force --entitlements Vane.entitlements --sign - "$SANDBOX"
 "$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence Galaxy
 "$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence verify
+"$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence "Fluted Glass Dark"
+"$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence verify
 "$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence Dark
+"$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence verify
 "$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence Galaxy
 "$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence restore
 "$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence invalid-data
@@ -57,4 +63,4 @@ codesign --force --entitlements Vane.entitlements --sign - "$SANDBOX"
 "$SANDBOX/Contents/MacOS/Check" --sandboxed --persistence cleanup
 "$PERSIST/Contents/MacOS/Check" --persistence cleanup
 codesign --verify --deep --strict "$SANDBOX"
-echo "PASS: built-in icons persist after exit, and Dark clears the stamp, in sandboxed and unsandboxed bundles"
+echo "PASS: built-in icons persist after exit, including the black Dark finish, in sandboxed and unsandboxed bundles"

@@ -1,14 +1,36 @@
-import Foundation
+import AppKit
 import Security
 
 /// A separate, unsandboxed service stamps only the app that contains it. No caller path
 /// crosses XPC, and each peer must satisfy the other embedded binary's signature.
 @objc protocol VaneIconPersisting {
-    func setIcon(_ image: Data?, withReply reply: @escaping (Bool) -> Void)
+    func setIcon(_ image: Data?, withReply reply: @escaping @Sendable (Bool) -> Void)
 }
 
 enum AppIconPersistence {
     static let serviceName = "io.github.notnaki.vane.IconService"
+    /// Publish the saved image before the caller can quit. The Dock caches its canonical
+    /// bundle icon at launch; a Finder stamp alone can leave the first quit on that image.
+    @MainActor static func stamp(_ image: NSImage?, at host: URL) -> Bool {
+        guard NSWorkspace.shared.setIcon(image, forFile: host.path, options: []) else { return false }
+        refreshDockIconCache()
+        return true
+    }
+
+    /// Tahoe's icon-appearance publisher tells the Dock to rebuild its cached icons.
+    /// Re-save the existing configuration without changing any appearance preference.
+    /// This private API is optional: persistence still works if a future OS removes it.
+    @MainActor static func refreshDockIconCache(
+        configurationClass: NSObject.Type? = NSClassFromString("SLSIconAppearanceConfiguration") as? NSObject.Type
+    ) {
+        let fetch = NSSelectorFromString("fetchCurrentIconAppearanceConfiguration")
+        let save = NSSelectorFromString("save")
+        guard let configurationClass,
+              configurationClass.responds(to: fetch),
+              let configuration = configurationClass.perform(fetch)?.takeUnretainedValue() as? NSObject,
+              configuration.responds(to: save) else { return }
+        configuration.perform(save)
+    }
 
     static func hostBundle(for service: URL) -> URL? {
         let host = service.deletingLastPathComponent().deletingLastPathComponent()
