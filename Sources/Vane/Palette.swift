@@ -957,7 +957,10 @@ struct CommandField: NSViewRepresentable {
     @discardableResult
     private func forget() -> Bool {
         guard rows.indices.contains(index), let url = rows[index].forget else { return false }
-        store.history.forget(url: url)
+        guard store.history.forget(url: url) else {
+            HistoryWindow.showWriteFailure(store.history)
+            return true
+        }
         axAnnounce("Removed from history.")
         // The suggestion list is the store's, and it is what has just changed underneath.
         store.suggest(typed, scopedTo: activeBang)

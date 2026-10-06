@@ -29,10 +29,6 @@ struct BrowserProfile {
         init(_ m: String) { errorDescription = m }
     }
 
-    /// ponytail: newest N urls, not the whole table. Store.record is one INSERT per row on
-    /// the main thread, and a heavy Chrome profile has six figures of them. If someone ever
-    /// wants the full archive the fix is a batched transaction in Store, not a bigger number.
-
     // MARK: Detection
 
     private static let appSupport = FileManager.default
@@ -145,7 +141,7 @@ struct BrowserProfile {
             }
         }
 
-        return (commit(visits, into: profileID), commit(marks, into: profileID))
+        return (try commit(visits, into: profileID), commit(marks, into: profileID))
     }
 
     /// A folder the user picked in the panel. Its family is sniffed from what is inside it,
@@ -191,13 +187,16 @@ struct BrowserProfile {
     /// Real visit dates go in as-is now, so there is no cap and no reliance on insertion
     /// order to fake the source browser's recency ranking.
     private static func commit(_ visits: [(url: String, title: String, at: Date)],
-                               into profileID: UUID) -> Int {
+                               into profileID: UUID) throws -> Int {
         let rows = visits.compactMap { v -> (url: URL, title: String, at: Date)? in
             guard let u = URL(string: v.url), u.scheme == "http" || u.scheme == "https" else { return nil }
             return (u, v.title, v.at)
         }
-        Store.store(for: profileID).record(rows)
-        return rows.count
+        let store = Store.store(for: profileID)
+        guard let count = store.record(rows) else {
+            throw Failure("Could not save imported history. " + (store.lastHistoryError ?? "Try the import again."))
+        }
+        return count
     }
 
     /// The Set collapses urls filed in two folders; INSERT OR IGNORE in Store handles the

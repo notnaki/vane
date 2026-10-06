@@ -13,6 +13,16 @@ import SwiftUI
 @MainActor enum HistoryWindow {
     private static var window: NSWindow?
 
+    static func showWriteFailure(_ store: Store) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Could not update browsing history"
+        alert.informativeText = (store.lastHistoryError ?? "The history database could not be written.")
+            + "\n\nYour history has not been changed. Try again after resolving the storage problem."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     static func show(profileID: UUID = Windows.current?.profileID ?? ProfileManager.activeProfileID) {
         if let w = window {
             w.contentView = NSHostingView(rootView: HistoryView(profileID: profileID)
@@ -102,7 +112,7 @@ private struct HistoryView: View {
             Button("Clear History…") {
                 guard confirm("Clear all browsing history?", "Clear",
                               "Bookmarks and saved passwords are not affected.") else { return }
-                store.clearHistory()
+                guard store.clearHistory() else { HistoryWindow.showWriteFailure(store); return }
                 reload()
                 axAnnounce("History cleared.")
             }
@@ -204,7 +214,7 @@ private struct HistoryView: View {
     }
 
     private func delete(_ visit: Visit) {
-        store.deleteVisit(visit.id)
+        guard store.deleteVisit(visit.id) else { HistoryWindow.showWriteFailure(store); return }
         if selection == visit.id { selection = nil }
         reload()
         axAnnounce("Forgot \(visit.display).")
