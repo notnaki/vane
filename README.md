@@ -85,6 +85,8 @@ nested folders. Click the locked folder to show its unlock controls in the page 
 authentication stays inline; **More unlock options…** opens macOS authentication,
 where you can choose your Mac login password. Without available Touch ID,
 **Unlock folder…** is the main action and uses macOS authentication.
+Settings → Profiles → Passwords → **Folder unlock method** can select **System**
+to open macOS authentication directly whenever you request an unlock.
 If a page inside is open when you lock,
 Vane replaces it with a heavily blurred, frozen backdrop and an unlock message;
 the page stops running and cannot receive input. Unlocks last until you relock,

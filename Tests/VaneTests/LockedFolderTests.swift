@@ -264,6 +264,9 @@ import LocalAuthentication
         TestEnvironment.prepare()
         let store = TabStore(profileID: UUID(), session: [])
         defer { cleanUp(store) }
+        store.folderAuthentication = FolderAuthentication()
+        store.folderAuthentication.inlineAvailable = { true }
+        Prefs.folderUnlockMethod = .touchID
         let tab = store.newBlankTab(focus: false, as: .pinned)
         let folder = store.pins.newFolder(named: "Private")!
         store.pins.move(tab.id.uuidString, into: folder.id)
@@ -287,6 +290,9 @@ import LocalAuthentication
         TestEnvironment.prepare()
         let store = TabStore(profileID: UUID(), session: [])
         defer { cleanUp(store) }
+        store.folderAuthentication = FolderAuthentication()
+        store.folderAuthentication.inlineAvailable = { true }
+        Prefs.folderUnlockMethod = .touchID
         let folder = store.pins.newFolder(named: "Private")!
         store.lockFolder(folder.id)
         var result: Bool?
@@ -320,6 +326,59 @@ import LocalAuthentication
         error = nil
         XCTAssertFalse(cancelled.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error))
         XCTAssertEqual(error?.code, LAError.invalidContext.rawValue)
+    }
+
+    func testUnavailableTouchIDAndSystemPreferenceOpenNativeAuthenticationDirectly() {
+        TestEnvironment.prepare()
+        let previous = Prefs.folderUnlockMethod
+        defer { Prefs.folderUnlockMethod = previous }
+        for (available, method) in [(false, FolderUnlockMethod.touchID), (true, .system)] {
+            let store = TabStore(profileID: UUID(), session: [])
+            defer { cleanUp(store) }
+            let authentication = FolderAuthentication()
+            authentication.inlineAvailable = { available }
+            var nativeRequests = 0
+            authentication.systemAuthenticator = { _, reply in
+                nativeRequests += 1
+                reply(true)
+                return nil
+            }
+            store.folderAuthentication = authentication
+            Prefs.folderUnlockMethod = method
+            let folder = store.pins.newFolder(named: "Private")!
+            store.lockFolder(folder.id)
+            var result: Bool?
+            store.unlockFolder(folder.id) { result = $0 }
+            XCTAssertEqual(nativeRequests, 1)
+            XCTAssertEqual(result, true)
+            XCTAssertNil(store.folderUnlockRequest, "Native authentication needs no second inline action")
+            XCTAssertFalse(store.isFolderLocked(folder.id))
+        }
+    }
+
+    func testSwitchingToSystemCompletesAnAlreadyPresentedInlineRequest() {
+        TestEnvironment.prepare()
+        let previous = Prefs.folderUnlockMethod
+        defer { Prefs.folderUnlockMethod = previous }
+        let store = TabStore(profileID: UUID(), session: [])
+        defer { cleanUp(store) }
+        let authentication = FolderAuthentication()
+        authentication.inlineAvailable = { true }
+        authentication.systemAuthenticator = { _, reply in reply(true); return nil }
+        store.folderAuthentication = authentication
+        let folder = store.pins.newFolder(named: "Private")!
+        store.lockFolder(folder.id)
+        Prefs.folderUnlockMethod = .touchID
+        var inlineResult: Bool?
+        store.unlockFolder(folder.id) { inlineResult = $0 }
+        XCTAssertNotNil(store.folderUnlockRequest)
+        Prefs.folderUnlockMethod = .system
+        var nativeResult: Bool?
+        store.unlockFolder(folder.id) { nativeResult = $0 }
+        XCTAssertEqual(inlineResult, true)
+        XCTAssertEqual(nativeResult, true)
+        XCTAssertNil(store.folderUnlockRequest)
+        XCTAssertNil(store.folderUnlockPage)
     }
 
     private func cleanUp(_ store: TabStore) {

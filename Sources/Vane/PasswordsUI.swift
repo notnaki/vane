@@ -16,6 +16,7 @@ import SwiftUI
 /// The pure parts (grouping, search, what a keystroke means, what VoiceOver is allowed to
 /// hear) are static functions with a `check()`, so they can be proved headless.
 @MainActor struct PasswordsPane: View {
+    @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var folderUnlockMethod = FolderUnlockMethod.touchID
     var settingsProfileID: UUID? = nil
     @ObservedObject private var manager = ProfileManager.shared
     @State private var query = ""
@@ -84,6 +85,15 @@ import SwiftUI
                     }
                     Spacer()
                     Button("Add password") { beginAdding() }
+                }
+                SettingsCard {
+                    SettingsRow("Folder unlock method") {
+                        Picker("Folder unlock method", selection: $folderUnlockMethod) {
+                            Text("Touch ID").tag(FolderUnlockMethod.touchID)
+                            Text("System").tag(FolderUnlockMethod.system)
+                        }.labelsHidden()
+                    }
+                    Footnote("Touch ID unlocks inside Vane. System opens macOS authentication. Macs without Touch ID use System automatically.")
                 }
                 search
                 HStack {

@@ -9,9 +9,12 @@ struct LockedFolderPage: View {
     @EnvironmentObject var store: TabStore
     let folder: Folder
     @StateObject private var control = FolderUnlockControl()
+    @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var method = FolderUnlockMethod.touchID
     private var hasTouchID: Bool {
         control.context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
     }
+
+    private var usesInline: Bool { method == .touchID && hasTouchID }
 
     var body: some View {
         ZStack {
@@ -37,28 +40,37 @@ struct LockedFolderPage: View {
                     .foregroundStyle(Look.inkSecondary)
                     .padding(.top, 6)
                     .padding(.bottom, 24)
-                HStack(spacing: 10) {
-                    if hasTouchID {
-                        EmbeddedFolderAuthentication(context: control.context)
-                            .id(ObjectIdentifier(control.context))
+                Button { unlock(password: !usesInline) } label: {
+                    HStack(spacing: 10) {
+                        if usesInline {
+                            ZStack {
+                                EmbeddedFolderAuthentication(context: control.context)
+                                    .id(ObjectIdentifier(control.context))
+                                Image(systemName: "touchid")
+                                    .font(.system(size: 25, weight: .light))
+                                    .foregroundStyle(Look.inkSecondary)
+                                    .opacity(control.authenticating ? 0 : 1)
+                            }
                             .frame(width: 28, height: 28)
-                    } else {
-                        Image(systemName: "key.fill").font(.system(size: 13))
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                        } else {
+                            Image(systemName: "key.fill").font(.system(size: 13))
+                        }
+                        Text(control.authenticating ? "Unlocking…" : (usesInline ? "Unlock with Touch ID" : "Unlock folder…"))
+                            .font(.system(size: 12, weight: .medium))
                     }
-                    Button(control.authenticating ? "Unlocking…" : (hasTouchID ? "Unlock with Touch ID" : "Unlock folder…")) {
-                        unlock(password: !hasTouchID)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(Look.pillFill, in: .rect(cornerRadius: 10))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10).strokeBorder(Look.inkTertiary.opacity(0.15))
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .disabled(control.authenticating)
                 }
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(Look.pillFill, in: .rect(cornerRadius: 10))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10).strokeBorder(Look.inkTertiary.opacity(0.15))
-                }
+                .buttonStyle(.plain)
+                .disabled(control.authenticating)
+                .animation(Motion.reduced ? nil : Look.quick, value: control.authenticating)
                 HStack(spacing: 16) {
-                    if hasTouchID {
+                    if usesInline {
                         Button("More unlock options…") { unlock(password: true) }
                             .help("Opens macOS authentication, where you can use your Mac login password.")
                             .disabled(control.authenticating)
@@ -70,7 +82,7 @@ struct LockedFolderPage: View {
                 .buttonStyle(.plain).font(.system(size: 11))
                 .foregroundStyle(Look.inkSecondary)
                 .padding(.top, 14)
-                if !hasTouchID {
+                if !usesInline {
                     Text("Use your Mac login password.")
                         .font(.system(size: 11)).foregroundStyle(Look.inkSecondary)
                         .padding(.top, 8)
@@ -95,13 +107,17 @@ struct LockedFolderPage: View {
     }
 
     private func unlock(password: Bool) {
-        if store.folderUnlockRequest == nil { store.unlockFolder(folder.id) }
         control.authenticating = true
         control.failed = false
+        if store.folderUnlockRequest == nil, !store.usesInlineFolderUnlock {
+            store.unlockFolder(folder.id) { success in finish(success) }
+            return
+        }
+        if store.folderUnlockRequest == nil { store.unlockFolder(folder.id) }
         let authenticate: FolderAuthentication.Authenticator
         if password {
             // A new, unattached context deliberately permits the macOS password dialog.
-            authenticate = FolderAuthentication.systemAuthentication
+            authenticate = store.folderAuthentication.systemAuthenticator
         } else {
             let embedded = control.context
             authenticate = { reason, reply in
@@ -113,10 +129,12 @@ struct LockedFolderPage: View {
                 return embedded
             }
         }
-        store.runFolderUnlock(using: authenticate) { success in
-            Motion.list { control.finish(success) }
-            if success, let current = store.current { store.current = current }
-        }
+        store.runFolderUnlock(using: authenticate) { success in finish(success) }
+    }
+
+    private func finish(_ success: Bool) {
+        Motion.list { control.finish(success) }
+        if success, let current = store.current { store.current = current }
     }
 }
 
@@ -144,7 +162,12 @@ struct LockedFolderPage: View {
 private struct EmbeddedFolderAuthentication: NSViewRepresentable {
     let context: LAContext
     func makeNSView(context: Context) -> LAAuthenticationView {
-        LAAuthenticationView(context: self.context, controlSize: .small)
+        let view = LAAuthenticationView(context: self.context, controlSize: .small)
+        view.wantsLayer = true
+        let neutral = CIFilter.colorControls()
+        neutral.saturation = 0
+        view.layer?.filters = [neutral]
+        return view
     }
     func updateNSView(_ view: LAAuthenticationView, context: Context) {}
 }

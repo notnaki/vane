@@ -18,6 +18,10 @@ import LocalAuthentication
     private var pending: [Key: Pending] = [:]
     private let authenticate: Authenticator
     let needsInlineAuthentication: Bool
+    var inlineAvailable: @MainActor () -> Bool = {
+        LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
+    }
+    var systemAuthenticator: Authenticator = FolderAuthentication.systemAuthentication
     private var observers: [NSObjectProtocol] = []
 
     init(observingSession: Bool = false,
@@ -120,6 +124,10 @@ extension Pins {
 }
 
 extension TabStore {
+    var usesInlineFolderUnlock: Bool {
+        Prefs.folderUnlockMethod == .touchID && folderAuthentication.inlineAvailable()
+    }
+
     var folderUnlockPage: Folder? {
         if let request = folderUnlockRequest,
            let shape = holder(of: request.target) {
@@ -187,6 +195,17 @@ extension TabStore {
         }
         guard let blocked = lockedFolders(for: id.uuidString).first else { done(true); return }
         if authenticate == nil, folderAuthentication.needsInlineAuthentication {
+            if !usesInlineFolderUnlock {
+                if let request = folderUnlockRequest {
+                    if request.target == id {
+                        runFolderUnlock(using: folderAuthentication.systemAuthenticator, then: done)
+                        return
+                    }
+                    cancelFolderUnlock()
+                }
+                unlockFolder(id, using: folderAuthentication.systemAuthenticator, then: done)
+                return
+            }
             if let request = folderUnlockRequest, request.target == id {
                 request.replies.append(done)
             } else {
