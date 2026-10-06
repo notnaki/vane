@@ -1685,11 +1685,17 @@ struct FolderIcons: View {
     }
 
     private func tile(_ name: String) -> some View {
-        Image(systemName: name)
-            .font(Look.icon)
-            .frame(width: Look.rowHeight, height: Look.rowHeight)
-            .background(folder.icon == name ? Look.selected : .clear,
-                        in: .rect(cornerRadius: Look.pillRadius))
+        Group {
+            if name == Folder.defaultIcon {
+                FolderIcon(open: false)
+                    .frame(width: Look.tileIcon, height: Look.tileIcon)
+            } else {
+                Image(systemName: name).font(Look.icon)
+            }
+        }
+        .frame(width: Look.rowHeight, height: Look.rowHeight)
+        .background(folder.icon == name ? Look.selected : .clear,
+                    in: .rect(cornerRadius: Look.pillRadius))
     }
 
     /// One character, so a pasted sentence cannot become a folder's glyph.
