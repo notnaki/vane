@@ -54,3 +54,7 @@ passing release checks.
   device permissions, and clean-Mac installation.
 - Keep real-account, payment, hardware, and notarized-distribution checks explicitly marked
   as requiring an appropriate test environment.
+- Passkeys are known pending Apple managed browser entitlement approval and a
+  matching embedded provisioning profile; registration and sign-in must be
+  verified after provisioning and user authorization. Provider sign-ins,
+  subscription streaming, and cross-network calls remain pending in the matrix.
