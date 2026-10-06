@@ -113,6 +113,7 @@ struct RecentLibraryPreview: View {
         }
         .scrollIndicators(.hidden)
         .defaultScrollAnchor(.bottom)
+        .padding(.horizontal, Look.inset)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Recent \(category.title)")
     }
@@ -123,6 +124,7 @@ private struct RecentLibraryRow: View {
     let open: () -> Void
     @State private var hovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     private var title: String {
         switch item {
@@ -168,12 +170,13 @@ private struct RecentLibraryRow: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 8).frame(height: 48).contentShape(.rect)
-            .background(hovered ? Look.hovered : .clear, in: .rect(cornerRadius: 8))
+            .background(hovered ? Look.selected : Look.pillFill,
+                        in: .rect(cornerRadius: Look.pillRadius))
         }
         .buttonStyle(TactileButtonStyle())
         .foregroundStyle(Look.inkSecondary)
         .onHover { hovered = $0 }
-        .animation(reduceMotion ? nil : Look.quick, value: hovered)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovered)
     }
 
     private var spaceSubtitle: String {
@@ -189,6 +192,7 @@ private struct RecentDownloadRow: View {
     let close: () -> Void
     @State private var hovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         Button {
@@ -212,11 +216,12 @@ private struct RecentDownloadRow: View {
             }
             .padding(.horizontal, 8).frame(height: 48)
             .contentShape(.rect)
-            .background(hovered ? Look.hovered : .clear, in: .rect(cornerRadius: 8))
+            .background(hovered ? Look.selected : Look.pillFill,
+                        in: .rect(cornerRadius: Look.pillRadius))
         }
         .buttonStyle(TactileButtonStyle())
         .onHover { hovered = $0 }
-        .animation(reduceMotion ? nil : Look.quick, value: hovered)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovered)
         .accessibilityLabel(item.name)
         .accessibilityValue(item.spoken)
         .accessibilityHint(item.status == .done ? "Opens this download." : "")
