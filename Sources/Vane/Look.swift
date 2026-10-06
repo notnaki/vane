@@ -168,7 +168,11 @@ enum Look {
     static let profileListWidth: CGFloat = 230
     /// The saved-account list under a login form's username field, for when the field is
     /// narrower than the usernames it holds.
-    static let chooserWidth: CGFloat = 220
+    static let chooserWidth: CGFloat = 280
+    static let passwordChooserHeader: CGFloat = 52
+    static let passwordChooserRow: CGFloat = 56
+    static let passwordChooserFooter: CGFloat = 40
+    static let passwordChooserInset: CGFloat = 4
     /// The save-password card at the top of the page. Fixed, so a long host does not make
     /// the card breathe in and out between one site and the next.
     static let offerWidth: CGFloat = 340

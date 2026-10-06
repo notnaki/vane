@@ -137,10 +137,10 @@ enum LinkTarget {
 
     /// Open straight at one pane — Help ▸ Keyboard Shortcuts, and anything else that means
     /// "the setting you are after is over there".
-    static func show(tab: String) {
+    static func show(tab: String, profileID: UUID? = nil) {
         show()
         if ["passwords", "privacy"].contains(tab) {
-            selection.profileID = ProfileManager.shared.active.id
+            selection.profileID = profileID ?? ProfileManager.shared.active.id
         }
         selection.id = tab
     }

@@ -401,6 +401,7 @@ struct TitleReveal: Equatable, Sendable {
     @Published var canGoForward = false
     /// A password the page just submitted, waiting on the user to approve saving it.
     @Published var pendingSave: PendingSave?
+    @Published var passwordSaveProblem: String?
     /// The account list hanging under this page's login form, when the site has more than
     /// one saved login. Nil the rest of the time, which is most of the time.
     @Published var passwordChoice: PasswordChoice?
@@ -1286,7 +1287,7 @@ struct TitleReveal: Equatable, Sendable {
         // all: the keyboard handler still swallows the arrows and Return still fills, with
         // nothing on screen to say why.
         guard PasswordChooser.place(anchor: anchor, in: web.bounds.size,
-                                    height: PasswordChooser.height(rows: accounts.count)) != nil
+                                    height: PasswordChooser.height(rows: accounts.count, in: web.bounds.size)) != nil
         else { return }
         passwordChoice = PasswordChoice(host: host, accounts: accounts, anchor: anchor)
     }
@@ -1661,6 +1662,7 @@ struct TitleReveal: Equatable, Sendable {
         // submitted is decrypted, and only to answer that one question.
         let stored = Passwords.password(host: host, account: account, profileID: profileID)
         if stored == password { return }
+        passwordSaveProblem = nil
         pendingSave = PendingSave(host: host, account: account, password: password,
                                   update: stored != nil)
     }
@@ -1669,8 +1671,13 @@ struct TitleReveal: Equatable, Sendable {
         guard let p = pendingSave else { return }
         let stored = Passwords.save(host: p.host, account: p.account, password: p.password,
                                     profileID: profileID)
-        axAnnounce(stored ? (p.update ? "Password updated." : "Password saved.")
-                          : PasswordsPane.saveFailed(host: p.host))
+        guard stored else {
+            passwordSaveProblem = PasswordsPane.saveFailed(host: p.host)
+            axAnnounce(passwordSaveProblem ?? "")
+            return
+        }
+        passwordSaveProblem = nil
+        axAnnounce(p.update ? "Password updated." : "Password saved.")
         pendingSave = nil
     }
 
