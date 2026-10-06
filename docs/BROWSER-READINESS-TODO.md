@@ -12,10 +12,11 @@ passing release checks.
 
 ## Permission behavior
 
-- Scope camera, microphone, location, and screen-capture decisions to the requesting origin
-  and profile.
-- Support one-time grants and keep private-session grants in memory only.
-- Verify navigation, tab closure, and profile deletion invalidate the appropriate grants.
+- Extend origin/profile-scoped decisions to location and screen capture where WebKit
+  exposes supported permission hooks. Camera and microphone already offer window-attached
+  prompts, document-scoped Allow Once, and memory-only private-tab choices.
+- Broaden real-site permission lifecycle coverage beyond the camera/microphone popup,
+  navigation, tab closure, and profile-reset regressions.
 
 ## Extension consent
 

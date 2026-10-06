@@ -50,6 +50,8 @@ struct SiteControlModel: Equatable, Sendable {
     /// nil is not "off": it means this site has never been answered, so it will be asked.
     var camera: Bool?
     var microphone: Bool?
+    var cameraOnce = false
+    var microphoneOnce = false
     var pictureInPicture = false
     var zoom = 1.0
     var blocking = true
@@ -159,9 +161,11 @@ extension SiteControlModel {
     var rows: [Row] {
         guard !siteless else { return [] }
         var out: [Row] = [
-            Row(id: .camera, title: "Camera", glyph: "camera", control: .permission(camera)),
+            Row(id: .camera, title: "Camera", glyph: "camera", control: .permission(camera),
+                note: cameraOnce ? "Allowed once, until this tab navigates or closes." : nil),
             Row(id: .microphone, title: "Microphone", glyph: "mic",
-                control: .permission(microphone)),
+                control: .permission(microphone),
+                note: microphoneOnce ? "Allowed once, until this tab navigates or closes." : nil),
             // ponytail: no Notifications row. WKWebView has no web-notification permission
             // hook on macOS — nothing asks, so there is nothing to remember and nothing to
             // switch, and a dead toggle is a promise Vane cannot keep. Upgrade path the day
@@ -238,8 +242,10 @@ extension SiteControlModel {
         secureContent = tab.secureContent
         certificateTrusted = tab.certificateTrusted
         if let permissionScope = SitePermissions.scope(for: tab) {
-            camera = SitePermissions.effective(scope: permissionScope, type: .camera)
-            microphone = SitePermissions.effective(scope: permissionScope, type: .microphone)
+            camera = SitePermissions.effective(scope: permissionScope, type: .camera, tabID: tab.id)
+            microphone = SitePermissions.effective(scope: permissionScope, type: .microphone, tabID: tab.id)
+            cameraOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .camera, tabID: tab.id)
+            microphoneOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .microphone, tabID: tab.id)
         }
         pictureInPicture = tab.pictureInPicture
         zoom = tab.zoom
@@ -320,13 +326,13 @@ extension SiteControlModel {
     /// does, so the keyboard and VoiceOver have a route that is not a menu.
     private static func cycle(_ type: WKMediaCaptureType, on tab: Tab) {
         guard let scope = SitePermissions.scope(for: tab) else { return }
-        let current = SitePermissions.effective(scope: scope, type: type)
+        let current = SitePermissions.effective(scope: scope, type: type, tabID: tab.id)
         set(type, to: current == nil ? true : (current == true ? false : nil), on: tab)
     }
 
     static func set(_ type: WKMediaCaptureType, to answer: Bool?, on tab: Tab) {
         guard let scope = SitePermissions.scope(for: tab) else { return }
-        SitePermissions.set(scope: scope, type: type, answer: answer)
+        SitePermissions.set(scope: scope, type: type, answer: answer, tabID: tab.id)
         SiteChanges.shared.bump()
     }
 
