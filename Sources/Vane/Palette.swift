@@ -552,6 +552,9 @@ struct CommandField: NSViewRepresentable {
 @MainActor struct PaletteView: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var sidebar = SidebarWidth.shared
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    private var sidebarLayout: SidebarChromeLayout { SidebarChromeLayout(width: sidebar.width) }
     let mode: PaletteMode
     let dismiss: () -> Void
 
@@ -612,10 +615,12 @@ struct CommandField: NSViewRepresentable {
                     // search modes retain their centered layout.
                     .padding(.leading, sidebarAddress ? Look.inset : 0)
                     .padding(.top, max(Look.inset,
-                                       min(sidebarAddress ? Look.topInset + Look.topRow + Look.inset
+                                       min(sidebarAddress ? sidebarLayout.addressTop
                                            : (geo.size.height - barHeight) / 2,
                                            geo.size.height - barHeight - Look.inset)))
                     .animation(motion(Look.quick), value: rows.count)
+                    .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
+                               value: sidebarLayout.stacked)
             }
         }
         .onExitCommand { close() }

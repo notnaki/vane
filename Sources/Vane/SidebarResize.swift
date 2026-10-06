@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+/// The header and address editor use the same reflow, so editing still opens over the pill.
+struct SidebarChromeLayout {
+    let width: CGFloat
+    var compact: Bool { width < Look.sidebarWidth }
+    // 16pt outer insets + 62pt lights + 22pt toggle + 64pt navigation + three 8pt gaps.
+    var stacked: Bool { width < 188 }
+    var headerHeight: CGFloat { Look.topRow * (stacked ? 2 : 1) }
+    var addressTop: CGFloat { Look.topInset + headerHeight + Look.inset }
+}
+
 /// The sidebar's width, and the grab handle on its right edge.
 ///
 /// Arc's sidebar is dragged by its own trailing edge: the pointer turns into a column-resize
@@ -24,7 +34,7 @@ import SwiftUI
 
     /// Measured from the installed Arc for macOS resize handlers: 164–500pt,
     /// a 228pt reset width, and collapse when the pointer passes 82pt.
-    /// The compact header fits at the minimum without hiding navigation controls.
+    /// The compact header reflows at the minimum without hiding navigation controls.
     nonisolated static let minimum: CGFloat = 164
     nonisolated static let maximum: CGFloat = 500
     nonisolated static let collapseThreshold: CGFloat = 82
