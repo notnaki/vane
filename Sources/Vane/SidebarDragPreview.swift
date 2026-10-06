@@ -135,8 +135,10 @@ enum FavouriteLanding {
                            width: address.width, height: Look.tileHeight)
         } else { setDestination(nil); return }
         guard FavouriteLanding.isNear(point, frame: frame) else { setDestination(nil); return }
-        let remaining = store.tabs.filter { $0.kind == .favourite && $0.id != id }.count
-        let columns = SidebarWidth.favouriteColumns(remaining + 1, width: SidebarWidth.shared.width)
+        let incoming = sidebarMoveTabs([id], in: store)
+        let remaining = store.tabs.filter { $0.kind == .favourite && !incoming.contains($0.id) }.count
+        let columns = SidebarWidth.favouriteColumns(remaining + incoming.count,
+                                                    width: SidebarWidth.shared.width)
         setDestination(Destination(index: FavouriteLanding.index(at: point, frame: frame,
                                                                  count: remaining, columns: columns),
                                    width: FavouriteLanding.tileWidth(width: frame.width, columns: columns)))
@@ -203,9 +205,9 @@ struct SidebarTabGhost: View {
 
         var body: some View {
             Group {
-                if !tile, let split = store.split(containing: tab.id) {
+                if !tile, tab.kind != .favourite, let split = store.split(containing: tab.id) {
                     PaneStrip(store: store, split: split,
-                              panes: store.tabs.filter { split.contains($0.id) },
+                              panes: split.tabs.compactMap { id in store.tabs.first { $0.id == id } },
                               selected: true, ticked: false, live: false)
                 } else {
             HStack(spacing: tile ? 0 : Look.rowSpacing) {
@@ -244,6 +246,7 @@ extension EnvironmentValues {
 
 extension TabStore {
     func dropInFavourites(_ ids: [Tab.ID], at index: Int) {
+        let ids = sidebarMoveTabs(ids, in: self)
         let others = tabs.filter { $0.kind == .favourite && !ids.contains($0.id) }
         let position = min(max(0, index), others.count)
         if position < others.count {

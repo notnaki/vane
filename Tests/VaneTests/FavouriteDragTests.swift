@@ -78,6 +78,23 @@ import XCTest
         XCTAssertEqual(store.tabs.count, ids.count)
     }
 
+    func testFavouriteLandingMovesRegularSplitTogetherButFavouriteTileIndependently() throws {
+        TestEnvironment.prepare()
+        let store = makeStore()
+        defer { clean(store) }
+        let lead = store.tabs[0], other = store.tabs[1], existing = store.tabs[2]
+        store.splits = [try XCTUnwrap(Split(tabs: [other.id, lead.id]))]
+        store.move(existing.id, to: .favourite)
+        store.dropInFavourites([lead.id], at: 0)
+        XCTAssertEqual(store.tabs.filter { $0.kind == .favourite }.map(\.id),
+                       [lead.id, other.id, existing.id])
+        XCTAssertEqual(store.splits[0].tabs, [other.id, lead.id])
+        XCTAssertEqual(sidebarMoveTabs([lead.id], in: store), [lead.id])
+        store.dropAtSectionRoot([lead.id], into: .today)
+        XCTAssertEqual(other.kind, .favourite)
+        XCTAssertEqual(lead.kind, .today)
+    }
+
     func testPreviewSlotCommitsSameOrderWithoutMutatingDuringHover() {
         TestEnvironment.prepare()
         let store = makeStore()

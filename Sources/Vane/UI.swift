@@ -1591,8 +1591,11 @@ private struct Favorites: View {
         var tabs = store.tabs.filter { $0.kind == .favourite }
         guard let destination = dragPreview.destination, let id = dragging.tab,
               let tab = store.tabs.first(where: { $0.id == id }) else { return tabs }
-        tabs.removeAll { $0.id == id }
-        tabs.insert(tab, at: min(destination.index, tabs.count))
+        let ids = sidebarMoveTabs([id], in: store)
+        let incoming = store.tabs.filter { ids.contains($0.id) }
+        tabs.removeAll { ids.contains($0.id) }
+        tabs.insert(contentsOf: incoming.isEmpty ? [tab] : incoming,
+                    at: min(destination.index, tabs.count))
         return tabs
     }
 
@@ -1907,7 +1910,7 @@ private struct FavoriteTile: View {
 
 /// A split is one visible row. Commit all of its regular panes together, while a
 /// favourite tile remains independent as documented by `leadPane`.
-@MainActor private func sidebarMoveTabs(_ rows: [Tab.ID], in store: TabStore) -> [Tab.ID] {
+@MainActor func sidebarMoveTabs(_ rows: [Tab.ID], in store: TabStore) -> [Tab.ID] {
     let ids = Set(rows.flatMap { id -> [Tab.ID] in
         guard store.tabs.first(where: { $0.id == id })?.kind != .favourite,
               let split = store.split(containing: id) else { return [id] }
