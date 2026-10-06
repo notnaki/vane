@@ -1536,6 +1536,32 @@ private struct Favorites: View {
     }
 }
 
+/// Shared visual surface, kept separate from the tile's native tooltip and drag targets.
+struct FavoriteTileBackground: View {
+    let selected: Bool
+    let hovering: Bool
+    let icon: NSImage?
+
+    private var outlineColors: [Color] {
+        let colors = FavoriteIconPalette.colors(for: icon).map { Color(nsColor: $0) }
+        if colors.isEmpty { return [Look.inkPrimary, Look.inkPrimary] }
+        return colors.count == 1 ? colors + colors : colors
+    }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: Look.pillRadius)
+            .fill(selected ? Look.ink(0.32) : hovering ? Look.selected : Look.pillFill)
+            .overlay {
+                RoundedRectangle(cornerRadius: Look.pillRadius)
+                    .strokeBorder(LinearGradient(colors: outlineColors,
+                        startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 2)
+                    .opacity(selected ? 0.9 : 0)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 private struct FavoriteTile: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
@@ -1560,10 +1586,11 @@ private struct FavoriteTile: View {
             }
         }
             .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
-            // Hover steps the tile up to the selected fill, the way the address pill does:
-            // a tile is a button, and a button that does not react reads as a label.
-            .background(selected || hovering ? Look.selected : Look.pillFill,
-                        in: .rect(cornerRadius: Look.pillRadius))
+            // The open favourite stays brighter than hover, with its own artwork's colors
+            // around the edge. The inset stroke preserves the tile's size and hit target.
+            .background {
+                FavoriteTileBackground(selected: selected, hovering: hovering, icon: tab.favicon)
+            }
             .overlay(alignment: side == .after ? .trailing : .leading) {
                 DropLine(on: side != nil, axis: .horizontal)
             }
@@ -1579,6 +1606,8 @@ private struct FavoriteTile: View {
                 }
             }
             .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selected)
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.favicon)
             .inStrip(tab.id, strip)
             .modifier(TabArrivalFeedback(feedback: store.feedback, id: tab.id))
             .contentShape(.rect)
