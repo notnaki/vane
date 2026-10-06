@@ -12,6 +12,6 @@ for source in "${SOURCES[@]}"; do
   name="$(basename "$source" .icon)"
   if [ "$name" != AppIcon ]; then ALTERNATES+=(--alternate-app-icon "$name"); fi
 done
-xcrun actool "${SOURCES[@]}" --compile "$DEST" --app-icon AppIcon \
+xcrun actool "${SOURCES[@]}" AppIcons/Static.xcassets --compile "$DEST" --app-icon AppIcon \
   "${ALTERNATES[@]}" --platform macosx --minimum-deployment-target 26.0 \
   --output-partial-info-plist "$INFO"

@@ -3,7 +3,6 @@ import AppKit
 final class IconService: NSObject, NSXPCListenerDelegate, VaneIconPersisting {
     private let host: URL
     private let requirement: String
-    private let lock = NSLock()
 
     init?(service: URL) {
         guard let host = AppIconPersistence.hostBundle(for: service),
@@ -22,17 +21,21 @@ final class IconService: NSObject, NSXPCListenerDelegate, VaneIconPersisting {
         return true
     }
 
-    func setIcon(_ data: Data?, withReply reply: @escaping (Bool) -> Void) {
-        lock.lock()
-        defer { lock.unlock() }
-        var image: NSImage?
-        if let data {
-            guard data.count <= 20 * 1024 * 1024,
-                  let decoded = NSImage(data: data), decoded.size.width > 0,
-                  decoded.size.height > 0 else { reply(false); return }
-            image = decoded
+    func setIcon(_ data: Data?, withReply reply: @escaping @Sendable (Bool) -> Void) {
+        // XPC invokes exports on a worker queue. Install and publish the Finder icon
+        // on the main queue, matching the direct path and its Dock cache publication.
+        // Serializing here also prevents concurrent requests from interleaving stamps.
+        DispatchQueue.main.async { [host] in
+            dispatchPrecondition(condition: .onQueue(.main))
+            var image: NSImage?
+            if let data {
+                guard data.count <= 20 * 1024 * 1024,
+                      let decoded = NSImage(data: data), decoded.size.width > 0,
+                      decoded.size.height > 0 else { reply(false); return }
+                image = decoded
+            }
+            reply(AppIconPersistence.stamp(image, at: host))
         }
-        reply(NSWorkspace.shared.setIcon(image, forFile: host.path, options: []))
     }
 }
 
