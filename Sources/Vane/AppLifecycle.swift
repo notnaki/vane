@@ -243,5 +243,8 @@ enum QuitAsk {
 @MainActor private final class DockAction: NSObject {
     let run: () -> Void
     init(_ run: @escaping () -> Void) { self.run = run }
-    @objc func fire() { run() }
+    @objc func fire() {
+        guard !FirstLaunch.isPresenting else { return }
+        run()
+    }
 }

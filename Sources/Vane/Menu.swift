@@ -9,13 +9,18 @@ import AppKit
     /// nearly all of them want; `validated` sets it for the ones that do not.
     var enabled: (() -> Bool)?
     init(_ run: @escaping () -> Void) { self.run = run }
-    @objc func fire() { run() }
+    @objc func fire() {
+        // Spaces manages enabled states itself, so validation alone cannot protect the
+        // browser behind the welcome. Recheck when any closure-backed item executes.
+        guard !FirstLaunch.isPresenting else { return }
+        run()
+    }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         // AppKit still offers key equivalents to the main menu while a modal session is up,
         // and a closure-backed item answers its own action — so without this, ⌘W and ⌘T still
         // fired behind the "Quit Vane?" card after the key monitor had stood down. See
         // `Keybindings.runs`.
-        guard Keybindings.runs(modal: NSApp.modalWindow != nil) else { return false }
+        guard !FirstLaunch.isPresenting, Keybindings.runs(modal: NSApp.modalWindow != nil) else { return false }
         return enabled?() ?? true
     }
 }
