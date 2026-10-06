@@ -802,7 +802,7 @@ private struct Sidebar: View {
     @State private var scrollHeight: CGFloat = 0
     @State private var sidebarHeight: CGFloat = 0
 
-    private var downloads: Downloads { Downloads.manager(for: store.profileID) }
+    private var downloads: DownloadLibrary { DownloadLibrary.library(for: store.profileID) }
     private var previewHeight: CGFloat {
         min(CGFloat(previewItems.count) * 56 - 8,
             max(0, sidebarHeight - Look.footer - Look.footerInset - Look.topInset - 48))
@@ -4643,7 +4643,7 @@ private struct BottomRow: View {
     var body: some View {
         HStack(spacing: 8) {
             LibraryButton(archive: Archive.shared(for: store.profileID),
-                          downloads: Downloads.manager(for: store.profileID),
+                          downloads: DownloadLibrary.library(for: store.profileID),
                           hover: downloadsHover, hasPreviewItems: hasPreviewItems,
                           preparePreview: preparePreview)
             Spacer(minLength: 0)
@@ -4676,11 +4676,9 @@ private struct BottomRow: View {
 /// Library panel out over the sidebar. The panel itself is LibraryWindow.swift.
 private struct LibraryButton: View {
     @EnvironmentObject var store: TabStore
-    /// Passed in from the window's own store, not read from a `shared`. That resolves to
-    /// whichever profile is active at the moment the view is built, so a background window
-    /// of another profile would show — and act on — the wrong lists.
+    /// Archive stays scoped to this window's profile; regular downloads span profiles.
     @ObservedObject var archive: Archive
-    @ObservedObject var downloads: Downloads
+    @ObservedObject var downloads: DownloadLibrary
     @ObservedObject var hover: DownloadsHover
     let hasPreviewItems: Bool
     let preparePreview: () -> Bool
@@ -4716,6 +4714,10 @@ private struct LibraryButton: View {
             .onChange(of: downloads.items.map(\.id)) {
                 let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
                 if (category == .downloads || category == .media) && !preparePreview() { hover.dismiss() }
+            }
+            .onChange(of: downloads.items.filter { $0.status == .done }.map(\.id)) {
+                let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
+                if category == .media && !preparePreview() { hover.dismiss() }
             }
             .onChange(of: archive.entries) {
                 let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")

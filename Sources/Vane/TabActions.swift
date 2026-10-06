@@ -464,7 +464,7 @@ struct ProgressRing: View {
 /// progress in the footer; Vane had it only inside the popover, so a download the user had
 /// walked away from was invisible.
 struct DownloadRing: View {
-    @ObservedObject var downloads: Downloads
+    @ObservedObject var downloads: DownloadLibrary
 
     var body: some View {
         if let fraction = TabActions.downloadFraction(
