@@ -106,6 +106,30 @@ import XCTest
         }
     }
 
+    func testAlternateOpaqueRepresentationDoesNotCropTransparentLogo() throws {
+        let image = NSImage(size: NSSize(width: 16, height: 16))
+        for pixels in [16, 32] {
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: pixels,
+                pixelsHigh: pixels, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                isPlanar: false, colorSpaceName: .calibratedRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            for y in 0..<pixels {
+                for x in 0..<pixels {
+                    let visible = pixels == 32 || (3..<13).contains(y)
+                    bitmap.setColor(NSColor(calibratedRed: 1, green: 0, blue: 0,
+                        alpha: visible ? 1 : 0), atX: x, y: y)
+                }
+            }
+            bitmap.size = image.size
+            image.addRepresentation(bitmap)
+        }
+        let renderer = ImageRenderer(content: SiteIcon(icon: image, size: 16))
+        renderer.scale = 1
+        let rendered = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+        XCTAssertEqual(try XCTUnwrap(rendered.colorAt(x: 0, y: 4)).alphaComponent,
+                       1, accuracy: 0.02,
+                       "A solid Retina variant must not crop the transparent normal-scale logo")
+    }
+
     func testParkingAtUncachedHostClearsPreviousSiteArtwork() async throws {
         let image = try cachedIcon(foreground: .systemGreen, background: .systemGreen)
         let tab = Tab(profileID: UUID())

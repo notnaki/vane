@@ -16,6 +16,18 @@ import AppKit
     }
 
     private static func sampleBackground(_ image: NSImage) -> Bool {
+        // ICO variants can have different silhouettes. A circle is safe only if every
+        // representation SwiftUI might choose at a display scale is fully opaque.
+        let representations = image.representations
+        guard !representations.isEmpty else { return false }
+        return representations.allSatisfy { representation in
+            let variant = NSImage(size: image.size)
+            variant.addRepresentation(representation)
+            return isOpaque(variant)
+        }
+    }
+
+    private static func isOpaque(_ image: NSImage) -> Bool {
         let size = 32
         guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
               let context = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
