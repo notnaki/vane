@@ -501,6 +501,7 @@ enum ArcImport {
         var favourites = 0, liveFolders = 0
         var passwords = 0, passwordsAlready = 0, passwordsSkipped = 0
         var cookies = 0, history = 0, bookmarks = 0
+        var historyImportFailures: [String] = []
         /// Rows the Safe Storage key would not open, of either kind.
         var locked = 0
         /// Rows that came out in the clear and the keychain would not take.
@@ -892,9 +893,12 @@ enum ArcImport {
                                          hasHistory: hasHistory, hasBookmarks: hasBookmarks)
             // `importAll` reaches the right profile's Store because it was given one to reach;
             // before Import from Arc it always wrote into whichever profile was on screen.
-            if let done = try? BrowserImport.importAll(from: profile, profileID: profileID) {
+            do {
+                let done = try BrowserImport.importAll(from: profile, profileID: profileID)
                 counts.history += done.history
                 counts.bookmarks += done.bookmarks
+            } catch {
+                counts.historyImportFailures.append("History and bookmarks for \(directory) could not be imported: \(error.localizedDescription)")
             }
         }
         // The selector reads every profile's spaces.json. Publish the import to every
@@ -1013,6 +1017,7 @@ enum ArcImport {
             tail.append("\(c.unreadable) file\(c.unreadable == 1 ? "" : "s") Arc still has "
                 + "would not open — Full Disk Access, most likely.")
         }
+        tail.append(contentsOf: c.historyImportFailures)
         guard !parts.isEmpty else {
             return tail.isEmpty ? "Arc had nothing left to import."
                 : (["Nothing came across."] + tail).joined(separator: " ")

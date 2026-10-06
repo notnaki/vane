@@ -57,6 +57,21 @@ import SQLite3
         XCTAssertEqual(notifications.total, 0)
     }
 
+    func testPartialDeletionFailureRollsBackAllDeletedRows() throws {
+        let (store, db) = try fixture()
+        let url = URL(string: "https://example.com/delete")!
+        XCTAssertTrue(store.record(url, title: "First"))
+        XCTAssertTrue(store.record(url, title: "Reject"))
+        let saved = store.history()
+        execute("CREATE TRIGGER reject_delete BEFORE DELETE ON visits WHEN OLD.title = 'Reject' BEGIN SELECT RAISE(FAIL, 'partial delete'); END", on: db)
+        let notifications = observe(store)
+        XCTAssertFalse(store.clearHistory())
+        XCTAssertEqual(store.history(), saved)
+        XCTAssertFalse(store.forget(url: url.absoluteString))
+        XCTAssertEqual(store.history(), saved)
+        XCTAssertEqual(notifications.total, 0)
+    }
+
     func testRejectedImportRollsBackEarlierRowsAndAllowsRetry() throws {
         let (store, db) = try fixture()
         execute("CREATE TRIGGER reject_import BEFORE INSERT ON visits WHEN NEW.title = 'Reject' BEGIN SELECT RAISE(ABORT, 'blocked row'); END", on: db)
@@ -207,5 +222,14 @@ import SQLite3
         let result = try BrowserImport.importAll(from: profile, profileID: profileID)
         XCTAssertEqual(result.history, 1)
         XCTAssertEqual(destination.history().map(\.title), ["Imported"])
+    }
+
+    func testArcSummaryIncludesHistoryFailuresAlongsideSuccessfulImports() {
+        var counts = ArcImport.Counts()
+        counts.spaces = 1
+        counts.historyImportFailures = ["History could not be imported: database is locked."]
+        XCTAssertEqual(ArcImport.report(counts), "Imported 1 space. History could not be imported: database is locked.")
+        counts.spaces = 0
+        XCTAssertEqual(ArcImport.report(counts), "Nothing came across. History could not be imported: database is locked.")
     }
 }

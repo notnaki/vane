@@ -242,10 +242,13 @@ struct BookmarkImportResult: Equatable, Sendable {
         return false
     }
 
-    private func historyWritten(_ succeeded: Bool) -> Bool {
-        guard succeeded else { return historyFailure() }
+    private func historyWritten(_ write: () -> Bool) -> Bool {
+        guard exec("BEGIN IMMEDIATE") else { return historyFailure() }
+        guard write() else { return historyFailure(rollingBack: true) }
+        let changed = sqlite3_changes(db) > 0
+        guard exec("COMMIT") else { return historyFailure(rollingBack: true) }
         lastHistoryError = nil
-        if sqlite3_changes(db) > 0 {
+        if changed {
             NotificationCenter.default.post(name: Self.historyChanged, object: self)
         }
         return true
@@ -254,15 +257,15 @@ struct BookmarkImportResult: Equatable, Sendable {
     @discardableResult func record(_ url: URL, title: String) -> Bool {
         // about:blank, the new-tab page and non-web schemes are not history.
         guard url.scheme == "http" || url.scheme == "https" else { return true }
-        return historyWritten(run("INSERT INTO visits (url, title, at) VALUES (?, ?, ?)",
-            [url.absoluteString, title, Date.now.timeIntervalSince1970]))
+        return historyWritten { run("INSERT INTO visits (url, title, at) VALUES (?, ?, ?)",
+            [url.absoluteString, title, Date.now.timeIntervalSince1970]) }
     }
 
     /// Titles arrive after the visit row is written, so backfill the newest row for that url.
     @discardableResult func retitle(_ url: URL, title: String) -> Bool {
         guard !title.isEmpty else { return true }
-        return historyWritten(run("UPDATE visits SET title = ? WHERE id = (SELECT id FROM visits WHERE url = ? ORDER BY at DESC LIMIT 1)",
-            [title, url.absoluteString]))
+        return historyWritten { run("UPDATE visits SET title = ? WHERE id = (SELECT id FROM visits WHERE url = ? ORDER BY at DESC LIMIT 1)",
+            [title, url.absoluteString]) }
     }
 
     /// The last title this profile saw for a page. For a row that has to be redrawn as a
@@ -278,7 +281,7 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     /// Bulk insert in one checked transaction, keeping each visit's real timestamp.
     /// Returns the committed count, or nil if the entire import failed.
-    /// ponytail: the single-row `record` above is one implicit transaction — and one fsync
+    /// ponytail: the single-row `record` above is one transaction — and one fsync
     /// — per row. That is why importing used to cap at 5000 pages and throw the real dates
     /// away. One BEGIN and one reused statement makes both limits unnecessary.
     @discardableResult func record(_ visits: [(url: URL, title: String, at: Date)]) -> Int? {
@@ -346,7 +349,7 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     /// ⌫ in the History window: one line, not every visit to that page.
     @discardableResult func deleteVisit(_ id: Int64) -> Bool {
-        historyWritten(run("DELETE FROM visits WHERE id = ?", [id]))
+        historyWritten { run("DELETE FROM visits WHERE id = ?", [id]) }
     }
 
     /// ⌥⌘⌫ on a suggestion in the command bar, which is the opposite gesture: the bar rolls
@@ -354,14 +357,14 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// or the suggestion comes straight back. Bookmarks are untouched — deleting a
     /// suggestion is not the same as unbookmarking, and the bar does not offer it on one.
     @discardableResult func forget(url: String) -> Bool {
-        historyWritten(run("DELETE FROM visits WHERE url = ?", [url]))
+        historyWritten { run("DELETE FROM visits WHERE url = ?", [url]) }
     }
 
     /// `since: nil` is "all time", which is a DELETE with no WHERE rather than a very old
     /// date — a stored visit with a broken timestamp must not survive "clear everything".
     @discardableResult func clearHistory(since: Date? = nil) -> Bool {
-        guard let since else { return historyWritten(exec("DELETE FROM visits")) }
-        return historyWritten(run("DELETE FROM visits WHERE at >= ?", [since.timeIntervalSince1970]))
+        guard let since else { return historyWritten { exec("DELETE FROM visits") } }
+        return historyWritten { run("DELETE FROM visits WHERE at >= ?", [since.timeIntervalSince1970]) }
     }
 
     // MARK: Bookmarks
