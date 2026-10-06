@@ -98,8 +98,10 @@ registration, and successful sign-in using a test authenticator. WebKit handles
 web-content WebAuthn requests, as described in Apple's
 [browser passkey guidance](https://developer.apple.com/documentation/authenticationservices/passkey-use-in-web-browsers).
 The explicit Vane App ID was registered under the developer team on 2026-10-06
-after the request form rejected the previously unregistered bundle ID. App ID
-registration does not grant the entitlement; Apple approval remains pending.
+after the request form rejected the previously unregistered bundle ID. The user
+then submitted the entitlement request, and Apple's confirmation page stated
+that the request will be reviewed. App ID registration and request submission
+do not grant the entitlement; Apple approval remains pending.
 
 Google/Microsoft/GitHub completed sign-ins, subscription streaming, and
 cross-network calls also remain **pending**. They require designated test
