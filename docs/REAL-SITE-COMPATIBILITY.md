@@ -3,7 +3,8 @@
 The public-demo pass on **2026-10-06** verified password-session navigation,
 print-to-PDF, local WebRTC media, screen capture, clear HLS playback, FairPlay
 demo playback, and basic editing in two complex web apps. File-picker uploads
-failed, and passkey authentication could not be completed in the test build.
+failed in that initial build and passed the follow-up below after the delegate
+fix. Passkey authentication could not be completed in the original test build.
 These results apply only to the flows and environment below.
 
 ## Environment and scope
@@ -34,7 +35,7 @@ but the complete flow remains unverified. **Pending** means it was not exercised
 | Password sign-in | [The Internet](https://the-internet.herokuapp.com/login), published demo credentials, submit and reload | Pass | `/secure` rendered “Secure Area” after sign-in and after reload. The save-password prompt was dismissed. This does not verify autofill, relaunch persistence, federated login, MFA, or embedded/multi-step login. |
 | Sign-in providers | Google, Microsoft, GitHub OAuth/SSO | Pending | No real provider account was used. The deterministic smoke checks cover popup creation and scripted closure, not a provider's completed OAuth exchange. |
 | Passkeys | [WebAuthn.io](https://webauthn.io/), discoverable authentication and capability probes | Partial | The demo obtained authentication options, but returned a not-allowed error. `isUserVerifyingPlatformAuthenticatorAvailable()` and `isConditionalMediationAvailable()` both returned `false`. No registration or successful assertion was performed; external security keys and cross-device authentication remain pending. |
-| File-picker upload | [The Internet uploader](https://the-internet.herokuapp.com/upload), activate Choose File with pointer and keyboard | Fail | The input stayed “no file selected”; no picker appeared. No file was submitted. Vane's `Tab` has no `runOpenPanelWithParameters` implementation; WebKit documents cancellation as the macOS default when this callback is absent. Drag/drop, multiple-file, folder, and cross-origin upload flows remain pending. |
+| File-picker upload | [The Internet uploader](https://the-internet.herokuapp.com/upload), activate Choose File and submit a synthetic text file | Pass after fix | The initial build showed no picker because `Tab` lacked the macOS upload delegate. In the follow-up, the native picker selected `vane-upload-fixture-74bd0015.txt` from Desktop and the server displayed “File Uploaded!” with that exact filename. See the follow-up environment below. Drag/drop, complete multiple-file/folder uploads, and cross-origin flows remain pending. |
 | Printing | Same public uploader page, Vane `⌘P`, PDF save | Pass | A one-page, 26,375-byte A4 PDF contained the heading, explanatory text, controls, drop zone, and footer. `pdfinfo`, `pdftotext`, and a rendered PNG confirmed nonblank output. Physical printer output, page ranges, print CSS, iframe documents, and long documents remain pending. |
 | Camera/microphone and calls | [WebRTC peer connection demo](https://webrtc.github.io/samples/src/content/peerconnection/pc1/), Start, Call, receive media, hang up | Pass | Local audio/video tracks were `live`; both peer connections reported `connected`, and remote video reached `74.04394175000198` seconds at width 640. Hang-up set both peers to `null`; explicitly stopping the source tracks produced `ended` for both. This is two peers in one page, not a cross-network call. Permission choices and revocation were not independently scored during this live pass. |
 | Screen sharing | [WebRTC getDisplayMedia demo](https://webrtc.github.io/samples/src/content/getusermedia/getdisplaymedia/), Start | Pass | The button became disabled and a live desktop capture appeared in the page's video. Navigating away ended the demo document. This establishes capture startup only, not chooser restrictions, permission persistence, an explicit Stop flow, system revocation, audio sharing, or remote screen transmission. No capture was saved to this repository. |
@@ -43,6 +44,35 @@ but the complete flow remains unverified. **Pending** means it was not exercised
 | Other DRM systems | Signed app `drmcheck`; Shaka Widevine sample availability | Partial | Modern/legacy FairPlay and Clear Key CDMs initialized. Widevine and PlayReady returned `NotSupportedError`; Shaka marked its featured Widevine Sintel sample unavailable. Clear Key end-to-end playback was not scored. |
 | Canvas web app | [Excalidraw](https://excalidraw.com/), rectangle, text, undo, redo and reload | Pass | After reload, browser storage contained a rectangle and a text element reading “Vane compatibility fixture” (wrapped onto three lines). File import/export, clipboard integration and multiplayer collaboration remain pending. |
 | Editor web app | [VS Code for the Web](https://vscode.dev/), New File → Text File, typing, undo and redo | Pass | The untitled editor displayed `const vaneCompatibility = 42;`; undo removed the last typing group and redo restored it. Disk access, downloads, extensions, authentication, remote repositories and workspace persistence remain pending. |
+
+## Upload picker follow-up — 2026-10-06
+
+The macOS upload delegate now presents an `NSOpenPanel` sheet on the requesting
+window and passes selected URLs to WebKit. It honors multiple-file and directory
+parameters, rejects detached/busy requests, and cancels on navigation, tab
+teardown, content-process termination, or window closure.
+
+The same macOS 27 / Xcode 27 environment above was used with a new, uniquely
+identified ad hoc signed app, the production `Vane.entitlements`, and an empty
+`VANE_DATA_DIR`. Its debug executable SHA-256 was
+`f005fad92e672468178d2f11e74e997eba2f0a2b2853e154f08ce27917eb1ea8`.
+A synthetic 49-byte text file on Desktop, outside the Downloads entitlement,
+was chosen through the native picker. The public uploader confirmed receipt of
+`vane-upload-fixture-74bd0015.txt`. This verifies selected-file access in the
+sandbox and an actual single-file submission, without personal data.
+
+```sh
+swift test --filter 'FileUploadTests|SitePermissionTests'
+python3 scripts/check-browser-smoke.py
+```
+
+The focused run passed **24 tests with zero failures**: seven upload regressions
+and 17 permission tests. Upload checks exercise real WebKit inputs, single/multiple
+and folder picker settings, cancel/reopen, navigation, teardown, window closure,
+and rejection of busy/detached requests. The signed smoke run passed **190
+real-WebKit assertions** and unregistered **14 temporary stores**; upload dialogs
+are covered separately by the XCTest and public-site checks. macOS 26 and an
+unchanged notarized release still need verification.
 
 ## Supporting checks
 
@@ -79,10 +109,9 @@ before interpreting its output as proof of decryption.
 
 ## Remaining work and reproduction
 
-1. Implement the macOS upload-panel callback, including cancellation, multiple
-   selection, document/window lifetime, and sandbox-selected file access. Re-run
-   the public uploader with a synthetic file and verify the server's received
-   filename. Apple's [WKUIDelegate contract](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/API/Cocoa/WKUIDelegate.h)
+1. Broaden upload checks to full multiple-file and folder submission, cross-origin
+   frames, and drag/drop. Repeat the fixed single-file picker flow on macOS 26 and
+   an unchanged notarized release. Apple's [WKUIDelegate contract](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/API/Cocoa/WKUIDelegate.h)
    describes the callback and default cancellation behavior.
 2. Verify passkeys in a distribution build with the required browser capability,
    user authorization and a test authenticator. The current entitlements file
