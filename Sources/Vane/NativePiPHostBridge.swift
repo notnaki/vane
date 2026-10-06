@@ -21,7 +21,7 @@ import WebKit
     private static var captures: [UUID: DirectCapture] = [:]
     private typealias Present = @convention(c) (AnyObject, Selector, NSViewController) -> Void
 
-    final class DirectCapture {
+    @MainActor final class DirectCapture {
         weak var web: WKWebView?
         let parent: NSView
         let video: NSView

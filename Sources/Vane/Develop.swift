@@ -53,13 +53,13 @@ import WebKit
               inspector.responds(to: Selector(("inspectorWebView"))),
               let frontend = inspector.value(forKey: "inspectorWebView") as? WKWebView,
               frontend.superview === host,
-              inspector.responds(to: Selector(("hide"))) else { return }
+              inspector.responds(to: NSSelectorFromString("hide")) else { return }
         if inspector.responds(to: Selector(("isElementSelectionActive"))),
            inspector.value(forKey: "elementSelectionActive") as? Bool == true,
            inspector.responds(to: Selector(("toggleElementSelection"))) {
             _ = inspector.perform(Selector(("toggleElementSelection")))
         }
-        _ = inspector.perform(Selector(("hide")))
+        _ = inspector.perform(NSSelectorFromString("hide"))
     }
 
     static func show(_ web: WKWebView?)        { web.map { call($0, "show") } }

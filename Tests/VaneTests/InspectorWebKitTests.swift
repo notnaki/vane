@@ -38,7 +38,7 @@ import XCTest
         try await wait { !web.isLoading }
         let inspector = try XCTUnwrap(web.perform(Selector(("_inspector")))?.takeUnretainedValue())
         addTeardownBlock { @MainActor in
-            _ = inspector.perform(Selector(("hide")))
+            _ = inspector.perform(NSSelectorFromString("hide"))
             web.stopLoading()
             window.close()
         }

@@ -865,8 +865,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// All frames: a comment box is as likely to be in an iframe as not. `focusout` fires
     /// *before* focus lands, so it re-reads on the next turn rather than trusting
     /// `activeElement` mid-move; the trailing call covers a field focused before the listeners
-    /// existed (`autofocus`, or a bfcache restore re-running the script); `pagehide`/`unload`
-    /// take the frame's token back out when the frame goes.
+    /// existed (`autofocus`); `pagehide` takes the frame's token back out when the frame
+    /// goes, and `pageshow` restores it when WebKit brings back a cached document.
     static let script = """
     (function () {
       if (window.__vaneEdit) return; window.__vaneEdit = true;
@@ -893,7 +893,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
       document.addEventListener("focusin", send, true);
       document.addEventListener("focusout", function () { setTimeout(send, 0); }, true);
       window.addEventListener("pagehide", function () { post(false); });
-      window.addEventListener("unload", function () { post(false); });
+      window.addEventListener("pageshow", send);
       send();
     })();
     """

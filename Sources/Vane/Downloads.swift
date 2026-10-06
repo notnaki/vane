@@ -1299,7 +1299,7 @@ import WebKit
             } else {
                 assert("a scope-owner defaults suite is available", false)
             }
-            if let firstItem = scoped.items.first { $0.id == first.id } { scoped.forget(firstItem) }
+            if let firstItem = scoped.items.first(where: { $0.id == first.id }) { scoped.forget(firstItem) }
             assert("forgetting one row leaves its sibling's scope active",
                    ScopedPaths.activeOwnerCount(for: scopedFiles) == 1)
             scoped.clear()

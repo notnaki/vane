@@ -310,6 +310,7 @@ To run the same checks configuration locally:
 ```sh
 swift build -c debug
 ./.build/debug/vane selfcheck --pure
+scripts/check-webkit-startup.sh
 swift test
 scripts/check-app-icons.sh
 scripts/check-cloud-ai.sh

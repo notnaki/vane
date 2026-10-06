@@ -53,8 +53,6 @@ import WebKit
             fail("browsercheck cleanup exceeded its 15-second deadline", code: 1)
         }
         Task {
-            // A cold fetchAllDataStoreIdentifiers call crashes WebKit on this macOS release.
-            _ = WKProcessPool()
             for id in ids {
                 var removed = false
                 var lastError: Error?
@@ -85,7 +83,8 @@ import WebKit
     }
 
     private static func registeredStoreIdentifiers() async -> [UUID] {
-        await withCheckedContinuation { continuation in
+        WebKitStartup.prepare()
+        return await withCheckedContinuation { continuation in
             WKWebsiteDataStore.fetchAllDataStoreIdentifiers { ids in
                 continuation.resume(returning: ids)
             }
@@ -674,7 +673,7 @@ import WebKit
                         && background.existingWeb == nil,
                         "extension metadata queries do not create parked pages")
             let destination = URL(string: "\(base)/b?extension=1")!
-            (adapter as any WKWebExtensionTab).loadURL?(destination, for: context, completionHandler: { _ in })
+            adapter.loadURL(destination, for: context, completionHandler: { _ in })
             try await loaded(background, path: "/b", title: "Fixture B")
             try require(!background.suspended && store.current == selected.id
                         && background.currentURL == destination,

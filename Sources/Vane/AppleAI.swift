@@ -298,12 +298,22 @@ import FoundationModels
         }
     }
 
+    /// The SDK 27 rename is back-deployed to macOS 26. Older SDKs still require the old
+    /// label; the module version detects SDK support independently of the compiler.
+    nonisolated static func generationOptions(tokens: Int) -> GenerationOptions {
+        #if canImport(FoundationModels, _version: 2.0)
+        GenerationOptions(samplingMode: .greedy, maximumResponseTokens: tokens)
+        #else
+        GenerationOptions(sampling: .greedy, maximumResponseTokens: tokens)
+        #endif
+    }
+
     /// One request. Bounded, timed out, cancellable, and nil on absolutely anything going
     /// wrong — `guardrailViolation`, `refusal`, `exceededContextWindowSize`, `rateLimited`,
     /// `decodingFailure`, `concurrentRequests` and cancellation all mean "no answer" here.
     ///
     /// The timeout is a racing sleep rather than a framework option because there isn't one:
-    /// `GenerationOptions` has sampling, temperature and maximumResponseTokens, and that is
+    /// `GenerationOptions` has sampling mode, temperature and maximumResponseTokens, and that is
     /// all. Losing the race cancels the inference task, and awaiting the group means the
     /// main actor is never blocked — only this async call is.
     private static func run<T: Generable & Sendable>(
@@ -317,7 +327,7 @@ import FoundationModels
         // ~4 characters a token, the same rule the input budget uses.
         let s = session(kind, cost: prompt.count + tokens * 4)
 
-        let options = GenerationOptions(sampling: .greedy, maximumResponseTokens: tokens)
+        let options = generationOptions(tokens: tokens)
         return await withTaskGroup(of: T?.self) { group in
             group.addTask {
                 try? await s.respond(to: prompt, generating: T.self, options: options).content
@@ -476,7 +486,7 @@ import FoundationModels
         let tokens = 60 * n
         let p = prompt(body, ask: summaryAsk(n))
         let s = session(.summary, cost: p.count + tokens * 4)
-        let options = GenerationOptions(sampling: .greedy, maximumResponseTokens: tokens)
+        let options = generationOptions(tokens: tokens)
 
         let (stream, continuation) = AsyncStream<String>.makeStream()
         // Inherits @MainActor, so snapshots are yielded on the main actor and land in a view

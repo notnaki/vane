@@ -386,7 +386,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     // the window. `AppleAI` races its own 30s sleep inside every call, so this only ever
     // fires for an await that has stopped answering altogether.
     let stamp = TidyProgress.shared.began(s) { tidyTask?.cancel() }
-    tidyTask = Task { @MainActor in
+    tidyTask = Task { @MainActor [s] in
         defer {
             TidyProgress.shared.ended(stamp)
             rebuild()                     // so Undo Tidy Tabs enables, and Tidy re-enables
