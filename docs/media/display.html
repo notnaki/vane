@@ -1,1 +1,37 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vane · App display</title><link rel="stylesheet" href="../styles.css?v=26"><style>body{margin:0;padding:0;background:#20262a}body::before,body::after{display:none}main{margin:0;padding:0;max-width:none}.display-board{height:100svh;display:flex;align-items:center;justify-content:center;padding:6vw 9vw;background:#20262a}.display-board>div{width:min(100%,900px)}.display-board[hidden]{display:none}</style></head><body><main><section class="display-board" data-display="spaces"><div class="app-capture"><img src="vane-spaces-dark.png" alt="Vane Work Space in dark mode" width="2560" height="1680"></div></section><section class="display-board" data-display="split" hidden><div class="app-capture"><img src="vane-split-dark.png" alt="Vane Split View in dark mode" width="2560" height="1680"></div></section><section class="display-board" data-display="little" hidden><div class="capture-composition"><div class="app-capture"><img src="vane-spaces-dark.png" alt="Vane Work Space in dark mode" width="2560" height="1680"></div><div class="capture-floating"><div class="app-capture app-capture-little"><img src="vane-little-dark.png" alt="Little Vane in dark mode" width="2000" height="1400"></div></div></div></section></main><script>const view=new URLSearchParams(location.search).get('view');if(['spaces','split','little'].includes(view)){document.querySelectorAll('[data-display]').forEach(board=>board.hidden=board.dataset.display!==view);}</script></body></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vane · App display</title>
+<link rel="stylesheet" href="../styles.css?v=26">
+<style>body{margin:0;padding:0;background:#20262a}body::before,body::after{display:none}main{margin:0;padding:0;max-width:none}.display-board{height:100svh;display:flex;align-items:center;justify-content:center;--display-padding:clamp(16px,6vw,64px);padding:var(--display-padding) 9vw;background:#20262a}.display-board>div{width:min(100%,900px,calc((100svh - var(--display-padding) - var(--display-padding) - 24px)*1.5))}.display-board[hidden]{display:none}</style>
+</head>
+<body>
+<main>
+<section class="display-board" data-display="spaces">
+<div class="app-capture">
+<img src="vane-spaces-dark.png" alt="Vane Work Space in dark mode" width="2560" height="1680">
+</div>
+</section>
+<section class="display-board" data-display="split" hidden>
+<div class="app-capture">
+<img src="vane-split-dark.png" alt="Vane Split View in dark mode" width="2560" height="1680">
+</div>
+</section>
+<section class="display-board" data-display="little" hidden>
+<div class="capture-composition">
+<div class="app-capture">
+<img src="vane-spaces-dark.png" alt="Vane Work Space in dark mode" width="2560" height="1680">
+</div>
+<div class="capture-floating">
+<div class="app-capture app-capture-little">
+<img src="vane-little-dark.png" alt="Little Vane in dark mode" width="2000" height="1400">
+</div>
+</div>
+</div>
+</section>
+</main>
+<script>const view=new URLSearchParams(location.search).get('view');if(['spaces','split','little'].includes(view)){document.querySelectorAll('[data-display]').forEach(board=>board.hidden=board.dataset.display!==view);}</script>
+</body>
+</html>
