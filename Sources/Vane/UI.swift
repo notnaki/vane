@@ -4170,6 +4170,7 @@ private struct TabRowTrailing: View {
     /// the noise, but the × — like ⌘W and the row's "Close Pane" action — closes the pane
     /// the row is showing, which may be a different one.
     var closes: Tab? = nil
+    @State private var closeHovering = false
     @Environment(\.rowHovering) private var hovering
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -4206,9 +4207,12 @@ private struct TabRowTrailing: View {
                         .rowTarget()
                         .background {
                             RoundedRectangle(cornerRadius: Look.cardRadius, style: .continuous)
-                                .fill(Look.controlFill)
+                                .fill(closeHovering ? Look.controlFill : .clear)
+                                .animation(reduced ? nil : Look.quick, value: closeHovering)
                         }
                 }
+                .onHover { closeHovering = $0 }
+                .onDisappear { closeHovering = false }
                 .vaneTooltip(pane ? "Close Pane" : glyph.verb, shortcut: "⌘W")
                 .accessibilityLabel((pane ? "Close pane " : glyph.spoken)
                                     + TidyTitles.title(for: closing))
