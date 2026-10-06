@@ -797,6 +797,7 @@ private struct LoadingBar: View {
 private struct Sidebar: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var dropMarker = SidebarDropMarker()
     @StateObject private var downloadsHover = DownloadsHover()
     @AppStorage(LibraryHoverCategory.key, store: .vane) private var hoverCategory = "downloads"
     @State private var previewItems: [LibraryHoverItem] = []
@@ -848,6 +849,9 @@ private struct Sidebar: View {
                     .scrollIndicators(.never)
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
                 })
+            .overlayPreferenceValue(SidebarDropLineBounds.self) { bounds in
+                SidebarDropLineOverlay(marker: dropMarker, bounds: bounds)
+            }
             .clipped()
             // The plus that fills as the fingers pull past the last Space.
             .overlay(alignment: .trailing) { PullPlus(store: store) }
@@ -877,6 +881,7 @@ private struct Sidebar: View {
                       preparePreview: preparePreview)
         }
         .environment(\.strip, strip)
+        .environment(\.sidebarDropMarker, dropMarker)
         // SwiftUI's accessibility motion environment is read-only. Stop decorative
         // animations here without changing the user's system accessibility setting.
         .padding(.horizontal, Look.inset)
@@ -1178,6 +1183,7 @@ private struct LiveAddressPill: View {
 }
 
 private struct PillBody: View {
+    @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -1215,7 +1221,7 @@ private struct PillBody: View {
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: nil, into: .favourite,
-                                  axis: .horizontal, extent: 0, side: .constant(nil)))
+                                  axis: .horizontal, extent: 0, marker: dropMarker, side: .constant(nil)))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Address and Search")
         .accessibilityValue(axValue)
@@ -1565,6 +1571,7 @@ struct FavoriteTileBackground: View {
 }
 
 private struct FavoriteTile: View {
+    @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @ObservedObject var tab: Tab
     @State private var hovering = false
@@ -1597,7 +1604,7 @@ private struct FavoriteTile: View {
             }
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: tab, into: .favourite,
-                                      axis: .horizontal, extent: width, side: $side))
+                                      axis: .horizontal, extent: width, marker: dropMarker, side: $side))
             .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
             .contextMenu { TabMenu(store: store, tab: tab) }
             // One element per favourite, the way a tab reads: the title is the label, the
@@ -1701,11 +1708,12 @@ private struct FavoriteTile: View {
 /// dropped on it.
 @MainActor final class Dragging: ObservableObject {
     static let shared = Dragging()
-    @Published var tab: Tab.ID? { didSet { watch() } }
+    @Published var session = UUID()
+    @Published var tab: Tab.ID? { didSet { if tab != nil { session = UUID() }; watch() } }
     /// A folder row being dragged among the pinned rows. Never both at once — a drag is one
     /// thing — but two fields rather than an enum keeps every existing `dragging.tab` read
     /// meaning exactly what it did.
-    @Published var folder: Folder.ID? { didSet { watch() } }
+    @Published var folder: Folder.ID? { didSet { if folder != nil { session = UUID() }; watch() } }
     /// Dragging one row of a multi-select drags the whole selection. Empty for an ordinary
     /// one-tab drag, so `tab` — the row actually grabbed, and the one the drag preview and
     /// every existing reader is about — keeps meaning exactly what it did.
@@ -1820,14 +1828,21 @@ private struct FavoriteTile: View {
 private struct DropLine: View {
     let on: Bool
     let axis: Axis
+    var target: String? = nil
+    @Environment(\.sidebarDropMarker) private var marker
     @ObservedObject private var dragging = Dragging.shared
 
     var body: some View {
         Rectangle().fill(Color.white)
             .frame(width: axis == .horizontal ? Look.dropLine : nil,
                    height: axis == .vertical ? Look.dropLine : nil)
-            .opacity(on && dragging.active ? 1 : 0)
+            // Vertical rows contribute their geometry to one persistent sidebar marker.
+            .opacity(marker != nil && target != nil ? 0 : (on && dragging.active ? 1 : 0))
             .animation(Motion.reduced ? nil : Look.quick, value: on && dragging.active)
+            .anchorPreference(key: SidebarDropLineBounds.self, value: .bounds) { bounds in
+                guard on && dragging.active, let target else { return [:] }
+                return [target: bounds]
+            }
             .allowsHitTesting(false)
     }
 }
@@ -1980,6 +1995,8 @@ struct TabDrop: DropDelegate {
     let extent: CGFloat
     /// Extra hit area covering half of the gap above and below this row.
     var verticalInset: CGFloat = 0
+    var marker: SidebarDropMarker? = nil
+    var markerTarget: String? = nil
     @Binding var side: Landing.Band?
     /// This row's place in its section, used to recognize gaps adjacent to the source.
     /// Nil for a tile in the
@@ -2046,6 +2063,7 @@ struct TabDrop: DropDelegate {
             return true
         }
         guard !dragged.isEmpty else { return false }
+        if let target, dragged.contains(target.id) { return true }
         defer {
             if let id = dragged.first,
                let landed = store.tabs.first(where: { $0.id == id }), landed.kind != .today {
@@ -2107,7 +2125,8 @@ struct TabDrop: DropDelegate {
     private func place(_ location: CGPoint, splitting: Bool) -> Offer? {
         // A row being carried is not a destination for its own selection.
         if let target, target.id == Dragging.shared.tab || Dragging.shared.tabs.contains(target.id) {
-            return nil
+            return Offer(band: Landing.band(y: location.y - verticalInset,
+                                            height: Look.rowHeight))
         }
         guard axis == .vertical, let target else {
             // Section headings and dividers are real root insertion targets, including
@@ -2123,19 +2142,8 @@ struct TabDrop: DropDelegate {
             return Offer(band: .onto,
                          half: Landing.side(x: location.x, width: extent, rtl: rtl))
         }
-        // Adjacent gaps are only no-ops for one visible row in the same parent. A
-        // scattered selection can regroup there, and a folder child can leave its parent.
-        let drag = Dragging.shared
-        let sameParent = TabStore.shape(of: into).map { shape in
-            let parent = store[keyPath: shape].folder(holding: target.id.uuidString)?.id
-            return sidebarMoveTabs([drag.tab].compactMap { $0 }, in: store).allSatisfy { id in
-                store.tabs.first(where: { $0.id == id })?.kind == into
-                    && store[keyPath: shape].folder(holding: id.uuidString)?.id == parent
-            }
-        } ?? true
-        let source = drag.tabs.count <= 1 && sameParent && drag.at?.kind == into
-            ? drag.at?.index : nil
-        guard Landing.move(row: row ?? 0, band: band, source: source) != nil else { return nil }
+        // A gap adjacent to the source is still a valid destination. Keeping its marker
+        // visible avoids blinking as the pointer passes through the original position.
         return Offer(band: band)
     }
 
@@ -2158,6 +2166,8 @@ struct TabDrop: DropDelegate {
         let offer = place(location, splitting: splitting)
         side = offer?.band
         half.wrappedValue = offer?.half
+        marker?.offer(offer == nil || offer?.band == .onto ? nil : markerTarget,
+                      session: Dragging.shared.session)
     }
 }
 
@@ -2167,6 +2177,7 @@ struct TabDrop: DropDelegate {
 /// right-click target for everything a space can be: its icon, its name, its colour and the
 /// profile it belongs to.
 private struct SpaceRow: View {
+    @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @State private var icons = false
     @State private var theme = false
@@ -2280,7 +2291,7 @@ private struct SpaceRow: View {
         // now that there is no placeholder slot to drop on.
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: nil, into: .pinned,
-                                  axis: .horizontal, extent: 0, side: .constant(nil)))
+                                  axis: .horizontal, extent: 0, marker: dropMarker, side: .constant(nil)))
     }
 }
 
@@ -2743,6 +2754,7 @@ private enum FolderZone: Equatable { case before, inside, after }
 /// folded. Clicking anywhere on it folds or unfolds; everything else it can be is in its
 /// right-click menu, which is the only route the keyboard and VoiceOver have.
 private struct FolderRow: View {
+    @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     let folder: Folder
     /// Which section's shape this folder is in — `\.pins` or `\.todayShape`.
@@ -2804,7 +2816,7 @@ private struct FolderRow: View {
         }
         .animation(Motion.reduced ? nil : Look.quick, value: receiving)
         .overlay(alignment: zone == .after ? .bottom : .top) {
-            DropLine(on: zone == .before || zone == .after, axis: .vertical)
+            DropLine(on: zone == .before || zone == .after, axis: .vertical, target: folder.id.uuidString)
                 .offset(y: zone == .after ? Look.rowGap / 2 : -Look.rowGap / 2)
         }
         .vaneTooltip(folder.name, hint: locked ? "Unlock with Touch ID or your Mac password" : "Click to expand or collapse")
@@ -2817,7 +2829,7 @@ private struct FolderRow: View {
         }
         .padding(.vertical, Look.rowGap / 2)
         .onDrop(of: [.plainText],
-                delegate: FolderDrop(store: store, folder: folder, shape: shape, zone: $zone))
+                delegate: FolderDrop(store: store, folder: folder, shape: shape, marker: dropMarker, zone: $zone))
         .padding(.vertical, -Look.rowGap / 2)
         .onChange(of: dragging.active) { _, active in if !active { zone = nil } }
     }
@@ -2969,6 +2981,7 @@ private struct FolderDrop: DropDelegate {
     let store: TabStore
     let folder: Folder
     let shape: ReferenceWritableKeyPath<TabStore, Pins>
+    var marker: SidebarDropMarker?
     @Binding var zone: FolderZone?
 
     func validateDrop(info: DropInfo) -> Bool {
@@ -2979,10 +2992,10 @@ private struct FolderDrop: DropDelegate {
         }
         return Dragging.shared.tab != nil
     }
-    func dropEntered(info: DropInfo) { zone = which(info) }
+    func dropEntered(info: DropInfo) { track(info) }
     func dropUpdated(info: DropInfo) -> DropProposal? {
         guard Dragging.shared.active else { return DropProposal(operation: .cancel) }
-        zone = which(info)
+        track(info)
         return DropProposal(operation: .move)
     }
     func dropExited(info: DropInfo) { zone = nil }
@@ -3018,6 +3031,12 @@ private struct FolderDrop: DropDelegate {
         // A tab takes the folder's own section, in it or beside it. See `TabDrop.performDrop`.
         store.selectionLanded(tabs, in: shape == \TabStore.todayShape ? .today : .pinned)
         return true
+    }
+
+    private func track(_ info: DropInfo) {
+        zone = which(info)
+        marker?.offer(zone == .inside ? nil : folder.id.uuidString,
+                      session: Dragging.shared.session)
     }
 
     private func which(_ info: DropInfo) -> FolderZone {
@@ -3148,6 +3167,7 @@ extension View {
 /// state where the row does not answer a click is while a tidy is actually running, and it
 /// says so with a spinner in the label's own place.
 private struct TidyRow: View {
+    @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     /// The one thing that says a tidy is in flight, for this window. See `TidyProgress`.
     @ObservedObject private var progress = TidyProgress.shared
@@ -3211,10 +3231,11 @@ private struct TidyRow: View {
         // Its own state, per row and per window: `Dragging` is process-wide, and a drag in
         // one window must not light the divider in another.
         .contentShape(.rect)
-        .overlay(alignment: .top) { DropLine(on: lit != nil, axis: .vertical) }
+        .overlay(alignment: .top) { DropLine(on: lit != nil, axis: .vertical, target: "pinned-end") }
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: nil, into: .pinned,
-                                  axis: .horizontal, extent: 0, side: $lit))
+                                  axis: .horizontal, extent: 0, marker: dropMarker,
+                                      markerTarget: "pinned-end", side: $lit))
     }
 
     /// The menu item owns this too, so both routes archive rather than destroy.
@@ -3222,6 +3243,7 @@ private struct TidyRow: View {
 }
 
 private struct NewTabRow: View {
+    @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     /// Set while a tab can land at the head of Today, outside its folders.
     @State private var lit: Landing.Band?
@@ -3230,10 +3252,11 @@ private struct NewTabRow: View {
         SidebarRow(icon: "plus", title: "New Tab", selected: false, dimmed: true) { store.newTab(nil) }
             // This row heads Today: tabs land directly under it, outside every folder,
             // including tabs already in Today. The line marks that gap at the bottom.
-            .overlay(alignment: .bottom) { DropLine(on: lit != nil, axis: .vertical) }
+            .overlay(alignment: .bottom) { DropLine(on: lit != nil, axis: .vertical, target: "today-head") }
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: nil, into: .today,
-                                      axis: .horizontal, extent: 0, side: $lit))
+                                      axis: .horizontal, extent: 0, marker: dropMarker,
+                                      markerTarget: "today-head", side: $lit))
             .vaneTooltip("New Tab", shortcut: Keybindings.binding(for: .newTab).display)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("New Tab")
@@ -3245,6 +3268,7 @@ private struct NewTabRow: View {
 /// Permanent room below the last Today row. The drop target owns hover here, so it must
 /// also report window-drag ground; during a tab drag the line marks the insertion point.
 private struct TodayEndDropArea: View {
+    @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @State private var lit: Landing.Band?
 
@@ -3252,10 +3276,11 @@ private struct TodayEndDropArea: View {
         WindowDragArea()
             .frame(maxWidth: .infinity, minHeight: Look.rowHeight)
             .contentShape(.rect)
-            .overlay(alignment: .top) { DropLine(on: lit != nil, axis: .vertical) }
+            .overlay(alignment: .top) { DropLine(on: lit != nil, axis: .vertical, target: "today-end") }
             .onDrop(of: [.plainText],
                     delegate: TabDrop(store: store, target: nil, into: .today, atEnd: true,
-                                      axis: .horizontal, extent: 0, side: $lit))
+                                      axis: .horizontal, extent: 0, marker: dropMarker,
+                                      markerTarget: "today-end", side: $lit))
             .accessibilityHidden(true)
     }
 }
@@ -3290,6 +3315,7 @@ private struct OpenTabs: View {
 /// One line of the strip: a tab's row — unless the tab is a pane of a split, in which case
 /// the split owns one row between all of its panes and draws it where its first pane sits.
 private struct StripRow: View {
+    @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     let tab: Tab
     /// Its place in the section it is drawn in, and how many rows that section draws — see
@@ -3329,7 +3355,7 @@ private struct StripRow: View {
         //
         // The insertion line stays visible until release; hovering leaves every row in place.
         .overlay(alignment: side == .after ? .bottom : .top) {
-            DropLine(on: side == .before || side == .after, axis: .vertical)
+            DropLine(on: side == .before || side == .after, axis: .vertical, target: tab.id.uuidString)
                 .offset(y: side == .after ? Look.rowGap / 2 : -Look.rowGap / 2)
         }
         // "Drop it on this one and the two go side by side." A ring rather than a fill: a
@@ -3361,7 +3387,7 @@ private struct StripRow: View {
         .onDrop(of: [.plainText],
                 delegate: TabDrop(store: store, target: tab, into: tab.kind,
                                   axis: .vertical, extent: width, verticalInset: Look.rowGap / 2,
-                                  side: $side, row: index, rows: rows, half: $half,
+                                  marker: dropMarker, markerTarget: tab.id.uuidString, side: $side, row: index, rows: rows, half: $half,
                                   rtl: direction == .rightToLeft))
         .padding(.vertical, -Look.rowGap / 2)
     }

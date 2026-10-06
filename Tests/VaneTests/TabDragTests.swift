@@ -21,8 +21,10 @@ import XCTest
         drag.tab = original[0]
         drag.at = Landing.Spot(kind: .today, index: 0)
         var side: Landing.Band?
+        let marker = SidebarDropMarker()
         let drop = TabDrop(store: store, target: store.tabs[2], into: .today,
                            axis: .vertical, extent: 220,
+                           marker: marker, markerTarget: store.tabs[2].id.uuidString,
                            side: Binding(get: { side }, set: { side = $0 }), row: 2, rows: 4)
         for y in [CGFloat(0), Look.rowHeight * 0.3, Look.rowHeight * 0.49] {
             drop.trackHover(at: CGPoint(x: 100, y: y))
@@ -47,7 +49,11 @@ import XCTest
         padded.trackHover(at: CGPoint(x: 100, y: midpoint), splitting: true)
         XCTAssertEqual(side, .onto)
         XCTAssertEqual(store.tabs.map(\.id), original)
+        XCTAssertEqual(marker.target, store.tabs[2].id.uuidString)
+        marker.remember(CGRect(x: 8, y: 121, width: 220, height: 2))
+        XCTAssertTrue(marker.visible(session: drag.session, active: drag.active))
         XCTAssertTrue(drop.performDrop(at: CGPoint(x: 100, y: Look.rowHeight * 0.6)))
+        XCTAssertFalse(marker.visible(session: drag.session, active: drag.active))
         XCTAssertEqual(store.tabs.map(\.id), [original[1], original[2], original[0], original[3]])
         XCTAssertTrue(store.splits.isEmpty)
 
@@ -198,7 +204,7 @@ import XCTest
                                      axis: .vertical, extent: 220,
                                      side: Binding(get: { side }, set: { side = $0 }), row: 1, rows: 4)
         selectedTarget.trackHover(at: CGPoint(x: 100, y: Look.rowHeight / 2))
-        XCTAssertNil(side)
+        XCTAssertEqual(side, .after)
         XCTAssertTrue(selectedTarget.performDrop(at: above))
         XCTAssertEqual(store.tabs.map(\.id), grouped)
         XCTAssertTrue(store.splits.isEmpty)

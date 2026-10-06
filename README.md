@@ -74,7 +74,8 @@ resizable dividers. Peek opens a link over the current page; Little Vane opens i
 in a separate compact window.
 
 Drag a sidebar tab to reorder it: the white line marks the nearest insertion gap,
-and the rows stay in place until you release. The held ghost matches the tab row.
+and the rows stay in place until you release. The line fades in once and stays visible
+while moving between gaps. The held ghost matches the tab row.
 Hold Option while dropping onto the middle of another tab to make a split view.
 Dropping into a closed folder highlights it and opens its icon while you hover.
 
