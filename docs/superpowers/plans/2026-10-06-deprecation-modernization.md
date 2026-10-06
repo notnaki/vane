@@ -51,7 +51,7 @@ There are no external Swift package dependencies. Current zero-argument onChange
 - [x] Apply the warning-only syntax and actor changes listed in the audit, preserving the smoke fixture's existing completion-handler behavior.
 - [x] Update checkout and restore/save cache actions to current stable majors; run workflow fixtures.
 - [x] Remove the redundant injected unload listener and verify pagehide cleanup, pageshow restoration, and ordinary focus/blur reporting with a real-WebKit fixture.
-- [ ] Run a clean warning-free build, pure checks, XCTest suite, cold-start harness, browser smoke, and helper packaging checks. Document pre-existing failures separately.
+- [x] Run a clean warning-free build, pure checks, XCTest suite, cold-start harness, browser smoke, and helper packaging checks. Document pre-existing failures separately.
 - [ ] Commit, push, open PR, obtain independent review, fix findings, verify required CI/approval state, squash-merge, and verify cleanup of owned test processes.
 
 ## Sources and compatibility decisions
@@ -74,4 +74,4 @@ The Swift 6.4 compiler crashed generating the imported optional async loadURL br
 - Editing lifecycle regression failed on the old unload registration and missing cached-document restore reporting; all 3 page-script tests passed after migration.
 - Browser smoke passed 185 real-WebKit assertions and unregistered 12 temporary stores. Both owned process launches were tracked by bundle path, PID, and start time, then verified exited.
 - App-icon and cloud-AI harnesses and both workflow fixtures passed.
-- Final full XCTest and browser-smoke runs are repeated for the completed lifecycle change before merge.
+- Final completed lifecycle change: 317 XCTest cases, pure selfchecks, cold-start harness, and 185 browser smoke assertions passed. All tracked browser processes exited.
