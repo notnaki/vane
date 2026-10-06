@@ -299,15 +299,15 @@ private struct EaselEditor: View {
         }
         .overlay(alignment: .bottomLeading) {
             HStack(spacing: 14) {
-                Button { zoom = max(0.25, zoom - 0.25) } label: { Image(systemName: "minus") }.help("Zoom out")
-                Button("\(Int(zoom * 100))%") { zoom = 1 }.frame(width: 44).help("Reset zoom")
-                Button { zoom = min(2, zoom + 0.25) } label: { Image(systemName: "plus") }.help("Zoom in")
+                Button { zoom = max(0.25, zoom - 0.25) } label: { Image(systemName: "minus") }.vaneTooltip("Zoom out")
+                Button("\(Int(zoom * 100))%") { zoom = 1 }.frame(width: 44).vaneTooltip("Reset zoom")
+                Button { zoom = min(2, zoom + 0.25) } label: { Image(systemName: "plus") }.vaneTooltip("Zoom in")
                 Divider().frame(height: 22)
                 Button { session.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                    .disabled(!repository.canUndo(boardID)).help("Undo · ⌘Z")
+                    .vaneTooltip("Undo", shortcut: "⌘Z").disabled(!repository.canUndo(boardID))
                 Button { session.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                    .disabled(!repository.canRedo(boardID)).help("Redo · ⇧⌘Z")
-            }.buttonStyle(.plain).font(.system(size: 13)).padding(12)
+                    .vaneTooltip("Redo", shortcut: "⇧⌘Z").disabled(!repository.canRedo(boardID))
+            }.buttonStyle(TactileButtonStyle()).font(.system(size: 13)).padding(12)
                 .background(EaselColors.panel, in: .rect(cornerRadius: 10)).padding(16)
         }
         .overlay(alignment: .bottomTrailing) {
@@ -362,7 +362,7 @@ private struct EaselEditor: View {
                 Button("Export Editable Easel…") { exportBoard() }
                 Button("Delete Easel…", role: .destructive) { deleteBoard() }
             } label: { Image(systemName: "ellipsis").frame(width: 36, height: 36) }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).help("More Easel actions")
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).vaneTooltip("More Easel actions")
                 .accessibilityLabel("More Easel actions")
         }.padding(6).background(EaselColors.panel, in: .rect(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(.primary.opacity(0.07), lineWidth: 1))
@@ -389,8 +389,8 @@ private struct EaselEditor: View {
                     if item != nil {
                         Divider()
                         HStack(spacing: 20) {
-                            Button { duplicateItem() } label: { Image(systemName: "square.on.square") }.help("Duplicate · ⌘D")
-                            Button { deleteItem() } label: { Image(systemName: "trash") }.help("Delete")
+                            Button { duplicateItem() } label: { Image(systemName: "square.on.square") }.vaneTooltip("Duplicate", shortcut: "⌘D")
+                            Button { deleteItem() } label: { Image(systemName: "trash") }.vaneTooltip("Delete")
                         }.buttonStyle(.plain)
                     }
                 }.padding(12).background { RoundedRectangle(cornerRadius: 10).fill(EaselColors.panel) }
@@ -467,13 +467,15 @@ private struct EaselEditor: View {
     }
     private func chooseDrawing(_ kind: EaselItem.Kind) { hand = false; drawingKind = kind; drawing = true; selected = nil; canvasFocused = true }
     private func tool(_ title: String, _ icon: String, active: Bool = false, number: String? = nil, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        let parts = title.components(separatedBy: " · ")
+        let shortcut = parts.count > 1 ? parts[1] : number
+        return Button(action: action) {
             Image(systemName: icon).font(.system(size: 17)).frame(width: 36, height: 36)
                 .overlay(alignment: .bottomTrailing) {
                     if let number { Text(number).font(.system(size: 8)).foregroundStyle(.secondary).padding(3) }
                 }
                 .background(active ? EaselColors.selection.opacity(0.18) : .clear, in: .rect(cornerRadius: 7))
-        }.buttonStyle(.plain).help(title).accessibilityLabel(title)
+        }.buttonStyle(TactileButtonStyle()).vaneTooltip(parts[0], shortcut: shortcut).accessibilityLabel(title)
             .accessibilityAddTraits(active ? [.isSelected] : [])
     }
     @discardableResult private func changeItem(_ item: EaselItem) -> Bool {
@@ -771,9 +773,9 @@ private struct EaselCard: View {
                     Spacer()
                     if let url = EaselItem.webURL(item.source) {
                         Button(action: toggleLive) { Image(systemName: live ? "pause.circle.fill" : "play.circle") }
-                            .buttonStyle(.plain).help(live ? "Pause live view" : "View source page live")
+                            .buttonStyle(.plain).vaneTooltip(live ? "Pause live view" : "View source page live")
                             .accessibilityLabel(live ? "Pause live view" : "View source page live")
-                        Link(destination: url) { Image(systemName: "arrow.up.right") }.help("Open source page")
+                        Link(destination: url) { Image(systemName: "arrow.up.right") }.vaneTooltip("Open source page")
                     }
                 }.foregroundStyle(EaselColors.ink).padding(12)
             }
@@ -983,7 +985,7 @@ private struct EaselLibraryCard: View {
                     .background(ChromeMenuAnchorView(anchor: menuAnchor))
                     .onHover { menuHovered = $0 }
                     .padding(14)
-                    .help("Easel actions")
+                    .vaneTooltip("Easel actions")
                     .accessibilityLabel("Actions for \(board.title)")
             }
             .onHover { hovering = $0 }
