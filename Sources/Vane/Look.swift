@@ -755,13 +755,6 @@ enum Look {
     static let floatShadow = Color.black.opacity(0.3)
     static let floatShadowRadius: CGFloat = 12
     static let floatShadowY: CGFloat = 4
-    /// A row picked up out of the list: a shade bigger with a shadow under it, so it reads
-    /// as held above the sidebar rather than sliding along it. Tighter than `floatShadow` —
-    /// the row is a finger's width off the list, not a window over the page.
-    static let liftScale: CGFloat = 1.04
-    static let liftShadow = Color.black.opacity(0.35)
-    static let liftShadowRadius: CGFloat = 8
-    static let liftShadowY: CGFloat = 3
     /// How far down the slot a lifted row leaves goes: still a row, plainly not the one in
     /// your hand.
     static let lifted: Double = 0.3
@@ -1047,10 +1040,6 @@ extension Look {
                     holdDelay > switcherDelay && holdDelay <= 0.5))
         out.append(("a dragged row settles in about the time the list takes to reshape",
                     listSeconds > 0 && listSeconds <= 0.4))
-        out.append(("a lifted row is a shade bigger, not a different size",
-                    liftScale > 1 && liftScale < 1.1))
-        out.append(("its shadow is tighter than a floating surface's",
-                    liftShadowRadius < floatShadowRadius && liftShadowY < floatShadowY))
         out.append(("the slot it left is dimmed, not emptied — the list keeps its shape",
                     lifted > 0 && lifted < 0.5))
         out.append(("the command bar's rows keep Arc's 50pt pitch", barRowHeight + barRowGap == 50))

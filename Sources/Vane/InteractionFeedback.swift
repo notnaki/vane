@@ -12,6 +12,20 @@ import SwiftUI
     private var copyReset: Task<Void, Never>?
     private var arrivalReset: Task<Void, Never>?
     private var tidyReset: Task<Void, Never>?
+    private var arrivalHighlight = true
+
+    /// Drag placement already has a ghost and insertion preview; keep its snap sound
+    /// without adding a second highlight after release. Other arrival actions retain it.
+    func withoutArrivalHighlight<T>(_ body: () throws -> T) rethrows -> T {
+        let previous = arrivalHighlight
+        arrivalHighlight = false
+        if previous {
+            arrivalReset?.cancel()
+            arrivingTab = nil
+        }
+        defer { arrivalHighlight = previous }
+        return try body()
+    }
 
     func copied(_ url: URL) {
         copyReset?.cancel()
@@ -25,10 +39,11 @@ import SwiftUI
     }
 
     func arrived(_ id: UUID) {
+        InteractionSounds.play(.snap)
+        guard arrivalHighlight else { return }
         arrivalReset?.cancel()
         arrivingTab = id
         arrivalStamp = UUID()
-        InteractionSounds.play(.snap)
         arrivalReset = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(0.65)) } catch { return }
             self?.arrivingTab = nil

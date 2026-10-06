@@ -76,6 +76,11 @@ import XCTest
         XCTAssertEqual(store.tabs.filter { $0.kind == .favourite }.map(\.id), [tab.id])
         XCTAssertEqual(Set(store.tabs.map(\.id)), ids)
         XCTAssertEqual(store.tabs.count, ids.count)
+        XCTAssertNil(store.feedback.arrivingTab, "Favourite drops must not flash a blue outline")
+        let other = store.tabs.first { $0.id != tab.id }!
+        store.move(other.id, to: .pinned)
+        XCTAssertEqual(store.feedback.arrivingTab, other.id,
+                       "A drag must not permanently disable other arrival feedback")
     }
 
     func testFavouriteLandingMovesRegularSplitTogetherButFavouriteTileIndependently() throws {
@@ -103,6 +108,8 @@ import XCTest
         store.move(first.id, to: .favourite)
         store.move(last.id, to: .favourite)
         store.dropInFavourites([incoming.id], at: 1)
+        XCTAssertNil(store.feedback.arrivingTab,
+                     "A prior pin highlight must not reappear when the drop remounts its row")
         XCTAssertEqual(store.tabs.map(\.id), [first.id, incoming.id, last.id])
         store.dropInFavourites([first.id], at: 2)
         XCTAssertEqual(store.tabs.map(\.id), [incoming.id, last.id, first.id])

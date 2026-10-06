@@ -3,6 +3,20 @@ import Combine
 import SwiftUI
 
 enum FavouriteLanding {
+    static func emptyFrame(below pill: CGRect, revealed: Bool) -> CGRect {
+        CGRect(x: pill.minX, y: pill.maxY + Look.inset, width: pill.width,
+               height: revealed ? Look.tileHeight : Look.inset)
+    }
+
+    /// Only a presentation order. The store and all actual tab kinds stay unchanged.
+    static func previewIDs(favourites: [Tab.ID], incoming: [Tab.ID], index: Int?) -> [Tab.ID] {
+        guard let index else { return favourites }
+        let moving = Set(incoming)
+        var ids = favourites.filter { !moving.contains($0) }
+        ids.insert(contentsOf: incoming, at: min(max(0, index), ids.count))
+        return ids
+    }
+
     static func isNear(_ point: CGPoint, frame: CGRect) -> Bool {
         frame.width > 0 && frame.insetBy(dx: -14, dy: -18).contains(point)
     }
@@ -18,6 +32,13 @@ enum FavouriteLanding {
         let column = max(0, min(columns, Int(floor((point.x - frame.minX + pitch / 2) / pitch))))
         return min(count, row * columns + column)
     }
+
+    /// Convert a gap in the fixed on-screen grid to an index after the dragged tiles leave.
+    static func remainingIndex(gap: Int, favourites: [Tab.ID], moving: Set<Tab.ID>) -> Int {
+        let gap = min(max(0, gap), favourites.count)
+        return favourites.prefix(gap).filter { !moving.contains($0) }.count
+    }
+
 }
 
 /// Move one noninteractive drag panel with the cursor, even outside Vane. SwiftUI redraws
@@ -35,11 +56,33 @@ enum FavouriteLanding {
     private var timer: Timer?
     private var observation: AnyCancellable?
     private var ghost: NSPanel?
+    private weak var sourceWindow: NSWindow?
+    var ownsGhost: Bool { Dragging.shared.sourcePreview === self }
+    var isTracking: Bool { timer != nil }
+
+    func prepareSource(in store: TabStore) {
+        self.store = store
+        sourceWindow = store.window ?? root?.window
+        observeDrag()
+    }
+
+    func finishSource() {
+        timer?.invalidate()
+        timer = nil
+        hideGhost()
+        setDestination(nil)
+        sourceWindow = nil
+        if root == nil { observation = nil }
+    }
 
     func attach(_ view: NSView, store: TabStore) {
         root = view
         self.store = store
         store.sidebarDragPreview = self
+        observeDrag()
+    }
+
+    private func observeDrag() {
         guard observation == nil else { return }
         observation = Dragging.shared.$tab.sink { [weak self] tab in
             guard let self else { return }
@@ -59,13 +102,16 @@ enum FavouriteLanding {
     }
 
     func detach() {
+        if store?.sidebarDragPreview === self { store?.sidebarDragPreview = nil }
+        root = nil
+        setDestination(nil)
+        // The pointer can close a peeked sidebar while its drag is still in flight.
+        // The drag owns the panel and timer until release, independently of that view.
+        if ownsGhost && Dragging.shared.active { return }
         timer?.invalidate()
         timer = nil
         observation = nil
-        if store?.sidebarDragPreview === self { store?.sidebarDragPreview = nil }
-        root = nil
         hideGhost()
-        setDestination(nil)
     }
 
     func setDestination(_ next: Destination?) {
@@ -85,10 +131,10 @@ enum FavouriteLanding {
     }
 
     private func showGhost(at mouse: CGPoint, in window: NSWindow, store: TabStore) {
+        guard ownsGhost else { return }
         if ghost == nil {
             // Only the source window owns the floating picture. Other windows can still
             // calculate their own landing slots for shared tabs.
-            guard window.isKeyWindow else { return }
             let panel = DragGhostPanel(contentRect: .zero,
                                        styleMask: [.borderless, .nonactivatingPanel],
                                        backing: .buffered, defer: false)
@@ -116,32 +162,51 @@ enum FavouriteLanding {
     }
 
     private func track() {
-        guard let root, let window = root.window, let store,
-              let id = Dragging.shared.tab, Dragging.shared.tabs.count <= 1,
+        guard let store, let window = root?.window ?? (ownsGhost ? sourceWindow : nil),
+              let id = Dragging.shared.tab,
               store.tabs.contains(where: { $0.id == id }) else {
             setDestination(nil)
             hideGhost()
             return
         }
         let mouse = NSEvent.mouseLocation
+        // Resolve the shape before showing the first frame, particularly for a tile
+        // picked up from Favourites. Native multi-selection previews remain native.
+        defer {
+            if ownsGhost && Dragging.shared.tabs.count <= 1 {
+                showGhost(at: mouse, in: window, store: store)
+            } else { hideGhost() }
+        }
+        guard let root, root.window === window else { setDestination(nil); return }
         let point = root.convert(window.convertPoint(fromScreen: mouse), from: nil)
-        showGhost(at: mouse, in: window, store: store)
         let frame: CGRect
-        if let favourites, favourites.window === window {
+        let favouriteIDs = store.tabs.filter { $0.kind == .favourite }.map(\.id)
+        if let favourites, favourites.window === window,
+           !favouriteIDs.isEmpty || destination != nil {
             frame = root.convert(favourites.bounds, from: favourites)
         } else if let pill, pill.window === window {
             let address = root.convert(pill.bounds, from: pill)
-            frame = CGRect(x: address.minX, y: address.maxY + Look.inset,
-                           width: address.width, height: Look.tileHeight)
+            frame = FavouriteLanding.emptyFrame(below: address, revealed: destination != nil)
         } else { setDestination(nil); return }
         guard FavouriteLanding.isNear(point, frame: frame) else { setDestination(nil); return }
-        let incoming = sidebarMoveTabs([id], in: store)
-        let remaining = store.tabs.filter { $0.kind == .favourite && !incoming.contains($0.id) }.count
-        let columns = SidebarWidth.favouriteColumns(remaining + incoming.count,
-                                                    width: SidebarWidth.shared.width)
-        setDestination(Destination(index: FavouriteLanding.index(at: point, frame: frame,
-                                                                 count: remaining, columns: columns),
-                                   width: FavouriteLanding.tileWidth(width: frame.width, columns: columns)))
+        let rows = Dragging.shared.tabs.isEmpty ? [id] : Dragging.shared.tabs
+        let incoming = sidebarMoveTabs(rows, in: store)
+        let favourites = favouriteIDs
+        let moving = Set(incoming)
+        let remaining = favourites.filter { !moving.contains($0) }.count
+        let displayed = FavouriteLanding.previewIDs(favourites: favourites, incoming: incoming,
+                                                    index: destination?.index)
+        let physicalColumns = SidebarWidth.favouriteColumns(max(1, displayed.count),
+                                                             width: SidebarWidth.shared.width)
+        let gap = FavouriteLanding.index(at: point, frame: frame, count: displayed.count,
+                                         columns: physicalColumns)
+        let index = FavouriteLanding.remainingIndex(gap: gap, favourites: displayed,
+                                                     moving: moving)
+        let finalColumns = SidebarWidth.favouriteColumns(remaining + incoming.count,
+                                                         width: SidebarWidth.shared.width)
+        setDestination(Destination(index: index,
+                                   width: FavouriteLanding.tileWidth(width: frame.width,
+                                                                     columns: finalColumns)))
     }
 }
 
@@ -187,7 +252,9 @@ struct SidebarTabGhost: View {
         if let id = dragging.tab, dragging.tabs.count <= 1,
            let tab = store.tabs.first(where: { $0.id == id }) {
             Ghost(tab: tab, tileWidth: dragging.favouriteGhostWidth,
-                  width: sidebar.width - Look.inset * 2,
+                  width: tab.kind == .favourite ? sidebar.width - Look.inset * 2
+                    : dragging.rowGhostWidth.flatMap { $0 > 0 ? $0 : nil }
+                        ?? (sidebar.width - Look.inset * 2),
                   store: store, reduced: reduceMotion || batterySaver.isActive)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
@@ -201,35 +268,71 @@ struct SidebarTabGhost: View {
         let width: CGFloat
         let store: TabStore
         let reduced: Bool
+        @State private var lastTileWidth: CGFloat = Look.tileHeight
         private var tile: Bool { tileWidth != nil }
 
         var body: some View {
             Group {
-                if !tile, tab.kind != .favourite, let split = store.split(containing: tab.id) {
-                    PaneStrip(store: store, split: split,
-                              panes: split.tabs.compactMap { id in store.tabs.first { $0.id == id } },
-                              selected: true, ticked: false, live: false)
+                if let held = Dragging.shared.rowGhost {
+                    // One mounted source surface throughout: its icon moves to the tile's
+                    // centre as the rectangle changes size, without swapping pictures.
+                    held.modifier(GhostTileTransform(progress: tile ? 1 : 0,
+                                                     rowWidth: width,
+                                                     tileWidth: tileWidth ?? lastTileWidth))
                 } else {
-            HStack(spacing: tile ? 0 : Look.rowSpacing) {
-                TabIcon(tab: tab, size: tile ? Look.tileIcon : Look.rowIcon)
-                Text(TidyTitles.title(for: tab))
-                    .font(Look.rowTitle).lineLimit(1)
-                    .frame(width: tile ? 0 : max(0, width - Look.rowInset * 2 - Look.rowIcon - Look.rowSpacing),
-                           alignment: .leading)
-                    .opacity(tile ? 0 : 1)
-            }
+                    SidebarTabSurface(store: store, tab: tab, held: true,
+                                      returnHovering: .constant(false), pr: nil, action: {})
+                        .modifier(GhostTileTransform(progress: tile ? 1 : 0,
+                                                    rowWidth: width,
+                                                    tileWidth: tileWidth ?? lastTileWidth))
                 }
             }
             .frame(width: tileWidth ?? width, height: tile ? Look.tileHeight : Look.rowHeight)
-            .background(Look.barFill, in: .rect(cornerRadius: Look.pillRadius))
-            .background(Look.barMaterial, in: .rect(cornerRadius: Look.pillRadius))
-            .overlay {
-                RoundedRectangle(cornerRadius: Look.pillRadius).strokeBorder(Look.hairline)
-            }
-            .shadow(color: Look.liftShadow, radius: Look.liftShadowRadius, y: Look.liftShadowY)
+            .clipShape(.rect(cornerRadius: Look.pillRadius))
             .animation(reduced ? nil : Look.quick, value: tile)
             .animation(reduced ? nil : Look.quick, value: tileWidth)
+            .onChange(of: tileWidth, initial: true) { _, next in
+                if let next { lastTileWidth = next }
+            }
         }
+    }
+}
+
+struct GhostTileMorph {
+    var progress: CGFloat
+    var rowWidth: CGFloat
+    var tileWidth: CGFloat
+    var width: CGFloat { rowWidth + (tileWidth - rowWidth) * progress }
+    var height: CGFloat { Look.rowHeight + (Look.tileHeight - Look.rowHeight) * progress }
+    var iconX: CGFloat {
+        let start = Look.rowInset + Look.rowIcon / 2
+        return start + (tileWidth / 2 - start) * progress
+    }
+}
+
+private struct GhostTileMorphKey: EnvironmentKey {
+    static let defaultValue: GhostTileMorph? = nil
+}
+extension EnvironmentValues {
+    var ghostTileMorph: GhostTileMorph? {
+        get { self[GhostTileMorphKey.self] }
+        set { self[GhostTileMorphKey.self] = newValue }
+    }
+}
+
+private struct GhostTileTransform: AnimatableModifier {
+    nonisolated var progress: CGFloat
+    nonisolated let rowWidth: CGFloat
+    nonisolated var tileWidth: CGFloat
+    nonisolated var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(progress, tileWidth) }
+        set { progress = newValue.first; tileWidth = newValue.second }
+    }
+    func body(content: Content) -> some View {
+        let morph = GhostTileMorph(progress: progress, rowWidth: rowWidth, tileWidth: tileWidth)
+        content.environment(\.ghostTileMorph, morph)
+            .frame(width: morph.width, height: morph.height, alignment: .leading)
+            .clipped()
     }
 }
 
@@ -246,6 +349,10 @@ extension EnvironmentValues {
 
 extension TabStore {
     func dropInFavourites(_ ids: [Tab.ID], at index: Int) {
+        feedback.withoutArrivalHighlight { placeInFavourites(ids, at: index) }
+    }
+
+    private func placeInFavourites(_ ids: [Tab.ID], at index: Int) {
         let ids = sidebarMoveTabs(ids, in: self)
         let others = tabs.filter { $0.kind == .favourite && !ids.contains($0.id) }
         let position = min(max(0, index), others.count)

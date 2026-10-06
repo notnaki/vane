@@ -73,6 +73,12 @@ their own pages. Split View shows two to four pages side by side or stacked, wit
 resizable dividers. Peek opens a link over the current page; Little Vane opens it
 in a separate compact window.
 
+Drag a sidebar tab to reorder it: the white line marks the nearest insertion gap,
+and the rows stay in place until you release. The line fades in once and stays visible
+while moving between gaps. The held ghost matches the tab row.
+Hold Option while dropping onto the middle of another tab to make a split view.
+Dropping into a closed folder highlights it and opens its icon while you hover.
+
 After Tidy groups Today tabs into folders, drag a tab or selection into the blank
 space below the last row to move it outside the folders at the bottom of Today.
 That drop area remains available when the last row is a collapsed folder or the
@@ -81,9 +87,10 @@ right-click → **Remove from Folder** keeps tabs in their section. An empty Tod
 folder disappears. Click and drag the blank area below Today tabs to move the window.
 
 Drag a tab onto a favourite tile or into the gaps between tiles to add it to Favourites.
-Lifting a tab reveals a drop tile when Favourites is empty; the address pill also accepts
+Approaching Favourites reveals a drop tile when it is empty; the address pill also accepts
 the first favourite. Nearby tiles move aside and the drag preview takes its destination
-tile's shape. Drag tiles to reorder them or move
+tile's shape, then transforms back into a row when dragged out. This previews placement;
+the order commits only on release. Drag tiles to reorder them or move
 them into Pinned or Today. Links dragged from a webpage or another app can be dropped
 onto the grid or address pill to save a favourite; dragging a tile into another app
 exports its page link.
