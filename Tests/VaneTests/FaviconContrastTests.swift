@@ -79,6 +79,33 @@ import XCTest
         XCTAssertGreaterThan(try XCTUnwrap(bitmap.colorAt(x: 16, y: 1)).alphaComponent, 0.9)
     }
 
+    func testTransparentColoredLogoKeepsArtworkOutsideTheCircularBadge() throws {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16,
+            pixelsHigh: 16, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .calibratedRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        // A wide logo with transparent space above and below, like YouTube's play mark.
+        // Its left edge lies outside a circle but is part of the site's artwork.
+        for y in 0..<16 {
+            for x in 0..<16 {
+                bitmap.setColor(NSColor(calibratedRed: 1, green: 0, blue: 0,
+                    alpha: (3..<13).contains(y) ? 1 : 0), atX: x, y: y)
+            }
+        }
+        let image = try XCTUnwrap(Favicons.image(from:
+            XCTUnwrap(bitmap.representation(using: .png, properties: [:]))))
+        for scale in [1.0, 2.0] {
+            let renderer = ImageRenderer(content: SiteIcon(icon: image, size: 16))
+            renderer.scale = scale
+            let rendered = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            let edge = try XCTUnwrap(rendered.colorAt(x: 0, y: Int(4 * scale)))
+            XCTAssertEqual(edge.alphaComponent, 1, accuracy: 0.02,
+                           "Transparent logos must retain their own silhouette at scale \(scale)")
+            XCTAssertEqual(edge.redComponent, 1, accuracy: 0.02)
+            XCTAssertEqual(try XCTUnwrap(rendered.colorAt(x: 0, y: 0)).alphaComponent,
+                           0, accuracy: 0.02)
+        }
+    }
+
     func testParkingAtUncachedHostClearsPreviousSiteArtwork() async throws {
         let image = try cachedIcon(foreground: .systemGreen, background: .systemGreen)
         let tab = Tab(profileID: UUID())
