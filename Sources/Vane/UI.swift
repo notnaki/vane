@@ -977,24 +977,49 @@ private struct TopRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
     private var compact: Bool { sidebar.width < 220 }
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        // At 164pt: 16pt outer padding + 62pt lights + 22pt toggle +
-        // three 20pt navigation targets + two 2pt gaps = 164pt.
-        HStack(spacing: compact ? 0 : 12) {
-            Spacer().frame(width: Look.trafficLights)   // traffic lights
-            Button { store.sidebarShown.toggle() } label: { Image(systemName: "sidebar.left") }
-                .frame(width: compact ? 22 : nil)
-                .vaneTooltip("Toggle Sidebar", shortcut: Keybindings.binding(for: .toggleSidebar).display)
-                .accessibilityLabel("Toggle Sidebar")
-                .accessibilityValue(store.sidebarShown ? "Shown" : "Hidden")
-            Spacer(minLength: 0)
-            NavButtons(tab: store.active, compact: compact)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: compact ? 8 : 12) {
+                Spacer().frame(width: Look.trafficLights)
+                toggle
+                Spacer(minLength: 0)
+                NavButtons(tab: store.active, compact: compact)
+            }
+            .frame(height: Look.topRow)
+            // Keep the lights and toggle on their original centre line. Navigation
+            // gets its own row when preserving the gaps would crowd the controls.
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer().frame(width: Look.trafficLights)
+                    Spacer(minLength: 8)
+                    toggle
+                }
+                .frame(height: Look.topRow)
+                HStack {
+                    Spacer(minLength: 0)
+                    NavButtons(tab: store.active, compact: compact)
+                }
+                .frame(height: Look.topRow)
+            }
         }
         .buttonStyle(TactileButtonStyle())
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
-        .frame(height: Look.topRow)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: compact)
+        // The compact row needs 188pt including the sidebar's outer insets.
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
+                   value: sidebar.width < 188)
+    }
+
+    private var toggle: some View {
+        Button { store.sidebarShown.toggle() } label: { Image(systemName: "sidebar.left") }
+            .frame(width: compact ? 22 : nil)
+            .vaneTooltip("Toggle Sidebar", shortcut: Keybindings.binding(for: .toggleSidebar).display)
+            .accessibilityLabel("Toggle Sidebar")
+            .accessibilityValue(store.sidebarShown ? "Shown" : "Hidden")
     }
 }
 
@@ -1145,6 +1170,7 @@ private struct LiveAddressPill: View {
 private struct PillBody: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
+    @ObservedObject private var batterySaver = BatterySaver.shared
     let tab: Tab?
     let host: String
     let address: String
@@ -1169,6 +1195,8 @@ private struct PillBody: View {
         // button that does not react reads as a label.
         .background(hovering ? Look.selected : Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
+                   value: sidebar.width < 220)
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture { open() }
@@ -1199,7 +1227,7 @@ private struct PillBody: View {
             HStack(spacing: Look.pillGlyphGap) {
                 if address.isEmpty {
                     Image(systemName: "magnifyingglass").accessibilityHidden(true)
-                    Text("Search or Enter URL…").font(Look.heading).lineLimit(1)
+                    Text("Search").font(Look.heading).lineLimit(1)
                 } else {
                     Text(host).font(Look.text).lineLimit(1)
                     .vaneTooltip(address)
@@ -1230,6 +1258,7 @@ private struct PillBody: View {
             Image(systemName: "ellipsis")
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .actionAnchor(overflowAnchor)
         .vaneTooltip("Page Actions", hint: "Copy, reader, site controls, and extensions")

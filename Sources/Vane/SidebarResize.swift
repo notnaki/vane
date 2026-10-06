@@ -24,7 +24,7 @@ import SwiftUI
 
     /// Measured from the installed Arc for macOS resize handlers: 164–500pt,
     /// a 228pt reset width, and collapse when the pointer passes 82pt.
-    /// The compact header fits at the minimum without hiding navigation controls.
+    /// The compact header reflows at the minimum without hiding navigation controls.
     nonisolated static let minimum: CGFloat = 164
     nonisolated static let maximum: CGFloat = 500
     nonisolated static let collapseThreshold: CGFloat = 82
