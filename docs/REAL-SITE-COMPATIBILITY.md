@@ -66,9 +66,10 @@ swift test --filter 'FileUploadTests|SitePermissionTests'
 python3 scripts/check-browser-smoke.py
 ```
 
-The focused run passed **24 tests with zero failures**: seven upload regressions
+The focused run passed **25 tests with zero failures**: eight upload regressions
 and 17 permission tests. Upload checks exercise real WebKit inputs, single/multiple
-and folder picker settings, cancel/reopen, navigation, teardown, window closure,
+and folder picker settings, cancel/reopen, navigation (including a picker opened
+between provisional start and commit), teardown, window closure,
 and rejection of busy/detached requests. The signed smoke run passed **190
 real-WebKit assertions** and unregistered **14 temporary stores**; upload dialogs
 are covered separately by the XCTest and public-site checks. macOS 26 and an

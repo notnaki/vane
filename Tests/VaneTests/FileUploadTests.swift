@@ -1,4 +1,5 @@
 import AppKit
+import Network
 import WebKit
 import XCTest
 @testable import vane
@@ -25,12 +26,14 @@ import XCTest
         tab = nil; window = nil
     }
 
-    private func wait(_ condition: () -> Bool) async throws {
+    private func wait(file: StaticString = #filePath, line: UInt = #line,
+                      _ condition: () -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTAssertTrue(condition(), "Timed out waiting for the upload picker")
+        XCTAssertTrue(condition(), "Timed out waiting for the upload fixture", file: file, line: line)
+        if !condition() { throw NSError(domain: "UploadFixtureTimeout", code: 1) }
     }
 
     private func loadInput(_ attributes: String = "") async throws {
@@ -87,6 +90,28 @@ import XCTest
         panel.cancel(nil)
     }
 
+    func testCommitDismissesPickerOpenedAfterProvisionalNavigation() async throws {
+        let server = try SlowUploadServer()
+        defer { server.stop() }
+        try await wait { server.port != nil }
+        let recorder = UploadRecorder(tab: tab)
+        tab.web.uiDelegate = recorder
+        try await loadInput()
+        let port = try XCTUnwrap(server.port)
+        let url = URL(string: "http://127.0.0.1:\(port)/next")!
+        tab.web.load(URLRequest(url: url))
+        try await wait { self.tab.loading && server.request != nil }
+        // The old document is still interactive while the HTTP response is held.
+        let panel = try await openPicker()
+        server.respond()
+        try await wait { self.tab.web.title == "Next document" }
+        try await wait { self.window.attachedSheet == nil }
+        XCTAssertFalse(panel.isVisible)
+        XCTAssertEqual(recorder.results.count, 1)
+        let result = try XCTUnwrap(recorder.results.first)
+        XCTAssertNil(result)
+    }
+
     func testTabTeardownDismissesPicker() async throws {
         let recorder = UploadRecorder(tab: tab)
         tab.web.uiDelegate = recorder
@@ -134,6 +159,37 @@ import XCTest
         XCTAssertEqual(answers, 2)
         XCTAssertNil(window.attachedSheet)
     }
+}
+
+/// Hold the next page until the old document has opened its upload sheet.
+@MainActor private final class SlowUploadServer {
+    private let listener: NWListener
+    var port: UInt16?
+    var request: NWConnection?
+
+    init() throws {
+        listener = try NWListener(using: .tcp, on: .any)
+        listener.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor in
+                if case .ready = state { self?.port = self?.listener.port?.rawValue }
+            }
+        }
+        listener.newConnectionHandler = { [weak self] connection in
+            connection.start(queue: .main)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { _, _, _, _ in
+                Task { @MainActor in self?.request = connection }
+            }
+        }
+        listener.start(queue: .main)
+    }
+
+    func respond() {
+        let body = "<title>Next document</title><p>Navigation committed</p>"
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n" + body
+        request?.send(content: Data(response.utf8), completion: .contentProcessed { _ in })
+    }
+
+    func stop() { listener.cancel(); request?.cancel() }
 }
 
 /// Record actual WebKit answers while forwarding its real parameters and frame to Tab.
