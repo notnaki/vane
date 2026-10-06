@@ -79,6 +79,22 @@ import XCTest
         XCTAssertGreaterThan(try XCTUnwrap(bitmap.colorAt(x: 16, y: 1)).alphaComponent, 0.9)
     }
 
+    func testParkingAtUncachedHostClearsPreviousSiteArtwork() async throws {
+        let image = try cachedIcon(foreground: .systemGreen, background: .systemGreen)
+        let tab = Tab(profileID: UUID())
+        defer { tab.tearDown(); Favicons.forget(tab.profileID) }
+        tab.favicon = image
+        // An unreachable local origin cannot supply replacement artwork. This also
+        // exercises the parked path without creating a WebContent process.
+        tab.park(url: URL(string: "http://127.0.0.1:1/home")!, Parked(title: "Pinned home"))
+        let deadline = Date.now.addingTimeInterval(2)
+        while tab.favicon != nil, Date.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNil(tab.favicon, "Returning home must not display the previous host's artwork")
+        XCTAssertNil(tab.existingWeb, "Clearing parked artwork must not create a page")
+    }
+
     func testLightArtworkAndInternalDetailsAreNotFlattened() throws {
         XCTAssertFalse(try cachedIcon(foreground: .white).isTemplate)
         XCTAssertFalse(try cachedIcon(foreground: .black, detail: .white).isTemplate)

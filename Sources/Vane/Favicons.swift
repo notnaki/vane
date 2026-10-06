@@ -110,6 +110,7 @@ import WebKit
                 tab.favicon = img
             }
             if tab.suspended {
+                tab.favicon = self.memory[key]
                 if self.memory[key] == nil, !self.missed(key), let fallback = Favicons.fallback(for: url) {
                     self.warm(key: key, urls: [fallback], persist: !tab.isPrivate, fallback: fallback)
                 }
