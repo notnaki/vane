@@ -90,8 +90,9 @@ with the newest at the bottom. Thumbnails, filenames, and relative times appear 
 the lower Today tabs; click a finished file to open it or right-click to show it in
 Finder. **Settings → General → Previews → Library hover preview** selects Downloads
 (the default), Media, Easels, Spaces, Archived Tabs, History, or Off. Each preview
-shows up to four items from this window's profile; private windows show only their
-own downloads, media, and archived tabs. The bucket is empty when downloads,
+shows up to four items. Downloads and Media are shared across all regular profiles
+and windows; the other previews use this window's profile. Private windows show only
+their own downloads, media, and archived tabs. The bucket is empty when downloads,
 archived tabs, and the selected preview are empty, and always highlights on hover.
 A filled bucket lifts its contents without changing their shape; an empty one lifts its lid.
 Reduce Motion and Battery Saver keep these changes immediate. Click the bucket to

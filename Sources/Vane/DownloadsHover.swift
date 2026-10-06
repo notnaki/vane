@@ -82,7 +82,7 @@ enum LibraryHoverCategory: String, CaseIterable, Identifiable {
 struct RecentLibraryPreview: View {
     let items: [LibraryHoverItem]
     let category: LibraryHoverCategory
-    @ObservedObject var downloads: Downloads
+    @ObservedObject var downloads: DownloadLibrary
     @ObservedObject var store: TabStore
     let close: () -> Void
 
@@ -92,7 +92,9 @@ struct RecentLibraryPreview: View {
                 ForEach(items) { item in
                     switch item {
                     case .download(let download):
-                        RecentDownloadRow(item: download, downloads: downloads, close: close)
+                        if let owner = downloads.owner(of: download) {
+                            RecentDownloadRow(item: download, downloads: owner, close: close)
+                        }
                     default:
                         RecentLibraryRow(item: item) {
                             close()

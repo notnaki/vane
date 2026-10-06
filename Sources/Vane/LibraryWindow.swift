@@ -665,8 +665,8 @@ struct LibraryPanel: View {
 
     @ViewBuilder private var content: some View {
         switch library.section {
-        case .media:     MediaPane(downloads: Downloads.manager(for: store.profileID))
-        case .downloads: DownloadsPane(downloads: Downloads.manager(for: store.profileID))
+        case .media:     MediaPane(downloads: DownloadLibrary.library(for: store.profileID))
+        case .downloads: DownloadsPane(downloads: DownloadLibrary.library(for: store.profileID))
         case .easels where !store.isPrivate: EaselsPane(repository: EaselStore.shared(profileID: store.profileID, directory: Store.directory))
         case .spaces where !store.isPrivate: SpacesPane()
         // History never becomes the section, and Spaces is not offered in a private
@@ -1070,7 +1070,7 @@ private struct ArchivedRow: View {
 // MARK: - Downloads
 
 private struct DownloadsPane: View {
-    @ObservedObject var downloads: Downloads
+    @ObservedObject var downloads: DownloadLibrary
     @ObservedObject private var library = Library.shared
 
     /// Not cached in `@State`: a running download republishes on every progress tick, so
@@ -1106,7 +1106,9 @@ private struct DownloadsPane: View {
                     : "No download matches this filter.")
             } else {
                 LibraryList(groups: groups, id: \Downloads.Item.id) { item in
-                    DownloadListRow(item: item, downloads: downloads)
+                    if let owner = downloads.owner(of: item) {
+                        DownloadListRow(item: item, downloads: owner)
+                    }
                 }
             }
         }
@@ -1191,7 +1193,7 @@ private struct DownloadVerbs: View {
 /// second thing to keep in step for no answer it could give that this cannot. Ceiling: an
 /// image the user looked at but never downloaded is not here.
 private struct MediaPane: View {
-    @ObservedObject var downloads: Downloads
+    @ObservedObject var downloads: DownloadLibrary
     @ObservedObject private var library = Library.shared
     /// Watched, not read once: a picture that decodes after the wall is drawn changes the
     /// height the masonry balanced on, so the wall has to be laid out again.
@@ -1224,8 +1226,10 @@ private struct MediaPane: View {
                         ForEach(Array(wall.enumerated()), id: \.offset) { _, column in
                             LazyVStack(spacing: Look.inset) {
                                 ForEach(column, id: \.item.id) { cell in
-                                    MediaTile(item: cell.item, downloads: downloads,
-                                              height: cell.height, order: cell.order)
+                                    if let owner = downloads.owner(of: cell.item) {
+                                        MediaTile(item: cell.item, downloads: owner,
+                                                  height: cell.height, order: cell.order)
+                                    }
                                 }
                             }
                             .frame(width: Look.mediaColumn)

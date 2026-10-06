@@ -85,6 +85,8 @@ import WebKit
     /// edit that file; `status` is the honest one. ponytail: two fields beat forking the UI.
     @MainActor final class Item: ObservableObject, Identifiable {
         let id: UUID
+        /// Retained across launches so downloads from different profiles have one order.
+        let started: Date
         /// Distinct per loaded instance, since a check or another manager can open the
         /// same record ID while this manager still holds its grant.
         fileprivate let scopeOwner = UUID()
@@ -131,12 +133,14 @@ import WebKit
 
         init(_ download: WKDownload, name: String) {
             self.id = UUID()
+            self.started = .now
             self.name = name
             watch(download)
         }
 
         fileprivate init(record: Record) {
             id = record.id
+            started = record.started ?? record.completed ?? .distantPast
             name = record.name
             url = record.destination
             source = record.source
@@ -171,7 +175,8 @@ import WebKit
                           total: total, received: received, state: name, reason: reason,
                           completed: completed, resumeFile: resumeFile,
                           destinationBookmark: destinationBookmark,
-                          destinationBookmarkIsFile: destinationBookmarkIsFile)
+                          destinationBookmarkIsFile: destinationBookmarkIsFile,
+                          started: started)
         }
 
         fileprivate func watch(_ d: WKDownload) {
@@ -231,6 +236,7 @@ import WebKit
         var resumeFile: String?
         var destinationBookmark: Data?
         var destinationBookmarkIsFile: Bool?
+        var started: Date?
     }
 
     static let missingText = "The file was moved or deleted."
@@ -412,6 +418,8 @@ import WebKit
     /// way to put a synthetic record into the list.
     @discardableResult
     func add(_ record: Record) -> Item {
+        var record = record
+        if record.started == nil { record.started = record.completed ?? .now }
         let item = Item(record: record)
         item.onProgress = { [weak self] in self?.throttledSave() }
         items.insert(item, at: 0)
