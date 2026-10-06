@@ -935,6 +935,7 @@ struct TitleReveal: Equatable, Sendable {
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
     private func release(replacing: Bool = true) {
+        FileUploads.cancel(tabID: id)
         SitePermissions.endDocument(tabID: id)
         certificateDestinationURL = nil
         certificateNavigation = nil
@@ -1321,6 +1322,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
         guard w === existingWeb else { return }
+        FileUploads.cancel(tabID: id)
         SitePermissions.endDocument(tabID: id)
         pictureInPicture = false
         pipFrame = nil
@@ -1329,6 +1331,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         if w === existingWeb {
+            FileUploads.cancel(tabID: id)
             SitePermissions.endDocument(tabID: id)
             certificateNavigation = navigation
         }
@@ -1413,7 +1416,10 @@ struct TitleReveal: Equatable, Sendable {
     /// redirect applies the wrong site's level) and didFinish is too late (the page has
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
-        if w === existingWeb { SitePermissions.endDocument(tabID: id) }
+        if w === existingWeb {
+            FileUploads.cancel(tabID: id)
+            SitePermissions.endDocument(tabID: id)
+        }
         finishCertificateNavigation(navigation, in: w)
         Trace.note("committed")
         Zoom.apply(to: self)

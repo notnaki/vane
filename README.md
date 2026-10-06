@@ -525,8 +525,9 @@ with `check-release-candidate.sh` before treating it as a distribution build.
 - A [public-demo compatibility pass](docs/REAL-SITE-COMPATIBILITY.md) verified
   password-session navigation, print-to-PDF, local WebRTC calls, screen-capture
   startup, clear HLS and FairPlay demo playback, and basic Excalidraw/VS Code editing
-  on macOS 27 in an ad hoc signed debug build. File-picker uploads failed; passkey
-  authentication was unavailable in that fixture. Provider sign-ins, subscription
+  on macOS 27 in an ad hoc signed debug build. The file-picker failure was fixed
+  and a synthetic upload reached the public demo server in a follow-up check.
+  Passkey authentication was unavailable in the original fixture. Provider sign-ins, subscription
   streaming, cross-network calls, broader permission lifecycles, and macOS 26 /
   notarized-release coverage remain unverified. See the matrix for exact scope.
 - Passkeys are **known pending** until Apple approves the managed macOS browser
