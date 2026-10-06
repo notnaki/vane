@@ -349,6 +349,10 @@ extension EnvironmentValues {
 
 extension TabStore {
     func dropInFavourites(_ ids: [Tab.ID], at index: Int) {
+        feedback.withoutArrivalHighlight { placeInFavourites(ids, at: index) }
+    }
+
+    private func placeInFavourites(_ ids: [Tab.ID], at index: Int) {
         let ids = sidebarMoveTabs(ids, in: self)
         let others = tabs.filter { $0.kind == .favourite && !ids.contains($0.id) }
         let position = min(max(0, index), others.count)

@@ -2225,6 +2225,12 @@ struct TabDrop: DropDelegate {
     }
 
     func performDrop(at location: CGPoint, splitting: Bool = false) -> Bool {
+        store.feedback.withoutArrivalHighlight {
+            commitDrop(at: location, splitting: splitting)
+        }
+    }
+
+    private func commitDrop(at location: CGPoint, splitting: Bool) -> Bool {
         let preview = favouritePreview ?? store.sidebarDragPreview
         preview?.refresh()
         let favouriteDestination = preview?.destination
@@ -3204,6 +3210,10 @@ private struct FolderDrop: DropDelegate {
     func dropExited(info: DropInfo) { zone = nil }
 
     func performDrop(info: DropInfo) -> Bool {
+        store.feedback.withoutArrivalHighlight { commitDrop(info: info) }
+    }
+
+    private func commitDrop(info: DropInfo) -> Bool {
         let where_ = which(info)
         zone = nil
         let (tabs, dragged) = Dragging.shared.takeAll()      // see `TabDrop.performDrop`

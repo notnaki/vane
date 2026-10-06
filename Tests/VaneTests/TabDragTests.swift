@@ -154,6 +154,7 @@ import XCTest
         XCTAssertTrue(pinned.performDrop(at: point))
         XCTAssertEqual(store.tabs.filter { $0.kind == .pinned }.map(\.id),
                        [original[0], original[1]])
+        XCTAssertNil(store.feedback.arrivingTab, "Dropping a row must not flash an arrival outline")
         XCTAssertEqual(store.splits[0], split)
 
         let folder = store.pins.newFolder(named: "Nested pane", next: original[1].uuidString)!
