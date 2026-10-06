@@ -93,6 +93,7 @@ import WebKit
                 other.tabs = store.tabs
                 other.pins = store.pins
                 other.todayShape = store.todayShape
+                other.enforceFolderLocks()
                 // Pane focus follows each window's own selection.
                 let remembered = other.splits
                 other.splits = store.splits.map { split in

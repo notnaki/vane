@@ -80,6 +80,15 @@ list fills the sidebar. Dropping onto **New Tab** moves tabs to the top of Today
 right-click → **Remove from Folder** keeps tabs in their section. An empty Today
 folder disappears. Click and drag the blank area below Today tabs to move the window.
 
+Right-click a sidebar folder and choose **Lock Folder** to hide all of its tabs and
+nested folders. Click the locked folder or the page's **Unlock Folder** button to
+use Touch ID or your Mac login password. If a page inside is open when you lock,
+Vane replaces it with a heavily blurred, frozen backdrop and an unlock message;
+the page stops running and cannot receive input. Unlocks last until you relock,
+quit Vane, or the Mac locks, sleeps, or switches users. **Remove Lock…** requires
+fresh authentication. Locks protect access inside Vane; they do not encrypt saved
+tabs, history, or browser data, and history remains available in the Library.
+
 Hover a sidebar tab to see a compact name tooltip and a **Double-click to rename** hint.
 Double-click a Today tab, pinned tab, favourite, or split pane to edit its name in
 place. Press **Return** to save or **Escape** to cancel; an empty name restores the

@@ -1034,7 +1034,7 @@ struct CommandField: NSViewRepresentable {
         for (w, other) in TabStore.all.enumerated()
         where other === store || !(other.isPrivate || other.isLittle) {
             let place = manyWindows ? "Window \(w + 1)" : ""
-            out += other.tabs.map { tabRow($0, in: other, place: place) }
+            out += other.accessibleTabs.map { tabRow($0, in: other, place: place) }
         }
         return out
     }
@@ -1055,10 +1055,10 @@ struct CommandField: NSViewRepresentable {
     /// the same question differently is exactly the sort of thing nobody would notice for a
     /// year. No "Window n" subtitle here — every row is this window's.
     private func recentTabRows() -> [PaletteRow] {
-        let byID = Dictionary(store.tabs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let byID = Dictionary(store.accessibleTabs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         // No cap asked for here: `Palette.empty` is the one place the bar's cap lives, and
         // two of them are two numbers that have to keep agreeing.
-        let order = TabSwitcher.recent(store.tabs.map { ($0.id, $0.lastActive) },
+        let order = TabSwitcher.recent(store.accessibleTabs.map { ($0.id, $0.lastActive) },
                                        current: store.current, limit: .max)
         return order.compactMap { byID[$0] }.map { tabRow($0, in: store, place: "") }
     }

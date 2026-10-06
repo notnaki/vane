@@ -358,7 +358,7 @@ struct LiveFolderActions: ViewModifier {
     @Binding var editing: Bool
 
     func body(content: Content) -> some View {
-        if folder.live == nil {
+        if folder.live == nil || store.isFolderLocked(folder.id) {
             content
         } else {
             content

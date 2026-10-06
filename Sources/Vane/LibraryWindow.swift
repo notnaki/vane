@@ -322,11 +322,13 @@ extension Library {
         for (i, entry) in shape.entries.enumerated() {
             switch entry.row {
             case .folder(let folder):
+                guard shape.ancestors(of: i).allSatisfy({ shape.folder($0)?.requiresAuthentication != true }) else { continue }
                 out.append(CardRow(id: folder.id.uuidString, folder: folder,
                                    parent: entry.parent, depth: shape.depth(of: i)))
             case .tab(let name):
                 guard let n = left[name], n > 0, let url = URL(string: name) else { continue }
                 left[name] = n - 1
+                guard shape.lockedFolders(for: entry.id, unlocked: []).isEmpty else { continue }
                 out.append(CardRow(id: "\(out.count)|\(name)", url: url,
                                    parent: entry.parent, depth: shape.depth(of: i)))
             }
@@ -486,6 +488,7 @@ extension Library {
         var opens = url
 
         if let live = owner(of: source), let tab = live.tabs.first(where: { $0.currentURL == url }) {
+            guard !live.isTabLocked(tab.id) else { return }
             // The source is on screen: hand the live tab to the code that already moves one,
             // which carries its scroll position and back/forward list across. That also
             // writes the target's list — harmless when the target is on screen too, because
@@ -494,7 +497,9 @@ extension Library {
             Spaces.move(tab.id, to: target, as: kind, from: live)
         } else {
             let spaces = ProfileManager.shared.spaces(for: profile)
-            guard var from = spaces.first(where: { $0.id == source }) else { return }
+            guard var from = spaces.first(where: { $0.id == source }),
+                  TabStore.savedShape(kind, space: source, profileID: profile)?
+                    .lockedFolders(for: url.absoluteString, unlocked: []).isEmpty ?? true else { return }
             from.tabURLs.removeAll { $0 == url }
             from.pinnedTabURLs?.removeAll { $0 == url }
             ProfileManager.shared.updateSpace(from)
@@ -1518,7 +1523,9 @@ private struct SpaceCard: View {
     }
 
     private var today: [URL] {
-        live.map { $0.tabs.filter { $0.kind == .today }.compactMap(\.currentURL) } ?? space.tabURLs
+        if let live { return live.accessibleTabs.filter { $0.kind == .today }.compactMap(\.currentURL) }
+        let shape = TabStore.savedShape(.today, space: space.id, profileID: space.profileID)
+        return space.tabURLs.filter { shape?.lockedFolders(for: $0.absoluteString, unlocked: []).isEmpty ?? true }
     }
 
     /// The card's ground, off the same stops `SpaceGround` builds the window's from — so a
@@ -1720,7 +1727,7 @@ private struct FolderCardRow: View {
 
     var body: some View {
         HStack(spacing: Look.captionGap * 3) {
-            Image(systemName: shut ? "chevron.right" : "chevron.down")
+            Image(systemName: folder.requiresAuthentication == true ? "lock.fill" : (shut ? "chevron.right" : "chevron.down"))
                 .font(Look.badgeText)
                 .foregroundStyle(Look.inkTertiary)
                 .frame(width: Look.captionGap * 4)
@@ -1744,7 +1751,7 @@ private struct FolderCardRow: View {
         .onTapGesture(perform: toggle)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(folder.name)
-        .accessibilityValue(shut ? "Closed" : "Open")
+        .accessibilityValue(folder.requiresAuthentication == true ? "Locked" : (shut ? "Closed" : "Open"))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { toggle() }
     }

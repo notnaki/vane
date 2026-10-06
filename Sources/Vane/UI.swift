@@ -33,7 +33,7 @@ struct WebView: NSViewRepresentable {
     var store: TabStore?
     private var mayMount: Bool {
         guard let tab, let store else { return true }
-        return store.ownsPage(tab)
+        return !store.isTabLocked(tab.id) && store.ownsPage(tab)
     }
 
     func makeNSView(context: Context) -> WebHost { WebHost(mayMount ? web : nil, offscreen: offscreen) }
@@ -264,13 +264,15 @@ struct TabPage: View {
     var keepPages = false
 
     var body: some View {
-        if store.ownsPage(tab) {
+        if store.isTabLocked(tab.id) {
+            Color.clear.accessibilityHidden(true)
+        } else if store.ownsPage(tab) {
             if let session = tab.easelSession {
                 EaselTabPage(session: session, store: store).id(tab.id)
             } else {
                 DeveloperFrame(tab: tab) {
                     WebView(web: tab.web,
-                        live: keepPages ? store.everyTab.filter { store.ownsPage($0) }.compactMap(\.existingWeb) : [],
+                        live: keepPages ? store.everyTab.filter { !store.isTabLocked($0.id) && store.ownsPage($0) }.compactMap(\.existingWeb) : [],
                         offscreen: offscreen, tab: tab, store: store)
                 }
                 .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
@@ -641,7 +643,10 @@ struct WebCard: View {
             // A split is one card holding several pages; everything that floats over the
             // page — find, the save prompt, the status bar — still belongs to `store.active`,
             // which *is* the active pane's tab.
-            if let split = store.activeSplit {
+            if let folder = store.lockedPageFolder {
+                LockedFolderPage(folder: folder)
+                    .transition(.opacity)
+            } else if let split = store.activeSplit {
                 SplitPanes(split: split)
             } else if let tab = store.active {
                 // The list of saved accounts hangs off a field *in this page*, so it is an
@@ -2945,7 +2950,7 @@ private struct PinnedSection: View {
         // actually draw a row are counted — a pinned pane that is not its split's lead, and
         // an entry whose tab has gone, draw nothing, and a place in the list counted in
         // entries rather than rows lands beside the wrong one. See `OpenTabs`.
-        let available = SidebarRows(tabs: store.tabs, splits: store.splits, shape: store.pins).rows
+        let available = SidebarRows(tabs: store.accessibleTabs, splits: store.splits, shape: store.pins, unlocked: store.unlockedFolders).rows
         // Empty is nothing, as in Arc: the divider follows the space’s name, and this
         // section draws no row at all — not even an empty one while a drag is in flight,
         // which would push the whole strip down a pitch under the pointer and take
@@ -3039,6 +3044,8 @@ private struct FolderRow: View {
     @State private var editing = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var locked: Bool { store.isFolderLocked(folder.id) }
+
     var body: some View {
         SidebarRow(selected: false, action: { store.toggleFolder(folder.id, in: shape) }) {
             FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID))
@@ -3055,8 +3062,17 @@ private struct FolderRow: View {
             Image(systemName: "chevron.down")
                 .font(Look.rowGlyph)
                 .foregroundStyle(Look.inkSecondary)
-                .rotationEffect(.degrees(folder.collapsed ? -90 : 0))
-                .animation(reduceMotion ? nil : Look.quick, value: folder.collapsed)
+                .rotationEffect(.degrees(folder.collapsed || locked ? -90 : 0))
+                .animation(Motion.reduced ? nil : Look.quick, value: folder.collapsed)
+                .overlay {
+                    if folder.requiresAuthentication == true {
+                        Image(systemName: locked ? "lock.fill" : "lock.open.fill")
+                            .font(Look.rowGlyph)
+                            .contentTransition(.symbolEffect(.replace))
+                            .transaction { if Motion.reduced { $0.disablesAnimations = true } }
+                            .background(Look.pillFill, in: .rect(cornerRadius: 3))
+                    }
+                }
                 .accessibilityHidden(true)      // the row’s value already says which it is
         }
         // A drop *into* the folder fills the whole row; a drop beside it draws a line at the
@@ -3072,7 +3088,7 @@ private struct FolderRow: View {
         .overlay(alignment: zone == .after ? .bottom : .top) {
             DropLine(on: zone == .before || zone == .after, axis: .vertical)
         }
-        .vaneTooltip(folder.name, hint: "Click to expand or collapse")
+        .vaneTooltip(folder.name, hint: locked ? "Unlock with Touch ID or your Mac password" : "Click to expand or collapse")
         .onDrag { folderDragPayload(folder) } preview: {
             HStack(spacing: Look.rowSpacing) {
                 FolderGlyph(folder: folder)
@@ -3096,7 +3112,10 @@ private struct FolderRow: View {
         .accessibilityLabel(folder.name)
         .accessibilityValue(state)
         .accessibilityAddTraits(.isButton)
-        .accessibilityHint("Folds this folder open or shut.")
+        .accessibilityHint(locked ? "Unlocks with Touch ID or your Mac password." : "Folds this folder open or shut.")
+        .accessibilityAction(named: locked ? "Unlock Folder" : "Lock Folder") {
+            if locked { store.toggleFolder(folder.id, in: shape) } else { store.lockFolder(folder.id) }
+        }
         .accessibilityAction(named: "Rename Folder") { store.renamingFolder = folder.id }
         .accessibilityAction(named: "Change Icon") { icons = true }
         .accessibilityAction(named: "Archive All Tabs in Folder") {
@@ -3118,7 +3137,7 @@ private struct FolderRow: View {
             && LiveFolders.shared(for: store.profileID).failing.contains(folder.id)
         return (folder.live == nil ? "Folder, " : "Live folder, ")
             + "\(store[keyPath: shape].tabs(in: folder.id).count) tabs, "
-            + (folder.collapsed ? "collapsed" : "expanded")
+            + (locked ? "locked" : (folder.collapsed ? "collapsed" : "expanded"))
             + (failed ? ", last refresh failed" : "")
     }
 }
@@ -3162,7 +3181,15 @@ private struct FolderMenu: View {
     var body: some View {
         Button("Rename…") { store.renamingFolder = folder.id }
         Button("Change Icon…") { icons = true }
-        Button(folder.collapsed ? "Unfold" : "Collapse") { store.toggleFolder(folder.id, in: shape) }
+        Button(store.isFolderLocked(folder.id) ? "Unlock Folder…" : (folder.collapsed ? "Unfold" : "Collapse")) {
+            store.toggleFolder(folder.id, in: shape)
+        }
+        if !store.isFolderLocked(folder.id) {
+            Button("Lock Folder") { store.lockFolder(folder.id) }
+        }
+        if folder.requiresAuthentication == true {
+            Button("Remove Lock…") { store.removeFolderLock(folder.id) }
+        }
         // Only on a folder that has something to refresh: an ordinary folder is filled by
         // hand and there is nothing for these to do.
         if folder.live != nil {
@@ -3171,6 +3198,7 @@ private struct FolderMenu: View {
                 LiveFolders.shared(for: store.profileID).refreshNow(folder.id)
             }
             Button("Edit Live Folder…") { open($editing) }
+                .disabled(store.isFolderLocked(folder.id))
             // Nothing is closed: the folder keeps exactly the rows it has and simply stops
             // being told what to hold.
             Button("Stop Keeping Filled") {
@@ -3185,9 +3213,10 @@ private struct FolderMenu: View {
             Button("New Folder") { store.newFolder(beside: folder.id, in: shape) }
         }
         Button("Archive All Tabs in Folder") { store.archiveFolder(folder.id, in: shape) }
-            .disabled(store[keyPath: shape].tabs(in: folder.id).isEmpty)
+            .disabled(store.isFolderLocked(folder.id) || store[keyPath: shape].tabs(in: folder.id).isEmpty)
         Divider()
         Button("Delete Folder") { store.deleteFolder(folder.id, in: shape) }
+            .disabled(store.isFolderLocked(folder.id))
     }
 }
 
@@ -3508,12 +3537,12 @@ private struct OpenTabs: View {
     @EnvironmentObject var store: TabStore
 
     var body: some View {
-        let open = store.tabs.filter { $0.kind == .today }
+        let open = store.accessibleTabs.filter { $0.kind == .today }
         // Drawn from `store.todayShape`, exactly as Pinned is drawn from `store.pins`: a
         // tidy's folders live here now, and a folder is not a tab. Only the entries that
         // actually draw a row are counted — a pane that is not its split's lead, and an
         // entry whose tab has gone, draw nothing. See `PinnedSection`.
-        let rows = SidebarRows(tabs: store.tabs, splits: store.splits, shape: store.todayShape).rows
+        let rows = SidebarRows(tabs: store.accessibleTabs, splits: store.splits, shape: store.todayShape, unlocked: store.unlockedFolders).rows
         VStack(spacing: Look.rowGap) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 ShapeRow(row: row.visible, tab: row.tab, index: index, rows: rows.count, shape: \.todayShape)

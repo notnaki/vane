@@ -914,6 +914,19 @@ struct TitleReveal: Equatable, Sendable {
         release()
     }
 
+    /// A lock also parks pages still loading their first URL and removes cached pixels.
+    func suspendForFolderLock() {
+        if let url = currentURL ?? homeURL {
+            parkedState = existingWeb?.interactionState as? Data ?? parkedState
+            parkedURL = url
+        }
+        easelSession?.liveItems.removeAll()
+        suspended = true
+        windowSnapshot = nil
+        release()
+        MediaState.shared.forget(id)
+    }
+
     /// The half of suspension that lets go: the observers, the script message handlers, the
     /// view, and the WebContent process behind it. Its replacement is created on demand.
     ///
@@ -1852,8 +1865,15 @@ struct Stash {
     /// Counts the archives that land in one burst, so Clear can sweep rows out one after
     /// another. See `archive`.
     private let bursts = Motion.Burst()
+    var folderAuthentication = FolderAuthentication.shared
+    @Published var lockedFolderBackdrop: NSImage?
     @Published var current: Tab.ID? {
         didSet {
+            // All selection paths enforce the same boundary, before resume or auto PiP.
+            if let id = current, isTabLocked(id) {
+                return
+            }
+            if lockedPageFolder == nil { lockedFolderBackdrop = nil }
             // Selecting a tab is what wakes it, and it has to happen here rather than in a
             // Task: SwiftUI reads `tab.web` on this same turn of the run loop.
             if let t = tabs.first(where: { $0.id == current }) { t.lastActive = .now; t.resume() }
@@ -1872,7 +1892,7 @@ struct Stash {
             // Arc's auto picture-in-picture: the video in the tab you left follows you out,
             // and goes back into the page when you come back to it.
             if oldValue != current {
-                PictureInPicture.enterIfPlaying(tabs.first { $0.id == oldValue })
+                PictureInPicture.enterIfPlaying(tabs.first { $0.id == oldValue && !isTabLocked($0.id) })
                 PictureInPicture.exitIfAuto(tabs.first { $0.id == current })
             }
             extensions.sync()
@@ -2071,10 +2091,9 @@ struct Stash {
         // Today is a shape too — its folders are where a tidy puts its groups — so the tabs
         // are collected on the way past and handed the shape the Space was left in.
         let restoredToday = rest.map { url in
-            let t = newBlankTab()
-            t.open(url, parked: parked[url.absoluteString])
-            // Named by the url it was opened with, not the one it has: with suspension off
-            // `open` hands it straight to `go` and there is no `currentURL` yet.
+            let t = newBlankTab(focus: false)
+            t.restore(url: url, home: nil, parked: parked[url.absoluteString] ?? Parked())
+            // Adopt the saved folder shape before selection can wake any restored page.
             return (url: url, tab: t)
         }
         adoptTodayShape(tabs: restoredToday)
@@ -2150,11 +2169,11 @@ struct Stash {
         }
     }
 
-    var active: Tab? { tabs.first { $0.id == current } }
+    var active: Tab? { tabs.first { $0.id == current && !isTabLocked($0.id) } }
     /// What the card is drawing: the active tab, or every pane of its split.
     var onScreenTabs: [Tab] {
         let ids = activeSplit?.tabs ?? [current].compactMap { $0 }
-        return ids.compactMap { id in tabs.first { $0.id == id } }
+        return ids.compactMap { id in tabs.first { $0.id == id && !isTabLocked(id) } }
     }
 
     /// A new tab with nowhere to go loads *nothing* and opens the command bar instead. Arc's
@@ -2383,6 +2402,7 @@ struct Stash {
     }
 
     private func archiveNow(_ id: Tab.ID, asPane: Bool = false) {
+        guard !isTabLocked(id) else { return }
         // Not only the strip: the auto-archive sweep reaches a Space this window is keeping
         // alive behind the one it is showing, and a day-old tab in one is a day old.
         let stashed = space(stashing: id)
@@ -2475,7 +2495,7 @@ struct Stash {
     /// — see `closeSplit` and `TabRowGlyph.isPane`.
     func close(_ id: Tab.ID, byScript: Bool = false, asPane: Bool = false) {
         SharedTabs.flush()
-        guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
+        guard !isTabLocked(id), let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let tab = tabs[i]
         // A pinned row's × — and ⌘W on it — is a two-step, and this is the one place that
         // decides which step it is: the page goes first, the pin only after that. See
@@ -2592,8 +2612,9 @@ struct Stash {
     }
 
     func cycle(_ delta: Int) {
-        guard let i = tabs.firstIndex(where: { $0.id == current }), tabs.count > 1 else { return }
-        current = tabs[(i + delta + tabs.count) % tabs.count].id
+        let allowed = accessibleTabs
+        guard let i = allowed.firstIndex(where: { $0.id == current }), allowed.count > 1 else { return }
+        current = allowed[(i + delta + allowed.count) % allowed.count].id
     }
 
     // MARK: Reorder + sections
@@ -2643,6 +2664,7 @@ struct Stash {
     /// move tabs between sections any more — its folders are Today's — so the flag went with
     /// it rather than sitting here explaining a run that no longer happens.
     func move(_ id: Tab.ID, to kind: TabKind) {
+        guard !isTabLocked(id) else { return }
         if sharingReady { SharedTabs.flush() }
         guard let i = tabs.firstIndex(where: { $0.id == id }), tabs[i].kind != kind else { return }
         Motion.list {
@@ -2743,6 +2765,7 @@ struct Stash {
     /// row sends it back down — so the grid and the two lists read as one strip the user
     /// drags across.
     func drop(_ id: Tab.ID, onto target: Tab.ID, after: Bool) {
+        guard !isTabLocked(id), !isTabLocked(target) else { return }
         if sharingReady { SharedTabs.flush() }
         guard id != target,
               let from = tabs.firstIndex(where: { $0.id == id }),
@@ -3444,10 +3467,9 @@ struct Stash {
             let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
             restorePins(urls: space.pinnedTabURLs ?? [], parked: parked)
             adoptTodayShape(tabs: space.tabURLs.map { url in
-                let t = newBlankTab()
-                t.open(url, parked: parked[url.absoluteString])
-                // Named by the url it was opened with, not the one it has: with suspension off
-                // `open` hands it straight to `go` and there is no `currentURL` yet.
+                let t = newBlankTab(focus: false)
+                t.restore(url: url, home: nil, parked: parked[url.absoluteString] ?? Parked())
+                // The folder shape must be in place before selecting or waking a page.
                 return (url: url, tab: t)
             })
             // Arc lands on the tab this Space was left on; `Spaces.landing` is the ladder down

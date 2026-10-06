@@ -10,6 +10,8 @@ struct Folder: Identifiable, Codable, Equatable, Sendable {
     /// a symbol name is always ASCII and an emoji never is.
     var icon = Folder.defaultIcon
     var collapsed = false
+    /// Optional so sessions saved before folder locks continue to decode.
+    var requiresAuthentication: Bool? = nil
     /// What fills the folder, when something other than the user does. Absent on every
     /// ordinary folder and on every folder saved before Live Folders existed — which is why
     /// it is an Optional with a default rather than a `kind` every folder has to answer.
@@ -185,12 +187,14 @@ struct Pins: Codable, Equatable, Sendable {
     }
 
     /// What the sidebar draws: everything with no folded-up folder above it.
-    var visible: [Visible] {
+    var visible: [Visible] { visible(unlocked: []) }
+
+    func visible(unlocked: Set<UUID>) -> [Visible] {
         var out: [Visible] = []
         var i = 0
         while i < entries.count {
             out.append(Visible(entry: entries[i], depth: depth(of: i)))
-            if let f = entries[i].folder, f.collapsed {
+            if let f = entries[i].folder, f.collapsed || (f.requiresAuthentication == true && !unlocked.contains(f.id)) {
                 i = subtree(at: i).upperBound          // skip what it is hiding
             } else {
                 i += 1
@@ -1028,6 +1032,7 @@ extension TabStore {
     /// A drop on the strip, told to the section it landed in: a tab dropped on a row joins
     /// whatever folder that row is in, and one dragged out of a folder leaves it.
     func placeInShape(_ id: Tab.ID, onto target: Tab.ID, after: Bool) {
+        guard !isTabLocked(id), !isTabLocked(target) else { return }
         syncShapes()
         guard let kind = tabs.first(where: { $0.id == id })?.kind,
               let shape = TabStore.shape(of: kind) else { return }
@@ -1072,7 +1077,7 @@ extension TabStore {
     /// drop targets before they light up, so a live folder offers no target rather than
     /// landing and then explaining itself.
     func canDrag(folder id: UUID, into shape: ReferenceWritableKeyPath<TabStore, Pins>) -> Bool {
-        guard let from = holder(of: id) else { return false }
+        guard !isFolderLocked(id), let from = holder(of: id) else { return false }
         return from == shape || !self[keyPath: from].holdsLive(id)
     }
 
@@ -1115,6 +1120,7 @@ extension TabStore {
     func move(folder id: UUID, from source: ReferenceWritableKeyPath<TabStore, Pins>,
               to dest: ReferenceWritableKeyPath<TabStore, Pins>, at spot: Pins.Spot,
               saying: Bool = true) -> Bool {
+        guard !isFolderLocked(id), spot.parent.map({ !isFolderLocked($0) }) ?? true else { return false }
         let back = self[keyPath: source].spot(of: id.uuidString)
         let name = self[keyPath: source].folder(id)?.name ?? "folder"
         let moving = Set(self[keyPath: source].tabs(in: id))
@@ -1159,6 +1165,7 @@ extension TabStore {
     /// same move without a drag.
     func move(_ id: Tab.ID, into folder: UUID,
               in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        guard !isTabLocked(id), !isFolderLocked(folder) else { return }
         move(id, to: kind(of: shape))   // a Today tab pins itself into a pinned folder
         syncShapes()
         Motion.list {
@@ -1178,7 +1185,7 @@ extension TabStore {
     /// Placing a run at the head backwards keeps its visible order.
     func dropAtSectionRoot(_ ids: [Tab.ID], into kind: TabKind, atEnd: Bool = false) {
         if sharingReady { SharedTabs.flush() }
-        let live = ids.filter { id in tabs.contains { $0.id == id } }
+        let live = ids.filter { id in !isTabLocked(id) && tabs.contains { $0.id == id } }
         guard !live.isEmpty else { return }
         Motion.list {
             live.forEach { move($0, to: kind) }
@@ -1199,6 +1206,7 @@ extension TabStore {
     /// it — and after it means after everything the folder holds.
     func drop(_ id: Tab.ID, beside folder: UUID, after: Bool,
               in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        guard !isTabLocked(id), !isFolderLocked(folder) else { return }
         move(id, to: kind(of: shape))
         syncShapes()
         Motion.list {
@@ -1212,6 +1220,7 @@ extension TabStore {
     /// move that crosses the divider.
     func move(folder id: UUID, next to: String, after: Bool,
               in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        guard !isFolderLocked(id), lockedFolders(for: to).isEmpty else { return }
         // Dragged in from the other section: this shape has never heard of the folder, so
         // there is no row here to move and it is placed by where the drop was instead.
         if let from = holder(of: id), from != shape,
@@ -1228,6 +1237,7 @@ extension TabStore {
 
     func move(folder id: UUID, into parent: UUID,
               in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        guard !isFolderLocked(id), !isFolderLocked(parent) else { return }
         // From the other section: in at the end, which is where a drop on a folder's middle
         // lands anything. See `move(folder:next:after:in:)`. Opened only once something has
         // arrived — a drop the depth cap refuses leaves the folder as the drag found it.
@@ -1257,6 +1267,7 @@ extension TabStore {
         // Where the new folder goes: beside the row that was right-clicked, at that row's
         // own level, or at the end of the section when nothing was.
         let next = tab?.uuidString ?? folder?.uuidString
+        guard next.map({ lockedFolders(for: $0).isEmpty }) ?? true else { return nil }
         // Asked before anything moves: pinning the tab and *then* finding there is no room
         // for a folder around it would leave the tab moved with nothing to show for it.
         guard self[keyPath: shape].canNestFolder(next: next) else {
@@ -1280,6 +1291,17 @@ extension TabStore {
     /// Folding is a list change like any other, so the rows under it collapse and the ones
     /// below slide up rather than blinking out.
     func toggleFolder(_ id: UUID, in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        if isFolderLocked(id) {
+            unlockFolder(id) { [weak self] success in
+                guard let self else { return }
+                guard success, let currentShape = holder(of: id) else {
+                    Toasts.show("Folder remains locked.", in: self); return
+                }
+                Motion.list { self[keyPath: currentShape].edit(folder: id) { $0.collapsed = false } }
+                savePins()
+            }
+            return
+        }
         Motion.list { self[keyPath: shape].toggle(folder: id) }
         savePins()
         // Unfolding a live folder refreshes it: what you are about to look at is the one
@@ -1293,6 +1315,7 @@ extension TabStore {
     /// simply become ordinary pinned rows. Nothing is closed — deleting a folder full of
     /// pages the user pinned on purpose is not something a menu item gets to do silently.
     func deleteFolder(_ id: UUID, in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        guard !isFolderLocked(id) else { return }
         let name = self[keyPath: shape].folder(id)?.name ?? "folder"
         let kept = self[keyPath: shape].tabs(in: id).count
         let wasLive = self[keyPath: shape].folder(id)?.live != nil
@@ -1325,6 +1348,9 @@ extension TabStore {
     /// empty. They have to leave Pinned first — a pinned tab is never archived, which is
     /// the whole difference between the sections.
     func archiveFolder(_ id: UUID, in shape: ReferenceWritableKeyPath<TabStore, Pins> = \.pins) {
+        guard !isFolderLocked(id), self[keyPath: shape].tabs(in: id).allSatisfy({
+            lockedFolders(for: $0).isEmpty
+        }) else { return }
         // A live folder stops being one. Archiving its tabs empties it, and a folder that
         // keeps itself filled would put every one of them straight back on the next refresh
         // — which is not something "Archive All Tabs in Folder" can be made to mean. The
