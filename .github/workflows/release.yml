@@ -53,7 +53,7 @@ jobs:
     # browser is built on do not exist on older ones.
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # every tag, and the commit count make-app.sh stamps as the build
 

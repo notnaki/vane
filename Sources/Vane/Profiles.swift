@@ -749,12 +749,11 @@ struct Space: Identifiable, Codable, Equatable {
     /// this process makes — and it delivers its answer through WTF's main run loop, which
     /// does not exist until some WebKit object has been made on the main thread. Called
     /// before that it segfaults on a null lock: a ten-line program that calls it cold exits
-    /// 139, and the same program after one `WKProcessPool()` is fine. Launch after a crash
-    /// is exactly the cold case — the restore alert spins the run loop, the deferred sweep
+    /// 139. Launch after a crash is exactly the cold case — the restore alert spins the
+    /// run loop, the deferred sweep
     /// runs, and no window has made a web view yet — so every relaunch crashed again.
-    private static let webKitWarm: Void = { _ = WKProcessPool() }()
     private static func registeredDataStores(_ done: @escaping @Sendable ([UUID]) -> Void) {
-        _ = webKitWarm
+        WebKitStartup.prepare()
         WKWebsiteDataStore.fetchAllDataStoreIdentifiers(done)
     }
 

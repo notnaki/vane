@@ -46,7 +46,47 @@ import XCTest
     }
 
     private func js(_ web: WKWebView, _ source: String, world: WKContentWorld = .page) async throws -> Any {
-        try await web.callAsyncJavaScript(source, arguments: [:], in: nil, contentWorld: world)
+        try await web.callAsyncJavaScript(source, arguments: [:], in: nil, contentWorld: world) as Any
+    }
+
+    func testEditingFocusSurvivesPageLifecycleWithoutAnUnloadListener() async throws {
+        let tracking = """
+        window.__focusEvents = [];
+        const listen = window.addEventListener.bind(window);
+        window.addEventListener = function(name, ...args) {
+            __focusEvents.push(name);
+            return listen(name, ...args);
+        };
+        """
+        let (web, capture) = try await fixture(script: tracking + PageFocus.script,
+                                               name: PageFocus.messageName, world: PageFocus.world,
+                                               html: "<body><input id='editor'></body>")
+        let hasUnload = try await js(web, "return __focusEvents.includes('unload');",
+                                    world: PageFocus.world) as? Bool
+        XCTAssertEqual(hasUnload, false, "The focus script must allow WebKit's page cache")
+
+        func waitForEditing(_ editing: Bool) async throws {
+            let deadline = Date.now.addingTimeInterval(3)
+            while capture.messages.last?["editable"] as? Bool != editing && Date.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertEqual(capture.messages.last?["editable"] as? Bool, editing)
+        }
+        _ = try await js(web, "document.getElementById('editor').focus(); return true;",
+                        world: PageFocus.world)
+        try await waitForEditing(true)
+        let frame = try XCTUnwrap(capture.messages.last?["frame"] as? String)
+        _ = try await js(web, "window.dispatchEvent(new PageTransitionEvent('pagehide', {persisted: true})); return true;",
+                        world: PageFocus.world)
+        try await waitForEditing(false)
+        _ = try await js(web, "window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true})); return true;",
+                        world: PageFocus.world)
+        try await waitForEditing(true)
+        XCTAssertEqual(capture.messages.last?["frame"] as? String, frame,
+                       "Restoring a cached document preserves its frame identity and editing state")
+        _ = try await js(web, "document.getElementById('editor').blur(); return true;",
+                        world: PageFocus.world)
+        try await waitForEditing(false)
     }
 
     func testPasswordDiscoveryCoalescesBusyPageMutations() async throws {

@@ -854,7 +854,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
 /// ponytail: a token per frame and a set per tab, not a description of *what* is focused.
 /// The only question anyone asks is "would this keystroke be typing". Ceiling: focus that
 /// moves in the same turn as the keystroke is read one event late; a frame torn down without
-/// firing `pagehide` or `unload` leaves its token behind until the next top-level navigation
+/// firing `pagehide` leaves its token behind until the next top-level navigation
 /// (which clears the set); and a page whose frames block user scripts reports nothing.
 @MainActor enum PageFocus {
     static let messageName = "vaneedit"
@@ -865,8 +865,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// All frames: a comment box is as likely to be in an iframe as not. `focusout` fires
     /// *before* focus lands, so it re-reads on the next turn rather than trusting
     /// `activeElement` mid-move; the trailing call covers a field focused before the listeners
-    /// existed (`autofocus`, or a bfcache restore re-running the script); `pagehide`/`unload`
-    /// take the frame's token back out when the frame goes.
+    /// existed (`autofocus`); `pagehide` takes the frame's token back out when the frame
+    /// goes, and `pageshow` restores it when WebKit brings back a cached document.
     static let script = """
     (function () {
       if (window.__vaneEdit) return; window.__vaneEdit = true;
@@ -893,7 +893,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
       document.addEventListener("focusin", send, true);
       document.addEventListener("focusout", function () { setTimeout(send, 0); }, true);
       window.addEventListener("pagehide", function () { post(false); });
-      window.addEventListener("unload", function () { post(false); });
+      window.addEventListener("pageshow", send);
       send();
     })();
     """
@@ -1295,10 +1295,11 @@ extension Keybindings {
                 && PageFocus.frames(["frame": top], in: [top]) == [top]
                 && PageFocus.frames(["editable": true], in: [top]) == [top]
                 && PageFocus.frames(["frame": "", "editable": true], in: []).isEmpty),
-            ("the script identifies its frame, listens in the capture phase, and lets go on unload",
+            ("the script identifies its frame and uses the page-cache lifecycle for focus",
              PageFocus.script.contains("focusin") && PageFocus.script.contains("focusout")
                 && PageFocus.script.contains("isContentEditable")
-                && PageFocus.script.contains("pagehide") && PageFocus.script.contains("unload")
+                && PageFocus.script.contains("pagehide") && PageFocus.script.contains("pageshow")
+                && !PageFocus.script.contains("\"unload\"")
                 && PageFocus.script.contains("frame: frame")),
         ]
 

@@ -19,7 +19,7 @@ jobs:
     # browser is built on (WKWebExtension, isInspectable) do not exist on older images.
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Identify Swift toolchain
         id: toolchain
@@ -33,7 +33,7 @@ jobs:
       # PRs reuse main's cache without leaving a separate archive for every revision.
       - name: Restore Swift debug build
         id: swift-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .build
           key: swift-debug-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**/*.swift') }}
@@ -58,6 +58,9 @@ jobs:
       # bundle and a window server respectively. Those stay a local `vane selfcheck`.
       - name: Checks
         run: ./.build/debug/vane selfcheck --pure
+
+      - name: Cold WebKit registry startup
+        run: scripts/check-webkit-startup.sh
 
       - name: App icon migration and bundled selections
         run: scripts/check-app-icons.sh
@@ -91,7 +94,7 @@ jobs:
 
       - name: Save Swift debug build
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.swift-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .build
           key: ${{ steps.swift-cache.outputs.cache-primary-key }}
