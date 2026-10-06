@@ -78,7 +78,7 @@ import WebKit
         entry.pages.removeAll()
         let image = NSImage(size: NSSize(width: 320, height: 200))
         image.lockFocus()
-        Look.pageGround.setFill()
+        NSColor.windowBackgroundColor.setFill()
         NSRect(x: 0, y: 0, width: 320, height: 200).fill()
         if let symbol = NSImage(systemSymbolName: "lock.fill", accessibilityDescription: nil) {
             symbol.draw(in: NSRect(x: 142, y: 78, width: 36, height: 44))
