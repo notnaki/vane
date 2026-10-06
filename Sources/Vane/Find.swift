@@ -346,7 +346,7 @@ private struct FindBarBody: View {
         case .shiftEnter: search(forward: false)
         case .escape:     close()
         // Typing is what changes the query; the arrows, Tab and ⌥⌘⌫ belong to the field.
-        case .up, .down, .tab, .commandEnter, .forget: return false
+        case .up, .down, .tab, .commandEnter, .forget, .backspace: return false
         }
         return true
     }

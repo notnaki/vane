@@ -1948,7 +1948,7 @@ struct Stash {
 
     private var suggestTask: Task<Void, Never>?
 
-    func suggest(_ query: String) {
+    func suggest(_ query: String, scopedTo engine: Bang? = nil) {
         suggestTask?.cancel()
         if !suggestions.isEmpty { suggestions = [] }
         if suggestionIndex != -1 { suggestionIndex = -1 }
@@ -1957,10 +1957,11 @@ struct Stash {
         suggestTask = Task { [weak self] in
             try? await Task.sleep(for: LocalSuggestionReader.debounce)
             guard !Task.isCancelled else { return }
-            let local = await history.suggestAsync(query)
+            let local = await history.suggestAsync(query, scopedTo: engine)
             guard !Task.isCancelled else { return }
             self?.suggestions = local
-            guard SearchSuggestions.shouldSend(query) else { return }
+            // A scoped query must never be sent to the default engine for completions.
+            guard engine == nil, SearchSuggestions.shouldSend(query) else { return }
             // Later completions widen the list without resetting the arrow selection.
             let merged = await SearchSuggestions.merged(query, local: local)
             guard !Task.isCancelled else { return }
