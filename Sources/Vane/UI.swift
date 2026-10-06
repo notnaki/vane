@@ -973,32 +973,36 @@ private struct Sidebar: View {
 
 /// Traffic lights, the sidebar toggle, and the page's own navigation. AppKit owns where the
 /// lights are drawn, so the row is laid out around them.
-private struct TopRow: View {
+struct TopRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
-    private var compact: Bool { sidebar.width < 220 }
+    private var layout: SidebarChromeLayout { SidebarChromeLayout(width: sidebar.width) }
+    private var compact: Bool { layout.compact }
     @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: compact ? 8 : 12) {
-                Spacer().frame(width: Look.trafficLights)
-                toggle
-                Spacer(minLength: 0)
-                NavButtons(tab: store.active, compact: compact)
-            }
-            .frame(height: Look.topRow)
+        Group {
             // Keep the lights and toggle on their original centre line. Navigation
             // gets its own row when preserving the gaps would crowd the controls.
-            VStack(spacing: 0) {
-                HStack {
-                    Spacer().frame(width: Look.trafficLights)
-                    Spacer(minLength: 8)
-                    toggle
+            if layout.stacked {
+                VStack(spacing: 0) {
+                    HStack {
+                        Spacer().frame(width: Look.trafficLights)
+                        Spacer(minLength: 8)
+                        toggle
+                    }
+                    .frame(height: Look.topRow)
+                    HStack {
+                        Spacer(minLength: 0)
+                        NavButtons(tab: store.active, compact: compact)
+                    }
+                    .frame(height: Look.topRow)
                 }
-                .frame(height: Look.topRow)
-                HStack {
+            } else {
+                HStack(spacing: compact ? 8 : 12) {
+                    Spacer().frame(width: Look.trafficLights)
+                    toggle
                     Spacer(minLength: 0)
                     NavButtons(tab: store.active, compact: compact)
                 }
@@ -1009,9 +1013,8 @@ private struct TopRow: View {
         .font(Look.icon)
         .foregroundStyle(Look.inkSecondary)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: compact)
-        // The compact row needs 188pt including the sidebar's outer insets.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
-                   value: sidebar.width < 188)
+                   value: layout.stacked)
     }
 
     private var toggle: some View {
@@ -1171,6 +1174,7 @@ private struct PillBody: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var batterySaver = BatterySaver.shared
+    private var compact: Bool { SidebarChromeLayout(width: sidebar.width).compact }
     let tab: Tab?
     let host: String
     let address: String
@@ -1196,7 +1200,7 @@ private struct PillBody: View {
         .background(hovering ? Look.selected : Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
-                   value: sidebar.width < 220)
+                   value: compact)
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture { open() }
@@ -1223,7 +1227,7 @@ private struct PillBody: View {
     }
 
     @ViewBuilder private var content: some View {
-        if sidebar.width < 220 {
+        if compact {
             HStack(spacing: Look.pillGlyphGap) {
                 if address.isEmpty {
                     Image(systemName: "magnifyingglass").accessibilityHidden(true)
