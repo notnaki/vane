@@ -139,6 +139,23 @@ import XCTest
         XCTAssertEqual(ExtensionConsent.saved(for: folder, profileID: host.profileID)?.sites, ["<all_urls>"])
     }
 
+    func testPermissionOnlyAndSiteOnlyExpansionsEachRequireReview() async throws {
+        for (permissions, sites) in [(["tabs", "cookies"], ["https://example.com/*"]),
+                                     (["tabs"], ["https://*.example.com/*"])] {
+            let host = host(), folder = try folder(permissions: permissions, sites: sites)
+            try ExtensionConsent.save(ExtensionAccess(permissions: ["tabs"], sites: ["https://example.com/*"]),
+                                      for: folder, profileID: host.profileID)
+            var reviewed = false
+            let accepted = try await host.load(folder, installing: false) { _ in
+                reviewed = true
+                return false
+            }
+            XCTAssertTrue(reviewed)
+            XCTAssertFalse(accepted)
+            XCTAssertTrue(host.installed.isEmpty)
+        }
+    }
+
     func testShrinkingAccessDropsOldGrantsAndReadditionRequiresReview() async throws {
         let host = host(), folder = try folder(permissions: [], sites: [])
         try ExtensionConsent.save(ExtensionAccess(permissions: ["tabs"], sites: ["<all_urls>"]),
@@ -311,6 +328,34 @@ import XCTest
         let context = try XCTUnwrap(host.installed.first)
         XCTAssertTrue(context.grantedPermissions.isEmpty)
         XCTAssertTrue(context.grantedPermissionMatchPatterns.isEmpty)
+    }
+
+    func testInvalidFirstRestoreDoesNotEraseALaterValidExtensionsPin() async throws {
+        let profile = UUID()
+        profiles.append(profile)
+        let invalid = try folder(version: 99)
+        let valid = try folder(permissions: [], sites: [])
+        XCTAssertTrue(ScopedPaths.add(invalid, to: ExtensionHost.key(for: profile)))
+        XCTAssertTrue(ScopedPaths.add(valid, to: ExtensionHost.key(for: profile)))
+        try ExtensionConsent.save(ExtensionAccess(permissions: [], sites: []), for: valid, profileID: profile)
+        UserDefaults.vane.set([valid.path], forKey: ProfileManager.defaultsKey(ExtensionPins.key, profile))
+        defer { UserDefaults.vane.removeObject(forKey: ProfileManager.defaultsKey(ExtensionPins.key, profile)) }
+        let timer = Timer(timeInterval: 0.01, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                if NSApplication.shared.modalWindow != nil {
+                    NSApplication.shared.stopModal(withCode: .alertSecondButtonReturn)
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .modalPanel)
+        defer { timer.invalidate() }
+        let host = ExtensionHost.host(for: profile)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while host.installed.isEmpty, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(host.installed.count, 1)
+        XCTAssertEqual(host.pins, [valid.path], "An earlier failed restore must not prune a still-pending pin")
     }
 
     func testReviewShowsNewAndFullAccessAndExplicitEmptyAccess() throws {

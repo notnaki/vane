@@ -138,7 +138,10 @@ import WebKit
 
     private func begin(_ folder: URL) {
         restoring[folder.path] = Task {
-            defer { restoring[folder.path] = nil }
+            defer {
+                restoring[folder.path] = nil
+                prunePins()
+            }
             do { _ = try await load(folder, installing: false) }
             catch is CancellationError { }
             catch {
@@ -384,7 +387,7 @@ import WebKit
     /// Once nothing is still loading, the stored list is rewritten to the pins that survived
     /// it, so a dead pin is dropped for good rather than re-examined every launch.
     private func prunePins() {
-        guard claimed.count == loaded.count else { return }   // something is still loading
+        guard restoring.isEmpty, claimed.count == loaded.count else { return }
         let live = livePins
         if live != pins { setPins(live) }
     }
