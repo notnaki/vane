@@ -44,6 +44,10 @@ passing release checks.
 
 ## Final documentation and compatibility pass
 
+- The [2026-10-06 public-demo evidence](REAL-SITE-COMPATIBILITY.md) records scoped
+  passes, the missing macOS upload-panel callback, and passkey/distribution
+  prerequisites. Implement and re-test the upload picker; complete the matrix's
+  pending account, device, service and macOS 26 checks before widening support claims.
 - Reconcile the README, known issues, release notes, and browser-support matrix with tested
   behavior.
 - Record remaining gaps for sign-in providers, passkeys, uploads, printing, streaming, DRM,

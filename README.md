@@ -522,8 +522,13 @@ with `check-release-candidate.sh` before treating it as a distribution build.
 
 ## Known gaps
 
-- Real-site coverage is still needed for sign-in providers, passkeys, uploads,
-  printing, protected media, device permissions, and complex web apps.
+- A [public-demo compatibility pass](docs/REAL-SITE-COMPATIBILITY.md) verified
+  password-session navigation, print-to-PDF, local WebRTC calls, screen-capture
+  startup, clear HLS and FairPlay demo playback, and basic Excalidraw/VS Code editing
+  on macOS 27 in an ad hoc signed debug build. File-picker uploads failed; passkey
+  authentication was unavailable in that fixture. Provider sign-ins, subscription
+  streaming, cross-network calls, broader permission lifecycles, and macOS 26 /
+  notarized-release coverage remain unverified. See the matrix for exact scope.
 - Password autofill is heuristic. Multiple saved accounts have a chooser, but
   unusual, multi-step, or embedded login forms may still need manual entry.
 - Content blocking supports a documented subset of EasyList syntax. Filter
