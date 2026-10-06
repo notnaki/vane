@@ -240,7 +240,7 @@ struct ToastPill: View {
 
     private func text(_ toast: Toasts.Toast) -> some View {
         // No `.font` modifier — a font on the view replaces the one a bold run carries, and
-        // the version would stop being the bold half of "Vane v0.2.0 is available";
+        // the version would stop being the bold half of "Vane v0.2.0";
         // `styled` sets both weights itself. Two lines is the ceiling: past that a toast is
         // an essay, and the tail can go.
         Text(styled(toast.text, emphasis: toast.sticky))
@@ -354,9 +354,9 @@ extension Toasts {
 
         // The updater's wording, which is what the pill actually says.
         out.append(("the offer names the release, with the version as the bold half",
-                    Updater.text(for: .available("v0.2.0")) == "Vane **v0.2.0** is available"))
+                    Updater.text(for: .available("v0.2.0")) == "Vane **v0.2.0**"))
         out.append(("...and VoiceOver reads the sentence, not the markers",
-                    spoken(Updater.text(for: .available("v0.2.0"))) == "Vane v0.2.0 is available"))
+                    spoken(Updater.text(for: .available("v0.2.0"))) == "Vane v0.2.0"))
         out.append(("a toast with no markup is read exactly as written",
                     spoken("Archived Swift Forums") == "Archived Swift Forums"))
         out.append(("progress is a whole percentage",

@@ -24,7 +24,7 @@ import XCTest
 
     func testShortUpdatePromptsStayOneRow() throws {
         for width in [220, SidebarWidth.standard, 249, SidebarWidth.maximum] {
-            for phase in [Updater.Phase.ready, .failed(nil)] {
+            for phase in [Updater.Phase.available("v0.0.23"), .available("v0.23.123"), .ready, .failed(nil)] {
                 let message = Updater.text(for: phase)
                 let action = try XCTUnwrap(Updater.action(for: phase)).title
                 let image = try render(message, action: action, width: width, sticky: true)
@@ -33,6 +33,15 @@ import XCTest
                 XCTAssertLessThanOrEqual(image.pixelsWide, Int(width - Look.inset * 2))
             }
         }
+    }
+
+    func testLongUpdateOfferWrapsWithinNarrowSidebar() throws {
+        let phase = Updater.Phase.available("v0.0.23-beta.123")
+        let image = try render(Updater.text(for: phase),
+            action: try XCTUnwrap(Updater.action(for: phase)).title,
+            width: SidebarWidth.minimum, sticky: true)
+        XCTAssertLessThanOrEqual(image.pixelsWide, Int(SidebarWidth.minimum - Look.inset * 2))
+        XCTAssertGreaterThan(image.pixelsHigh, Int(Look.toastHeight))
     }
 
     func testLongActionAndMessageStayWithinNarrowSidebar() throws {
