@@ -56,11 +56,33 @@ enum FavouriteLanding {
     private var timer: Timer?
     private var observation: AnyCancellable?
     private var ghost: NSPanel?
+    private weak var sourceWindow: NSWindow?
+    var ownsGhost: Bool { Dragging.shared.sourcePreview === self }
+    var isTracking: Bool { timer != nil }
+
+    func prepareSource(in store: TabStore) {
+        self.store = store
+        sourceWindow = store.window ?? root?.window
+        observeDrag()
+    }
+
+    func finishSource() {
+        timer?.invalidate()
+        timer = nil
+        hideGhost()
+        setDestination(nil)
+        sourceWindow = nil
+        if root == nil { observation = nil }
+    }
 
     func attach(_ view: NSView, store: TabStore) {
         root = view
         self.store = store
         store.sidebarDragPreview = self
+        observeDrag()
+    }
+
+    private func observeDrag() {
         guard observation == nil else { return }
         observation = Dragging.shared.$tab.sink { [weak self] tab in
             guard let self else { return }
@@ -80,13 +102,16 @@ enum FavouriteLanding {
     }
 
     func detach() {
+        if store?.sidebarDragPreview === self { store?.sidebarDragPreview = nil }
+        root = nil
+        setDestination(nil)
+        // The pointer can close a peeked sidebar while its drag is still in flight.
+        // The drag owns the panel and timer until release, independently of that view.
+        if ownsGhost && Dragging.shared.active { return }
         timer?.invalidate()
         timer = nil
         observation = nil
-        if store?.sidebarDragPreview === self { store?.sidebarDragPreview = nil }
-        root = nil
         hideGhost()
-        setDestination(nil)
     }
 
     func setDestination(_ next: Destination?) {
@@ -106,10 +131,10 @@ enum FavouriteLanding {
     }
 
     private func showGhost(at mouse: CGPoint, in window: NSWindow, store: TabStore) {
+        guard ownsGhost else { return }
         if ghost == nil {
             // Only the source window owns the floating picture. Other windows can still
             // calculate their own landing slots for shared tabs.
-            guard window.isKeyWindow else { return }
             let panel = DragGhostPanel(contentRect: .zero,
                                        styleMask: [.borderless, .nonactivatingPanel],
                                        backing: .buffered, defer: false)
@@ -137,7 +162,7 @@ enum FavouriteLanding {
     }
 
     private func track() {
-        guard let root, let window = root.window, let store,
+        guard let store, let window = root?.window ?? (ownsGhost ? sourceWindow : nil),
               let id = Dragging.shared.tab,
               store.tabs.contains(where: { $0.id == id }) else {
             setDestination(nil)
@@ -145,9 +170,15 @@ enum FavouriteLanding {
             return
         }
         let mouse = NSEvent.mouseLocation
+        // Resolve the shape before showing the first frame, particularly for a tile
+        // picked up from Favourites. Native multi-selection previews remain native.
+        defer {
+            if ownsGhost && Dragging.shared.tabs.count <= 1 {
+                showGhost(at: mouse, in: window, store: store)
+            } else { hideGhost() }
+        }
+        guard let root, root.window === window else { setDestination(nil); return }
         let point = root.convert(window.convertPoint(fromScreen: mouse), from: nil)
-        if Dragging.shared.tabs.count <= 1 { showGhost(at: mouse, in: window, store: store) }
-        else { hideGhost() }
         let frame: CGRect
         let favouriteIDs = store.tabs.filter { $0.kind == .favourite }.map(\.id)
         if let favourites, favourites.window === window,
@@ -221,7 +252,9 @@ struct SidebarTabGhost: View {
         if let id = dragging.tab, dragging.tabs.count <= 1,
            let tab = store.tabs.first(where: { $0.id == id }) {
             Ghost(tab: tab, tileWidth: dragging.favouriteGhostWidth,
-                  width: dragging.rowGhostWidth ?? (sidebar.width - Look.inset * 2),
+                  width: tab.kind == .favourite ? sidebar.width - Look.inset * 2
+                    : dragging.rowGhostWidth.flatMap { $0 > 0 ? $0 : nil }
+                        ?? (sidebar.width - Look.inset * 2),
                   store: store, reduced: reduceMotion || batterySaver.isActive)
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
@@ -240,27 +273,18 @@ struct SidebarTabGhost: View {
 
         var body: some View {
             Group {
-                if tab.kind != .favourite, let held = Dragging.shared.rowGhost {
+                if let held = Dragging.shared.rowGhost {
                     // One mounted source surface throughout: its icon moves to the tile's
                     // centre as the rectangle changes size, without swapping pictures.
                     held.modifier(GhostTileTransform(progress: tile ? 1 : 0,
                                                      rowWidth: width,
                                                      tileWidth: tileWidth ?? lastTileWidth))
-                } else if tile {
-                    if tab.kind == .favourite, let held = Dragging.shared.rowGhost {
-                        held
-                    } else {
-                        TabIcon(tab: tab, size: Look.tileIcon)
-                            .scaleEffect(reduced ? 1 : 1.07)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .background {
-                                FavoriteTileBackground(selected: store.current == tab.id,
-                                                       hovering: true, icon: tab.favicon)
-                            }
-                    }
                 } else {
                     SidebarTabSurface(store: store, tab: tab, held: true,
                                       returnHovering: .constant(false), pr: nil, action: {})
+                        .modifier(GhostTileTransform(progress: tile ? 1 : 0,
+                                                    rowWidth: width,
+                                                    tileWidth: tileWidth ?? lastTileWidth))
                 }
             }
             .frame(width: tileWidth ?? width, height: tile ? Look.tileHeight : Look.rowHeight)

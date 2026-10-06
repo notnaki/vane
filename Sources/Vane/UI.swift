@@ -1534,6 +1534,7 @@ private struct ZoomChip: View {
 /// Empty, it is nothing at all — Arc's fresh space is the pill and then the space's name,
 /// no placeholder. Approaching the empty area reveals the first favourite's landing tile.
 private struct Favorites: View {
+    @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var dragPreview: SidebarDragPreview
     @ObservedObject private var dragging = Dragging.shared
@@ -1567,12 +1568,9 @@ private struct Favorites: View {
             // The grid sits an `inset` above the space row, not a row gap.
             .padding(.bottom, Look.inset - Look.rowGap)
             .contentShape(.rect)
-            .overlay(alignment: .bottom) {
-                DropLine(on: side != nil, axis: .vertical).allowsHitTesting(false)
-            }
             .onDrop(of: [.plainText, .url],
                     delegate: TabDrop(store: store, target: nil, into: .favourite,
-                                      axis: .horizontal, extent: 0, side: $side,
+                                      axis: .horizontal, extent: 0, marker: dropMarker, side: $side,
                                       favouritePreview: dragPreview))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Favourites")
@@ -1587,7 +1585,7 @@ private struct Favorites: View {
                 .contentShape(.rect)
                 .onDrop(of: [.plainText, .url],
                         delegate: TabDrop(store: store, target: nil, into: .favourite,
-                                          axis: .horizontal, extent: 0, side: $side,
+                                          axis: .horizontal, extent: 0, marker: dropMarker, side: $side,
                                           favouritePreview: dragPreview))
                 .transition(.tileGrow)
                 .accessibilityLabel("Add First Favourite")
@@ -1677,9 +1675,15 @@ private struct FavoriteTile: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil)
             .onDrag {
-                dragPayload(tab, in: store, ghost: AnyView(surface(held: true)
+                dragPayload(tab, in: store, ghost: AnyView(SidebarTabSurface(store: store, tab: tab,
+                    held: true, returnHovering: .constant(false), pr: nil, action: {})
                     .environment(\.colorScheme, colorScheme)), ghostWidth: width)
-            } preview: { Color.clear.frame(width: 1, height: 1) }
+            } preview: {
+                if store.sidebarDragPreview == nil || (store.selection.contains(tab.id) && store.selection.count > 1) {
+                    surface(held: true).frame(width: max(1, width))
+                        .environment(\.colorScheme, colorScheme)
+                } else { Color.clear.frame(width: 1, height: 1) }
+            }
             .onDrop(of: [.plainText, .url],
                     delegate: TabDrop(store: store, target: tab, into: .favourite,
                                       axis: .horizontal, extent: width, marker: dropMarker, side: $side,
@@ -1828,6 +1832,8 @@ private struct FavoriteTile: View {
         Motion.list {
             tab = nil; folder = nil; tabs = []; at = nil
             rowGhost = nil; rowGhostWidth = nil
+            sourcePreview?.finishSource()
+            sourcePreview = nil
         }
     }
 
@@ -1847,6 +1853,8 @@ private struct FavoriteTile: View {
     private var monitors: [Any] = []
     var rowGhost: AnyView?
     var rowGhostWidth: CGFloat?
+    /// Keep the source preview alive even if a peeked sidebar collapses during tracking.
+    var sourcePreview: SidebarDragPreview?
     weak var favouriteTarget: SidebarDragPreview?
     @Published private(set) var favouriteGhostWidth: CGFloat?
 
@@ -1905,6 +1913,7 @@ private struct FavoriteTile: View {
     // Published on the next turn, not now: a state change inside the drag's own start
     // re-renders the row under the pointer, and SwiftUI drops the drag with it.
     let id = tab.id
+    let sourcePreview = store.sidebarDragPreview
     Dragging.shared.session = UUID()
     let set = store.selection.contains(id) ? store.selectedTabs.map(\.id) : []
     // All of it set, so a flag left behind by a drag that ended outside any of our targets —
@@ -1912,6 +1921,9 @@ private struct FavoriteTile: View {
     // next drag rather than outliving the session.
     DispatchQueue.main.async {
         Motion.list {
+            Dragging.shared.sourcePreview?.finishSource()
+            Dragging.shared.sourcePreview = sourcePreview
+            sourcePreview?.prepareSource(in: store)
             Dragging.shared.rowGhost = ghost
             Dragging.shared.rowGhostWidth = ghostWidth
             Dragging.shared.tab = id
@@ -1919,6 +1931,7 @@ private struct FavoriteTile: View {
             Dragging.shared.tabs = set
             Dragging.shared.at = spot
         }
+        sourcePreview?.refresh()
     }
     // Internal targets read Dragging's identity; external targets get a usable link in
     // either URL or text form. An Easel's profile-local address stays inside Vane.
@@ -3635,7 +3648,7 @@ private struct SplitRow: View {
                                                 selected: selected, ticked: ticked, held: true)
                             .environment(\.colorScheme, colorScheme)), ghostWidth: dragWidth)
         } preview: {
-            if ticked && store.selection.count > 1 {
+            if store.sidebarDragPreview == nil || (ticked && store.selection.count > 1) {
                 PaneStrip(store: store, split: split, panes: panes,
                           selected: selected, ticked: ticked, held: true)
                     .frame(width: dragWidth)
@@ -3768,6 +3781,12 @@ struct SidebarTabSurface: View {
                     .opacity(morph.progress)
             }
         }
+        .overlay(alignment: .topTrailing) {
+            if let morph, tab.kind == .favourite,
+               TabRowGlyph.showsGoHome(stays: tab.stays, atHome: tab.atHome, hovering: true) {
+                GoHomeGlyph(store: store, tab: tab).padding(4).opacity(morph.progress)
+            }
+        }
         // Arc's hazard tape: a Developer Mode tab is marked on its row, not on the page.
         .overlay {
             if tab.developer {
@@ -3805,7 +3824,7 @@ private struct TabRow: View {
                             .environment(\.colorScheme, colorScheme).environment(\.livePR, pr)),
                         ghostWidth: dragWidth)
         } preview: {
-            if ticked && store.selection.count > 1 {
+            if store.sidebarDragPreview == nil || (ticked && store.selection.count > 1) {
                 surface(held: true)
                     .frame(width: dragWidth)
                     .environmentObject(store)
@@ -4509,9 +4528,14 @@ private struct TabHomeIcon: View {
     @Binding var returnHovering: Bool
     var size: CGFloat = Look.rowIcon
     @Environment(\.rowHovering) private var hovering
+    @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
-        if tab.kind == .pinned && !tab.atHome {
+        if morph != nil && tab.kind == .favourite {
+            // The favourite's artwork remains the same icon through both directions;
+            // its return control belongs in the tile corner, not in the icon's place.
+            TabIcon(tab: tab, size: size)
+        } else if tab.kind == .pinned && !tab.atHome {
             GoHomeGlyph(store: store, tab: tab, tiled: true, returnHovering: $returnHovering)
                 // The tile can draw past the favicon's box, but must not move the icon
                 // or title when this pin leaves or returns to its saved page.

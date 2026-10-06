@@ -59,6 +59,7 @@ struct SidebarDropLineOverlay: View {
             let candidate = marker.target.flatMap { bounds[$0] }.map { geometry[$0] }
             let rect = marker.frame ?? .zero
             let visible = marker.visible(session: dragging.session, active: dragging.active)
+                && dragging.favouriteGhostWidth == nil
             Rectangle().fill(Color.white)
                 .frame(width: rect.width, height: Look.dropLine)
                 .position(x: rect.midX, y: rect.midY)

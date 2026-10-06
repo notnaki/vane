@@ -89,7 +89,8 @@ folder disappears. Click and drag the blank area below Today tabs to move the wi
 Drag a tab onto a favourite tile or into the gaps between tiles to add it to Favourites.
 Approaching Favourites reveals a drop tile when it is empty; the address pill also accepts
 the first favourite. Nearby tiles move aside and the drag preview takes its destination
-tile's shape. This previews placement; the order commits only on release. Drag tiles to reorder them or move
+tile's shape, then transforms back into a row when dragged out. This previews placement;
+the order commits only on release. Drag tiles to reorder them or move
 them into Pinned or Today. Links dragged from a webpage or another app can be dropped
 onto the grid or address pill to save a favourite; dragging a tile into another app
 exports its page link.

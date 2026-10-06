@@ -3,6 +3,46 @@ import XCTest
 @testable import vane
 
 final class FavouriteLandingTests: XCTestCase {
+    @MainActor func testDetachedSourceRestartsTrackingBeforeDragPublication() {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let store = TabStore(isPrivate: true)
+        let tab = Tab(isPrivate: true, profileID: store.profileID)
+        store.tabs = [tab]
+        let source = SidebarDragPreview()
+        let dragging = Dragging.shared
+        dragging.cancel()
+        defer {
+            dragging.cancel()
+            tab.tearDown()
+            TabStore.all.removeAll { $0 === store }
+        }
+        source.attach(NSView(), store: store)
+        source.detach() // A peek can disappear before the queued drag-start block runs.
+        dragging.sourcePreview = source
+        source.prepareSource(in: store)
+        dragging.tab = tab.id
+        XCTAssertTrue(source.isTracking, "The owned ghost must continue following the pointer")
+        source.detach()
+        XCTAssertTrue(source.isTracking, "Closing the sidebar during a drag must preserve tracking")
+        dragging.cancel()
+        XCTAssertFalse(source.isTracking)
+    }
+    @MainActor func testDragOwnsItsPreviewUntilCancellation() {
+        let dragging = Dragging.shared
+        dragging.cancel()
+        var source: SidebarDragPreview? = SidebarDragPreview()
+        let otherWindow = SidebarDragPreview()
+        weak var lifetime = source
+        dragging.sourcePreview = source
+        XCTAssertTrue(source!.ownsGhost)
+        XCTAssertFalse(otherWindow.ownsGhost)
+        source = nil
+        XCTAssertNotNil(lifetime, "A collapsing sidebar must not destroy the held ghost")
+        dragging.cancel()
+        XCTAssertNil(lifetime)
+        XCTAssertFalse(otherWindow.ownsGhost)
+    }
     func testEmptyFavouritesRevealOnlyNearCollapsedSeam() {
         let pill = CGRect(x: 8, y: 40, width: 212, height: 36)
         let collapsed = FavouriteLanding.emptyFrame(below: pill, revealed: false)
