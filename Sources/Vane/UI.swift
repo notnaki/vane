@@ -4452,13 +4452,11 @@ private struct TabRowTrailing: View {
                                                pane: pane, atHome: closing.atHome)
                 Button { store.close(closing.id) } label: {
                     Image(systemName: glyph.symbol)
-                        .font(glyph == .unload ? Look.rowGlyph : .system(size: 13, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .rowTarget()
                         .background {
-                            if glyph != .unload {
-                                RoundedRectangle(cornerRadius: Look.cardRadius, style: .continuous)
-                                    .fill(Look.controlFill)
-                            }
+                            RoundedRectangle(cornerRadius: Look.cardRadius, style: .continuous)
+                                .fill(Look.controlFill)
                         }
                 }
                 .help((pane ? "Close Pane" : glyph.verb) + " (⌘W)")
