@@ -1836,6 +1836,7 @@ struct Stash {
 }
 
 @MainActor final class TabStore: ObservableObject {
+    weak var sidebarDragPreview: SidebarDragPreview?
     let windowID = UUID()
     let feedback = InteractionFeedback()
     var sharingReady = false
