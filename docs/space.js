@@ -295,7 +295,6 @@
     const productStage = document.querySelector('.product-stage');
     const productPages = [...document.querySelectorAll('[data-product]')];
     const productShell = document.querySelector('.product-shell');
-    const productAddress = document.querySelector('.product-address');
     function updateGalaxyLabel() {
       canvas.dataset.shape=shape;
       canvas.setAttribute('aria-label','Spiral galaxy');
@@ -340,8 +339,7 @@
           const active=Number(page.dataset.product)===Math.max(1,chapter);
           page.classList.toggle('is-active',active); page.setAttribute('aria-hidden',String(!active));
         });
-        productAddress.textContent=['vane / your everyday','vane / your everyday','vane / side by side','vane / a quick look'][chapter];
-        productShell.setAttribute('aria-label',['Browser preview','Work Space with separate project tabs','Two pages side by side in Vane','A small Little Vane window above your main page'][chapter]);
+        productShell.setAttribute('aria-label',['Vane app screenshots in dark mode','Vane screenshot: Work Space with project tabs in dark mode','Vane screenshot: two pages side by side in dark mode','Vane screenshots: Little Vane above a Work Space in dark mode'][chapter]);
         activeChapter = chapter;
       }
       const arrival = reducedMotion.matches ? Number(chapter>0) : ease(progress);
