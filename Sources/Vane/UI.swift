@@ -4641,7 +4641,8 @@ struct SiteIcon: View {
                 Image(nsImage: icon).resizable().interpolation(.high)
                     .aspectRatio(contentMode: .fit)
                     .frame(width: size, height: size)
-                    .clipShape(.rect(cornerRadius: rounded && !icon.isTemplate ? size / 2 : 0))
+                    .clipShape(.rect(cornerRadius: rounded && !icon.isTemplate
+                        && SiteIconArtwork.hasOpaqueBackground(icon) ? size / 2 : 0))
             } else if let fallback {
                 Image(systemName: fallback).resizable().foregroundStyle(.tertiary)
             } else {
