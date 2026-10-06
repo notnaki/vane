@@ -34,12 +34,13 @@ enum TabTooltipLayout {
     private var panel: NSPanel?
     private var monitor: Any?
     private var observers: [NSObjectProtocol] = []
+    private let hovered = NSHashTable<TabTooltipAnchorView>.weakObjects()
     var isPending: Bool { pending != nil }
     var isVisible: Bool { panel != nil }
 
     func schedule(for anchor: TabTooltipAnchorView) {
         guard anchor.enabled else { return }
-        dismiss()
+        dismissPresentation()
         self.anchor = anchor
         owner = anchor.window
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown,
@@ -62,8 +63,29 @@ enum TabTooltipLayout {
     }
 
     func handle(_ event: NSEvent) -> NSEvent {
-        dismiss()
+        // Keep hover membership so moving off a clicked control can re-arm its row,
+        // without reopening a tooltip while the pointer stays still after input.
+        dismissPresentation()
         return event
+    }
+
+    func enter(for anchor: TabTooltipAnchorView) {
+        guard anchor.enabled else { return }
+        hovered.add(anchor)
+        guard let target = bestHovered(in: anchor.window) else { return }
+        if self.anchor === target && (isPending || isVisible) { return }
+        schedule(for: target)
+    }
+
+    private func bestHovered(in window: NSWindow?) -> TabTooltipAnchorView? {
+        // SwiftUI backgrounds are siblings in AppKit's tree. Compare target sizes,
+        // rather than ancestry, so a small control wins over its containing row in
+        // either tracking-event order.
+        hovered.allObjects.filter {
+            $0.enabled && $0.window === window && !$0.isHiddenOrHasHiddenAncestor && !$0.visibleRect.isEmpty
+        }.min {
+            $0.visibleRect.width * $0.visibleRect.height < $1.visibleRect.width * $1.visibleRect.height
+        }
     }
 
     private func watch(_ name: Notification.Name, object: AnyObject?) {
@@ -119,10 +141,28 @@ enum TabTooltipLayout {
     }
 
     func dismiss(for anchor: TabTooltipAnchorView) {
-        if self.anchor === anchor { dismiss() }
+        hovered.remove(anchor)
+        guard self.anchor === anchor else { return }
+        dismissPresentation()
+        if let target = bestHovered(in: anchor.window) { schedule(for: target) }
+    }
+
+    func exit(for anchor: TabTooltipAnchorView) {
+        let wasHovered = hovered.contains(anchor)
+        dismiss(for: anchor)
+        // Only a pointer exit may re-arm a tooltip canceled by input. Disabled or
+        // dismantled sibling controls must not silently undo that cancellation.
+        if self.anchor == nil && wasHovered, let target = bestHovered(in: anchor.window) {
+            schedule(for: target)
+        }
     }
 
     func dismiss() {
+        hovered.removeAllObjects()
+        dismissPresentation()
+    }
+
+    private func dismissPresentation() {
         pending?.cancel()
         pending = nil
         if let monitor { NSEvent.removeMonitor(monitor) }
@@ -222,9 +262,9 @@ final class TabTooltipAnchorView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        if enabled { tooltip.schedule(for: self) }
+        if enabled { tooltip.enter(for: self) }
     }
-    override func mouseExited(with event: NSEvent) { tooltip.dismiss(for: self) }
+    override func mouseExited(with event: NSEvent) { tooltip.exit(for: self) }
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if window !== newWindow { tooltip.dismiss(for: self) }
         super.viewWillMove(toWindow: newWindow)
