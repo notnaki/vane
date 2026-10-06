@@ -3,6 +3,42 @@ import XCTest
 @testable import vane
 
 final class FavouriteLandingTests: XCTestCase {
+    func testEmptyFavouritesRevealOnlyNearCollapsedSeam() {
+        let pill = CGRect(x: 8, y: 40, width: 212, height: 36)
+        let collapsed = FavouriteLanding.emptyFrame(below: pill, revealed: false)
+        XCTAssertTrue(FavouriteLanding.isNear(CGPoint(x: 100, y: 88), frame: collapsed))
+        XCTAssertFalse(FavouriteLanding.isNear(CGPoint(x: 100, y: 130), frame: collapsed))
+        let revealed = FavouriteLanding.emptyFrame(below: pill, revealed: true)
+        XCTAssertEqual(collapsed.minY, revealed.minY)
+        XCTAssertTrue(FavouriteLanding.isNear(CGPoint(x: 100, y: 130), frame: revealed))
+    }
+
+    func testPreviewMakesRoomWithoutChangingCommittedFavourites() {
+        let ids = (0..<3).map { _ in UUID() }, incoming = UUID()
+        XCTAssertEqual(FavouriteLanding.previewIDs(favourites: ids, incoming: [incoming], index: nil), ids)
+        XCTAssertEqual(FavouriteLanding.previewIDs(favourites: ids, incoming: [incoming], index: 1),
+                       [ids[0], incoming, ids[1], ids[2]])
+        XCTAssertEqual(FavouriteLanding.previewIDs(favourites: ids, incoming: [ids[0]], index: 2),
+                       [ids[1], ids[2], ids[0]])
+        let preview = FavouriteLanding.previewIDs(favourites: ids, incoming: [incoming], index: 1)
+        XCTAssertEqual(FavouriteLanding.remainingIndex(gap: 1, favourites: preview, moving: [incoming]), 1)
+        XCTAssertEqual(FavouriteLanding.remainingIndex(gap: 2, favourites: preview, moving: [incoming]), 1)
+        XCTAssertEqual(ids.count, 3)
+    }
+
+    func testGhostMorphContinuouslyInterpolatesRowAndTileGeometry() {
+        let row = GhostTileMorph(progress: 0, rowWidth: 212, tileWidth: 64)
+        let mid = GhostTileMorph(progress: 0.5, rowWidth: 212, tileWidth: 64)
+        let tile = GhostTileMorph(progress: 1, rowWidth: 212, tileWidth: 64)
+        XCTAssertEqual(row.width, 212)
+        XCTAssertEqual(tile.width, 64)
+        XCTAssertEqual(mid.width, 138)
+        XCTAssertEqual(row.height, Look.rowHeight)
+        XCTAssertEqual(tile.height, Look.tileHeight)
+        XCTAssertEqual(row.iconX, Look.rowInset + Look.rowIcon / 2)
+        XCTAssertEqual(tile.iconX, 32)
+        XCTAssertEqual(mid.iconX, (row.iconX + tile.iconX) / 2)
+    }
     @MainActor func testLeavingSourceWindowDoesNotClearAnotherWindowsTileShape() {
         let source = SidebarDragPreview(), destination = SidebarDragPreview()
         source.setDestination(.init(index: 0, width: 100))

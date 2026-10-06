@@ -3,6 +3,20 @@ import Combine
 import SwiftUI
 
 enum FavouriteLanding {
+    static func emptyFrame(below pill: CGRect, revealed: Bool) -> CGRect {
+        CGRect(x: pill.minX, y: pill.maxY + Look.inset, width: pill.width,
+               height: revealed ? Look.tileHeight : Look.inset)
+    }
+
+    /// Only a presentation order. The store and all actual tab kinds stay unchanged.
+    static func previewIDs(favourites: [Tab.ID], incoming: [Tab.ID], index: Int?) -> [Tab.ID] {
+        guard let index else { return favourites }
+        let moving = Set(incoming)
+        var ids = favourites.filter { !moving.contains($0) }
+        ids.insert(contentsOf: incoming, at: min(max(0, index), ids.count))
+        return ids
+    }
+
     static func isNear(_ point: CGPoint, frame: CGRect) -> Bool {
         frame.width > 0 && frame.insetBy(dx: -14, dy: -18).contains(point)
     }
@@ -124,7 +138,7 @@ enum FavouriteLanding {
 
     private func track() {
         guard let root, let window = root.window, let store,
-              let id = Dragging.shared.tab, Dragging.shared.tabs.count <= 1,
+              let id = Dragging.shared.tab,
               store.tabs.contains(where: { $0.id == id }) else {
             setDestination(nil)
             hideGhost()
@@ -132,25 +146,30 @@ enum FavouriteLanding {
         }
         let mouse = NSEvent.mouseLocation
         let point = root.convert(window.convertPoint(fromScreen: mouse), from: nil)
-        showGhost(at: mouse, in: window, store: store)
+        if Dragging.shared.tabs.count <= 1 { showGhost(at: mouse, in: window, store: store) }
+        else { hideGhost() }
         let frame: CGRect
-        if let favourites, favourites.window === window {
+        let favouriteIDs = store.tabs.filter { $0.kind == .favourite }.map(\.id)
+        if let favourites, favourites.window === window,
+           !favouriteIDs.isEmpty || destination != nil {
             frame = root.convert(favourites.bounds, from: favourites)
         } else if let pill, pill.window === window {
             let address = root.convert(pill.bounds, from: pill)
-            frame = CGRect(x: address.minX, y: address.maxY + Look.inset,
-                           width: address.width, height: Look.tileHeight)
+            frame = FavouriteLanding.emptyFrame(below: address, revealed: destination != nil)
         } else { setDestination(nil); return }
         guard FavouriteLanding.isNear(point, frame: frame) else { setDestination(nil); return }
-        let incoming = sidebarMoveTabs([id], in: store)
-        let favourites = store.tabs.filter { $0.kind == .favourite }.map(\.id)
+        let rows = Dragging.shared.tabs.isEmpty ? [id] : Dragging.shared.tabs
+        let incoming = sidebarMoveTabs(rows, in: store)
+        let favourites = favouriteIDs
         let moving = Set(incoming)
         let remaining = favourites.filter { !moving.contains($0) }.count
-        let physicalColumns = SidebarWidth.favouriteColumns(max(1, favourites.count),
+        let displayed = FavouriteLanding.previewIDs(favourites: favourites, incoming: incoming,
+                                                    index: destination?.index)
+        let physicalColumns = SidebarWidth.favouriteColumns(max(1, displayed.count),
                                                              width: SidebarWidth.shared.width)
-        let gap = FavouriteLanding.index(at: point, frame: frame, count: favourites.count,
+        let gap = FavouriteLanding.index(at: point, frame: frame, count: displayed.count,
                                          columns: physicalColumns)
-        let index = FavouriteLanding.remainingIndex(gap: gap, favourites: favourites,
+        let index = FavouriteLanding.remainingIndex(gap: gap, favourites: displayed,
                                                      moving: moving)
         let finalColumns = SidebarWidth.favouriteColumns(remaining + incoming.count,
                                                          width: SidebarWidth.shared.width)
@@ -216,11 +235,18 @@ struct SidebarTabGhost: View {
         let width: CGFloat
         let store: TabStore
         let reduced: Bool
+        @State private var lastTileWidth: CGFloat = Look.tileHeight
         private var tile: Bool { tileWidth != nil }
 
         var body: some View {
             Group {
-                if tile {
+                if tab.kind != .favourite, let held = Dragging.shared.rowGhost {
+                    // One mounted source surface throughout: its icon moves to the tile's
+                    // centre as the rectangle changes size, without swapping pictures.
+                    held.modifier(GhostTileTransform(progress: tile ? 1 : 0,
+                                                     rowWidth: width,
+                                                     tileWidth: tileWidth ?? lastTileWidth))
+                } else if tile {
                     if tab.kind == .favourite, let held = Dragging.shared.rowGhost {
                         held
                     } else {
@@ -232,8 +258,6 @@ struct SidebarTabGhost: View {
                                                        hovering: true, icon: tab.favicon)
                             }
                     }
-                } else if tab.kind != .favourite, let held = Dragging.shared.rowGhost {
-                    held
                 } else {
                     SidebarTabSurface(store: store, tab: tab, held: true,
                                       returnHovering: .constant(false), pr: nil, action: {})
@@ -243,7 +267,48 @@ struct SidebarTabGhost: View {
             .clipShape(.rect(cornerRadius: Look.pillRadius))
             .animation(reduced ? nil : Look.quick, value: tile)
             .animation(reduced ? nil : Look.quick, value: tileWidth)
+            .onChange(of: tileWidth, initial: true) { _, next in
+                if let next { lastTileWidth = next }
+            }
         }
+    }
+}
+
+struct GhostTileMorph {
+    var progress: CGFloat
+    var rowWidth: CGFloat
+    var tileWidth: CGFloat
+    var width: CGFloat { rowWidth + (tileWidth - rowWidth) * progress }
+    var height: CGFloat { Look.rowHeight + (Look.tileHeight - Look.rowHeight) * progress }
+    var iconX: CGFloat {
+        let start = Look.rowInset + Look.rowIcon / 2
+        return start + (tileWidth / 2 - start) * progress
+    }
+}
+
+private struct GhostTileMorphKey: EnvironmentKey {
+    static let defaultValue: GhostTileMorph? = nil
+}
+extension EnvironmentValues {
+    var ghostTileMorph: GhostTileMorph? {
+        get { self[GhostTileMorphKey.self] }
+        set { self[GhostTileMorphKey.self] = newValue }
+    }
+}
+
+private struct GhostTileTransform: AnimatableModifier {
+    nonisolated var progress: CGFloat
+    nonisolated let rowWidth: CGFloat
+    nonisolated var tileWidth: CGFloat
+    nonisolated var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(progress, tileWidth) }
+        set { progress = newValue.first; tileWidth = newValue.second }
+    }
+    func body(content: Content) -> some View {
+        let morph = GhostTileMorph(progress: progress, rowWidth: rowWidth, tileWidth: tileWidth)
+        content.environment(\.ghostTileMorph, morph)
+            .frame(width: morph.width, height: morph.height, alignment: .leading)
+            .clipped()
     }
 }
 

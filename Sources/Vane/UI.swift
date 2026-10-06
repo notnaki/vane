@@ -1532,7 +1532,7 @@ private struct ZoomChip: View {
 /// out. Columns follow the count (`TabStore.favouriteColumns`), so one favourite is one wide
 /// tile and seven are a 4-wide grid, never two fixed slots.
 /// Empty, it is nothing at all — Arc's fresh space is the pill and then the space's name,
-/// no placeholder. Lifting a tab reveals a landing tile for the first favourite.
+/// no placeholder. Approaching the empty area reveals the first favourite's landing tile.
 private struct Favorites: View {
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var dragPreview: SidebarDragPreview
@@ -1554,9 +1554,9 @@ private struct Favorites: View {
                     } else {
                         // Keep the native drag source mounted while its slot moves.
                         FavoriteTile(tab: tab)
-                            .opacity(dragPreview.destination != nil && tab.id == dragging.tab ? 0 : 1)
+                            .opacity(dragPreview.destination != nil && moving.contains(tab.id) ? 0 : 1)
                             .overlay {
-                                if dragPreview.destination != nil && tab.id == dragging.tab { slot }
+                                if dragPreview.destination != nil && moving.contains(tab.id) { slot }
                             }
                             .transition(.tileGrow)
                     }
@@ -1577,9 +1577,8 @@ private struct Favorites: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Favourites")
             .accessibilityValue("\(pinned.count) pinned")
-        } else if dragging.tab != nil {
-            // A real drop target before proximity sampling: the first favourite must be
-            // as easy to place as every later one, including a quick drag and release.
+        } else if dragPreview.destination != nil {
+            // The collapsed seam is sampled above the Space row before this expands.
             ZStack { Color.clear; slot }
                 .frame(height: Look.tileHeight)
                 .frame(maxWidth: .infinity)
@@ -1596,8 +1595,16 @@ private struct Favorites: View {
     }
 
     private var previewTabs: [Tab] {
-        // The actual tiles remain in their original slots until the drop commits.
-        store.tabs.filter { $0.kind == .favourite }
+        let favourites = store.tabs.filter { $0.kind == .favourite }.map(\.id)
+        let incoming = moving
+        return FavouriteLanding.previewIDs(favourites: favourites, incoming: incoming,
+                                            index: dragPreview.destination?.index)
+            .compactMap { id in store.tabs.first { $0.id == id } }
+    }
+
+    private var moving: [Tab.ID] {
+        guard let id = dragging.tab else { return [] }
+        return sidebarMoveTabs(dragging.tabs.isEmpty ? [id] : dragging.tabs, in: store)
     }
 
     private var slot: some View {
@@ -1993,9 +2000,10 @@ struct PaneStrip: View {
     var held = false
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
-        HStack(spacing: Look.paneGap) {
+        HStack(spacing: Look.paneGap * (1 - (morph?.progress ?? 0))) {
             ForEach(Array(panes.enumerated()), id: \.element.id) { i, pane in
                 PanePill(store: store, tab: pane, active: pane.id == split.activeTab,
                          index: i, of: panes.count, held: held)
@@ -2006,12 +2014,24 @@ struct PaneStrip: View {
             if let voice {
                 TabRowTrailing(store: store, tab: voice,
                                pane: true, closes: panes.first { $0.id == split.activeTab })
+                    .opacity(1 - (morph?.progress ?? 0))
+                    .frame(width: morph.map { (voice.audible || TabAudio.isMuted(voice) ? 2 : 1)
+                        * Look.rowTarget * (1 - $0.progress) })
             }
         }
         .padding(Look.paneInset)
-        .frame(height: Look.rowHeight)
-        .background(fill, in: .rect(cornerRadius: Look.pillRadius))
-        .hairline(radius: Look.pillRadius, ticked && selected ? Look.selectedEdge : .clear)
+        .frame(height: morph?.height ?? Look.rowHeight)
+        .background(fill.opacity(1 - (morph?.progress ?? 0)),
+                    in: .rect(cornerRadius: Look.pillRadius))
+        .background {
+            if let morph {
+                FavoriteTileBackground(selected: selected, hovering: true,
+                                       icon: panes.first { $0.id == split.activeTab }?.favicon)
+                    .opacity(morph.progress)
+            }
+        }
+        .hairline(radius: Look.pillRadius, ticked && selected
+                  ? Look.selectedEdge.opacity(1 - (morph?.progress ?? 0)) : .clear)
         .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -2052,10 +2072,12 @@ private struct PanePill: View {
     let index: Int
     let of: Int
     var held = false
+    @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
-        HStack(spacing: Look.rowSpacing) {
-            TabIcon(tab: tab, size: Look.rowIcon)
+        HStack(spacing: Look.rowSpacing * (1 - (morph?.progress ?? 0))) {
+            TabIcon(tab: tab, size: Look.rowIcon).opacity(morph == nil ? 1 : 0)
+                .frame(width: Look.rowIcon * (1 - (morph?.progress ?? 0)))
             if !held && store.renamingTab == tab.id {
                 RenameField(store: store, tab: tab)
             } else {
@@ -2064,15 +2086,27 @@ private struct PanePill: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .foregroundStyle(Look.inkPrimary)
+                    .opacity(1 - (morph?.progress ?? 0))
+                    .frame(minWidth: 0, alignment: .leading)
             }
         }
-        .padding(.horizontal, Look.paneInset)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: Look.rowHeight - Look.paneInset * 2)
+        .padding(.horizontal, Look.paneInset * (1 - (morph?.progress ?? 0)))
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .frame(height: (morph?.height ?? Look.rowHeight) - Look.paneInset * 2)
         // The pane being looked at is the lighter one; the rest are a step quieter, so the
         // row says which page the card is showing without a second mark to read.
-        .background(active ? Look.selected : Look.hovered,
+        .background((active ? Look.selected : Look.hovered).opacity(1 - (morph?.progress ?? 0)),
                     in: .rect(cornerRadius: Look.panePillRadius))
+        .overlay {
+            if let morph {
+                GeometryReader { geometry in
+                    let start = Look.paneInset + Look.rowIcon / 2
+                    TabIcon(tab: tab, size: Look.rowIcon)
+                        .position(x: start + (geometry.size.width / 2 - start) * morph.progress,
+                                  y: geometry.size.height / 2)
+                }
+            }
+        }
         .contentShape(.rect)
         .onTapGesture { store.focusPane(tab.id) }
         .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
@@ -3225,22 +3259,33 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     @ViewBuilder let trailing: () -> Trailing
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
         HStack(spacing: Look.rowSpacing) {
-            leading()
+            leading().opacity(morph == nil ? 1 : 0)
             // Every tab title in the same ink, selected or not — Arc's list is one grey on
             // dark all the way down, and the selection is the fill, not a change of ink.
             label().font(Look.rowTitle).lineLimit(1)
                 .foregroundStyle(dimmed ? Look.inkTertiary : Look.inkPrimary)
+                .opacity(1 - (morph?.progress ?? 0))
             Spacer(minLength: 0)
-            trailing()
+            trailing().opacity(1 - (morph?.progress ?? 0))
         }
         .padding(.leading, Look.rowInset)
         .padding(.trailing, Look.rowTrailingInset)
-        .frame(height: Look.rowHeight)
-        .background(fill, in: .rect(cornerRadius: Look.pillRadius))
-        .hairline(radius: Look.pillRadius, ticked && selected ? Look.selectedEdge : .clear)
+        .frame(width: morph?.width, height: morph?.height ?? Look.rowHeight)
+        .background(fill.opacity(1 - (morph?.progress ?? 0)),
+                    in: .rect(cornerRadius: Look.pillRadius))
+        .hairline(radius: Look.pillRadius, ticked && selected
+                  ? Look.selectedEdge.opacity(1 - (morph?.progress ?? 0)) : .clear)
+        .overlay {
+            if let morph {
+                leading()
+                    .scaleEffect(Motion.reduced ? 1 : 1 + 0.07 * morph.progress)
+                    .position(x: morph.iconX, y: morph.height / 2)
+            }
+        }
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -3681,6 +3726,7 @@ struct SidebarTabSurface: View {
     @Binding var returnHovering: Bool
     var pr: GitHub.Row?
     var action: () -> Void
+    @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
         let selected = store.current == tab.id
@@ -3716,10 +3762,17 @@ struct SidebarTabSurface: View {
         } trailing: {
             TabRowTrailing(store: store, tab: tab)
         }
+        .background {
+            if let morph {
+                FavoriteTileBackground(selected: selected, hovering: true, icon: tab.favicon)
+                    .opacity(morph.progress)
+            }
+        }
         // Arc's hazard tape: a Developer Mode tab is marked on its row, not on the page.
         .overlay {
             if tab.developer {
                 DeveloperTabBorder()
+                    .opacity(1 - (morph?.progress ?? 0))
             }
         }
     }
