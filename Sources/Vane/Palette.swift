@@ -659,7 +659,7 @@ struct CommandField: NSViewRepresentable {
             HStack(spacing: Look.barRowInset) {
                 Group {
                     if sidebarAddress, !actionsOnly, let icon = store.active?.favicon {
-                        Image(nsImage: icon).resizable().aspectRatio(contentMode: .fit)
+                        SiteIcon(icon: icon, size: Look.rowIcon, rounded: store.active?.currentURL?.isFileURL != true)
                     } else {
                         Image(systemName: actionsOnly ? "command" : "magnifyingglass")
                             .font(Look.fieldIcon)
@@ -740,8 +740,7 @@ struct CommandField: NSViewRepresentable {
         let lit = hover == row.id
         return HStack(spacing: Look.barRowSpacing) {
             if let image = row.image {
-                Image(nsImage: image).resizable()
-                    .frame(width: Look.rowIcon, height: Look.rowIcon)
+                SiteIcon(icon: image, size: Look.rowIcon, rounded: !row.detail.hasPrefix("file:"))
             } else if row.chip {
                 Image(systemName: row.icon)
                     .font(Look.chipGlyph)

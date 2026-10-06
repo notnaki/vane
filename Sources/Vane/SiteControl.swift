@@ -664,7 +664,7 @@ struct SiteControlPopover: View {
         HStack(spacing: Look.rowSpacing) {
             Group {
                 if let icon = tab.favicon {
-                    Image(nsImage: icon).resizable().interpolation(.high)
+                    SiteIcon(icon: icon, size: Look.rowIcon, rounded: tab.currentURL?.isFileURL != true)
                 } else {
                     Image(systemName: model.glyph).resizable().foregroundStyle(.tertiary)
                 }

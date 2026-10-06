@@ -86,6 +86,14 @@ list fills the sidebar. Dropping onto **New Tab** moves tabs to the top of Today
 right-click → **Remove from Folder** keeps tabs in their section. An empty Today
 folder disappears. Click and drag the blank area below Today tabs to move the window.
 
+Drag a tab onto a favourite tile or into the gaps between tiles to add it to Favourites.
+Lifting a tab reveals a drop tile when Favourites is empty; the address pill also accepts
+the first favourite. Nearby tiles move aside and the drag preview takes its destination
+tile's shape. Drag tiles to reorder them or move
+them into Pinned or Today. Links dragged from a webpage or another app can be dropped
+onto the grid or address pill to save a favourite; dragging a tile into another app
+exports its page link.
+
 Right-click a sidebar folder and choose **Lock Folder** to hide all of its tabs and
 nested folders. Click the locked folder to show its unlock controls in the page card. Touch ID
 authentication stays inline; **More unlock options…** opens macOS authentication,

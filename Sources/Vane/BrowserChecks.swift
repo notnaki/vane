@@ -610,6 +610,63 @@ import WebKit
             let privateCache = ProfileManager.faviconDir(for: privateTab.profileID, in: Store.directory)
             let files = (try? FileManager.default.contentsOfDirectory(atPath: privateCache.path)) ?? []
             try require(files.isEmpty, "fetching a private parked tab's icon does not write it to disk")
+
+            let qualityURL = URL(string: "\(base)/quality-icon-page")!
+            let upgrade = makeTab(profile: ProfileManager.shared.create(name: "Icon quality checks").id)
+            upgrade.park(url: qualityURL, Parked(title: "Cached small icon"))
+            try await wait("cached low-resolution fallback") { upgrade.favicon != nil }
+            let smallIcon = upgrade.favicon
+            let sibling = makeTab(profile: upgrade.profileID)
+            sibling.park(url: qualityURL, Parked(title: "Parked sibling"))
+            try await wait("sibling uses cached fallback") { sibling.favicon != nil }
+            let qualityBefore = server.requests["/brand.png", default: 0]
+            upgrade.resume()
+            try await loaded(upgrade, path: qualityURL.path, title: "Fixture Quality")
+            try await wait("a cached fallback upgrades to the declared touch icon") {
+                server.requests["/brand.png", default: 0] > qualityBefore && upgrade.favicon !== smallIcon
+            }
+            try require(upgrade.favicon?.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width == 64,
+                        "touch-icon rel metadata wins even when its filename does not say apple-touch")
+            try require(sibling.suspended && sibling.favicon === upgrade.favicon,
+                        "a sharper declared icon also updates parked rows")
+            let restoredIcon = Favicons(profileID: upgrade.profileID).icon(for: qualityURL)
+            try require(restoredIcon?.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width == 64,
+                        "the sharper artwork replaces the low-resolution disk cache too")
+            try await load(upgrade, qualityURL.absoluteString, title: "Fixture Quality")
+            _ = try await js(upgrade, "document.readyState")
+            try await Task.sleep(for: .milliseconds(100))
+            try require(server.requests["/brand.png", default: 0] == qualityBefore + 1,
+                        "reloading a page reuses its already discovered icon")
+
+            let preloadBefore = server.requests["/apple-touch-icon.png", default: 0]
+            try await load(upgrade, "\(base)/preloaded-icon-page", title: "Fixture Preloaded")
+            try await wait("preloaded touch-icon artwork") {
+                server.requests["/apple-touch-icon.png", default: 0] > preloadBefore
+            }
+            try await wait("preloaded artwork decoded") {
+                upgrade.favicon?.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width == 64
+            }
+            let preloadDeclarations = Favicons.declared(try await js(upgrade, Favicons.linkJS))
+            try require(!preloadDeclarations.contains { $0.path == "/unrelated-image.png" },
+                        "ordinary preloaded page images are not favicon candidates")
+
+            let successfulRace = makeTab(profile: ProfileManager.shared.create(name: "Successful fallback race").id)
+            let successfulBefore = server.requests["/favicon.ico", default: 0]
+            let successfulDiscovery = server.requests["/icon-discovery/quality-icon-page", default: 0]
+            server.holdFavicons = true
+            _ = successfulRace.favicons.icon(for: qualityURL)
+            try await wait("successful fallback in flight") {
+                server.requests["/favicon.ico", default: 0] > successfulBefore
+            }
+            try await load(successfulRace, qualityURL.absoluteString, title: "Fixture Quality")
+            try await wait("declarations queued behind successful fallback") {
+                server.requests["/icon-discovery/quality-icon-page", default: 0] > successfulDiscovery
+            }
+            _ = try await js(successfulRace, "document.readyState")
+            server.releaseFavicons()
+            try await wait("a successful in-flight fallback still upgrades to sharper artwork") {
+                successfulRace.favicon?.cgImage(forProposedRect: nil, context: nil, hints: nil)?.width == 64
+            }
             server.faviconAvailable = false
         }
 
@@ -1625,6 +1682,14 @@ import WebKit
         private var heldFavicons: [(NWConnection, Data)] = []
         private let icon = Data(base64Encoded:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO1sAAAAASUVORK5CYII=")!
+        private let qualityIcon: Data = {
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            let green = NSColor(deviceRed: 0, green: 1, blue: 0, alpha: 1)
+            for y in 0..<64 { for x in 0..<64 { bitmap.setColor(green, atX: x, y: y) } }
+            return bitmap.representation(using: .png, properties: [:])!
+        }()
 
 
         init() throws {
@@ -1674,8 +1739,11 @@ import WebKit
                     let path = String(target.split(separator: "?", maxSplits: 1)[0])
                     self.requests[path, default: 0] += 1
                     let attachment = path == "/download"
-                    let image = path == "/site-icon.png" || (path == "/favicon.ico" && self.faviconAvailable)
-                    let body = image ? self.icon : Data((attachment ? "Vane download fixture\n" : self.html(path)).utf8)
+                    let sharp = path == "/brand.png" || path == "/apple-touch-icon.png"
+                    let image = sharp || ["/site-icon.png", "/small-icon.png"].contains(path)
+                        || (path == "/favicon.ico" && self.faviconAvailable)
+                    let body = image ? (sharp ? self.qualityIcon : self.icon)
+                        : Data((attachment ? "Vane download fixture\n" : self.html(path)).utf8)
                     let redirect = path == "/redirect"
                     let status = redirect ? "302 Found" : (path == "/favicon.ico" && !image ? "404 Not Found" : "200 OK")
                     let location = redirect ? "Location: /b\r\n" : ""
@@ -1696,6 +1764,12 @@ import WebKit
             let title: String
             let content: String
             switch path {
+            case "/preloaded-icon-page":
+                title = "Preloaded"
+                content = "<link rel=icon href=/small-icon.png><link rel=preload as=image href=/unrelated-image.png><link rel=preload as=image href=/apple-touch-icon.png><p>Preloaded touch icon</p>"
+            case "/quality-icon-page":
+                title = "Quality"
+                content = "<link rel=icon sizes=16x16 href=/small-icon.png><link rel=apple-touch-icon sizes=64x64 href=/brand.png><p>Sharp declared icon</p>"
             case "/icon-page": title = "Icon"; content = "<link rel=icon href=/site-icon.png><p>Declared icon</p>"
             case "/a": title = "A"; content = "<p>needle one</p><p>needle two</p><a id=next href=/b>Next</a>"
             case "/b": title = "B"; content = "<p>Second page</p>"
