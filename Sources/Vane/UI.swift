@@ -3285,8 +3285,6 @@ private struct FolderDrop: DropDelegate {
 /// trailing edge. One shape so the list reads as one list.
 private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     let selected: Bool
-    /// A wandered pin offers Return on hover instead of keeping its row highlighted.
-    var highlightSelection = true
     /// In a multi-select. It wears the same fill as `selected` — a selection is a selection —
     /// and the row that is *also* `selected` is picked out by an accent hairline, so the
     /// list still says which of the ticked tabs is the one on screen.
@@ -3324,7 +3322,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     }
 
     private var fill: Color {
-        (selected && highlightSelection) || ticked ? Look.selected : (hovering ? Look.hovered : .clear)
+        selected || ticked ? Look.selected : (hovering ? Look.hovered : .clear)
     }
 }
 
@@ -3755,13 +3753,14 @@ private struct TabRow: View {
         let ticked = store.selection.contains(tab.id)
         let returning = tab.kind == .pinned && !tab.atHome
         let title = TidyTitles.title(for: tab)
-        SidebarRow(selected: selected, highlightSelection: !returning, ticked: ticked, action: select) {
+        SidebarRow(selected: selected, ticked: ticked, action: select) {
             TabHomeIcon(store: store, tab: tab, returnHovering: $returnHovering)
         } label: {
             HStack(spacing: 6) {
                 if returning {
                     Text("/")
-                        .foregroundStyle(Look.inkSecondary)
+                        .fontWeight(.bold)
+                        .foregroundStyle(Look.inkTertiary)
                         .fixedSize()
                         .accessibilityHidden(true)
                 }
