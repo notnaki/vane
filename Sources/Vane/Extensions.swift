@@ -507,7 +507,7 @@ import WebKit
             controller.didOpenWindow(adapter(for: store))
         }
 
-        let liveTabs = Set(stores.flatMap { $0.tabs.map(\.id) })
+        let liveTabs = Set(stores.flatMap { $0.accessibleTabs.map(\.id) })
         for id in announcedTabs.subtracting(liveTabs) {
             if let shim = tabShims[id] { controller.didCloseTab(shim) }
             tabShims[id] = nil
@@ -517,12 +517,12 @@ import WebKit
         announcedTabs.formIntersection(liveTabs)
 
         for store in stores {
-            for tab in store.tabs where !announcedTabs.contains(tab.id) {
+            for tab in store.accessibleTabs where !announcedTabs.contains(tab.id) {
                 announcedTabs.insert(tab.id)
                 controller.didOpenTab(adapter(for: tab, in: store))
             }
             // Title and URL together: onUpdated does not care which of the two moved.
-            for tab in store.tabs {
+            for tab in store.accessibleTabs {
                 let state = tab.title + "\u{0}" + (tab.currentURL?.absoluteString ?? "")
                     + "\u{0}" + (tab.loading ? "L" : "")
                 guard tabState[tab.id] != state else { continue }
@@ -1006,47 +1006,54 @@ extension View {
         self.originalStore = store
     }
 
+    private var accessible: Bool {
+        guard let tab, let store else { return false }
+        return !store.isTabLocked(tab.id)
+    }
+
     func window(for context: WKWebExtensionContext) -> (any WKWebExtensionWindow)? {
-        store.map { ExtensionHost.host(for: $0.profileID).adapter(for: $0) }
+        guard accessible else { return nil }
+        return store.map { ExtensionHost.host(for: $0.profileID).adapter(for: $0) }
     }
 
     func indexInWindow(for context: WKWebExtensionContext) -> Int {
-        guard let tab, let i = store?.tabs.firstIndex(where: { $0 === tab }) else { return NSNotFound }
+        guard accessible, let tab, let i = store?.accessibleTabs.firstIndex(where: { $0 === tab }) else { return NSNotFound }
         return i
     }
 
     // Everything WebKit can read straight off the web view (zoom, loading, snapshots,
     // back/forward, reload) is deliberately left unimplemented — the protocol's documented
     // defaults already do it against `webView(for:)`.
-    func webView(for context: WKWebExtensionContext) -> WKWebView? { tab?.existingWeb }
+    func webView(for context: WKWebExtensionContext) -> WKWebView? { accessible ? tab?.existingWeb : nil }
 
-    func url(for context: WKWebExtensionContext) -> URL? { tab?.currentURL }
+    func url(for context: WKWebExtensionContext) -> URL? { accessible ? tab?.currentURL : nil }
 
     func loadURL(_ url: URL, for context: WKWebExtensionContext,
                  completionHandler: @escaping (Error?) -> Void) {
-        guard let tab else {
-            completionHandler(ExtensionHost.Failure("This tab has closed."))
+        guard accessible, let tab else {
+            completionHandler(ExtensionHost.Failure("This tab is locked or closed."))
             return
         }
         tab.navigate(to: url)
         completionHandler(nil)
     }
 
-    func title(for context: WKWebExtensionContext) -> String? { tab?.title }
+    func title(for context: WKWebExtensionContext) -> String? { accessible ? tab?.title : nil }
 
-    func isLoadingComplete(for context: WKWebExtensionContext) -> Bool { !(tab?.loading ?? false) }
+    func isLoadingComplete(for context: WKWebExtensionContext) -> Bool { accessible && !(tab?.loading ?? false) }
 
     func isSelected(for context: WKWebExtensionContext) -> Bool {
-        guard let tab, let store else { return false }
+        guard accessible, let tab, let store else { return false }
         return store.current == tab.id
     }
 
-    func isPrivate(for context: WKWebExtensionContext) -> Bool { tab?.isPrivate ?? false }
+    func isPrivate(for context: WKWebExtensionContext) -> Bool { accessible && (tab?.isPrivate ?? false) }
 
     /// activeTab is the permission almost every extension actually relies on.
-    func shouldGrantPermissionsOnUserGesture(for context: WKWebExtensionContext) -> Bool { true }
+    func shouldGrantPermissionsOnUserGesture(for context: WKWebExtensionContext) -> Bool { accessible }
 
     func activate(for context: WKWebExtensionContext) async throws {
+        guard accessible else { throw ExtensionHost.Failure("This tab is locked or closed.") }
         guard let tab, let store else { return }
         store.current = tab.id
         store.window?.makeKeyAndOrderFront(nil)
@@ -1070,6 +1077,7 @@ extension View {
     /// rule for every route, and it is the right side of the trade — the alternative is an
     /// extension being the one thing in the browser that can drop a row the user arranged.
     func close(for context: WKWebExtensionContext) async throws {
+        guard accessible else { throw ExtensionHost.Failure("This tab is locked or closed.") }
         guard let tab, let store else { return }
         store.close(tab.id)
         ExtensionHost.host(for: store.profileID).sync()
@@ -1077,6 +1085,7 @@ extension View {
 
     func duplicate(using configuration: WKWebExtension.TabConfiguration,
                    for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
+        guard accessible else { throw ExtensionHost.Failure("This tab is locked or closed.") }
         guard let store, let url = tab?.currentURL else { return nil }
         let copy = store.newBlankTab()
         copy.navigate(to: url)
@@ -1095,7 +1104,7 @@ extension View {
     func tabs(for context: WKWebExtensionContext) -> [any WKWebExtensionTab] {
         guard let store else { return [] }
         let host = ExtensionHost.host(for: store.profileID)
-        return store.tabs.map { host.adapter(for: $0, in: store) }
+        return store.accessibleTabs.map { host.adapter(for: $0, in: store) }
     }
 
     func activeTab(for context: WKWebExtensionContext) -> (any WKWebExtensionTab)? {

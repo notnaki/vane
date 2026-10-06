@@ -17,11 +17,13 @@ import LocalAuthentication
     }
     private var pending: [Key: Pending] = [:]
     private let authenticate: Authenticator
+    let needsInlineAuthentication: Bool
     private var observers: [NSObjectProtocol] = []
 
     init(observingSession: Bool = false,
-         authenticate: @escaping Authenticator = FolderAuthentication.systemAuthentication) {
-        self.authenticate = authenticate
+         authenticate: Authenticator? = nil) {
+        self.authenticate = authenticate ?? FolderAuthentication.systemAuthentication
+        needsInlineAuthentication = authenticate == nil
         if observingSession {
             for name in [NSWorkspace.sessionDidResignActiveNotification,
                          NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
@@ -51,13 +53,14 @@ import LocalAuthentication
         Set(unlocked.filter { $0.profile == profile }.map(\.folder))
     }
 
-    func unlock(_ folder: UUID, profile: UUID, reason: String, then reply: @escaping Reply) {
+    func unlock(_ folder: UUID, profile: UUID, reason: String,
+                using override: Authenticator? = nil, then reply: @escaping Reply) {
         let key = Key(profile: profile, folder: folder)
         if unlocked.contains(key) { reply(true); return }
         if pending[key] != nil { pending[key]?.replies.append(reply); return }
         let token = UUID()
         pending[key] = Pending(token: token, replies: [reply])
-        let context = authenticate(reason) { [weak self] success in
+        let context = (override ?? authenticate)(reason) { [weak self] success in
             guard let self, let request = pending[key], request.token == token else { return }
             pending[key] = nil
             if success { unlocked.insert(key); changed(profile) }
@@ -105,7 +108,49 @@ extension Pins {
     }
 }
 
+/// A sidebar unlock request is presented inside the page card, never in a Vane popup.
+@MainActor final class FolderUnlockRequest {
+    let id = UUID()
+    let target: UUID
+    var replies: [FolderAuthentication.Reply]
+    init(target: UUID, reply: @escaping FolderAuthentication.Reply) {
+        self.target = target
+        self.replies = [reply]
+    }
+}
+
 extension TabStore {
+    var folderUnlockPage: Folder? {
+        if let request = folderUnlockRequest,
+           let shape = holder(of: request.target) {
+            return lockedFolders(for: request.target.uuidString).first
+                ?? self[keyPath: shape].folder(request.target)
+        }
+        return lockedPageFolder
+    }
+
+    func cancelFolderUnlock() {
+        guard let request = folderUnlockRequest else { return }
+        folderUnlockRequest = nil
+        for folder in lockedFolders(for: request.target.uuidString) {
+            folderAuthentication.lock(folder.id, profile: profileID)
+        }
+        request.replies.forEach { $0(false) }
+    }
+
+    func runFolderUnlock(using authenticate: @escaping FolderAuthentication.Authenticator,
+                         then done: @escaping FolderAuthentication.Reply) {
+        guard let request = folderUnlockRequest else { done(false); return }
+        unlockFolder(request.target, using: authenticate) { [weak self] success in
+            guard let self, folderUnlockRequest === request else { done(false); return }
+            if success {
+                Motion.list { folderUnlockRequest = nil }
+                request.replies.forEach { $0(true) }
+            }
+            done(success)
+        }
+    }
+
     var unlockedFolders: Set<UUID> { folderAuthentication.grants(for: profileID) }
 
     func lockedFolders(for row: String) -> [Folder] {
@@ -132,14 +177,28 @@ extension TabStore {
 
     /// Called before a locked page can wake or acquire a live presentation.
     func unlockFolder(_ id: UUID, then done: @escaping FolderAuthentication.Reply = { _ in }) {
+        unlockFolder(id, using: nil, then: done)
+    }
+
+    private func unlockFolder(_ id: UUID, using authenticate: FolderAuthentication.Authenticator?,
+                              then done: @escaping FolderAuthentication.Reply) {
         guard let shape = holder(of: id), self[keyPath: shape].folder(id) != nil else {
             done(false); return
         }
         guard let blocked = lockedFolders(for: id.uuidString).first else { done(true); return }
+        if authenticate == nil, folderAuthentication.needsInlineAuthentication {
+            if let request = folderUnlockRequest, request.target == id {
+                request.replies.append(done)
+            } else {
+                cancelFolderUnlock()
+                Motion.list { folderUnlockRequest = FolderUnlockRequest(target: id, reply: done) }
+            }
+            return
+        }
         folderAuthentication.unlock(blocked.id, profile: profileID,
-                                    reason: "Unlock the folder “\(blocked.name)” in Vane.") { [weak self] success in
+                                    reason: "Unlock the folder “\(blocked.name)”.", using: authenticate) { [weak self] success in
             guard let self, success, holder(of: id) != nil else { done(false); return }
-            unlockFolder(id, then: done)
+            unlockFolder(id, using: authenticate, then: done)
         }
     }
 
@@ -198,7 +257,9 @@ extension TabStore {
         let blocked = everyTab.filter { isTabLocked($0.id) }
         if let peek = Peek.live, peek.parent === self,
            blocked.contains(where: { $0.id == peek.source }) { Peek.close(animated: false) }
+        if !blocked.isEmpty, let window { MinimizedWindowIcon.protect(window) }
         for tab in blocked { tab.suspendForFolderLock() }
+        extensions.sync()
         if lockedPageFolder == nil, let current { self.current = current }
         SharedTabs.refreshPresentation()
     }

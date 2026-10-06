@@ -1,4 +1,6 @@
 import XCTest
+import WebKit
+import LocalAuthentication
 @testable import vane
 
 @MainActor final class LockedFolderTests: XCTestCase {
@@ -176,8 +178,10 @@ import XCTest
         SharedTabs.flush()
         first.current = tab.id
         second.current = tab.id
+        tab.windowSnapshot = NSImage(size: NSSize(width: 640, height: 480))
         first.lockFolder(folder.id)
         for store in [first, second] {
+            XCTAssertNotNil(store.lockedFolderBackdrop, "Every window captures before the shared page is released")
             XCTAssertEqual(store.current, tab.id)
             XCTAssertEqual(store.lockedPageFolder?.id, folder.id)
             XCTAssertNil(store.active)
@@ -222,6 +226,100 @@ import XCTest
         XCTAssertEqual(store.lockedPageFolder?.id, folder.id)
         XCTAssertNil(store.activeSplit)
         XCTAssertFalse(store.onScreenTabs.contains { $0.id == secret.id })
+    }
+
+    func testExtensionCannotReadOrNavigatePreviouslyRetainedLockedTab() async throws {
+        TestEnvironment.prepare()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(#"{"manifest_version":3,"name":"Folder test","version":"1.0"}"#.utf8)
+            .write(to: directory.appendingPathComponent("manifest.json"))
+        let webExtension = try await WKWebExtension(resourceBaseURL: directory)
+        let context = WKWebExtensionContext(for: webExtension)
+        let store = TabStore(profileID: UUID(), session: [])
+        defer { cleanUp(store) }
+        let tab = store.newBlankTab(focus: false, as: .pinned)
+        tab.open(URL(string: "https://secret.example")!, parked: nil)
+        let folder = store.pins.newFolder(named: "Private")!
+        store.pins.move(tab.id.uuidString, into: folder.id)
+        let adapter = ExtTab(tab, in: store)
+        store.lockFolder(folder.id)
+        XCTAssertTrue(ExtWindow(store).tabs(for: context).isEmpty)
+        XCTAssertNil(adapter.url(for: context))
+        XCTAssertNil(adapter.title(for: context))
+        XCTAssertNil(adapter.webView(for: context))
+        XCTAssertFalse(adapter.shouldGrantPermissionsOnUserGesture(for: context))
+        var error: Error?
+        adapter.loadURL(URL(string: "https://leak.example")!, for: context) { error = $0 }
+        XCTAssertNotNil(error)
+        XCTAssertNil(tab.existingWeb)
+        do {
+            try await adapter.activate(for: context)
+            XCTFail("A retained extension adapter cannot activate a protected tab")
+        } catch {}
+    }
+
+    func testDefaultUnlockStaysInPageUntilAnAuthenticationAction() {
+        TestEnvironment.prepare()
+        let store = TabStore(profileID: UUID(), session: [])
+        defer { cleanUp(store) }
+        let tab = store.newBlankTab(focus: false, as: .pinned)
+        let folder = store.pins.newFolder(named: "Private")!
+        store.pins.move(tab.id.uuidString, into: folder.id)
+        store.lockFolder(folder.id)
+        var result: Bool?
+        store.unlockFolder(folder.id) { result = $0 }
+        XCTAssertEqual(store.folderUnlockPage?.id, folder.id)
+        XCTAssertNotNil(store.folderUnlockRequest)
+        XCTAssertNil(result)
+        XCTAssertTrue(store.isTabLocked(tab.id))
+        store.runFolderUnlock(using: { _, reply in reply(false); return nil }) { _ in }
+        XCTAssertTrue(store.isTabLocked(tab.id))
+        XCTAssertNotNil(store.folderUnlockRequest, "A failed attempt stays inline for retry")
+        store.runFolderUnlock(using: { _, reply in reply(true); return nil }) { _ in }
+        XCTAssertEqual(result, true)
+        XCTAssertNil(store.folderUnlockRequest)
+        XCTAssertFalse(store.isTabLocked(tab.id))
+    }
+
+    func testCancellingInlineUnlockRejectsLateAuthentication() {
+        TestEnvironment.prepare()
+        let store = TabStore(profileID: UUID(), session: [])
+        defer { cleanUp(store) }
+        let folder = store.pins.newFolder(named: "Private")!
+        store.lockFolder(folder.id)
+        var result: Bool?
+        store.unlockFolder(folder.id) { result = $0 }
+        var finish: FolderAuthentication.Reply?
+        store.runFolderUnlock(using: { _, reply in finish = reply; return nil }) { _ in }
+        store.cancelFolderUnlock()
+        finish?(true)
+        XCTAssertEqual(result, false)
+        XCTAssertNil(store.folderUnlockRequest)
+        XCTAssertTrue(store.isFolderLocked(folder.id))
+    }
+
+    func testInlineControlRetiresSuccessfulContextEvenWhenNestedPageStaysMounted() {
+        let control = FolderUnlockControl()
+        let authenticated = control.context
+        control.finish(true)
+        XCTAssertFalse(control.context === authenticated)
+        var error: NSError?
+        XCTAssertFalse(authenticated.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error))
+        XCTAssertEqual(error?.code, LAError.invalidContext.rawValue)
+        let failed = control.context
+        control.finish(false)
+        XCTAssertFalse(control.context === failed)
+        XCTAssertTrue(control.failed)
+        let cancelled = control.context
+        control.cancel()
+        XCTAssertFalse(control.context === cancelled)
+        XCTAssertFalse(control.failed)
+        XCTAssertFalse(control.authenticating)
+        error = nil
+        XCTAssertFalse(cancelled.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error))
+        XCTAssertEqual(error?.code, LAError.invalidContext.rawValue)
     }
 
     private func cleanUp(_ store: TabStore) {

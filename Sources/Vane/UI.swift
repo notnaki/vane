@@ -643,7 +643,7 @@ struct WebCard: View {
             // A split is one card holding several pages; everything that floats over the
             // page — find, the save prompt, the status bar — still belongs to `store.active`,
             // which *is* the active pane's tab.
-            if let folder = store.lockedPageFolder {
+            if let folder = store.folderUnlockPage {
                 LockedFolderPage(folder: folder)
                     .transition(.opacity)
             } else if let split = store.activeSplit {
@@ -3059,21 +3059,22 @@ private struct FolderRow: View {
                 Text(folder.name).font(Look.folderTitle)
             }
         } trailing: {
-            Image(systemName: "chevron.down")
-                .font(Look.rowGlyph)
-                .foregroundStyle(Look.inkSecondary)
-                .rotationEffect(.degrees(folder.collapsed || locked ? -90 : 0))
-                .animation(Motion.reduced ? nil : Look.quick, value: folder.collapsed)
-                .overlay {
-                    if folder.requiresAuthentication == true {
-                        Image(systemName: locked ? "lock.fill" : "lock.open.fill")
-                            .font(Look.rowGlyph)
-                            .contentTransition(.symbolEffect(.replace))
-                            .transaction { if Motion.reduced { $0.disablesAnimations = true } }
-                            .background(Look.pillFill, in: .rect(cornerRadius: 3))
-                    }
+            HStack(spacing: 6) {
+                if folder.requiresAuthentication == true {
+                    Image(systemName: locked ? "lock.fill" : "lock.open.fill")
+                        .font(Look.rowGlyph)
+                        .contentTransition(.symbolEffect(.replace))
+                        .transaction { if Motion.reduced { $0.disablesAnimations = true } }
                 }
-                .accessibilityHidden(true)      // the row’s value already says which it is
+                if !locked {
+                    Image(systemName: "chevron.down")
+                        .font(Look.rowGlyph)
+                        .rotationEffect(.degrees(folder.collapsed ? -90 : 0))
+                        .animation(Motion.reduced ? nil : Look.quick, value: folder.collapsed)
+                }
+            }
+            .foregroundStyle(Look.inkSecondary)
+            .accessibilityHidden(true)
         }
         // A drop *into* the folder fills the whole row; a drop beside it draws a line at the
         // edge it will land on. Behind `SidebarRow`, whose own fill is clear at rest.

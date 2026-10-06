@@ -85,6 +85,7 @@ import WebKit
         for tab in store.tabs { tab.sharedSpaceID = tab.kind == .favourite ? nil : store.currentSpaceID }
         let shared = state(of: store)
         var displaced: [Tab] = []
+        var protectionStores = [store]
         for other in TabStore.all where other !== store && other.sharesTabs
             && other.profileID == store.profileID {
             let previous = other.tabs
@@ -93,7 +94,7 @@ import WebKit
                 other.tabs = store.tabs
                 other.pins = store.pins
                 other.todayShape = store.todayShape
-                other.enforceFolderLocks()
+                protectionStores.append(other)
                 // Pane focus follows each window's own selection.
                 let remembered = other.splits
                 other.splits = store.splits.map { split in
@@ -134,6 +135,9 @@ import WebKit
             displaced += heldBefore.filter { !heldAfter.contains(ObjectIdentifier($0)) }
             other.extensions.sync()
         }
+        // Copy all folder shapes, then capture every window before releasing shared pages.
+        for holder in protectionStores { holder.captureLockedFolderBackdrop() }
+        for holder in protectionStores { holder.enforceFolderLocks() }
         release(displaced)
         refreshPresentation()
     }

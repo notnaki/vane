@@ -1867,8 +1867,10 @@ struct Stash {
     private let bursts = Motion.Burst()
     var folderAuthentication = FolderAuthentication.shared
     @Published var lockedFolderBackdrop: NSImage?
+    @Published var folderUnlockRequest: FolderUnlockRequest?
     @Published var current: Tab.ID? {
         didSet {
+            if oldValue != current { cancelFolderUnlock() }
             // All selection paths enforce the same boundary, before resume or auto PiP.
             if let id = current, isTabLocked(id) {
                 return

@@ -92,6 +92,27 @@ import XCTest
         XCTAssertNil(window.dockTile.contentView)
     }
 
+    func testFolderProtectionReplacesRetainedPixelsUntilWindowIsRestored() async throws {
+        setupIcons()
+        AppIcon.apply("Galaxy")
+        let window = window()
+        try await minimize(window)
+        XCTAssertGreaterThan(try pixels(window, matching: red), 1_000)
+        MinimizedWindowIcon.protect(window)
+        XCTAssertEqual(try pixels(window, matching: red), 0,
+                       "Locking must discard the retained page and sidebar thumbnail")
+        XCTAssertNotNil(window.miniwindowImage)
+        AppIcon.apply("Candy")
+        XCTAssertEqual(try pixels(window, matching: red), 0,
+                       "Changing badges cannot bring protected pixels back")
+        window.deminiaturize(nil)
+        let deadline = Date.now.addingTimeInterval(3)
+        while window.isMiniaturized && Date.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertNil(window.miniwindowImage, "Restoring allows a fresh thumbnail next time")
+    }
+
     func testChoosingAlternateAfterMinimizingDarkKeepsThumbnail() async throws {
         setupIcons()
         let window = window()

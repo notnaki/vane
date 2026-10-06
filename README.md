@@ -81,8 +81,11 @@ right-click → **Remove from Folder** keeps tabs in their section. An empty Tod
 folder disappears. Click and drag the blank area below Today tabs to move the window.
 
 Right-click a sidebar folder and choose **Lock Folder** to hide all of its tabs and
-nested folders. Click the locked folder or the page's **Unlock Folder** button to
-use Touch ID or your Mac login password. If a page inside is open when you lock,
+nested folders. Click the locked folder to show its unlock controls in the page card. Touch ID
+authentication stays inline; **More unlock options…** opens macOS authentication,
+where you can choose your Mac login password. Without available Touch ID,
+**Unlock folder…** is the main action and uses macOS authentication.
+If a page inside is open when you lock,
 Vane replaces it with a heavily blurred, frozen backdrop and an unlock message;
 the page stops running and cannot receive input. Unlocks last until you relock,
 quit Vane, or the Mac locks, sleeps, or switches users. **Remove Lock…** requires
