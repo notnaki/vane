@@ -88,7 +88,7 @@ struct RecentLibraryPreview: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 8) {
+            VStack(spacing: Look.rowGap) {
                 ForEach(items) { item in
                     switch item {
                     case .download(let download):
@@ -155,25 +155,27 @@ private struct RecentLibraryRow: View {
 
     var body: some View {
         Button(action: open) {
-            HStack(spacing: 12) {
-                Image(systemName: symbol).font(.system(size: 22))
-                    .frame(width: 40, height: 40).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.system(size: 14, weight: .medium))
+            HStack(spacing: Look.rowSpacing) {
+                Image(systemName: symbol).font(.system(size: Look.rowIcon))
+                    .frame(width: Look.rowIcon, height: Look.rowIcon).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title).font(Look.rowTitle)
                         .foregroundStyle(Look.inkPrimary).lineLimit(1)
                     TimelineView(.periodic(from: .now, by: 60)) { _ in
                         Text(date?.formatted(.relative(presentation: .numeric)) ?? spaceSubtitle)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Look.inkSecondary).lineLimit(1)
+                            .font(Look.small)
+                            .foregroundStyle(Look.inkTertiary).lineLimit(1)
                     }
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8).frame(height: 48).contentShape(.rect)
+            .padding(.leading, Look.rowInset)
+            .padding(.trailing, Look.rowTrailingInset)
+            .frame(height: Look.rowHeight).contentShape(.rect)
             .background(hovered ? Look.selected : Look.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
         }
-        .buttonStyle(TactileButtonStyle())
+        .buttonStyle(TactileButtonStyle(scales: false))
         .foregroundStyle(Look.inkSecondary)
         .onHover { hovered = $0 }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovered)
@@ -198,28 +200,30 @@ private struct RecentDownloadRow: View {
         Button {
             if item.status == .done { close(); downloads.open(item) }
         } label: {
-            HStack(spacing: 12) {
-                DownloadIcon(item: item, size: 40).frame(width: 40, height: 40)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.name).font(.system(size: 14, weight: .medium))
+            HStack(spacing: Look.rowSpacing) {
+                DownloadIcon(item: item, size: Look.rowIcon).frame(width: Look.rowIcon, height: Look.rowIcon)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(item.name).font(Look.rowTitle)
                         .foregroundStyle(Look.inkPrimary).lineLimit(1)
                         .truncationMode(.tail)
                     TimelineView(.periodic(from: .now, by: 60)) { _ in
                         Text(item.status == .done
                             ? item.completed?.formatted(.relative(presentation: .numeric)) ?? item.subtitle
                             : item.subtitle)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Look.inkSecondary).lineLimit(1)
+                            .font(Look.small)
+                            .foregroundStyle(Look.inkTertiary).lineLimit(1)
                     }
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8).frame(height: 48)
+            .padding(.leading, Look.rowInset)
+            .padding(.trailing, Look.rowTrailingInset)
+            .frame(height: Look.rowHeight)
             .contentShape(.rect)
             .background(hovered ? Look.selected : Look.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
         }
-        .buttonStyle(TactileButtonStyle())
+        .buttonStyle(TactileButtonStyle(scales: false))
         .onHover { hovered = $0 }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovered)
         .accessibilityLabel(item.name)
