@@ -126,9 +126,12 @@ Saved choices belong to the requesting origin and profile; private-tab choices s
 memory and disappear when that tab closes. Site Controls shows temporary grants and lets
 you return each device to Ask.
 
-Settings → Passwords lets you search, add, edit, reveal, copy, and delete saved
-logins. When a site has multiple saved accounts, the autofill chooser lets you
-select one. Credentials stay in the local macOS Keychain and are scoped to the
+Settings → Passwords lets you search by website and username, add, edit, reveal,
+copy, and delete saved logins. Add/edit forms can generate random passwords of
+16, 20, 24, or 32 characters. The autofill chooser shows each account with a masked
+password; use the arrow keys and Return to choose, or Escape to dismiss. Save and
+update prompts show labeled credentials with a password reveal control. Credentials
+stay in the local macOS Keychain and are scoped to the
 profile; private browsing does not use saved passwords. The bookmark manager
 supports folders, search, bulk actions, and HTML import/export.
 

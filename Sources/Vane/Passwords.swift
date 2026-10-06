@@ -555,7 +555,8 @@ enum Passwords {
 }
 
 /// A save offer waiting on the user. Held only until they answer.
-struct PendingSave: Equatable {
+struct PendingSave: Equatable, Identifiable {
+    let id = UUID()
     let host: String
     let account: String
     let password: String

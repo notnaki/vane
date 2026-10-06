@@ -27,26 +27,15 @@ import SwiftUI
     @State private var never: [String] = []
     @State private var selected: String?
     @State private var selectedHost: String?
-    @State private var adding = false
     @State private var draftSite = ""
     @State private var addProblem: String?
     @State private var feedback: String?
-    @State private var secretContext = UUID()
-    /// Plaintext the user has authenticated to see, by row id. Dropped when the row is
-    /// hidden again, when the pane goes away, and on its own after `revealFor`.
-    @State private var revealed: [String: String] = [:]
-    /// The timers that take them away again, so re-revealing a row restarts its minute
-    /// instead of leaving the first timer to blank it early.
-    @State private var forgetting: [String: Task<Void, Never>] = [:]
-    /// One line of feedback when a write is refused. Non-nil is rare and always the user's
-    /// business — a silent no here is a password they think they changed and did not.
+    /// A refused write must be visible, so a failed save never looks like success.
     @State private var problem: String?
-    /// The row being edited, and its two fields. Held apart from `logins` on purpose: Cancel
-    /// is then free, and the draft password can be wiped without touching the store.
-    @State private var editing: String?
-    @State private var draftAccount = ""
-    @State private var draftPassword = ""
-    @FocusState private var listFocused: Bool
+    /// Plaintext lives only while the manager is visible, including its add/edit drafts.
+    @StateObject private var secrets = PasswordManagerSecrets()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     /// What a hidden password looks like. Eight bullets whatever the real length — the
     /// length of a password is itself worth not leaking.
@@ -66,39 +55,63 @@ import SwiftUI
         PasswordsPane.groups(logins, query: query)
     }
     private var neverShown: [String] { PasswordsPane.matching(never, query: query) }
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var resultCount: Int { groups.reduce(0) { $0 + $1.logins.count } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 2) {
             if let host = selectedHost {
-                Button { selectedHost = nil; selected = nil } label: {
+                Button { navigate(to: nil) } label: {
                     Label("All passwords", systemImage: "chevron.left")
                 }.buttonStyle(.plain).foregroundStyle(Color.accentColor)
-                site(host, count: logins.filter { $0.host == host }.count)
-                ForEach(logins.filter { $0.host == host }) { login in detail(login) }
+                HStack {
+                    site(host, count: logins.filter { $0.host == host }.count)
+                    Spacer(minLength: 0)
+                    Button { beginAdding(host: host) } label: {
+                        Label("Add login", systemImage: "plus")
+                    }
+                }
+                ScrollView {
+                    VStack(spacing: Look.inset * 2) {
+                        ForEach(logins.filter { $0.host == host }) { login in detail(login) }
+                    }
+                }
             } else {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Password Manager").font(Look.heading)
-                        Text("Saved in your Mac’s login keychain")
+                        Text("Your saved logins, on this Mac")
                             .font(Look.caption).foregroundStyle(Look.inkSecondary)
                     }
                     Spacer()
-                    Button("Add password") { beginAdding() }
+                    Button { beginAdding() } label: { Label("Add password", systemImage: "plus") }
+                        .buttonStyle(.borderedProminent)
                 }
                 search
                 HStack {
-                    Text("\(logins.count) saved passwords").font(Look.caption)
+                    Text(searching
+                         ? "\(resultCount) matching \(resultCount == 1 ? "password" : "passwords")"
+                         : "\(logins.count) \(logins.count == 1 ? "password" : "passwords") · \(groups.count) \(groups.count == 1 ? "site" : "sites")")
+                        .font(Look.caption)
                         .foregroundStyle(Look.inkSecondary)
                     Spacer()
                     Button("Import passwords…") { PasswordImport.chooseAndImport(profileID: profileID); reload() }
                 }
                 if groups.isEmpty && neverShown.isEmpty {
-                    quiet(logins.isEmpty && never.isEmpty
-                          ? "Save a password when you sign in, add one here, or import from another browser."
-                          : "No passwords match \"\(query)\".")
+                    VStack(spacing: Look.inset) {
+                        Image(systemName: searching ? "magnifyingglass" : "key.fill")
+                            .font(.system(size: 28)).foregroundStyle(Look.inkSecondary)
+                        Text(searching ? "No passwords found" : "Your passwords in one place")
+                            .font(Look.heading)
+                        quiet(searching ? "Try another website or username."
+                              : "Save a password when you sign in, add one here, or import from another browser.")
+                        if searching { Button("Clear search") { query = "" } }
+                    }
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity).padding(.vertical, 28)
                 } else {
                     if !groups.isEmpty { list }
-                    if !neverShown.isEmpty { neverCard }
+                    else { ScrollView { neverCard } }
                 }
             }
             if let problem {
@@ -110,11 +123,13 @@ import SwiftUI
             }
         }
         .padding(.top, Look.inset * 2)
-        .sheet(isPresented: $adding, onDismiss: { forgetSecrets() }) { addSheet }
-        .onAppear { reload() }
-        .onDisappear { forgetSecrets() }
+        .sheet(isPresented: $secrets.adding, onDismiss: { forgetSecrets() }) { addSheet }
+        .onAppear { reload(); secrets.watchSettingsClose() }
+        .onDisappear { secrets.stopWatching() }
         .onChange(of: selectedHost) { forgetSecrets(); problem = nil; feedback = nil }
-        .onChange(of: profileID) { selectedHost = nil; adding = false; forgetSecrets(); reload() }
+        .onChange(of: profileID) { selectedHost = nil; secrets.adding = false; forgetSecrets(); reload() }
+        .onChange(of: query) { selected = nil }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selectedHost)
     }
 
     private func quiet(_ text: String) -> some View {
@@ -126,8 +141,13 @@ import SwiftUI
         HStack(spacing: Look.inset) {
             Image(systemName: "magnifyingglass").font(Look.fieldIcon)
                 .foregroundStyle(Look.inkTertiary)
-            TextField("", text: $query, prompt: Text("Search saved logins"))
+            TextField("", text: $query, prompt: Text("Search passwords by site or username"))
                 .textFieldStyle(.plain).font(Look.text)
+            if !query.isEmpty {
+                Button { query = "" } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Look.inkSecondary)
+                }.buttonStyle(.plain).accessibilityLabel("Clear search")
+            }
         }
         .padding(.horizontal, Look.inset)
         .frame(height: Look.control + Look.inset)
@@ -136,35 +156,10 @@ import SwiftUI
     }
 
     private var list: some View {
-        LazyVStack(alignment: .leading, spacing: Look.inset) {
-            ForEach(groups, id: \.host) { group in
-                SettingsCard {
-                    Button {
-                        selectedHost = group.host
-                        selected = group.logins.first?.id
-                    } label: {
-                        HStack(spacing: Look.inset * 1.5) {
-                            SiteIcon(icon: URL(string: "https://" + group.host).flatMap {
-                                Favicons.cache(for: profileID).icon(for: $0)
-                            }, fallback: "key.fill", size: Look.rowIcon)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(group.host).font(Look.text).foregroundStyle(Look.inkPrimary)
-                                Text(group.logins.count == 1
-                                     ? (group.logins[0].account.isEmpty ? "No username" : group.logins[0].account)
-                                     : "\(group.logins.count) accounts")
-                                    .font(Look.caption).foregroundStyle(Look.inkSecondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right").foregroundStyle(Look.inkTertiary)
-                        }
-                        .padding(Look.cardInset).frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(.rect)
-                    }.buttonStyle(.plain)
-                }
-            }
+        PasswordManagerList(groups: groups, selected: $selected, profileID: profileID,
+                            open: { navigate(to: $0) }) {
+            if !neverShown.isEmpty { neverCard }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Saved passwords")
     }
 
     /// Arc keeps its "Never Saved" list under the passwords themselves, as the answer to
@@ -177,7 +172,7 @@ import SwiftUI
                         Button {
                             Passwords.allowSaving(host: host, profileID: profileID)
                             reload()
-                        } label: { Image(systemName: "minus.circle") }
+                        } label: { Text("Allow saving") }
                             .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
                             .accessibilityLabel("Offer to save passwords for \(host) again")
                     }
@@ -190,10 +185,9 @@ import SwiftUI
 
     private func site(_ host: String, count: Int) -> some View {
         HStack(spacing: Look.inset) {
-            SiteIcon(icon: URL(string: "https://" + host).flatMap {
-                Favicons.cache(for: profileID).icon(for: $0)
-            }, fallback: "key.fill", size: Look.rowIcon)
+            PasswordSiteIcon(host: host, profileID: profileID)
             Text(host).font(Look.heading).foregroundStyle(Look.inkPrimary)
+                .lineLimit(1).truncationMode(.middle)
             Spacer(minLength: Look.inset)
             if count > 1 {
                 Text("\(count) logins").font(Look.caption).foregroundStyle(Look.inkQuiet)
@@ -205,35 +199,34 @@ import SwiftUI
     }
 
     private func detail(_ login: Passwords.Login) -> some View {
-        let isEditing = editing == login.id
-        let shown = revealed[login.id]
+        let isEditing = secrets.editing == login.id
+        let shown = secrets.revealed[login.id]
         return SettingsCard {
-            VStack(alignment: .leading, spacing: Look.inset * 2) {
+            VStack(alignment: .leading, spacing: Look.cardInset) {
                 VStack(alignment: .leading, spacing: Look.inset) {
                     Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
                     HStack {
                         if isEditing {
-                            TextField("Username", text: $draftAccount).textFieldStyle(.roundedBorder)
+                            TextField("Username", text: $secrets.draftAccount).textFieldStyle(.roundedBorder)
                         } else {
                             Text(login.account.isEmpty ? "No username" : login.account)
                                 .textSelection(.enabled)
                             Spacer()
                             glyph("doc.on.doc", "Copy username") { copy(login.account, secret: false) }
+                                .disabled(login.account.isEmpty)
                         }
                     }
                 }
                 VStack(alignment: .leading, spacing: Look.inset) {
-                    Text("Password").font(Look.caption).foregroundStyle(Look.inkSecondary)
-                    HStack {
-                        if isEditing {
-                            SecureField("Password", text: $draftPassword).textFieldStyle(.roundedBorder)
-                        } else {
-                            Text(shown ?? Self.dots).font(Look.text)
+                    if isEditing {
+                        PasswordDraftField(text: $secrets.draftPassword).id(login.id)
+                    } else {
+                        Text("Password").font(Look.caption).foregroundStyle(Look.inkSecondary)
+                        HStack {
+                            PasswordValue(value: shown)
                                 .textSelection(.enabled)
-                                .accessibilityLabel("Password")
-                                .accessibilityValue(Self.spoken(shown))
                             Spacer()
-                            glyph(shown == nil ? "eye" : "eye.slash", shown == nil ? "Show password" : "Hide password") {
+                            PasswordEyeButton(revealed: shown != nil) {
                                 toggleReveal(login)
                             }
                             glyph("doc.on.doc", "Copy password") { copyPassword(login) }
@@ -243,13 +236,13 @@ import SwiftUI
                 HStack(spacing: Look.inset * 1.5) {
                     if isEditing {
                         Button("Save") { commit(login) }.keyboardShortcut(.defaultAction)
-                            .disabled(draftPassword.isEmpty)
+                            .disabled(secrets.draftPassword.isEmpty)
                         Button("Cancel") { cancelEditing() }.keyboardShortcut(.cancelAction)
                     } else {
-                        Button("Edit") { startEditing(login) }
-                        Button("Delete", role: .destructive) { remove(login) }
+                        Button("Edit password") { startEditing(login) }
+                        Spacer()
+                        Button("Delete…", role: .destructive) { remove(login) }
                     }
-                    Spacer()
                 }
             }
             .font(Look.text).padding(Look.cardInset)
@@ -258,40 +251,46 @@ import SwiftUI
 
     private var addSheet: some View {
         VStack(alignment: .leading, spacing: Look.inset * 2) {
-            Text("Add password").font(Look.heading)
-            TextField("Website (example.com)", text: $draftSite).textFieldStyle(.roundedBorder)
+            Label("Add password", systemImage: "key.fill").font(Look.heading)
+            Text("Save a login for this profile on your Mac.")
+                .font(Look.caption).foregroundStyle(Look.inkSecondary)
+            Text("Website").font(Look.caption).foregroundStyle(Look.inkSecondary)
+            TextField("example.com", text: $draftSite).textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Website")
-            TextField("Username", text: $draftAccount).textFieldStyle(.roundedBorder)
-            SecureField("Password", text: $draftPassword).textFieldStyle(.roundedBorder)
+            Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
+            TextField("Username (optional)", text: $secrets.draftAccount).textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Username")
+            PasswordDraftField(text: $secrets.draftPassword)
             if let addProblem { Text(addProblem).font(Look.caption).foregroundStyle(Look.warning) }
             HStack {
                 Spacer()
-                Button("Cancel") { adding = false; forgetSecrets() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { secrets.adding = false; forgetSecrets() }.keyboardShortcut(.cancelAction)
                 Button("Save") { addPassword() }.keyboardShortcut(.defaultAction)
-                    .disabled(Self.siteHost(draftSite) == nil || draftPassword.isEmpty)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(Self.siteHost(draftSite) == nil || secrets.draftPassword.isEmpty)
             }
         }.padding(24).frame(width: 400)
     }
 
-    private func beginAdding() {
+    private func beginAdding(host: String = "") {
         forgetSecrets()
-        draftSite = ""; draftAccount = ""; addProblem = nil
-        adding = true
+        draftSite = host; secrets.draftAccount = ""; addProblem = nil
+        secrets.adding = true
     }
 
     private func addPassword() {
-        guard let host = Self.siteHost(draftSite), !draftPassword.isEmpty else { return }
-        let account = draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let host = Self.siteHost(draftSite), !secrets.draftPassword.isEmpty else { return }
+        let account = secrets.draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !logins.contains(where: { $0.host == host && $0.account == account }) else {
             addProblem = "This login already exists. Open it and choose Edit to change it."
             return
         }
-        guard Passwords.save(host: host, account: account, password: draftPassword, profileID: profileID) else {
+        guard Passwords.save(host: host, account: account, password: secrets.draftPassword, profileID: profileID) else {
             addProblem = Self.saveFailed(host: host); return
         }
         Passwords.allowSaving(host: host, profileID: profileID)
-        adding = false; forgetSecrets(); reload()
-        selectedHost = host
+        secrets.adding = false; forgetSecrets(); reload()
+        navigate(to: host)
         axAnnounce("Password saved.")
     }
 
@@ -311,35 +310,33 @@ import SwiftUI
         if let selected, !logins.contains(where: { $0.id == selected }) { self.selected = nil }
     }
 
-    private func forgetSecrets() {
-        secretContext = UUID()
-        for task in forgetting.values { task.cancel() }
-        forgetting.removeAll()
-        revealed.removeAll()
-        draftAccount = ""
-        draftPassword = ""
-        editing = nil
+    private func navigate(to host: String?) {
+        forgetSecrets()
+        selected = host
+        selectedHost = host
     }
+
+    private func forgetSecrets() { secrets.forget() }
 
     /// Hiding needs no permission; showing does — and what comes back is held for a minute
     /// and then dropped, whether or not anybody is still looking at this window.
     private func toggleReveal(_ login: Passwords.Login) {
-        if revealed.removeValue(forKey: login.id) != nil {
-            forgetting.removeValue(forKey: login.id)?.cancel()
+        if secrets.revealed.removeValue(forKey: login.id) != nil {
+            secrets.forgetting.removeValue(forKey: login.id)?.cancel()
             return
         }
-        let scope = profileID, context = secretContext
+        let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("show the password for \(login.host)") { ok in
-            guard ok, profileID == scope, secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
+            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
                                                      profileID: scope) else { return }
-            revealed[login.id] = plain
+            secrets.revealed[login.id] = plain
             axAnnounce("Password for \(login.host) shown.")
-            forgetting.removeValue(forKey: login.id)?.cancel()
-            forgetting[login.id] = Task {
+            secrets.forgetting.removeValue(forKey: login.id)?.cancel()
+            secrets.forgetting[login.id] = Task {
                 try? await Task.sleep(for: PasswordsPane.revealFor)
                 guard !Task.isCancelled else { return }
-                revealed[login.id] = nil
-                forgetting[login.id] = nil
+                secrets.revealed[login.id] = nil
+                secrets.forgetting[login.id] = nil
             }
         }
     }
@@ -366,14 +363,14 @@ import SwiftUI
 
     /// Copying a password is the same door as revealing one, so it asks the same way.
     private func copyPassword(_ login: Passwords.Login) {
-        if let shown = revealed[login.id] {
+        if let shown = secrets.revealed[login.id] {
             copy(shown, secret: true)
             axAnnounce("Password copied.")
             return
         }
-        let scope = profileID, context = secretContext
+        let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("copy the password for \(login.host)") { ok in
-            guard ok, profileID == scope, secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
+            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
                                                      profileID: scope) else { return }
             copy(plain, secret: true)
             axAnnounce("Password copied.")
@@ -383,30 +380,34 @@ import SwiftUI
     /// Editing puts the password into a field the user can read, so it is the same door as
     /// revealing one and asks the same way.
     private func startEditing(_ login: Passwords.Login) {
-        let scope = profileID, context = secretContext
+        forgetSecrets()
+        problem = nil; feedback = nil
+        let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("edit the saved login for \(login.host)") { ok in
-            guard ok, profileID == scope, secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
+            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
                                                      profileID: scope) else { return }
             selected = login.id
-            editing = login.id
-            draftAccount = login.account
-            draftPassword = plain
+            secrets.editing = login.id
+            secrets.draftAccount = login.account
+            secrets.draftPassword = plain
         }
     }
 
     private func cancelEditing() {
-        editing = nil
-        draftPassword = ""
+        secrets.editing = nil
+        secrets.draftAccount = ""
+        secrets.draftPassword = ""
+        secrets.secretContext = UUID()
     }
 
     /// A changed username is a different keychain item, so the old one goes — but only after
     /// the new one is safely stored, and only after its last-used stamp has moved across.
     private func commit(_ login: Passwords.Login) {
-        let account = draftAccount.trimmingCharacters(in: .whitespaces)
+        let account = secrets.draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
         // Checked before anything is closed or written. An empty password is not a password,
         // and quietly keeping the old one while the field says otherwise is worse than
         // refusing.
-        guard !draftPassword.isEmpty else { return }
+        guard !secrets.draftPassword.isEmpty else { return }
         // Renaming onto an account this site already has would silently fold the two logins
         // into one and take the other one's password with it. That is a delete wearing a
         // rename's clothes, so it is refused rather than guessed at.
@@ -416,7 +417,7 @@ import SwiftUI
             axAnnounce(clash)
             return
         }
-        guard Passwords.save(host: login.host, account: account, password: draftPassword,
+        guard Passwords.save(host: login.host, account: account, password: secrets.draftPassword,
                              profileID: profileID) else {
             problem = PasswordsPane.saveFailed(host: login.host)
             axAnnounce(problem ?? "")
@@ -426,11 +427,15 @@ import SwiftUI
         if account != login.account {
             Passwords.renameUse(host: login.host, from: login.account, to: account,
                                 profileID: profileID)
-            Passwords.delete(host: login.host, account: login.account, profileID: profileID)
+            guard Passwords.delete(host: login.host, account: login.account, profileID: profileID) else {
+                problem = "The new login was saved, but the original login could not be removed. Both are listed below."
+                forgetSecrets(); reload()
+                axAnnounce(problem ?? "")
+                return
+            }
         }
-        editing = nil
-        draftPassword = ""
-        revealed[login.id] = nil
+        forgetSecrets()
+        feedback = "Password updated"
         selected = Passwords.key(host: login.host, account: account)
         reload()
     }
@@ -438,9 +443,16 @@ import SwiftUI
     private func remove(_ login: Passwords.Login) {
         guard confirm("Delete the saved login for \(login.host)?", "Delete",
                       PasswordsPane.deleteDetail(login)) else { return }
-        Passwords.delete(host: login.host, account: login.account, profileID: profileID)
-        revealed[login.id] = nil
-        if editing == login.id { cancelEditing() }
+        guard Passwords.delete(host: login.host, account: login.account, profileID: profileID) else {
+            problem = "Vane could not delete this login. Check Keychain access and try again."
+            axAnnounce(problem ?? "")
+            return
+        }
+        problem = nil
+        secrets.secretContext = UUID()
+        secrets.forgetting.removeValue(forKey: login.id)?.cancel()
+        secrets.revealed[login.id] = nil
+        if secrets.editing == login.id { cancelEditing() }
         reload()
         if !logins.contains(where: { $0.host == selectedHost }) { selectedHost = nil }
         axAnnounce("Saved login for \(login.host) deleted.")
@@ -460,10 +472,84 @@ import SwiftUI
             remove(hit)
         case .copy:
             // Only what is already on screen: ⌘C must not be a way around the authentication.
-            guard let id = selected, let shown = revealed[id] else { return .ignored }
+            guard let id = selected, let shown = secrets.revealed[id] else { return .ignored }
             copy(shown, secret: true)
             axAnnounce("Password copied.")
         }
+        return .handled
+    }
+}
+
+/// A bounded list keeps the manager's search in place and keyboard selection visible.
+@MainActor struct PasswordManagerList<Footer: View>: View {
+    let groups: [(host: String, logins: [Passwords.Login])]
+    @Binding var selected: String?
+    let profileID: UUID
+    let open: (String) -> Void
+    @ViewBuilder var footer: Footer
+    @FocusState private var listFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: Look.inset * 2) {
+                    SettingsCard(divided: false) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(groups, id: \.host) { group in
+                                Button { open(group.host) } label: {
+                                    HStack(spacing: Look.inset * 1.5) {
+                                        PasswordSiteIcon(host: group.host, profileID: profileID)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(group.host).font(Look.text.weight(.medium)).foregroundStyle(Look.inkPrimary)
+                                                .lineLimit(1).truncationMode(.middle)
+                                            Text(group.logins.count == 1
+                                                 ? (group.logins[0].account.isEmpty ? "No username" : group.logins[0].account)
+                                                 : "\(group.logins.count) accounts")
+                                                .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                                                .lineLimit(1).truncationMode(.middle)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "chevron.right").foregroundStyle(Look.inkTertiary)
+                                    }
+                                    .padding(Look.cardInset).frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(selected == group.host ? Look.accentSelected : .clear)
+                                    .contentShape(.rect)
+                                }.buttonStyle(.plain).id(group.host)
+                                if group.host != groups.last?.host {
+                                    Hairline().padding(.horizontal, Look.cardInset)
+                                }
+                            }
+                        }
+                        .clipShape(.rect(cornerRadius: Look.cardRadius))
+                    }
+                    footer
+                }
+            }
+            .onChange(of: selected) {
+                guard let selected, groups.contains(where: { $0.host == selected }) else { return }
+                withAnimation(reduceMotion || batterySaver.isActive ? nil : Look.quick) {
+                    proxy.scrollTo(selected, anchor: .center)
+                }
+            }
+        }
+        .focusable().focused($listFocused).focusEffectDisabled()
+        .onKeyPress(.upArrow) { moveSite(-1) }
+        .onKeyPress(.downArrow) { moveSite(1) }
+        .onKeyPress(.return) {
+            guard let selected, groups.contains(where: { $0.host == selected }) else { return .ignored }
+            open(selected)
+            return .handled
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Saved passwords")
+    }
+
+    private func moveSite(_ delta: Int) -> KeyPress.Result {
+        let hosts = groups.map(\.host)
+        guard !hosts.isEmpty else { return .ignored }
+        selected = PasswordsPane.move(selected, in: hosts, by: delta)
         return .handled
     }
 }
@@ -511,9 +597,9 @@ extension PasswordsPane {
     /// password in the first place.
     static func groups(_ logins: [Passwords.Login],
                        query: String) -> [(host: String, logins: [Passwords.Login])] {
-        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
-        let hits = needle.isEmpty ? logins : logins.filter {
-            $0.host.lowercased().contains(needle) || $0.account.lowercased().contains(needle)
+        let terms = query.lowercased().split(whereSeparator: \.isWhitespace)
+        let hits = terms.isEmpty ? logins : logins.filter { login in
+            terms.allSatisfy { login.host.lowercased().contains($0) || login.account.lowercased().contains($0) }
         }
         return Dictionary(grouping: hits, by: \.host)
             .map { (host: $0.key, logins: $0.value.sorted { $0.account < $1.account }) }
@@ -541,8 +627,10 @@ extension PasswordsPane {
 
     /// The same needle against a bare list of hosts, for the Never Saved card.
     static func matching(_ hosts: [String], query: String) -> [String] {
-        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return needle.isEmpty ? hosts : hosts.filter { $0.lowercased().contains(needle) }
+        let terms = query.lowercased().split(whereSeparator: \.isWhitespace)
+        return terms.isEmpty ? hosts : hosts.filter { host in
+            terms.allSatisfy { host.lowercased().contains($0) }
+        }
     }
 
     /// What VoiceOver is allowed to say about a row: the password only while it is on
@@ -664,17 +752,26 @@ enum ChooserEvent: Equatable {
 struct PasswordChooser: View {
     @ObservedObject var tab: Tab
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     var body: some View {
         GeometryReader { geo in
             if let choice = tab.passwordChoice {
                 if let at = PasswordChooser.place(
                     anchor: choice.anchor, in: geo.size,
-                    height: PasswordChooser.height(rows: choice.accounts.count)) {
-                    card(choice, width: PasswordChooser.width(of: choice.anchor, in: geo.size))
+                    height: PasswordChooser.height(rows: choice.accounts.count, in: geo.size)) {
+                    PasswordChooserCard(choice: choice, profileID: tab.profileID,
+                        width: PasswordChooser.width(of: choice.anchor, in: geo.size),
+                        height: PasswordChooser.height(rows: choice.accounts.count, in: geo.size),
+                        fill: { tab.fillChosen(host: choice.host, account: $0) },
+                        manage: {
+                            tab.closeChooser(.escape)
+                            SettingsWindow.show(tab: "passwords", profileID: tab.profileID)
+                        })
                         .offset(x: at.x, y: at.y)
                         .onHover { tab.chooserHovered = $0 }
-                        .transition(reduceMotion ? .opacity
+                        .transition(reduced ? .identity
                                     : .opacity.combined(with: .scale(scale: Look.appearScale,
                                                                      anchor: .topLeading)))
                 } else {
@@ -684,7 +781,7 @@ struct PasswordChooser: View {
                 }
             }
         }
-        .animation(reduceMotion ? nil : Look.appear, value: tab.passwordChoice)
+        .animation(reduced ? nil : Look.appear, value: tab.passwordChoice == nil)
         // A click on the page, a blur and a scroll all come back from the page itself
         // (see Autofill.script). These two do not, because they never reach it.
         .onReceive(NotificationCenter.default.publisher(
@@ -696,31 +793,62 @@ struct PasswordChooser: View {
         } }
     }
 
-    private func card(_ choice: PasswordChoice, width: CGFloat) -> some View {
+}
+
+struct PasswordChooserCard: View {
+    let choice: PasswordChoice
+    let profileID: UUID
+    let width: CGFloat
+    let height: CGFloat
+    let fill: (String) -> Void
+    let manage: () -> Void
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(choice.accounts.enumerated()), id: \.element) { i, account in
-                ChooserRow(account: account, host: choice.host,
-                           profileID: tab.profileID, selected: i == choice.selected) {
-                    tab.fillChosen(host: choice.host, account: account)
-                }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(choice.accounts.count == 1 ? "Saved password" : "Saved passwords")
+                    .font(Look.text.weight(.medium)).foregroundStyle(Look.inkPrimary)
+                Text(choice.host).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    .lineLimit(1).truncationMode(.middle)
             }
-            Hairline()
-            Button {
-                tab.closeChooser(.escape)
-                SettingsWindow.show(tab: "passwords")
-            } label: {
-                Text("Manage Passwords\u{2026}")
-                    .font(Look.caption).foregroundStyle(Look.inkSecondary)
-                    .padding(.horizontal, Look.rowInset)
-                    .frame(height: Look.settingsRow, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
+            .padding(.horizontal, Look.rowInset + Look.passwordChooserInset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: Look.passwordChooserHeader)
+            .overlay(alignment: .bottom) { Hairline() }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(choice.accounts.enumerated()), id: \.offset) { i, account in
+                            ChooserRow(account: account, host: choice.host,
+                                profileID: profileID, selected: i == choice.selected) { fill(account) }
+                                .id(i)
+                        }
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(height: height - PasswordChooser.chromeHeight)
+                .onChange(of: choice.selected) { proxy.scrollTo(choice.selected) }
+                .onAppear { proxy.scrollTo(choice.selected) }
+            }
+            .padding(.vertical, Look.passwordChooserInset)
+            Button(action: manage) {
+                HStack(spacing: Look.inset) {
+                    Image(systemName: "key.horizontal").font(Look.rowGlyph)
+                    Text("Manage passwords…").font(Look.caption)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(Look.caption)
+                }
+                .foregroundStyle(Look.inkSecondary)
+                .padding(.horizontal, Look.rowInset + Look.passwordChooserInset)
+                .frame(height: Look.passwordChooserFooter)
+                .contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .overlay(alignment: .top) { Hairline() }
         }
         .frame(width: width, alignment: .leading)
-        .background(Look.panelFill, in: .rect(cornerRadius: Look.cardRadius))
-        .hairline(radius: Look.cardRadius)
+        .background(Look.panelFill, in: .rect(cornerRadius: Look.pillRadius))
+        .hairline(radius: Look.pillRadius)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Saved logins for \(choice.host)")
@@ -734,6 +862,9 @@ struct PasswordChooser: View {
 // MARK: chooser rules
 
 extension PasswordChooser {
+    static var chromeHeight: CGFloat {
+        Look.passwordChooserHeader + Look.passwordChooserFooter + Look.passwordChooserInset * 2
+    }
     /// How long after a fill a focus event is ignored. Filling takes the focus out of the
     /// page and hands it back, which is another `focusin` — without this, the list the user
     /// just chose from reopens on top of the form they wanted to submit.
@@ -755,14 +886,16 @@ extension PasswordChooser {
     /// The rows plus the footer. Fixed per account, so nothing shifts as the list is walked,
     /// and known before the list is drawn — `Engine` needs it to decide whether the list
     /// would be on screen at all.
-    static func height(rows: Int) -> CGFloat {
-        CGFloat(rows) * Look.rowHeight + Look.settingsRow
+    static func height(rows: Int, in viewport: CGSize = CGSize(width: 800, height: 600)) -> CGFloat {
+        guard rows > 0 else { return 0 }
+        let available = max(1, floor((viewport.height - chromeHeight) / Look.passwordChooserRow))
+        return chromeHeight + min(CGFloat(rows), 4, available) * Look.passwordChooserRow
     }
 
     /// As wide as the field it hangs off, so it reads as part of the form — but never
     /// narrower than a username needs, and never wider than the pane it is drawn in.
     static func width(of anchor: CGRect, in viewport: CGSize) -> CGFloat {
-        min(max(anchor.width, Look.chooserWidth), max(Look.chooserWidth, viewport.width))
+        min(max(anchor.width, Look.chooserWidth), max(0, viewport.width))
     }
 
     /// Where the list actually goes: under the field, and never outside the page.
@@ -771,7 +904,10 @@ extension PasswordChooser {
     /// including far off the viewport, and a list pinned to nothing is one the user cannot
     /// see to dismiss and cannot tell is there.
     static func place(anchor: CGRect, in viewport: CGSize, height: CGFloat) -> CGPoint? {
-        guard viewport.width > 0, viewport.height > 0,
+        guard viewport.width.isFinite, viewport.height.isFinite,
+              anchor.minX.isFinite, anchor.minY.isFinite, anchor.width.isFinite,
+              anchor.width >= 0, height.isFinite, height > 0,
+              viewport.width > 0, viewport.height >= height,
               anchor.minX >= 0, anchor.minY >= 0,
               anchor.minX <= viewport.width, anchor.minY <= viewport.height else { return nil }
         let w = width(of: anchor, in: viewport)
@@ -818,7 +954,7 @@ extension PasswordChooser {
                 let size = web.bounds.size
                 let point = web.convert(event.locationInWindow, from: nil)
                 let topPoint = CGPoint(x: point.x, y: web.isFlipped ? point.y : size.height - point.y)
-                let height = height(rows: choice.accounts.count)
+                let height = height(rows: choice.accounts.count, in: size)
                 let at = place(anchor: choice.anchor, in: size, height: height)
                 let inside = at.map {
                     CGRect(origin: $0, size: CGSize(width: width(of: choice.anchor, in: size), height: height))
@@ -841,7 +977,7 @@ extension PasswordChooser {
 
     static func check() -> [(String, Bool)] {
         let viewport = CGSize(width: 800, height: 600)
-        let mid = CGRect(x: 100, y: 200, width: 240, height: 0)
+        let mid = CGRect(x: 100, y: 200, width: 320, height: 0)
         let height: CGFloat = 72
         return [
             ("focus opens the list", opens(.focus, sinceFill: 10)),
@@ -869,7 +1005,7 @@ extension PasswordChooser {
             ("anything else the page says still closes it",
              opens(ChooserEvent(page: "whatever"), sinceFill: 10) == false),
 
-            ("the list is as wide as the field", width(of: mid, in: viewport) == 240),
+            ("the list is as wide as the field", width(of: mid, in: viewport) == 320),
             ("…never narrower than a username needs",
              width(of: CGRect(x: 0, y: 0, width: 40, height: 0), in: viewport)
                 == Look.chooserWidth),
@@ -880,7 +1016,7 @@ extension PasswordChooser {
              place(anchor: mid, in: viewport, height: height) == CGPoint(x: 100, y: 200)),
             ("…one near the right edge is pulled in",
              place(anchor: CGRect(x: 700, y: 200, width: 240, height: 0),
-                   in: viewport, height: height)?.x == 560),
+                   in: viewport, height: height)?.x == 800 - Look.chooserWidth),
             ("…one near the bottom is lifted",
              place(anchor: CGRect(x: 100, y: 590, width: 240, height: 0),
                    in: viewport, height: height)?.y == 528),
@@ -907,7 +1043,7 @@ extension PasswordChooser {
             ("no rows is index zero", step(0, by: 1, of: 0) == 0),
 
             ("two rows and a footer is a known height",
-             PasswordChooser.height(rows: 2) == Look.rowHeight * 2 + Look.settingsRow),
+             PasswordChooser.height(rows: 2) == chromeHeight + Look.passwordChooserRow * 2),
         ]
     }
 }
@@ -919,31 +1055,37 @@ private struct ChooserRow: View {
     let selected: Bool
     let fill: () -> Void
     @State private var hovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         Button(action: fill) {
             HStack(spacing: Look.inset) {
-                SiteIcon(icon: URL(string: "https://" + host).flatMap {
-                    Favicons.cache(for: profileID).icon(for: $0)
-                }, fallback: "key.fill", size: Look.rowIcon)
-                Text(account.isEmpty ? "Saved password" : account)
-                    .font(Look.text).foregroundStyle(Look.inkPrimary)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: Look.inset)
-                // The same eight bullets the settings list shows, for the same reason: a row
-                // that says only a username does not look like it is offering a password.
-                Text(PasswordsPane.dots).font(Look.caption).foregroundStyle(Look.inkTertiary)
+                PasswordSiteIcon(host: host, profileID: profileID)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(account.isEmpty ? "No username" : account)
+                        .font(Look.text.weight(.medium)).foregroundStyle(Look.inkPrimary)
+                        .lineLimit(1).truncationMode(.middle)
+                    PasswordValue(value: nil).fixedSize(horizontal: true, vertical: false)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "return").font(Look.caption)
+                    .foregroundStyle(Look.inkSecondary).opacity(selected || hovered ? 1 : 0)
+                    .accessibilityHidden(true)
             }
             .padding(.horizontal, Look.rowInset)
-            .frame(height: Look.rowHeight)
+            .frame(height: Look.passwordChooserRow)
             .background(fill(for: selected, hovered: hovered),
                         in: .rect(cornerRadius: Look.chipRadius))
-            .padding(.horizontal, Look.rowGap / 2)
+            .padding(.horizontal, Look.passwordChooserInset)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
-        .accessibilityLabel("Fill \(account)")
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovered)
+        .accessibilityLabel(account.isEmpty ? "Fill saved password for \(host)"
+                            : "Fill \(account) for \(host)")
+        .accessibilityValue("Password hidden")
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
@@ -964,49 +1106,82 @@ private struct ChooserRow: View {
 struct PasswordOffer: View {
     @ObservedObject var tab: Tab
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    var body: some View {
+        Group {
+            if let offer = tab.pendingSave {
+                PasswordOfferCard(offer: offer, profileID: tab.profileID,
+                    problem: tab.passwordSaveProblem,
+                    dismiss: { tab.pendingSave = nil }, save: { tab.confirmSave() },
+                    never: { tab.neverSaveHere() })
+                    .id(offer.id)
+                    .transition(reduceMotion || batterySaver.isActive ? .identity
+                        : .opacity.combined(with: .scale(scale: Look.appearScale, anchor: .topTrailing)))
+            }
+        }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: tab.pendingSave?.id)
+    }
+}
+
+struct PasswordOfferCard: View {
+    let offer: PendingSave
+    let profileID: UUID
+    var problem: String? = nil
+    let dismiss: () -> Void
+    let save: () -> Void
+    let never: () -> Void
     /// Revealing what is about to be saved is a check on Vane, not a secret being handed
     /// out — it is the user's own password, which they just typed into the page.
     @State private var revealed = false
 
     var body: some View {
-        if let p = tab.pendingSave {
-            VStack(alignment: .leading, spacing: Look.inset) {
-                header(p)
-                credential(p)
-                buttons()
+        VStack(alignment: .leading, spacing: Look.cardInset) {
+            header
+            credential
+            if let problem {
+                Text(problem).font(Look.caption).foregroundStyle(Look.warning)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            HStack {
+                Label("Saved on this Mac", systemImage: "lock")
+                    .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                Spacer(minLength: 0)
+            }
+            buttons
+        }
             .padding(Look.cardInset)
-            .frame(width: Look.offerWidth, alignment: .leading)
-            .background(Look.panelFill, in: .rect(cornerRadius: Look.cardRadius))
-            .hairline(radius: Look.cardRadius)
+            .frame(maxWidth: Look.offerWidth, alignment: .leading)
+            .background(Look.panelFill, in: .rect(cornerRadius: Look.pillRadius))
+            .hairline(radius: Look.pillRadius)
             .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius,
                     y: Look.floatShadowY)
-            .transition(reduceMotion ? .opacity
-                        : .opacity.combined(with: .scale(scale: Look.appearScale, anchor: .top)))
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(p.title)
+            .accessibilityLabel(offer.title)
             // A credential decision is the first thing in the window worth reaching, not the
             // last. Not .isModal, though: the page underneath stays usable.
             .accessibilitySortPriority(2)
             // It appears on its own, with no focus change and no sound — say so.
-            .onAppear { revealed = false; axAnnounce(p.title) }
-        }
+            .onAppear { axAnnounce(offer.title) }
     }
 
-    private func header(_ p: PendingSave) -> some View {
+    private var header: some View {
         HStack(spacing: Look.inset) {
-            SiteIcon(icon: URL(string: "https://" + p.host).flatMap {
-                Favicons.cache(for: tab.profileID).icon(for: $0)
-            }, fallback: "key.fill", size: Look.rowIcon)
-            Text(p.title).font(Look.heading).foregroundStyle(Look.inkPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: Look.inset)
-            Button { tab.pendingSave = nil } label: {
+            PasswordSiteIcon(host: offer.host, profileID: profileID)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(offer.update ? "Update password?" : "Save password?")
+                    .font(Look.heading).foregroundStyle(Look.inkPrimary)
+                Text(offer.host).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            Button(action: dismiss) {
                 Image(systemName: "xmark").font(Look.glyph)
                     .frame(width: Look.control, height: Look.control)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain).foregroundStyle(Look.inkTertiary)
+            .keyboardShortcut(.cancelAction)
             .help("Not now")
             .accessibilityLabel("Not now")
         }
@@ -1014,47 +1189,130 @@ struct PasswordOffer: View {
 
     /// What is about to be stored, so "Save" is never a blind yes: the account, and the
     /// password as bullets until the eye is used.
-    private func credential(_ p: PendingSave) -> some View {
-        HStack(spacing: Look.inset) {
-            Text(p.account.isEmpty ? "No username" : p.account)
-                .font(Look.text).foregroundStyle(Look.inkSecondary)
-                .lineLimit(1).truncationMode(.middle)
-                .accessibilityHidden(true)
-            Spacer(minLength: Look.inset)
-            Text(revealed ? p.password : PasswordsPane.dots)
-                .font(Look.text)
-                .foregroundStyle(revealed ? Look.inkPrimary : Look.inkTertiary)
-                .lineLimit(1).truncationMode(.tail)
-                .accessibilityHidden(true)
-            Button { revealed.toggle() } label: {
-                Image(systemName: revealed ? "eye.slash" : "eye").font(Look.rowGlyph)
-                    .frame(width: Look.control, height: Look.control)
-                    .contentShape(.rect)
+    private var credential: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
+                Text(offer.account.isEmpty ? "No username" : offer.account)
+                    .font(Look.text).foregroundStyle(Look.inkPrimary)
+                    .lineLimit(1).truncationMode(.middle)
             }
-            .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
-            .help(revealed ? "Hide password" : "Show password")
-            .accessibilityLabel(revealed ? "Hide password" : "Show password")
+            .padding(Look.rowInset)
+            Hairline().padding(.horizontal, Look.rowInset)
+            HStack(spacing: Look.inset) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Password").font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    PasswordValue(value: revealed ? offer.password : nil)
+                }
+                Spacer(minLength: 0)
+                PasswordEyeButton(revealed: revealed) { revealed.toggle() }
+            }
+            .padding(Look.rowInset)
         }
-        .padding(.horizontal, Look.inset)
-        .frame(height: Look.control + Look.inset)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
         // The password is the user's own and is on its way into their keychain, but it is
         // still not something VoiceOver should read out unprompted.
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(p.account.isEmpty ? "No username" : p.account)
-        .accessibilityValue(PasswordsPane.spoken(revealed ? p.password : nil))
     }
 
-    private func buttons() -> some View {
+    private var buttons: some View {
         HStack(spacing: Look.inset) {
-            Button("Never for This Site") { tab.neverSaveHere() }
-                .buttonStyle(.plain).font(Look.text)
-                .foregroundStyle(Look.inkSecondary)
-            Spacer(minLength: Look.inset)
-            Button("Not Now") { tab.pendingSave = nil }
-                .keyboardShortcut(.cancelAction)
-            Button(tab.pendingSave?.update == true ? "Update" : "Save") { tab.confirmSave() }
+            Spacer(minLength: 0)
+            if offer.update {
+                Button("Not now", action: dismiss)
+                    .buttonStyle(.bordered)
+            } else {
+                Button("Never", action: never).buttonStyle(.bordered)
+                    .help("Never save passwords for \(offer.host)")
+                    .accessibilityLabel("Never save passwords for \(offer.host)")
+            }
+            Button(offer.update ? "Update" : "Save", action: save)
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
         }
+        .controlSize(.large)
+    }
+}
+
+struct PasswordEyeButton: View {
+    let revealed: Bool
+    let action: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "eye")
+                .overlay {
+                    Rectangle().frame(width: 1.5, height: 20).rotationEffect(.degrees(-45))
+                        .scaleEffect(y: revealed ? 1 : 0)
+                }
+                .font(Look.rowGlyph)
+                .frame(width: 28, height: 28).contentShape(.rect)
+        }
+        .buttonStyle(.plain).foregroundStyle(Look.inkSecondary)
+        .help(revealed ? "Hide password" : "Show password")
+        .accessibilityLabel(revealed ? "Hide password" : "Show password")
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: revealed)
+    }
+}
+
+struct PasswordDraftField: View {
+    @Binding var text: String
+    @State private var revealed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Look.inset) {
+            Text("Password").font(Look.caption).foregroundStyle(Look.inkSecondary)
+            HStack(spacing: Look.inset) {
+                Group {
+                    if revealed { TextField("Password", text: $text) }
+                    else { SecureField("Password", text: $text) }
+                }
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13, design: .monospaced))
+                PasswordEyeButton(revealed: revealed) { revealed.toggle() }
+            }
+            Menu {
+                ForEach([20, 16, 24, 32], id: \.self) { length in
+                    Button("\(length) characters") { text = PasswordGenerator.generate(length: length) }
+                }
+            } label: {
+                Label("Generate password", systemImage: "sparkles")
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .font(Look.caption).foregroundStyle(Color.accentColor)
+            .help("Replace this draft with a randomly generated password")
+        }
+    }
+}
+
+/// Fixed-length masking is shared by the manager and both page popups.
+struct PasswordValue: View {
+    let value: String?
+
+    var body: some View {
+        Text(value ?? PasswordsPane.dots)
+            .font(.system(size: 14, weight: .medium, design: .monospaced))
+            .tracking(value == nil ? 1.5 : 0)
+            .foregroundStyle(Look.inkPrimary)
+            .lineLimit(1).truncationMode(.tail)
+            .accessibilityLabel("Password")
+            .accessibilityValue(PasswordsPane.spoken(value))
+    }
+}
+
+struct PasswordSiteIcon: View {
+    let host: String
+    let profileID: UUID
+
+    var body: some View {
+        SiteIcon(icon: URL(string: "https://" + host).flatMap {
+            Favicons.cache(for: profileID).icon(for: $0)
+        }, fallback: "key.fill", size: Look.rowIcon)
+            .frame(width: 32, height: 32)
+            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+            .accessibilityHidden(true)
     }
 }
