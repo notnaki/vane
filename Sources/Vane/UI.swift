@@ -1813,7 +1813,7 @@ private struct DropLine: View {
     @ObservedObject private var dragging = Dragging.shared
 
     var body: some View {
-        Rectangle().fill(.tint)
+        Rectangle().fill(Color.white)
             .frame(width: axis == .horizontal ? Look.dropLine : nil,
                    height: axis == .vertical ? Look.dropLine : nil)
             .opacity(on && dragging.active ? 1 : 0)
