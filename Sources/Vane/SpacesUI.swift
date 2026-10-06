@@ -720,7 +720,7 @@ private struct SpaceSwipe: ViewModifier {
         self.store = store
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
             guard let store else { return event }
-            // Library sits before the first Space. Give its shared window-wide handler
+            // Library sits before the first Space. Give its shared navigation handler
             // priority even when AppKit invokes the sidebar's monitor first.
             guard store.librarySwipeMonitor.handle(event, in: store) != nil else { return nil }
             guard self.mine(event, store) else { return event }
