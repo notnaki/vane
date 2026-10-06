@@ -414,7 +414,7 @@ private struct PaletteRow: Identifiable {
 /// Internal, not private: the find bar needs the same three things (selected on open, Return
 /// and Shift-Return seen first, focus that stays put), only smaller.
 struct CommandField: NSViewRepresentable {
-    enum Key { case up, down, enter, shiftEnter, commandEnter, tab, escape, forget }
+    enum Key { case up, down, enter, shiftEnter, commandEnter, tab, escape, forget, backspace }
 
     @Binding var text: String
     let prompt: String
@@ -525,6 +525,7 @@ struct CommandField: NSViewRepresentable {
                 return parent.onKey(.forget)
             }
             switch selector {
+            case #selector(NSResponder.deleteBackward(_:)): return parent.onKey(.backspace)
             case #selector(NSResponder.moveUp(_:)):          return parent.onKey(.up)
             case #selector(NSResponder.moveDown(_:)):        return parent.onKey(.down)
             // ⇥ and ⇧⇥ both toggle the actions scope. Backtab has to be caught as well as
@@ -568,6 +569,7 @@ struct CommandField: NSViewRepresentable {
     /// Arc's ⇥: the bar narrows to its actions catalogue and says so with a scope chip in
     /// the field. Escape takes the filter off before it closes the bar.
     @State private var actionsOnly = false
+    @State private var activeBang: Bang?
     /// The field is held back one frame so it is created with the prefilled address already
     /// in it — an NSTextField can only select text it has.
     @State private var ready = false
@@ -594,7 +596,27 @@ struct CommandField: NSViewRepresentable {
     }
 
     /// Nil under Reduce Motion, which SwiftUI reads as "just change".
-    private func motion(_ a: Animation) -> Animation? { reduceMotion ? nil : a }
+    private func motion(_ a: Animation) -> Animation? {
+        reduceMotion || batterySaver.isActive ? nil : a
+    }
+
+    private var bangCandidate: Bangs.Activation? {
+        guard mode != .tabs, !actionsOnly, activeBang == nil else { return nil }
+        return Bangs.activation(typed)
+    }
+
+    private var bangColor: Color {
+        switch activeBang?.home?.host?.lowercased() {
+        case "www.youtube.com": Color(red: 1, green: 0, blue: 0)
+        case "www.reddit.com": Color(red: 0.85, green: 0.22, blue: 0)
+        case "open.spotify.com": Color(red: 0.08, green: 0.48, blue: 0.23)
+        case "www.twitch.tv": Color(red: 0.45, green: 0.20, blue: 0.82)
+        case "www.pinterest.com", "www.target.com": Color(red: 0.74, green: 0.03, blue: 0.11)
+        case "soundcloud.com", "www.etsy.com": Color(red: 0.78, green: 0.24, blue: 0.04)
+        case "x.com", "www.tiktok.com", "github.com", "unsplash.com", "medium.com": Color(white: 0.20)
+        default: Color(red: 0.16, green: 0.36, blue: 0.78)
+        }
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -637,10 +659,15 @@ struct CommandField: NSViewRepresentable {
         }
         .onChange(of: query) {
             if query != seededAddress { seededAddress = nil }
+            if mode != .tabs, !actionsOnly, activeBang == nil,
+               let activation = Bangs.activation(query, explicitOnly: true) {
+                enterBang(activation)
+                return
+            }
             // Not while scoped to actions: the catalogue is local, and asking the engine
             // for completions to "reload pa" is a network round-trip for rows the scope
             // will not show anyway.
-            if mode != .tabs, !actionsOnly { store.suggest(typed) }
+            if mode != .tabs, !actionsOnly { store.suggest(typed, scopedTo: activeBang) }
             refresh()
         }
         // Completions land later than the keystroke that asked for them; the list has to
@@ -658,7 +685,7 @@ struct CommandField: NSViewRepresentable {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Look.barRowInset) {
                 Group {
-                    if sidebarAddress, !actionsOnly, let icon = store.active?.favicon {
+                    if sidebarAddress, !actionsOnly, activeBang == nil, let icon = store.active?.favicon {
                         SiteIcon(icon: icon, size: Look.rowIcon, rounded: store.active?.currentURL?.isFileURL != true)
                     } else {
                         Image(systemName: actionsOnly ? "command" : "magnifyingglass")
@@ -667,17 +694,47 @@ struct CommandField: NSViewRepresentable {
                     }
                 }
                 .frame(width: Look.rowIcon, height: Look.rowIcon)
+                if let activeBang {
+                    Button { leaveBang() } label: {
+                        Text(activeBang.name).font(Look.rowText)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, Look.barRowInset)
+                            .padding(.vertical, Look.barRowGap)
+                            .background(bangColor, in: .capsule)
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize()
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    .accessibilityLabel("Searching \(activeBang.name). Click to leave site search")
+                }
                 if ready {
-                    CommandField(text: $query, prompt: actionsOnly ? "Run a command…" : mode.prompt,
+                    CommandField(text: $query, prompt: actionsOnly ? "Run a command…"
+                                 : (activeBang == nil ? mode.prompt : "Search…"),
                                  selectAll: mode == .address,
-                                 label: actionsOnly ? "Actions" : mode.title,
+                                 label: activeBang.map { "Search \($0.name)" }
+                                     ?? (actionsOnly ? "Actions" : mode.title),
                                  hint: "Type to filter. Up and down arrows choose a result, "
-                                     + "Return opens it, Tab searches actions, "
+                                     + "Return opens it, Tab activates a site shortcut or searches actions, "
+                                     + "Backspace in an empty site search removes its chip, "
                                      + "Option-Command-Delete forgets a history result, "
                                      + "Escape closes.",
                                  font: sidebarAddress ? Look.Typography.addressInput.native
                                      : Look.Typography.input.native,
                                  onKey: key)
+                }
+                if let candidate = bangCandidate {
+                    Button { enterBang(candidate) } label: {
+                        HStack(spacing: Look.barRowGap * 2) {
+                            Text("Search \(candidate.engine.name)")
+                            Text("Tab")
+                                .padding(.horizontal, Look.barRowGap * 2)
+                                .padding(.vertical, Look.barRowGap)
+                                .background(Look.chipFill, in: .rect(cornerRadius: Look.chipRadius))
+                        }
+                        .font(Look.rowText).foregroundStyle(Look.barTrailing)
+                    }
+                    .buttonStyle(.plain).fixedSize()
+                    .accessibilityLabel("Search \(candidate.engine.name), press Tab to activate")
                 }
                 // The scope chip: with ⇥ on, the field says what it is searching, so a bar
                 // showing nothing but verbs never reads as a bar that has gone wrong.
@@ -696,6 +753,7 @@ struct CommandField: NSViewRepresentable {
             // The same two insets a row has, so the field's icon sits over the rows' icons.
             .padding(.horizontal, Look.barInset + Look.barRowInset)
             .frame(height: fieldHeight)
+            .animation(motion(Look.quick), value: activeBang)
 
             if !rows.isEmpty {
                 Hairline().padding(.horizontal, Look.barInset)
@@ -803,7 +861,8 @@ struct CommandField: NSViewRepresentable {
         }
         .padding(.horizontal, Look.barRowInset)
         .frame(height: Look.barRowHeight)
-        .background(on ? Look.barSelected : (lit ? Look.barHovered : .clear),
+        .background(on ? (activeBang == nil ? Look.barSelected : bangColor)
+                    : (lit ? Look.barHovered : .clear),
                     in: .rect(cornerRadius: Look.pillRadius))
         .animation(motion(Look.quick), value: on)
         .animation(motion(Look.quick), value: lit)
@@ -830,7 +889,11 @@ struct CommandField: NSViewRepresentable {
         // The only key here that can decline: on a row with nothing to forget, ⌥⌘⌫ is
         // still the field editor's delete and must go back to it rather than be eaten.
         case .forget:       return forget()
+        case .backspace:
+            guard activeBang != nil, query.isEmpty else { return false }
+            leaveBang()
         case .escape:
+            if activeBang != nil { leaveBang(); break }
             // One Escape takes the actions filter off, the next closes the bar — the same
             // way Escape leaves a scope before it leaves the search everywhere else.
             guard actionsOnly else { close(); break }
@@ -842,8 +905,14 @@ struct CommandField: NSViewRepresentable {
             guard mode == .address || mode == .newTab, !typed.isEmpty else { return false }
             let tab = target()
             close()
-            store.goInstant(typed, from: tab)
+            if let activeBang, let url = Bangs.scopedURL(typed, using: activeBang) {
+                tab.go(url)
+            } else {
+                store.goInstant(typed, from: tab)
+            }
         case .tab:
+            if let candidate = bangCandidate { enterBang(candidate); break }
+            if activeBang != nil { break }
             // Arc's ⇥ narrows the bar to its actions. It used to hand the query to the
             // assistant instead, which was Vane's own invention and cost the bar the one
             // gesture Arc users reach for — the assistant keeps its own row, two under what
@@ -863,6 +932,24 @@ struct CommandField: NSViewRepresentable {
         return true
     }
 
+    private func enterBang(_ activation: Bangs.Activation) {
+        withAnimation(motion(Look.quick)) {
+            activeBang = activation.engine
+            seededAddress = nil
+            query = activation.query
+        }
+        store.suggest(typed, scopedTo: activation.engine)
+        refresh()
+        axAnnounce("Searching \(activation.engine.name). Escape leaves site search.")
+    }
+
+    private func leaveBang() {
+        withAnimation(motion(Look.quick)) { activeBang = nil }
+        store.suggest(typed)
+        refresh()
+        axAnnounce("Site search off.")
+    }
+
     /// ⌥⌘⌫, and the × the row grows on hover: forget this page. Only history rows carry a
     /// url to forget — a suggestion you can never get rid of is what makes one embarrassing
     /// address follow you around for a year. False when this row has nothing to forget, so
@@ -873,7 +960,7 @@ struct CommandField: NSViewRepresentable {
         store.history.forget(url: url)
         axAnnounce("Removed from history.")
         // The suggestion list is the store's, and it is what has just changed underneath.
-        store.suggest(query)
+        store.suggest(typed, scopedTo: activeBang)
         refresh(reset: false)
         return true
     }
@@ -933,6 +1020,8 @@ struct CommandField: NSViewRepresentable {
             out = commandRows()
         } else if mode == .tabs {
             out = matchingTabs()
+        } else if activeBang != nil {
+            out = typedRow().map { [$0] + suggestionRows() } ?? []
         } else if let typedRow = typedRow() {
             // Arc's order (refs 2, 3): a tab you already have open that matches is the
             // best answer there is, so it leads — "Switch to Tab" is what Return does. Then
@@ -983,6 +1072,13 @@ struct CommandField: NSViewRepresentable {
     /// is decided by asking the same functions that will run — `Bangs` then `Search.url`,
     /// the address bar's own decision table — rather than by a second copy of the heuristic.
     private func typedRow() -> PaletteRow? {
+        if let activeBang, let url = Bangs.scopedURL(typed, using: activeBang) {
+            return PaletteRow(id: "typed", icon: "magnifyingglass",
+                              title: typed.isEmpty ? "Open \(activeBang.name)" : typed,
+                              kind: "\(typed.isEmpty ? "Open" : "Search") \(activeBang.name)") { target in
+                target().go(url)
+            }
+        }
         guard !typed.isEmpty else { return nil }
         let icon: String, trailing: String
         if let bang = Bangs.split(typed).flatMap({ Bangs.lookup($0.keyword) }) {

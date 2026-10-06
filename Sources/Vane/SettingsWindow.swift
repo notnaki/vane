@@ -1097,7 +1097,8 @@ private struct SearchPane: View {
                         .padding(.vertical, Look.inset + 2)
                 }
                 Footnote("A bang jumps straight to a site's own search: !gh swift searches "
-                         + "GitHub. Around forty are built in; yours win over those.")
+                         + "GitHub. Type a keyword or site name and press Tab for a search chip. "
+                         + "\(Bangs.builtIn.count) sites are built in; yours win over those.")
             }
         }
     }

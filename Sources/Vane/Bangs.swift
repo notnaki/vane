@@ -28,20 +28,18 @@ extension SearchEngine {
 /// Google, `!gh swift` is a literal search for the string "!gh swift". Changing the default
 /// engine broke a feature nobody had written down, so the feature is written down here.
 ///
-/// The table is deliberately small — roughly forty rows a developer actually types, not a
-/// mirror of DuckDuckGo's index. Every template in it was resolved live with curl against a
-/// real query before it shipped; anything that 404'd, dropped the query on a redirect, or
-/// answered with a bot wall was cut rather than shipped broken. The ones that survived only
-/// as a client-rendered shell are marked in the table.
+/// The table covers developer tools and everyday sites, rather than mirroring DuckDuckGo's
+/// index. Some sites render search client-side, require sign-in, or challenge automated
+/// requests. These shortcuts navigate directly to each site's search using its own session.
 ///
-/// ponytail: no bang *index*, no download, no update channel. Forty rows compiled in, plus
+/// ponytail: no bang *index*, no download, no update channel. A table compiled in, plus
 /// whatever the user adds. Ceiling: the table goes stale and a site changes its query
 /// parameter — which is why `Bangs.add` exists, so a user can fix one without a release.
 @MainActor enum Bangs {
 
     // MARK: - The table
 
-    /// Verified live, one query each, before shipping. `%s` is the percent-encoded query.
+    /// Direct site search routes. `%s` is the percent-encoded query.
     ///
     /// A few of these are jumps rather than searches, because the site has no server-side
     /// search worth pointing at: `!man` uses manpages.debian.org's `/jump`, `!brew` goes
@@ -57,6 +55,8 @@ extension SearchEngine {
 
         // Development.
         .init(bang: "gh",       "GitHub",           "https://github.com/search?q=%s"),
+        .init(bang: "gitlab",   "GitLab",           "https://gitlab.com/search?search=%s"),
+        .init(bang: "devto",    "DEV.to",           "https://dev.to/search?q=%s"),
         .init(bang: "gist",     "GitHub Gist",      "https://gist.github.com/search?q=%s"),
         .init(bang: "mdn",      "MDN",              "https://developer.mozilla.org/en-US/search?q=%s"),
         .init(bang: "npm",      "npm",              "https://www.npmjs.com/search?q=%s"),
@@ -93,15 +93,33 @@ extension SearchEngine {
         .init(bang: "yt",       "YouTube",          "https://www.youtube.com/results?search_query=%s"),
         .init(bang: "steam",    "Steam",            "https://store.steampowered.com/search/?term=%s"),
         .init(bang: "spotify",  "Spotify",          "https://open.spotify.com/search/%s"),
+        .init(bang: "twitch",   "Twitch",           "https://www.twitch.tv/search?term=%s"),
+        .init(bang: "tiktok",   "TikTok",           "https://www.tiktok.com/search?q=%s"),
+        .init(bang: "imdb",     "IMDb",             "https://www.imdb.com/find/?q=%s"),
+        .init(bang: "soundcloud", "SoundCloud",      "https://soundcloud.com/search?q=%s"),
+        .init(bang: "vimeo",    "Vimeo",            "https://vimeo.com/search?q=%s"),
+        .init(bang: "letterboxd", "Letterboxd",      "https://letterboxd.com/search/%s/"),
+
+        // Reading and design.
+        .init(bang: "goodreads", "Goodreads",        "https://www.goodreads.com/search?q=%s"),
+        .init(bang: "medium",   "Medium",           "https://medium.com/search?q=%s"),
+        .init(bang: "dribbble", "Dribbble",         "https://dribbble.com/search/%s"),
+        .init(bang: "behance",  "Behance",          "https://www.behance.net/search/projects?search=%s"),
+        .init(bang: "unsplash", "Unsplash",         "https://unsplash.com/s/photos/%s"),
+        .init(bang: "pexels",   "Pexels",           "https://www.pexels.com/search/%s/"),
 
         // Shopping.
         .init(bang: "a",        "Amazon",           "https://www.amazon.com/s?k=%s"),
         .init(bang: "ebay",     "eBay",             "https://www.ebay.com/sch/i.html?_nkw=%s"),
+        .init(bang: "etsy",     "Etsy",             "https://www.etsy.com/search?q=%s"),
+        .init(bang: "target",   "Target",           "https://www.target.com/s?searchTerm=%s"),
 
         // Social.
         .init(bang: "hn",       "Hacker News",      "https://hn.algolia.com/?q=%s"),
         .init(bang: "r",        "Reddit",           "https://www.reddit.com/search/?q=%s"),
         .init(bang: "x",        "X",                "https://x.com/search?q=%s"),
+        .init(bang: "bluesky",  "Bluesky",          "https://bsky.app/search?q=%s"),
+        .init(bang: "pinterest", "Pinterest",        "https://www.pinterest.com/search/pins/?q=%s"),
         .init(bang: "lobsters", "Lobsters",         "https://lobste.rs/search?q=%s"),
     ]
 
@@ -203,15 +221,66 @@ extension SearchEngine {
     /// does `!g` do", including overrides, without recomputing precedence.
     static var all: [Bang] { custom + Search.custom + builtIn + Search.builtIn }
 
-    /// Exact match by precedence, then the legacy loose engine-id prefix (`!goo` → Google)
-    /// last, where it cannot shadow anything specific.
+    /// Exact keywords, site names and aliases, then the legacy loose engine-id prefix
+    /// (`!goo` → Google) last, where it cannot shadow anything specific.
     static func lookup(_ keyword: String) -> Bang? {
         let k = normalise(keyword)
         guard !k.isEmpty else { return nil }
-        return all.first { $0.keyword == k } ?? Search.all.first { $0.id.hasPrefix(k) }
+        return wordLookup(k) ?? Search.all.first { $0.id.hasPrefix(k) }
+    }
+
+    /// Words are exact, so ordinary typing cannot select a site by a loose prefix.
+    private static func wordLookup(_ word: String) -> Bang? {
+        let entries = all
+        if let engine = entries.first(where: { $0.keyword == word }) { return engine }
+        if let engine = entries.first(where: {
+            $0.name.lowercased().filter { !$0.isWhitespace } == word
+        }) { return engine }
+        if word == "twitter" { return entries.first { $0.keyword == "x" } }
+        return nil
     }
 
     // MARK: - Reading a bang out of what was typed
+
+    struct Activation {
+        let engine: Bang
+        let query: String
+    }
+
+    /// Explicit bangs become chips after a delimiter; words require Tab or a click.
+    /// Exact keywords win before display names, preserving custom shortcut precedence.
+    static func activation(_ input: String, explicitOnly: Bool = false) -> Activation? {
+        guard !input.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("?") else { return nil }
+        if let parts = split(input), let engine = lookup(parts.keyword) {
+            let text = input.drop(while: \.isWhitespace)
+            let delimited = text.hasPrefix("!")
+                ? text.contains(where: \.isWhitespace) : input.last?.isWhitespace == true
+            guard !explicitOnly || delimited else { return nil }
+            return Activation(engine: engine, query: parts.query)
+        }
+        guard !explicitOnly else { return nil }
+        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let end = text.firstIndex(where: \.isWhitespace) ?? text.endIndex
+        let word = String(text[..<end]).lowercased()
+        guard !word.isEmpty, !word.hasPrefix("!"), !word.hasPrefix("?") else { return nil }
+        guard let engine = wordLookup(word) else { return nil }
+        return Activation(engine: engine,
+                          query: String(text[end...]).trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Inside a chip, punctuation, URLs, assistant names and other bangs are query text.
+    static func scopedURL(_ query: String, using engine: Bang) -> URL? {
+        Search.search(query, using: engine) ?? engine.home
+    }
+
+    nonisolated static func contains(_ url: URL?, in engine: Bang) -> Bool {
+        func site(_ host: String) -> String {
+            let host = host.lowercased()
+            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        }
+        guard let host = url?.host, let home = engine.home?.host else { return false }
+        return site(host) == site(home) || site(host).hasSuffix("." + site(home))
+    }
 
     /// The bang keyword and the rest of the query, or nil when there is no bang token.
     ///

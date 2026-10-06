@@ -3,7 +3,7 @@ import Foundation
 /// A search engine. `queryTemplate` holds one `%s`, replaced by the percent-encoded query.
 /// ponytail: `%s` rather than a URLComponents dance — every browser's custom-engine field
 /// already works this way, so a user pasting one from Chrome gets what they expect.
-struct SearchEngine: Identifiable, Codable, Hashable {
+struct SearchEngine: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var name: String
     var queryTemplate: String

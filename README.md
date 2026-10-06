@@ -65,6 +65,18 @@ keeps the native Picture in Picture window as a fallback.
 | Easels | Saved visual boards with notes, images, web captures, drawing, zoom, undo/redo, and export. |
 | Extras | Unpacked WebExtensions, GitHub-backed live folders, and an in-app update check for published releases. |
 
+Type a site word such as `youtube`, `github`, or `twitter` in the search bar and
+press **Tab** (or click **Search …**) to turn it into a site search chip. Shortcut
+keywords such as `yt` and your custom bangs work too. Typing `!yt ` activates the
+chip directly. The selected result uses the site's chip color; **Return** searches
+that site, and an empty query opens its home page. **Escape**, clicking the chip,
+or **Backspace** with an empty query leaves site search. Words remain ordinary
+searches until activated. Tab still searches actions when no site shortcut matches.
+Built-in sites also include Twitch, TikTok, Pinterest, Bluesky, IMDb, SoundCloud,
+Vimeo, Letterboxd, Goodreads, Medium, Etsy, Target, Dribbble, Behance, Unsplash,
+Pexels, GitLab, and DEV.to. Full site names work with `!` too, such as `!youtube`
+and `!github`; `twitter` and `!twitter` search X. Some sites require sign-in.
+
 Windows in the same Space share tabs. When both show the same tab, the focused
 window holds its live page and the other shows a gray snapshot. Switching windows
 preserves input, scroll position, and history; closing a tab removes it from every

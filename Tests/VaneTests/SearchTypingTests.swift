@@ -97,4 +97,29 @@ import XCTest
         try await Task.sleep(for: .milliseconds(350))
         XCTAssertTrue(store.suggestions.isEmpty)
     }
+
+    func testSiteSearchOnlySuggestsHistoryFromItsSiteAndCancelsOnExit() async throws {
+        let store = window()
+        store.history.record(URL(string: "https://www.youtube.com/watch?v=1")!, title: "Cats video")
+        store.history.record(URL(string: "https://other.example/cats")!, title: "Cats elsewhere")
+        store.suggest("cats", scopedTo: Bangs.lookup("yt"))
+        try await waitForResults(store)
+        XCTAssertEqual(store.suggestions.map(\.title), ["Cats video"])
+        store.suggest("cats", scopedTo: Bangs.lookup("yt"))
+        store.suggest("cats")
+        try await waitForResults(store)
+        XCTAssertEqual(Set(store.suggestions.map(\.title)), ["Cats video", "Cats elsewhere"])
+    }
+
+    func testSiteSearchFindsMatchingHistoryBelowTheGlobalLimit() async throws {
+        let store = window()
+        store.history.record([(URL(string: "https://www.youtube.com/watch?v=1")!, "Cats video",
+                               Date(timeIntervalSince1970: 1))])
+        for i in 0..<12 {
+            store.history.record(URL(string: "https://other.example/cats/\(i)")!, title: "Cats elsewhere")
+        }
+        store.suggest("cats", scopedTo: Bangs.lookup("yt"))
+        try await waitForResults(store)
+        XCTAssertEqual(store.suggestions.map(\.title), ["Cats video"])
+    }
 }

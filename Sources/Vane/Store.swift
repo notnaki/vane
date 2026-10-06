@@ -542,8 +542,8 @@ struct BookmarkImportResult: Equatable, Sendable {
     }
 
     /// The address bar uses its own read-only connection, away from the input thread.
-    func suggestAsync(_ query: String, limit: Int = 8) async -> [Suggestion] {
-        await suggestionReader.suggest(query, limit: limit)
+    func suggestAsync(_ query: String, limit: Int = 8, scopedTo engine: SearchEngine? = nil) async -> [Suggestion] {
+        await suggestionReader.suggest(query, limit: limit, scopedTo: engine)
     }
 }
 
