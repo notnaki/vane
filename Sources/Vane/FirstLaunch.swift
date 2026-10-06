@@ -37,7 +37,7 @@ import SwiftUI
 /// leaves incoming links intact in the browser underneath it.
 @MainActor enum FirstLaunch {
     private static let state = FirstLaunchState(defaults: .vane)
-    private static var needed = false
+    private(set) static var needed = false
     private static var sheet: NSWindow?
     static var isPresenting: Bool { sheet != nil }
 
@@ -47,7 +47,9 @@ import SwiftUI
     }
 
     @discardableResult static func presentIfNeeded() -> Bool {
-        guard needed, !isPresenting, let store = Windows.main, let host = store.window else { return false }
+        guard needed, !isPresenting else { return false }
+        let store = Windows.main ?? Windows.open()
+        guard let host = store.window else { return false }
         let welcome = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 840, height: 560),
                                styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         welcome.title = "Welcome to Vane"

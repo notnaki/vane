@@ -59,7 +59,10 @@ Blocker.refresh()
 // is routed exactly as a link from any other app is, so `open -a Vane <url>` and a click in
 // Mail land in the same place — a Little Arc, or a window with the page in it.
 if let first = args.first, first.hasPrefix("http"), let u = URL(string: first) {
-    URLHandling.open([u])
+    // A first-launch URL stays visible in the same full window that hosts the welcome.
+    // Later launches keep the user's ordinary external-link routing preference.
+    if FirstLaunch.needed { Windows.open(urls: [u]) }
+    else { URLHandling.open([u]) }
 } else if !Prefs.restoreSession || !Crash.offerRestore() {
     Windows.open()
 }
