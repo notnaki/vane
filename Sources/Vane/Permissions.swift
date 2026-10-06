@@ -134,7 +134,8 @@ import WebKit
         cancelPrompts(scope: scope, type: type)
         // Split a combined one-time grant just like a saved combined answer, so changing
         // Camera to Ask does not also discard Microphone's one-time access.
-        for id in Array(onceAnswers.keys) where tabID == nil || id == tabID {
+        let owner = tabID ?? scope.privateTabID
+        for id in Array(onceAnswers.keys) where owner == nil || id == owner {
             let pairKey = key(scope: scope, type: .cameraAndMicrophone)
             if type != .cameraAndMicrophone, onceAnswers[id]?[pairKey] == true {
                 for kind in [WKMediaCaptureType.camera, .microphone] {
@@ -253,7 +254,7 @@ import WebKit
 
     static func reset(scope: Scope) {
         cancelPrompts(scope: scope)
-        for id in Array(onceAnswers.keys) {
+        for id in Array(onceAnswers.keys) where scope.privateTabID == nil || id == scope.privateTabID {
             for kind in [WKMediaCaptureType.camera, .microphone, .cameraAndMicrophone] {
                 onceAnswers[id]?.removeValue(forKey: key(scope: scope, type: kind))
             }

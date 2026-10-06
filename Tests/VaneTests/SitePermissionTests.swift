@@ -264,4 +264,19 @@ import XCTest
         }
     }
 
+
+    func testPrivateSiteResetPreservesOtherPrivateTabsOnceGrants() async throws {
+        let firstID = tabID(), secondID = tabID()
+        let firstScope = scope(privateTab: firstID), secondScope = scope(privateTab: secondID)
+        _ = try await answer(firstScope, type: .camera, tabID: firstID, response: .alertFirstButtonReturn)
+        _ = try await answer(secondScope, type: .camera, tabID: secondID, response: .alertFirstButtonReturn)
+        SitePermissions.reset(scope: firstScope)
+        XCTAssertNil(SitePermissions.effective(scope: firstScope, type: .camera, tabID: firstID))
+        XCTAssertEqual(SitePermissions.effective(scope: secondScope, type: .camera, tabID: secondID), true)
+        _ = try await answer(firstScope, type: .camera, tabID: firstID, response: .alertFirstButtonReturn)
+        SitePermissions.set(scope: firstScope, type: .camera, answer: nil)
+        XCTAssertNil(SitePermissions.effective(scope: firstScope, type: .camera, tabID: firstID))
+        XCTAssertEqual(SitePermissions.effective(scope: secondScope, type: .camera, tabID: secondID), true)
+    }
+
 }
