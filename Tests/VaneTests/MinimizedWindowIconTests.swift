@@ -146,9 +146,11 @@ import XCTest
                 }
                 let width = try XCTUnwrap(xs.max()) - XCTUnwrap(xs.min()) + 1
                 let height = try XCTUnwrap(ys.max()) - XCTUnwrap(ys.min()) + 1
-                XCTAssertEqual(Double(width) / Double(rep.pixelsWide), 0.32, accuracy: 0.02,
+                // The alpha threshold can discard an antialiased edge pixel on
+                // either side, especially on the CI runner's non-Retina display.
+                XCTAssertEqual(Double(width), Double(rep.pixelsWide) * 0.32, accuracy: 2,
                                "Transparent icon margins must not shrink the visible badge")
-                XCTAssertEqual(Double(height) / Double(rep.pixelsHigh), 0.32, accuracy: 0.02)
+                XCTAssertEqual(Double(height), Double(rep.pixelsHigh) * 0.32, accuracy: 2)
             }
         }
     }
