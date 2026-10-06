@@ -109,6 +109,52 @@ import XCTest
         XCTAssertNil(window.dockTile.contentView)
     }
 
+    func testPaddedBadgeKeepsNativeVisualSizeAcrossDockScalesAndWindowShapes() async throws {
+        setupIcons()
+        // Bundled icon plates have transparent margins. The visible badge in the
+        // native Dock occupies about a third of its square tile, including on wide windows.
+        let icon = NSImage(size: NSSize(width: 128, height: 128))
+        icon.lockFocus()
+        blue.setFill()
+        NSRect(x: 13, y: 13, width: 102, height: 102).fill()
+        icon.unlockFocus()
+        MinimizedWindowIcon.apply(icon)
+
+        for thumbnailSize in [NSSize(width: 400, height: 250), NSSize(width: 250, height: 400)] {
+            let window = window()
+            window.setContentSize(thumbnailSize)
+            window.displayIfNeeded()
+            try await minimize(window)
+            let view = try XCTUnwrap(window.dockTile.contentView)
+            for side in [64.0, 128.0, 256.0] {
+                view.setFrameSize(NSSize(width: side, height: side))
+                let rendered = NSImage(size: view.bounds.size)
+                rendered.lockFocus()
+                view.draw(view.bounds)
+                rendered.unlockFocus()
+                let rep = try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(rendered.tiffRepresentation)))
+                var xs: [Int] = []
+                var ys: [Int] = []
+                for y in 0..<rep.pixelsHigh {
+                    for x in 0..<rep.pixelsWide {
+                        guard let pixel = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+                              pixel.blueComponent > 0.75, pixel.redComponent < 0.25,
+                              pixel.greenComponent < 0.25, pixel.alphaComponent > 0.9 else { continue }
+                        xs.append(x)
+                        ys.append(y)
+                    }
+                }
+                let width = try XCTUnwrap(xs.max()) - XCTUnwrap(xs.min()) + 1
+                let height = try XCTUnwrap(ys.max()) - XCTUnwrap(ys.min()) + 1
+                // The alpha threshold can discard an antialiased edge pixel on
+                // either side, especially on the CI runner's non-Retina display.
+                XCTAssertEqual(Double(width), Double(rep.pixelsWide) * 0.32, accuracy: 2,
+                               "Transparent icon margins must not shrink the visible badge")
+                XCTAssertEqual(Double(height), Double(rep.pixelsHigh) * 0.32, accuracy: 2)
+            }
+        }
+    }
+
     func testDisabledBadgesAndExistingCustomTilesArePreserved() async throws {
         setupIcons()
         AppIcon.apply("Galaxy")

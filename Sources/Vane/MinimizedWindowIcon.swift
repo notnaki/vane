@@ -181,7 +181,9 @@ import WebKit
             let rect = NSRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
                               width: size.width, height: size.height)
             thumbnail.draw(in: rect)
-            let badge = min(bounds.width, bounds.height) * 0.32
+            // Icon plates include transparent margins. A 40% plate leaves the
+            // visible badge near one third of the tile, matching native Dock badges.
+            let badge = min(bounds.width, bounds.height) * 0.40
             icon?.draw(in: NSRect(x: bounds.maxX - badge, y: bounds.minY, width: badge, height: badge))
         }
     }
