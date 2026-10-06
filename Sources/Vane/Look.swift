@@ -213,6 +213,8 @@ enum Look {
     /// lights' line is a different number — the same line, arrived at from a taller row.
     static let littleTopInset: CGFloat = lightsCentre - pillHeight / 2
     static let footer: CGFloat = 28
+    /// Matching end controls keep the Space strip centered in the sidebar.
+    static let footerControl: CGFloat = 32
     /// Under the footer.
     static let footerInset: CGFloat = 10
     /// A favourite tile's icon: the same 16 as a row's (32px at 2x in ref 1).

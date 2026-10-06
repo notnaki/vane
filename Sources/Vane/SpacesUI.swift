@@ -133,7 +133,7 @@ struct NewSpaceButton: View {
                 .rotationEffect(.degrees(menuAnchor.isPresented ? 45 : 0))
                 .animation(reduceMotion || Motion.reduced ? nil : Look.quick,
                            value: menuAnchor.isPresented)
-                .frame(width: Look.rowTarget, height: Look.rowTarget).contentShape(.rect)
+                .frame(width: Look.footerControl, height: Look.footerControl).contentShape(.rect)
         }
             .buttonStyle(TactileButtonStyle())
             .background(ChromeMenuAnchorView(anchor: menuAnchor))
