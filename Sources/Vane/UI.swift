@@ -4737,12 +4737,11 @@ private struct BottomRow: View {
     let preparePreview: () -> Bool
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Look.inset) {
             LibraryButton(archive: Archive.shared(for: store.profileID),
                           downloads: DownloadLibrary.library(for: store.profileID),
                           hover: downloadsHover, hasPreviewItems: hasPreviewItems,
                           preparePreview: preparePreview)
-            Spacer(minLength: 0)
             // A private window has no Spaces — Arc's incognito has none either — so there
             // is nothing to draw dots for and nothing a `+` could make. The row keeps its
             // height regardless: nothing in the sidebar's chrome may come and go.
@@ -4750,6 +4749,7 @@ private struct BottomRow: View {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal) {
                         SpaceDots()
+                            .frame(maxWidth: .infinity)
                     }
                     .scrollIndicators(.never)
                     .defaultScrollAnchor(.center)
@@ -4758,6 +4758,8 @@ private struct BottomRow: View {
                     }
                 }
                 NewSpaceButton()
+            } else {
+                Spacer(minLength: 0)
             }
         }
         .font(Look.icon)
@@ -4791,7 +4793,9 @@ private struct LibraryButton: View {
             Library.toggle(Library.shared.section, in: store)
         } label: {
             LibraryBucket(filled: filled, hovered: hovered)
-                .frame(width: 32, height: 32)
+                // The bucket's artwork occupies the bottom of its 24pt canvas.
+                .offset(y: -4)
+                .frame(width: Look.footerControl, height: Look.footerControl)
                 .background(hovered ? Look.hovered : .clear, in: .rect(cornerRadius: 8))
                 .contentShape(.rect)
         }
