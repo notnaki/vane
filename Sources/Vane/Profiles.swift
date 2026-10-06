@@ -598,7 +598,7 @@ struct Space: Identifiable, Codable, Equatable {
             ExtensionHost.forget(id)
             Passwords.deleteAll(profileID: id)
             SitePermissions.resetAll(profileID: id)
-            for key in ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey,
+            for key in ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey, ExtensionConsent.baseKey,
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }

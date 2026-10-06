@@ -20,9 +20,10 @@ passing release checks.
 
 ## Extension consent
 
-- Show permissions before installation and require review when an update expands access.
-- Keep extension data and permissions isolated by profile.
-- Cover rejection, interrupted installation, incompatible updates, and removal cleanup.
+- Installation consent and manifest expanded-access review now gate extension loading,
+  with profile-scoped approvals and rejection/interruption/removal regression coverage.
+- Broaden real-extension compatibility coverage, including incompatible folder updates
+  and runtime permission requests against real sites.
 
 ## Updater safety
 

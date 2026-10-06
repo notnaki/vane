@@ -49,6 +49,9 @@ import WebKit
     /// Unload everything and forget the host. Called when a profile is deleted.
     static func forget(_ profileID: UUID) {
         guard let host = hosts[profileID] else { return }
+        host.invalidated = true
+        for task in host.restoring.values { task.cancel() }
+        host.restoring.removeAll()
         for context in host.installed { try? host.controller.unload(context) }
         host.loaded.removeAll()
         hosts[profileID] = nil
@@ -104,22 +107,9 @@ import WebKit
         init(_ m: String) { errorDescription = m }
     }
 
-    /// Validates the folder synchronously (so a bad pick fails loudly and nothing is
-    /// persisted), then loads it.
-    ///
-    /// ponytail: the actual load is fire-and-forget, because `WKWebExtension(resourceBaseURL:)`
-    /// is async-only in this SDK and the requested signature is not. A manifest that parses
-    /// but that WebKit rejects therefore surfaces as an alert a beat later rather than as a
-    /// thrown error. Upgrade path: make this `async throws` the day the call sites can await.
-    func install(folder: URL) throws {
-        _ = try Self.validate(folder)
-        // A path is not enough under the sandbox: powerbox's grant on a panel selection
-        // dies with the process, so the folder must be kept as a scoped bookmark.
-        guard ScopedPaths.add(folder, to: myKey) else {
-            throw Failure("macOS would not let Vane keep access to \(folder.lastPathComponent) "
-                + "after quitting, so it was not installed.")
-        }
-        begin(folder)
+    /// Nothing is persisted or granted until the user has reviewed WebKit's parsed access.
+    func install(folder: URL) async throws {
+        _ = try await load(folder, installing: true)
     }
 
     private var myKey: String { Self.key(for: profileID) }
@@ -129,6 +119,7 @@ import WebKit
         forget(context, tab: nil)
         if let path = loaded.first(where: { $0.context === context })?.path {
             ScopedPaths.remove(path: path, from: myKey)
+            ExtensionConsent.remove(for: URL(fileURLWithPath: path), profileID: profileID)
             claimed.remove(path)
             // An uninstalled extension must not keep a slot in the pill: the cap is three,
             // and a pin nothing can fill would silently cost one of them.
@@ -142,42 +133,78 @@ import WebKit
     /// extension two contexts, two background pages, and two of every event.
     private var claimed: Set<String> = []
 
+    private var invalidated = false
+    private var restoring: [String: Task<Void, Never>] = [:]
+
     private func begin(_ folder: URL) {
-        guard claimed.insert(folder.path).inserted else { return }
-        Task {
-            do {
-                let ext = try await WKWebExtension(resourceBaseURL: folder)
-                let context = WKWebExtensionContext(for: ext)
-                context.isInspectable = Settings.inspectorEnabled
-                context.inspectionName = ext.displayName
-                grantRequested(on: context, of: ext)
-                try controller.load(context)
-                loaded.append((folder.path, context))
-                startPolling()
-                prunePins()
-            } catch {
-                claimed.remove(folder.path)
-                // Also here: a folder that fails to load is only *settled* once this runs, so
-                // when the failure is the last one outstanding this is the only place the
-                // write-back can happen at all.
-                prunePins()
+        restoring[folder.path] = Task {
+            defer { restoring[folder.path] = nil }
+            do { _ = try await load(folder, installing: false) }
+            catch is CancellationError { }
+            catch {
                 warn("Could not load the extension in \(folder.lastPathComponent).",
                      error.localizedDescription)
             }
         }
     }
 
-    /// ponytail: an unpacked extension is installed by the user pointing a file panel at a
-    /// folder, so everything the manifest asks for is granted up front. The runtime prompts
-    /// below are still wired, so anything requested *later* does ask. Upgrade path: a real
-    /// permissions sheet at install time listing what is about to be granted.
-    private func grantRequested(on context: WKWebExtensionContext, of ext: WKWebExtension) {
+    /// Restore and install use the same consent gate. The reviewer is synchronous because
+    /// AppKit's modal loop can process removal/profile deletion while the prompt is open;
+    /// the lifetime and cancellation checks after it are essential even without an await.
+    @discardableResult
+    func load(_ folder: URL, installing: Bool,
+              review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
+        guard !invalidated, profileID != Profile.incognito.id else { throw CancellationError() }
+        try Task.checkCancellation()
+        let path = folder.resolvingSymlinksInPath().path
+        guard claimed.insert(path).inserted else { return false }
+        var succeeded = false
+        var addedBookmark = false
+        defer {
+            if !succeeded {
+                claimed.remove(path)
+                if addedBookmark { ScopedPaths.remove(path: path, from: myKey) }
+            }
+            prunePins()
+        }
+        _ = try Self.validate(folder)
+        let ext = try await WKWebExtension(resourceBaseURL: folder)
+        try Task.checkCancellation()
+        guard !invalidated else { throw CancellationError() }
+        let requested = ExtensionAccess(ext)
+        let previous = ExtensionConsent.saved(for: folder, profileID: profileID)
+        let request = ExtensionConsent.Review(name: ext.displayName ?? folder.lastPathComponent,
+                                              requested: requested, previous: previous,
+                                              installing: installing)
+        if request.needsApproval, !review(request) { return false }
+        try Task.checkCancellation()
+        guard !invalidated else { throw CancellationError() }
+        if installing {
+            let alreadySaved = ScopedPaths.paths(myKey).contains {
+                URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == path
+            }
+            guard ScopedPaths.add(folder, to: myKey) else {
+                throw Failure("macOS would not let Vane keep access to \(folder.lastPathComponent) "
+                    + "after quitting, so it was not installed.")
+            }
+            addedBookmark = !alreadySaved
+        }
+        let context = WKWebExtensionContext(for: ext)
+        context.isInspectable = Settings.inspectorEnabled
+        context.inspectionName = ext.displayName
         for permission in ext.requestedPermissions {
             context.setPermissionStatus(.grantedExplicitly, for: permission)
         }
-        for pattern in ext.requestedPermissionMatchPatterns {
+        for pattern in ext.requestedPermissionMatchPatterns.union(ext.allRequestedMatchPatterns) {
             context.setPermissionStatus(.grantedExplicitly, for: pattern)
         }
+        try controller.load(context)
+        do { try ExtensionConsent.save(requested, for: folder, profileID: profileID) }
+        catch { try? controller.unload(context); throw error }
+        loaded.append((path, context))
+        succeeded = true
+        startPolling()
+        return true
     }
 
     // MARK: Manifest validation (pure — this is what `check()` exercises)
@@ -210,8 +237,7 @@ import WebKit
 
     // MARK: Persistence
 
-    /// ponytail: plain paths, not security-scoped bookmarks — Vane is not sandboxed, so a
-    /// path is all the access it needs. Sandbox it and this becomes bookmark data.
+    /// Security-scoped bookmarks, isolated by profile.
     static let baseKey = "extensionFolders"
 
     /// Per profile, so an extension installed in one profile is not loaded into another.
@@ -401,8 +427,11 @@ import WebKit
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let folder = panel.url else { return }
-        do { try install(folder: folder) }
-        catch { warn("Could not install that folder.", error.localizedDescription) }
+        Task {
+            do { try await install(folder: folder) }
+            catch is CancellationError { }
+            catch { warn("Could not install that folder.", error.localizedDescription) }
+        }
     }
 
     private func warn(_ title: String, _ detail: String) {
@@ -415,12 +444,14 @@ import WebKit
 
     /// One modal for all three permission prompts. Returns what the user allowed.
     private func ask(_ context: WKWebExtensionContext, _ what: [String]) -> Bool {
+        guard !invalidated, installed.contains(where: { $0 === context }) else { return false }
         let a = NSAlert()
         a.messageText = "“\(context.webExtension.displayName ?? "An extension")” wants more access."
         a.informativeText = what.sorted().joined(separator: "\n")
         a.addButton(withTitle: "Allow")
-        a.addButton(withTitle: "Deny")
-        return a.runModal() == .alertFirstButtonReturn
+        a.addButton(withTitle: "Deny").keyEquivalent = "\u{1b}"
+        let allowed = a.runModal() == .alertFirstButtonReturn
+        return allowed && !invalidated && installed.contains(where: { $0 === context })
     }
 
     // MARK: Adapters
