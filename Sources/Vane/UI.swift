@@ -1035,8 +1035,7 @@ private struct NavGlyphs: View {
     /// reached through it, and a new holder every frame would lose that view.
     @StateObject private var backMenu = HoldMenu()
     @StateObject private var forwardMenu = HoldMenu()
-    @State private var reloadTurn = 0
-    @State private var reloadSpinning = false
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -1066,12 +1065,11 @@ private struct NavGlyphs: View {
                 }
             Button {
                 if loading { tab?.stop() }
-                else { reloadSpinning = true; reloadTurn += 1; tab?.reload() }
+                else { tab?.reload() }
             } label: {
-                Image(systemName: loading && !reloadSpinning ? "xmark" : "arrow.clockwise")
-                    .rotationEffect(.degrees(reduceMotion ? 0 : Double(reloadTurn) * 360))
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.26), value: reloadTurn)
-                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                Image(systemName: loading ? "xmark" : "arrow.clockwise")
+                    .contentTransition(reduceMotion || batterySaver.isActive ? .identity : .opacity)
+                    .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: loading)
                     .modifier(NavigationTarget(compact: compact))
             }
             .disabled(tab == nil)
@@ -1079,11 +1077,6 @@ private struct NavGlyphs: View {
             .accessibilityLabel(loading ? "Stop Loading" : "Reload Page")
         }
         .buttonStyle(TactileButtonStyle())
-        .task(id: reloadTurn) {
-            guard reloadTurn > 0 else { return }
-            do { try await Task.sleep(for: .seconds(0.26)) } catch { return }
-            reloadSpinning = false
-        }
     }
 }
 
