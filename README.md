@@ -200,6 +200,17 @@ a temporary green lightning popup at the page's top right, with an **Edit this s
 button. Hovering keeps the popup visible; sleeping tabs reload when selected. The mode respects
 the existing idle-suspension preference and preserves an already shorter timeout.
 
+### Saving profiles
+
+Profile save failures appear in browser windows and Settings → Profiles. Unsaved
+profile names, colors, new profiles, and selection changes stay in memory; **Retry
+Save** writes their latest state. Quitting retries them first and asks before
+discarding changes that still cannot be saved. A failed profile deletion keeps its
+data and must be requested again. Failed Space changes retain the last saved list;
+check storage and folder access, then repeat the change. **Data Folder** helps
+locate files for recovery. An unreadable `profiles.json` is preserved: restore it
+from a backup, then restart Vane before editing profiles.
+
 ### Appearance and icons
 
 Settings → Icon offers Normal, Dark, Galaxy, Candy, Neon, Fluted Glass,

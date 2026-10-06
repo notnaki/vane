@@ -572,6 +572,10 @@ private struct ProfilesPane: View {
                 .font(Look.text)
                 .fixedSize(horizontal: false, vertical: true)
 
+            if !manager.saveFailures.isEmpty {
+                ProfileSaveNotice(manager: manager)
+            }
+
             HStack(alignment: .top, spacing: 10) {
                 // The list runs the full height of the controls beside it, like Arc's, so
                 // the two columns read as one layout rather than a card and a stack.

@@ -173,6 +173,7 @@ enum QuitAsk {
 
     /// The dialog has been answered and we are the ones asking to terminate: do not ask again.
     private var confirmed = false
+    private var askingAboutUnsavedProfiles = false
 
     /// ⌘Q with `Prefs.warnBeforeQuit` on puts up Arc's "Quit Vane?" and quits only on its
     /// answer. Only a real, fresh ⌘Q is asked about, and the chord is checked exactly:
@@ -185,6 +186,23 @@ enum QuitAsk {
     func applicationShouldTerminate(_ app: NSApplication) -> NSApplication.TerminateReply {
         // Before every other route out of here, all of which end in a terminate.
         if QuitAsk.refuses(whileAsking: QuitDialog.isUp) { return .terminateCancel }
+        guard !askingAboutUnsavedProfiles else { return .terminateCancel }
+        var discarded = false
+        let savedOrDiscarded = ProfileManager.shared.prepareToQuit {
+            askingAboutUnsavedProfiles = true
+            defer { askingAboutUnsavedProfiles = false }
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Profile changes haven’t been saved"
+            alert.informativeText = "Keep Vane open to retry saving. Quitting now will lose the unsaved profile changes."
+            alert.addButton(withTitle: "Keep Vane Open")
+            alert.addButton(withTitle: "Quit Without Saving")
+            alert.buttons.last?.hasDestructiveAction = true
+            discarded = alert.runModal() == .alertSecondButtonReturn
+            return discarded
+        }
+        guard savedOrDiscarded else { return .terminateCancel }
+        if discarded { return .terminateNow }
         if let ae = NSAppleEventManager.shared().currentAppleEvent,
            QuitAsk.isQuitAppleEvent(class: ae.eventClass, id: ae.eventID) { return .terminateNow }
         guard !confirmed, Prefs.warnBeforeQuit, let event = app.currentEvent,

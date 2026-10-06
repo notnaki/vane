@@ -6,12 +6,14 @@ import WebKit
 enum SnapshotPersistence {
     @discardableResult
     static func write(_ data: Data, to url: URL,
+                      onFailure: (Error) -> Void = { _ in },
                       writer: (Data, URL, Data.WritingOptions) throws -> Void = {
                           try $0.write(to: $1, options: $2)
                       }) -> Bool {
         do { try writer(data, url, .atomic); return true }
         catch {
             NSLog("Vane: could not save %@: %@", url.lastPathComponent, error.localizedDescription)
+            onFailure(error)
             return false
         }
     }
@@ -24,10 +26,10 @@ enum SnapshotPersistence {
         let file = root.appendingPathComponent("session.json")
         let first = Data("previous complete session".utf8), next = Data("new complete session".utf8)
         var out = [("a snapshot reaches disk", write(first, to: file))]
-        let failed = write(next, to: file) { _, _, options in
+        let failed = write(next, to: file, writer: { _, _, options in
             guard options.contains(.atomic) else { throw CocoaError(.fileWriteUnknown) }
             throw CocoaError(.fileWriteOutOfSpace)
-        }
+        })
         out.append(("a failed snapshot is reported and preserves the completed file",
                     !failed && (try? Data(contentsOf: file)) == first))
         out.append(("a later successful snapshot replaces the completed file",
