@@ -20,9 +20,9 @@ private struct LibrarySwipe: ViewModifier {
     }
 }
 
-/// Left closes Library; right opens it from the first Space, anywhere in the window.
+/// Left closes Library from its panel; right opens it from the first Space's sidebar.
 /// Decide on fingers-up and consume momentum so one gesture cannot do both.
-/// Vertical scrolling and other Spaces' gestures keep their original recipient.
+/// Page content, vertical scrolling and other Spaces' gestures keep their recipient.
 @MainActor final class LibrarySwipeMonitor {
     private var monitor: Any?
     private var watchers: [any NSObjectProtocol] = []
@@ -87,6 +87,27 @@ private struct LibrarySwipe: ViewModifier {
         }
     }
 
+    /// Match BrowserWindow's rail geometry, including the inset floating sidebar and
+    /// Library's section-dependent width. Only inspect this at fingers-down: a gesture
+    /// keeps its recipient even if the pointer moves or the panel closes beneath it.
+    private func startsInNavigationArea(_ event: NSEvent, window: NSWindow, store: TabStore) -> Bool {
+        let bounds = window.contentView.map { $0.convert($0.bounds, to: nil) }
+            ?? NSRect(origin: .zero, size: window.frame.size)
+        if store.libraryOpen {
+            let spaces = Library.shared.section == .spaces ? ProfileManager.shared.allSpaces.count : 0
+            let width = Library.panelWidth(section: Library.shared.section, spaces: spaces,
+                                          private: store.isPrivate, available: bounds.width)
+            let panel = NSRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height)
+            return panel.contains(event.locationInWindow)
+        }
+        guard store.sidebarShown || (window as? VaneWindow)?.peekingSidebar == true else { return false }
+        let inset = store.sidebarShown ? 0 : Look.cardGap
+        let sidebar = NSRect(x: bounds.minX + inset, y: bounds.minY + inset,
+                             width: SidebarWidth.shared.width,
+                             height: max(0, bounds.height - 2 * inset))
+        return sidebar.contains(event.locationInWindow)
+    }
+
     private func process(_ event: NSEvent, in store: TabStore) -> NSEvent? {
         guard let window = event.window, window === store.window,
               event.hasPreciseScrollingDeltas else { return event }
@@ -97,10 +118,12 @@ private struct LibrarySwipe: ViewModifier {
         guard !event.phase.isEmpty else { return event }
         if event.phase.contains(.began) {
             reset()
-            if store.libraryOpen { action = .close }
-            else if let space = store.currentSpaceID, !store.isPrivate, !store.isLittle,
-                    !store.creatingSpace, !store.spaceSwiping {
-                action = .open(space)
+            if startsInNavigationArea(event, window: window, store: store) {
+                if store.libraryOpen { action = .close }
+                else if let space = store.currentSpaceID, !store.isPrivate, !store.isLittle,
+                        !store.creatingSpace, !store.spaceSwiping {
+                    action = .open(space)
+                }
             }
             claim = action == nil ? .theirs : .undecided
         }

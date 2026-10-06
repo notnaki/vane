@@ -49,21 +49,108 @@ import XCTest
             dx: dx, dy: dy, phase: phase, momentum: momentum, precise: precise, inverted: inverted))
     }
 
-    func testRightSwipeOpensLastLibrarySectionFromFirstSpaceAnywhereInWindow() {
+    func testPageSwipesPassThroughWithLibraryOpenOrClosedRegardlessOfMonitorOrder() {
+        let (store, window, libraryMonitor) = fixture(withSpaces: true)
+        let spaceMonitor = store.spaceGesture.monitor
+        defer { spaceMonitor.remove() }
+        store.sidebarShown = true
+        for libraryFirst in [true, false] {
+            libraryMonitor.remove()
+            spaceMonitor.remove()
+            if libraryFirst { libraryMonitor.install(store); spaceMonitor.install(store) }
+            else { spaceMonitor.install(store); libraryMonitor.install(store) }
+            for open in [false, true] {
+                Library.open(.downloads, in: store)
+                store.libraryOpen = open
+                for inverted in [true, false] {
+                    for delta in [CGFloat(-120), CGFloat(120)] {
+                        let before = window.scrolls
+                        let point = NSPoint(x: 800, y: 350)
+                        send(window, point: point, phase: .began, inverted: inverted)
+                        send(window, point: point, dx: delta, inverted: inverted)
+                        send(window, point: point, phase: .ended, inverted: inverted)
+                        send(window, point: point, dx: delta, phase: [], momentum: .began, inverted: inverted)
+                        send(window, point: point, phase: [], momentum: .ended, inverted: inverted)
+                        XCTAssertEqual(store.libraryOpen, open)
+                        XCTAssertFalse(store.spaceSwiping)
+                        XCTAssertEqual(window.scrolls - before, 5, "Content receives the whole gesture")
+                    }
+                }
+            }
+        }
+    }
+
+    func testHiddenSidebarDoesNotClaimLibraryOpeningSwipes() {
+        let (store, window, _) = fixture(withSpaces: true)
+        store.libraryOpen = false
+        store.sidebarShown = false
+        send(window, phase: .began)
+        send(window, dx: 120)
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertEqual(window.scrolls, 3)
+    }
+
+    func testFloatingSidebarOpensLibraryButPageAndOuterGapsKeepTheirSwipes() {
+        let (store, originalWindow, _) = fixture(withSpaces: true)
+        let window = VaneWindow(contentRect: originalWindow.frame, styleMask: .borderless,
+                                backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        store.window = window
+        defer { store.window = originalWindow; window.close() }
+        store.sidebarShown = false
+        window.peekingSidebar = true
+        let width = SidebarWidth.shared.width
+        for point in [NSPoint(x: 100, y: 350), NSPoint(x: width + 4, y: 350)] {
+            store.libraryOpen = false
+            send(window, point: point, phase: .began)
+            send(window, point: point, dx: 120)
+            send(window, point: point, phase: .ended)
+            XCTAssertTrue(store.libraryOpen)
+        }
+        store.libraryOpen = false
+        for point in [NSPoint(x: 4, y: 350), NSPoint(x: width + 20, y: 350),
+                      NSPoint(x: 100, y: 4), NSPoint(x: 100, y: 696)] {
+            send(window, point: point, phase: .began)
+            send(window, point: point, dx: 120)
+            send(window, point: point, phase: .ended)
+            XCTAssertFalse(store.libraryOpen)
+        }
+    }
+
+    func testLibraryClosingUsesEachSectionsPanelBoundary() {
+        let (store, window, _) = fixture(withSpaces: true)
+        for section in [LibrarySection.downloads, .easels, .spaces] {
+            Library.open(section, in: store)
+            let width = Library.panelWidth(section: section,
+                spaces: ProfileManager.shared.allSpaces.count, available: 900)
+            for (x, closes) in [(width - 2, true), (width + 2, false)] {
+                store.libraryOpen = true
+                let point = NSPoint(x: x, y: 350)
+                let before = window.scrolls
+                send(window, point: point, phase: .began)
+                send(window, point: point, dx: -120)
+                send(window, point: point, phase: .ended)
+                XCTAssertEqual(store.libraryOpen, !closes, "Boundary for \(section)")
+                if !closes { XCTAssertEqual(window.scrolls - before, 3) }
+            }
+        }
+    }
+
+    func testRightSwipeOpensLastLibrarySectionFromFirstSpaceSidebar() {
         let (store, window, _) = fixture(withSpaces: true)
         let first = store.currentSpaceID
         Library.open(.downloads, in: store)
         Library.shared.query = "old search"
-        store.sidebarShown = false
-        for point in [NSPoint(x: 20, y: 350), NSPoint(x: 250, y: 350),
-                      NSPoint(x: 800, y: 350), NSPoint(x: 450, y: 696)] {
+        store.sidebarShown = true
+        for point in [NSPoint(x: 20, y: 350), NSPoint(x: 100, y: 350)] {
             store.libraryOpen = false
             store.findOpen = true
             send(window, point: point, phase: .began)
             send(window, point: point, dx: 120)
             XCTAssertFalse(store.libraryOpen, "Wait for fingers-up")
             send(window, point: point, phase: .ended)
-            XCTAssertTrue(store.libraryOpen, "Open from anywhere at the first Space: \(point)")
+            XCTAssertTrue(store.libraryOpen, "Open from the first Space sidebar: \(point)")
             XCTAssertEqual(store.currentSpaceID, first)
             XCTAssertEqual(Library.shared.section, .downloads)
             XCTAssertEqual(Library.shared.query, "")
@@ -221,17 +308,16 @@ import XCTest
         XCTAssertFalse(store.libraryOpen)
     }
 
-    func testLeftSwipeClosesLibraryAcrossWindowWithSidebarHidden() {
+    func testLeftSwipeClosesLibraryWithinPanelWithSidebarHidden() {
         let (store, window, _) = fixture()
         store.sidebarShown = false
-        for point in [NSPoint(x: 20, y: 350), NSPoint(x: 250, y: 350),
-                      NSPoint(x: 800, y: 350), NSPoint(x: 450, y: 696)] {
+        for point in [NSPoint(x: 20, y: 350), NSPoint(x: 250, y: 350)] {
             store.libraryOpen = true
             send(window, point: point, phase: .began)
             send(window, point: point, dx: -120)
             XCTAssertTrue(store.libraryOpen, "Wait for fingers-up")
             send(window, point: point, phase: .ended)
-            XCTAssertFalse(store.libraryOpen, "Close from anywhere in the window: \(point)")
+            XCTAssertFalse(store.libraryOpen, "Close from the Library panel: \(point)")
             XCTAssertFalse(store.spaceSwiping)
             XCTAssertEqual(store.spaceDrag, 0)
         }
