@@ -165,7 +165,7 @@ import XCTest
             guard Passwords.save(host: login.host, account: login.account, password: "fixture", profileID: profile)
             else { throw XCTSkip("Fixture Keychain unavailable") }
         }
-        let bitmap = try render(PasswordsPane(settingsProfileID: profile).padding(24), width: 632, name: "manager")
+        let bitmap = try render(PasswordsPane(settingsProfileID: profile).frame(height: 400).padding(24), width: 632, name: "manager")
         XCTAssertEqual(bitmap.pixelsWide, 632)
         XCTAssertLessThan(bitmap.pixelsHigh, 560)
         let colors = Set(stride(from: 0, to: bitmap.pixelsHigh, by: 8).flatMap { y in
@@ -174,5 +174,72 @@ import XCTest
             }
         })
         XCTAssertGreaterThan(colors.count, 4, "The mounted manager must draw its rows, not just a blank background")
+    }
+
+    func testManagerScrollsKeyboardSelectionIntoView() throws {
+        let fixture = ManagerSelectionFixture()
+        let groups = (0..<30).map { index in
+            let host = String(format: "site%02d.example", index)
+            return (host: host, logins: [Passwords.Login(host: host, account: "fixture")])
+        }
+        let hosting = NSHostingView(rootView: ManagerListFixture(fixture: fixture, groups: groups))
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 400, height: 220),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        window.orderFront(nil)
+        defer { window.close() }
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+        func scrollView(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+        }
+        let scroll = try XCTUnwrap(scrollView(in: hosting))
+        let before = scroll.documentVisibleRect.origin.y
+        fixture.selected = groups.last?.host
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.4))
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(abs(scroll.documentVisibleRect.origin.y - before), 100,
+                             "Keyboard selection must move the actual viewport to the selected row")
+    }
+
+    func testClosingSettingsClearsSecretsAndInvalidatesPendingAuthentication() throws {
+        SettingsWindow.show(tab: "passwords")
+        let window = try XCTUnwrap(NSApp.windows.first(where: { SettingsWindow.holds($0) }))
+        window.setFrameOrigin(CGPoint(x: -10000, y: -10000))
+        let secrets = PasswordManagerSecrets()
+        secrets.watchSettingsClose()
+        defer { secrets.stopWatching(); window.close() }
+        secrets.adding = true
+        secrets.editing = "fixture"
+        secrets.draftAccount = "fixture"
+        secrets.draftPassword = "draft-fixture"
+        secrets.revealed["fixture"] = "revealed-fixture"
+        let pending = Task<Void, Never> { _ = try? await Task.sleep(for: .seconds(60)) }
+        secrets.forgetting["fixture"] = pending
+        let context = secrets.secretContext
+        window.close()
+        XCTAssertFalse(secrets.adding)
+        XCTAssertNil(secrets.editing)
+        XCTAssertTrue(secrets.draftAccount.isEmpty)
+        XCTAssertTrue(secrets.draftPassword.isEmpty)
+        XCTAssertTrue(secrets.revealed.isEmpty)
+        XCTAssertTrue(secrets.forgetting.isEmpty)
+        XCTAssertTrue(pending.isCancelled)
+        XCTAssertNotEqual(secrets.secretContext, context,
+                          "A pending authentication must not restore a secret after Settings closes")
+    }
+}
+
+@MainActor private final class ManagerSelectionFixture: ObservableObject {
+    @Published var selected: String?
+}
+
+@MainActor private struct ManagerListFixture: View {
+    @ObservedObject var fixture: ManagerSelectionFixture
+    let groups: [(host: String, logins: [Passwords.Login])]
+    var body: some View {
+        PasswordManagerList(groups: groups, selected: $fixture.selected,
+                            profileID: ProfileManager.defaultID, open: { _ in }) { EmptyView() }
     }
 }

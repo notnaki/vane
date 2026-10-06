@@ -158,10 +158,9 @@ enum LinkTarget {
         return candidate === window && window.isVisible
     }
 
-    /// Told when this window closes; the token unregisters it again. The one caller is
-    /// `ShortcutsPane`'s recorder, which has to let go of the keyboard the moment Settings
-    /// does — the pane's own `.onDisappear` never fires, because the instance and its
-    /// hosting view are kept here for the next time Settings is opened.
+    /// Told when this window closes; the token unregisters it again. Recorders and password
+    /// drafts must let go of their temporary state as soon as Settings closes. The pane's
+    /// `.onDisappear` never fires because its hosting view is kept for the next opening.
     static func onClose(_ then: @escaping @MainActor () -> Void) -> Any? {
         guard let window else { return nil }
         return NotificationCenter.default.addObserver(
@@ -260,9 +259,9 @@ private struct SettingsView: View {
 
     var body: some View {
         Group {
-            if current.id == "shortcuts" {
+            if ["shortcuts", "passwords"].contains(current.id) {
                 // This pane owns a bounded scrolling list, so its search and guidance
-                // stay in place while the shortcuts scroll.
+                // stay in place while the rows scroll.
                 pane
             } else {
                 ScrollView { pane }.id(current.id)

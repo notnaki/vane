@@ -27,26 +27,13 @@ import SwiftUI
     @State private var never: [String] = []
     @State private var selected: String?
     @State private var selectedHost: String?
-    @State private var adding = false
     @State private var draftSite = ""
     @State private var addProblem: String?
     @State private var feedback: String?
-    @State private var secretContext = UUID()
-    /// Plaintext the user has authenticated to see, by row id. Dropped when the row is
-    /// hidden again, when the pane goes away, and on its own after `revealFor`.
-    @State private var revealed: [String: String] = [:]
-    /// The timers that take them away again, so re-revealing a row restarts its minute
-    /// instead of leaving the first timer to blank it early.
-    @State private var forgetting: [String: Task<Void, Never>] = [:]
-    /// One line of feedback when a write is refused. Non-nil is rare and always the user's
-    /// business — a silent no here is a password they think they changed and did not.
+    /// A refused write must be visible, so a failed save never looks like success.
     @State private var problem: String?
-    /// The row being edited, and its two fields. Held apart from `logins` on purpose: Cancel
-    /// is then free, and the draft password can be wiped without touching the store.
-    @State private var editing: String?
-    @State private var draftAccount = ""
-    @State private var draftPassword = ""
-    @FocusState private var listFocused: Bool
+    /// Plaintext lives only while the manager is visible, including its add/edit drafts.
+    @StateObject private var secrets = PasswordManagerSecrets()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
@@ -84,7 +71,11 @@ import SwiftUI
                         Label("Add login", systemImage: "plus")
                     }
                 }
-                ForEach(logins.filter { $0.host == host }) { login in detail(login) }
+                ScrollView {
+                    VStack(spacing: Look.inset * 2) {
+                        ForEach(logins.filter { $0.host == host }) { login in detail(login) }
+                    }
+                }
             } else {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
@@ -120,7 +111,7 @@ import SwiftUI
                     .frame(maxWidth: .infinity).padding(.vertical, 28)
                 } else {
                     if !groups.isEmpty { list }
-                    if !neverShown.isEmpty { neverCard }
+                    else { ScrollView { neverCard } }
                 }
             }
             if let problem {
@@ -132,11 +123,11 @@ import SwiftUI
             }
         }
         .padding(.top, Look.inset * 2)
-        .sheet(isPresented: $adding, onDismiss: { forgetSecrets() }) { addSheet }
-        .onAppear { reload() }
-        .onDisappear { forgetSecrets() }
+        .sheet(isPresented: $secrets.adding, onDismiss: { forgetSecrets() }) { addSheet }
+        .onAppear { reload(); secrets.watchSettingsClose() }
+        .onDisappear { secrets.stopWatching() }
         .onChange(of: selectedHost) { forgetSecrets(); problem = nil; feedback = nil }
-        .onChange(of: profileID) { selectedHost = nil; adding = false; forgetSecrets(); reload() }
+        .onChange(of: profileID) { selectedHost = nil; secrets.adding = false; forgetSecrets(); reload() }
         .onChange(of: query) { selected = nil }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selectedHost)
     }
@@ -165,45 +156,10 @@ import SwiftUI
     }
 
     private var list: some View {
-        SettingsCard(divided: false) {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(groups, id: \.host) { group in
-                    Button { navigate(to: group.host) } label: {
-                        HStack(spacing: Look.inset * 1.5) {
-                            PasswordSiteIcon(host: group.host, profileID: profileID)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(group.host).font(Look.text.weight(.medium)).foregroundStyle(Look.inkPrimary)
-                                    .lineLimit(1).truncationMode(.middle)
-                                Text(group.logins.count == 1
-                                     ? (group.logins[0].account.isEmpty ? "No username" : group.logins[0].account)
-                                     : "\(group.logins.count) accounts")
-                                    .font(Look.caption).foregroundStyle(Look.inkSecondary)
-                                    .lineLimit(1).truncationMode(.middle)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right").foregroundStyle(Look.inkTertiary)
-                        }
-                        .padding(Look.cardInset).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(selected == group.host ? Look.accentSelected : .clear)
-                        .contentShape(.rect)
-                    }.buttonStyle(.plain)
-                    if group.host != groups.last?.host {
-                        Hairline().padding(.horizontal, Look.cardInset)
-                    }
-                }
-            }
-            .clipShape(.rect(cornerRadius: Look.cardRadius))
+        PasswordManagerList(groups: groups, selected: $selected, profileID: profileID,
+                            open: { navigate(to: $0) }) {
+            if !neverShown.isEmpty { neverCard }
         }
-        .focusable().focused($listFocused).focusEffectDisabled()
-        .onKeyPress(.upArrow) { moveSite(-1) }
-        .onKeyPress(.downArrow) { moveSite(1) }
-        .onKeyPress(.return) {
-            guard let selected, groups.contains(where: { $0.host == selected }) else { return .ignored }
-            navigate(to: selected)
-            return .handled
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Saved passwords")
     }
 
     /// Arc keeps its "Never Saved" list under the passwords themselves, as the answer to
@@ -243,15 +199,15 @@ import SwiftUI
     }
 
     private func detail(_ login: Passwords.Login) -> some View {
-        let isEditing = editing == login.id
-        let shown = revealed[login.id]
+        let isEditing = secrets.editing == login.id
+        let shown = secrets.revealed[login.id]
         return SettingsCard {
             VStack(alignment: .leading, spacing: Look.cardInset) {
                 VStack(alignment: .leading, spacing: Look.inset) {
                     Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
                     HStack {
                         if isEditing {
-                            TextField("Username", text: $draftAccount).textFieldStyle(.roundedBorder)
+                            TextField("Username", text: $secrets.draftAccount).textFieldStyle(.roundedBorder)
                         } else {
                             Text(login.account.isEmpty ? "No username" : login.account)
                                 .textSelection(.enabled)
@@ -263,7 +219,7 @@ import SwiftUI
                 }
                 VStack(alignment: .leading, spacing: Look.inset) {
                     if isEditing {
-                        PasswordDraftField(text: $draftPassword).id(login.id)
+                        PasswordDraftField(text: $secrets.draftPassword).id(login.id)
                     } else {
                         Text("Password").font(Look.caption).foregroundStyle(Look.inkSecondary)
                         HStack {
@@ -280,7 +236,7 @@ import SwiftUI
                 HStack(spacing: Look.inset * 1.5) {
                     if isEditing {
                         Button("Save") { commit(login) }.keyboardShortcut(.defaultAction)
-                            .disabled(draftPassword.isEmpty)
+                            .disabled(secrets.draftPassword.isEmpty)
                         Button("Cancel") { cancelEditing() }.keyboardShortcut(.cancelAction)
                     } else {
                         Button("Edit password") { startEditing(login) }
@@ -302,38 +258,38 @@ import SwiftUI
             TextField("example.com", text: $draftSite).textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Website")
             Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
-            TextField("Username (optional)", text: $draftAccount).textFieldStyle(.roundedBorder)
+            TextField("Username (optional)", text: $secrets.draftAccount).textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Username")
-            PasswordDraftField(text: $draftPassword)
+            PasswordDraftField(text: $secrets.draftPassword)
             if let addProblem { Text(addProblem).font(Look.caption).foregroundStyle(Look.warning) }
             HStack {
                 Spacer()
-                Button("Cancel") { adding = false; forgetSecrets() }.keyboardShortcut(.cancelAction)
+                Button("Cancel") { secrets.adding = false; forgetSecrets() }.keyboardShortcut(.cancelAction)
                 Button("Save") { addPassword() }.keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(Self.siteHost(draftSite) == nil || draftPassword.isEmpty)
+                    .disabled(Self.siteHost(draftSite) == nil || secrets.draftPassword.isEmpty)
             }
         }.padding(24).frame(width: 400)
     }
 
     private func beginAdding(host: String = "") {
         forgetSecrets()
-        draftSite = host; draftAccount = ""; addProblem = nil
-        adding = true
+        draftSite = host; secrets.draftAccount = ""; addProblem = nil
+        secrets.adding = true
     }
 
     private func addPassword() {
-        guard let host = Self.siteHost(draftSite), !draftPassword.isEmpty else { return }
-        let account = draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let host = Self.siteHost(draftSite), !secrets.draftPassword.isEmpty else { return }
+        let account = secrets.draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !logins.contains(where: { $0.host == host && $0.account == account }) else {
             addProblem = "This login already exists. Open it and choose Edit to change it."
             return
         }
-        guard Passwords.save(host: host, account: account, password: draftPassword, profileID: profileID) else {
+        guard Passwords.save(host: host, account: account, password: secrets.draftPassword, profileID: profileID) else {
             addProblem = Self.saveFailed(host: host); return
         }
         Passwords.allowSaving(host: host, profileID: profileID)
-        adding = false; forgetSecrets(); reload()
+        secrets.adding = false; forgetSecrets(); reload()
         navigate(to: host)
         axAnnounce("Password saved.")
     }
@@ -360,42 +316,27 @@ import SwiftUI
         selectedHost = host
     }
 
-    private func moveSite(_ delta: Int) -> KeyPress.Result {
-        let hosts = groups.map(\.host)
-        guard !hosts.isEmpty else { return .ignored }
-        selected = Self.move(selected, in: hosts, by: delta)
-        return .handled
-    }
-
-    private func forgetSecrets() {
-        secretContext = UUID()
-        for task in forgetting.values { task.cancel() }
-        forgetting.removeAll()
-        revealed.removeAll()
-        draftAccount = ""
-        draftPassword = ""
-        editing = nil
-    }
+    private func forgetSecrets() { secrets.forget() }
 
     /// Hiding needs no permission; showing does — and what comes back is held for a minute
     /// and then dropped, whether or not anybody is still looking at this window.
     private func toggleReveal(_ login: Passwords.Login) {
-        if revealed.removeValue(forKey: login.id) != nil {
-            forgetting.removeValue(forKey: login.id)?.cancel()
+        if secrets.revealed.removeValue(forKey: login.id) != nil {
+            secrets.forgetting.removeValue(forKey: login.id)?.cancel()
             return
         }
-        let scope = profileID, context = secretContext
+        let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("show the password for \(login.host)") { ok in
-            guard ok, profileID == scope, secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
+            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
                                                      profileID: scope) else { return }
-            revealed[login.id] = plain
+            secrets.revealed[login.id] = plain
             axAnnounce("Password for \(login.host) shown.")
-            forgetting.removeValue(forKey: login.id)?.cancel()
-            forgetting[login.id] = Task {
+            secrets.forgetting.removeValue(forKey: login.id)?.cancel()
+            secrets.forgetting[login.id] = Task {
                 try? await Task.sleep(for: PasswordsPane.revealFor)
                 guard !Task.isCancelled else { return }
-                revealed[login.id] = nil
-                forgetting[login.id] = nil
+                secrets.revealed[login.id] = nil
+                secrets.forgetting[login.id] = nil
             }
         }
     }
@@ -422,14 +363,14 @@ import SwiftUI
 
     /// Copying a password is the same door as revealing one, so it asks the same way.
     private func copyPassword(_ login: Passwords.Login) {
-        if let shown = revealed[login.id] {
+        if let shown = secrets.revealed[login.id] {
             copy(shown, secret: true)
             axAnnounce("Password copied.")
             return
         }
-        let scope = profileID, context = secretContext
+        let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("copy the password for \(login.host)") { ok in
-            guard ok, profileID == scope, secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
+            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
                                                      profileID: scope) else { return }
             copy(plain, secret: true)
             axAnnounce("Password copied.")
@@ -441,32 +382,32 @@ import SwiftUI
     private func startEditing(_ login: Passwords.Login) {
         forgetSecrets()
         problem = nil; feedback = nil
-        let scope = profileID, context = secretContext
+        let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("edit the saved login for \(login.host)") { ok in
-            guard ok, profileID == scope, secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
+            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
                                                      profileID: scope) else { return }
             selected = login.id
-            editing = login.id
-            draftAccount = login.account
-            draftPassword = plain
+            secrets.editing = login.id
+            secrets.draftAccount = login.account
+            secrets.draftPassword = plain
         }
     }
 
     private func cancelEditing() {
-        editing = nil
-        draftAccount = ""
-        draftPassword = ""
-        secretContext = UUID()
+        secrets.editing = nil
+        secrets.draftAccount = ""
+        secrets.draftPassword = ""
+        secrets.secretContext = UUID()
     }
 
     /// A changed username is a different keychain item, so the old one goes — but only after
     /// the new one is safely stored, and only after its last-used stamp has moved across.
     private func commit(_ login: Passwords.Login) {
-        let account = draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = secrets.draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
         // Checked before anything is closed or written. An empty password is not a password,
         // and quietly keeping the old one while the field says otherwise is worse than
         // refusing.
-        guard !draftPassword.isEmpty else { return }
+        guard !secrets.draftPassword.isEmpty else { return }
         // Renaming onto an account this site already has would silently fold the two logins
         // into one and take the other one's password with it. That is a delete wearing a
         // rename's clothes, so it is refused rather than guessed at.
@@ -476,7 +417,7 @@ import SwiftUI
             axAnnounce(clash)
             return
         }
-        guard Passwords.save(host: login.host, account: account, password: draftPassword,
+        guard Passwords.save(host: login.host, account: account, password: secrets.draftPassword,
                              profileID: profileID) else {
             problem = PasswordsPane.saveFailed(host: login.host)
             axAnnounce(problem ?? "")
@@ -508,10 +449,10 @@ import SwiftUI
             return
         }
         problem = nil
-        secretContext = UUID()
-        forgetting.removeValue(forKey: login.id)?.cancel()
-        revealed[login.id] = nil
-        if editing == login.id { cancelEditing() }
+        secrets.secretContext = UUID()
+        secrets.forgetting.removeValue(forKey: login.id)?.cancel()
+        secrets.revealed[login.id] = nil
+        if secrets.editing == login.id { cancelEditing() }
         reload()
         if !logins.contains(where: { $0.host == selectedHost }) { selectedHost = nil }
         axAnnounce("Saved login for \(login.host) deleted.")
@@ -531,10 +472,84 @@ import SwiftUI
             remove(hit)
         case .copy:
             // Only what is already on screen: ⌘C must not be a way around the authentication.
-            guard let id = selected, let shown = revealed[id] else { return .ignored }
+            guard let id = selected, let shown = secrets.revealed[id] else { return .ignored }
             copy(shown, secret: true)
             axAnnounce("Password copied.")
         }
+        return .handled
+    }
+}
+
+/// A bounded list keeps the manager's search in place and keyboard selection visible.
+@MainActor struct PasswordManagerList<Footer: View>: View {
+    let groups: [(host: String, logins: [Passwords.Login])]
+    @Binding var selected: String?
+    let profileID: UUID
+    let open: (String) -> Void
+    @ViewBuilder var footer: Footer
+    @FocusState private var listFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: Look.inset * 2) {
+                    SettingsCard(divided: false) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(groups, id: \.host) { group in
+                                Button { open(group.host) } label: {
+                                    HStack(spacing: Look.inset * 1.5) {
+                                        PasswordSiteIcon(host: group.host, profileID: profileID)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(group.host).font(Look.text.weight(.medium)).foregroundStyle(Look.inkPrimary)
+                                                .lineLimit(1).truncationMode(.middle)
+                                            Text(group.logins.count == 1
+                                                 ? (group.logins[0].account.isEmpty ? "No username" : group.logins[0].account)
+                                                 : "\(group.logins.count) accounts")
+                                                .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                                                .lineLimit(1).truncationMode(.middle)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "chevron.right").foregroundStyle(Look.inkTertiary)
+                                    }
+                                    .padding(Look.cardInset).frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(selected == group.host ? Look.accentSelected : .clear)
+                                    .contentShape(.rect)
+                                }.buttonStyle(.plain).id(group.host)
+                                if group.host != groups.last?.host {
+                                    Hairline().padding(.horizontal, Look.cardInset)
+                                }
+                            }
+                        }
+                        .clipShape(.rect(cornerRadius: Look.cardRadius))
+                    }
+                    footer
+                }
+            }
+            .onChange(of: selected) {
+                guard let selected, groups.contains(where: { $0.host == selected }) else { return }
+                withAnimation(reduceMotion || batterySaver.isActive ? nil : Look.quick) {
+                    proxy.scrollTo(selected, anchor: .center)
+                }
+            }
+        }
+        .focusable().focused($listFocused).focusEffectDisabled()
+        .onKeyPress(.upArrow) { moveSite(-1) }
+        .onKeyPress(.downArrow) { moveSite(1) }
+        .onKeyPress(.return) {
+            guard let selected, groups.contains(where: { $0.host == selected }) else { return .ignored }
+            open(selected)
+            return .handled
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Saved passwords")
+    }
+
+    private func moveSite(_ delta: Int) -> KeyPress.Result {
+        let hosts = groups.map(\.host)
+        guard !hosts.isEmpty else { return .ignored }
+        selected = PasswordsPane.move(selected, in: hosts, by: delta)
         return .handled
     }
 }
