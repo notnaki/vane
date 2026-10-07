@@ -260,7 +260,7 @@ import LocalAuthentication
         } catch {}
     }
 
-    func testDefaultUnlockStaysInPageUntilAnAuthenticationAction() {
+    func testDefaultUnlockStaysInPageUntilEmbeddedAuthenticationStarts() {
         TestEnvironment.prepare()
         let store = TabStore(profileID: UUID(), session: [])
         defer { cleanUp(store) }
@@ -326,6 +326,42 @@ import LocalAuthentication
         error = nil
         XCTAssertFalse(cancelled.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error))
         XCTAssertEqual(error?.code, LAError.invalidContext.rawValue)
+    }
+
+    func testInlineControlAutomaticallyStartsOncePerLockedFolder() {
+        let control = FolderUnlockControl()
+        let folder = UUID()
+        XCTAssertFalse(control.beginAutomaticUnlock(for: folder, usingInline: false))
+        XCTAssertTrue(control.beginAutomaticUnlock(for: folder, usingInline: true))
+        XCTAssertTrue(control.authenticating)
+        XCTAssertFalse(control.beginAutomaticUnlock(for: folder, usingInline: true))
+        control.finish(false)
+        XCTAssertFalse(control.beginAutomaticUnlock(for: folder, usingInline: true),
+                       "A failed attempt must wait for an explicit retry rather than loop")
+        let retired = control.context
+        control.cancel()
+        XCTAssertTrue(control.beginAutomaticUnlock(for: UUID(), usingInline: true))
+        XCTAssertFalse(control.context === retired, "A different locked folder needs a fresh context")
+        XCTAssertFalse(control.failed)
+        control.cancel(leavingPage: true)
+        XCTAssertTrue(control.beginAutomaticUnlock(for: folder, usingInline: true),
+                      "Returning to a locked page should listen again")
+    }
+
+    func testInlineControlIgnoresCompletionFromReplacedAttempt() {
+        let control = FolderUnlockControl()
+        let first = UUID()
+        XCTAssertTrue(control.beginAutomaticUnlock(for: first, usingInline: true))
+        let retired = control.context
+        control.cancel()
+        XCTAssertTrue(control.beginAutomaticUnlock(for: UUID(), usingInline: true))
+        let active = control.context
+        control.finish(false, from: retired)
+        XCTAssertTrue(control.context === active)
+        XCTAssertTrue(control.authenticating)
+        XCTAssertFalse(control.failed)
+        control.finish(true, from: active)
+        XCTAssertFalse(control.authenticating)
     }
 
     func testUnavailableTouchIDAndSystemPreferenceOpenNativeAuthenticationDirectly() {

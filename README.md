@@ -109,7 +109,9 @@ exports its page link.
 
 Right-click a sidebar folder and choose **Lock Folder** to hide all of its tabs and
 nested folders. Click the locked folder to show its unlock controls in the page card. Touch ID
-authentication stays inline; **More unlock options…** opens macOS authentication,
+starts automatically when the locked page appears; touch the sensor to unlock without
+clicking another button. Authentication stays inline; **More unlock options…** opens macOS
+authentication,
 where you can choose your Mac login password. Without available Touch ID,
 **Unlock folder…** is the main action and uses macOS authentication.
 Settings → Profiles → Passwords → **Folder unlock method** can select **System**
