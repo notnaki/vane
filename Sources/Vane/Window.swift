@@ -645,6 +645,9 @@ extension VaneWindow {
         // straight into the Space being walked to — there is no intermediate Space to show.
         let arriving = parked(profile.id, in: window)
             ?? TabStore(profileID: profile.id, space: space)
+        // Visibility belongs to the window, across every Space and profile. Apply it
+        // before mounting the arriving host, including when reusing a parked profile.
+        arriving.sidebarShown = store.sidebarShown
         store.parkedIn = window
         store.window = nil
         arriving.parkedIn = nil
