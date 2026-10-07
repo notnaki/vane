@@ -9,6 +9,7 @@ struct LockedFolderPage: View {
     @EnvironmentObject var store: TabStore
     let folder: Folder
     @StateObject private var control = FolderUnlockControl()
+    @State private var usingPassword = false
     @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var method = FolderUnlockMethod.touchID
     private var hasTouchID: Bool {
         control.context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
@@ -46,6 +47,12 @@ struct LockedFolderPage: View {
                             ZStack {
                                 EmbeddedFolderAuthentication(context: control.context)
                                     .id(ObjectIdentifier(control.context))
+                                    .task {
+                                        guard !Task.isCancelled else { return }
+                                        if control.beginAutomaticUnlock(for: folder.id, usingInline: usesInline) {
+                                            unlock(password: false)
+                                        }
+                                    }
                                 Image(systemName: "touchid")
                                     .font(.system(size: 25, weight: .light))
                                     .foregroundStyle(Look.inkSecondary)
@@ -57,7 +64,7 @@ struct LockedFolderPage: View {
                         } else {
                             Image(systemName: "key.fill").font(.system(size: 13))
                         }
-                        Text(control.authenticating ? "Unlocking…" : (usesInline ? "Unlock with Touch ID" : "Unlock folder…"))
+                        Text(control.authenticating ? (usingPassword ? "Unlocking…" : "Touch the Touch ID sensor") : (usesInline ? "Unlock with Touch ID" : "Unlock folder…"))
                             .font(.system(size: 12, weight: .medium))
                     }
                     .padding(.horizontal, 14).padding(.vertical, 9)
@@ -71,9 +78,16 @@ struct LockedFolderPage: View {
                 .animation(Motion.reduced ? nil : Look.quick, value: control.authenticating)
                 HStack(spacing: 16) {
                     if usesInline {
-                        Button("More unlock options…") { unlock(password: true) }
+                        Button("More unlock options…") {
+                            if control.authenticating {
+                                // Retire the pending scan without dismissing the sidebar request.
+                                store.folderAuthentication.lock(folder.id, profile: store.profileID)
+                                control.cancel()
+                            }
+                            unlock(password: true)
+                        }
                             .help("Opens macOS authentication, where you can use your Mac login password.")
-                            .disabled(control.authenticating)
+                            .disabled(control.authenticating && usingPassword)
                     }
                     if store.folderUnlockRequest != nil {
                         Button("Cancel") { store.cancelFolderUnlock(); control.cancel() }
@@ -100,17 +114,20 @@ struct LockedFolderPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .accessibilityElement(children: .contain)
+        .onChange(of: folder.id) { control.cancel() }
         .onDisappear {
-            control.context.invalidate()
+            control.cancel(leavingPage: true)
             store.cancelFolderUnlock()
         }
     }
 
     private func unlock(password: Bool) {
+        usingPassword = password
         control.authenticating = true
         control.failed = false
+        let attemptedContext = control.context
         if store.folderUnlockRequest == nil, !store.usesInlineFolderUnlock {
-            store.unlockFolder(folder.id) { success in finish(success) }
+            store.unlockFolder(folder.id) { success in finish(success, from: attemptedContext) }
             return
         }
         if store.folderUnlockRequest == nil { store.unlockFolder(folder.id) }
@@ -129,11 +146,12 @@ struct LockedFolderPage: View {
                 return embedded
             }
         }
-        store.runFolderUnlock(using: authenticate) { success in finish(success) }
+        store.runFolderUnlock(using: authenticate) { success in finish(success, from: attemptedContext) }
     }
 
-    private func finish(_ success: Bool) {
-        Motion.list { control.finish(success) }
+    private func finish(_ success: Bool, from attemptedContext: LAContext) {
+        guard control.context === attemptedContext else { return }
+        Motion.list { control.finish(success, from: attemptedContext) }
         if success, let current = store.current { store.current = current }
     }
 }
@@ -144,21 +162,38 @@ struct LockedFolderPage: View {
     @Published var context = LAContext()
     @Published var authenticating = false
     @Published var failed = false
+    private var automaticFolder: UUID?
+
+    /// Context replacement reattaches the embedded view. Only a new folder may auto-start;
+    /// a failure or cancellation on the same page must not cause a retry loop.
+    func beginAutomaticUnlock(for folder: UUID, usingInline: Bool) -> Bool {
+        guard usingInline, !authenticating, automaticFolder != folder else { return false }
+        automaticFolder = folder
+        authenticating = true
+        failed = false
+        return true
+    }
+
+    func finish(_ success: Bool, from attemptedContext: LAContext) {
+        guard context === attemptedContext else { return }
+        finish(success)
+    }
 
     func finish(_ success: Bool) {
         cancel()
         failed = !success
     }
 
-    func cancel() {
+    func cancel(leavingPage: Bool = false) {
         context.invalidate()
         context = LAContext()
         authenticating = false
         failed = false
+        if leavingPage { automaticFolder = nil }
     }
 }
 
-/// The context is attached before the button can evaluate it, keeping biometric UI inline.
+/// The context is attached before the appearance task evaluates it, keeping biometric UI inline.
 private struct EmbeddedFolderAuthentication: NSViewRepresentable {
     let context: LAContext
     func makeNSView(context: Context) -> LAAuthenticationView {
