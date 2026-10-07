@@ -41,7 +41,17 @@ enum CSV {
 /// ponytail: no reading Chrome's Login Data + Safe Storage key, no Firefox NSS. One parser,
 /// no crypto, and it does not break the next time a vendor changes its at-rest format.
 enum PasswordImport {
-    struct Entry { let host: String, account: String, password: String }
+    struct Entry {
+        let origin: PasswordOrigin
+        let account: String, password: String
+        var host: String { origin.host }
+        init(host: String, account: String, password: String) {
+            self.init(origin: PasswordOrigin(host: host), account: account, password: password)
+        }
+        init(origin: PasswordOrigin, account: String, password: String) {
+            self.origin = origin; self.account = account; self.password = password
+        }
+    }
 
     private static let urlNames      = ["url", "website url", "login_uri", "web site", "hostname"]
     private static let accountNames  = ["username", "user name", "login_username", "login", "email"]
@@ -62,27 +72,26 @@ enum PasswordImport {
         for row in rows.dropFirst() {
             func field(_ i: Int?) -> String {
                 guard let i, i < row.count else { return "" }
-                return row[i].trimmingCharacters(in: .whitespaces)
+                return row[i]
             }
             let password = field(p)
-            guard !password.isEmpty, let host = host(from: field(u)) else { skipped += 1; continue }
-            entries.append(Entry(host: host, account: field(a), password: password))
+            guard !password.isEmpty, let origin = origin(from: field(u)) else { skipped += 1; continue }
+            entries.append(Entry(origin: origin, account: field(a), password: password))
         }
         return (entries, skipped)
     }
 
     /// Exports write anything from "https://site.com/login" to a bare "site.com".
-    private static func host(from raw: String) -> String? {
-        if let h = URLComponents(string: raw)?.host, !h.isEmpty { return h.lowercased() }
-        let bare = raw.replacingOccurrences(of: "^[a-z]+://", with: "", options: .regularExpression)
-        let host = bare.split(separator: "/").first.map(String.init) ?? ""
-        return host.contains(".") ? host.lowercased() : nil
+    private static func origin(from raw: String) -> PasswordOrigin? {
+        let raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = URL(string: raw.contains("://") ? raw : "https://" + raw)
+        return url.flatMap(PasswordOrigin.init(url:))
     }
 
     @discardableResult
     static func importFile(_ url: URL,
                            save: (Entry) -> Bool = {
-                               Passwords.save(host: $0.host, account: $0.account,
+                               Passwords.save(origin: $0.origin, account: $0.account,
                                               password: $0.password)
                            }) throws -> (imported: Int, skipped: Int, failed: Int) {
         let text = try String(contentsOf: url, encoding: .utf8)
@@ -111,7 +120,7 @@ enum PasswordImport {
         let alert = NSAlert()
         do {
             let result = try importFile(file, save: {
-                Passwords.save(host: $0.host, account: $0.account, password: $0.password,
+                Passwords.save(origin: $0.origin, account: $0.account, password: $0.password,
                                profileID: profileID)
             })
             alert.messageText = result.failed == 0

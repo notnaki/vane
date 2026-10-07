@@ -363,6 +363,14 @@ examples use `vane` as shorthand for that path.
 | `vane drmcheck` | Probe which encrypted-media key systems WebKit can initialize. |
 | `vane drmcheck <url>` | Check whether a protected video advances on a page. |
 
+Import from Arc reads local SQLite snapshots and decrypts supported `v10` credentials
+using Arc's Keychain Safe Storage key. Passwords keep their scheme and port; autofill
+uses HTTPS and matches the full origin. Existing Vane passwords are kept, and duplicate
+Arc logins use the most recently modified password (creation time in older schemas).
+Session imports preserve HttpOnly, SameSite, Secure, domain, path, and lifetime.
+Expired, partitioned, or unsupported cookies are skipped and reported; those sessions
+may need a fresh sign-in. No decrypted value is logged or written to an import file.
+
 Password exports contain plain text credentials. Delete a CSV export when you no
 longer need it. The same importer is available from Vane's Passwords UI.
 

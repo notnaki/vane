@@ -1198,10 +1198,11 @@ struct TitleReveal: Equatable, Sendable {
 
     /// Only ever over https — filling a saved password into a plaintext page hands it to
     /// anyone on the path, and saving one from there means it was already exposed.
-    private var secureHost: String? {
-        guard let u = existingWeb?.url, u.scheme == "https", let h = u.host else { return nil }
-        return h
+    private var secureOrigin: PasswordOrigin? {
+        guard let url = existingWeb?.url, url.scheme == "https" else { return nil }
+        return PasswordOrigin(url: url)
     }
+    private var secureHost: String? { secureOrigin?.host }
 
     /// One saved login fills straight in, the way it always has. Several put the list under
     /// the username field and wait — guessing which of your two accounts you meant is worse
@@ -1209,11 +1210,12 @@ struct TitleReveal: Equatable, Sendable {
     ///
     /// Names only until something is chosen: deciding *whether* to ask decrypts nothing.
     func fillPassword(announcing: Bool = false, automatic: Bool = false) {
-        guard let host = secureHost else {
+        guard let origin = secureOrigin else {
             if announcing { axAnnounce("No saved password for this page.") }
             return
         }
-        let hits = Passwords.matches(host: host, profileID: profileID)
+        let host = origin.host
+        let hits = Passwords.matches(origin: origin, profileID: profileID)
         guard hits.count > 1 else {
             if let one = hits.first {
                 fill(one, automatic: automatic)
@@ -1240,9 +1242,9 @@ struct TitleReveal: Equatable, Sendable {
     /// Fills both fields and remembers the choice, so this account leads the list next time.
     /// The password is read here and nowhere else, and lives exactly as long as the call.
     func fill(_ login: Passwords.Login, automatic: Bool = false) {
-        guard secureHost == login.host else { return }
+        guard secureOrigin == login.origin else { return }
         closeChooser(.filled)
-        guard let password = Passwords.password(host: login.host, account: login.account,
+        guard let password = Passwords.password(origin: login.origin, account: login.account,
                                                 profileID: profileID) else { return }
         let pageURL = web.url
         web.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
@@ -1253,7 +1255,7 @@ struct TitleReveal: Equatable, Sendable {
             guard let self, self.existingWeb?.url == pageURL, case let .success(value) = result else { return }
             if (value as? Bool) == true {
                 self.lastFilledAt = .now
-                Passwords.recordUse(host: login.host, account: login.account, profileID: self.profileID)
+                Passwords.recordUse(origin: login.origin, account: login.account, profileID: self.profileID)
             } else if !automatic {
                 axAnnounce("No sign-in form on this page.")
             }
@@ -1264,8 +1266,8 @@ struct TitleReveal: Equatable, Sendable {
     /// `passwordChoice`, because by the time a click completes the list may already be gone:
     /// the mouse-*down* takes first responder off the web view, the page reports that as a
     /// blur, and the blur is a dismiss. Reading the state here lost every click.
-    func fillChosen(host: String, account: String) {
-        guard let hit = Passwords.matches(host: host, profileID: profileID)
+    func fillChosen(host: String, account: String, port: Int = 443) {
+        guard let hit = Passwords.matches(origin: PasswordOrigin(host: host, port: port), profileID: profileID)
             .first(where: { $0.account == account })
         else { closeChooser(.filled); return }
         fill(hit)
@@ -1303,7 +1305,8 @@ struct TitleReveal: Equatable, Sendable {
         guard PasswordChooser.place(anchor: anchor, in: web.bounds.size,
                                     height: PasswordChooser.height(rows: accounts.count, in: web.bounds.size)) != nil
         else { return }
-        passwordChoice = PasswordChoice(host: host, accounts: accounts, anchor: anchor)
+        guard let origin = secureOrigin, origin.host == host else { return }
+        passwordChoice = PasswordChoice(port: origin.port, host: host, accounts: accounts, anchor: anchor)
     }
 
     func allowCertificateNavigation(to url: URL?) {
@@ -1649,7 +1652,8 @@ struct TitleReveal: Equatable, Sendable {
         guard let body = m.body as? [String: Any] else { return }
         guard m.name == "vanepw", m.frameInfo.isMainFrame,
               m.frameInfo.securityOrigin.protocol == "https",
-              m.frameInfo.securityOrigin.host == secureHost else { return }
+              m.frameInfo.securityOrigin.host == secureHost,
+              (m.frameInfo.securityOrigin.port == 0 ? 443 : m.frameInfo.securityOrigin.port) == secureOrigin?.port else { return }
         if body["ready"] as? Bool == true {
             fillPassword(automatic: true)
             return
@@ -1664,8 +1668,9 @@ struct TitleReveal: Equatable, Sendable {
         // saved login — one still fills from the menu command, silently. Names only: nothing
         // is decrypted to answer "is there a choice here".
         if body["focus"] as? Bool == true {
-            guard let host = secureHost else { return }
-            let hits = Passwords.matches(host: host, profileID: profileID)
+            guard let origin = secureOrigin else { return }
+            let host = origin.host
+            let hits = Passwords.matches(origin: origin, profileID: profileID)
             guard !hits.isEmpty else { return }
             openChooser(host: host, accounts: hits.map(\.account),
                         at: body.compactMapValues { $0 as? Double })
@@ -1679,16 +1684,17 @@ struct TitleReveal: Equatable, Sendable {
         let account = (body["account"] as? String) ?? ""
         // Already stored and unchanged — nothing to ask about. Only the account being
         // submitted is decrypted, and only to answer that one question.
-        let stored = Passwords.password(host: host, account: account, profileID: profileID)
+        guard let origin = secureOrigin else { return }
+        let stored = Passwords.password(origin: origin, account: account, profileID: profileID)
         if stored == password { return }
         passwordSaveProblem = nil
-        pendingSave = PendingSave(host: host, account: account, password: password,
+        pendingSave = PendingSave(port: origin.port, host: host, account: account, password: password,
                                   update: stored != nil)
     }
 
     func confirmSave() {
         guard let p = pendingSave else { return }
-        let stored = Passwords.save(host: p.host, account: p.account, password: p.password,
+        let stored = Passwords.save(origin: p.origin, account: p.account, password: p.password,
                                     profileID: profileID)
         guard stored else {
             passwordSaveProblem = PasswordsPane.saveFailed(host: p.host)
@@ -1720,7 +1726,7 @@ struct TitleReveal: Equatable, Sendable {
     func fillSelected() {
         guard let choice = passwordChoice,
               choice.accounts.indices.contains(choice.selected) else { return }
-        fillChosen(host: choice.host, account: choice.accounts[choice.selected])
+        fillChosen(host: choice.host, account: choice.accounts[choice.selected], port: choice.port)
     }
 
     func reload()     { if easelSession == nil { existingWeb?.reload() } }

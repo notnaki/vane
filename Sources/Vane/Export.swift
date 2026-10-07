@@ -346,8 +346,8 @@ import UniformTypeIdentifiers
         // Passwords owns the definition of "a credential Vane created"; duplicating its
         // creator code and security-domain rule here would break silently if either moved.
         Passwords.all(profileID: profileID).compactMap { login in
-            Passwords.password(host: login.host, account: login.account, profileID: profileID)
-                .map { PasswordImport.Entry(host: login.host, account: login.account,
+            Passwords.password(origin: login.origin, account: login.account, profileID: profileID)
+                .map { PasswordImport.Entry(origin: login.origin, account: login.account,
                                             password: $0) }
         }
     }
@@ -357,7 +357,7 @@ import UniformTypeIdentifiers
     /// `PasswordImport` copes with a bare host, but 1Password and Bitwarden want the scheme.
     static func passwordsCSV(_ entries: [PasswordImport.Entry]) -> String {
         csv([["name", "url", "username", "password", "note"]] + entries.map {
-            [$0.host, "https://" + $0.host, $0.account, $0.password, ""]
+            [$0.host, $0.origin.url.absoluteString, $0.account, $0.password, ""]
         })
     }
 

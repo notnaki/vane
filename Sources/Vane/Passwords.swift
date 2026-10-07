@@ -12,14 +12,22 @@ enum Passwords {
     /// Deliberately *not* the password — a password is read one item at a time, at the
     /// moment something actually needs it, and is never held anywhere that outlives the use.
     struct Login: Identifiable, Hashable, Sendable {
-        let host: String
+        let origin: PasswordOrigin
         let account: String
+        var host: String { origin.host }
+        init(host: String, account: String) {
+            self.init(origin: PasswordOrigin(host: host), account: account)
+        }
+        init(origin: PasswordOrigin, account: String) {
+            self.origin = origin
+            self.account = account
+        }
         /// Host and account are the keychain's own primary key for the item, so they are
         /// also what "the same login" means everywhere else — last-used included.
-        var id: String { Passwords.key(host: host, account: account) }
+        var id: String { origin.key(account: account) }
     }
 
-    static func key(host: String, account: String) -> String { host + "\n" + account }
+    static func key(host: String, account: String) -> String { PasswordOrigin(host: host).key(account: account) }
 
     /// ponytail: local items only. Add kSecAttrSynchronizable once the app has a real
     /// Developer ID, and they ride iCloud Keychain to the user's other machines.
@@ -57,10 +65,15 @@ enum Passwords {
 
     private static func query(host: String, account: String? = nil,
                               profileID: UUID) -> [String: Any] {
+        query(origin: PasswordOrigin(host: host), account: account, profileID: profileID)
+    }
+
+    private static func query(origin: PasswordOrigin, account: String? = nil,
+                              profileID: UUID) -> [String: Any] {
         var q: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
-            kSecAttrServer as String: host,
-            kSecAttrProtocol as String: kSecAttrProtocolHTTPS,
+            kSecAttrServer as String: origin.host,
+            kSecAttrProtocol as String: origin.keychainProtocol,
             kSecAttrCreator as String: creator,
         ]
         if let account { q[kSecAttrAccount as String] = account }
@@ -87,8 +100,8 @@ enum Passwords {
     /// host+account query is exactly the one that fails open for the default profile.
     /// A persistent ref names *that* item and nothing else, so the read or the delete that
     /// follows cannot land on a neighbour.
-    private static func ref(host: String, account: String, profileID: UUID) -> Data? {
-        var q = query(host: host, account: account, profileID: profileID)
+    private static func ref(origin: PasswordOrigin, account: String, profileID: UUID) -> Data? {
+        var q = query(origin: origin, account: account, profileID: profileID)
         q[kSecReturnAttributes as String] = true
         q[kSecReturnPersistentRef as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitAll
@@ -98,6 +111,7 @@ enum Passwords {
         let scope = domain(profileID)
         return items.first {
             owns(scope: scope, itemDomain: $0[kSecAttrSecurityDomain as String] as? String)
+                && PasswordOrigin(attributes: $0) == origin
         }?[kSecValuePersistentRef as String] as? Data
     }
 
@@ -111,17 +125,24 @@ enum Passwords {
     @discardableResult
     static func save(host: String, account: String, password: String,
                      profileID: UUID = ProfileManager.activeProfileID) -> Bool {
+        save(origin: PasswordOrigin(host: host), account: account, password: password, profileID: profileID)
+    }
+
+    @discardableResult
+    static func save(origin: PasswordOrigin, account: String, password: String,
+                     profileID: UUID = ProfileManager.activeProfileID, replacingExisting: Bool = true) -> Bool {
         defer { invalidate() }
         // Add first, then update: a failed add must not leave the login gone. The add comes
         // back errSecDuplicateItem when one is already there, which is the signal to replace
         // its data in place — but only if that item is *ours*, which `ref` is what decides.
-        var add = query(host: host, account: account, profileID: profileID)
+        var add = query(origin: origin, account: account, profileID: profileID)
+        if !origin.isDefaultPort { add[kSecAttrPort as String] = origin.port }
         add[kSecValueData as String] = Data(password.utf8)
-        add[kSecAttrLabel as String] = "\(host) (Vane)"
+        add[kSecAttrLabel as String] = "\(origin.url.absoluteString) (Vane)"
         let status = SecItemAdd(add as CFDictionary, nil)
         if status == errSecSuccess { return true }
-        guard status == errSecDuplicateItem,
-              let existing = ref(host: host, account: account, profileID: profileID)
+        guard replacingExisting, status == errSecDuplicateItem,
+              let existing = ref(origin: origin, account: account, profileID: profileID)
         else { return false }
         return SecItemUpdate([kSecValuePersistentRef as String: existing] as CFDictionary,
                              [kSecValueData as String: Data(password.utf8)] as CFDictionary)
@@ -182,6 +203,7 @@ enum Passwords {
         let scope = domain(profileID)
         return .found(items.filter {
             owns(scope: scope, itemDomain: $0[kSecAttrSecurityDomain as String] as? String)
+                && PasswordOrigin(attributes: $0) == PasswordOrigin(host: host)
         })
     }
 
@@ -252,7 +274,12 @@ enum Passwords {
     /// needs a password, and answering that must not decrypt anything.
     static func matches(host: String,
                         profileID: UUID = ProfileManager.activeProfileID) -> [Login] {
-        rank(all(profileID: profileID).filter { $0.host == host },
+        matches(origin: PasswordOrigin(host: host), profileID: profileID)
+    }
+
+    static func matches(origin: PasswordOrigin,
+                        profileID: UUID = ProfileManager.activeProfileID) -> [Login] {
+        rank(all(profileID: profileID).filter { $0.origin == origin },
              used: lastUsed(profileID: profileID))
     }
 
@@ -260,7 +287,12 @@ enum Passwords {
     /// caches what comes back out of it.
     static func password(host: String, account: String,
                          profileID: UUID = ProfileManager.activeProfileID) -> String? {
-        guard let ref = ref(host: host, account: account, profileID: profileID) else { return nil }
+        password(origin: PasswordOrigin(host: host), account: account, profileID: profileID)
+    }
+
+    static func password(origin: PasswordOrigin, account: String,
+                         profileID: UUID = ProfileManager.activeProfileID) -> String? {
+        guard let ref = ref(origin: origin, account: account, profileID: profileID) else { return nil }
         var out: CFTypeRef?
         guard SecItemCopyMatching([
             kSecClass as String: kSecClassInternetPassword,
@@ -332,21 +364,27 @@ enum Passwords {
               let items = out as? [[String: Any]] else { return [] }
 
         return items.compactMap { item -> Login? in
-            guard let host = item[kSecAttrServer as String] as? String,
+            guard let origin = PasswordOrigin(attributes: item),
                   owns(scope: scope, itemDomain: item[kSecAttrSecurityDomain as String] as? String)
             else { return nil }
-            return Login(host: host, account: item[kSecAttrAccount as String] as? String ?? "")
+            return Login(origin: origin, account: item[kSecAttrAccount as String] as? String ?? "")
         }.sorted { ($0.host, $0.account) < ($1.host, $1.account) }
     }
 
     @discardableResult
     static func delete(host: String, account: String,
                        profileID: UUID = ProfileManager.activeProfileID) -> Bool {
-        defer { invalidate(); forgetUse(host: host, account: account, profileID: profileID) }
+        delete(origin: PasswordOrigin(host: host), account: account, profileID: profileID)
+    }
+
+    @discardableResult
+    static func delete(origin: PasswordOrigin, account: String,
+                       profileID: UUID = ProfileManager.activeProfileID) -> Bool {
+        defer { invalidate(); forgetUse(origin: origin, account: account, profileID: profileID) }
         // By reference, not by host+account: the default profile's query also matches every
         // other profile's item for the same site, and a delete that hits one of those is a
         // login silently gone from a profile the user was not even looking at.
-        guard let ref = ref(host: host, account: account, profileID: profileID) else { return false }
+        guard let ref = ref(origin: origin, account: account, profileID: profileID) else { return false }
         return SecItemDelete([
             kSecClass as String: kSecClassInternetPassword,
             kSecValuePersistentRef as String: ref,
@@ -369,16 +407,25 @@ enum Passwords {
 
     static func recordUse(host: String, account: String,
                           profileID: UUID = ProfileManager.activeProfileID) {
+        recordUse(origin: PasswordOrigin(host: host), account: account, profileID: profileID)
+    }
+
+    static func recordUse(origin: PasswordOrigin, account: String,
+                          profileID: UUID = ProfileManager.activeProfileID) {
         var d = UserDefaults.vane.dictionary(forKey: usedKey(profileID)) ?? [:]
-        d[key(host: host, account: account)] = Date.now.timeIntervalSince1970
+        d[origin.key(account: account)] = Date.now.timeIntervalSince1970
         UserDefaults.vane.set(d, forKey: usedKey(profileID))
     }
 
     /// A deleted login must not leave its timestamp behind to promote the next login that
     /// happens to be saved under the same host and account.
     private static func forgetUse(host: String, account: String, profileID: UUID) {
+        forgetUse(origin: PasswordOrigin(host: host), account: account, profileID: profileID)
+    }
+
+    private static func forgetUse(origin: PasswordOrigin, account: String, profileID: UUID) {
         var d = UserDefaults.vane.dictionary(forKey: usedKey(profileID)) ?? [:]
-        guard d.removeValue(forKey: key(host: host, account: account)) != nil else { return }
+        guard d.removeValue(forKey: origin.key(account: account)) != nil else { return }
         UserDefaults.vane.set(d, forKey: usedKey(profileID))
     }
 
@@ -418,9 +465,14 @@ enum Passwords {
     /// that login to the bottom of its own site's chooser.
     static func renameUse(host: String, from: String, to: String,
                           profileID: UUID = ProfileManager.activeProfileID) {
+        renameUse(origin: PasswordOrigin(host: host), from: from, to: to, profileID: profileID)
+    }
+
+    static func renameUse(origin: PasswordOrigin, from: String, to: String,
+                          profileID: UUID = ProfileManager.activeProfileID) {
         var d = UserDefaults.vane.dictionary(forKey: usedKey(profileID)) ?? [:]
-        guard let when = d.removeValue(forKey: key(host: host, account: from)) else { return }
-        d[key(host: host, account: to)] = when
+        guard let when = d.removeValue(forKey: origin.key(account: from)) else { return }
+        d[origin.key(account: to)] = when
         UserDefaults.vane.set(d, forKey: usedKey(profileID))
     }
 
@@ -484,9 +536,9 @@ enum Passwords {
               let items = out as? [[String: Any]] else { return }
         for item in items {
             guard owns(scope: nil, itemDomain: item[kSecAttrSecurityDomain as String] as? String),
-                  let host = item[kSecAttrServer as String] as? String,
+                  let origin = PasswordOrigin(attributes: item),
                   let account = item[kSecAttrAccount as String] as? String else { continue }
-            delete(host: host, account: account, profileID: profileID)
+            delete(origin: origin, account: account, profileID: profileID)
         }
     }
 
@@ -556,6 +608,8 @@ enum Passwords {
 
 /// A save offer waiting on the user. Held only until they answer.
 struct PendingSave: Equatable, Identifiable {
+    var port: Int = 443
+    var origin: PasswordOrigin { PasswordOrigin(host: host, port: port) }
     let id = UUID()
     let host: String
     let account: String
@@ -576,6 +630,7 @@ struct PendingSave: Equatable, Identifiable {
 /// one saved login. Usernames only — the passwords stay in the keychain until one is picked,
 /// so nothing secret sits in view state waiting to be screenshotted or read by VoiceOver.
 struct PasswordChoice: Equatable {
+    var port: Int = 443
     let host: String
     let accounts: [String]
     /// Under the username field, in the web view's own coordinates.
