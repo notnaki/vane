@@ -303,40 +303,50 @@ struct BrowserProfile {
         }
     }
 
-    nonisolated private static let sidecars = ["", "-wal", "-shm", "-journal"]
-
-    /// Copy before opening: the other browser is probably running and holds a lock, and the
-    /// newest rows may still be sitting in the WAL sidecar rather than the main file — so
-    /// the sidecars have to travel with it or the import silently misses recent history.
-    /// Not private, because `ArcImport` reads `Login Data` and `Cookies` out of the same
-    /// profile directories and must copy them the same way — Arc is running while the import
-    /// is, and the newest rows of both are in the WAL sidecar.
+    /// SQLite's backup API makes a consistent snapshot, including committed WAL rows,
+    /// while the source browser is running. The source connection is read-only and the
+    /// snapshot lives in memory, so no credential database is copied to temporary files.
     nonisolated static func query(_ file: URL, _ sql: String, _ row: (OpaquePointer) -> Void) throws {
-        try guardReadable(file)
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vane-import-\(UUID().uuidString)")
-        defer { for s in sidecars { try? FileManager.default.removeItem(atPath: tmp.path + s) } }
-        for s in sidecars {
-            guard FileManager.default.fileExists(atPath: file.path + s) else { continue }
-            do { try FileManager.default.copyItem(atPath: file.path + s, toPath: tmp.path + s) }
-            catch {
-                // Losing a sidecar only costs the most recent rows; losing the main file
-                // means there is nothing to import at all.
-                if s.isEmpty { throw Failure("could not read \(file.lastPathComponent): \(error.localizedDescription)") }
-            }
-        }
+        try snapshot(file) { db in try query(db: db, file: file, sql: sql, row) }
+    }
 
-        var db: OpaquePointer?
-        defer { sqlite3_close(db) }
-        guard sqlite3_open_v2(tmp.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+    nonisolated static func snapshot(_ file: URL, _ read: (OpaquePointer) throws -> Void) throws {
+        try guardReadable(file)
+        var source: OpaquePointer?
+        defer { sqlite3_close(source) }
+        guard sqlite3_open_v2(file.path, &source, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             throw Failure("\(file.lastPathComponent) is not a database Vane can read.")
         }
+        sqlite3_busy_timeout(source, 1_000)
+        var db: OpaquePointer?
+        defer { sqlite3_close(db) }
+        guard sqlite3_open(":memory:", &db) == SQLITE_OK,
+              let backup = sqlite3_backup_init(db, "main", source, "main") else {
+            throw Failure("Could not snapshot \(file.lastPathComponent).")
+        }
+        let copied = sqlite3_backup_step(backup, -1)
+        let finished = sqlite3_backup_finish(backup)
+        guard copied == SQLITE_DONE, finished == SQLITE_OK else {
+            throw Failure("Could not snapshot \(file.lastPathComponent): \(String(cString: sqlite3_errmsg(db)))")
+        }
+        try read(db!)
+    }
+
+    nonisolated static func query(db: OpaquePointer, file: URL, sql: String,
+                                 _ row: (OpaquePointer) -> Void) throws {
         var st: OpaquePointer?
         defer { sqlite3_finalize(st) }
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else {
             throw Failure("\(file.lastPathComponent): \(String(cString: sqlite3_errmsg(db)))")
         }
-        while sqlite3_step(st) == SQLITE_ROW { row(st!) }
+        var status = sqlite3_step(st)
+        while status == SQLITE_ROW {
+            row(st!)
+            status = sqlite3_step(st)
+        }
+        guard status == SQLITE_DONE else {
+            throw Failure("Could not finish reading \(file.lastPathComponent): \(String(cString: sqlite3_errmsg(db)))")
+        }
     }
 
     private static func text(_ st: OpaquePointer, _ col: Int32) -> String {

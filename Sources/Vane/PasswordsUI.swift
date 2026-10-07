@@ -213,6 +213,9 @@ import SwiftUI
         let shown = secrets.revealed[login.id]
         return SettingsCard {
             VStack(alignment: .leading, spacing: Look.cardInset) {
+                if login.origin.scheme != "https" || !login.origin.isDefaultPort {
+                    Text(login.origin.url.absoluteString).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                }
                 VStack(alignment: .leading, spacing: Look.inset) {
                     Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
                     HStack {
@@ -277,7 +280,7 @@ import SwiftUI
                 Button("Cancel") { secrets.adding = false; forgetSecrets() }.keyboardShortcut(.cancelAction)
                 Button("Save") { addPassword() }.keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(Self.siteHost(draftSite) == nil || secrets.draftPassword.isEmpty)
+                    .disabled(Self.siteOrigin(draftSite) == nil || secrets.draftPassword.isEmpty)
             }
         }.padding(24).frame(width: 400)
     }
@@ -289,13 +292,14 @@ import SwiftUI
     }
 
     private func addPassword() {
-        guard let host = Self.siteHost(draftSite), !secrets.draftPassword.isEmpty else { return }
+        guard let origin = Self.siteOrigin(draftSite), !secrets.draftPassword.isEmpty else { return }
+        let host = origin.host
         let account = secrets.draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !logins.contains(where: { $0.host == host && $0.account == account }) else {
+        guard !logins.contains(where: { $0.origin == origin && $0.account == account }) else {
             addProblem = "This login already exists. Open it and choose Edit to change it."
             return
         }
-        guard Passwords.save(host: host, account: account, password: secrets.draftPassword, profileID: profileID) else {
+        guard Passwords.save(origin: origin, account: account, password: secrets.draftPassword, profileID: profileID) else {
             addProblem = Self.saveFailed(host: host); return
         }
         Passwords.allowSaving(host: host, profileID: profileID)
@@ -337,7 +341,7 @@ import SwiftUI
         }
         let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("show the password for \(login.host)") { ok in
-            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
+            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(origin: login.origin, account: login.account,
                                                      profileID: scope) else { return }
             secrets.revealed[login.id] = plain
             axAnnounce("Password for \(login.host) shown.")
@@ -380,7 +384,7 @@ import SwiftUI
         }
         let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("copy the password for \(login.host)") { ok in
-            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
+            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(origin: login.origin, account: login.account,
                                                      profileID: scope) else { return }
             copy(plain, secret: true)
             axAnnounce("Password copied.")
@@ -394,7 +398,7 @@ import SwiftUI
         problem = nil; feedback = nil
         let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("edit the saved login for \(login.host)") { ok in
-            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(host: login.host, account: login.account,
+            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(origin: login.origin, account: login.account,
                                                      profileID: scope) else { return }
             selected = login.id
             secrets.editing = login.id
@@ -422,12 +426,12 @@ import SwiftUI
         // into one and take the other one's password with it. That is a delete wearing a
         // rename's clothes, so it is refused rather than guessed at.
         if let clash = PasswordsPane.renameClash(logins, host: login.host,
-                                                 from: login.account, to: account) {
+                                                 from: login.account, to: account, origin: login.origin) {
             problem = clash
             axAnnounce(clash)
             return
         }
-        guard Passwords.save(host: login.host, account: account, password: secrets.draftPassword,
+        guard Passwords.save(origin: login.origin, account: account, password: secrets.draftPassword,
                              profileID: profileID) else {
             problem = PasswordsPane.saveFailed(host: login.host)
             axAnnounce(problem ?? "")
@@ -435,9 +439,9 @@ import SwiftUI
         }
         problem = nil
         if account != login.account {
-            Passwords.renameUse(host: login.host, from: login.account, to: account,
+            Passwords.renameUse(origin: login.origin, from: login.account, to: account,
                                 profileID: profileID)
-            guard Passwords.delete(host: login.host, account: login.account, profileID: profileID) else {
+            guard Passwords.delete(origin: login.origin, account: login.account, profileID: profileID) else {
                 problem = "The new login was saved, but the original login could not be removed. Both are listed below."
                 forgetSecrets(); reload()
                 axAnnounce(problem ?? "")
@@ -446,14 +450,14 @@ import SwiftUI
         }
         forgetSecrets()
         feedback = "Password updated"
-        selected = Passwords.key(host: login.host, account: account)
+        selected = login.origin.key(account: account)
         reload()
     }
 
     private func remove(_ login: Passwords.Login) {
         guard confirm("Delete the saved login for \(login.host)?", "Delete",
                       PasswordsPane.deleteDetail(login)) else { return }
-        guard Passwords.delete(host: login.host, account: login.account, profileID: profileID) else {
+        guard Passwords.delete(origin: login.origin, account: login.account, profileID: profileID) else {
             problem = "Vane could not delete this login. Check Keychain access and try again."
             axAnnounce(problem ?? "")
             return
@@ -571,6 +575,13 @@ import SwiftUI
 enum RowCommand: Equatable { case up, down, delete, copy }
 
 extension PasswordsPane {
+    static func siteOrigin(_ raw: String) -> PasswordOrigin? {
+        let raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard siteHost(raw) != nil,
+              let url = URL(string: raw.contains("://") ? raw : "https://" + raw) else { return nil }
+        return PasswordOrigin(url: url)
+    }
+
     static func siteHost(_ value: String) -> String? {
         let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !text.contains(where: \.isWhitespace),
@@ -619,9 +630,10 @@ extension PasswordsPane {
     /// Why a rename is refused, or nil when it is fine. Named so the wording can be
     /// asserted, and pure so the rule is not buried in a view.
     static func renameClash(_ logins: [Passwords.Login], host: String,
-                           from: String, to: String) -> String? {
+                           from: String, to: String, origin: PasswordOrigin? = nil) -> String? {
+        let origin = origin ?? PasswordOrigin(host: host)
         guard from != to,
-              logins.contains(where: { $0.host == host && $0.account == to })
+              logins.contains(where: { $0.origin == origin && $0.account == to })
         else { return nil }
         return "\(host) already has a login for \u{201C}\(to)\u{201D}. "
             + "Delete that one first, or pick another username."
@@ -774,7 +786,7 @@ struct PasswordChooser: View {
                     PasswordChooserCard(choice: choice, profileID: tab.profileID,
                         width: PasswordChooser.width(of: choice.anchor, in: geo.size),
                         height: PasswordChooser.height(rows: choice.accounts.count, in: geo.size),
-                        fill: { tab.fillChosen(host: choice.host, account: $0) },
+                        fill: { tab.fillChosen(host: choice.host, account: $0, port: choice.port) },
                         manage: {
                             tab.closeChooser(.escape)
                             SettingsWindow.show(tab: "passwords", profileID: tab.profileID)

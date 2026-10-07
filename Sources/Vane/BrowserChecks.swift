@@ -158,6 +158,7 @@ import WebKit
                 try require(!firstPage.canGoBack,
                             "the first navigation has no synthetic blank page to go back to")
                 print("PERF first local page: \(firstPageStart.duration(to: .now)), view setup=\(firstViewTime)")
+                try await arcCookieChecks(firstPage, profile: profile)
                 try await parkedStartupChecks(base: base)
                 try await faviconChecks(base: base, server: server)
                 let tab = makeTab(profile: profile)
@@ -1232,6 +1233,28 @@ import WebKit
             try await wait("load \(path)") { tab.web.url?.path == path && tab.web.title == title && !tab.web.isLoading }
             let ready = try await js(tab, "document.readyState")
             guard ready as? String == "complete" else { throw Failure("\(path) did not finish loading") }
+        }
+
+        private func arcCookieChecks(_ tab: Tab, profile: UUID) async throws {
+            let row = ArcImport.Vault.Cookie(host: "127.0.0.1", name: "arc_private_fixture", path: "/",
+                                             value: Data(), expires: 0, secure: false,
+                                             httpOnly: true, sameSite: 2)
+            guard let cookie = ArcImport.cookie(row, value: "fixture-token") else {
+                throw Failure("Arc's cookie fixture could not be constructed")
+            }
+            let store = ProfileManager.dataStore(for: profile).httpCookieStore
+            await store.setCookie(cookie)
+            defer { Task { await store.deleteCookie(cookie) } }
+            let stored = await store.allCookies().first { $0.name == cookie.name }
+            try require(stored?.isHTTPOnly == true && stored?.sameSitePolicy?.rawValue == "strict",
+                        "Arc cookies retain HttpOnly and SameSite in WebKit storage")
+            let visible = try await js(tab, "document.cookie") as? String ?? ""
+            try require(!visible.contains("arc_private_fixture"),
+                        "page JavaScript cannot read imported HttpOnly session cookies")
+            _ = try await js(tab, "document.cookie = 'arc_private_fixture=script-overwrite; Path=/'")
+            let afterScript = await store.allCookies().first { $0.name == cookie.name }
+            try require(afterScript?.value == "fixture-token" && afterScript?.isHTTPOnly == true,
+                        "page JavaScript cannot overwrite imported HttpOnly session cookies")
         }
 
         private func js(_ tab: Tab, _ source: String, world: WKContentWorld = .page) async throws -> Any? {

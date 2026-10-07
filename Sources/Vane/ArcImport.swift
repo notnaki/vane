@@ -336,7 +336,8 @@ enum SafeStorage {
     ///
     /// nil for anything that does not come out as UTF-8: a value encrypted under a different
     /// key, a truncated row, or a profile whose keychain item is not the one we read.
-    static func decrypt(_ value: Data, key: Data, hostKey: String? = nil) -> String? {
+    static func decrypt(_ value: Data, key: Data, hostKey: String? = nil,
+                        requiresHostHash: Bool = false) -> String? {
         guard key.count == keyLength, value.count > prefix.count,
               value.prefix(prefix.count) == prefix else { return nil }
         let body = Data(value.dropFirst(prefix.count))
@@ -364,7 +365,7 @@ enum SafeStorage {
             let hash = Data(SHA256.hash(data: Data(hostKey.utf8)))
             if out.count >= hash.count, out.prefix(hash.count) == hash {
                 out = out.dropFirst(hash.count)
-            }
+            } else if requiresHostHash { return nil }
         }
         return String(data: out, encoding: .utf8)
     }
@@ -451,9 +452,22 @@ enum ArcImport {
     struct Vault: Sendable {
         let directory: String
         let path: URL
-        var logins: [(origin: String, account: String, value: Data)] = []
-        var cookies: [(host: String, name: String, path: String, value: Data,
-                       expires: Int64, secure: Bool)] = []
+        struct Login: Sendable {
+            let origin: String, account: String, value: Data
+            var blocked = false
+            var scheme = 0
+        }
+        struct Cookie: Sendable {
+            let host: String, name: String, path: String, value: Data
+            let expires: Int64, secure: Bool
+            var httpOnly = false
+            var sameSite = -1
+            var partitioned = false
+            var plaintext = ""
+        }
+        var logins: [Login] = []
+        var cookies: [Cookie] = []
+        var cookieVersion: Int?
         /// Files Arc still has that would not open. Zero cookies and "Vane could not read
         /// your cookies" are different answers, and the second one used to be reported as
         /// the first because the read was a `try?`.
@@ -464,12 +478,12 @@ enum ArcImport {
     /// decision that needs Vane — which profile already has this login, which data store a
     /// cookie belongs in — is made on the main actor from these and the AES is not.
     struct Opened: Sendable {
-        var logins: [(host: String, account: String, password: String)] = []
-        var cookies: [(host: String, name: String, path: String, value: String,
-                       expires: Int64, secure: Bool)] = []
+        var logins: [(origin: PasswordOrigin, account: String, password: String)] = []
+        var cookies: [HTTPCookie] = []
+        var cookiesSkipped = 0
         /// Rows Vane will not save and nothing was lost by not saving: Chromium writes a site
-        /// you told it never to save as a login with an empty username, and an origin with no
-        /// host in it names nothing. Counted apart from the ones already here, which they
+        /// you told it never to save with a separate blocklist flag, and an unsupported
+        /// origin names no credential Vane can fill. Counted apart from the ones already here, which they
         /// used to inflate.
         var skipped = 0
         /// Rows the key would not open. All of them, with a key in hand, is the wrong key.
@@ -489,7 +503,7 @@ enum ArcImport {
 
         /// Arc's `User Data`, where the Chromium half of the installation lives.
         var userData: URL { root.appendingPathComponent("User Data") }
-        var passwordCount: Int { vaults.values.reduce(0) { $0 + $1.logins.count } }
+        var passwordCount: Int { vaults.values.reduce(0) { $0 + $1.logins.filter { !$0.blocked && !$0.value.isEmpty }.count } }
         var cookieCount: Int { vaults.values.reduce(0) { $0 + $1.cookies.count } }
         var pinnedCount: Int { sidebar.spaces.reduce(0) { $0 + ArcSidebar.flatten($1.pinned).count } }
     }
@@ -500,7 +514,7 @@ enum ArcImport {
         var profiles = 0, spaces = 0, spacesSkipped = 0
         var favourites = 0, liveFolders = 0
         var passwords = 0, passwordsAlready = 0, passwordsSkipped = 0
-        var cookies = 0, history = 0, bookmarks = 0
+        var cookies = 0, cookiesSkipped = 0, history = 0, bookmarks = 0
         var historyImportFailures: [String] = []
         /// Rows the Safe Storage key would not open, of either kind.
         var locked = 0
@@ -516,7 +530,7 @@ enum ArcImport {
         /// another browser, or an Arc that has re-keyed since — and "0 passwords" on its own
         /// reads as "Arc had none", which is the opposite of what happened.
         var wrongKey: Bool {
-            !noKey && locked > 0 && refused == 0 && passwords == 0 && cookies == 0
+            !noKey && locked > 0 && refused == 0 && passwords == 0 && passwordsAlready == 0 && cookies == 0
         }
     }
 
@@ -529,8 +543,8 @@ enum ArcImport {
         return Data(bytes: bytes, count: Int(sqlite3_column_bytes(st, col)))
     }
 
-    /// Read one Arc profile directory's encrypted rows. Both files are copied before they are
-    /// opened — see `BrowserImport.query` — so Arc can stay open the whole time, which is the
+    /// Read one Arc profile directory's encrypted rows using consistent SQLite snapshots
+    /// (see `BrowserImport.query`), so Arc can stay open the whole time, which is the
     /// difference between an import the user can run now and one that starts with "quit Arc".
     ///
     /// A missing file leaves its list empty and takes nothing else with it: a profile with no
@@ -541,21 +555,65 @@ enum ArcImport {
     /// `nonisolated`: this is a file copy and a `sqlite3_step` loop over a profile that can
     /// hold six figures of rows, and running it on the main actor froze the window between
     /// the panel and the summary alert. Nothing in it is UI.
-    nonisolated private static func read(vault directory: String, at path: URL) -> Vault {
+    nonisolated static func read(vault directory: String, at path: URL) -> Vault {
         var vault = Vault(directory: directory, path: path)
-        func read(_ name: String, _ sql: String, _ row: (OpaquePointer) -> Void) {
-            let file = path.appendingPathComponent(name)
-            guard FileManager.default.fileExists(atPath: file.path) else { return }
-            do { try BrowserImport.query(file, sql, row) } catch { vault.unreadable += 1 }
+        let loginFile = path.appendingPathComponent("Login Data")
+        if FileManager.default.fileExists(atPath: loginFile.path) {
+            do {
+                try BrowserImport.snapshot(loginFile) { db in
+                    var columns = Set<String>()
+                    try BrowserImport.query(db: db, file: loginFile, sql: "PRAGMA table_info(logins)") {
+                        columns.insert(text($0, 1))
+                    }
+                    // Updated credentials win even when their form row was created earlier.
+                    // Older schemas have no modification timestamp; use creation time there.
+                    let newest = columns.contains("date_password_modified")
+                        ? "COALESCE(NULLIF(date_password_modified, 0), date_created)" : "date_created"
+                    let scheme = columns.contains("scheme") ? "scheme" : "0"
+                    var logins: [Vault.Login] = []
+                    try BrowserImport.query(db: db, file: loginFile, sql: """
+                        SELECT origin_url, username_value, password_value, blacklisted_by_user, \(scheme)
+                        FROM logins ORDER BY \(newest) DESC, date_created DESC, rowid DESC
+                        """) {
+                        logins.append(.init(origin: text($0, 0), account: text($0, 1), value: blob($0, 2),
+                                            blocked: sqlite3_column_int($0, 3) != 0,
+                                            scheme: Int(sqlite3_column_int($0, 4))))
+                    }
+                    vault.logins = logins
+                }
+            } catch { vault.unreadable += 1 }
         }
-        read("Login Data", """
-            SELECT origin_url, username_value, password_value FROM logins
-            """) { vault.logins.append((text($0, 0), text($0, 1), blob($0, 2))) }
-        read("Cookies", """
-            SELECT host_key, name, path, encrypted_value, expires_utc, is_secure FROM cookies
-            """) {
-            vault.cookies.append((text($0, 0), text($0, 1), text($0, 2), blob($0, 3),
-                                  sqlite3_column_int64($0, 4), sqlite3_column_int($0, 5) != 0))
+        let cookieFile = path.appendingPathComponent("Cookies")
+        if FileManager.default.fileExists(atPath: cookieFile.path) {
+            do {
+                try BrowserImport.snapshot(cookieFile) { db in
+                    var version: Int?
+                    try BrowserImport.query(db: db, file: cookieFile, sql: "SELECT value FROM meta WHERE key = 'version'") {
+                        version = Int(text($0, 0))
+                    }
+                    guard let version else { throw BrowserImport.Failure("Unknown cookie database version") }
+                    var columns = Set<String>()
+                    try BrowserImport.query(db: db, file: cookieFile, sql: "PRAGMA table_info(cookies)") {
+                        columns.insert(text($0, 1))
+                    }
+                    let partition = columns.contains("top_frame_site_key") ? "top_frame_site_key" : "''"
+                    var cookies: [Vault.Cookie] = []
+                    try BrowserImport.query(db: db, file: cookieFile, sql: """
+                        SELECT host_key, name, path, encrypted_value, expires_utc, is_secure,
+                               is_httponly, samesite, \(partition), value, has_expires, is_persistent FROM cookies
+                        """) {
+                        let persistent = sqlite3_column_int($0, 10) != 0 && sqlite3_column_int($0, 11) != 0
+                        cookies.append(.init(host: text($0, 0), name: text($0, 1), path: text($0, 2),
+                                             value: blob($0, 3), expires: persistent ? sqlite3_column_int64($0, 4) : 0,
+                                             secure: sqlite3_column_int($0, 5) != 0,
+                                             httpOnly: sqlite3_column_int($0, 6) != 0,
+                                             sameSite: Int(sqlite3_column_int($0, 7)),
+                                             partitioned: !text($0, 8).isEmpty, plaintext: text($0, 9)))
+                    }
+                    vault.cookieVersion = version
+                    vault.cookies = cookies
+                }
+            } catch { vault.unreadable += 1 }
         }
         return vault
     }
@@ -789,67 +847,106 @@ enum ArcImport {
     nonisolated static func open(_ vault: Vault, key: Data) -> Opened {
         var out = Opened()
         for login in vault.logins {
-            guard !login.account.isEmpty,
-                  let host = URLComponents(string: login.origin)?.host?.lowercased(), !host.isEmpty
-            else { out.skipped += 1; continue }
+            guard !login.blocked, login.scheme == 0, let url = URL(string: login.origin),
+                  let origin = PasswordOrigin(url: url) else { out.skipped += 1; continue }
+            // Empty usernames are valid. Chromium's separate flag identifies blocklist rows.
+            guard !login.value.isEmpty else { out.skipped += 1; continue }
             guard let password = SafeStorage.decrypt(login.value, key: key), !password.isEmpty
             else { out.locked += 1; continue }
-            out.logins.append((host, login.account, password))
+            out.logins.append((origin, login.account, password))
         }
         for row in vault.cookies {
-            guard !row.host.isEmpty, !row.name.isEmpty else { out.skipped += 1; continue }
-            guard let value = SafeStorage.decrypt(row.value, key: key, hostKey: row.host)
-            else { out.locked += 1; continue }
-            out.cookies.append((row.host, row.name, row.path, value, row.expires, row.secure))
+            guard let version = vault.cookieVersion, !row.partitioned else {
+                out.cookiesSkipped += 1; continue
+            }
+            let value: String?
+            if row.value.isEmpty { value = row.plaintext }
+            else {
+                value = SafeStorage.decrypt(row.value, key: key,
+                                            hostKey: version >= 24 ? row.host : nil,
+                                            requiresHostHash: version >= 24)
+            }
+            guard let value else { out.locked += 1; continue }
+            guard let cookie = cookie(row, value: value) else { out.cookiesSkipped += 1; continue }
+            out.cookies.append(cookie)
         }
         return out
     }
 
-    /// Arc's saved logins, into the profile's keychain items.
-    ///
-    /// An entry the profile already has is left exactly as it is — the keychain's own primary
-    /// key for an internet password is host plus account, so overwriting would silently
-    /// replace a password the user may have changed in Vane since.
-    @MainActor private static func write(logins: [(host: String, account: String, password: String)],
-                                         into profileID: UUID, counts: inout Counts) {
-        let already = Set(Passwords.all(profileID: profileID).map(\.id))
+    /// Parse a real Set-Cookie header through Foundation's public API so HttpOnly survives.
+    /// Reject ambiguous header characters and unsupported partitioning rather than weakening
+    /// a session's scope. SameSite's Chromium values are -1 unset, 0 None, 1 Lax, 2 Strict.
+    nonisolated static func cookie(_ row: Vault.Cookie, value: String) -> HTTPCookie? {
+        guard !row.partitioned, !row.host.isEmpty, !row.name.isEmpty,
+              (-1...2).contains(row.sameSite) else { return nil }
+        func headerSafe(_ text: String) -> Bool {
+            !text.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7f || $0 == ";" }
+        }
+        guard headerSafe(row.name), !row.name.contains("="), headerSafe(value),
+              headerSafe(row.host), headerSafe(row.path) else { return nil }
+        let host = row.host.hasPrefix(".") ? String(row.host.dropFirst()) : row.host
+        var origin = URLComponents()
+        origin.scheme = row.secure ? "https" : "http"
+        origin.host = host
+        guard let url = origin.url, url.host == host else { return nil }
+        var header = "\(row.name)=\(value); Path=\(row.path.isEmpty ? "/" : row.path)"
+        if row.host.hasPrefix(".") { header += "; Domain=\(row.host)" }
+        if row.secure { header += "; Secure" }
+        if row.httpOnly { header += "; HttpOnly" }
+        switch row.sameSite {
+        case 0: header += "; SameSite=None"
+        case 1: header += "; SameSite=Lax"
+        case 2: header += "; SameSite=Strict"
+        default: break
+        }
+        if let expires = chromeTime(row.expires) {
+            guard expires > Date() else { return nil }
+            let format = DateFormatter()
+            format.locale = Locale(identifier: "en_US_POSIX")
+            format.timeZone = TimeZone(secondsFromGMT: 0)
+            format.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+            header += "; Expires=" + format.string(from: expires)
+        }
+        guard let cookie = HTTPCookie.cookies(withResponseHeaderFields: ["Set-Cookie": header], for: url).first,
+              cookie.name == row.name, cookie.value == value,
+              cookie.isHTTPOnly == row.httpOnly, cookie.isSecure == row.secure,
+              cookie.domain == row.host,
+              cookie.path == (row.path.isEmpty ? "/" : row.path),
+              row.sameSite != 0 || cookie.sameSitePolicy?.rawValue == "none",
+              row.sameSite != 1 || cookie.sameSitePolicy?.rawValue == "lax",
+              row.sameSite != 2 || cookie.sameSitePolicy?.rawValue == "strict",
+              (row.expires == 0) == cookie.isSessionOnly else { return nil }
+        return cookie
+    }
+
+    /// Keep existing credentials and the first successfully saved row for each origin/account.
+    /// The reader orders Arc's rows by last password modification (creation in old schemas),
+    /// so duplicates have a deterministic winner.
+    static func importLogins(_ logins: [(origin: PasswordOrigin, account: String, password: String)],
+                             existing: Set<String>, counts: inout Counts,
+                             save: (PasswordOrigin, String, String) -> Bool) {
+        var already = existing
         for login in logins {
-            guard !already.contains(Passwords.key(host: login.host, account: login.account))
-            else { counts.passwordsAlready += 1; continue }
-            if Passwords.save(host: login.host, account: login.account,
-                              password: login.password, profileID: profileID) {
+            let id = login.origin.key(account: login.account)
+            guard !already.contains(id) else { counts.passwordsAlready += 1; continue }
+            if save(login.origin, login.account, login.password) {
+                already.insert(id)
                 counts.passwords += 1
-            } else {
-                counts.refused += 1
-            }
+            } else { counts.refused += 1 }
         }
     }
 
-    /// Arc's cookies, into the profile's website data store — which is what carries the user
-    /// across still signed in to everything they were signed in to.
-    ///
-    /// ponytail: `HTTPCookie`'s public properties only. SameSite and HttpOnly have no
-    /// documented keys, so a cookie arrives without them; WebKit applies its own defaults and
-    /// the session still works. Ceiling: a site that depends on a cookie being HttpOnly sees
-    /// a script-readable one until the site rewrites it, which is on the first page load.
-    @MainActor private static func write(cookies: [(host: String, name: String, path: String,
-                                                    value: String, expires: Int64, secure: Bool)],
-                                         into profileID: UUID) async -> Int {
-        let store = ProfileManager.dataStore(for: profileID).httpCookieStore
-        var written = 0
-        for row in cookies {
-            var properties: [HTTPCookiePropertyKey: Any] = [
-                .name: row.name, .value: row.value, .domain: row.host,
-                .path: row.path.isEmpty ? "/" : row.path,
-            ]
-            if row.secure { properties[.secure] = "TRUE" }
-            // nil is a session cookie and stays one; see `chromeTime`.
-            if let expires = chromeTime(row.expires) { properties[.expires] = expires }
-            guard let cookie = HTTPCookie(properties: properties) else { continue }
-            await store.setCookie(cookie)
-            written += 1
+    @MainActor private static func write(logins: [(origin: PasswordOrigin, account: String, password: String)],
+                                         into profileID: UUID, counts: inout Counts) {
+        importLogins(logins, existing: Set(Passwords.all(profileID: profileID).map(\.id)), counts: &counts) {
+            Passwords.save(origin: $0, account: $1, password: $2, profileID: profileID, replacingExisting: false)
         }
-        return written
+    }
+
+    @MainActor private static func write(cookies: [HTTPCookie], into profileID: UUID) async -> Int {
+        let store = ProfileManager.dataStore(for: profileID).httpCookieStore
+        for cookie in cookies { await store.setCookie(cookie) }
+        return cookies.count
     }
 
     /// The whole import, in the order the design calls for: profiles, then spaces, then
@@ -882,6 +979,7 @@ enum ArcImport {
                 }.value
                 counts.passwordsSkipped += opened.skipped
                 counts.locked += opened.locked
+                counts.cookiesSkipped += opened.cookiesSkipped
                 write(logins: opened.logins, into: profileID, counts: &counts)
                 counts.cookies += await write(cookies: opened.cookies, into: profileID)
             }
@@ -989,8 +1087,8 @@ enum ArcImport {
     /// The second half is the point. A list of successes alone let a run that read the wrong
     /// key, or could not open `Login Data` at all, come back saying "Imported 3 spaces." —
     /// which reads as an Arc that had no passwords in it. A blocklist row is the one failure
-    /// not named: Chromium writes a site you told it never to save as a login with no
-    /// username, and nothing was lost by not bringing it across.
+    /// skipped separately: blocked rows, unsupported origins, and expired or unsupported
+    /// cookies are reported without exposing their values.
     static func report(_ c: Counts) -> String {
         var parts: [String] = []
         if c.profiles > 0 { parts.append("\(c.profiles) profile\(c.profiles == 1 ? "" : "s")") }
@@ -1000,7 +1098,7 @@ enum ArcImport {
         }
         if c.favourites > 0 { parts.append("\(c.favourites) favourite\(c.favourites == 1 ? "" : "s")") }
         if c.passwords > 0 { parts.append("\(c.passwords) password\(c.passwords == 1 ? "" : "s")") }
-        if c.cookies > 0 { parts.append("\(c.cookies) session\(c.cookies == 1 ? "" : "s")") }
+        if c.cookies > 0 { parts.append("\(c.cookies) cookie\(c.cookies == 1 ? "" : "s")") }
         if c.history > 0 { parts.append("\(c.history) history entr\(c.history == 1 ? "y" : "ies")") }
         if c.bookmarks > 0 { parts.append("\(c.bookmarks) bookmark\(c.bookmarks == 1 ? "" : "s")") }
 
@@ -1010,9 +1108,15 @@ enum ArcImport {
         } else if c.wrongKey {
             tail.append("Arc's keychain key opened none of them — nothing Arc had sealed "
                 + "could be read.")
-        } else if c.locked + c.refused > 0 {
-            tail.append("\(c.locked + c.refused) could not be read.")
+        } else if c.locked > 0 {
+            tail.append("\(c.locked) could not be read.")
         }
+        if c.refused > 0 {
+            tail.append("\(c.refused) passwords could not be saved to Keychain; existing passwords were not changed.")
+        }
+        if c.passwordsSkipped > 0 { tail.append("\(c.passwordsSkipped) password rows were skipped (blocked, empty or unsupported origin).") }
+        if c.passwordsAlready > 0 { tail.append("\(c.passwordsAlready) duplicate or existing passwords were kept.") }
+        if c.cookiesSkipped > 0 { tail.append("\(c.cookiesSkipped) expired or unsupported cookies were skipped safely.") }
         if c.unreadable > 0 {
             tail.append("\(c.unreadable) file\(c.unreadable == 1 ? "" : "s") Arc still has "
                 + "would not open — Full Disk Access, most likely.")
@@ -1271,23 +1375,24 @@ enum ArcImport {
         // rows open, which are Arc's own dead weight and which the key will not touch.
         var vault = Vault(directory: "Default", path: URL(fileURLWithPath: "/tmp/Arc/Default"))
         vault.logins = [
-            ("https://example.com/login", "ada", seal("hunter2", key: key)),
+            .init(origin: "https://example.com/login", account: "ada", value: seal("hunter2", key: key)),
             // Chromium writes a site you told it never to save as a login with no username.
-            ("https://blocked.example/", "", Data()),
-            ("not a url at all", "ada", seal("nowhere", key: key)),
-            ("https://other.example/", "bob", seal("s3cret", key: SafeStorage.key(secret: "other"))),
+            .init(origin: "https://blocked.example/", account: "", value: Data(), blocked: true),
+            .init(origin: "not a url at all", account: "ada", value: seal("nowhere", key: key)),
+            .init(origin: "https://other.example/", account: "bob", value: seal("s3cret", key: SafeStorage.key(secret: "other"))),
         ]
         vault.cookies = [
-            (host, "sid", "/", seal(secret, key: key, hostKey: host), 0, true),
-            ("", "sid", "/", Data(), 0, false),
+            .init(host: host, name: "sid", path: "/", value: seal(secret, key: key, hostKey: host), expires: 0, secure: true),
+            .init(host: "", name: "sid", path: "/", value: Data(), expires: 0, secure: false),
         ]
+        vault.cookieVersion = 24
         let opened = open(vault, key: key)
         assert("arc vault: a login opens into a host, an account and a password",
-               opened.logins.map(\.host) == ["example.com"]
+               opened.logins.map { $0.origin.host } == ["example.com"]
                    && opened.logins.first?.password == "hunter2")
         assert("arc vault: a blocklist row, an origin with no host and a nameless cookie are "
                + "counted apart from the ones already here",
-               opened.skipped == 3)
+               opened.skipped == 2 && opened.cookiesSkipped == 1)
         assert("arc vault: a row sealed with another key is one that would not open",
                opened.locked == 1)
         assert("arc vault: a cookie gives up its host hash and keeps its value",
@@ -1319,7 +1424,7 @@ enum ArcImport {
         var counts = Counts()
         counts.spaces = 3; counts.passwords = 235; counts.cookies = 1
         assert("arc report: only what happened is named, and one of a thing is singular",
-               report(counts) == "Imported 3 spaces, 235 passwords, 1 session.")
+               report(counts) == "Imported 3 spaces, 235 passwords, 1 cookie.")
         assert("arc report: a run with nothing to say does not claim a success",
                report(Counts()) == "Arc had nothing left to import.")
         var locked = Counts()
@@ -1346,8 +1451,8 @@ enum ArcImport {
                report(kept) == "Imported 1 space, 1 live folder.")
         var blocked = Counts()
         blocked.passwords = 2; blocked.passwordsSkipped = 40
-        assert("arc report: a blocklist row is not a failure and is not named",
-               report(blocked) == "Imported 2 passwords.")
+        assert("arc report: skipped password rows are visible",
+               report(blocked) == "Imported 2 passwords. 40 password rows were skipped (blocked, empty or unsupported origin).")
 
         // MARK: timestamps
         assert("chrome time: the FILETIME zero point is the unix epoch",
