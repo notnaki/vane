@@ -152,6 +152,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
     case openFile, savePageAs, sharePage, capturePage
     // View
     case reload, hardReload, openLocation, find, toggleSidebar
+    case nextFocusArea
     case findNext, findPrevious
     case actualSize, zoomIn, zoomOut, fullScreen
     case copyPageURL, showLibrary
@@ -224,6 +225,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findNext: "Find Next"
         case .findPrevious: "Find Previous"
         case .toggleSidebar: "Toggle Sidebar"
+        case .nextFocusArea: "Next Focus Area"
         case .actualSize: "Actual Size"
         case .zoomIn: "Zoom In"
         case .zoomOut: "Zoom Out"
@@ -309,7 +311,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .newEasel, .captureToEasel, .showEasels, .newWindow, .newPrivateWindow, .newTab, .newLittleArc, .reopenClosedTab,
              .closeTab, .closeWindow, .printPage, .settings, .openFile, .savePageAs,
              .sharePage, .capturePage: .file
-        case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious,
+        case .reload, .hardReload, .openLocation, .find, .findNext, .findPrevious, .nextFocusArea,
              .toggleSidebar, .actualSize,
              .zoomIn, .zoomOut, .fullScreen, .showReader, .biggerReaderText,
              .smallerReaderText, .readerSerif, .copyPageURL, .showLibrary: .view
@@ -362,6 +364,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         case .findNext:         Keybinding("g", .command)
         case .findPrevious:     Keybinding("g", [.command, .shift])
         case .toggleSidebar:    Keybinding("s", .command)
+        case .nextFocusArea:    Keybinding("\u{F709}") // F6, like other browsers
         case .actualSize:       Keybinding("0", .command)
         case .zoomIn:           Keybinding("+", .command)
         case .zoomOut:          Keybinding("-", .command)
@@ -728,6 +731,7 @@ enum Command: String, CaseIterable, Codable, Sendable {
         .previousTab: Keybinding("{", .command),
         .nextTab: Keybinding("}", .command),
         .zoomIn: Keybinding("=", .command),
+        .nextFocusArea: Keybinding("\u{F709}", .shift),
     ]
 
     /// The alias chords a caret could want for itself. ⌘← and ⌘→ move the insertion point in
@@ -775,12 +779,14 @@ enum Command: String, CaseIterable, Codable, Sendable {
     static func handle(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown, let b = Keybinding(event: event) else { return false }
         guard runs(modal: NSApp.modalWindow != nil) else { return false }
-        guard let cmd = command(for: b), let action = actions[cmd] else { return alias(b) }
+        guard let cmd = command(for: b), let action = actions[cmd] else {
+            return alias(b, in: event.window ?? NSApp.keyWindow)
+        }
         // ponytail: WKWebView gives no synchronous "did the page take it?", so `.page`
         // means "hands off whenever web content has focus" and Vane's action is simply
         // unreachable there. Ceiling: doing better needs a JS keydown listener reporting
         // defaultPrevented back over a message handler, i.e. an async round-trip per key.
-        if priority(for: cmd) == .page, webContentHasFocus() { return false }
+        if keepsKeyForResponder(b, in: event.window ?? NSApp.keyWindow) { return false }
         action()
         return true
     }
@@ -792,17 +798,17 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// AppKit's dispatch: without them Vane would win ⌘← before WebKit ever saw it, and a
     /// user typing in a comment box would lose the box. The page's half is a flag the page
     /// keeps up to date on its own — see `PageFocus` — rather than a round trip per key.
-    private static func alias(_ b: Keybinding) -> Bool {
+    private static func alias(_ b: Keybinding, in window: NSWindow?) -> Bool {
         // Cheapest question first: every keystroke in the app comes through here, and only
         // two chords are worth walking the responder chain for.
         guard aliases.values.contains(b) else { return false }
-        let r = NSApp.keyWindow?.firstResponder
+        let r = window?.firstResponder
         guard let cmd = alias(b, fieldEditor: r is NSText || r is NSTextView,
-                              pageEditable: focusedTab()?.editableFocused == true),
+                              pageEditable: focusedTab(in: window)?.editableFocused == true),
               let action = actions[cmd] else { return false }
         // The alias is the same command, so it obeys the same priority: someone who has given
         // Back to the page has given it both chords, not one.
-        if priority(for: cmd) == .page, webContentHasFocus() { return false }
+        if priority(for: cmd) == .page, webContentHasFocus(in: window) { return false }
         action()
         return true
     }
@@ -810,8 +816,8 @@ enum Command: String, CaseIterable, Codable, Sendable {
     /// The tab whose page holds the keyboard, by walking up from the first responder to the
     /// WKWebView it lives inside. Not "the window's current tab": a split view has two live
     /// pages, and only the one being typed in may keep the chord.
-    private static func focusedTab() -> Tab? {
-        var view = NSApp.keyWindow?.firstResponder as? NSView
+    private static func focusedTab(in window: NSWindow?) -> Tab? {
+        var view = window?.firstResponder as? NSView
         while let v = view {
             if let web = v as? WKWebView {
                 return TabStore.all.lazy.flatMap(\.tabs).first { $0.existingWeb === web }
@@ -821,8 +827,24 @@ enum Command: String, CaseIterable, Codable, Sendable {
         return nil
     }
 
-    private static func webContentHasFocus() -> Bool {
-        var view = NSApp.keyWindow?.firstResponder as? NSView
+    /// The monitor and AppKit's menu fallback must both stand down for website priority
+    /// and text entry. Option-only bindings otherwise take characters and caret commands
+    /// from an editor (the shipped Option-D would prevent typing ∂).
+    static func keepsKeyForResponder(_ binding: Keybinding, in window: NSWindow?) -> Bool {
+        guard let command = command(for: binding)
+                ?? aliases.first(where: { $0.value == binding })?.key else { return false }
+        let functionKey = binding.key.unicodeScalars.first.map {
+            (0xF704...0xF726).contains($0.value)
+        } ?? false
+        if binding.mods.isDisjoint(with: [.command, .control]), !functionKey {
+            let responder = window?.firstResponder
+            if responder is NSText || focusedTab(in: window)?.editableFocused == true { return true }
+        }
+        return priority(for: command) == .page && webContentHasFocus(in: window)
+    }
+
+    private static func webContentHasFocus(in window: NSWindow?) -> Bool {
+        var view = window?.firstResponder as? NSView
         while let v = view {
             if v is WKWebView { return true }
             view = v.superview
@@ -889,7 +911,13 @@ enum Command: String, CaseIterable, Codable, Sendable {
           webkit.messageHandlers.\(messageName).postMessage({ frame: frame, editable: v });
         } catch (e) {}
       }
-      function send() { post(editable(document.activeElement)); }
+      function send() {
+        var el = document.activeElement;
+        while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+          el = el.shadowRoot.activeElement;
+        }
+        post(editable(el));
+      }
       document.addEventListener("focusin", send, true);
       document.addEventListener("focusout", function () { setTimeout(send, 0); }, true);
       window.addEventListener("pagehide", function () { post(false); });

@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
     let repository: EaselStore
     @Published var selected: UUID?
     @Published var message: String?
+    @Published var requestedImage: UUID?
     @Published var capturing = false
     @Published var liveItems: Set<UUID> = []
     var insertionPoint = CGPoint(x: 120, y: 140)
@@ -40,6 +41,13 @@ import UniformTypeIdentifiers
         if liveItems.contains(id) { liveItems.remove(id) }
         else if liveItems.count < 4 { liveItems.insert(id) }
         else { message = "Pause a live view before opening another. Up to four can run at once." }
+    }
+    /// Annotation is an ordinary drawing operation over the saved pixels.
+    /// Pausing is transient and leaves the board and its undo history untouched.
+    @discardableResult func prepareAnnotation(_ id: UUID) -> Bool {
+        guard board?.items.contains(where: { $0.id == id && $0.kind == .image }) == true else { return false }
+        liveItems.remove(id)
+        return true
     }
     func undo() { if let selected { perform { try repository.undo(selected) }; pruneLiveItems() } }
     func redo() { if let selected { perform { try repository.redo(selected) }; pruneLiveItems() } }
@@ -100,7 +108,9 @@ import UniformTypeIdentifiers
             let session = store.tabs.first { $0.easelID == board.id }?.easelSession ?? EaselSession(repository)
             board.items.append(session.placed(item, in: board))
             try repository.save(board)
-            return store.openEasel(board.id) != nil
+            guard let tab = store.openEasel(board.id) else { return false }
+            tab.easelSession?.requestedImage = item.id
+            return true
         } catch {
             Toasts.show(error.localizedDescription)
             return false
@@ -151,14 +161,13 @@ import UniformTypeIdentifiers
         guard image.size.width > 0, image.size.height > 0,
               image.size.width.isFinite, image.size.height.isFinite,
               image.size.width * image.size.height <= 32_000_000 else { throw EaselStore.Failure.tooLarge }
-        let scale = min(1, 1600 / max(image.size.width, image.size.height))
-        let resized = NSImage(size: NSSize(width: image.size.width * scale, height: image.size.height * scale))
-        resized.lockFocus()
-        image.draw(in: NSRect(origin: .zero, size: resized.size))
-        resized.unlockFocus()
-        guard let tiff = resized.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
-              let png = bitmap.representation(using: .png, properties: [:]), png.count <= EaselStore.imageLimit
-        else { throw EaselStore.Failure.tooLarge }
+        // Canvas size is independent of stored resolution. Re-rasterizing through
+        // lockFocus made pixels depend on the host display and silently shrank captures.
+        guard let pixels = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              pixels.width <= 16_000, pixels.height <= 16_000,
+              pixels.width * pixels.height <= 32_000_000,
+              let png = NSBitmapImageRep(cgImage: pixels).representation(using: .png, properties: [:]),
+              png.count <= EaselStore.imageLimit else { throw EaselStore.Failure.tooLarge }
         let width = min(520, max(120, image.size.width))
         let height = min(1600, max(100, width * image.size.height / image.size.width + 44))
         return EaselItem(kind: .image, text: title, source: source, image: png, width: width, height: height)
@@ -265,7 +274,7 @@ private struct EaselEditor: View {
                             profileID: repository.profileID, liveItems: session.liveItems, toggleLive: session.toggleLive,
                             stroke: stroke, zoom: zoom, hand: hand, editRequest: editRequest, drawingKind: drawingKind, drawingColor: drawingColor, drawingStrokeWidth: strokeWidth, drawingFillColor: fillColor, drawingStyle: drawingStyle,
                             select: { selected = $0; canvasFocused = true },
-                            edit: { editing = $0 }, change: { changeItem($0) },
+                            edit: { editing = $0 }, annotate: annotateImage, change: { changeItem($0) },
                             textEditingChanged: { id, active in
                                 if active { inlineEditing = id } else if inlineEditing == id { inlineEditing = nil }
                             },
@@ -318,7 +327,8 @@ private struct EaselEditor: View {
         .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: drawing)
         .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: selected)
         .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: hand)
-        .onAppear { title = board.title; session.insertionPoint = CGPoint(x: 120, y: 140) }
+        .onAppear { title = board.title; selectRequestedImage(); session.insertionPoint = CGPoint(x: 120, y: 140) }
+        .onChange(of: session.requestedImage) { selectRequestedImage() }
         .onChange(of: zoom) {
             session.insertionPoint = CGPoint(x: max(0, viewport.x / zoom) + 80, y: max(0, viewport.y / zoom) + 80)
         }
@@ -372,6 +382,14 @@ private struct EaselEditor: View {
         if drawing || selected != nil {
             let item = board.items.first { $0.id == selected }
             let kind = drawing ? drawingKind : item?.kind
+            if kind == .image, let item {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button { annotateImage(item.id) } label: { Label("Annotate Image", systemImage: "pencil.tip") }
+                    Button("Caption and Crop…") { editing = item }
+                    Text("Draw over the saved image. Use the toolbar for arrows, shapes, and text.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.buttonStyle(TactileButtonStyle())
+            }
             if kind != .image && kind != .link {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(kind == .note ? "Background" : "Stroke").font(.caption)
@@ -464,6 +482,17 @@ private struct EaselEditor: View {
         default: return .ignored
         }
         return .handled
+    }
+    private func selectRequestedImage() {
+        guard let id = session.requestedImage else { return }
+        session.requestedImage = nil
+        guard board.items.contains(where: { $0.id == id && $0.kind == .image }) else { return }
+        selected = id; selectTool()
+    }
+    private func annotateImage(_ id: UUID) {
+        guard session.prepareAnnotation(id) else { return }
+        chooseDrawing(.drawing)
+        toolLocked = true
     }
     private func chooseDrawing(_ kind: EaselItem.Kind) { hand = false; drawingKind = kind; drawing = true; selected = nil; canvasFocused = true }
     private func tool(_ title: String, _ icon: String, active: Bool = false, number: String? = nil, _ action: @escaping () -> Void) -> some View {
@@ -595,6 +624,7 @@ private struct EaselCanvas: View {
     var drawingStyle = EaselObjectStyle()
     let select: (UUID?) -> Void
     let edit: (EaselItem) -> Void
+    var annotate: (UUID) -> Void = { _ in }
     let change: (EaselItem) -> Bool
     var textEditingChanged: (UUID, Bool) -> Void = { _, _ in }
     let draw: (CGPoint?, Bool) -> Void
@@ -604,7 +634,7 @@ private struct EaselCanvas: View {
             EaselColors.paper.onTapGesture { select(nil) }
             ForEach(items) { item in
                 EaselCard(item: item, selected: selected == item.id, profileID: profileID,
-                          live: liveItems.contains(item.id), zoom: zoom, editRequest: editRequest, toggleLive: { toggleLive(item.id) }, select: { select(item.id) }, edit: { edit(item) }, change: change, textEditingChanged: { textEditingChanged(item.id, $0) }, interactive: interactive)
+                          live: liveItems.contains(item.id), zoom: zoom, editRequest: editRequest, toggleLive: { toggleLive(item.id) }, select: { select(item.id) }, edit: { edit(item) }, annotate: { annotate(item.id) }, change: change, textEditingChanged: { textEditingChanged(item.id, $0) }, interactive: interactive)
                     .offset(x: item.x, y: item.y)
                     .allowsHitTesting(!drawing && !hand)
             }
@@ -641,6 +671,7 @@ private struct EaselCard: View {
     let toggleLive: () -> Void
     let select: () -> Void
     let edit: () -> Void
+    let annotate: () -> Void
     let change: (EaselItem) -> Bool
     let textEditingChanged: (Bool) -> Void
     var interactive = true
@@ -689,6 +720,9 @@ private struct EaselCard: View {
             .contextMenu {
                 if [.text, .note, .link, .image, .rectangle, .ellipse, .diamond].contains(item.kind) {
                     Button(item.kind == .text ? "Edit Text" : "Edit…") { editContent() }
+                }
+                if item.kind == .image {
+                    Button("Annotate Image", action: annotate)
                 }
                 if item.kind == .image && !item.source.isEmpty {
                     Button(live ? "Pause Live View" : "View Source Page Live") { toggleLive() }
@@ -771,6 +805,11 @@ private struct EaselCard: View {
                 HStack {
                     Text(item.text).font(.caption).lineLimit(1)
                     Spacer()
+                    if interactive {
+                        Button(action: annotate) { Image(systemName: "pencil.tip") }
+                            .buttonStyle(.plain).vaneTooltip("Annotate image")
+                            .accessibilityLabel("Annotate image")
+                    }
                     if let url = EaselItem.webURL(item.source) {
                         Button(action: toggleLive) { Image(systemName: live ? "pause.circle.fill" : "play.circle") }
                             .buttonStyle(.plain).vaneTooltip(live ? "Pause live view" : "View source page live")

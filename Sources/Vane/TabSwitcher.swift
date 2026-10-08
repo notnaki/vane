@@ -110,7 +110,9 @@ struct TabSwitcher: Equatable {
     /// ⌃ came up: go to the highlighted tab.
     func commit() {
         if let id = state?.highlighted, let store, store.accessibleTabs.contains(where: { $0.id == id }) {
+            let previousPage = store.activePageResponder
             store.current = id
+            store.focusPage(from: previousPage)
         }
         end()
     }

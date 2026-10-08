@@ -369,6 +369,8 @@ struct BrowserWindow: View {
                 }
                 WebCard()
             }
+            .disabled(store.palette != nil)
+            .accessibilityHidden(store.palette != nil)
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
             // Not while the Library is up: the rail is not the sidebar, and is not dragged.
@@ -397,6 +399,9 @@ struct BrowserWindow: View {
         }
         .sheet(item: $store.tidyPreview) { preview in
             TidyPreviewSheet(store: store, preview: preview)
+        }
+        .sheet(item: $store.workspaceSheet) { request in
+            SpaceTemplatesSheet(store: store, request: request)
         }
         .sheet(isPresented: $store.organizationSheet) {
             TabOrganizationSheet(store: store)
@@ -432,9 +437,6 @@ struct BrowserWindow: View {
         .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
         .environmentObject(store.spaceGesture)
-        // In .background so it costs no layout: the buttons are still in the view tree and
-        // in the responder chain, which is all .keyboardShortcut needs.
-        .background { Shortcuts() }
     }
 
     /// The 6pt of window edge that brings the sidebar back. Only live while it is away.
@@ -456,6 +458,8 @@ struct BrowserWindow: View {
         // would follow the peeked panel's inset line off the rail's own row.
         if !store.sidebarShown && peeking && !store.libraryOpen {
             Sidebar()
+                .disabled(store.palette != nil)
+                .accessibilityHidden(store.palette != nil)
                 .frame(width: sidebar.width)
                 // The same near-opaque ground as the command bar: this one floats over
                 // the page, and a bare material over a white page is a white panel.
@@ -603,47 +607,6 @@ struct SpaceGround: View {
         guard let target = gesture.neighbour else { return idle }
         let f = Double(min(1, abs(gesture.drag / width)))
         return (colors(of: target), target.grain ?? 0, f)
-    }
-}
-
-/// ⌘1–⌘8 select tab N and ⌘9 selects the last one, the way Safari and Chrome do; ⌘⇧P and
-/// ⌘⇧A open the search bar.
-/// ponytail: hidden buttons rather than menu items — Menu.swift is built in AppKit and is
-/// not this view's to extend, and a Button with a shortcut is the SwiftUI equivalent. They
-/// are zero-size and transparent, *not* .hidden(), which would take them out of the
-/// responder chain and stop the shortcuts firing.
-/// ⌘9 is "last tab", not "tab 9" — matching Safari and Chrome.
-@MainActor private func tabCommand(_ n: Int) -> Command {
-    n == 9 ? .selectLastTab : (Command(rawValue: "selectTab\(n)") ?? .selectTab1)
-}
-
-private struct Shortcuts: View {
-    @EnvironmentObject var store: TabStore
-
-    var body: some View {
-        ZStack {
-            ForEach(1...9, id: \.self) { n in
-                Button("Select Tab \(n)") { select(n) }
-                    .keyboardShortcut(Keybindings.binding(for: tabCommand(n)).keyboardShortcut)
-            }
-            Button("Search") { store.palette = .all }
-                .keyboardShortcut(Keybindings.binding(for: .commandPalette).keyboardShortcut)
-            Button("Search Tabs") { store.palette = .tabs }
-                .keyboardShortcut(Keybindings.binding(for: .searchTabs).keyboardShortcut)
-        }
-        .frame(width: 0, height: 0)
-        .opacity(0)
-        // The sidebar already exposes selecting a tab and searching tabs as real elements
-        // and actions. A pile of zero-size buttons on top of that is noise.
-        .accessibilityHidden(true)
-    }
-
-    /// ⌘9 means "the last tab", not "tab nine" — every other Mac browser agrees.
-    private func select(_ n: Int) {
-        let i = n == 9 ? store.tabs.count - 1 : n - 1
-        guard store.tabs.indices.contains(i) else { return }
-        store.current = store.tabs[i].id
-        axAnnounce("\(store.tabs[i].title), tab \(i + 1) of \(store.tabs.count)")
     }
 }
 
@@ -1232,6 +1195,7 @@ private struct PillBody: View {
         }
         .onHover { hovering = $0 }
         .onTapGesture { open() }
+        .vaneKeyboardAction(requestFocus: $store.chromeFocusRequested, action: open)
         // Arc's "drag a tab to the top of the sidebar" to make it a favourite: the pill is
         // the top of the sidebar, and it is what the empty grid used to be dropped on.
         .onDrop(of: [.plainText, .url],
@@ -1282,6 +1246,7 @@ private struct PillBody: View {
                 Button("Site Controls") { showingSiteControls = true }
                 if tab.readerAvailable || Reader.isOn(tab) {
                     Button(Reader.isOn(tab) ? "Exit Reader" : "Enter Reader") { Reader.toggle(tab) }
+                    ReaderPreferencesMenu(tab: tab)
                 }
             }
             if let zoom, let tab {
@@ -1315,10 +1280,8 @@ private struct PillBody: View {
             }
             Spacer(minLength: 4)
             if let zoom, let tab { ZoomChip(label: zoom, tab: tab) }
-            // On hover only, the way Arc's are: ref 2 catches the bar at rest and it is a
-            // host and nothing else; ref 9 catches it hovered and the two glyphs are there.
-            // They sit past a Spacer, so arriving and leaving never moves the host.
-            if !address.isEmpty, let tab, tab.easelID == nil, hovering || showingSiteControls {
+            // Keep these controls mounted so Tab and VoiceOver can reach them without hover.
+            if !address.isEmpty, let tab, tab.easelID == nil {
                 PillHoverGlyphs(tab: tab, site: site, showingSiteControls: $showingSiteControls,
                                 feedback: store.feedback, address: address, copyLink: copyLink)
             }
@@ -1677,6 +1640,7 @@ private struct FavoriteTile: View {
             .contentShape(.rect)
             .onHover { hovering = $0 }
             .onTapGesture { InteractionSounds.play(.press); store.current = tab.id }
+            .vaneKeyboardAction(enabled: store.renamingTab != tab.id) { store.current = tab.id }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
             .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil)
             .onDrag {
@@ -1702,7 +1666,8 @@ private struct FavoriteTile: View {
             .accessibilityLabel(TidyTitles.title(for: tab))
             .accessibilityValue(tabState(tab, in: store))
             .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-            .accessibilityHint("Shows this tab. Double-click to rename.")
+            .accessibilityHint("Activate to show this tab. Rename and other commands are in Actions.")
+            .accessibilityAction { store.selection.clear(); store.current = tab.id }
             // Only on a tile that has wandered — see `TabRow`, where the same action is
             // offered on the same terms.
             .accessibilityActions {
@@ -2130,13 +2095,16 @@ private struct PanePill: View {
         }
         .contentShape(.rect)
         .onTapGesture { store.focusPane(tab.id) }
+        .vaneKeyboardAction(enabled: !previewing && !held && store.renamingTab != tab.id,
+                            radius: Look.panePillRadius) { store.focusPane(tab.id) }
         .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
         .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(TidyTitles.title(for: tab))
         .accessibilityValue("Pane \(index + 1) of \(of)" + (active ? ", showing" : ""))
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
-        .accessibilityHint("Shows this pane of the split view. Double-click to rename.")
+        .accessibilityHint("Activate to show this pane. Rename is available in Actions.")
+        .accessibilityAction { store.focusPane(tab.id) }
         .accessibilityAction(named: "Rename Tab") { store.renamingTab = tab.id }
     }
 }
@@ -2464,6 +2432,9 @@ private struct SpaceRow: View {
             .onTapGesture {
                 if space != nil { store.togglePinnedSection() }
             }
+            .vaneKeyboardAction(enabled: space != nil && store.renamingSpace != space?.id) {
+                store.togglePinnedSection()
+            }
             .accessibilityElement(children: .contain)
             .accessibilityAddTraits(space == nil ? [] : .isButton)
             .accessibilityLabel(space == nil ? name : "Space")
@@ -2563,6 +2534,10 @@ private struct SpaceMenu: View {
         // by side, draggable between columns — rather than a settings pane.
         Button("Manage Spaces…") { Library.open(.spaces, in: store) }
         Button("Organize Tabs…") { store.organizationSheet = true }
+        Button("Save Space as Template…") {
+            spaceMenuTarget(space, from: store)?.showWorkspaceTemplates(saving: true)
+        }
+        Button("Space Templates…") { store.showWorkspaceTemplates() }
         Divider()
         Button("Delete Space") { deleteSpace(space, in: store) }
     }
@@ -2826,6 +2801,7 @@ private struct SpaceDots: View {
             else if hovered == space.id { hovered = nil }
         }
         .onTapGesture { gesture.monitor.select(space, in: store) }
+        .vaneKeyboardAction { gesture.monitor.select(space, in: store) }
         .onDrag { spaceDragPayload(space) }
         .onDrop(of: [.plainText], delegate: SpaceDrop(store: store, space: space, over: over))
         .vaneTooltip(space.name, hint: "Click to switch · Right-click to customize", enabled: icons == nil && theme == nil && live == nil)
@@ -3055,7 +3031,8 @@ private struct FolderRow: View {
         .accessibilityLabel(folder.name)
         .accessibilityValue(state)
         .accessibilityAddTraits(.isButton)
-        .accessibilityHint(locked ? "Unlocks with Touch ID or your Mac password." : "Folds this folder open or shut.")
+        .accessibilityHint(locked ? "Unlocks with Touch ID or your Mac password." : "Activate to expand or collapse this folder.")
+        .accessibilityAction { store.toggleFolder(folder.id, in: shape) }
         .accessibilityAction(named: locked ? "Unlock Folder" : "Lock Folder") {
             if locked { store.toggleFolder(folder.id, in: shape) } else { store.lockFolder(folder.id) }
         }
@@ -3105,7 +3082,8 @@ private struct FolderRow: View {
     }
 
     private func labelRow(held: Bool = false) -> some View {
-        SidebarRow(selected: false, held: held, action: { store.toggleFolder(folder.id, in: shape) }) {
+        SidebarRow(selected: false, held: held,
+                   keyboardEnabled: store.renamingFolder != folder.id, action: { store.toggleFolder(folder.id, in: shape) }) {
             FolderGlyph(folder: folder, live: LiveFolders.shared(for: store.profileID), dropOpen: receiving)
         } label: {
             if !held && store.renamingFolder == folder.id {
@@ -3348,6 +3326,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     /// Secondary rather than primary type: "New Tab" is an action among places, and Arc
     /// sets it a step quieter than the tabs around it.
     var dimmed = false
+    var keyboardEnabled = true
     let action: () -> Void
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let label: () -> Label
@@ -3385,6 +3364,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture { InteractionSounds.play(.press); action() }
+        .vaneKeyboardAction(enabled: keyboardEnabled && !held, action: action)
         .environment(\.rowHovering, held || hovering)
     }
 
@@ -3843,7 +3823,9 @@ struct SidebarTabSurface: View {
         let ticked = previewSelected == nil ? store.selection.contains(tab.id) : previewTicked
         let returning = tab.kind == .pinned && !tab.atHome
         let title = TidyTitles.title(for: tab)
-        SidebarRow(selected: selected, ticked: ticked, held: held, action: action) {
+        SidebarRow(selected: selected, ticked: ticked, held: held,
+                   keyboardEnabled: previewSelected == nil && store.renamingTab != tab.id,
+                   action: action) {
             TabHomeIcon(store: store, tab: tab, returnHovering: held ? .constant(returnHovering) : $returnHovering)
         } label: {
             HStack(spacing: 6) {
@@ -3951,7 +3933,8 @@ private struct TabRow: View {
         .accessibilityValue(tabState(tab, in: store)
                             + selectionSuffix(ticked, store.selection.count))
         .accessibilityAddTraits(selected || ticked ? [.isButton, .isSelected] : .isButton)
-        .accessibilityHint("Shows this tab. Double-click to rename.")
+        .accessibilityHint("Activate to show this tab. Rename and other commands are in Actions.")
+        .accessibilityAction { store.selection.clear(); store.current = tab.id }
         // The same words the row's own glyph is showing — a pinned row's ⌘W unloads before
         // it unpins, and an action named "Close Tab" that does neither is a lie.
         .accessibilityAction(named: tab.kind == .today ? "Archive Tab" : closeVerb) {

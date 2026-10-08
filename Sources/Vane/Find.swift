@@ -20,6 +20,9 @@ import WebKit
 
     /// What is typed in the bar. Survives closing it, so ⌘G can pick the search back up.
     @Published var query = ""
+    @Published private(set) var focusRequest = 0
+
+    func requestFocus() { focusRequest &+= 1 }
     /// Total matches on the page, 0 when there are none (or nothing typed).
     @Published private(set) var count = 0
     /// Which match is showing, 1-based. 0 means "none" — nothing typed, or no match.
@@ -289,6 +292,7 @@ private struct FindBarBody: View {
                                  hint: "Return finds the next match, Shift-Return the previous "
                                      + "one, Escape closes the bar.",
                                  font: Look.Typography.secondary.native,
+                                 focusRequest: session.focusRequest,
                                  onKey: key)
                         .foregroundStyle(miss ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
                 }
@@ -407,6 +411,7 @@ extension TabStore {
         }
         guard active?.easelID == nil else { return }
         findOpen = true
+        Find.session(for: self).requestFocus()
     }
 
     /// Whether the first responder is the page rather than the chrome around it. Asked of

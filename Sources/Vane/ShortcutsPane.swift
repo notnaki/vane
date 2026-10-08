@@ -232,12 +232,7 @@ import SwiftUI
                     .foregroundStyle(Look.inkPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: Look.inset)
-                if isHovered || live || priority == .page {
-                    priorityMenu(command, priority)
-                } else {
-                    Color.clear.frame(width: Look.control, height: Look.control)
-                        .accessibilityHidden(true)
-                }
+                priorityMenu(command, priority)
                 chip(command, binding)
             }
             .padding(.horizontal, Look.cardInset * 1.5)

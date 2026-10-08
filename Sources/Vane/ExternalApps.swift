@@ -16,9 +16,8 @@ import SwiftUI
 ///
 /// ponytail: a UserDefaults bool per (host, scheme), exactly like `SitePermissions` — no
 /// expiry, no per-tab "allow for this visit", no allow-list shipped with the app. The two
-/// places it can be taken back are the Site Control Center's rows for that site and Clear
-/// Browsing Data's "cookies and site data", which is where a user goes looking for
-/// "what has this site been allowed to do".
+/// place it can be taken back is the Site Control Center's app rows. Website-data
+/// clearing keeps these shared preferences so another profile cannot lose its answers.
 @MainActor enum ExternalApps {
 
     // MARK: - What counts as leaving

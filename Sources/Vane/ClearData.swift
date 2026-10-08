@@ -67,6 +67,7 @@ import WebKit
                 WKWebsiteDataTypeLocalStorage,
                 WKWebsiteDataTypeSessionStorage,
                 WKWebsiteDataTypeIndexedDBDatabases,
+                WKWebsiteDataTypeFileSystem,
                 WKWebsiteDataTypeWebSQLDatabases,
                 WKWebsiteDataTypeServiceWorkerRegistrations,
             ])
@@ -98,31 +99,28 @@ import WebKit
         let when = options.range == .everything
             ? "from the beginning of time"
             : "from the \(options.range.title.lowercased())"
-        let apps = options.cookies ? " Apps you let sites open without asking are forgotten too." : ""
-        return "Clears \(list) \(when).\(apps) Bookmarks and saved passwords are not affected."
+        let effects = options.cookies ? " You may be signed out and lose offline website work." : ""
+        return "Clears \(list) \(when).\(effects) Bookmarks and saved passwords are not affected."
     }
 
     /// Do it. History is Vane's own database; cookies, storage and caches belong to the
     /// profile's `WKWebsiteDataStore`, which is why this cannot be one call.
-    @discardableResult static func clear(_ options: Options, profileID: UUID, now: Date = .now) -> Bool {
+    static func clear(_ options: Options, profileID: UUID, now: Date = .now, completion: @escaping (Bool) -> Void) {
         let since = options.range.since(now)
         if options.history {
             let history = Store.store(for: profileID)
             guard history.clearHistory(since: options.range == .everything ? nil : since) else {
                 HistoryWindow.showWriteFailure(history)
-                return false
+                completion(false)
+                return
             }
         }
-        // Being allowed to open another app is site data too: the answer was given to a
-        // site, and a sweep that clears the site's cookies and leaves it standing has not
-        // cleared the site. No time range — the answers carry no date, and "cookies and
-        // site data" is what a user picks when they mean "forget this".
-        if options.cookies { ExternalApps.forgetAll() }
+        // App-opening permissions are shared preferences, not profile website storage.
+        // Clearing this profile must not reset permissions used by another profile.
         let types = dataTypes(cookies: options.cookies, cache: options.cache)
-        guard !types.isEmpty else { return true }
-        ProfileManager.dataStore(for: profileID)
-            .removeData(ofTypes: types, modifiedSince: since) { }
-        return true
+        guard !types.isEmpty else { completion(true); return }
+        let store = ProfileManager.dataStore(for: profileID)
+        store.removeData(ofTypes: types, modifiedSince: since) { completion(true) }
     }
 
     // MARK: Offline check
@@ -185,13 +183,10 @@ import WebKit
             ("a time window is named in the sentence",
              { justCookies.range = .week
                return summary(justCookies).contains("from the last 7 days") }()),
-            // Being allowed to open another app is site data, and the sentence has to say
-            // so: it is the one thing cleared here that is not WebKit's to clear.
-            ("cookies and site data says the apps sites may open go too",
-             summary(Options(history: false, cookies: true, cache: false))
-                .contains("Apps you let sites open without asking are forgotten too.")),
-            ("…and history on its own does not claim to touch them",
-             !summary(Options()).contains("Apps you let sites open")),
+            ("clearing site storage explains possible sign-out",
+             summary(Options(history: false, cookies: true, cache: false)).contains("signed out")),
+            ("profile storage clearing does not promise to erase shared app permissions",
+             !summary(everything).contains("Apps you let sites open")),
         ]
     }
 }
@@ -205,6 +200,9 @@ struct ClearDataSheet: View {
     let profileName: String
     @Environment(\.dismiss) private var dismiss
     @State private var options = BrowsingData.Options()
+    @State private var isClearing = false
+    @State private var status: String?
+    @State private var watchdog: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) {
@@ -229,18 +227,38 @@ struct ClearDataSheet: View {
                     Toggle("", isOn: $options.cache).labelsHidden()
                 }
                 Footnote(BrowsingData.summary(options))
+                Footnote("Open pages can retain or recreate data. Close affected tabs before clearing and reload them afterward. Vane’s site settings are kept.")
             }
+            .disabled(isClearing)
 
+            if isClearing { ProgressView("Clearing browsing data…").controlSize(.small) }
+            if let status { Text(status).font(Look.footnote).foregroundStyle(Look.inkSecondary) }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(isClearing ? "Close" : "Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Clear Data") {
-                    guard BrowsingData.clear(options, profileID: profileID) else { return }
-                    rebuild()          // the History menu lists what was just deleted
-                    dismiss()
+                    guard ProfileManager.shared.profiles.contains(where: { $0.id == profileID }) else {
+                        status = "This profile is no longer available. Close this view."
+                        return
+                    }
+                    isClearing = true
+                    status = nil
+                    watchdog = Task { @MainActor in
+                        do { try await Task.sleep(for: .seconds(20)) } catch { return }
+                        if isClearing { status = "WebKit is taking longer than expected. Clearing may still be running." }
+                    }
+                    BrowsingData.clear(options, profileID: profileID) { success in
+                        watchdog?.cancel()
+                        watchdog = nil
+                        isClearing = false
+                        if success {
+                            rebuild()
+                            status = "WebKit finished the requested clear. Open pages may retain or recreate data."
+                        } else { status = "Couldn’t clear browsing history. Website data was kept." }
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(options.isEmpty)
+                .disabled(options.isEmpty || isClearing)
             }
         }
         .padding(Look.paneMargin)

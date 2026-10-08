@@ -874,15 +874,58 @@ extension TabStore {
     /// "Nobody has it" is either of AppKit's two spellings — the window is its own first
     /// responder, or the first responder is a view that has already left the window — so the
     /// answer does not depend on which of the two happens first.
-    func focusPage() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let window else { return }
+    func focusPage(from previousPage: NSView? = nil, remaining: Int = 12,
+                   waitingFor dismissedResponder: NSResponder? = nil) {
+        DispatchQueue.main.async { [weak self, weak previousPage, weak dismissedResponder] in
+            guard let self, let window, palette == nil,
+                  NSApp.modalWindow == nil, window.attachedSheet == nil else { return }
             let holder = window.firstResponder
-            let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
+            let heldPreviousPage = previousPage.map { previous in
+                (holder as? NSView).map { $0 === previous || $0.isDescendant(of: previous) } ?? false
+            } ?? false
+            let nobody = holder == nil || holder === window || heldPreviousPage
+                || (holder as? NSView).map { $0.window !== window } ?? false
             let page = activePageResponder
-            guard Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
-                                            libraryOpen: libraryOpen), let page else { return }
+            if Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
+                                         libraryOpen: libraryOpen), let page,
+               page.window === window, window.makeFirstResponder(page) { return }
+            guard !libraryOpen,
+                  nobody || dismissedResponder == nil || holder === dismissedResponder else { return }
+            // Search creates its tab on the next turn, and its dismissed field can remain
+            // mounted during the exit transition. Wait for that same responder to leave;
+            // another control taking focus or a new overlay cancels the handoff.
+            if remaining > 1 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+                    self?.focusPage(from: previousPage, remaining: remaining - 1,
+                                    waitingFor: dismissedResponder ?? holder)
+                }
+            }
+        }
+    }
+
+    /// F6 crosses the page/chrome boundary even when WebKit keeps Tab inside its document.
+    func focusNextArea() {
+        guard let window, palette == nil, window.attachedSheet == nil,
+              NSApp.modalWindow == nil else { return }
+        let holder = window.firstResponder
+        let page = activePageResponder
+        let onPage = (holder as? NSView).map { responder in
+            page.map { responder === $0 || responder.isDescendant(of: $0) } ?? false
+        } ?? false
+        if !onPage, holder != nil, holder !== window,
+           let page, page.window === window {
             window.makeFirstResponder(page)
+            return
+        }
+        Motion.list {
+            libraryOpen = false
+            sidebarShown = true
+        }
+        DispatchQueue.main.async { [weak self, weak holder] in
+            guard let self, let window = self.window, self.palette == nil,
+                  window.attachedSheet == nil, NSApp.modalWindow == nil,
+                  window.firstResponder === holder else { return }
+            self.chromeFocusRequested = true
         }
     }
 
@@ -928,8 +971,9 @@ extension TabStore {
         var state: String?
         var kind: TabKind?
         var home: String?
+        var customName: String?
 
-        private enum CodingKeys: String, CodingKey { case id, url, title, state, kind, home }
+        private enum CodingKeys: String, CodingKey { case id, url, title, state, kind, home, customName }
 
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -938,17 +982,19 @@ extension TabStore {
             title = try? values.decode(String.self, forKey: .title)
             state = try? values.decode(String.self, forKey: .state)
             kind = try? values.decode(TabKind.self, forKey: .kind)
+            customName = try? values.decode(String.self, forKey: .customName)
             home = try? values.decode(String.self, forKey: .home)
         }
 
         init(id: String? = nil, url: String, title: String? = nil, state: String? = nil,
-             kind: TabKind? = nil, home: String? = nil) {
+             kind: TabKind? = nil, home: String? = nil, customName: String? = nil) {
             self.id = id
             self.url = url
             self.title = title
             self.state = state
             self.kind = kind
             self.home = home
+            self.customName = customName
         }
     }
 
@@ -999,6 +1045,40 @@ extension TabStore {
     }
 
     static func decode(_ data: Data) -> [[Entry]] { disk(data).windows }
+
+    /// Restore previews must distinguish an empty session from a damaged file. Keep
+    /// the browsing reader's legacy tolerance, but require a known schema at import.
+    static func validateBackup(_ data: Data) throws -> (windows: [[Entry]], spaces: [UUID?]) {
+        if let legacy = try? JSONDecoder().decode([[String]].self, from: data) {
+            return (legacy.map { $0.map { Entry(url: $0) } }, legacy.map { _ in nil })
+        }
+        let saved: Disk
+        do { saved = try JSONDecoder().decode(Disk.self, from: data) }
+        catch { throw BackupError.invalid("The session file is damaged.") }
+        guard (2...4).contains(saved.version),
+              saved.spaces.map({ $0.count == saved.windows.count }) ?? true,
+              saved.selected.map({ $0.count == saved.windows.count }) ?? true,
+              saved.splits.map({ $0.count == saved.windows.count }) ?? true else {
+            throw BackupError.invalid("Unsupported or inconsistent session metadata.")
+        }
+        for rows in saved.splits ?? [] {
+            for split in rows {
+                guard (2...4).contains(split.urls.count), split.urls.indices.contains(split.active),
+                      split.ids.map({ $0.count == split.urls.count && $0.allSatisfy { UUID(uuidString: $0) != nil } }) ?? true,
+                      split.urls.allSatisfy({ TabAddress.restorable(URL(string: $0)) }) else {
+                    throw BackupError.invalid("Invalid split view metadata.")
+                }
+            }
+        }
+        for id in saved.spaces ?? [] where !id.isEmpty && UUID(uuidString: id) == nil { throw BackupError.invalid("Invalid window Space identity.") }
+        for id in (saved.selected ?? []).compactMap({ $0 }) where UUID(uuidString: id) == nil { throw BackupError.invalid("Invalid selected tab identity.") }
+        for row in saved.windows.flatMap({ $0 }) {
+            if let id = row.id, UUID(uuidString: id) == nil { throw BackupError.invalid("Invalid session tab identity.") }
+        }
+        return (saved.windows, saved.windows.indices.map { index in
+            saved.spaces.flatMap { $0.indices.contains(index) ? UUID(uuidString: $0[index]) : nil }
+        })
+    }
 
     /// Each window's splits, in the same order as `decode`'s windows. Empty for a file that
     /// predates them.
@@ -1125,7 +1205,7 @@ extension TabStore {
                 let snap = tab.snapshot
                 return Entry(id: tab.id.uuidString, url: u.absoluteString, title: snap.title,
                              state: snap.state?.base64EncodedString(), kind: tab.kind,
-                             home: tab.homeURL?.absoluteString)
+                             home: tab.homeURL?.absoluteString, customName: tab.workspaceName)
             }
             byProfile[store.profileID, default: []]
                 .append((entries, store.savedSplits, store.currentSpaceID?.uuidString ?? "",

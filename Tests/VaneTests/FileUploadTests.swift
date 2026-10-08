@@ -73,11 +73,97 @@ import XCTest
     }
 
     func testDirectoryInputChoosesFoldersIncludingPackages() async throws {
+        try XCTSkipIf(affectedDirectoryUploads, "Directory selection is safely cancelled on macOS 27.0")
         try await loadInput("webkitdirectory multiple")
         let panel = try await openPicker()
         XCTAssertFalse(panel.canChooseFiles)
         XCTAssertTrue(panel.canChooseDirectories)
         XCTAssertTrue(panel.treatsFilePackagesAsDirectories)
+        panel.cancel(nil)
+    }
+
+    func testDirectorySafeguardIsLimitedToMacOS270() {
+        for (major, minor, patch, unavailable) in [(26, 0, 0, false), (26, 9, 9, false),
+            (27, 0, 0, true), (27, 0, 1, true), (27, 0, 2, true), (27, 1, 0, false), (28, 0, 0, false)] {
+            XCTAssertEqual(FileUploads.directoryUploadsUnavailable(on: OperatingSystemVersion(
+                majorVersion: major, minorVersion: minor, patchVersion: patch)), unavailable)
+        }
+    }
+
+    private var affectedDirectoryUploads: Bool {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        return version.majorVersion == 27 && version.minorVersion == 0
+    }
+
+    private func text(in view: NSView) -> [String] {
+        (view as? NSTextField).map { [$0.stringValue] } ?? view.subviews.flatMap { text(in: $0) }
+    }
+
+    func testAffectedDirectoryRequestExplainsCancellationAndCanReopen() async throws {
+        try XCTSkipUnless(affectedDirectoryUploads, "macOS 27.0 directory safeguard")
+        let recorder = UploadRecorder(tab: tab)
+        tab.web.uiDelegate = recorder
+        try await loadInput("webkitdirectory multiple")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('file').click()")
+        try await wait { self.window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        XCTAssertFalse(sheet is NSOpenPanel, "Do not select folders which WebKit cannot safely submit")
+        XCTAssertTrue(text(in: try XCTUnwrap(sheet.contentView)).contains("Folder uploads unavailable"))
+        window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+        try await wait { self.window.attachedSheet == nil && recorder.results.count == 1 }
+        XCTAssertNil(recorder.results[0])
+        let count = try await tab.web.evaluateJavaScript("document.getElementById('file').files.length")
+        XCTAssertEqual(count as? Int, 0)
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('file').click()")
+        try await wait { self.window.attachedSheet != nil }
+        FileUploads.cancel(tabID: tab.id)
+        try await wait { self.window.attachedSheet == nil && recorder.results.count == 2 }
+        XCTAssertNil(recorder.results[1])
+    }
+
+    func testTeardownCancelsDirectoryExplanationExactlyOnce() async throws {
+        try XCTSkipUnless(affectedDirectoryUploads, "macOS 27.0 directory safeguard")
+        let recorder = UploadRecorder(tab: tab)
+        tab.web.uiDelegate = recorder
+        try await loadInput("webkitdirectory")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('file').click()")
+        try await wait { self.window.attachedSheet != nil }
+        tab.tearDown()
+        try await wait { self.window.attachedSheet == nil && recorder.results.count == 1 }
+        XCTAssertNil(recorder.results[0])
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(recorder.results.count, 1)
+    }
+
+    func testWindowCloseCancelsDirectoryExplanationExactlyOnce() async throws {
+        try XCTSkipUnless(affectedDirectoryUploads, "macOS 27.0 directory safeguard")
+        let recorder = UploadRecorder(tab: tab)
+        tab.web.uiDelegate = recorder
+        try await loadInput("webkitdirectory")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('file').click()")
+        try await wait { self.window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        window.close()
+        try await wait { !sheet.isVisible && self.window.attachedSheet == nil && recorder.results.count == 1 }
+        XCTAssertNil(recorder.results[0])
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(recorder.results.count, 1)
+    }
+
+    func testNavigationCancelsDirectoryExplanationExactlyOnce() async throws {
+        try XCTSkipUnless(affectedDirectoryUploads, "macOS 27.0 directory safeguard")
+        let recorder = UploadRecorder(tab: tab)
+        tab.web.uiDelegate = recorder
+        try await loadInput("webkitdirectory")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('file').click()")
+        try await wait { self.window.attachedSheet != nil }
+        tab.web.loadHTMLString("<title>Next document</title><input id='file' type='file'>", baseURL: nil)
+        try await wait { self.window.attachedSheet == nil && self.tab.web.title == "Next document" }
+        try await wait { recorder.results.count == 1 }
+        XCTAssertNil(recorder.results[0])
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(recorder.results.count, 1)
+        let panel = try await openPicker()
         panel.cancel(nil)
     }
 

@@ -379,6 +379,11 @@ import Foundation
     }
 
     static func rename(_ tab: Tab, to name: String?) {
+        if tab.workspaceName != nil {
+            tab.workspaceName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            TabStore.savePins(owning: tab)
+            return
+        }
         if let session = tab.easelSession, let name {
             session.edit { $0.title = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)) }
             return
@@ -507,6 +512,7 @@ import Foundation
     /// is a rule about *us* inventing a name behind the user's back; a name the user typed
     /// is not us, and Arc keeps it across an unpin too.
     static func title(for tab: Tab) -> String {
+        if let name = tab.workspaceName { return name.isEmpty ? tab.title : name }
         if tab.easelID != nil { return tab.title }
         guard let url = key(for: tab) else { return tab.title }
         return rowName(for: url, in: tab.profileID, raw: tab.title, stays: tab.stays)
