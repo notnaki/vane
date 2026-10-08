@@ -103,45 +103,71 @@ struct BrowserProfile {
 
         switch family(of: p) {
         case .safari:
-            // Two independent TCC-protected files. Bookmarks are the ones people actually
-            // want, so a locked History.db must not sink the whole import.
-            var firstFailure: Error?
-            if p.hasBookmarks {
-                do { marks = try safariBookmarksFile(p.path.appendingPathComponent("Bookmarks.plist")) }
-                catch { firstFailure = error }
-            }
-            if p.hasHistory {
-                do { visits = try safariHistory(p.path.appendingPathComponent("History.db")) }
-                catch { firstFailure = firstFailure ?? error }
-            }
-            if let firstFailure, visits.isEmpty, marks.isEmpty { throw firstFailure }
+            if p.hasBookmarks { marks = try safariBookmarksFile(p.path.appendingPathComponent("Bookmarks.plist")) }
+            if p.hasHistory { visits = try safariHistory(p.path.appendingPathComponent("History.db")) }
 
         case .firefox:
             let places = p.path.appendingPathComponent("places.sqlite")
-            try query(places, """
-                SELECT url, title, last_visit_date FROM moz_places
-                WHERE last_visit_date IS NOT NULL AND visit_count > 0
-                ORDER BY last_visit_date DESC
-                """) { visits.append((text($0, 0), text($0, 1), firefoxTime(sqlite3_column_int64($0, 2)))) }
-            // type 1 is a bookmark; 2 and 3 are folders and separators.
-            try query(places, """
-                SELECT p.url, b.title FROM moz_bookmarks b
-                JOIN moz_places p ON p.id = b.fk WHERE b.type = 1
-                """) { marks.append((text($0, 0), text($0, 1))) }
+            if p.hasHistory {
+                try snapshot(places) { db in
+                    let hasVisits = try hasTable("moz_historyvisits", in: db, file: places)
+                    let sql = hasVisits ? """
+                        SELECT p.url, p.title, v.visit_date FROM moz_historyvisits v
+                        JOIN moz_places p ON p.id = v.place_id ORDER BY v.visit_date DESC
+                        """ : """
+                        SELECT url, title, last_visit_date FROM moz_places
+                        WHERE last_visit_date IS NOT NULL AND visit_count > 0 ORDER BY last_visit_date DESC
+                        """
+                    try query(db: db, file: places, sql: sql) {
+                        visits.append((text($0, 0), text($0, 1), firefoxTime(sqlite3_column_int64($0, 2))))
+                    }
+                }
+            }
+            if p.hasBookmarks {
+                // type 1 is a bookmark; 2 and 3 are folders and separators.
+                try query(places, """
+                    SELECT p.url, b.title FROM moz_bookmarks b
+                    JOIN moz_places p ON p.id = b.fk WHERE b.type = 1
+                    """) { marks.append((text($0, 0), text($0, 1))) }
+            }
 
         case .chromium:
             if p.hasHistory {
-                try query(p.path.appendingPathComponent("History"), """
-                    SELECT url, title, last_visit_time FROM urls
-                    WHERE last_visit_time > 0 ORDER BY last_visit_time DESC
-                    """) { visits.append((text($0, 0), text($0, 1), chromiumTime(sqlite3_column_int64($0, 2)))) }
+                let file = p.path.appendingPathComponent("History")
+                try snapshot(file) { db in
+                    let hasVisits = try hasTable("visits", in: db, file: file)
+                    let sql = hasVisits ? """
+                        SELECT u.url, u.title, v.visit_time FROM visits v
+                        JOIN urls u ON u.id = v.url WHERE v.visit_time > 0 ORDER BY v.visit_time DESC
+                        """ : """
+                        SELECT url, title, last_visit_time FROM urls
+                        WHERE last_visit_time > 0 ORDER BY last_visit_time DESC
+                        """
+                    try query(db: db, file: file, sql: sql) {
+                        visits.append((text($0, 0), text($0, 1), chromiumTime(sqlite3_column_int64($0, 2))))
+                    }
+                }
             }
             if p.hasBookmarks {
-                marks = chromiumBookmarks(try read(p.path.appendingPathComponent("Bookmarks")))
+                marks = try checkedChromiumBookmarks(read(p.path.appendingPathComponent("Bookmarks")))
             }
         }
 
-        return (try commit(visits, into: profileID), commit(marks, into: profileID))
+        let history = visits.compactMap { visit -> (url: URL, title: String, at: Date)? in
+            guard let url = URL(string: visit.url), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                  url.host != nil else { return nil }
+            return (url, visit.title, visit.at)
+        }
+        let bookmarks = marks.compactMap { mark -> BookmarkImportItem? in
+            guard let url = URL(string: mark.url), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                  url.host != nil else { return nil }
+            return BookmarkImportItem(url: url, title: mark.title, folder: nil)
+        }
+        let store = Store.store(for: profileID)
+        guard let result = store.importBrowserData(visits: history, bookmarks: bookmarks) else {
+            throw Failure("Could not save imported history and bookmarks. " + (store.lastHistoryError ?? "Try again."))
+        }
+        return (result.history, result.bookmarks.imported)
     }
 
     /// A folder the user picked in the panel. Its family is sniffed from what is inside it,
@@ -184,31 +210,11 @@ struct BrowserProfile {
         return .chromium
     }
 
-    /// Real visit dates go in as-is now, so there is no cap and no reliance on insertion
-    /// order to fake the source browser's recency ranking.
-    private static func commit(_ visits: [(url: String, title: String, at: Date)],
-                               into profileID: UUID) throws -> Int {
-        let rows = visits.compactMap { v -> (url: URL, title: String, at: Date)? in
-            guard let u = URL(string: v.url), u.scheme == "http" || u.scheme == "https" else { return nil }
-            return (u, v.title, v.at)
-        }
-        let store = Store.store(for: profileID)
-        guard let count = store.record(rows) else {
-            throw Failure("Could not save imported history. " + (store.lastHistoryError ?? "Try the import again."))
-        }
-        return count
-    }
-
-    /// The Set collapses urls filed in two folders; INSERT OR IGNORE in Store handles the
-    /// already-bookmarked case, so re-importing adds nothing rather than deleting.
-    private static func commit(_ marks: [(url: String, title: String)], into profileID: UUID) -> Int {
-        var seen = Set<String>()
-        let rows = marks.compactMap { m -> (url: URL, title: String)? in
-            guard let u = URL(string: m.url), u.scheme == "http" || u.scheme == "https",
-                  seen.insert(u.absoluteString).inserted else { return nil }
-            return (u, m.title)
-        }
-        return Store.store(for: profileID).addBookmarks(rows)
+    private static func hasTable(_ name: String, in db: OpaquePointer, file: URL) throws -> Bool {
+        var found = false
+        // Names here are fixed schema constants, never user input.
+        try query(db: db, file: file, sql: "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '\(name)'") { _ in found = true }
+        return found
     }
 
     // MARK: Timestamps
@@ -239,8 +245,14 @@ struct BrowserProfile {
     /// real bookmarks. Folders carry the same shape, so keying off the presence of a `url`
     /// field instead of the type would import folders too.
     static func chromiumBookmarks(_ data: Data) -> [(url: String, title: String)] {
-        guard let top = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let roots = top["roots"] as? [String: Any] else { return [] }
+        (try? checkedChromiumBookmarks(data)) ?? []
+    }
+
+    private static func checkedChromiumBookmarks(_ data: Data) throws -> [(url: String, title: String)] {
+        guard let top = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let roots = top["roots"] as? [String: Any] else {
+            throw Failure("The Bookmarks file has no supported bookmark roots.")
+        }
         var out: [(url: String, title: String)] = []
         func walk(_ node: Any?) {
             guard let n = node as? [String: Any] else { return }
@@ -270,14 +282,13 @@ struct BrowserProfile {
                                                                    format: nil))
     }
 
-    /// Titles live on the visit, not the item, so take the title from the newest visit.
-    /// SQLite's bare-column rule makes `v.title` come from the row that produced MAX().
+    /// Safari stores a title on each visit, so retain each visit and its own title.
     private static func safariHistory(_ file: URL) throws -> [(url: String, title: String, at: Date)] {
         var out: [(url: String, title: String, at: Date)] = []
         try query(file, """
-            SELECT i.url, v.title, MAX(v.visit_time) FROM history_items i
+            SELECT i.url, v.title, v.visit_time FROM history_items i
             JOIN history_visits v ON v.history_item = i.id
-            GROUP BY i.id ORDER BY 3 DESC
+            ORDER BY v.visit_time DESC
             """) { out.append((text($0, 0), text($0, 1), safariTime(sqlite3_column_double($0, 2)))) }
         return out
     }

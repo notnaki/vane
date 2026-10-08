@@ -47,8 +47,7 @@ import UniformTypeIdentifiers
     // MARK: Reading a profile
 
     /// Read-only second connection to the active profile's db. Store keeps its own handle
-    /// open in WAL mode; WAL is built for exactly this — one writer, many readers — so
-    /// nothing has to be copied the way BrowserImport copies another browser's locked file.
+    /// open in WAL mode; one checked read transaction gives a complete export snapshot.
     private static func message(_ operation: String, db: OpaquePointer?, code: Int32) -> Failure {
         let detail = db.map { String(cString: sqlite3_errmsg($0)) } ?? "SQLite error \(code)"
         return Failure("Could not \(operation) the browsing database: \(detail)")
@@ -137,8 +136,7 @@ import UniformTypeIdentifiers
 
     /// The format every browser reads, defined by Netscape in 1996 and never changed since:
     /// a doctype nobody validates, then a `<DL>` of `<DT><A HREF ADD_DATE>` entries.
-    /// ponytail: flat, no `<H3>` folders. Vane's bookmarks have no folders to preserve, and
-    /// importers put a flat list wherever they put flat lists.
+    /// Vane stores one folder level; imported nested paths are exported as readable names.
     ///
     /// ADD_DATE is whole seconds since the unix epoch. Chrome reads a float here as garbage
     /// and shows 1970, so it is truncated to an Int rather than printed as a Double.
@@ -186,86 +184,92 @@ import UniformTypeIdentifiers
          .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
+    /// One pass prevents an escaped literal such as &amp;lt; from being decoded twice.
     static func unescape(_ s: String) -> String {
-        s.replacingOccurrences(of: "&lt;", with: "<")
-         .replacingOccurrences(of: "&gt;", with: ">")
-         .replacingOccurrences(of: "&quot;", with: "\"")
-         .replacingOccurrences(of: "&#39;", with: "'")
-         .replacingOccurrences(of: "&amp;", with: "&")   // last, or "&amp;lt;" decodes twice
-    }
-
-    /// Reads back what `bookmarksHTML` writes — and, being written against the format rather
-    /// than against our writer, also reads Chrome's, Safari's and Firefox's exports, which is
-    /// what makes the round-trip assertion worth anything.
-    /// ponytail: a regex over `<DT><A …>`, not an HTML parser. This file has no nesting worth
-    /// walking; the ceiling is that folder structure (`<H3>`) is ignored, which is exactly
-    /// what Vane would do with it anyway.
-    static func parseNetscape(_ html: String) -> [Row] {
-        // Two passes: grab the anchor, then pull attributes out of it by name. One combined
-        // pattern with an optional ADD_DATE group looks tidier and is wrong — the optional
-        // group matches empty and `[^>]*` eats the date, so every bookmark imports as 1970.
-        guard let anchors = try? NSRegularExpression(pattern: "<DT><A\\s([^>]*)>(.*?)</A>",
-                                                     options: [.caseInsensitive]) else { return [] }
-        let ns = html as NSString
-        return anchors.matches(in: html, range: NSRange(location: 0, length: ns.length)).compactMap { m in
-            let attributes = ns.substring(with: m.range(at: 1))
-            guard let href = attribute("HREF", in: attributes) else { return nil }
-            return Row(url: unescape(href),
-                       title: unescape(ns.substring(with: m.range(at: 2))),
-                       at: Date(timeIntervalSince1970: Double(attribute("ADD_DATE", in: attributes) ?? "") ?? 0))
+        let entities = try! NSRegularExpression(pattern: #"&(?:amp|lt|gt|quot|apos|#39|#\d+|#x[0-9a-fA-F]+);"#)
+        let ns = s as NSString
+        var result = s
+        for match in entities.matches(in: s, range: NSRange(location: 0, length: ns.length)).reversed() {
+            let token = ns.substring(with: match.range)
+            let named = ["&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'"]
+            var decoded = named[token]
+            if decoded == nil {
+                let hex = token.hasPrefix("&#x")
+                let digits = token.dropFirst(hex ? 3 : 2).dropLast()
+                if let value = UInt32(digits, radix: hex ? 16 : 10), value != 0,
+                   let scalar = UnicodeScalar(value) { decoded = String(scalar) }
+            }
+            if let decoded, let range = Range(match.range, in: result) { result.replaceSubrange(range, with: decoded) }
         }
+        return result
     }
 
-    /// Folder-aware companion to the legacy flat parser. A stack follows the Netscape
-    /// H3/DL convention, so files from other browsers may be nested even though Vane's
-    /// manager currently presents one folder level.
+    // Quoted attributes can contain >, and text can contain line breaks. DT end tags are
+    // optional in Netscape exports, so anchors are recognized independently of DT spacing.
+    private static let attributesPattern = #"(?:[^>"']|"[^"]*"|'[^']*')*"#
+    private static let bookmarkTags = try! NSRegularExpression(
+        pattern: "<H3\\b(\(attributesPattern))>(.*?)</H3\\s*>|</?DL\\b\(attributesPattern)>|<A\\b(\(attributesPattern))>(.*?)</A\\s*>",
+        options: [.caseInsensitive, .dotMatchesLineSeparators])
+
+    static func parseNetscape(_ html: String) -> [Row] { parseNetscapeEntries(html).map(\.row) }
+
     static func parseNetscapeEntries(_ html: String) -> [BookmarkEntry] {
+        (try? netscapeEntries(html, validate: false)) ?? []
+    }
+
+    static func checkedNetscapeEntries(_ html: String) throws -> [BookmarkEntry] {
+        try netscapeEntries(html, validate: true)
+    }
+
+    private static func netscapeEntries(_ html: String, validate: Bool) throws -> [BookmarkEntry] {
         var folders: [String] = [], levels: [Bool] = [], pending: String?
-        var out: [BookmarkEntry] = []
-        guard let tags = try? NSRegularExpression(
-            pattern: "<H3[^>]*>.*?</H3>|</?DL[^>]*>|<DT>\\s*<A\\b[^>]*>.*?</A>",
-            options: [.caseInsensitive, .dotMatchesLineSeparators]),
-              let h3 = try? NSRegularExpression(pattern: "<H3[^>]*>(.*?)</H3>",
-                                                options: [.caseInsensitive, .dotMatchesLineSeparators])
-        else { return [] }
-        let whole = NSRange(html.startIndex..., in: html)
-        for match in tags.matches(in: html, range: whole) {
-            guard let range = Range(match.range, in: html) else { continue }
-            let tag = String(html[range])
-            if tag.range(of: "<H3", options: .caseInsensitive) != nil,
-               let title = h3.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)),
-               let titleRange = Range(title.range(at: 1), in: tag) {
-                pending = unescape(String(tag[titleRange]))
-            } else if tag.range(of: "</DL", options: .caseInsensitive) != nil {
-                if levels.popLast() == true { _ = folders.popLast() }
-            } else if tag.range(of: "<DL", options: .caseInsensitive) != nil {
+        var out: [BookmarkEntry] = [], anchors = 0, headings = 0
+        let ns = html as NSString
+        let whole = NSRange(location: 0, length: ns.length)
+        for match in bookmarkTags.matches(in: html, range: whole) {
+            let tag = ns.substring(with: match.range)
+            if match.range(at: 2).location != NSNotFound {
+                headings += 1
+                pending = unescape(ns.substring(with: match.range(at: 2)))
+            } else if match.range(at: 4).location != NSNotFound {
+                anchors += 1
+                let attributes = ns.substring(with: match.range(at: 3))
+                guard let href = attribute("HREF", in: attributes) else { continue }
+                let at = attribute("ADD_DATE", in: attributes).flatMap(Double.init)
+                    .flatMap { $0.isFinite ? Date(timeIntervalSince1970: $0) : nil }
+                out.append(BookmarkEntry(row: Row(url: unescape(href),
+                    title: unescape(ns.substring(with: match.range(at: 4))),
+                    at: at ?? Date(timeIntervalSince1970: 0)),
+                    folder: folders.isEmpty ? nil : folders.joined(separator: " / "), importedAt: at))
+            } else if tag.lowercased().hasPrefix("</dl") {
+                guard let level = levels.popLast() else {
+                    if validate { throw Failure("The bookmark HTML has an unmatched folder ending.") }
+                    continue
+                }
+                if level { _ = folders.popLast() }
+            } else {
                 if let folder = pending { folders.append(folder); pending = nil; levels.append(true) }
                 else { levels.append(false) }
-            } else {
-                for row in parseNetscape(tag) {
-                    let anchor = tag as NSString
-                    let anchorRange = NSRange(location: 0, length: anchor.length)
-                    let attributes = try? NSRegularExpression(pattern: "<DT><A\\s([^>]*)>", options: [.caseInsensitive])
-                        .firstMatch(in: tag, range: anchorRange)
-                        .map { anchor.substring(with: $0.range(at: 1)) }
-                    let importedAt = attributes.flatMap { attribute("ADD_DATE", in: $0) }
-                        .flatMap(Double.init).map(Date.init(timeIntervalSince1970:))
-                    out.append(BookmarkEntry(row: row,
-                                             folder: folders.isEmpty ? nil : folders.joined(separator: " / "),
-                                             importedAt: importedAt))
-                }
+            }
+        }
+        if validate {
+            let starts = try! NSRegularExpression(pattern: #"<(A|H3)\b"#, options: .caseInsensitive)
+            let opened = starts.numberOfMatches(in: html, range: whole)
+            guard opened == anchors + headings, levels.isEmpty, pending == nil else {
+                throw Failure("The bookmark HTML is truncated or has unfinished folders. No bookmarks were imported.")
             }
         }
         return out
     }
 
     private static func attribute(_ name: String, in attributes: String) -> String? {
-        guard let re = try? NSRegularExpression(pattern: "\\b\(name)=\"([^\"]*)\"",
-                                                options: [.caseInsensitive]) else { return nil }
+        let re = try! NSRegularExpression(pattern: "(?:^|\\s)\(name)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))", options: .caseInsensitive)
         let ns = attributes as NSString
-        guard let m = re.firstMatch(in: attributes, range: NSRange(location: 0, length: ns.length))
-        else { return nil }
-        return ns.substring(with: m.range(at: 1))
+        guard let match = re.firstMatch(in: attributes, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        for group in 1...3 where match.range(at: group).location != NSNotFound {
+            return ns.substring(with: match.range(at: group))
+        }
+        return nil
     }
 
     // MARK: CSV
@@ -342,14 +346,8 @@ import UniformTypeIdentifiers
     /// anything stamped with another profile's domain — same rule as `Passwords.deleteAll`.
     ///
     /// Returns `PasswordImport.Entry` so the round-trip check compares like with like.
-    static func savedPasswords(profileID: UUID = ProfileManager.activeProfileID) -> [PasswordImport.Entry] {
-        // Passwords owns the definition of "a credential Vane created"; duplicating its
-        // creator code and security-domain rule here would break silently if either moved.
-        Passwords.all(profileID: profileID).compactMap { login in
-            Passwords.password(origin: login.origin, account: login.account, profileID: profileID)
-                .map { PasswordImport.Entry(origin: login.origin, account: login.account,
-                                            password: $0) }
-        }
+    static func savedPasswords(profileID: UUID = ProfileManager.activeProfileID) throws -> [PasswordImport.Entry] {
+        try Passwords.exportEntries(profileID: profileID)
     }
 
     /// Chrome's column names, because that is the header `PasswordImport` matches on and the
@@ -368,7 +366,7 @@ import UniformTypeIdentifiers
         case .bookmarks:   bookmarksHTML(try bookmarkEntries(profileID: profileID))
         case .historyJSON: historyJSON(try historyRows(profileID: profileID))
         case .historyCSV:  historyCSV(try historyRows(profileID: profileID))
-        case .passwords:   passwordsCSV(savedPasswords(profileID: profileID))
+        case .passwords:   passwordsCSV(try savedPasswords(profileID: profileID))
         }
     }
 

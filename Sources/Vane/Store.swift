@@ -395,14 +395,46 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// One all-or-nothing folder-aware import. The first occurrence of a URL in source
     /// order wins; bookmarks already in this profile are left exactly where they are.
     func importBookmarks(_ source: [BookmarkImportItem]) -> BookmarkImportResult? {
+        importBrowserData(visits: [], bookmarks: source)?.bookmarks
+    }
+
+    /// A browser profile import has one destination transaction across both categories.
+    /// Only imported history is deduplicated: URL + exact timestamp identifies a visit;
+    /// ordinary browsing still records every navigation via record().
+    func importBrowserData(visits: [(url: URL, title: String, at: Date)],
+                           bookmarks: [BookmarkImportItem])
+        -> (history: Int, bookmarks: BookmarkImportResult)? {
+        guard exec("BEGIN IMMEDIATE") else { historyFailure(); return nil }
+        var committed = false
+        defer { if !committed { historyFailure(rollingBack: true) } }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, """
+            INSERT INTO visits (url, title, at) SELECT ?, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM visits WHERE url = ? AND at = ?)
+            """, -1, &statement, nil) == SQLITE_OK, let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+        var count = 0
+        for visit in visits {
+            let at = visit.at.timeIntervalSince1970
+            guard at.isFinite,
+                  bind([visit.url.absoluteString, visit.title, at, visit.url.absoluteString, at], to: statement),
+                  sqlite3_step(statement) == SQLITE_DONE else { return nil }
+            count += Int(sqlite3_changes(db))
+            guard sqlite3_reset(statement) == SQLITE_OK, sqlite3_clear_bindings(statement) == SQLITE_OK else { return nil }
+        }
+        guard let marks = insertBookmarks(bookmarks), exec("COMMIT") else { return nil }
+        committed = true
+        lastHistoryError = nil
+        if count > 0 { NotificationCenter.default.post(name: Self.historyChanged, object: self) }
+        return (count, marks)
+    }
+
+    private func insertBookmarks(_ source: [BookmarkImportItem]) -> BookmarkImportResult? {
         var seen = Set<String>()
         let rows = source.filter {
             ($0.url.scheme == "http" || $0.url.scheme == "https")
                 && seen.insert($0.url.absoluteString).inserted
         }
-        guard exec("BEGIN IMMEDIATE") else { return nil }
-        var committed = false
-        defer { if !committed && sqlite3_get_autocommit(db) == 0 { exec("ROLLBACK") } }
         var existing = Set<String>()
         let urls = rows.map { $0.url.absoluteString }
         for chunk in urls.chunked(max: variableChunkSize()) {
@@ -414,7 +446,11 @@ struct BookmarkImportResult: Equatable, Sendable {
         let fresh = rows.filter { !existing.contains($0.url.absoluteString) }
         let fallbackDate = Date.now
         var folders: [String: BookmarkFolder] = [:]
-        for folder in bookmarkFolders() { folders[folder.name.lowercased()] = folder }
+        guard run("SELECT id, name, position FROM bookmark_folders ORDER BY position", [], { st in
+            let folder = BookmarkFolder(id: self.text(st, 0), name: self.text(st, 1),
+                                        position: Int(sqlite3_column_int64(st, 2)))
+            folders[folder.name.lowercased()] = folder
+        }) else { return nil }
         var imported = 0, made = 0
         for (index, item) in fresh.enumerated() {
             let name = item.folder?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -430,11 +466,10 @@ struct BookmarkImportResult: Equatable, Sendable {
             let folder: Any = folderID.map { $0 as Any } ?? NSNull()
             let date = item.at ?? fallbackDate.addingTimeInterval(-Double(index))
             guard run("INSERT INTO bookmarks (url, title, at, folder_id) VALUES (?, ?, ?, ?)",
-                      [item.url.absoluteString, item.title, date.timeIntervalSince1970, folder]) else { return nil }
+                      [item.url.absoluteString, item.title, date.timeIntervalSince1970, folder]),
+                  sqlite3_changes(db) == 1 else { return nil }
             imported += 1
         }
-        guard exec("COMMIT") else { return nil }
-        committed = true
         return BookmarkImportResult(imported: imported, folders: made)
     }
 
