@@ -707,9 +707,11 @@ with `check-release-candidate.sh` before treating it as a distribution build.
   and a synthetic upload reached the public demo server in a follow-up check.
   A macOS 27.0.1 follow-up covers exact multiple-file/frame submissions, print CSS
   and page ranges, extension storage restoration, decoded media controls, and disk
-  session restoration. Native directory selection works, but ordinary directory
-  form submission resets the page with a WebKit guard fault before the server
-  receives it. See the matrix for the opt-in failing reproduction and evidence.
+  session restoration. A standalone signed WKWebView probe reproduces an upstream
+  guard fault during directory form submission on macOS 27.0.1, before any POST
+  reaches the receiver. Vane cancels folder selection with an explanation on macOS
+  27.0; ordinary file uploads remain available. See the matrix for the retained
+  failing reproduction, byte-level evidence, and version limits.
   Passkey authentication was unavailable in the original fixture. Provider sign-ins, subscription
   streaming, cross-network calls, broader permission lifecycles, and macOS 26 /
   notarized-release coverage remain unverified. See the matrix for exact scope.

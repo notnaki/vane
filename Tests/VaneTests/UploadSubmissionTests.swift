@@ -93,6 +93,42 @@ import XCTest
         XCTAssertNotNil(body.range(of: Data("folder nested file".utf8)))
     }
 
+    // Characterize why returning child URLs through the public picker callback
+    // cannot replace root selection: it changes the directory input's contract.
+    func testChildFileURLsSubmitBytesButLoseDirectoryRelativePaths() async throws {
+        let top = Data("folder top level".utf8), child = Data([0, 255, 1, 128, 13, 10])
+        selection.urls = [try file("tree/top.txt", top), try file("tree/nested/child.bin", child)]
+        server.pages["/upload"] = server.pages["/upload"]!.replacingOccurrences(of: "multiple>", with: "multiple webkitdirectory>")
+        try await load("/upload")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('files').click()")
+        try await compatibilityWait { try await self.tab.web.evaluateJavaScript("document.getElementById('files').files.length") as? Int == 2 }
+        let paths = try await tab.web.evaluateJavaScript("Array.from(document.getElementById('files').files, f=>f.webkitRelativePath)") as? [String]
+        XCTAssertEqual(paths, ["", ""], "Child-only selection loses the folder hierarchy")
+        _ = try await tab.web.evaluateJavaScript("document.querySelector('form').submit()")
+        try await compatibilityWait { self.server.submissions.count == 1 }
+        let body = try XCTUnwrap(server.submissions.first)
+        XCTAssertNotNil(body.range(of: top)); XCTAssertNotNil(body.range(of: child))
+        let metadata = String(decoding: body, as: UTF8.self)
+        XCTAssertTrue(metadata.contains("filename=\"top.txt\""))
+        XCTAssertTrue(metadata.contains("filename=\"child.bin\""))
+        XCTAssertFalse(metadata.contains("filename=\"tree/"))
+    }
+
+    func testRootAndChildFileURLsDuplicateDirectoryEntries() async throws {
+        _ = try file("tree/top.txt", Data("top".utf8))
+        _ = try file("tree/nested/child.txt", Data("child".utf8))
+        selection.urls = [directory.appendingPathComponent("tree"),
+                          directory.appendingPathComponent("tree/top.txt"),
+                          directory.appendingPathComponent("tree/nested/child.txt")]
+        server.pages["/upload"] = server.pages["/upload"]!.replacingOccurrences(of: "multiple>", with: "multiple webkitdirectory>")
+        try await load("/upload")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('files').click()")
+        try await compatibilityWait { try await self.tab.web.evaluateJavaScript("document.getElementById('files').files.length") as? Int == 4 }
+        let paths = try await tab.web.evaluateJavaScript("Array.from(document.getElementById('files').files, f=>f.webkitRelativePath).sort()") as? [String]
+        XCTAssertEqual(paths, ["", "", "tree/nested/child.txt", "tree/top.txt"],
+                       "Granting children alongside the root adds unwanted duplicate entries")
+    }
+
     func testCrossOriginFrameReceivesSelectedFileAndSubmits() async throws {
         let bytes = Data("cross origin synthetic content".utf8)
         selection.urls = [try file("framed.txt", bytes)]
