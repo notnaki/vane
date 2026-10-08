@@ -437,6 +437,7 @@ struct BrowserWindow: View {
         .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
         .environmentObject(store.spaceGesture)
+        .vaneMotionPolicy()
     }
 
     /// The 6pt of window edge that brings the sidebar back. Only live while it is away.
@@ -2836,7 +2837,18 @@ private struct SpaceDots: View {
         let width = SidebarWidth.shared.width
         guard gesture.drag != 0, width > 0, let target = gesture.neighbour else { return [current: 1] }
         let f = Double(min(1, abs(gesture.drag / width)))
-        return [current: 1 - f, target.id: f]
+        return SpaceDotBlend.weights(current: current, target: target.id, fraction: f)
+    }
+}
+
+enum SpaceDotBlend {
+    /// Selection publishes the destination before clearing the preview offset. Both
+    /// identities can briefly be equal; a dictionary literal would trap in that frame.
+    static func weights(current: UUID, target: UUID, fraction: Double) -> [UUID: Double] {
+        let f = min(1, max(0, fraction))
+        var weights = [current: 1 - f]
+        weights[target, default: 0] += f
+        return weights
     }
 }
 
@@ -4217,6 +4229,7 @@ private struct ShimmerTitle: View {
     let title: String
     let reveal: TitleReveal
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     /// How far the wipe has got, in fractions of the title's width. It rests one soft edge
     /// *past* the end so the mask is solid black at rest — the resting state of this view is
@@ -4233,6 +4246,7 @@ private struct ShimmerTitle: View {
     /// final value at once and animates the *rendering*, so `wipe` is already at rest while
     /// the sweep is still on screen. The animation's completion handler is what knows.
     @State private var wiping = false
+    @State private var generation = UUID()
 
     var body: some View {
         Group {
@@ -4245,6 +4259,8 @@ private struct ShimmerTitle: View {
             }
         }
         .onChange(of: reveal) { _, new in start(new) }
+        .onChange(of: reduceMotion) { if reduceMotion { finish() } }
+        .onChange(of: batterySaver.isActive) { if batterySaver.isActive { finish() } }
     }
 
     /// Opaque up to the wipe's edge, clear past it, with `shimmerEdge` of gradient between
@@ -4275,24 +4291,37 @@ private struct ShimmerTitle: View {
 
     private func start(_ reveal: TitleReveal) {
         guard reveal.count > 0 else { return }
+        guard !reduceMotion && !batterySaver.isActive else { finish(); return }
+        // A second rename changes the text under the existing wipe. Keep its current
+        // presentation and completion rather than restarting the mask at the left edge.
+        if wiping {
+            leaving = reveal.from.isEmpty ? nil : reveal.from
+            return
+        }
+        let token = UUID()
+        generation = token
         leaving = reveal.from.isEmpty ? nil : reveal.from
         leavingOpacity = 1
         wiping = true
-        // Reduced motion still gets the *event* — a name that changed by itself has to be
-        // visible — it simply gets it as a crossfade with no travel.
-        guard !reduceMotion else {
-            wipe = ShimmerTitle.full
-            withAnimation(Look.quick) { leavingOpacity = 0 } completion: {
-                leaving = nil
-                wiping = false
-            }
-            return
-        }
         wipe = 0
-        withAnimation(Look.shimmerFade) { leavingOpacity = 0 } completion: { leaving = nil }
+        withAnimation(Look.shimmerFade) { leavingOpacity = 0 } completion: {
+            guard generation == token else { return }
+            leaving = nil
+        }
         // The sweep is the longer of the two, so its completion is where the row goes back
         // to being a plain label.
         withAnimation(Look.shimmerSweep) { wipe = ShimmerTitle.full } completion: {
+            guard generation == token else { return }
+            wiping = false
+        }
+    }
+
+    private func finish() {
+        generation = UUID()
+        Motion.animate(Look.quick) {
+            wipe = ShimmerTitle.full
+            leaving = nil
+            leavingOpacity = 0
             wiping = false
         }
     }

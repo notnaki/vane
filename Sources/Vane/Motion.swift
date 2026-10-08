@@ -15,8 +15,14 @@ import SwiftUI
     /// Run `body` with the list animation — or without any, when the user asked for less
     /// motion. Every write to the strip goes through here.
     static func list<T>(_ body: () throws -> T) rethrows -> T {
-        guard !reduced else { return try body() }
-        return try withAnimation(Look.list, body)
+        try animate(Look.list, body)
+    }
+
+    static func animate<T>(_ animation: Animation, _ body: () throws -> T) rethrows -> T {
+        guard reduced else { return try withAnimation(animation, body) }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        return try withTransaction(transaction, body)
     }
 
     /// System-wide Reduce Motion. Read from AppKit rather than the SwiftUI environment
@@ -53,6 +59,26 @@ import SwiftUI
                 Task { @MainActor [weak self] in self?.count = 0; self?.armed = false }
             }
             return count
+        }
+    }
+}
+
+extension View {
+    /// An outer animated transaction must not re-enable motion in a descendant.
+    /// Observe both policies so an already-visible interface responds to changes.
+    func vaneMotionPolicy() -> some View { modifier(VaneMotionPolicy()) }
+}
+
+private struct VaneMotionPolicy: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    func body(content: Content) -> some View {
+        content.transaction {
+            if reduceMotion || batterySaver.isActive {
+                $0.animation = nil
+                $0.disablesAnimations = true
+            }
         }
     }
 }
