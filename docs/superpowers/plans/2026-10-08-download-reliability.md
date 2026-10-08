@@ -30,3 +30,6 @@ Review focus: stale async pause/resume callbacks after cancellation/removal; com
 - First CI passed download coverage on macOS 26 but timed out in an existing reused-username-node password-autofill fixture. No failing check is treated as a pass.
 
 - An unknown-length held transfer reproduced missing byte-count updates (fraction-only observation). Observe completedUnitCount as well; unknown-length interruption/range-retry test now passes.
+
+- Source review approved 941533d and its CI passed. Signed running-quit and pending-pause-quit restart rounds passed hashes/state/Range/blob cleanup. All six tracked processes exited, server port closed, bundle/data fixtures removed. macOS retains an empty protected sandbox registration; its Data directory is removed.
+- A prior CI run timed out waiting for WebKit to fail a known readonly folder. Preflight now rejects known missing/unwritable parents before native writes; targeted real fixtures and pure checks pass. Full slot remains queued while updater fixes a LaunchServices environment-isolation issue.

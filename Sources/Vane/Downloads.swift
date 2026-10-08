@@ -683,6 +683,17 @@ import CryptoKit
         items.insert(entry, at: 0)
         Self.pendingDestinations[entry.scopeOwner] = target
         save()
+        // Some WebKit versions do not promptly report an unwritable destination.
+        // Reject known-invalid paths ourselves, after recording an actionable failure.
+        let parent = target.deletingLastPathComponent()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: parent.path, isDirectory: &isDirectory),
+              isDirectory.boolValue, FileManager.default.isWritableFile(atPath: parent.path) else {
+            entry.unwatch()
+            finish(entry, error: "The download folder is missing or not writable. Choose an available folder", resumeData: nil)
+            completionHandler(nil)
+            return
+        }
         completionHandler(target)
         if let window = origin?.window {
             NotificationCenter.default.post(name: DownloadFeedback.started,

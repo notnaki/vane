@@ -252,6 +252,7 @@ import XCTest
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: destination.path)
         defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path) }
+        XCTAssertFalse(FileManager.default.isWritableFile(atPath: destination.path))
         manager.destinationDirectory = destination
         let row = try await start()
         try await compatibilityWait { row.download == nil }

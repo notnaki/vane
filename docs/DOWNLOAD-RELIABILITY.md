@@ -37,9 +37,9 @@ changed validators/length, gzip/unknown length, destination loss/write denial,
 resume-storage failures and repeated/cancelled/pending actions.
 
 Local validation: all 52 focused tests and `selfcheck --pure` pass on macOS
-27.0.1 (26A434). Signed restart, full XCTest and standard browser smoke are queued
-outside the smoothness chat's native profiling window; their final results follow
-before merge.
+27.0.1 (26A434). The signed restart driver passes both running-transfer quit and pending-manual-pause
+quit, with exact final SHA-256, persisted state and Range requests. Full XCTest and
+standard browser smoke remain queued outside the smoothness chat's native window.
 
 ## Reproduce
 
@@ -93,3 +93,7 @@ can only be checked for property-list structure before WebKit interprets them;
 syntactically valid legacy data is not proof of resumability. Server responses
 without a usable length cannot be independently checked for truncation without
 a server-provided digest; WebKit still determines transfer success.
+
+Known missing/unwritable destinations are rejected before handing the path to
+WebKit, with an explicit failed row. A macOS 26 CI run exposed delayed native
+failure delivery for a readonly folder; destination preflight removes that stall.
