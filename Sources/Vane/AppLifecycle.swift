@@ -177,8 +177,9 @@ enum QuitAsk {
     private var confirmed = false
     private var askingAboutUnsavedProfiles = false
 
-    /// ⌘Q with `Prefs.warnBeforeQuit` on puts up Arc's "Quit Vane?" and quits only on its
-    /// answer. Only a real, fresh ⌘Q is asked about, and the chord is checked exactly:
+    /// ⌘Q with `Prefs.warnBeforeQuit` on and an open user window puts up Arc's "Quit Vane?"
+    /// and quits only on its answer. Only a real, fresh ⌘Q is asked about, and the chord is
+    /// checked exactly:
     /// a logout sends ⇧⌘Q to the login window and then a quit Apple Event to us, a Dock Quit
     /// or a script arrives as that same event, and any of them arriving while `currentEvent`
     /// still names an old ⌘Q (AppKit swallows the keyUp under ⌘) would otherwise inherit the
@@ -207,7 +208,12 @@ enum QuitAsk {
         if discarded { return .terminateNow }
         if let ae = NSAppleEventManager.shared().currentAppleEvent,
            QuitAsk.isQuitAppleEvent(class: ae.eventClass, id: ae.eventID) { return .terminateNow }
-        guard !confirmed, Prefs.warnBeforeQuit, let event = app.currentEvent,
+        // Closed windows can linger in AppKit, and the offscreen preview renderer stays
+        // visible. Neither needs a warning; minimized user windows still do.
+        guard !confirmed, Prefs.warnBeforeQuit,
+              app.windows.contains(where: {
+                  !$0.isExcludedFromWindowsMenu && ($0.isVisible || $0.isMiniaturized)
+              }), let event = app.currentEvent,
               QuitAsk.isQuitChord(type: event.type, characters: event.charactersIgnoringModifiers,
                                   flags: event.modifierFlags),
               QuitAsk.isFresh(event.timestamp, now: ProcessInfo.processInfo.systemUptime)
