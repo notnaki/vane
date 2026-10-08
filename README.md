@@ -313,6 +313,34 @@ swift test --filter 'BlockerTests|BlockerSubscriptionTests|BlockerWebKitTests'
 
 ### Saving profiles
 
+Settings → Advanced → **Backup and Restore** exports one `.vanebackup` file with all
+regular profiles, Spaces, saved tabs and sessions, bookmark folders and bookmarks,
+history, settings, imported blocking lists, and Easels with embedded images. Backups
+are unencrypted and limited to 512 MB; oversized backups fail without omitting data.
+Passwords and tokens in Keychain, cookies and website sign-ins/storage, downloaded
+files, caches, and external extension folders are excluded. External folder choices
+are remembered, but another Mac may require you to select those folders again.
+
+**Restore Backup…** validates the file and shows its date, profiles, item counts, and
+current saved-library totals before replacing anything. Cancel leaves the library
+alone. **Restore and Restart** preserves a local recovery point, then restores all
+saved profiles and settings during a controlled restart. It replaces the library;
+it does not merge it. An interrupted restore rolls back before normal startup.
+
+Vane creates a recovery point after startup and checks hourly while running, saving
+another only when saved data changes. The latest ten completed points are kept under
+the data folder's `Recovery/Points`, including points made before restores. The last
+healthy point is protected if damaged originals need preserving. Preview and restore
+them from the same Settings section. A write failure keeps previous points and shows
+an error with Retry. These local copies share your disk: export to another disk for
+protection against disk loss. **Erase Everything…** removes local recovery points too.
+
+Focused backup validation:
+
+```sh
+swift test --filter 'Backup.*Tests|ProfilePersistenceTests|EaselTabTests|HistoryPersistenceTests'
+```
+
 Profile save failures appear in browser windows and Settings → Profiles. Unsaved
 profile names, colors, new profiles, and selection changes stay in memory; **Retry
 Save** writes their latest state. Quitting retries them first and asks before
