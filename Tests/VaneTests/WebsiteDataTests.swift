@@ -111,7 +111,7 @@ import XCTest
         model.refresh()
         model.select("example.com")
         model.clearSelection()
-        try await Task.sleep(for: .milliseconds(50))
+        try await compatibilityWait { model.error != nil }
         XCTAssertTrue(model.isBusy, "A timed-out removal may still be executing in WebKit")
         XCTAssertNotNil(model.error)
         XCTAssertNil(model.message)
@@ -129,7 +129,7 @@ import XCTest
         model.select("example.com")
         backend.deferFetch = true
         model.clearSelection()
-        try await Task.sleep(for: .milliseconds(50))
+        try await compatibilityWait { model.error != nil }
         XCTAssertFalse(model.isBusy, "Removal finished; only the verification read timed out")
         XCTAssertNotNil(model.error)
         XCTAssertNil(model.message)
