@@ -50,10 +50,19 @@ import WebKit
     static func forget(_ profileID: UUID) {
         guard let host = hosts[profileID] else { return }
         host.invalidated = true
+        ExtensionManagement.close(for: profileID)
         for task in host.restoring.values { task.cancel() }
         host.restoring.removeAll()
-        for context in host.installed { try? host.controller.unload(context) }
+        host.operations.removeAll()
+        for context in host.installed + Array(host.candidates.values) {
+            host.closePages(for: context)
+            try? host.controller.unload(context)
+        }
+        host.candidates.removeAll()
+        host.icons.removeAll()
+        host.anchors.removeAll()
         host.loaded.removeAll()
+        SiteChanges.shared.bump()
         hosts[profileID] = nil
     }
 
@@ -74,6 +83,34 @@ import WebKit
 
     var installed: [WKWebExtensionContext] { loaded.map(\.context) }
 
+    struct Entry: Identifiable {
+        let path: String
+        let name: String
+        let context: WKWebExtensionContext?
+        let status: String
+        let failure: String?
+        let busy: Bool
+        var id: String { path }
+    }
+
+    @Published private var folders: [String: String] = [:]
+    @Published private var failures: [String: String] = [:]
+    @Published private var operations: [String: UUID] = [:]
+    @Published private var disabled: Set<String> = []
+    private var candidates: [String: WKWebExtensionContext] = [:]
+    private var limitations: [String: [String]] = [:]
+
+    var entries: [Entry] {
+        folders.keys.sorted().map { path in
+            let context = loaded.first { $0.path == path }?.context
+            return Entry(path: path, name: folders[path] ?? URL(fileURLWithPath: path).lastPathComponent,
+                         context: context, status: operations[path] != nil ? "Checking…"
+                            : failures[path] != nil ? "Failed to load"
+                            : context != nil ? "Enabled" : disabled.contains(path) ? "Disabled" : "Inactive",
+                         failure: failures[path], busy: operations[path] != nil)
+        }
+    }
+
     private init(profileID: UUID) {
         self.profileID = profileID
         // A profile-scoped controller configuration is what keeps extension storage and
@@ -90,7 +127,41 @@ import WebKit
         super.init()
         controller.delegate = self
         guard profileID != Profile.incognito.id else { return }
-        for folder in ScopedPaths.urls(Self.key(for: profileID)) { begin(folder) }
+        folders = UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.namesKey, profileID)) as? [String: String] ?? [:]
+        disabled = Set(UserDefaults.vane.stringArray(forKey: ProfileManager.defaultsKey(Self.disabledKey, profileID)) ?? [])
+        var blocked: Set<String> = []
+        for choice in ScopedPaths.savedChoices(myKey) {
+            let old = contextBookmarks.first(where: { $0.value == choice.data })?.key ?? choice.originalPath
+            if let old, folders[old] != nil || contextIdentifiers[old] != nil {
+                var bookmarks = contextBookmarks
+                bookmarks[old] = choice.data
+                contextBookmarks = bookmarks
+            }
+            if let old, let folder = choice.url,
+               folder.resolvingSymlinksInPath().path != old,
+               folders[old] != nil || contextIdentifiers[old] != nil {
+                do { try relocate(old, to: folder, bookmark: choice.data) }
+                catch {
+                    failures[old] = error.localizedDescription
+                    blocked.insert(folder.resolvingSymlinksInPath().path)
+                }
+            }
+        }
+        // Keep unavailable choices recoverable; the management window can remove or retry them.
+        let saved = ScopedPaths.urls(Self.key(for: profileID), preservingUnavailable: true)
+        for path in contextIdentifiers.keys where folders[path] == nil {
+            folders[path] = URL(fileURLWithPath: path).lastPathComponent
+        }
+        for folder in saved {
+            let path = folder.resolvingSymlinksInPath().path
+            if blocked.contains(path) { continue }
+            if folders[path] == nil { folders[path] = folder.lastPathComponent }
+            if !disabled.contains(path) { begin(folder) }
+        }
+        let available = Set(saved.map { $0.resolvingSymlinksInPath().path })
+        for path in folders.keys where !available.contains(path) && !disabled.contains(path) && failures[path] == nil {
+            failures[path] = "The extension folder is unavailable. Reconnect its disk or choose Install Extension to grant folder access again."
+        }
     }
 
     /// The controller a new WKWebView's configuration must be pointed at. See the wiring note
@@ -109,32 +180,78 @@ import WebKit
 
     /// Nothing is persisted or granted until the user has reviewed WebKit's parsed access.
     func install(folder: URL) async throws {
-        _ = try await load(folder, installing: true)
+        let path = folder.resolvingSymlinksInPath().path
+        _ = try await load(folder, installing: true, replacing: folders[path] != nil)
     }
 
     private var myKey: String { Self.key(for: profileID) }
 
     func remove(_ context: WKWebExtensionContext) {
-        try? controller.unload(context)
-        forget(context, tab: nil)
-        if let path = loaded.first(where: { $0.context === context })?.path {
-            ScopedPaths.remove(path: path, from: myKey)
-            ExtensionConsent.remove(for: URL(fileURLWithPath: path), profileID: profileID)
-            claimed.remove(path)
-            var identities = contextIdentifiers
-            identities.removeValue(forKey: path)
-            contextIdentifiers = identities
-            // An uninstalled extension must not keep a slot in the pill: the cap is three,
-            // and a pin nothing can fill would silently cost one of them.
-            setPins(pins.filter { $0 != path })
-        }
-        loaded.removeAll { $0.context === context }
-        if loaded.isEmpty { poller?.invalidate(); poller = nil }   // no timer is started any more
+        guard let path = path(of: context) else { return }
+        do { try remove(folder: path) }
+        catch { warn("Could not remove that extension.", error.localizedDescription) }
     }
 
-    /// Paths loaded or in flight. Installing the same folder twice would otherwise give the
-    /// extension two contexts, two background pages, and two of every event.
-    private var claimed: Set<String> = []
+    func remove(folder path: String) throws {
+        cancelOperation(path)
+        try deactivate(path)
+        ScopedPaths.remove(path: path, from: myKey, bookmark: contextBookmarks[path])
+        var bookmarks = contextBookmarks
+        bookmarks[path] = nil
+        contextBookmarks = bookmarks
+        ExtensionConsent.remove(for: URL(fileURLWithPath: path), profileID: profileID)
+        var identities = contextIdentifiers
+        identities.removeValue(forKey: path)
+        contextIdentifiers = identities
+        folders[path] = nil
+        failures[path] = nil
+        limitations[path] = nil
+        disabled.remove(path)
+        saveManagement()
+        setPins(pins.filter { $0 != path })
+    }
+
+    func disable(_ path: String) throws {
+        cancelOperation(path)
+        try deactivate(path)
+        disabled.insert(path)
+        failures[path] = nil
+        saveManagement()
+    }
+
+    private func cancelOperation(_ path: String) {
+        operations[path] = nil
+        restoring[path]?.cancel()
+        restoring[path] = nil
+    }
+
+    private func deactivate(_ path: String) throws {
+        if let context = candidates[path] {
+            if context.isLoaded { try controller.unload(context) }
+            closePages(for: context)
+            candidates[path] = nil
+        }
+        guard let context = loaded.first(where: { $0.path == path })?.context else { return }
+        try controller.unload(context)
+        closePages(for: context)
+        forget(context, tab: nil)
+        loaded.removeAll { $0.path == path }
+        SiteChanges.shared.bump()
+    }
+
+    private func saveManagement() {
+        UserDefaults.vane.set(folders, forKey: ProfileManager.defaultsKey(Self.namesKey, profileID))
+        UserDefaults.vane.set(disabled.sorted(), forKey: ProfileManager.defaultsKey(Self.disabledKey, profileID))
+    }
+
+    @discardableResult
+    func refresh(_ path: String,
+                 review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
+        guard folders[path] != nil else { throw Failure("This extension has been removed. Install its folder again.") }
+        let folder = ScopedPaths.urls(myKey, preservingUnavailable: true)
+            .first { $0.resolvingSymlinksInPath().path == path } ?? URL(fileURLWithPath: path)
+        return try await load(folder, installing: false, replacing: true, review: review)
+    }
 
     private var invalidated = false
     private var restoring: [String: Task<Void, Never>] = [:]
@@ -144,12 +261,13 @@ import WebKit
             defer {
                 restoring[folder.path] = nil
                 prunePins()
+                rebuild()
             }
             do { _ = try await load(folder, installing: false) }
             catch is CancellationError { }
             catch {
-                warn("Could not load the extension in \(folder.lastPathComponent).",
-                     error.localizedDescription)
+                // The management window retains the failure without blocking launch.
+                rebuild()
             }
         }
     }
@@ -158,75 +276,127 @@ import WebKit
     /// AppKit's modal loop can process removal/profile deletion while the prompt is open;
     /// the lifetime and cancellation checks after it are essential even without an await.
     @discardableResult
-    func load(_ folder: URL, installing: Bool,
+    func load(_ folder: URL, installing: Bool, replacing: Bool = false,
               review: @MainActor (ExtensionConsent.Review) -> Bool = ExtensionConsent.ask) async throws -> Bool {
         guard !invalidated, profileID != Profile.incognito.id else { throw CancellationError() }
         try Task.checkCancellation()
         let path = folder.resolvingSymlinksInPath().path
-        guard claimed.insert(path).inserted else { return false }
-        var succeeded = false
+        guard operations[path] == nil else { return false }
+        guard replacing || !loaded.contains(where: { $0.path == path }) else { return false }
+        let token = UUID()
+        operations[path] = token
         var addedBookmark = false
+        var succeeded = false
         defer {
-            if !succeeded {
-                claimed.remove(path)
-                if addedBookmark { ScopedPaths.remove(path: path, from: myKey) }
+            if operations[path] == token { operations[path] = nil }
+            if !succeeded, addedBookmark, folders[path] == nil, operations[path] == nil {
+                ScopedPaths.remove(path: path, from: myKey)
             }
             prunePins()
+            rebuild()
         }
-        _ = try Self.validate(folder)
-        let ext = try await WKWebExtension(resourceBaseURL: folder)
-        try Task.checkCancellation()
-        guard !invalidated else { throw CancellationError() }
-        let requested = ExtensionAccess(ext)
-        let previous = ExtensionConsent.saved(for: folder, profileID: profileID)
-        let request = ExtensionConsent.Review(name: ext.displayName ?? folder.lastPathComponent,
-                                              requested: requested, previous: previous,
-                                              installing: installing)
-        if request.needsApproval, !review(request) { return false }
-        try Task.checkCancellation()
-        guard !invalidated else { throw CancellationError() }
-        if installing {
-            let alreadySaved = ScopedPaths.paths(myKey).contains {
-                URL(fileURLWithPath: $0).resolvingSymlinksInPath().path == path
+        func checkLifetime() throws {
+            try Task.checkCancellation()
+            guard !invalidated, operations[path] == token else { throw CancellationError() }
+        }
+        do {
+            let manifestData = try Self.readManifest(folder)
+            let manifest = try Self.validate(folder, data: manifestData)
+            try ExtensionDiagnostics.validateResources(manifest, in: folder)
+            let ext = try await WKWebExtension(resourceBaseURL: folder)
+            try checkLifetime()
+            guard try Self.readManifest(folder) == manifestData else {
+                throw Failure("manifest.json changed while Vane was checking it. Retry to review the current extension before enabling it.")
             }
-            guard ScopedPaths.add(folder, to: myKey) else {
-                throw Failure("macOS would not let Vane keep access to \(folder.lastPathComponent) "
-                    + "after quitting, so it was not installed.")
+            let parseErrors = ExtensionDiagnostics.blockingErrors(ext.errors, manifest: manifest)
+            guard parseErrors.isEmpty else {
+                throw Failure(ExtensionDiagnostics.describe(parseErrors) + "\nFix the extension folder and retry.")
             }
-            addedBookmark = !alreadySaved
+            let issues = ExtensionDiagnostics.limitations(manifest, extension: ext)
+            limitations[path] = issues
+            let requested = ExtensionAccess(ext)
+            let previous = ExtensionConsent.saved(for: folder, profileID: profileID)
+            let request = ExtensionConsent.Review(name: ext.displayName ?? folder.lastPathComponent,
+                requested: requested, previous: previous, installing: installing, limitations: issues)
+            if request.needsApproval, !review(request) {
+                try checkLifetime()
+                if replacing { try deactivate(path) }
+                if folders[path] != nil {
+                    failures[path] = "Access was not approved. Review and enable this extension when you are ready; its previous approval and settings are retained."
+                }
+                return false
+            }
+            try checkLifetime()
+            guard try Data(contentsOf: folder.appendingPathComponent("manifest.json")) == manifestData else {
+                throw Failure("manifest.json changed while Vane was checking it. Retry to review the current extension before enabling it.")
+            }
+            try ExtensionDiagnostics.validateResources(manifest, in: folder)
+            if installing {
+                let alreadySaved = folders[path] != nil
+                guard ScopedPaths.add(folder, to: myKey) else {
+                    throw Failure("macOS would not let Vane keep access to \(folder.lastPathComponent) after quitting, so it was not installed. Choose its folder again.")
+                }
+                addedBookmark = !alreadySaved
+            }
+            let context = WKWebExtensionContext(for: ext)
+            let identity = contextIdentifiers[path].flatMap(UUID.init(uuidString:)) ?? UUID()
+            context.uniqueIdentifier = identity.uuidString.lowercased()
+            context.baseURL = URL(string: "webkit-extension://\(context.uniqueIdentifier)/")!
+            context.isInspectable = Settings.inspectorEnabled
+            context.inspectionName = ext.displayName
+            context.unsupportedAPIs = ExtensionDiagnostics.unsupportedAPIs
+            for permission in ext.requestedPermissions where !ExtensionDiagnostics.unsupportedPermissions.contains(permission.rawValue) {
+                context.setPermissionStatus(.grantedExplicitly, for: permission)
+            }
+            for pattern in ext.requestedPermissionMatchPatterns.union(ext.allRequestedMatchPatterns) {
+                context.setPermissionStatus(.grantedExplicitly, for: pattern)
+            }
+            // Parsing and consent precede replacement. A failed candidate never becomes a
+            // toolbar action; edited unpacked folders cannot provide a last-good code copy.
+            if replacing { try deactivate(path) }
+            candidates[path] = context
+            try controller.load(context)
+            if ext.hasBackgroundContent { try await context.loadBackgroundContent() }
+            try checkLifetime()
+            let contextErrors = ExtensionDiagnostics.blockingErrors(context.errors, manifest: manifest)
+            guard contextErrors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(contextErrors)) }
+            try ExtensionConsent.save(requested, for: folder, profileID: profileID)
+            var identities = contextIdentifiers
+            identities[path] = identity.uuidString
+            contextIdentifiers = identities
+            if let bookmark = ScopedPaths.savedChoices(myKey).first(where: { $0.url?.resolvingSymlinksInPath().path == path })?.data {
+                var bookmarks = contextBookmarks
+                bookmarks[path] = bookmark
+                contextBookmarks = bookmarks
+            }
+            folders[path] = ext.displayName ?? folder.lastPathComponent
+            disabled.remove(path)
+            failures[path] = nil
+            saveManagement()
+            candidates[path] = nil
+            loaded.append((path, context))
+            succeeded = true
+            startPolling()
+            SiteChanges.shared.bump()
+            return true
+        } catch {
+            if operations[path] == token {
+                do { if replacing || candidates[path] != nil { try deactivate(path) } }
+                catch { failures[path] = "Could not stop the extension: " + error.localizedDescription; throw error }
+                if folders[path] != nil {
+                    failures[path] = ExtensionDiagnostics.describe([error])
+                        + "\nRepair the folder and choose Retry. Your approval, identity, and settings are retained."
+                }
+            }
+            throw error
         }
-        let context = WKWebExtensionContext(for: ext)
-        // WebKit's default identity changes on every load and makes storage.local
-        // ephemeral. Keep an installation identity in this profile's isolated defaults.
-        // Removing the extension drops it, so a reinstall cannot inherit old settings.
-        var identities = contextIdentifiers
-        let identity = identities[path].flatMap(UUID.init(uuidString:)) ?? UUID()
-        context.uniqueIdentifier = identity.uuidString.lowercased()
-        context.baseURL = URL(string: "webkit-extension://\(context.uniqueIdentifier)/")!
-        context.isInspectable = Settings.inspectorEnabled
-        context.inspectionName = ext.displayName
-        for permission in ext.requestedPermissions {
-            context.setPermissionStatus(.grantedExplicitly, for: permission)
-        }
-        for pattern in ext.requestedPermissionMatchPatterns.union(ext.allRequestedMatchPatterns) {
-            context.setPermissionStatus(.grantedExplicitly, for: pattern)
-        }
-        try controller.load(context)
-        do { try ExtensionConsent.save(requested, for: folder, profileID: profileID) }
-        catch { try? controller.unload(context); throw error }
-        identities[path] = identity.uuidString
-        contextIdentifiers = identities
-        loaded.append((path, context))
-        succeeded = true
-        startPolling()
-        return true
     }
 
     // MARK: Manifest validation (pure — this is what `check()` exercises)
 
     /// The cheap half of what WebKit will do, done synchronously so a wrong folder is
     /// rejected before anything is written down. Returns the parsed manifest.
-    static func validate(_ folder: URL) throws -> [String: Any] {
+    static func readManifest(_ folder: URL) throws -> Data {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDir), isDir.boolValue else {
             throw Failure("\(folder.lastPathComponent) is not a folder.")
@@ -236,6 +406,11 @@ import WebKit
             throw Failure("No manifest.json in \(folder.lastPathComponent) — pick the folder that "
                 + "contains the manifest, not the one above it.")
         }
+        return data
+    }
+
+    static func validate(_ folder: URL, data: Data? = nil) throws -> [String: Any] {
+        let data = try data ?? readManifest(folder)
         guard let manifest = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw Failure("manifest.json is not valid JSON.")
         }
@@ -255,6 +430,9 @@ import WebKit
     /// Security-scoped bookmarks, isolated by profile.
     static let baseKey = "extensionFolders"
     static let identifiersKey = "extensionIdentifiers"
+    static let namesKey = "extensionNames"
+    static let disabledKey = "extensionDisabled"
+    static let bookmarksKey = "extensionBookmarks"
 
     /// Per profile, so an extension installed in one profile is not loaded into another.
     static func key(for profileID: UUID) -> String {
@@ -264,6 +442,36 @@ import WebKit
     private var contextIdentifiers: [String: String] {
         get { UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.identifiersKey, profileID)) as? [String: String] ?? [:] }
         set { UserDefaults.vane.set(newValue, forKey: ProfileManager.defaultsKey(Self.identifiersKey, profileID)) }
+    }
+
+    private var contextBookmarks: [String: Data] {
+        get { UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.bookmarksKey, profileID)) as? [String: Data] ?? [:] }
+        set { UserDefaults.vane.set(newValue, forKey: ProfileManager.defaultsKey(Self.bookmarksKey, profileID)) }
+    }
+
+    /// A bookmark follows a folder moved in Finder. Carry the installation, including
+    /// its disabled state, to that resolved location rather than making a second install.
+    private func relocate(_ old: String, to folder: URL, bookmark: Data) throws {
+        let path = folder.resolvingSymlinksInPath().path
+        guard path != old else { return }
+        guard folders[path] == nil, contextIdentifiers[path] == nil else {
+            throw Failure("The moved folder conflicts with another saved extension. Remove the obsolete installation in Manage Extensions before retrying.")
+        }
+        if let consent = ExtensionConsent.saved(for: URL(fileURLWithPath: old), profileID: profileID) {
+            try ExtensionConsent.save(consent, for: folder, profileID: profileID)
+            ExtensionConsent.remove(for: URL(fileURLWithPath: old), profileID: profileID)
+        }
+        var identities = contextIdentifiers
+        identities[path] = identities.removeValue(forKey: old)
+        contextIdentifiers = identities
+        folders[path] = folders.removeValue(forKey: old) ?? folder.lastPathComponent
+        if disabled.remove(old) != nil { disabled.insert(path) }
+        var bookmarks = contextBookmarks
+        bookmarks[old] = nil
+        bookmarks[path] = bookmark
+        contextBookmarks = bookmarks
+        setPins(pins.map { $0 == old ? path : $0 })
+        saveManagement()
     }
 
     // MARK: Actions
@@ -312,6 +520,7 @@ import WebKit
     /// popup hanging off `view`. `performAction` also marks the tab as having had a user
     /// gesture, which is what `activeTab` extensions actually wait for.
     func run(_ context: WKWebExtensionContext, for tab: Tab?, from view: NSView?) {
+        guard installed.contains(where: { $0 === context }) else { return }
         let shim = shim(tab)
         // Only an action that *has* a popup will ever ask for its anchor. Recording one for
         // an onClicked-only extension would leave it in the table with nothing to consume
@@ -399,15 +608,16 @@ import WebKit
     private func setPins(_ paths: [String]) {
         // No explicit bump: writing defaults posts `didChangeNotification`, which is exactly
         // what `SiteChanges` listens to. Bumping as well would redraw every pill twice.
+        objectWillChange.send()
         UserDefaults.vane.set(paths, forKey: pinKey)
     }
 
     /// Once nothing is still loading, the stored list is rewritten to the pins that survived
     /// it, so a dead pin is dropped for good rather than re-examined every launch.
     private func prunePins() {
-        guard restoring.isEmpty, claimed.count == loaded.count else { return }
-        let live = livePins
-        if live != pins { setPins(live) }
+        guard restoring.isEmpty, operations.isEmpty else { return }
+        let recoverable = ExtensionPins.visible(stored: pins, installed: Array(folders.keys))
+        if recoverable != pins { setPins(recoverable) }
     }
 
     /// What the pill draws, in pin order, capped — and in a private window, only what is
@@ -426,11 +636,17 @@ import WebKit
 
     /// True when the pill has room. False is the cap being reached, which the menu item says
     /// out loud rather than quietly dropping somebody else's pin.
-    var canPin: Bool { livePins.count < ExtensionPins.cap }
+    var canPin: Bool { savedPins.count < ExtensionPins.cap }
+
+    private var savedPins: [String] { ExtensionPins.visible(stored: pins, installed: Array(folders.keys)) }
 
     func togglePin(_ context: WKWebExtensionContext) {
-        guard let path = path(of: context),
-              let next = ExtensionPins.toggled(path, in: livePins) else { return }
+        guard let path = path(of: context) else { return }
+        togglePin(path)
+    }
+
+    func togglePin(_ path: String) {
+        guard folders[path] != nil, let next = ExtensionPins.toggled(path, in: savedPins) else { return }
         setPins(next)
     }
 
@@ -465,10 +681,11 @@ import WebKit
 
     /// One modal for all three permission prompts. Returns what the user allowed.
     private func ask(_ context: WKWebExtensionContext, _ what: [String]) -> Bool {
-        guard !invalidated, installed.contains(where: { $0 === context }) else { return false }
+        guard !what.isEmpty, !invalidated, installed.contains(where: { $0 === context }) else { return false }
         let a = NSAlert()
         a.messageText = "“\(context.webExtension.displayName ?? "An extension")” wants more access."
         a.informativeText = what.sorted().joined(separator: "\n")
+            + "\n\nAllowed access lasts until the extension is reloaded, disabled, or Vane quits. Manage Extensions can revoke additional access."
         a.addButton(withTitle: "Allow")
         a.addButton(withTitle: "Deny").keyEquivalent = "\u{1b}"
         let allowed = a.runModal() == .alertFirstButtonReturn
@@ -516,7 +733,6 @@ import WebKit
     // call `sync()` at the bottom of `newBlankTab`, `close`, and the `current` didSet, and
     // delete the timer.
 
-    private var poller: Timer?
     private var announcedWindows: Set<ObjectIdentifier> = []
     private var announcedTabs: Set<Tab.ID> = []
     private var focusedWindow: ObjectIdentifier?
@@ -619,6 +835,7 @@ import WebKit
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openNewTabUsing configuration: WKWebExtension.TabConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionTab)? {
+        try requireActive(context)
         if let requested = configuration.window {
             guard let store = (requested as? ExtWindow)?.store,
                   myStores.contains(where: { $0 === store }) else {
@@ -637,6 +854,7 @@ import WebKit
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openNewWindowUsing configuration: WKWebExtension.WindowConfiguration,
                                 for context: WKWebExtensionContext) async throws -> (any WKWebExtensionWindow)? {
+        try requireActive(context)
         let store = Windows.open(isPrivate: configuration.shouldBePrivate,
                                  urls: configuration.tabURLs,
                                  profile: ProfileManager.shared.profiles.first { $0.id == profileID })
@@ -655,7 +873,8 @@ import WebKit
     func webExtensionController(_ controller: WKWebExtensionController,
                                 openOptionsPageFor context: WKWebExtensionContext) async throws {
         guard let url = context.optionsPageURL, let cfg = context.webViewConfiguration else { return }
-        present(url, cfg, title: context.webExtension.displayName ?? "Extension Options")
+        try requireActive(context)
+        present(url, cfg, context: context, title: context.webExtension.displayName ?? "Extension Options")
     }
 
     func webExtensionController(_ controller: WKWebExtensionController,
@@ -663,11 +882,14 @@ import WebKit
                                 for context: WKWebExtensionContext) async throws {
         // Taken first, whatever happens next: an anchor left in the table would come up
         // under the *next* popup, on a button nobody pressed.
+        try requireActive(context)
         let anchor = anchors.removeValue(forKey: ActionKey(context, subject(of: action)))?.view
         let name = context.webExtension.displayName ?? "An extension"
         guard let popover = action.popupPopover else {
             throw Failure("“\(name)” has no popup to show.")
         }
+        let id = ObjectIdentifier(context)
+        popovers[id] = (popovers[id] ?? []).filter(\.isShown) + [popover]
         // The button that ran the action: the pill's pinned glyph, or the extension's row in
         // the Site Control Center. Each window — a Little Vane and a private one included —
         // hands over its own, so a popup never opens over the wrong pill.
@@ -701,6 +923,7 @@ import WebKit
     func webExtensionController(_ controller: WKWebExtensionController,
                                 didUpdate action: WKWebExtension.Action,
                                 forExtensionContext context: WKWebExtensionContext) {
+        guard installed.contains(where: { $0 === context }) else { return }
         let tab = subject(of: action)
         forget(context, tab: .some(tab?.id))
         guard drawn(tab) else { return }
@@ -726,7 +949,8 @@ import WebKit
                                 promptForPermissions permissions: Set<WKWebExtension.Permission>,
                                 in tab: (any WKWebExtensionTab)?,
                                 for context: WKWebExtensionContext) async -> (Set<WKWebExtension.Permission>, Date?) {
-        ask(context, permissions.map(\.rawValue)) ? (permissions, nil) : ([], nil)
+        let supported = permissions.filter { !ExtensionDiagnostics.unsupportedPermissions.contains($0.rawValue) }
+        return ask(context, supported.map(\.rawValue)) ? (supported, nil) : ([], nil)
     }
 
     func webExtensionController(_ controller: WKWebExtensionController,
@@ -745,9 +969,53 @@ import WebKit
 
     // MARK: Helpers
 
-    private var pages: [NSWindow] = []
+    private var pages: [(context: WKWebExtensionContext, window: NSWindow)] = []
+    private var popovers: [ObjectIdentifier: [NSPopover]] = [:]
 
-    private func present(_ url: URL, _ cfg: WKWebViewConfiguration, title: String) {
+    private func closePages(for context: WKWebExtensionContext) {
+        for popover in popovers.removeValue(forKey: ObjectIdentifier(context)) ?? [] { popover.close() }
+        for page in pages where page.context === context {
+            (page.window.contentView as? WKWebView)?.stopLoading()
+            page.window.contentView = nil
+            page.window.close()
+        }
+        pages.removeAll { $0.context === context }
+    }
+
+    private func requireActive(_ context: WKWebExtensionContext) throws {
+        guard !invalidated, context.isLoaded,
+              installed.contains(where: { $0 === context }) || candidates.values.contains(where: { $0 === context }) else {
+            throw Failure("This extension is no longer enabled.")
+        }
+    }
+
+    func revokeRuntimeAccess(_ context: WKWebExtensionContext) {
+        guard installed.contains(where: { $0 === context }) else { return }
+        let required = context.webExtension.requestedPermissions
+        let patterns = context.webExtension.requestedPermissionMatchPatterns.union(context.webExtension.allRequestedMatchPatterns)
+        context.grantedPermissions = context.grantedPermissions.filter { required.contains($0.key) }
+        context.grantedPermissionMatchPatterns = context.grantedPermissionMatchPatterns.filter { patterns.contains($0.key) }
+        context.deniedPermissions = [:]
+        context.deniedPermissionMatchPatterns = [:]
+        objectWillChange.send()
+    }
+
+    func diagnostic(for entry: Entry) -> String {
+        var sections = ["Folder: " + entry.path, "Status: " + entry.status]
+        if let failure = entry.failure { sections.append(failure) }
+        if let context = entry.context {
+            if !context.errors.isEmpty { sections.append("WebKit errors\n" + ExtensionDiagnostics.describe(context.errors)) }
+            sections.append("Currently granted access\n" + ExtensionAccess(
+                permissions: Set(context.grantedPermissions.keys.map(\.rawValue)),
+                sites: Set(context.grantedPermissionMatchPatterns.keys.map(\.string))).description)
+        }
+        let issues = limitations[entry.path] ?? []
+        if !issues.isEmpty { sections.append("Compatibility limitations\n" + issues.joined(separator: "\n")) }
+        sections.append("Vane loads unpacked MV2/MV3 WebExtensions through macOS WebKit. API availability depends on WebKit and Vane’s host integration; this is not general Chrome-extension compatibility.")
+        return sections.joined(separator: "\n\n")
+    }
+
+    private func present(_ url: URL, _ cfg: WKWebViewConfiguration, context: WKWebExtensionContext, title: String) {
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 780, height: 620), configuration: cfg)
         web.isInspectable = Settings.inspectorEnabled
         let window = NSWindow(contentRect: web.frame,
@@ -758,7 +1026,8 @@ import WebKit
         window.isReleasedWhenClosed = false
         window.center()
         window.makeKeyAndOrderFront(nil)
-        pages.append(window)
+        pages.removeAll { !$0.window.isVisible }
+        pages.append((context, window))
         web.load(URLRequest(url: url))
     }
 

@@ -2,9 +2,8 @@ import AppKit
 import WebKit
 
 /// `vane drmcheck` — the one runnable check behind the DRM claim. Asks the engine, in a
-/// real https origin, which key systems it will actually hand out. Netflix/Disney+ need a
-/// YES from a FairPlay (com.apple.fps) or Widevine (com.widevine.alpha) line; clearkey
-/// alone means EME is wired up but no premium content will ever decrypt.
+/// real https origin, which key systems can initialize. This is capability evidence,
+/// not subscription-service or license-exchange verification.
 @MainActor enum DRMCheck {
     private static var web: WKWebView?
     private static var holder: NSWindow?
@@ -12,10 +11,21 @@ import WebKit
     // Actor state, not locals: a local captured by the MainActor closure below is
     // task-isolated, and newer Swift rejects mutating it from inside.
     private static var tick = 0
-    private static var best = 0.0
+    private static var previousTime: Double?
+    private static var previousVideoID: String?
+    private static var previousFrames: Int?
+    enum PlaybackResult { case unverified, withoutKeys, keysAttached }
 
-    /// With a URL: load a real page and report whether a <video> actually advances —
-    /// end-to-end proof that a DRM licence was fetched and frames are decrypting.
+    static func playbackResult(time: Double, previousTime: Double? = nil, width: Int, hasKeys: Bool, error: Int?,
+                               paused: Bool = false, seeking: Bool = false,
+                               frames: Int? = nil, previousFrames: Int? = nil) -> PlaybackResult {
+        guard let previousTime, previousTime.isFinite, time.isFinite,
+              time > 1, time > previousTime + 0.05, width > 0, error == nil,
+              !paused, !seeking, let frames, let previousFrames, frames > previousFrames else { return .unverified }
+        return hasKeys ? .keysAttached : .withoutKeys
+    }
+
+    /// With a URL: report decoded progress and modern media-key attachment separately.
     static func run(url: String?) -> Never {
         if let url, let u = URL(string: url) { play(u) }
         probeOnly()
@@ -60,22 +70,42 @@ import WebKit
         NSApplication.shared.activate(ignoringOtherApps: true)
         w.load(URLRequest(url: url))
         print("loading \(url.absoluteString) — polling for a playing <video>...")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 50) {
+            FileHandle.standardError.write(Data("drmcheck: playback probe timed out\n".utf8))
+            exit(2)
+        }
 
         poller = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
             MainActor.assumeIsolated {
                 tick += 1
                 w.evaluateJavaScript(videoProbe) { result, _ in
-                    let line = (result as? String) ?? "no result"
-                    print("  t+\(tick * 3)s  \(line)")
-                    if let t = Double(line.split(separator: " ").first(where: { $0.hasPrefix("time=") })?
-                        .dropFirst(5) ?? "") { best = max(best, t) }
-                    if tick >= 15 || best > 1.0 {
+                    let state = result as? [String: Any] ?? [:]
+                    print("  t+\(tick * 3)s  \(state)")
+                    let videoID = state["id"] as? String
+                    let time = state["time"] as? Double ?? 0
+                    let frames = state["frames"] as? Int
+                    let evidence = playbackResult(time: state["time"] as? Double ?? 0,
+                                                  previousTime: videoID != nil && videoID == previousVideoID ? previousTime : nil,
+                                                  width: state["width"] as? Int ?? 0,
+                                                  hasKeys: state["keys"] as? Bool ?? false,
+                                                  error: state["error"] as? Int,
+                                                  paused: state["paused"] as? Bool ?? true,
+                                                  seeking: state["seeking"] as? Bool ?? true,
+                                                  frames: frames,
+                                                  previousFrames: videoID != nil && videoID == previousVideoID ? previousFrames : nil)
+                    previousVideoID = videoID
+                    previousTime = time
+                    previousFrames = frames
+                    if tick >= 15 || evidence != .unverified {
                         poller?.invalidate()
                         print("")
-                        print(best > 1.0
-                            ? "=> PLAYING (reached \(best)s of protected video)"
-                            : "=> no playback (video never advanced past 1s)")
-                        exit(best > 1.0 ? 0 : 1)
+                        switch evidence {
+                        case .withoutKeys: print("=> PLAYING (decoded progress; no modern media keys attached)")
+                        case .keysAttached: print("=> PLAYING (decoded progress; modern media keys attached)")
+                        case .unverified: print("=> playback unverified (requires progress, decoded width and no media error)")
+                        }
+                        print("Asset encryption, license exchange and subscription compatibility require separate verification.")
+                        exit(evidence == .unverified ? 1 : 0)
                     }
                 }
             }
@@ -85,19 +115,35 @@ import WebKit
     }
 
     /// Finds the biggest <video> on the page, nudges it into playing, and reports its state.
-    private static let videoProbe = """
+    static let videoProbe = """
     (function () {
       var vs = Array.prototype.slice.call(document.querySelectorAll('video'));
       if (!vs.length) {
-        return 'no <video> yet | ' + document.title + ' | '
-          + (document.body ? document.body.innerText : '').replace(/\\s+/g, ' ').slice(0, 160);
+        return {status:'no video'};
       }
       vs.sort(function (a, b) { return b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight; });
       var v = vs[0];
+      var sample = window.__vaneDrmcheckSample;
+      if (!sample || sample.video !== v) {
+        sample = window.__vaneDrmcheckSample = {video:v,id:Math.random().toString(36),frames:0};
+        if (v.requestVideoFrameCallback) {
+          var delivered = function() {
+            if (window.__vaneDrmcheckSample !== sample || !v.isConnected) return;
+            sample.frames++;
+            v.requestVideoFrameCallback(delivered);
+          };
+          v.requestVideoFrameCallback(delivered);
+        }
+        // Invalidate continuity even if a seek completes between native polling ticks.
+        ['seeking','emptied'].forEach(function(type){v.addEventListener(type,function(){sample.id=Math.random().toString(36);});});
+      }
       if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
-      var keys = v.mediaKeys ? 'keys=yes' : 'keys=no';
-      var err = v.error ? ' error=' + v.error.code : '';
-      return 'time=' + v.currentTime.toFixed(2) + ' ready=' + v.readyState + ' ' + keys + err;
+      var quality = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+      // Native HLS can expose zero quality counters while delivering frame callbacks.
+      var frames = v.requestVideoFrameCallback ? sample.frames :
+        (quality ? quality.totalVideoFrames - quality.droppedVideoFrames : v.webkitDecodedFrameCount);
+      return {id:sample.id,time:v.currentTime,ready:v.readyState,width:v.videoWidth,keys:!!v.mediaKeys,error:v.error ? v.error.code : null,
+        paused:v.paused,seeking:v.seeking,frames:typeof frames==='number'?frames:null};
     })()
     """
 
@@ -110,8 +156,8 @@ import WebKit
             lines.forEach { print($0) }
             print("")
             let ok = lines.contains { $0.contains("com.apple.fps") && $0.contains("YES") }
-            print(ok ? "=> FairPlay available: premium streaming has a decrypt path."
-                     : "=> No FairPlay: Netflix/Disney+ will not play in this engine.")
+            print(ok ? "=> FairPlay CDM initialized; service compatibility remains unverified."
+                     : "=> FairPlay unavailable in this probe; service compatibility remains unverified.")
             exit(ok ? 0 : 1)
         }
     }

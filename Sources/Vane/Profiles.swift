@@ -38,15 +38,18 @@ import WebKit
 
     /// Every folder still reachable under `key`, access already started. Anything that no
     /// longer resolves — folder deleted, volume gone, or a pre-sandbox plain path that the
-    /// sandbox will not grant — is dropped from the stored list rather than retried forever.
+    /// sandbox will not grant — is dropped unless the caller preserves unavailable choices.
     @discardableResult
-    static func urls(_ key: String, in defaults: UserDefaults = .vane) -> [URL] {
+    static func urls(_ key: String, in defaults: UserDefaults = .vane, preservingUnavailable: Bool = false) -> [URL] {
         let stored = raw(key, in: defaults)
         let holder = owner(key, defaults)
         var kept: [Data] = []
         var out: [URL] = []
         for data in stored {
-            guard let url = resolve(data), start(url, for: holder) else { continue }
+            guard let url = resolve(data), start(url, for: holder) else {
+                if preservingUnavailable { kept.append(data) }
+                continue
+            }
             kept.append(data)
             out.append(url)
         }
@@ -126,10 +129,20 @@ import WebKit
         return true
     }
 
-    static func remove(path: String, from key: String, in defaults: UserDefaults = .vane) {
+    static func remove(path: String, from key: String, in defaults: UserDefaults = .vane, bookmark: Data? = nil) {
         let url = URL(fileURLWithPath: path)
-        defaults.set(raw(key, in: defaults).filter { !same($0, url) }, forKey: key)
+        defaults.set(raw(key, in: defaults).filter { $0 != bookmark && !same($0, url) }, forKey: key)
         release(owner(key, defaults), at: url.resolvingSymlinksInPath().path)
+    }
+
+    /// The original bytes identify an unavailable choice even when URL resolution fails.
+    /// Reading its embedded path also lets legacy consumers follow Finder relocation.
+    static func savedChoices(_ key: String, in defaults: UserDefaults = .vane) -> [(data: Data, url: URL?, originalPath: String?)] {
+        raw(key, in: defaults).map { data in
+            let original = (NSURL.resourceValues(forKeys: [.pathKey], fromBookmarkData: data)?[.pathKey] as? String)
+                .map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+            return (data, resolve(data), original)
+        }
     }
 
     /// A resolved bookmark comes back through the data volume's firmlink — under the
@@ -678,7 +691,7 @@ struct Space: Identifiable, Codable, Equatable {
             Passwords.deleteAll(profileID: id)
             SitePermissions.resetAll(profileID: id)
             for key in ["pinnedTabs", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
-                        ExtensionHost.identifiersKey, ExtensionConsent.baseKey,
+                        ExtensionHost.identifiersKey, ExtensionHost.namesKey, ExtensionHost.disabledKey, ExtensionHost.bookmarksKey, ExtensionConsent.baseKey,
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
