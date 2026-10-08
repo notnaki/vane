@@ -36,6 +36,25 @@ import XCTest
         XCTAssertNil(SpaceLayout.templateURL(URL(string: "vane://easel/\(UUID())")!))
     }
 
+    func testSignedAddressesNeverPersistBearerSignaturesOrAuthenticationCodes() throws {
+        let (manager, library) = try fixture()
+        var source = layout()
+        let raw = URL(string: "https://account.blob.core.windows.net/private/doc?sv=2023-11-03&sp=r&se=2027-01-01&sr=b&sig=SECRET")!
+        source.tabs[0].url = raw
+        source.tabs[0].home = raw
+        source.splits = []
+        let saved = try library.save(name: "Signed page", space: Space(name: "Source", profileID: manager.active.id),
+                                     layout: source, unlocked: [])
+        XCTAssertEqual(saved.layout.tabs[0].url.absoluteString,
+                       "https://account.blob.core.windows.net/private/doc?sv=2023-11-03&sp=r&se=2027-01-01&sr=b")
+        let file = WorkspaceTemplates.url(profile: manager.active.id, directory: manager.directory)
+        XCTAssertFalse(try String(contentsOf: file, encoding: .utf8).contains("SECRET"))
+        let copy = try library.create(saved.id, profile: manager.active.id, name: "Copy", unlocked: [])
+        XCTAssertEqual(copy.layout?.tabs[0].url, saved.layout.tabs[0].url)
+        XCTAssertEqual(SpaceLayout.templateURL(URL(string: "https://example.com/action?oobCode=SECRET&mode=signIn#sig=SECRET&section=2")!)?.absoluteString,
+                       "https://example.com/action?mode=signIn#section=2")
+    }
+
     func testFreshCopiesPreserveDuplicateRowsNamesHierarchyAndSplits() throws {
         let original = layout()
         let copy = try original.recreated()

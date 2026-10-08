@@ -80,7 +80,7 @@ struct SpaceLayout: Codable, Equatable {
         func sensitive(_ key: String) -> Bool {
             let key = key.lowercased().filter { $0.isLetter || $0.isNumber }
             return ["code", "auth", "authorization", "credential", "credentials", "jwt", "key", "apikey",
-                    "password", "passwd", "secret", "signature", "session", "sessionid", "sid", "ticket"].contains(key)
+                    "password", "passwd", "secret", "signature", "sig", "oobcode", "session", "sessionid", "sid", "ticket"].contains(key)
                 || key.contains("token") || key.contains("password") || key.contains("secret")
                 || key.hasPrefix("xamz") || key.hasPrefix("xgoog") || key.hasPrefix("oauth")
         }

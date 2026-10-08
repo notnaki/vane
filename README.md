@@ -334,7 +334,7 @@ swift test --filter 'BlockerTests|BlockerSubscriptionTests|BlockerWebKitTests'
 
 Settings → Advanced → **Backup and Restore** exports one `.vanebackup` file with all
 regular profiles, Spaces, saved tabs and sessions, bookmark folders and bookmarks,
-history, settings, imported blocking lists, and Easels with embedded images. Backups
+history, Space templates, settings, imported blocking lists, and Easels with embedded images. Backups
 are unencrypted and limited to 512 MB; oversized backups fail without omitting data.
 Passwords and tokens in Keychain, cookies and website sign-ins/storage, downloaded
 files, caches, and external extension folders are excluded. External folder choices
