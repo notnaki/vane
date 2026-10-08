@@ -100,8 +100,10 @@ namespace. Preference changes apply to the open saved Reader.
 
 Only explicitly mapped local images can load. A restrictive content security
 policy and navigation policy prevent remote subresources, scripts, frames, forms,
-and automatic navigations. Grant file read access only to the selected article's
-directory through the public WebKit file-loading API. Never grant the data root.
+and automatic navigations. Generate a disposable presentation directory containing
+only the selected article's document and validated images. Grant file read access
+only to that directory through the public WebKit file-loading API; remove it when
+the view closes and exclude it from backups. Never grant the data root.
 Links and Open Live Page are explicit user actions that open ordinary browser tabs;
 the saved view cannot follow them automatically or silently reload the live page.
 
