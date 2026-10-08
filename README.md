@@ -316,7 +316,9 @@ On launch, Vane compares the folder's current requested access with its last app
 set. Added capabilities or website patterns require review, and declining leaves the
 extension disabled. Choose **Install Extension…** again to review and enable it later.
 Existing installations require one review when first opened with this version. Removing
-an extension clears its saved approval. Runtime requests for additional access still ask;
+an extension clears its saved approval and installation identity. Its identity and
+`storage.local` settings survive host restoration; reinstalling starts a fresh identity.
+Runtime requests for additional access still ask;
 those grants last for the current extension session.
 
 Unpacked folder changes are checked when loaded, normally on the next launch. Vane does
@@ -544,6 +546,11 @@ with `check-release-candidate.sh` before treating it as a distribution build.
   startup, clear HLS and FairPlay demo playback, and basic Excalidraw/VS Code editing
   on macOS 27 in an ad hoc signed debug build. The file-picker failure was fixed
   and a synthetic upload reached the public demo server in a follow-up check.
+  A macOS 27.0.1 follow-up covers exact multiple-file/frame submissions, print CSS
+  and page ranges, extension storage restoration, decoded media controls, and disk
+  session restoration. Native directory selection works, but ordinary directory
+  form submission resets the page with a WebKit guard fault before the server
+  receives it. See the matrix for the opt-in failing reproduction and evidence.
   Passkey authentication was unavailable in the original fixture. Provider sign-ins, subscription
   streaming, cross-network calls, broader permission lifecycles, and macOS 26 /
   notarized-release coverage remain unverified. See the matrix for exact scope.
