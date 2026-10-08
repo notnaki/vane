@@ -675,7 +675,7 @@ struct Space: Identifiable, Codable, Equatable {
             ExtensionHost.forget(id)
             Passwords.deleteAll(profileID: id)
             SitePermissions.resetAll(profileID: id)
-            for key in ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey, ExtensionConsent.baseKey,
+            for key in ["pinnedTabs", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey, ExtensionConsent.baseKey,
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
@@ -1513,12 +1513,13 @@ struct Space: Identifiable, Codable, Equatable {
         pm.createSpace(name: "Scratch", in: victim)
         let victimKeys = ["pinnedTabs", "blockerEnabled", ExtensionHost.baseKey]
             .map { defaultsKey($0, victim) }
-            + [DownloadLocation.directoryKey(victim), DownloadLocation.askKey(victim)]
+            + [DownloadLocation.directoryKey(victim), DownloadLocation.askKey(victim), defaultsKey("blockerSiteExceptions", victim)]
         UserDefaults.vane.set(["https://pinned.example"], forKey: victimKeys[0])
         UserDefaults.vane.set(false, forKey: victimKeys[1])
         UserDefaults.vane.set([Data("bookmark".utf8)], forKey: victimKeys[2])
         UserDefaults.vane.set([Data("download bookmark".utf8)], forKey: victimKeys[3])
         UserDefaults.vane.set(true, forKey: victimKeys[4])
+        UserDefaults.vane.set(["example.com"], forKey: victimKeys[5])
         let victimPermission = SitePermissions.Scope(
             url: URL(string: "https://vane-delete-check.invalid"), profileID: victim)!
         let neighbourPermission = SitePermissions.Scope(

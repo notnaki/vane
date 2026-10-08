@@ -1334,9 +1334,6 @@ private struct PrivacyPane: View {
                     Toggle("", isOn: $blocking).labelsHidden()
                         .onChange(of: blocking) { Blocker.setEnabled(blocking, for: profile.id); rebuild() }
                 }
-                SettingsRow("Filter lists") {
-                    Button("Add Filter List…") { Blocker.chooseAndAddList() }
-                }
                 SettingsRow("Search suggestions") {
                     Toggle("", isOn: $suggestions).labelsHidden()
                 }
@@ -1346,6 +1343,8 @@ private struct PrivacyPane: View {
                          + "exception: they send what you type to your search engine before you "
                          + "press Return, and they are off unless you turn them on.")
             }
+
+            BlockerSettingsSection(profileID: profile.id)
 
             SettingsSection("Site Permissions") {
                 SettingsCard {
