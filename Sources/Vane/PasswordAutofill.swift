@@ -14,15 +14,21 @@ import WebKit
       var topWindow = window, contexts = new Map(), recentContext = null;
       function install(window) {
         var document;
-        try { document = window.document; } catch (_) { return; }
+        try {
+          // document.domain can make another host or port DOM-accessible. Credentials
+          // still require the exact serialized origin, including inherited srcdoc origins.
+          if (window !== topWindow && (window.origin === 'null' || window.origin !== topWindow.origin)) return;
+          document = window.document;
+        } catch (_) { return; }
         if (!document) return;
         if (contexts.has(document)) { contexts.get(document).ready(); return; }
         var documentID = Array.from(topWindow.crypto.getRandomValues(new Uint32Array(4))).join('-'), fields = new WeakMap(), fieldSerial = 0;
         function attachedDocument() {
           try {
-            if (window.document !== document) return false;
+            if (window.document !== document || window.origin !== topWindow.origin) return false;
             var child = window;
             while (child !== topWindow) {
+              if (child.origin === 'null' || child.origin !== topWindow.origin) return false;
               var frame = child.frameElement;
               if (!frame || !frame.isConnected || frame.contentDocument !== child.document) return false;
               child = child.parent;
@@ -41,7 +47,7 @@ import WebKit
           var field = p && (p.pass || p.user);
           if (!field) return null;
           if (!fields.has(field)) fields.set(field, String(++fieldSerial));
-          return documentID + ':' + fields.get(field);
+          return documentID + ':' + fields.get(field) + (p.pass ? ':password' : ':username');
         }
         // React and friends install their own value setter; assigning .value directly updates
         // the DOM but not the component state, and the site then submits an empty field.
@@ -61,7 +67,7 @@ import WebKit
             style.visibility === 'visible' && !el.closest('[inert]');
         }
         function usableInput(el) {
-          return !el.disabled && !el.readOnly && el.type !== 'hidden' && shown(el);
+          return !el.disabled && !el.readOnly && el.type !== 'hidden' && !hasRole(el, 'one-time-code') && shown(el);
         }
         function hasRole(el, role) { return el.autocomplete.toLowerCase().split(/\\s+/).includes(role); }
         function usernameInput(el) {
@@ -75,7 +81,7 @@ import WebKit
           var inputs = Array.from(root.querySelectorAll('input'));
           if (!capture) inputs = inputs.filter(usableInput);
           var passwords = inputs.filter(function (el) {
-            return (el.type === 'password' || hasRole(el, 'current-password')) && !el.disabled && shown(el) &&
+            return (el.type === 'password' || hasRole(el, 'current-password')) && !el.disabled && !hasRole(el, 'one-time-code') && shown(el) &&
               (capture || !hasRole(el, 'new-password'));
           });
           var pw = passwords.find(function (el) {
@@ -88,9 +94,11 @@ import WebKit
             inputs = inputs.filter(function (el) { return rootFor(el) === document; });
           }
           var user, before = pw ? inputs.slice(0, inputs.indexOf(pw)).reverse() : inputs;
-          user = before.find(function (el) { return hasRole(el, 'username'); });
+          user = before.find(function (el) { return hasRole(el, 'username') && !hasRole(el, 'one-time-code') &&
+              (['text', 'email', 'tel'].includes(el.type) || (capture && el.type === 'hidden')); });
           if (!user && (!pw || pw.form)) {
-            user = inputs.find(function (el) { return hasRole(el, 'username'); });
+            user = inputs.find(function (el) { return hasRole(el, 'username') && !hasRole(el, 'one-time-code') &&
+              (['text', 'email', 'tel'].includes(el.type) || (capture && el.type === 'hidden')); });
           }
           if (!user && pw) user = before.find(function (el) { return usernameInput(el); });
           if (!pw && !user) {
@@ -111,7 +119,7 @@ import WebKit
         function carriedAccount(p) {
           if (selectedAccounts.has(p.pass)) return selectedAccounts.get(p.pass);
           var step = usernameStep, root = p.pass.form || p.pass;
-          if (!step || step.field.isConnected) return '';
+          if (!step || (step.field.isConnected && step.field !== p.pass)) return '';
           if (root === step.root || (!step.root.isConnected && root.parentNode === step.parent &&
               root.previousSibling === step.before && root.nextSibling === step.after)) return step.account;
           return '';
@@ -292,13 +300,18 @@ import WebKit
           var root = rootFor(p.pass || p.user);
           if (p.user && account) setValue(p.user, account);
           rememberStep(p);
-          if (!p.user && p.pass) selectedAccounts.set(p.pass, account);
           // Site input handlers can replace, hide, or reclassify fields synchronously.
           // Revalidate after the username events before handing over the secret.
           if (p.pass) {
             if (!liveDocument() || !usableInput(p.pass) || hasRole(p.pass, 'new-password') ||
                 rootFor(p.pass) !== root || token(targetPair()) !== token(p) ||
                 (p.user && p.user.isConnected && p.user.value !== account)) return false;
+            var current = pairFor(p.pass), currentIdentity = pair(root, true);
+            if (!current || token(current) !== token(p)) return false;
+            var hint = currentIdentity && currentIdentity.user;
+            if (hint && hint.value && hint.value !== account) return false;
+            if (current.user && (!hint || usableInput(hint)) && current.user.value !== account) return false;
+            selectedAccounts.set(p.pass, account);
             setValue(p.pass, password);
           }
           return true;   // never auto-submit
@@ -307,11 +320,11 @@ import WebKit
         // same notification. Mutation callbacks only schedule work: searching each added
         // subtree here competes with the framework's page construction in its microtasks.
         // One discovery pass after a burst also avoids searching nested additions twice.
-        var seen = new WeakSet(), pending = false;
+        var seen = new WeakMap(), pending = false;
         function ready() {
           var p = targetPair(), field = p && (p.pass || p.user);
-          if (!field || seen.has(field)) return;
-          seen.add(field);
+          if (!field || seen.get(field) === token(p)) return;
+          seen.set(field, token(p));
           send({ ready: true });
           if (ours(document.activeElement)) focused(document.activeElement);
         }

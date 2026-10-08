@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import Network
 import XCTest
 @testable import vane
 
@@ -21,7 +22,7 @@ import XCTest
         XCTAssertEqual(value, expected, file: file, line: line)
     }
 
-    private func fixture(_ html: String) async throws -> (WKWebView, Capture) {
+    private func fixture(_ html: String, url: URL = URL(string: "https://login.example.test/signin")!) async throws -> (WKWebView, Capture) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         WebKitStartup.prepare()
@@ -42,7 +43,7 @@ import XCTest
             config.userContentController.removeScriptMessageHandler(forName: "vanepw", contentWorld: Autofill.world)
             window.close()
         }
-        web.loadSimulatedRequest(URLRequest(url: URL(string: "https://login.example.test/signin")!),
+        web.loadSimulatedRequest(URLRequest(url: url),
                                  responseHTML: "<!doctype html><body>" + html + "</body>")
         try await wait { !web.isLoading }
         return (web, capture)
@@ -265,6 +266,64 @@ import XCTest
             }
             expectEqual(Passwords.password(origin: origin, account: "ada", profileID: profile), "owned-secret")
         }
+    }
+
+    func testUsernameReplacementCannotChangeIdentityBeforeSecretWrite() async throws {
+        let (web, _) = try await fixture("""
+            <form><input id=user autocomplete=username><input id=password type=password></form>
+            <script>user.addEventListener('input',()=>{
+              user.outerHTML='<input id=user autocomplete=username readonly value=bob>';
+            });</script>
+            """)
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "[user.value,password.value].join('|')") as? String, "bob|")
+    }
+
+    func testDomainRelaxationCannotShareCredentialsAcrossPorts() async throws {
+        // document.domain makes these ports DOM-accessible, but not the same origin.
+        let listener = try NWListener(using: .tcp, on: .any)
+        let html = "<script>document.domain='localhost'</script><form><input id=password type=password></form>"
+        let response = Data(("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " +
+                             String(html.utf8.count) + "\r\nConnection: close\r\n\r\n" + html).utf8)
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: .main)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { _, _, _, _ in
+                connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
+            }
+        }
+        listener.start(queue: .main)
+        defer { listener.cancel() }
+        try await wait { (listener.port?.rawValue ?? 0) != 0 }
+        let childPort = try XCTUnwrap(listener.port).rawValue
+        let parentPort = childPort == 65535 ? childPort - 1 : childPort + 1
+        let (web, capture) = try await fixture("""
+            <script>document.domain='localhost'</script>
+            <iframe id=embedded src='http://localhost:\(childPort)/'></iframe>
+            """, url: URL(string: "http://localhost:\(parentPort)/")!)
+        try await wait { try await self.js(web, "!!embedded.contentDocument?.getElementById('password')") as? Bool == true }
+        _ = try await js(web, "embedded.contentDocument.getElementById('password').focus()")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "embedded.contentDocument.getElementById('password').value") as? String, "")
+        expectFalse(capture.messages.contains { $0["focus"] as? Bool == true || $0["ready"] as? Bool == true })
+    }
+
+    func testPasswordTypedOneTimeCodeIsNotALoginPassword() async throws {
+        let (web, capture) = try await fixture("<form><input id=code type=password autocomplete=one-time-code></form>")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "code.value") as? String, "")
+        expectFalse(capture.messages.contains { $0["ready"] as? Bool == true })
+    }
+
+    func testReusedUsernameNodeBecomesANewPasswordStep() async throws {
+        let (web, capture) = try await fixture("<form><input id=field autocomplete=username></form>")
+        try await Task.sleep(for: .milliseconds(150))
+        expectTrue(try await fill(web))
+        let before = capture.messages.filter { $0["ready"] as? Bool == true }.count
+        _ = try await js(web, "field.value=''; field.type='password'; field.autocomplete='current-password'")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertGreaterThan(capture.messages.filter { $0["ready"] as? Bool == true }.count, before)
+        expectEqual(capture.messages.last { $0["ready"] as? Bool == true }?["accountHint"] as? String, "ada")
+        expectFalse(try await fill(web, account: "bob", automatic: true))
     }
 
 }
