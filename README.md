@@ -225,10 +225,10 @@ choices and a Location row on macOS 27. Allow Once belongs to the requesting doc
 and expires when it navigates or closes. Embedded camera, microphone, and location
 requests fail closed because the public APIs do not identify their original document
 reliably. Saved choices belong to the requesting main frame’s exact origin and profile;
-private choices stay in
-memory in that private tab. Site Controls returns decisions to Ask or Block and stops
+private choices stay in memory in that private tab. Site Controls returns decisions to Ask or Block and stops
 camera/microphone capture for the affected device. Revoking location reloads pages
-using its decision to end location watches.
+using its decision; location watches end when reload completes. Cancelling the reload
+can leave existing watches alive until the document is replaced.
 
 These are Vane’s **site decisions**. macOS independently authorizes Vane to access
 camera, microphone, Location Services, and screen recording; Allow in Vane cannot

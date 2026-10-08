@@ -196,6 +196,29 @@ import XCTest
         XCTAssertNil(window.attachedSheet)
     }
 
+    func testClosingPromptWindowPreservesCaptureOwnerWhenDocumentMovesToAnotherWindow() async throws {
+        try await load("<script>\(mediaScript)</script>")
+        try await start()
+        try answer(.alertFirstButtonReturn)
+        try await granted()
+        SiteControl.set(.microphone, to: nil, on: tab)
+        try await compatibilityWait { self.tab.web.microphoneCaptureState == .none }
+        try await evaluate("navigator.mediaDevices.getUserMedia({audio:true}).catch(e => { window.micResult = e.name; }); true;")
+        try await compatibilityWait { self.window.attachedSheet != nil }
+        let original = window!
+        original.close()
+        let replacement = NSWindow(contentRect: original.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        replacement.isReleasedWhenClosed = false
+        replacement.contentView = tab.web
+        replacement.makeKeyAndOrderFront(nil)
+        window = replacement
+        try await compatibilityWait { try await self.tab.web.evaluateJavaScript("window.micResult") as? String == "NotAllowedError" }
+        let live = try await tab.web.evaluateJavaScript("stream.getVideoTracks()[0].readyState") as? String
+        XCTAssertEqual(live, "live", "Window closure did not destroy this shared document")
+        SiteControl.set(.camera, to: nil, on: tab)
+        try await compatibilityWait { try await self.tab.web.evaluateJavaScript("stream.getVideoTracks()[0].readyState") as? String == "ended" }
+    }
+
     func testTeardownStopsSyntheticCaptureEvenWhenWebViewIsRetained() async throws {
         try await load("<script>\(mediaScript)</script>")
         try await start()

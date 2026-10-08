@@ -64,7 +64,9 @@ A pending sheet is attached only to its requesting window. A busy window rejects
 second sheet; other windows remain usable. While a sheet is pending, Vane checks its
 owner and main document every 150 ms, cancelling on replacement, hiding, window
 transfer, or closure. Explicit lifecycle events and task cancellation also
-cancel it. A cancelled/stale answer cannot save a decision. Revocation rechecks the
+cancel it. Closing a prompt’s window cancels that prompt without forgetting capture
+ownership for a shared document that survives in another window; actual document
+teardown owns grant expiration. A cancelled/stale answer cannot save a decision. Revocation rechecks the
 pending request after asynchronous document validation, so a late validation result
 cannot resurrect an Allow. Escape chooses Don’t Allow and saves Block. Cancelling
 or dismissing the sheet through lifecycle/task cancellation denies without saving.

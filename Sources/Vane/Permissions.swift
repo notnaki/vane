@@ -207,7 +207,7 @@ import WebKit
         }
         if let answer { remember(scope: scope, type: type, allow: answer) }
         else { forget(scope: scope, type: type) }
-        if answer != true { revoke(scope: scope, type: type) }
+        if answer == nil { revoke(scope: scope, type: type) }
     }
 
     static func makePrompt(scope: Scope, type: Kind) -> NSAlert {
@@ -273,7 +273,7 @@ import WebKit
         prompt.closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: window, queue: .main) { _ in
                 Task { @MainActor in
-                    if pending[tabID]?.token == token { endDocument(tabID: tabID) }
+                    if pending[tabID]?.token == token { cancel(tabID: tabID) }
                 }
             }
         // Poll only while a sheet is pending. Check the isolated document token and
