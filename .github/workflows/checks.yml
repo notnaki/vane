@@ -89,6 +89,12 @@ jobs:
       - name: DMG package
         run: ./scripts/test-build-dmg.sh
 
+      - name: Updater interruption, rollback, transport and relaunch recovery
+        run: |
+          scripts/test-updater-recovery.sh
+          python3 scripts/test-updater-transport.py
+          scripts/test-updater-relaunch.sh
+
       - name: Update installer rejection and quarantine cleanup
         run: bash scripts/test-update-installer.sh Vane.app --unsigned
 

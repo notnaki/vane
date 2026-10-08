@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import Darwin
+import MachO
 
 /// Runs outside the browser sandbox, as the current user (never root). Only a Vane
 /// bundle in one of the two Applications directories can be installed. The copied
@@ -21,16 +22,43 @@ enum UpdateInstallation {
         guard let incomingVersion = UpdateVersion(tag) else { throw failure("Invalid update version") }
         try BundleReplacement.install(source: source, at: target, keepPrevious: keepPrevious,
             verify: { staged in
-                guard realDirectory(staged), verified(staged), let actual = version(staged) else { return false }
+                guard realDirectory(staged), bundleInfo(staged) != nil,
+                      let actual = version(staged) else { throw failure("Invalid update bundle identity or version") }
+                guard compatibleExecutable(staged) else {
+                    throw failure("Update executable does not support this architecture")
+                }
+                try verifySignature(staged)
                 // The advertised tag must match the signed payload, with semver's padded
                 // numeric core and ignored build metadata rather than string equality.
-                return !(actual < incomingVersion) && !(incomingVersion < actual)
+                guard !(actual < incomingVersion) && !(incomingVersion < actual) else {
+                    throw failure("Update version does not match advertised version")
+                }
+                return true
             }, mayReplaceTarget: { destination in
                 guard allowed(destination, within: applicationsDirectories) else { return false }
                 guard FileManager.default.fileExists(atPath: destination.path) else { return true }
-                guard let installed = version(destination) else { return false }
+                guard realDirectory(destination), bundleInfo(destination) != nil,
+                      let installed = version(destination) else { return false }
+                // A corrupt installation is not a usable rollback candidate. Local
+                // ad-hoc Vane builds are allowed, but their contents must still be sealed.
+                guard (try? verifySignature(destination, pinned: false)) != nil else { return false }
                 return installed < incomingVersion
             }, prepare: prepare)
+    }
+
+    static func verifyForRelaunch(_ bundle: URL) throws {
+        guard realDirectory(bundle), bundleInfo(bundle) != nil, version(bundle) != nil,
+              compatibleExecutable(bundle) else { throw failure("Invalid Vane relaunch bundle") }
+        try verifySignature(bundle)
+    }
+
+    static func verifyRelaunchHelper(_ helper: URL) throws {
+        try verifySignature(helper, identifier: UpdateInstaller.serviceName)
+    }
+
+    static func recoverablePrevious(_ bundle: URL) -> Bool {
+        guard realDirectory(bundle), bundleInfo(bundle) != nil, version(bundle) != nil else { return false }
+        return (try? verifySignature(bundle, pinned: false)) != nil
     }
 
     private static func realDirectory(_ url: URL) -> Bool {
@@ -38,7 +66,7 @@ enum UpdateInstallation {
         return lstat(url.path, &metadata) == 0 && metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR)
     }
 
-    private static func allowed(_ target: URL, within roots: [URL]) -> Bool {
+    static func allowed(_ target: URL, within roots: [URL]) -> Bool {
         guard target.isFileURL, target.lastPathComponent == "Vane.app" else { return false }
         let normalized = target.standardizedFileURL
         guard normalized.resolvingSymlinksInPath() == normalized else { return false }
@@ -53,21 +81,52 @@ enum UpdateInstallation {
         return UpdateVersion(version)
     }
 
-    private static func verified(_ bundle: URL) -> Bool {
+    private static func bundleInfo(_ bundle: URL) -> [String: Any]? {
+        guard let data = try? Data(contentsOf: bundle.appendingPathComponent("Contents/Info.plist")),
+              let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+              info["CFBundleIdentifier"] as? String == "io.github.notnaki.vane",
+              info["CFBundlePackageType"] as? String == "APPL",
+              let executable = info["CFBundleExecutable"] as? String, !executable.isEmpty,
+              executable == (executable as NSString).lastPathComponent,
+              executable != ".", executable != ".." else { return nil }
+        let binary = bundle.appendingPathComponent("Contents/MacOS").appendingPathComponent(executable)
+        guard binary.resolvingSymlinksInPath().path.hasPrefix(bundle.resolvingSymlinksInPath().path + "/"),
+              FileManager.default.isExecutableFile(atPath: binary.path) else { return nil }
+        return info
+    }
+
+    private static func compatibleExecutable(_ bundle: URL) -> Bool {
+        #if arch(arm64)
+        let architecture = NSNumber(value: CPU_TYPE_ARM64)
+        #else
+        let architecture = NSNumber(value: CPU_TYPE_X86_64)
+        #endif
+        return Bundle(url: bundle)?.executableArchitectures?.contains(architecture) == true
+    }
+
+    private static func verifySignature(_ bundle: URL, pinned: Bool = true,
+                                        identifier: String = "io.github.notnaki.vane") throws {
         // Validate the private, final copy, not the source the client can still modify.
         var code: SecStaticCode?
         var requirement: SecRequirement?
-        let text = UpdateInstaller.requirement(identifier: "io.github.notnaki.vane")
-        guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &code) == errSecSuccess,
-              let code,
-              SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess,
-              let requirement,
-              SecStaticCodeCheckValidity(code,
-                  SecCSFlags(rawValue: kSecCSCheckNestedCode | kSecCSStrictValidate | kSecCSCheckAllArchitectures),
-                  requirement) == errSecSuccess else {
-            return false
+        let text = pinned ? UpdateInstaller.requirement(identifier: identifier)
+                          : "identifier \"\(identifier)\""
+        var status = SecStaticCodeCreateWithPath(bundle as CFURL, [], &code)
+        guard status == errSecSuccess, let code else {
+            throw failure("Cannot inspect update signature", status: status)
         }
-        return true
+        status = SecRequirementCreateWithString(text as CFString, [], &requirement)
+        guard status == errSecSuccess, requirement != nil else {
+            throw failure("Cannot create update signature requirement", status: status)
+        }
+        var detail: Unmanaged<CFError>?
+        status = SecStaticCodeCheckValidityWithErrors(code,
+            SecCSFlags(rawValue: kSecCSCheckNestedCode | kSecCSStrictValidate | kSecCSCheckAllArchitectures),
+            requirement, &detail)
+        guard status == errSecSuccess else {
+            let underlying = detail?.takeRetainedValue() as Error?
+            throw failure("Update signature verification failed", status: status, underlying: underlying)
+        }
     }
 
     private static func prepare(_ bundle: URL) throws {
@@ -77,11 +136,15 @@ enum UpdateInstallation {
         assessment.executableURL = URL(fileURLWithPath: "/usr/sbin/spctl")
         assessment.arguments = ["--assess", "--type", "execute", "--ignore-cache", bundle.path]
         assessment.standardOutput = FileHandle.nullDevice
-        assessment.standardError = FileHandle.nullDevice
+        let errors = Pipe()
+        assessment.standardError = errors
         try assessment.run()
+        let detail = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         assessment.waitUntilExit()
         guard assessment.terminationStatus == 0 else {
-            throw failure("Gatekeeper rejected the update")
+            throw failure("Gatekeeper rejected the update", status: assessment.terminationStatus,
+                          underlying: NSError(domain: "Gatekeeper", code: Int(assessment.terminationStatus),
+                              userInfo: [NSLocalizedDescriptionKey: String(detail.suffix(2000))]))
         }
         try removeQuarantine(bundle)
     }
@@ -109,8 +172,10 @@ enum UpdateInstallation {
         if let traversalError { throw traversalError }
     }
 
-    private static func failure(_ message: String) -> NSError {
-        NSError(domain: UpdateInstaller.serviceName, code: 2,
-                userInfo: [NSLocalizedDescriptionKey: message])
+    private static func failure(_ message: String, status: Int32 = 2, underlying: Error? = nil) -> NSError {
+        var info: [String: Any] = [NSLocalizedDescriptionKey: message]
+        if let underlying { info[NSUnderlyingErrorKey] = underlying }
+        else if status != 2 { info[NSUnderlyingErrorKey] = NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }
+        return NSError(domain: UpdateInstaller.serviceName, code: Int(status), userInfo: info)
     }
 }

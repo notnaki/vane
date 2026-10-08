@@ -28,4 +28,31 @@ final class InstallerService: NSObject, NSXPCListenerDelegate, VaneUpdateInstall
             reply(nil)
         } catch { reply(error as NSError) }
     }
+
+    func scheduleRelaunch(target: URL, isolatedDirectory: String, parentPID: Int32,
+                         withReply reply: @escaping (NSError?) -> Void) {
+        do {
+            guard NSXPCConnection.current()?.processIdentifier == parentPID,
+                  let parentStart = BundleReplacement.processStart(parentPID),
+                  target.standardizedFileURL == target.resolvingSymlinksInPath(),
+                  UpdateInstallation.allowed(target, within: applicationsDirectories),
+                  isolatedDirectory.hasPrefix("/") else {
+                throw NSError(domain: UpdateInstaller.serviceName, code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Invalid update relaunch destination or caller"])
+            }
+            try UpdateInstallation.verifyForRelaunch(target)
+            let helper = target.appendingPathComponent("Contents/XPCServices/\(UpdateInstaller.serviceName).xpc/Contents/MacOS/VaneUpdateInstaller")
+            try UpdateInstallation.verifyRelaunchHelper(helper)
+            let worker = Process()
+            worker.executableURL = helper
+            worker.arguments = ["--relaunch-after-exit", target.path, String(parentPID), String(parentStart)]
+            var environment = ProcessInfo.processInfo.environment
+            environment["VANE_DATA_DIR"] = isolatedDirectory
+            worker.environment = environment
+            // Application XPC services die with their client. Start the independent,
+            // unsandboxed worker now; only it waits for the authenticated caller to exit.
+            try worker.run()
+            reply(nil)
+        } catch { reply(error as NSError) }
+    }
 }

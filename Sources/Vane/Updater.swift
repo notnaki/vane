@@ -745,10 +745,12 @@ extension Release {
                   Release.trusted(http.url ?? asset) != nil,
                   http.expectedContentLength <= Release.maxAssetBytes,
                   let size, size > 0, size <= Release.maxAssetBytes,
+                  http.expectedContentLength < 0 || size == http.expectedContentLength,
                   (try? FileManager.default.moveItem(at: tmp, to: dest)) != nil
             else {
-                NSLog("[vane] update: download rejected (status %d, %lld bytes, from %@)",
-                      http?.statusCode ?? -1, size ?? -1, (http?.url?.host() ?? "?"))
+                NSLog("[vane] update: download rejected (status %d, %lld bytes, from %@): %@",
+                      http?.statusCode ?? -1, size ?? -1, (http?.url?.host() ?? "?"),
+                      error.map { String(describing: $0) } ?? "Invalid download response or temporary file")
                 Task { @MainActor in Updater.shared.fail() }
                 return
             }
@@ -833,7 +835,7 @@ extension Release {
     /// — no Vane.app in the zip, or one signed by somebody who is not us — so the caller can
     /// refuse the tag for good. Every other way out is a transient one (a dropped `ditto`, a
     /// rename the disk would not do), and the next check is welcome to try the same tag again.
-    nonisolated private static func unpackAndSwap(zip: URL, target: URL, tag: String)
+    nonisolated static func unpackAndSwap(zip: URL, target: URL, tag: String)
         -> (ok: Bool, permanent: Bool) {
         let fm = FileManager.default
         let staged = fm.temporaryDirectory.appendingPathComponent("Vane-new-\(UUID().uuidString)")
@@ -891,16 +893,30 @@ extension Release {
     /// its previous launch is rolled back while its old bundle is still retained.
     static func recoverAtLaunch() {
         guard isBundled else { return }
-        switch BundleReplacement.beginLaunch(at: Bundle.main.bundleURL) {
+        switch BundleReplacement.beginLaunch(at: Bundle.main.bundleURL, verifyRecovery: verified, verifyPrevious: verifiedPrevious,
+                                             expectedExecutable: Bundle.main.executableURL) {
         case .unchanged:
             break
         case .waitingForHealth:
             launchedReplacement = true
         case .needsAttention:
-            NSLog("[vane] update: pending bundle transaction needs manual attention")
+            NSLog("[vane] update: pending bundle transaction needs manual attention; refusing to launch an unconfirmed bundle")
+            exit(1)
         case .rolledBack:
+            if ProcessInfo.processInfo.environment["VANE_UPDATE_SUPERVISED"] == "1" {
+                // The unsandboxed worker independently verifies the restored bundle
+                // and reopens it with the isolated environment after this process exits.
+                exit(0)
+            }
+            if Store.overrideDirectory != nil {
+                // Released older helpers do not implement isolated relaunch scheduling.
+                // Retain isolation rather than falling back to sandboxed `open`, which
+                // drops the environment and could open the user's ordinary profile.
+                NSLog("[vane] previous bundle restored; reopen this isolated copy with VANE_DATA_DIR")
+                exit(1)
+            }
             do {
-                try launchAfterExit(Bundle.main.bundleURL)
+                try launchAfterExit(Bundle.main.bundleURL, recoverUnlaunched: false)
                 exit(0)
             } catch {
                 NSLog("[vane] update: old bundle restored, but relaunch failed: %@",
@@ -915,7 +931,8 @@ extension Release {
     /// must never mark the new copy healthy or delete its own backup on termination.
     static func markHealthyLaunch() {
         guard isBundled, launchedReplacement else { return }
-        BundleReplacement.markHealthy(at: Bundle.main.bundleURL)
+        BundleReplacement.markHealthy(at: Bundle.main.bundleURL, verifyRecovery: verified, verifyPrevious: verifiedPrevious,
+                                      expectedExecutable: Bundle.main.executableURL)
     }
 
     /// `refused` is the tag this copy has decided against and must never be offered again;
@@ -941,12 +958,14 @@ extension Release {
     /// rather than leaving the user with no app if the first `open` loses a race with quit.
     /// `Process` is reachable from inside the sandbox — `ditto` in `unpackAndSwap` is the
     /// same mechanism — and the child inherits the sandbox, which `open` does not mind.
-    private static func launchAfterExit(_ target: URL) throws {
-        func quoted(_ s: String) -> String {
-            "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    private static func launchAfterExit(_ target: URL, recoverUnlaunched: Bool = true) throws {
+        if let directory = Store.overrideDirectory {
+            try UpdateInstaller.scheduleRelaunch(target: target, isolatedDirectory: directory)
+            return
         }
-        let script = "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.1; done; "
-            + "for i in 1 2 3; do /usr/bin/open \(quoted(target.path)) && exit 0; sleep 1; done; exit 1"
+        let script = UpdateRelaunch.script(parentPID: getpid(), target: target,
+                                          isolatedDirectory: Store.overrideDirectory,
+                                          recoveryTool: recoverUnlaunched ? target.appendingPathComponent("Contents/XPCServices/\(UpdateInstaller.serviceName).xpc/Contents/MacOS/VaneUpdateInstaller") : nil)
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
         helper.arguments = ["-c", script]
@@ -1072,7 +1091,18 @@ extension Release {
     /// than the one this Mac happens to run. Every file gets re-hashed, so a truncated or
     /// edited download is refused here rather than launched.
     nonisolated private static func verified(_ bundle: URL) -> Bool {
-        guard let text = Release.pinnedRequirement else { return false }
+        verifiedSignature(bundle, requirement: UpdateInstaller.requirement(identifier: "io.github.notnaki.vane"))
+    }
+
+    /// The installer can displace a valid local Vane build as well as a release. Recovery
+    /// keeps that policy: validate its sealed Vane identity and recorded contents without
+    /// demanding a Developer ID from a previously accepted ad-hoc build.
+    nonisolated private static func verifiedPrevious(_ bundle: URL) -> Bool {
+        guard let version = Release.version(ofBundleAt: bundle), Release.Version(version) != nil else { return false }
+        return verifiedSignature(bundle, requirement: "identifier \"io.github.notnaki.vane\"")
+    }
+
+    nonisolated private static func verifiedSignature(_ bundle: URL, requirement text: String) -> Bool {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &code) == errSecSuccess,
               let code else { return false }

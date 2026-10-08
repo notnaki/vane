@@ -18,9 +18,19 @@ func tag(_ bundle: URL) throws -> String {
 func oldTarget(_ directory: URL) throws -> URL {
     let target = directory.appendingPathComponent("Vane.app")
     try fm.createDirectory(at: target.appendingPathComponent("Contents"), withIntermediateDirectories: true)
-    let data = try PropertyListSerialization.data(fromPropertyList: ["CFBundleShortVersionString": "0.0.0"], format: .xml, options: 0)
+    let data = try PropertyListSerialization.data(fromPropertyList: ["CFBundleShortVersionString": "0.0.0", "CFBundleIdentifier": "io.github.notnaki.vane", "CFBundlePackageType": "APPL", "CFBundleExecutable": "Vane", "CFBundleVersion": "1"], format: .xml, options: 0)
     try data.write(to: target.appendingPathComponent("Contents/Info.plist"))
-    try Data("old".utf8).write(to: target.appendingPathComponent("old-version"))
+    try fm.createDirectory(at: target.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+    try fm.copyItem(at: URL(fileURLWithPath: CommandLine.arguments[0]), to: target.appendingPathComponent("Contents/MacOS/Vane"))
+    try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.appendingPathComponent("Contents/MacOS/Vane").path)
+    try fm.createDirectory(at: target.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
+    try Data("old".utf8).write(to: target.appendingPathComponent("Contents/Resources/old-version"))
+    let sign = Process()
+    sign.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+    sign.arguments = ["--force", "--sign", "-", target.path]
+    sign.standardError = FileHandle.standardError
+    try sign.run(); sign.waitUntilExit()
+    precondition(sign.terminationStatus == 0)
     return target
 }
 func quarantined(_ url: URL) -> Bool {
@@ -63,6 +73,33 @@ do {
     check("cleanup rejects symlink root", false)
 } catch { check("cleanup rejects symlink root", error.localizedDescription == "Invalid update source") }
 check("symlink source rejection preserves source quarantine", quarantined(source) && quarantined(executable))
+let unrelatedRoot = root.appendingPathComponent("unrelated-destination")
+let unrelatedTarget = try oldTarget(unrelatedRoot)
+let unrelatedInfo: [String: Any] = ["CFBundleShortVersionString": "0.0.0", "CFBundleIdentifier": "com.example.unrelated"]
+try PropertyListSerialization.data(fromPropertyList: unrelatedInfo, format: .xml, options: 0)
+    .write(to: unrelatedTarget.appendingPathComponent("Contents/Info.plist"))
+do {
+    try UpdateInstallation.install(source: source, target: unrelatedTarget, tag: sourceTag,
+                                   keepPrevious: false, applicationsDirectories: [unrelatedRoot])
+    check("unrelated app named Vane.app is never replaced", false)
+} catch {
+    check("unrelated app named Vane.app is never replaced", fm.fileExists(atPath: unrelatedTarget.appendingPathComponent("Contents/Resources/old-version").path)
+          && !fm.fileExists(atPath: unrelatedRoot.appendingPathComponent(".Vane.app.vane-transaction.json").path))
+}
+if !CommandLine.arguments.contains("--unsigned") {
+    let corruptRoot = root.appendingPathComponent("corrupt-existing")
+    let corruptTarget = try oldTarget(corruptRoot)
+    let binary = corruptTarget.appendingPathComponent("Contents/MacOS/Vane")
+    let handle = try FileHandle(forWritingTo: binary)
+    try handle.seekToEnd(); try handle.write(contentsOf: Data("unsigned bytes".utf8)); try handle.close()
+    do {
+        try UpdateInstallation.install(source: source, target: corruptTarget, tag: sourceTag,
+            keepPrevious: false, applicationsDirectories: [corruptRoot])
+        check("invalid existing signature cannot become rollback backup", false)
+    } catch {
+        check("invalid existing signature cannot become rollback backup", fm.fileExists(atPath: corruptTarget.appendingPathComponent("Contents/Resources/old-version").path))
+    }
+}
 let target = try oldTarget(root)
 let nestedTarget = root.appendingPathComponent("Browsers/Vane.app")
 do {
@@ -71,17 +108,17 @@ do {
     check("nested Applications installation is supported", !CommandLine.arguments.contains("--unsigned") && unquarantined(nestedTarget))
     _ = BundleReplacement.beginLaunch(at: nestedTarget)
     BundleReplacement.markHealthy(at: nestedTarget)
-} catch BundleReplacement.Fault.invalidStage {
-    check("nested Applications destination reaches signature validation", CommandLine.arguments.contains("--unsigned"))
+} catch let error as NSError where error.localizedDescription == "Update signature verification failed" {
+    check("nested Applications destination reaches signature validation", CommandLine.arguments.contains("--unsigned") && error.userInfo[NSUnderlyingErrorKey] != nil)
 } catch { check("nested Applications installation is supported (\(error))", false) }
 if CommandLine.arguments.contains("--unsigned") {
     do {
         try UpdateInstallation.install(source: source, target: target, tag: sourceTag,
                                        keepPrevious: false, applicationsDirectories: [root])
         check("unsigned update is rejected", false)
-    } catch BundleReplacement.Fault.invalidStage { check("unsigned update is rejected", true) }
+    } catch let error as NSError where error.localizedDescription == "Update signature verification failed" { check("unsigned update is rejected", error.userInfo[NSUnderlyingErrorKey] != nil) }
     catch { check("unsigned update reaches signature validation (\(error))", false) }
-    check("rejected update preserves old app and quarantine", fm.fileExists(atPath: target.appendingPathComponent("old-version").path) && quarantined(source))
+    check("rejected update preserves old app and quarantine", fm.fileExists(atPath: target.appendingPathComponent("Contents/Resources/old-version").path) && quarantined(source))
     try UpdateInstallation.removeQuarantine(source)
     check("recursive cleanup covers bundle and executable", unquarantined(source) && unquarantined(executable))
 } else {
@@ -90,7 +127,7 @@ if CommandLine.arguments.contains("--unsigned") {
     check("installed bundle has no quarantine", unquarantined(target))
     check("installed executable has no quarantine", unquarantined(target.appendingPathComponent("Contents/MacOS/Vane")))
     let stages = try fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix(".Vane.app.vane-stage-") }
-    check("old installation remains recoverable", stages.count == 1 && fm.fileExists(atPath: stages[0].appendingPathComponent("old-version").path))
+    check("old installation remains recoverable", stages.count == 1 && fm.fileExists(atPath: stages[0].appendingPathComponent("Contents/Resources/old-version").path))
     check("download remains quarantined", quarantined(source))
     check("replacement enters launch recovery", BundleReplacement.beginLaunch(at: target) == .waitingForHealth)
     BundleReplacement.markHealthy(at: target)
@@ -115,14 +152,14 @@ if CommandLine.arguments.contains("--unsigned") {
         try UpdateInstallation.install(source: tampered, target: rejectedTarget, tag: sourceTag,
                                        keepPrevious: false, applicationsDirectories: [rejectedRoot])
         check("tampered update is rejected", false)
-    } catch BundleReplacement.Fault.invalidStage { check("tampered update is rejected", true) }
+    } catch let error as NSError where error.localizedDescription == "Update signature verification failed" { check("tampered update is rejected", error.userInfo[NSUnderlyingErrorKey] != nil) }
     catch { check("tampered update reaches signature validation (\(error))", false) }
-    check("signature rejection preserves old app and download quarantine", fm.fileExists(atPath: rejectedTarget.appendingPathComponent("old-version").path) && quarantined(tampered))
+    check("signature rejection preserves old app and download quarantine", fm.fileExists(atPath: rejectedTarget.appendingPathComponent("Contents/Resources/old-version").path) && quarantined(tampered))
     do {
         try UpdateInstallation.install(source: source, target: rejectedTarget, tag: "99.0.0",
                                        keepPrevious: false, applicationsDirectories: [rejectedRoot])
         check("advertised version must match signed payload", false)
-    } catch BundleReplacement.Fault.invalidStage { check("advertised version must match signed payload", true) }
+    } catch let error as NSError where error.localizedDescription == "Update version does not match advertised version" { check("advertised version must match signed payload", true) }
     catch { check("advertised version reaches payload validation (\(error))", false) }
     let firstRoot = root.appendingPathComponent("first")
     try fm.createDirectory(at: firstRoot, withIntermediateDirectories: true)
@@ -133,14 +170,37 @@ if CommandLine.arguments.contains("--unsigned") {
     _ = BundleReplacement.beginLaunch(at: firstTarget)
     BundleReplacement.markHealthy(at: firstTarget)
     check("first install completes without a backup", try fm.contentsOfDirectory(at: firstRoot, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.contains("vane-stage") }.isEmpty)
-    if CommandLine.arguments.count > 2 {
+    if CommandLine.arguments.count > 2, !CommandLine.arguments[2].hasPrefix("--") {
         let unnotarized = URL(fileURLWithPath: CommandLine.arguments[2])
         do {
             try UpdateInstallation.install(source: unnotarized, target: rejectedTarget, tag: try tag(unnotarized),
                                            keepPrevious: false, applicationsDirectories: [rejectedRoot])
             check("unnotarized update is rejected", false)
         } catch { check("unnotarized update is rejected by Gatekeeper (\(error.localizedDescription))", error.localizedDescription == "Gatekeeper rejected the update") }
-        check("Gatekeeper rejection preserves old installation", fm.fileExists(atPath: rejectedTarget.appendingPathComponent("old-version").path))
+        check("Gatekeeper rejection preserves old installation", fm.fileExists(atPath: rejectedTarget.appendingPathComponent("Contents/Resources/old-version").path))
+    }
+}
+if let index = CommandLine.arguments.firstIndex(of: "--fixtures"), index + 1 < CommandLine.arguments.count {
+    let fixtures = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+    let expectations = [
+        ("identity", "Invalid update bundle identity or version"),
+        ("version", "Invalid update bundle identity or version"),
+        ("architecture", "Update executable does not support this architecture"),
+        ("gatekeeper", "Gatekeeper rejected the update")]
+    for (name, expected) in expectations {
+        let fixture = fixtures.appendingPathComponent(name + ".app")
+        let destination = root.appendingPathComponent("invalid-" + name)
+        let previous = try oldTarget(destination)
+        do {
+            try UpdateInstallation.install(source: fixture, target: previous, tag: "0.0.25",
+                keepPrevious: false, applicationsDirectories: [destination])
+            check("real signed \(name) fixture rejected", false)
+        } catch {
+            let actual = error as NSError
+            check("real signed \(name) fixture rejected: \(actual)", actual.localizedDescription == expected)
+            if name == "gatekeeper" { check("Gatekeeper stderr and status retained", actual.userInfo[NSUnderlyingErrorKey] != nil && actual.code != 0) }
+        }
+        check("\(name) rejection retains previous installation", fm.fileExists(atPath: previous.appendingPathComponent("Contents/Resources/old-version").path))
     }
 }
 let markerURL = CommandLine.arguments.contains("--unsigned") ? source : target

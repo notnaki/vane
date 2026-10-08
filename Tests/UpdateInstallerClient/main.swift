@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-if CommandLine.arguments.contains("--install") {
+func checkInstallation() -> Int32 {
     let fm = FileManager.default
     let source = fm.temporaryDirectory.appendingPathComponent("Vane-xpc-check-\(UUID().uuidString).app")
     defer { try? fm.removeItem(at: source) }
@@ -9,7 +9,7 @@ if CommandLine.arguments.contains("--install") {
         try fm.copyItem(at: URL(fileURLWithPath: CommandLine.arguments[1]), to: source)
         guard getxattr(source.path, "com.apple.quarantine", nil, 0, 0, XATTR_NOFOLLOW) >= 0 else {
             print("FAIL: sandboxed source did not carry quarantine")
-            exit(1)
+            return 1
         }
         let target = URL(fileURLWithPath: CommandLine.arguments[2])
         let plist = try Data(contentsOf: source.appendingPathComponent("Contents/Info.plist"))
@@ -21,12 +21,28 @@ if CommandLine.arguments.contains("--install") {
             guard getxattr(path, "com.apple.quarantine", nil, 0, 0, XATTR_NOFOLLOW) == -1,
                   errno == ENOATTR else {
                 print("FAIL: XPC-installed bundle or executable is quarantined")
-                exit(1)
+                return 1
             }
         }
         print("PASS: sandboxed download installed through XPC without bundle or executable quarantine")
-        exit(0)
-    } catch { print("FAIL: \(error.localizedDescription)"); exit(1) }
+        return 0
+    } catch { print("FAIL: \(error.localizedDescription)"); return 1 }
+}
+
+if CommandLine.arguments.contains("--install") { exit(checkInstallation()) }
+
+if CommandLine.arguments.contains("--relaunch-rejected") {
+    do {
+        try UpdateInstaller.scheduleRelaunch(target: URL(fileURLWithPath: "/tmp/Vane-installer-test/Vane.app"),
+                                            isolatedDirectory: "/tmp/Vane-installer-test/data")
+        print("FAIL: relaunch accepted an arbitrary destination")
+        exit(1)
+    } catch {
+        let policy = error.localizedDescription == "Invalid update relaunch destination or caller"
+        let expected = CommandLine.arguments.contains("--unauthorized") ? !policy : policy
+        print("\(expected ? "PASS" : "FAIL"): relaunch rejection: \(error.localizedDescription)")
+        exit(expected ? 0 : 1)
+    }
 }
 
 // Exercise the production service from a signed, sandboxed bundle. Use a forbidden

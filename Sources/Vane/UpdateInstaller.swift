@@ -5,6 +5,8 @@ import Foundation
 @objc protocol VaneUpdateInstalling {
     func install(source: URL, target: URL, tag: String, keepPrevious: Bool,
                  withReply reply: @escaping (NSError?) -> Void)
+    func scheduleRelaunch(target: URL, isolatedDirectory: String, parentPID: Int32,
+                         withReply reply: @escaping (NSError?) -> Void)
 }
 
 enum UpdateInstaller {
@@ -33,6 +35,23 @@ enum UpdateInstaller {
         installer.install(source: source, target: target, tag: tag, keepPrevious: keepPrevious) { error in
             failure = error
         }
+        if let failure { throw failure }
+    }
+
+    /// The unsandboxed installer starts a detached worker before this browser exits.
+    /// Direct children inherit our sandbox; LaunchServices drops its environment.
+    static func scheduleRelaunch(target: URL, isolatedDirectory: String) throws {
+        let connection = NSXPCConnection(serviceName: serviceName)
+        connection.remoteObjectInterface = NSXPCInterface(with: VaneUpdateInstalling.self)
+        connection.setCodeSigningRequirement(requirement(identifier: serviceName))
+        connection.resume()
+        defer { connection.invalidate() }
+        var failure: Error?
+        guard let installer = connection.synchronousRemoteObjectProxyWithErrorHandler({ failure = $0 }) as? VaneUpdateInstalling else {
+            throw NSError(domain: serviceName, code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Update installer unavailable"])
+        }
+        installer.scheduleRelaunch(target: target, isolatedDirectory: isolatedDirectory, parentPID: getpid()) { failure = $0 }
         if let failure { throw failure }
     }
 }

@@ -1,0 +1,113 @@
+# Updater recovery audit — macOS 27
+
+Audited on macOS 27.0.1 (26A434), arm64, starting from `main` at `dee7b89`
+in an isolated `codex/updater-failure-recovery` worktree. The installed Vane bundle was not modified. The earlier failed native relaunch
+runs could not establish data isolation; see the limits below. Heavy checks and foreground launches were scheduled
+with the smoothness chat.
+
+## Confirmed defects and fixes
+
+- A lower-version destination could be an unrelated or damaged app. The installer
+  now validates bundle shape, executable containment, Vane code identity and the
+  sealed existing signature before replacement. Incoming executables must support
+  the current architecture. Existing ad-hoc Vane installations retain their
+  previous acceptance policy; incoming updates still require the pinned Developer ID.
+- Directory inode identity survived edits and partial deletion. Journals now bind
+  the canonical target, volume and SHA-256 content snapshots. Recovery and health
+  decisions independently verify the bundle signature/identity as well. A damaged
+  previous bundle is retained for attention rather than activated or discarded.
+- Symlink and dangling-symlink journals could bypass transaction protection.
+  Journals must be regular files; dangling entries remain blocking records and
+  locks refuse symlinks. Stale or unbound records cannot authorize other targets.
+- An old executable already running during a swap could certify the replacement.
+  Kernel executable-path ownership now gates launch and health decisions.
+- Finder's root `Icon\r` file changes legitimately during startup. Content snapshots
+  ignore that exact root file while retaining all signed `Contents` data. Legacy
+  journals can restore independently verified previous bundles even if the new
+  bundle is damaged; interrupted legacy cleanup remains recoverable.
+- Restart could lose `VANE_DATA_DIR` and select an existing app instance. Relaunch
+  requests a new instance for ordinary launches. Apple ignores LaunchServices
+  environment overrides from sandboxed callers. Direct execution from an inherited
+  sandbox also traps before main on macOS 27. Isolated restart now asks the existing
+  authenticated unsandboxed XPC installer to start a detached signed worker before
+  the browser exits. The worker observes the authenticated caller's PID/start,
+  starts an exact child with the explicit environment, and supervises through health
+  or verified rollback. Its immutable witness also supports independently verified
+  legacy records. An unsupervised isolated rollback restores the previous bundle
+  and explicitly requests manual reopening, since released older helpers lack the
+  new RPC. The shell verifies the
+  current host and helper against pinned signature requirements before execution.
+  Real native testing also caught and fixed the missing `=` prefix for inline
+  `codesign -R` requirements.
+- A signed candidate exiting before browser bootstrap never claimed its journal,
+  so repeated starts could leave it active indefinitely. A restricted mode of the
+  existing installer helper watches LaunchServices' actual application object. It
+  restores the verified previous bundle when that process dies before bootstrap;
+  a slow live launch is allowed to continue. A claim must match the actual child
+  PID and nonnil kernel start time; unavailable start observations keep supervision
+  active. Once bootstrap claims the journal,
+  existing browser recovery owns health and rollback. Failed opens return failure
+  even when a stale or malformed record prevents recovery.
+- Transport and verification failures lost diagnostic context. Known download
+  lengths must match, signature errors retain Security status/details, Gatekeeper
+  retains stderr/status, and filesystem errors retain errno and path.
+
+The architecture remains URLSession/ditto, authenticated same-user XPC installation,
+durable sibling staging, atomic rename/swap and prepared/launching/healthy journal.
+The previous bundle is removed only after the existing AppKit/WebKit health criteria
+and durable healthy record. Unsafe recovery stops before opening a browser window.
+
+## Evidence and reproducible checks
+
+| Area | Coverage |
+| --- | --- |
+| Transport/extraction | Real URLSession loopback complete, truncated, interrupted, cancellation and HTTP failure cases; real ditto corrupt/truncated/empty ZIP and missing/unsigned bundle rejection. The release host is simulated; production host trust is unchanged. |
+| Transaction | 129 headless assertions, including actual SIGKILL at copy, sync, journal, swap, launch, rollback and healthy/cleanup boundaries; failed writes/destinations/replacement; repeated attempts; stale, legacy, wrong-target/volume and symlink records; damaged old/new bundles and old executing inode. Bundle verification predicates in generic directory fixtures are simulated. |
+| Relaunch | Literal shell arguments, isolated environment, three failed-open retries, simulated verifier/helper failures, refusal to execute an unverified helper, and real ad-hoc `codesign` requirement parsing. |
+| Distribution | Unchanged published v0.0.23 and v0.0.24 fixtures passed strict deep/all-architecture signature verification, stapled-ticket validation and real Gatekeeper assessment as Notarized Developer ID, team `T7X84HN3W3`. |
+| Rejections | Real Developer ID re-signed wrong identity, version and architecture fixtures were rejected. A locally signed unnotarized candidate passed signature verification but failed real Gatekeeper assessment, preserving the old destination and detailed error. Tampered signatures were rejected. |
+| XPC | Mutual caller/helper trust, unauthorized caller rejection, sandboxed source copy, final signature/Gatekeeper verification and quarantine removal tested in isolated Downloads installation directories. Task-owned clients and services were verified exited. |
+| Native recovery | Eight signed disposable cases passed: authenticated sandboxed XPC handoff/worker survival and health cleanup; crash then next-launch rollback; corrupted-new rollback; legacy rollback; unsupervised isolated rollback with explicit manual reopen; pre-bootstrap exit with restoration; stale and malformed records refusing success. Actual environment and isolated database verified for all six running healthy/restored browsers. All recorded main/helper/IconService processes exited and disposable roots were removed; six temporary WebKit stores unregistered. |
+| Browser regression | Initial full local Swift suite: 825 tests, 8 skipped, zero failures; pure selfcheck passed. Final current-main updater archive/bundle tests: 2 passed. The full current-main CI result is attached to the PR. Skips cover opt-in Keychain/public-network/directory-WebKit cases and animation paths while the coordinated Reduce Motion slot was active. |
+
+Final review and CI are recorded with the PR. A separate nonblocking relaunch
+lease serializes detached workers through health/rollback and prevents pre-AppKit
+registration races; refusal cannot enter recovery. Exact child processes are used
+only by the unsandboxed isolated worker. Ordinary user relaunch uses LaunchServices.
+The previous bundle remains present before health and is cleaned only after the
+existing durable successful-launch criteria. The scripts are
+documented in README and headless transaction/transport/relaunch checks run in CI.
+Final native fixtures use isolated data and disposable app copies. Transaction
+staging runs outside the browser sandbox, as XPC does; the restart driver inherits
+Vane's sandbox entitlements for the shell/helper chain. App Translocation paths are
+resolved to original fixture paths before process cleanup. All native process signals
+are limited to recorded executable paths, PIDs and start times.
+
+## Limits
+
+The modified candidate and early-exit executable are locally Developer ID signed,
+not notarized. Their native transaction staging simulates candidate notarization;
+this does not establish distribution approval for the changed build. Real
+distribution acceptance above applies only to unchanged published releases.
+A notarized build containing these changes and a clean-Mac upgrade remain release
+prerequisites. Power loss/storage failure is represented by durable-boundary process
+interruption and injected failures, not physical power removal. Invalid records or
+an untrusted helper retain the previous bundle for attention rather than executing
+unverified recovery code.
+
+Early failed sandboxed relaunch runs (approximately 14:03 and 14:12 local time)
+were discovered to lose their environment override. Those restored release copies
+could access the normal data directory; any profile impact cannot be attributed
+or ruled out while the user's regular instance and other tasks were active. They
+were stopped, and those runs are excluded from the final isolated evidence.
+No installed app bundle was changed. The corrected native early-exit fixture
+records its actual isolated environment before exiting.
+
+The current exact-identity driver runs only transaction/relaunch code and never
+starts or cleans browser preferences/profile data itself. The fixture cleans its
+owned processes, isolated data, WebKit stores and disposable bundles. Earlier
+unique-identity driver runs left macOS-protected sandbox registration/scaffold
+metadata; those historical OS-managed registrations may remain after app removal.
+
+Apple documents the sandbox environment restriction in
+[NSWorkspace.OpenConfiguration.environment](https://developer.apple.com/documentation/appkit/nsworkspace/openconfiguration/environment).
