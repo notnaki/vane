@@ -385,54 +385,10 @@ extension SiteControlModel {
         toggleAccess(all[index], on: tab)
     }
 
-    /// Cookies, storage and caches belonging to this host, and the answers Vane itself is
-    /// keeping about it. Scoped by `WKWebsiteDataRecord`, which is the finest grain WebKit
-    /// offers — a registrable domain, so clearing `news.example.com` also clears
-    /// `example.com`. The alert says so; it is not something to do quietly.
+    /// Inspect the exact tab's store before choosing which website data to clear.
     static func clearSiteData(host: String, tab: Tab) {
         guard !host.isEmpty else { return }
-        let permissionScope = SitePermissions.scope(for: tab)
-        let alert = NSAlert()
-        alert.messageText = "Clear the data “\(host)” has stored?"
-        alert.informativeText = "Cookies, local storage and cached files for this site and its "
-            + "subdomains go, and you will be signed out of it. Vane also forgets the camera, "
-            + "microphone and zoom answers you gave this site, the apps you let it open, "
-            + "any certificate warning you clicked through for it, and its exemption from "
-            + "HTTPS-only mode, along with its Boost and custom code. Reload the page to remove "
-            + "effects from scripts already run. History and passwords are not touched."
-        alert.addButton(withTitle: "Clear")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        if let permissionScope { SitePermissions.reset(scope: permissionScope) }
-        Zoom.forget(host: host, profile: tab.profileID)
-        SiteBoosts.forget(host: host, tab: tab)
-        // The header advertises both of these — "a certificate problem was accepted here",
-        // and http that HTTPS-only was told to allow. Clearing a site cannot leave standing
-        // the two decisions that made it less safe than the others.
-        CertificateTrust.forget(host: host, profileID: tab.profileID)
-        HTTPSOnly.forget(host: host, profileID: tab.profileID)
-        // "Always Allow" for another app is one more thing this site was allowed to do.
-        ExternalApps.reset(host: host)
-        done(host)
-
-        let store = tab.web.configuration.websiteDataStore
-        let types = WKWebsiteDataStore.allWebsiteDataTypes()
-        store.fetchDataRecords(ofTypes: types) { records in
-            let mine = records.filter { SiteControlModel.covers(record: $0.displayName, host: host) }
-            guard !mine.isEmpty else { return }
-            // `assumeIsolated` would trap here: WebKit does not promise this completion a
-            // queue, and a fetch that lands off the main one would take the app with it.
-            store.removeData(ofTypes: types, for: mine) { Task { @MainActor in done(host) } }
-        }
-    }
-
-    /// Said once when the answers go and again when WebKit's records follow, because the
-    /// two land seconds apart and a site with no stored data at all never reaches the
-    /// second — the user still cleared something, and still has to hear so.
-    private static func done(_ host: String) {
-        axAnnounce("Cleared the data stored by \(host).")
-        SiteChanges.shared.bump()
+        WebsiteDataWindow.show(host: host, tab: tab)
     }
 
     // MARK: - check
@@ -714,7 +670,7 @@ private struct SiteControlRow: View {
     let contexts: [WKWebExtensionContext]
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// A modal alert must not open over a live popover, so Clear Site Data closes this
+    /// Website Data opens in its own window, so Clear Site Data closes this
     /// first and runs on the next turn of the loop.
     @Environment(\.dismiss) private var dismiss
     /// An extension's popup hangs off this row, not off the top of the window.
