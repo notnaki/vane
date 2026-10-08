@@ -98,6 +98,24 @@ while moving between gaps. The held ghost matches the tab row.
 Hold Option while dropping onto the middle of another tab to make a split view.
 Dropping into a closed folder highlights it and opens its icon while you hover.
 
+**Tidy Tabs** first opens a review sheet. Rename its proposed folders and untick
+pages you want to leave loose, then choose **Apply Groups**. A changed page or Space
+requires a fresh proposal. Tidy preserves pinned tabs, favourites, existing folders,
+split panes, and custom tab names; **Undo Tidy Tabs** takes the grouping back.
+
+Choose **Tabs → Organize Tabs…** or the Space menu's **Organize Tabs…** to search
+and select Today tabs across the current profile's Spaces. Copy their links, move
+them to another Space as Today tabs, or archive the selection. **Duplicates only**
+compares complete URLs, including query strings and fragments. **Select Extras**
+offers a selection for review; pinned tabs, favourites, named tabs, and tabs in use
+are preferred as keepers. Untick or tick individual copies, then choose **Archive
+Selected Copies**. Cleanup requires at least one copy to remain. Locked-folder
+contents are hidden; pinned tabs, favourites, and split panes are protected from
+bulk moves and archives. **Undo** in the sheet, the toast, or **Tabs → Undo Tab
+Organization** restores the last action for that profile, including folder order
+and saved page state, while the affected tabs and folders have no later changes.
+Reduce Motion and Battery Saver keep list and selection changes immediate.
+
 After Tidy groups Today tabs into folders, drag a tab or selection into the blank
 space below the last row to move it outside the folders at the bottom of Today.
 That drop area remains available when the last row is a collapsed folder or the

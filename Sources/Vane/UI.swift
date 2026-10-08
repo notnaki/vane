@@ -383,6 +383,12 @@ struct BrowserWindow: View {
         .sheet(isPresented: $store.liveFolderSheet) {
             LiveFolderSheet(store: store, live: LiveFolders.shared(for: store.profileID))
         }
+        .sheet(item: $store.tidyPreview) { preview in
+            TidyPreviewSheet(store: store, preview: preview)
+        }
+        .sheet(isPresented: $store.organizationSheet) {
+            TabOrganizationSheet(store: store)
+        }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
         // The one place the Space list is counted: when it changes, and when the Library
         // opens onto it. Changes in another profile invalidate the count too.
@@ -2563,6 +2569,7 @@ private struct SpaceMenu: View {
         // Arc's "Manage Spaces…" opens the Library's Spaces view — every Space's pages side
         // by side, draggable between columns — rather than a settings pane.
         Button("Manage Spaces…") { Library.open(.spaces, in: store) }
+        Button("Organize Tabs…") { store.organizationSheet = true }
         Divider()
         Button("Delete Space") { deleteSpace(space, in: store) }
     }
