@@ -196,6 +196,25 @@ Click the Space buttons in the sidebar footer for the same sliding change, inclu
 between profiles. Each button shows a rounded highlight on hover. Reduce Motion and
 Battery Saver keep click changes immediate.
 
+Choose the Space menu → **Save Space as Template…** to save a named workspace.
+**Space Templates…**, also available as **New Space from Template…** in the creation
+menu, previews the current profile’s saved setups and creates a new Space. Templates
+preserve pinned and Today tab order, duplicate pages, custom names, nested folders,
+Space appearance, and supported split layouts including divider sizes. Rename a
+template, update it from the current Space after reviewing its contents, or delete it;
+already created Spaces keep their own contents.
+
+Locked-folder contents require macOS authentication before saving, previewing, or
+recreating them. New folders retain their locks and receive fresh identities.
+Templates save addresses and layout without cookies, credentials, website storage,
+or WebKit navigation state; pages can still use their profile’s existing sign-ins.
+Credential-like URL parameters and URL userinfo are removed. Blank tabs, files, and
+local Easel documents are excluded and counted in the preview. Live folders become
+ordinary folder snapshots, and Favourites remain shared by the profile. Private and
+Little Vane windows cannot save templates. A failed save leaves the previous version
+safe, and a failed creation leaves no partial Space. Template files use the same
+atomic persistence and profile filename conventions as Spaces for backup/restore.
+
 Incognito uses a temporary identity of its own, with a glasses icon and a near-black
 theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and
 its browsing data and download records are not restored after quitting.

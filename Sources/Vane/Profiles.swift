@@ -421,6 +421,8 @@ struct Space: Identifiable, Codable, Equatable {
     var colors: [String]?
     /// How much static noise the ground wears, 0…1. See `Look.grain`.
     var grain: Double?
+    /// Address-only row identities and layout, atomically committed with template-created Spaces.
+    var layout: SpaceLayout? = nil
 
     init(id: UUID = UUID(), name: String, profileID: UUID,
          tabURLs: [URL] = [], pinnedURLs: [URL] = [], pinnedTabURLs: [URL]? = nil,
@@ -698,6 +700,7 @@ struct Space: Identifiable, Codable, Equatable {
         Zoom.forget(profile: id)
         SiteBoosts.forget(profile: id)
         CertificateTrust.forget(profile: id)
+        try? fm.removeItem(at: WorkspaceTemplates.url(profile: id, directory: directory))
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
         try? fm.removeItem(at: Self.faviconDir(for: id, in: directory))
         return true
