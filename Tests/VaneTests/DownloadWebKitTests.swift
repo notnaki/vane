@@ -20,6 +20,8 @@ import XCTest
         manager = Downloads(profileID: UUID(), directory: root, sandboxed: true)
         manager.destinationDirectory = root
         fixtureProfile = manager.profileID
+        let identifier = ProfileManager.dataStoreIdentifier(for: fixtureProfile, dataDirectory: Store.overrideDirectory)!
+        fputs("DOWNLOAD FIXTURE store=\(identifier) namespace=\(Store.overrideDirectory ?? "")\n", stderr)
         let config = WKWebViewConfiguration()
         config.websiteDataStore = ProfileManager.dataStore(for: manager.profileID)
         web = WKWebView(frame: .zero, configuration: config)
@@ -35,13 +37,20 @@ import XCTest
         server = nil
         let profile = fixtureProfile!
         manager = nil
-        let store = ProfileManager.dataStore(for: profile)
-        await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+        var store: WKWebsiteDataStore? = ProfileManager.dataStore(for: profile)
+        await store?.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+        store = nil
         ProfileManager.releaseDataStore(for: profile)
         let identifier = ProfileManager.dataStoreIdentifier(for: profile, dataDirectory: Store.overrideDirectory)!
-        _ = await withCheckedContinuation { continuation in
-            WKWebsiteDataStore.remove(forIdentifier: identifier) { continuation.resume(returning: $0) }
+        var removalError: Error?
+        for _ in 0..<20 {
+            removalError = await withCheckedContinuation { continuation in
+                WKWebsiteDataStore.remove(forIdentifier: identifier) { continuation.resume(returning: $0) }
+            }
+            if removalError == nil { break }
+            try await Task.sleep(for: .milliseconds(100))
         }
+        XCTAssertNil(removalError, "Owned WebKit fixture store remains registered: \(identifier)")
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -121,6 +130,8 @@ import XCTest
         try await compatibilityWait { row.download == nil }
         XCTAssertTrue(manager.resume(row))
         manager.pause(row)
+        XCTAssertFalse(manager.canRetry(row))
+        XCTAssertFalse(manager.retry(row))
         try await compatibilityWait { row.download == nil && row.status != .running && !row.subtitle.hasPrefix("Pausing") }
         XCTAssertEqual(row.status, .paused)
         XCTAssertTrue(manager.canResume(row))
@@ -334,6 +345,24 @@ import XCTest
         _ = await download.cancel()
     }
 
+    func testResumeCannotAppendToReplacedPartialFile() async throws {
+        server.held = true
+        let row = try await start()
+        try await compatibilityWait { row.received > 0 }
+        manager.pause(row)
+        try await compatibilityWait { row.download == nil }
+        let destination = try XCTUnwrap(row.url)
+        let replacement = root.appendingPathComponent("replacement.bin")
+        let keep = Data("user replacement".utf8)
+        try keep.write(to: replacement)
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: replacement, to: destination)
+        XCTAssertFalse(manager.canResume(row))
+        XCTAssertFalse(manager.resume(row))
+        XCTAssertTrue(manager.canRetry(row))
+        XCTAssertEqual(try Data(contentsOf: destination), keep)
+    }
+
     func testPrivateFreshRetryKeepsOriginatingCookies() async throws {
         manager = Downloads(profileID: Profile.incognito.id, directory: root, sandboxed: true)
         manager.destinationDirectory = root
@@ -428,6 +457,22 @@ import XCTest
         manager.pause(row)
         try await compatibilityWait { row.download == nil }
         XCTAssertTrue(manager.canRetry(origin))
+    }
+
+    func testCancelledOrRemovedPendingRetryCannotAddDownload() async throws {
+        for remove in [false, true] {
+            server.holdHeaders = true
+            let origin = manager.add(.init(name: "paused", source: try server.url(), state: "paused", sourceMethod: "GET"))
+            XCTAssertTrue(manager.retry(origin))
+            try await compatibilityWait { self.server.requests.count > (remove ? 1 : 0) }
+            if remove { manager.forget(origin) } else { manager.cancel(origin) }
+            let count = manager.items.count
+            server.holdHeaders = false
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(manager.items.count, count)
+            XCTAssertFalse(manager.items.contains { $0.status.isLive })
+            if !remove { XCTAssertEqual(origin.state, .failed(Downloads.cancelledText)) }
+        }
     }
 
     func testCancelWhileResumeCallbackIsPendingCannotResurrectTransfer() async throws {

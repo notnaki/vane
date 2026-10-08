@@ -25,3 +25,6 @@ Review focus: stale async pause/resume callbacks after cancellation/removal; com
 - The expanded focused suite passes 49 cases; pure selfcheck passes. Review lifecycle fixes cover pending Resume/Pause, pending manual Pause/Quit, late cancelled destination callbacks, and known-GET-only retries.
 - A proposed zero-byte ownership poll was rejected during independent review. macOS WKDownload has no public creation callback; unverified empty files are retained, with a controlled foreign-file collision regression. Automatic destinations are reserved until written bytes establish a filesystem identity.
 - Native full XCTest, signed running/pending-pause restart rounds and browser smoke remain queued behind updater; no task-owned native app launched yet.
+
+- Latest review fixes exclude Retry during pending Resume/Pause, guard both retry callback gaps with operation/membership checks, retire pending/active retry children on Cancel/Remove, and reject replaced partials before Resume. All 51 focused cases pass; fixture store unregistration is verified after releasing strong references.
+- First CI passed download coverage on macOS 26 but timed out in an existing reused-username-node password-autofill fixture. No failing check is treated as a pass.

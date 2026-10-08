@@ -72,6 +72,7 @@ def main():
                     "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "CFBundleShortVersionString": "0.1",
                     "NSPrincipalClass": "NSApplication", "LSMinimumSystemVersion": "26.0"}
             (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
+            print(f"TEST BUNDLE identifier={info['CFBundleIdentifier']}", flush=True)
             subprocess.run(["codesign", "--force", "--sign", "-", "--entitlements", str(ROOT / "Vane.entitlements"), str(app)], check=True)
             env = {k: os.environ[k] for k in ("HOME", "PATH", "TMPDIR", "USER", "LOGNAME", "LANG") if k in os.environ}
             env["VANE_DOWNLOAD_FIXTURE_URL"] = f"http://127.0.0.1:{server.server_port}/file"

@@ -28,13 +28,13 @@ downloads chose only six paths), premature pause/quit handling, lost private ret
 cookies, and unsafe deletion of replacement files. Those cases now have focused
 coverage. Final validation is recorded below.
 
-The focused suite comprises 29 real WebKit cases, eight filesystem cases, and 12
+The focused suite comprises 31 real WebKit cases, eight filesystem cases, and 12
 existing Library/hover cases. It checks exact bytes, persisted rows, per-profile
 ownership, resume-blob cleanup, inode-safe partial cleanup, redirects, range refusal,
 changed validators/length, gzip/unknown length, destination loss/write denial,
 resume-storage failures and repeated/cancelled/pending actions.
 
-Local validation: all 49 focused tests and `selfcheck --pure` pass on macOS
+Local validation: all 51 focused tests and `selfcheck --pure` pass on macOS
 27.0.1 (26A434). Signed restart, full XCTest and standard browser smoke are queued
 outside the smoothness chat's native profiling window; their final results follow
 before merge.

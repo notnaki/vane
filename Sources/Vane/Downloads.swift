@@ -616,8 +616,8 @@ import CryptoKit
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String,
                   completionHandler: @escaping @MainActor (URL?) -> Void) {
-        let pending = pendingDownloads.removeValue(forKey: ObjectIdentifier(download))
-        guard !invalidated,
+        let pending = pendingDownloads[ObjectIdentifier(download)]
+        guard acceptsRetryOrigin(download),
               pending != nil || resuming[ObjectIdentifier(download)] != nil else {
             completionHandler(nil)
             return
@@ -648,7 +648,11 @@ import CryptoKit
             }
             target = chosen
         }
-        guard !invalidated else { completionHandler(nil); return }
+        guard acceptsRetryOrigin(download), pendingDownloads[ObjectIdentifier(download)] != nil else {
+            completionHandler(nil)
+            return
+        }
+        pendingDownloads.removeValue(forKey: ObjectIdentifier(download))
         let entry = Item(download, name: target.lastPathComponent)
         entry.url = target
         entry.destinationBookmarkIsFile = chosenByPanel ? true : nil
@@ -692,7 +696,7 @@ import CryptoKit
 
     func downloadDidFinish(_ download: WKDownload) {
         resuming.removeValue(forKey: ObjectIdentifier(download))
-        retryOrigins.removeValue(forKey: ObjectIdentifier(download))?.retryPending = false
+        retryOrigins.removeValue(forKey: ObjectIdentifier(download))?.item.retryPending = false
         guard let i = item(for: download) else { return }
         Self.pendingDestinations[i.scopeOwner] = nil
         captureFileGrant(i)
@@ -723,7 +727,7 @@ import CryptoKit
         privateSources.removeValue(forKey: ObjectIdentifier(download))
         origins.removeValue(forKey: ObjectIdentifier(download))
         resuming.removeValue(forKey: ObjectIdentifier(download))
-        retryOrigins.removeValue(forKey: ObjectIdentifier(download))?.retryPending = false
+        retryOrigins.removeValue(forKey: ObjectIdentifier(download))?.item.retryPending = false
         guard let i = item(for: download) else { return }
         i.unwatch()
         finish(i, error: error.localizedDescription, resumeData: resumeData)
@@ -774,10 +778,21 @@ import CryptoKit
         try? FileManager.default.removeItem(at: url)
     }
 
-    private var retryOrigins: [ObjectIdentifier: Item] = [:]
+    private struct RetryOrigin {
+        let item: Item
+        let operation: UUID
+    }
+    private var retryOrigins: [ObjectIdentifier: RetryOrigin] = [:]
+
+    private func acceptsRetryOrigin(_ download: WKDownload) -> Bool {
+        guard !invalidated else { return false }
+        guard let origin = retryOrigins[ObjectIdentifier(download)] else { return true }
+        return origin.item.retryPending && origin.item.operation == origin.operation
+            && items.contains(where: { $0 === origin.item })
+    }
 
     func canRetry(_ item: Item) -> Bool {
-        guard !invalidated, items.contains(where: { $0 === item }), !item.retryPending,
+        guard !invalidated, items.contains(where: { $0 === item }), !item.retryPending, !item.resumePending,
               item.download == nil, item.completed == nil,
               item.status == .failed || (item.status == .paused && !canResume(item)),
               let source = item.source, ["http", "https"].contains(source.scheme?.lowercased() ?? ""),
@@ -791,15 +806,18 @@ import CryptoKit
     @discardableResult
     func retry(_ item: Item) -> Bool {
         guard canRetry(item), let source = item.source else { return false }
+        item.operation = UUID()
+        let operation = item.operation
         item.retryPending = true
         deleteResume(item)
         removePartial(item)
         resumeWebView(for: item).startDownload(using: URLRequest(url: source)) { [weak self, weak item] download in
-            guard let self, let item, self.items.contains(where: { $0 === item }) else {
+            guard let self, let item, !self.invalidated, item.retryPending,
+                  item.operation == operation, self.items.contains(where: { $0 === item }) else {
                 download.cancel { _ in }
                 return
             }
-            self.retryOrigins[ObjectIdentifier(download)] = item
+            self.retryOrigins[ObjectIdentifier(download)] = RetryOrigin(item: item, operation: operation)
             self.attach(download, alwaysAsk: item.destinationBookmarkIsFile == true,
                         suggestedFilename: item.name, from: self.resumeWebView(for: item))
         }
@@ -831,7 +849,7 @@ import CryptoKit
             guard let self, item.operation == operation,
                   self.items.contains(where: { $0 === item }), item.download === d else { return }
             self.resuming.removeValue(forKey: ObjectIdentifier(d))
-            self.retryOrigins.removeValue(forKey: ObjectIdentifier(d))?.retryPending = false
+            self.retryOrigins.removeValue(forKey: ObjectIdentifier(d))?.item.retryPending = false
             d.delegate = nil
             item.unwatch()
             self.finish(item, error: "Paused", resumeData: data)
@@ -845,6 +863,10 @@ import CryptoKit
     }
 
     private func resumeProblem(_ item: Item) -> String? {
+        if let identity = item.partialIdentity, let destination = restoredDestination(item),
+           FileIdentity.at(destination) != identity {
+            return "Cannot resume: the partial file was moved or replaced. Retry starts from the beginning."
+        }
         let data = readResume(item)
         if let expected = item.resumeChecksum, let data,
            Self.checksum(data) != expected {
@@ -873,7 +895,8 @@ import CryptoKit
             return "Cannot resume: the saved resume data is damaged."
         }
         guard let destination else { return "Cannot resume: this download has no destination." }
-        guard fm.fileExists(atPath: destination.path) else {
+        guard (try? fm.attributesOfItem(atPath: destination.path)[.type]) as? FileAttributeType == .typeRegular,
+              fm.isReadableFile(atPath: destination.path) else {
             return "Cannot resume: the partial file was moved or deleted."
         }
         return nil
@@ -996,12 +1019,25 @@ import CryptoKit
     /// Stop a transfer for good and take the half-written file with it. Distinct from
     /// `pause`, which keeps both the partial file and the resume data on purpose.
     func cancel(_ item: Item) {
-        guard items.contains(where: { $0 === item }), item.status.isLive else { return }
+        guard items.contains(where: { $0 === item }), item.status.isLive || item.retryPending else { return }
         item.operation = UUID()
         item.pausedByUser = false
+        item.retryPending = false
+        for (key, origin) in retryOrigins.filter({ $0.value.item === item }) {
+            retryOrigins[key] = nil
+            if let pending = pendingDownloads.removeValue(forKey: key) {
+                saveAsDownloads[key] = nil
+                privateSources[key] = nil
+                origins[key] = nil
+                pending.delegate = nil
+                pending.cancel { _ in }
+            } else if let child = items.first(where: { $0.download.map(ObjectIdentifier.init) == key }) {
+                cancel(child)
+            }
+        }
         if let d = item.download {
             resuming.removeValue(forKey: ObjectIdentifier(d))
-            retryOrigins.removeValue(forKey: ObjectIdentifier(d))?.retryPending = false
+            retryOrigins.removeValue(forKey: ObjectIdentifier(d))?.item.retryPending = false
             d.delegate = nil
             d.cancel { [self] _ in
                 removePartial(item)
@@ -1026,7 +1062,7 @@ import CryptoKit
     /// of what happened, and forgetting an entry is not the same as deleting a download.
     func forget(_ item: Item) {
         guard items.contains(where: { $0 === item }) else { return }
-        if item.status.isLive { cancel(item) }
+        if item.status.isLive || item.retryPending { cancel(item) }
         item.operation = UUID()
         deleteResume(item)
         ScopedPaths.releaseBookmark(owner: item.scopeOwner)
