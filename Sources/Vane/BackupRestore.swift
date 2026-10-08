@@ -7,12 +7,13 @@ import Darwin
     init(_ directory: URL) throws {
         self.directory = directory.standardizedFileURL
         let file = directory.appendingPathComponent(".backup-owner")
-        descriptor = open(file.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard descriptor >= 0 else { throw BackupIO.posixError() }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
-            close(descriptor)
+        let fd = open(file.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw BackupIO.posixError() }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            close(fd)
             throw BackupError.storage("Another Vane instance is using this data folder. Quit that instance before restoring.")
         }
+        descriptor = fd
     }
     deinit { close(descriptor) }
 }

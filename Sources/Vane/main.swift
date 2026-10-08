@@ -96,6 +96,10 @@ NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotif
 Inspector.configure()
 NotificationCenter.default.addObserver(forName: NSApplication.didFinishLaunchingNotification,
                                        object: nil, queue: .main) { _ in
+    MainActor.assumeIsolated {
+        BackupController.shared.reportLaunch(backupLaunchResult)
+        BackupController.shared.begin()
+    }
     Task { @MainActor in
         Tab.prepareFirstPage(profileID: ProfileManager.shared.active.id)
     }

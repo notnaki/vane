@@ -98,4 +98,12 @@ import XCTest
         XCTAssertTrue(try recovery.points().contains { $0.id == newest.id })
         XCTAssertEqual(try recovery.points().count, 10)
     }
+    func testAsyncStorageUsesSameValidationAndRetention() async throws {
+        let f = try fixture(), recovery = BackupRecovery(library: f.library)
+        let first = try await recovery.automaticPointIfChangedAsync(f.library.capture(reason: .automatic))
+        XCTAssertNotNil(first)
+        let unchanged = try await recovery.automaticPointIfChangedAsync(f.library.capture(reason: .automatic))
+        XCTAssertNil(unchanged)
+        XCTAssertEqual(try recovery.points().count, 1)
+    }
 }

@@ -20,16 +20,17 @@ enum BackupSchedule {
 
 @MainActor struct BackupRecovery {
     let library: BackupLibrary
-    private let writer: (BackupArchive, URL) throws -> Void
-    private let remover: (URL) throws -> Void
-    private var root: URL { library.directory.appendingPathComponent("Recovery") }
-    private var pointRoot: URL { root.appendingPathComponent("Points") }
+    private nonisolated let writer: @Sendable (BackupArchive, URL) throws -> Void
+    private nonisolated let remover: @Sendable (URL) throws -> Void
+    private nonisolated let root: URL
+    private nonisolated var pointRoot: URL { root.appendingPathComponent("Points") }
     init(library: BackupLibrary,
-         writer: @escaping (BackupArchive, URL) throws -> Void = { try BackupCodec.write($0, to: $1) },
-         remover: @escaping (URL) throws -> Void = BackupIO.remove) {
+         writer: @escaping @Sendable (BackupArchive, URL) throws -> Void = { try BackupCodec.write($0, to: $1) },
+         remover: @escaping @Sendable (URL) throws -> Void = BackupIO.remove) {
         self.library = library; self.writer = writer; self.remover = remover
+        root = library.directory.appendingPathComponent("Recovery")
     }
-    func points() throws -> [BackupPoint] {
+    nonisolated func points() throws -> [BackupPoint] {
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         try BackupIO.directory(root)
         guard FileManager.default.fileExists(atPath: pointRoot.path) else { return [] }
@@ -57,13 +58,30 @@ enum BackupSchedule {
     @discardableResult func save(_ archive: BackupArchive) throws -> BackupPoint {
         try BackupCodec.validate(archive)
         if archive.damage == nil { _ = try library.validate(archive) }
+        try writePoint(archive)
+        return try finishSave(archive)
+    }
+    func saveAsync(_ archive: BackupArchive) async throws -> BackupPoint {
+        try BackupCodec.validate(archive)
+        if archive.damage == nil { _ = try library.validate(archive) }
+        return try await Task.detached(priority: .utility) {
+            try self.writePoint(archive)
+            return try self.finishSave(archive)
+        }.value
+    }
+    private nonisolated func writePoint(_ archive: BackupArchive) throws {
         try BackupIO.directory(root); try BackupIO.directory(pointRoot)
         let url = pointRoot.appendingPathComponent("\(archive.id.uuidString).vanebackup")
         guard !FileManager.default.fileExists(atPath: url.path) else { throw BackupError.storage("This recovery point already exists.") }
         try writer(archive, url)
+    }
+    private nonisolated func finishSave(_ archive: BackupArchive) throws -> BackupPoint {
+        let url = pointRoot.appendingPathComponent("\(archive.id.uuidString).vanebackup")
         let written = try BackupCodec.read(url)
-        guard written.id == archive.id else { throw BackupError.storage("The recovery point could not be verified.") }
-        if written.damage == nil { _ = try library.validate(written) }
+        guard written.id == archive.id, written.files == archive.files,
+              written.preferences == archive.preferences, written.damage == archive.damage else {
+            throw BackupError.storage("The recovery point could not be verified.")
+        }
         let all = try points()
         var kept = Array(all.prefix(10))
         // A clock adjustment or a UUID tie-break must never prune the point we
@@ -91,6 +109,17 @@ enum BackupSchedule {
         if let latest = try points().first(where: { $0.diagnostic == nil }),
            digest == (try Self.contentDigest(BackupCodec.read(latest.url))) { return nil }
         return try save(archive)
+    }
+    func automaticPointIfChangedAsync(_ archive: BackupArchive) async throws -> BackupPoint? {
+        _ = try library.validate(archive)
+        let changed = try await Task.detached(priority: .utility) {
+            let digest = try Self.contentDigest(archive)
+            if let latest = try self.points().first(where: { $0.diagnostic == nil }) {
+                return digest != (try Self.contentDigest(BackupCodec.read(latest.url)))
+            }
+            return true
+        }.value
+        return changed ? try await saveAsync(archive) : nil
     }
     nonisolated static func contentDigest(_ archive: BackupArchive) throws -> String {
         var hash = SHA256()
