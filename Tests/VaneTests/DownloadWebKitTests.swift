@@ -212,6 +212,24 @@ import XCTest
         XCTAssertTrue(server.requests.contains { $0.lowercased().contains("range:") })
     }
 
+    func testUnknownLengthRejectedRangeCannotCompleteEmptyFile() async throws {
+        server.omitLength = true
+        server.held = true
+        let row = try await start()
+        try await compatibilityWait { row.received > 0 }
+        manager.pause(row)
+        try await compatibilityWait { row.download == nil }
+        if manager.canResume(row) {
+            server.rejectRanges = true
+            server.held = false
+            XCTAssertTrue(manager.resume(row))
+            try await compatibilityWait { row.download == nil && row.status != .running }
+            XCTAssertNotEqual(row.status, .done)
+        } else {
+            XCTAssertTrue(manager.canRetry(row))
+        }
+    }
+
     func testChangedResourceNeverCompletesMixedBytes() async throws {
         server.held = true
         let row = try await start()

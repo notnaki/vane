@@ -28,3 +28,5 @@ Review focus: stale async pause/resume callbacks after cancellation/removal; com
 
 - Latest review fixes exclude Retry during pending Resume/Pause, guard both retry callback gaps with operation/membership checks, retire pending/active retry children on Cancel/Remove, and reject replaced partials before Resume. All 51 focused cases pass; fixture store unregistration is verified after releasing strong references.
 - First CI passed download coverage on macOS 26 but timed out in an existing reused-username-node password-autofill fixture. No failing check is treated as a pass.
+
+- An unknown-length held transfer reproduced missing byte-count updates (fraction-only observation). Observe completedUnitCount as well; unknown-length interruption/range-retry test now passes.

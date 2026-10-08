@@ -153,7 +153,7 @@ import CryptoKit
         fileprivate var pausedByUser = false
         fileprivate var operation = UUID()
         fileprivate var onProgress: (() -> Void)?
-        private var obs: NSKeyValueObservation?
+        private var obs: [NSKeyValueObservation] = []
 
         enum State: Equatable { case running, done, failed(String) }
         enum Status: Equatable {
@@ -216,16 +216,24 @@ import CryptoKit
 
         fileprivate func watch(_ d: WKDownload) {
             download = d
-            obs = d.progress.observe(\.fractionCompleted, options: [.new]) { [weak self] p, _ in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.fraction = p.fractionCompleted
-                    self.received = p.completedUnitCount
-                    if p.totalUnitCount > 0 { self.total = p.totalUnitCount }
-                    self.sample()
-                    self.onProgress?()
+            obs = [
+                d.progress.observe(\.fractionCompleted, options: [.new]) { [weak self] p, _ in
+                    MainActor.assumeIsolated { self?.updateProgress(p) }
+                },
+                // Indeterminate transfers do not change fractionCompleted as bytes
+                // arrive. Observe their actual written count for persistence/cleanup.
+                d.progress.observe(\.completedUnitCount, options: [.new]) { [weak self] p, _ in
+                    MainActor.assumeIsolated { self?.updateProgress(p) }
                 }
-            }
+            ]
+        }
+
+        private func updateProgress(_ progress: Progress) {
+            fraction = progress.fractionCompleted
+            received = progress.completedUnitCount
+            if progress.totalUnitCount > 0 { total = progress.totalUnitCount }
+            sample()
+            onProgress?()
         }
 
         /// One rate sample every half second, folded into the last one. Sampling on every
@@ -248,7 +256,7 @@ import CryptoKit
         /// Stop observing and forget the WKDownload. Anything that ends a transfer calls
         /// this, so `items.first { $0.download === d }` can never match a dead download.
         fileprivate func unwatch() {
-            obs = nil
+            obs = []
             download = nil
         }
     }
