@@ -223,6 +223,24 @@ supports folders, search, bulk actions, and HTML import/export.
 Some features depend on macOS services, site behavior, or a signed distribution
 build. The [known gaps](#known-gaps) section gives the practical limits.
 
+Choose **Site Controls → Boost This Site** to customize a website while viewing it.
+The native Boost editor previews fonts, text size, background/text/link colors, and
+custom CSS as you edit (CSS `@import` is not supported). **Zap an Element** highlights what is under the pointer;
+click to hide it, select **Undo** or a saved selector's restore button to bring it
+back, and press **Escape** to finish. Hidden-element rules also apply to content
+added later. A site's markup changes can require selecting an element again;
+iframes can be hidden as a whole, and shadow-root contents are not edited.
+
+Boosts save locally per profile and exact website origin (scheme, host, and port).
+Subdomains have separate Boosts. Private tabs keep their own temporary changes.
+**Code → JavaScript** offers an explicit **Enable JavaScript** switch and **Apply
+Script** button. Enabled scripts run once after each new document loads; editing
+code alone does not run it. Script errors appear in the editor. Disabling or
+resetting prevents future runs; reload the page to remove effects already made
+by a script. **Reset Boost** restores the site's visual defaults, and
+**Settings → Profiles → Site Permissions → Reset Boosts…** removes all Boosts in
+that profile. Reduce Motion and Battery Saver keep editor transitions immediate.
+
 Capture part of a page with **⌘⇧2**, **File → Capture a Portion of This Page**,
 the camera row in Site Controls, or by searching for **Capture** in the command
 palette. Click a highlighted element or drag a rectangle over the visible page;

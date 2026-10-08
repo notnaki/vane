@@ -624,6 +624,7 @@ struct TitleReveal: Equatable, Sendable {
     /// configuration whose controller belongs to somebody else — see `init(popup:)`.
     private static func contentController(profileID: UUID) -> WKUserContentController {
         let c = WKUserContentController()
+        SiteBoostScripts.install(on: c)
         c.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: true, in: Autofill.world))
@@ -665,6 +666,7 @@ struct TitleReveal: Equatable, Sendable {
     /// and the KVO that republishes WebKit's state. Runs at init and again on every resume,
     /// because suspension swaps the web view out from under all of it.
     private func attach() {
+        web.configuration.userContentController.add(WeakHandler(self), contentWorld: SiteBoostScripts.world, name: SiteBoostScripts.messageName)
         NativePiPHostBridge.register(tab: self, web: web)
         if let linkView = web as? LinkContextWebView {
             linkView.openBackground = { [weak self] url in self?.onOpenLinkInBackground?(url) }
@@ -939,6 +941,7 @@ struct TitleReveal: Equatable, Sendable {
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
         passwordStep = nil
+        SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
         SitePermissions.endDocument(tabID: id)
         certificateDestinationURL = nil
@@ -961,6 +964,7 @@ struct TitleReveal: Equatable, Sendable {
         }
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: LinkContextWebView.messageName, contentWorld: LinkContextWebView.world)
+        old.configuration.userContentController.removeScriptMessageHandler(forName: SiteBoostScripts.messageName, contentWorld: SiteBoostScripts.world)
         old.uiDelegate = nil
         old.navigationDelegate = nil
         old.configuration.userContentController.removeScriptMessageHandler(
@@ -1021,6 +1025,7 @@ struct TitleReveal: Equatable, Sendable {
     func tearDown() {
         guard !tornDown else { return }
         tornDown = true
+        SiteBoosts.forget(tab: self)
         SitePermissions.endDocument(tabID: id)
         presentationGeneration += 1
         windowSnapshot = nil
@@ -1351,6 +1356,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
         guard w === existingWeb else { return }
+        SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
         SitePermissions.endDocument(tabID: id)
         pictureInPicture = false
@@ -1359,6 +1365,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if w === existingWeb { SiteBoosts.beginNavigation(tab: self) }
         if w === existingWeb {
             FileUploads.cancel(tabID: id)
             SitePermissions.endDocument(tabID: id)
@@ -1633,6 +1640,7 @@ struct TitleReveal: Equatable, Sendable {
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
         // A queued message from a released document must not recreate its page or media state.
         guard !tornDown, let currentWeb = existingWeb, m.webView === currentWeb else { return }
+        if m.name == SiteBoostScripts.messageName { SiteBoosts.receive(m, tab: self); return }
         if m.name == LinkContextWebView.messageName {
             guard let linkView = existingWeb as? LinkContextWebView else { return }
             linkView.receiveContextLink(m.body)
