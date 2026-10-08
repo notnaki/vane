@@ -338,6 +338,48 @@ enum Passwords {
         return fresh
     }
 
+    /// Export bypasses the metadata cache and reads owned persistent references. A failed
+    /// enumeration or secret read must not publish an empty or incomplete password file.
+    static func exportEntries(profileID: UUID,
+                              copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching)
+        throws -> [PasswordImport.Entry] {
+        var q: [String: Any] = [
+            kSecClass as String: kSecClassInternetPassword,
+            kSecAttrCreator as String: creator,
+            kSecReturnAttributes as String: true,
+            kSecReturnPersistentRef as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        let scope = domain(profileID)
+        if let scope { q[kSecAttrSecurityDomain as String] = scope }
+        var out: CFTypeRef?
+        let status = copyMatching(q as CFDictionary, &out)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess, let items = out as? [[String: Any]] else {
+            throw PasswordImport.Failure("Could not read saved passwords from Keychain. No file was exported.")
+        }
+        var entries: [PasswordImport.Entry] = []
+        for item in items where owns(scope: scope, itemDomain: item[kSecAttrSecurityDomain as String] as? String) {
+            guard let origin = PasswordOrigin(attributes: item),
+                  let ref = item[kSecValuePersistentRef as String] as? Data else {
+                throw PasswordImport.Failure("A saved login has unsupported attributes. No file was exported.")
+            }
+            var secret: CFTypeRef?
+            let read = copyMatching([
+                kSecClass as String: kSecClassInternetPassword,
+                kSecValuePersistentRef as String: ref,
+                kSecReturnData as String: true,
+            ] as CFDictionary, &secret)
+            guard read == errSecSuccess, let data = secret as? Data,
+                  let password = String(data: data, encoding: .utf8) else {
+                throw PasswordImport.Failure("Could not read every saved password from Keychain. No file was exported.")
+            }
+            entries.append(PasswordImport.Entry(origin: origin,
+                account: item[kSecAttrAccount as String] as? String ?? "", password: password))
+        }
+        return entries.sorted { ($0.origin.url.absoluteString, $0.account) < ($1.origin.url.absoluteString, $1.account) }
+    }
+
     /// `nonisolated(unsafe)` plus an explicit lock, for the same reason `UserDefaults.vane`
     /// is: the keychain is reachable from any thread and this is only a read-through copy.
     private nonisolated(unsafe) static var cached: [UUID: [Login]] = [:]
@@ -522,6 +564,7 @@ enum Passwords {
                 kSecClass as String: kSecClassInternetPassword,
                 kSecAttrCreator as String: creator,
                 kSecAttrSecurityDomain as String: d,
+                kSecMatchLimit as String: kSecMatchLimitAll,
             ] as CFDictionary)
             return
         }

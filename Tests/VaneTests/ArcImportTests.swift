@@ -256,7 +256,10 @@ import CryptoKit
         let host = "fixture-\(UUID().uuidString.lowercased()).invalid"
         let origins = [PasswordOrigin(host: host), PasswordOrigin(host: host, port: 8443),
                        PasswordOrigin(host: host, scheme: "http")]
-        defer { Passwords.deleteAll(profileID: profileID) }
+        defer {
+            Passwords.deleteAll(profileID: profileID)
+            XCTAssertEqual(try? Passwords.exportEntries(profileID: profileID).count, 0)
+        }
         for (index, origin) in origins.enumerated() {
             XCTAssertTrue(Passwords.save(origin: origin, account: "", password: "fixture-\(index)", profileID: profileID))
         }

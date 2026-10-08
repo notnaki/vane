@@ -22,7 +22,8 @@ if args.first == "import" {
         exit(2)
     }
     do {
-        let result = try PasswordImport.importFile(URL(fileURLWithPath: file))
+        let result = try PasswordImport.importFile(URL(fileURLWithPath: file),
+            existing: Set(Passwords.all().map(\.id)))
         let report = "imported \(result.imported), skipped \(result.skipped), failed \(result.failed)"
         if result.failed > 0 {
             FileHandle.standardError.write(Data("\(report) — check Keychain access and try again; \(file) is plain text\n".utf8))
