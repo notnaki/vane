@@ -326,4 +326,32 @@ import XCTest
         expectFalse(try await fill(web, account: "bob", automatic: true))
     }
 
+    func testEditedAccountReplacesEarlierChoiceBeforeUsernameRemoval() async throws {
+        let (web, _) = try await fixture("<form><input id=user autocomplete=username><input id=password type=password></form>")
+        expectTrue(try await fill(web))
+        _ = try await js(web, """
+            user.value='bob'; user.dispatchEvent(new Event('input',{bubbles:true}));
+            password.value=''; user.remove();
+            """)
+        expectFalse(try await fill(web, automatic: true))
+        expectTrue(try await fill(web, account: "bob", automatic: true))
+    }
+
+    func testClearingUsernameCancelsItsAccountContinuity() async throws {
+        let (web, _) = try await fixture("<form><input id=user autocomplete=username><input id=password type=password></form>")
+        expectTrue(try await fill(web))
+        _ = try await js(web, "user.value=''; user.dispatchEvent(new Event('input',{bubbles:true})); password.value=''; user.remove()")
+        let raw = try await js(web, "window.__vaneAnchor()", world: Autofill.world) as? String
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(raw?.data(using: .utf8))) as? [String: Any])
+        expectEqual(body["accountHint"] as? String, "")
+    }
+
+    func testReadOnlyIdentitySupersedesAnEarlierPasswordOnlyChoice() async throws {
+        let (web, _) = try await fixture("<form id=login><input id=password type=password></form>")
+        expectTrue(try await fill(web))
+        _ = try await js(web, "password.value=''; login.insertAdjacentHTML('afterbegin','<input autocomplete=username readonly value=bob>')")
+        expectFalse(try await fill(web, automatic: true))
+        expectTrue(try await fill(web, account: "bob", automatic: true))
+    }
+
 }

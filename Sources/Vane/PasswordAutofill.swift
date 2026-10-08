@@ -111,8 +111,12 @@ import WebKit
         var lastPair = null, lastCapturePair = null, usernameStep = null;
         var selectedAccounts = new WeakMap();
         function rememberStep(p) {
-          if (!p || p.pass || !p.user || !p.user.value) return;
+          if (!p || !p.user) return;
           var root = p.user.form || p.user;
+          if (!p.user.value) {
+            if (usernameStep && (usernameStep.field === p.user || usernameStep.root === root)) usernameStep = null;
+            return;
+          }
           usernameStep = { field: p.user, account: p.user.value, root: root,
             parent: root.parentNode, before: root.previousSibling, after: root.nextSibling };
         }
@@ -121,7 +125,7 @@ import WebKit
           var step = usernameStep, root = p.pass.form || p.pass;
           if (!step || (step.field.isConnected && step.field !== p.pass)) return '';
           if (root === step.root || (!step.root.isConnected && root.parentNode === step.parent &&
-              root.previousSibling === step.before && root.nextSibling === step.after)) return step.account;
+              root.previousSibling === step.before && root.nextSibling === step.after)) return step.field === p.pass ? step.account : step.field.value;
           return '';
         }
         function pairFor(el, capture) {
@@ -262,6 +266,7 @@ import WebKit
           var p = pairFor(e.target);
           if (p) {
             if (e.isTrusted) send({ dismiss: 'input' });
+            if (p.pass && e.target === p.user) selectedAccounts.delete(p.pass);
             rememberStep(p);
           }
           if (!submittedAttempt || !pairFor(e.target, true)) { return; }
@@ -290,7 +295,7 @@ import WebKit
             if (!usableInput(identity.user)) p.user = null;
           }
           if (!p.pass && !p.user) return false;
-          var carried = p.pass && !p.user ? carriedAccount(p) : '';
+          var carried = p.pass && !p.user && !(identity && identity.user && identity.user.value) ? carriedAccount(p) : '';
           if (carried && carried !== account) return false;
           if (continuation && (!p.pass || p.user || carried)) return false;
           if (automatic && !p.pass && !hasRole(p.user, 'username') &&
@@ -311,7 +316,7 @@ import WebKit
             var hint = currentIdentity && currentIdentity.user;
             if (hint && hint.value && hint.value !== account) return false;
             if (current.user && (!hint || usableInput(hint)) && current.user.value !== account) return false;
-            selectedAccounts.set(p.pass, account);
+            if (!current.user) selectedAccounts.set(p.pass, account);
             setValue(p.pass, password);
           }
           return true;   // never auto-submit
