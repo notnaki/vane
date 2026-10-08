@@ -48,6 +48,9 @@ are unsupported.
   occurrence in file order wins; later occurrences and existing bookmarks never replace
   the title, date or folder. Duplicate URLs in different folders cannot both be retained.
 * Browser history imports identify a visit by complete URL and exact converted timestamp.
+  Chromium conversion shifts whole seconds before converting to floating point, retaining
+  distinct contemporary microsecond visits. Stored dates have Foundation/SQLite floating-point
+  precision; dates far outside contemporary ranges may have lower fractional precision.
   Repeated imports and duplicate source visits add nothing; existing titles are kept. Visits
   at different times remain distinct. Ordinary browsing continues recording each navigation.
 * Password identity is full web origin plus exact username, scoped to a Vane profile and
@@ -78,11 +81,12 @@ are unsupported.
 The pre-fix fixture run reproduced multiline/attribute HTML loss, BOM rejection, malformed
 CSV reaching save callbacks, truncated bookmark prefix imports, source JSON failures being
 swallowed, latest-only history loss, repeated history imports, and cross-category partial
-writes. After fixes and the independent review repairs, 193 focused tests passed (two opt-in real
+writes. After fixes and the independent review repairs, 194 focused tests passed (two opt-in real
 Keychain integration tests skipped) on macOS 27.0.1. The expanded filter also covers
 password autofill/origin regressions, backup formats and Easels. Pure selfchecks and the
 CLI malformed-input/error/privacy fixtures passed. Fixtures include 2,500 HTML bookmarks
 and 10,000 database visits, SQLite abort/commit failures, missing/invalid sources, malformed
-native bookmark structure, attribute spoofing, unrepresentable dates and output preservation.
+native bookmark structure, attribute spoofing, adjacent Chromium microsecond visits,
+unrepresentable dates and output preservation.
 Native checks and optional Keychain runs are coordinated separately with the smoothness chat;
 the PR records their final outcomes. Fixtures remove their temporary data and scratch preferences.

@@ -226,7 +226,11 @@ struct BrowserProfile {
     /// the sake of its panels and its alerts, and one line of arithmetic has no business
     /// being the reason a second copy of the epoch constant exists.
     nonisolated static func chromiumTime(_ micro: Int64) -> Date {
-        Date(timeIntervalSince1970: Double(micro) / 1_000_000 - 11_644_473_600)
+        // Modern Chromium microseconds exceed Double's exact integer range. Shift the
+        // whole seconds before conversion so adjacent visits retain their precision.
+        let seconds = micro / 1_000_000 - 11_644_473_600
+        let fraction = Double(micro % 1_000_000) / 1_000_000
+        return Date(timeIntervalSince1970: Double(seconds) + fraction)
     }
 
     /// Firefox counts microseconds from the Unix epoch.

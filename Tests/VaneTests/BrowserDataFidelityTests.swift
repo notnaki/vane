@@ -142,6 +142,17 @@ import SQLite3
         XCTAssertEqual(result.failed, 0)
     }
 
+    func testDistinctChromiumMicrosecondVisitsDoNotCollapseDuringConversion() throws {
+        let profile = try chromium(in: directory()), id = destination()
+        try sql(profile.path.appendingPathComponent("History"), "DELETE FROM visits; INSERT INTO visits VALUES (1, 1, 13344473600000000), (2, 1, 13344473600000001)")
+        let result = try BrowserImport.importAll(from: profile, profileID: id)
+        XCTAssertEqual(result.history, 2)
+        let dates = try Export.historyRows(profileID: id).map(\.at)
+        XCTAssertEqual(dates.count, 2)
+        if dates.count == 2 { XCTAssertGreaterThan(dates[0], dates[1]) }
+        XCTAssertEqual(try BrowserImport.importAll(from: profile, profileID: id).history, 0)
+    }
+
     func testNativeImportPreservesEveryVisitAndRepeatedImportAddsNothing() throws {
         let profile = try chromium(in: directory()), id = destination()
         let first = try BrowserImport.importAll(from: profile, profileID: id)
