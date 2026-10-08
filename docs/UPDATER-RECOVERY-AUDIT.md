@@ -31,7 +31,7 @@ with the smoothness chat.
   sandbox also traps before main on macOS 27. Isolated restart now asks the existing
   authenticated unsandboxed XPC installer to start a detached signed worker before
   the browser exits. The worker observes the authenticated caller's PID/start,
-  uses LaunchServices with the explicit environment, and supervises through health
+  starts an exact child with the explicit environment, and supervises through health
   or verified rollback. Its immutable witness also supports independently verified
   legacy records. An unsupervised isolated rollback restores the previous bundle
   and explicitly requests manual reopening, since released older helpers lack the
@@ -62,14 +62,20 @@ and durable healthy record. Unsafe recovery stops before opening a browser windo
 | Area | Coverage |
 | --- | --- |
 | Transport/extraction | Real URLSession loopback complete, truncated, interrupted, cancellation and HTTP failure cases; real ditto corrupt/truncated/empty ZIP and missing/unsigned bundle rejection. The release host is simulated; production host trust is unchanged. |
-| Transaction | 126 headless assertions, including actual SIGKILL at copy, sync, journal, swap, launch, rollback and healthy/cleanup boundaries; failed writes/destinations/replacement; repeated attempts; stale, legacy, wrong-target/volume and symlink records; damaged old/new bundles and old executing inode. Bundle verification predicates in generic directory fixtures are simulated. |
+| Transaction | 129 headless assertions, including actual SIGKILL at copy, sync, journal, swap, launch, rollback and healthy/cleanup boundaries; failed writes/destinations/replacement; repeated attempts; stale, legacy, wrong-target/volume and symlink records; damaged old/new bundles and old executing inode. Bundle verification predicates in generic directory fixtures are simulated. |
 | Relaunch | Literal shell arguments, isolated environment, three failed-open retries, simulated verifier/helper failures, refusal to execute an unverified helper, and real ad-hoc `codesign` requirement parsing. |
 | Distribution | Unchanged published v0.0.23 and v0.0.24 fixtures passed strict deep/all-architecture signature verification, stapled-ticket validation and real Gatekeeper assessment as Notarized Developer ID, team `T7X84HN3W3`. |
 | Rejections | Real Developer ID re-signed wrong identity, version and architecture fixtures were rejected. A locally signed unnotarized candidate passed signature verification but failed real Gatekeeper assessment, preserving the old destination and detailed error. Tampered signatures were rejected. |
 | XPC | Mutual caller/helper trust, unauthorized caller rejection, sandboxed source copy, final signature/Gatekeeper verification and quarantine removal tested in isolated Downloads installation directories. Task-owned clients and services were verified exited. |
-| Browser regression | Final local Swift suite: 825 tests, 8 skipped, zero failures; pure selfcheck passed. Skips cover opt-in Keychain/public-network/directory-WebKit cases and animation paths while the coordinated Reduce Motion slot was active. |
+| Native recovery | Eight signed disposable cases passed: authenticated sandboxed XPC handoff/worker survival and health cleanup; crash then next-launch rollback; corrupted-new rollback; legacy rollback; unsupervised isolated rollback with explicit manual reopen; pre-bootstrap exit with restoration; stale and malformed records refusing success. Actual environment and isolated database verified for all six running healthy/restored browsers. All recorded main/helper/IconService processes exited and disposable roots were removed; six temporary WebKit stores unregistered. |
+| Browser regression | Initial full local Swift suite: 825 tests, 8 skipped, zero failures; pure selfcheck passed. Final current-main updater archive/bundle tests: 2 passed. The full current-main CI result is attached to the PR. Skips cover opt-in Keychain/public-network/directory-WebKit cases and animation paths while the coordinated Reduce Motion slot was active. |
 
-Native launch results and final review/CI are recorded with the PR. The scripts are
+Final review and CI are recorded with the PR. A separate nonblocking relaunch
+lease serializes detached workers through health/rollback and prevents pre-AppKit
+registration races; refusal cannot enter recovery. Exact child processes are used
+only by the unsandboxed isolated worker. Ordinary user relaunch uses LaunchServices.
+The previous bundle remains present before health and is cleaned only after the
+existing durable successful-launch criteria. The scripts are
 documented in README and headless transaction/transport/relaunch checks run in CI.
 Final native fixtures use isolated data and disposable app copies. Transaction
 staging runs outside the browser sandbox, as XPC does; the restart driver inherits

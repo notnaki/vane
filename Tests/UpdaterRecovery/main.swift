@@ -317,5 +317,18 @@ do {
     let result = BundleReplacement.beginLaunch(at: target, processAlive: { _, _, _ in false }, verifyRecovery: { label($0) == "new" }, verifyPrevious: { label($0) == "old" })
     check("legacy selfrollback retains witnessed complete previous launch", result == .rolledBack && BundleReplacement.isRestoredPrevious(at: target, witness: witness, verifyPrevious: { label($0) == "old" }))
 }
+do {
+    let (_, target) = try scene("exclusive-relaunch-supervisor")
+    let first = try BundleReplacement.acquireRelaunchLease(at: target)
+    check("second detached supervisor cannot launch or recover concurrently", (try? BundleReplacement.acquireRelaunchLease(at: target)) == nil)
+    close(first)
+    let retry = try BundleReplacement.acquireRelaunchLease(at: target)
+    check("released supervisor lease permits safe retry", retry >= 0)
+    close(retry)
+    let lock = target.deletingLastPathComponent().appendingPathComponent(".Vane.app.vane-relaunch.lock")
+    try fm.removeItem(at: lock)
+    try fm.createSymbolicLink(at: lock, withDestinationURL: target)
+    check("supervisor lease refuses a symlink", (try? BundleReplacement.acquireRelaunchLease(at: target)) == nil)
+}
 print("\(failures) failure(s)")
 exit(failures == 0 ? 0 : 1)

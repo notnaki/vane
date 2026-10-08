@@ -19,3 +19,13 @@ Read Updater.swift (URLSession download, ditto extraction, pinned team validatio
 ## Review focus
 
 Journal identity is not authority; same inode is not proof of intact content. Never erase the only usable old bundle before durable health. Recovery errors must not produce health. Concurrent launching processes cannot roll back a live launch. Cleanup interruptions must be idempotent; failed retries must preserve recovery. Real Gatekeeper/signature results must be reported separately from injected predicates.
+
+## Outcome
+
+Implementation, independent source review and coordinated disposable native checks
+completed. The audit records defects and unavailable distribution prerequisites.
+Earlier failed sandboxed relaunch attempts lost their data override; the installed
+bundle remained unchanged, but profile isolation could not be certified for those
+attempts. They are excluded from final isolated results. Final eight native cases
+verify actual process environment, and every task-owned native process/copy exited
+or was removed. Final committed-head review, required CI and merge are tracked in PR344.

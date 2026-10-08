@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 APP="${1:-Vane.app}"
 APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
+SOURCE="${2:-$APP}"
+SOURCE="$(cd "$(dirname "$SOURCE")" && pwd)/$(basename "$SOURCE")"
 : "${SIGN_ID:?Set SIGN_ID to the Vane Developer ID signing identity}"
 WORK=$(mktemp -d "$HOME/Downloads/vane-installer-xpc.XXXXXX")
 cleanup() {
@@ -11,7 +13,7 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$WORK/source"
-cp -R "$APP" "$WORK/source/Vane.app"
+cp -R "$SOURCE" "$WORK/source/Vane.app"
 CLIENT_SOURCE="$WORK/source/Vane.app"
 FIXTURE="$WORK/Installer Check.app"
 mkdir -p "$FIXTURE/Contents/MacOS" "$FIXTURE/Contents/XPCServices"

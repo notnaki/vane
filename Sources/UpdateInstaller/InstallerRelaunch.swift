@@ -26,6 +26,14 @@ enum InstallerRelaunch {
             NSLog("[vane] relaunch refused a destination outside its host bundle")
             exit(1)
         }
+        let lease: Int32
+        do { lease = try BundleReplacement.acquireRelaunchLease(at: target) }
+        catch {
+            // Failure to own supervision must never enter the recovery catch below.
+            NSLog("[vane] relaunch supervisor unavailable: %@", String(describing: error))
+            exit(1)
+        }
+        defer { close(lease) }
         do {
             try UpdateInstallation.verifyForRelaunch(target)
             if let directory = ProcessInfo.processInfo.environment["VANE_DATA_DIR"] {
@@ -80,30 +88,14 @@ enum InstallerRelaunch {
             NSLog("[vane] cannot bind isolated relaunch to its transaction; refused launch")
             exit(1)
         }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        configuration.environment = ["VANE_DATA_DIR": directory, "VANE_UPDATE_SUPERVISED": "1"]
-        let reply = Reply()
-        NSWorkspace.shared.openApplication(at: target, configuration: configuration) { app, error in
-            reply.finish(app, error)
-        }
-        let deadline = Date().addingTimeInterval(30)
-        while reply.read() == nil, Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        }
-        guard let result = reply.read() else {
-            NSLog("[vane] isolated relaunch completion unavailable; retained previous bundle")
-            exit(1)
-        }
-        guard let application = result.0, result.1 == nil else {
-            if try !recover(target) {
-                var details: [String: Any] = [NSLocalizedDescriptionKey: "Isolated relaunch failed"]
-                if let error = result.1 { details[NSUnderlyingErrorKey] = error }
-                throw NSError(domain: UpdateInstaller.serviceName, code: 4, userInfo: details)
-            }
-            return
-        }
-        while !application.isTerminated, BundleReplacement.hasPendingRecord(at: target) {
+        let application = Process()
+        application.executableURL = Bundle(url: target)?.executableURL
+        var environment = ProcessInfo.processInfo.environment
+        environment["VANE_DATA_DIR"] = directory
+        environment["VANE_UPDATE_SUPERVISED"] = "1"
+        application.environment = environment
+        try application.run()
+        while application.isRunning, BundleReplacement.hasPendingRecord(at: target) {
             if let witness, BundleReplacement.hasCompletedReplacement(at: target, witness: witness,
                     verifyReplacement: { (try? UpdateInstallation.verifyForRelaunch($0)) != nil }) { return }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
@@ -112,19 +104,17 @@ enum InstallerRelaunch {
                 verifyPrevious: UpdateInstallation.recoverablePrevious) {
             // Bootstrap restored the old inode and durably removed the journal.
             // The exact new child may still own profile locks until it exits.
-            while !application.isTerminated {
-                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-            }
+            application.waitUntilExit()
             try launchRestoredIsolated(target, directory: directory, witness: witness)
             return
         }
-        if let witness, !application.isTerminated,
+        if let witness, application.isRunning,
            !BundleReplacement.hasCompletedReplacement(at: target, witness: witness,
                 verifyReplacement: { (try? UpdateInstallation.verifyForRelaunch($0)) != nil }) {
             NSLog("[vane] replacement completion did not match its verified transaction; refusing success")
             exit(1)
         }
-        if application.isTerminated {
+        if !application.isRunning {
             let restored = BundleReplacement.awaitingBootstrap(at: target) ? try recover(target) : false
             if !restored { exit(1) }
         }
@@ -144,21 +134,17 @@ enum InstallerRelaunch {
             throw NSError(domain: UpdateInstaller.serviceName, code: 3,
                 userInfo: [NSLocalizedDescriptionKey: "Restored previous bundle is unavailable or already running"])
         }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.createsNewApplicationInstance = true
-        configuration.environment = ["VANE_DATA_DIR": directory]
-        let reply = Reply()
-        NSWorkspace.shared.openApplication(at: target, configuration: configuration) { app, error in
-            reply.finish(app, error)
-        }
-        let deadline = Date().addingTimeInterval(30)
-        while reply.read() == nil, Date() < deadline {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-        }
-        guard let (application, error) = reply.read(), let application,
-              error == nil, !application.isTerminated else {
+        let application = Process()
+        application.executableURL = Bundle(url: target)?.executableURL
+        var environment = ProcessInfo.processInfo.environment
+        environment["VANE_DATA_DIR"] = directory
+        environment.removeValue(forKey: "VANE_UPDATE_SUPERVISED")
+        application.environment = environment
+        try application.run()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        guard application.isRunning else {
             throw NSError(domain: UpdateInstaller.serviceName, code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "Restored previous app failed to relaunch"])
+                userInfo: [NSLocalizedDescriptionKey: "Restored previous app exited during relaunch"])
         }
     }
 

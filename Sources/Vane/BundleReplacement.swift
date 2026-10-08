@@ -462,6 +462,20 @@ enum BundleReplacement {
 
     static func hasPendingRecord(at target: URL) -> Bool { entryExists(journalURL(target)) }
 
+    /// Serialize detached workers through launch, health and recovery. The normal
+    /// transaction lock stays short-lived; this separate lease cannot deadlock it.
+    static func acquireRelaunchLease(at target: URL) throws -> Int32 {
+        let path = target.deletingLastPathComponent()
+            .appendingPathComponent(".\(target.lastPathComponent).vane-relaunch.lock")
+        let descriptor = open(path.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw filesystemError(path) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            throw Fault.busy
+        }
+        return descriptor
+    }
+
     struct LaunchWitness {
         fileprivate let targetPath: String
         fileprivate let volumeID: UInt64

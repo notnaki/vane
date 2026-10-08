@@ -854,11 +854,13 @@ sandbox identity and the authenticated installer service for isolated restart. I
 never starts or cleans browser preferences/profile data itself. Disposable bundles
 live under Downloads; the fixture records actual browser environment and exact
 process identities, including App Translocation, before cleanup. Isolated restarts
-use a detached unsandboxed installer worker and LaunchServices environment overrides;
+use a detached unsandboxed installer worker and exact child processes;
 sandboxed LaunchServices callers drop those overrides, and direct execution from an
 inherited sandbox fails before main on macOS 27. The fixture simulates notarization
 for the local candidate at the transaction boundary;
 actual distribution verification remains the separate installer/release-candidate check.
+To test the current XPC helper with an unchanged notarized payload, run
+`SIGN_ID=… scripts/test-update-installer-xpc.sh /path/to/current/Vane.app /path/to/notarized/Vane.app`.
 
 To verify an *unchanged, notarized* release ZIP on a graphical test machine:
 
