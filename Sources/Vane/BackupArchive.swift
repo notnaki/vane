@@ -59,6 +59,7 @@ enum BackupPaths {
                     "vane\(suffix).db", "easels-\(id.uuidString).json", "space-templates\(suffix).json"])
     }
     static func isOwned(_ name: String) -> Bool {
+        if ReadingQueueFiles.parseOwnedName(name) != nil { return true }
         if name == "profiles.json" { return true }
         if name.hasPrefix("FilterLists/") {
             let part = String(name.dropFirst("FilterLists/".count))

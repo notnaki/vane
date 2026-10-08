@@ -75,11 +75,12 @@ struct SiteBoost: Codable, Equatable, Sendable {
     final class Document {
         weak var tab: Tab?
         let origin: String
+        let stamp: Double // Captured only for diagnostics; identity uses tokens.
         let token: String
         var pageToken: String?
         var tokenCapture: (id: UUID, task: Task<String?, Never>)?
         var scriptRan = false
-        init(tab: Tab, origin: String, token: String) { self.tab = tab; self.origin = origin; self.token = token }
+        init(tab: Tab, origin: String, stamp: Double, token: String) { self.tab = tab; self.origin = origin; self.stamp = stamp; self.token = token }
     }
     private static let store = SiteBoostStore(defaults: .vane)
     private static var privateValues: [UUID: [String: SiteBoost]] = [:]
@@ -116,12 +117,13 @@ struct SiteBoost: Codable, Equatable, Sendable {
     static func receive(_ message: WKScriptMessage, tab: Tab) {
         guard message.webView === tab.existingWeb, message.frameInfo.isMainFrame,
               let body = message.body as? [String: Any], let origin = body["origin"] as? String,
+              let stamp = body["stamp"] as? Double, stamp.isFinite,
               let token = body["token"] as? String, validToken(token),
               let frameURL = message.frameInfo.request.url, Self.origin(frameURL) == origin,
               let url = tab.currentURL, Self.origin(url) == origin else { return }
         switch body["kind"] as? String {
         case "ready", "restored":
-            let doc = Document(tab: tab, origin: origin, token: token)
+            let doc = Document(tab: tab, origin: origin, stamp: stamp, token: token)
             documents[tab.id] = doc
             apply(to: tab, document: doc)
             if body["kind"] as? String == "restored" {
@@ -152,25 +154,25 @@ struct SiteBoost: Codable, Equatable, Sendable {
 
     private static func apply(to tab: Tab, document: Document) {
         guard let web = tab.existingWeb else { return }
-        web.callAsyncJavaScript("if (window.__vaneBoost?.token === token && location.origin === origin) window.__vaneBoost.apply(css, scale);",
+        web.callAsyncJavaScript("if (window.__vaneBoost?.documentToken === token && location.origin === origin) window.__vaneBoost.apply(css, scale);",
             arguments: ["token": document.token, "origin": document.origin, "css": value(origin: document.origin, tab: tab).style, "scale": value(origin: document.origin, tab: tab).enabled ? value(origin: document.origin, tab: tab).sanitized.textScale : 1],
             in: nil, in: SiteBoostScripts.world) { _ in }
     }
 
     static func zap(_ on: Bool, tab: Tab) {
         guard let doc = documents[tab.id], let web = tab.existingWeb else { return }
-        web.callAsyncJavaScript("if (window.__vaneBoost?.token === token && location.origin === origin) window.__vaneBoost.zap(on);",
+        web.callAsyncJavaScript("if (window.__vaneBoost?.documentToken === token && location.origin === origin) window.__vaneBoost.zap(on);",
             arguments: ["token": doc.token, "origin": doc.origin, "on": on], in: nil, in: SiteBoostScripts.world) { _ in }
     }
 
     private static func validToken(_ token: String) -> Bool {
-        token.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil
+        token.utf8.count == 32 && token.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
     private static func matches(_ doc: Document, tab: Tab, web: WKWebView) async -> Bool {
         guard documents[tab.id] === doc, tab.existingWeb === web else { return false }
         let matches: Bool = await withCheckedContinuation { continuation in
-            web.callAsyncJavaScript("return window.__vaneBoost?.token === token && location.origin === origin;",
+            web.callAsyncJavaScript("return window.__vaneBoost?.documentToken === token && location.origin === origin;",
                 arguments: ["token": doc.token, "origin": doc.origin], in: nil, in: SiteBoostScripts.world) { result in
                 continuation.resume(returning: (try? result.get()) as? Bool ?? false)
             }

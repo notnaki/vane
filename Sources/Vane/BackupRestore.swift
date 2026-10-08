@@ -151,9 +151,11 @@ import Darwin
             try BackupIO.directory(library.directory.appendingPathComponent("FilterLists"))
         }
         for file in files {
+            if ReadingQueueFiles.parseOwnedName(file.name) != nil { try ReadingQueueFiles.prepareOwnedParents(file.name, in: library.directory) }
             try BackupIO.write(file.data, library.directory.appendingPathComponent(file.name))
             try checkpoint("installed:\(file.name)")
         }
+        try ReadingQueueFiles.removeEmptyDirectories(in: library.directory)
         try library.applyPreferences(preferences, includeLocal: exactPreferences)
         try checkpoint("preferences")
     }
