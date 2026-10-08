@@ -87,8 +87,9 @@ unchanged notarized release still need verification.
 
 - macOS **27.0.1**, build **26A434**, Apple Silicon; Xcode **27.0**, build
   **27A266a**. Automated probes used source
-  `b589f0f9abb0e742f151fdebae78819d7cbded43` (including the extension fix and
-  the reviewed iframe-selection synchronization fix).
+  `102ace442f38029d97362e514e010a962975424f` (including the extension fix,
+  the reviewed iframe-selection synchronization fix and integration with `main`
+  at `ac3fbfc`).
 - XCTest used real Vane `Tab`/WebKit objects, native print operations and
   synthetic unpacked extensions. It is **not a signed sandbox app**. Upload
   submission tests supply selected URLs through a fixture delegate; native picker
