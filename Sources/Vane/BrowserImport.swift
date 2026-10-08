@@ -261,6 +261,7 @@ struct BrowserProfile {
             switch type {
             case "url":
                 guard let url = n["url"] as? String else { throw Failure("A bookmark is missing its URL.") }
+                if let name = n["name"], !(name is String) { throw Failure("A bookmark has a malformed title.") }
                 out.append((url, n["name"] as? String ?? ""))
             case "folder": break
             case "separator": return
@@ -289,7 +290,15 @@ struct BrowserProfile {
         switch type {
         case "WebBookmarkTypeLeaf":
             guard let url = n["URLString"] as? String else { throw Failure("A bookmark is missing its URL.") }
-            return [(url, (n["URIDictionary"] as? [String: Any])?["title"] as? String ?? "")]
+            var title = ""
+            if let raw = n["URIDictionary"] {
+                guard let dictionary = raw as? [String: Any] else { throw Failure("A bookmark has malformed title metadata.") }
+                if let rawTitle = dictionary["title"] {
+                    guard let text = rawTitle as? String else { throw Failure("A bookmark has a malformed title.") }
+                    title = text
+                }
+            }
+            return [(url, title)]
         case "WebBookmarkTypeProxy": return []
         case "WebBookmarkTypeList":
             guard let raw = n["Children"] else { return [] }

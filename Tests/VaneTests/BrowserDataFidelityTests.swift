@@ -298,6 +298,46 @@ import SQLite3
         }
     }
 
+    func testUnicodeAttributeNamesCannotHideURLOrDateAttributes() throws {
+        let id = destination(), file = try directory().appendingPathComponent("bookmarks.html")
+        try Export.write(#"<DL><DT><A DATA-雪='x HREF="https://wrong.invalid/" ADD_DATE="42"' HREF='https://right.invalid/' ADD_DATE='1700000000'>T</A></DL>"#, to: file)
+        XCTAssertEqual(try BookmarkImport.importFile(file, profileID: id).imported, 1)
+        let saved = try Export.bookmarkEntries(profileID: id)
+        XCTAssertEqual(saved.first?.row.url, "https://right.invalid/")
+        XCTAssertEqual(saved.first?.row.at.timeIntervalSince1970, 1700000000)
+    }
+
+    func testMalformedNativeTitlesRejectBothCategoriesRatherThanLosingText() throws {
+        let chrome = try chromium(in: directory()), id = destination()
+        for title in [42 as Any, NSNull() as Any] {
+            let json: [String: Any] = ["roots": ["bookmark_bar": ["type": "folder", "children": [
+                ["type": "url", "url": "https://prefix.invalid/", "name": "Keep"],
+                ["type": "url", "url": "https://damaged.invalid/", "name": title]]]]]
+            try JSONSerialization.data(withJSONObject: json).write(to: chrome.path.appendingPathComponent("Bookmarks"))
+            XCTAssertThrowsError(try BrowserImport.importAll(from: chrome, profileID: id))
+            XCTAssertTrue(Store.store(for: id).history().isEmpty)
+            XCTAssertTrue(Store.store(for: id).bookmarks().isEmpty)
+        }
+        let dir = try directory(), safariID = destination()
+        try sql(dir.appendingPathComponent("History.db"), """
+            CREATE TABLE history_items (id INTEGER, url TEXT);
+            CREATE TABLE history_visits (history_item INTEGER, title TEXT, visit_time REAL);
+            INSERT INTO history_items VALUES (1, 'https://prefix.invalid/');
+            INSERT INTO history_visits VALUES (1, 'Keep', 721692800);
+            """)
+        for dictionary in [["title": 42] as Any, "damaged dictionary" as Any] {
+            let plist: [String: Any] = ["WebBookmarkType": "WebBookmarkTypeList", "Children": [
+                ["WebBookmarkType": "WebBookmarkTypeLeaf", "URLString": "https://prefix.invalid/", "URIDictionary": ["title": "Keep"]],
+                ["WebBookmarkType": "WebBookmarkTypeLeaf", "URLString": "https://damaged.invalid/", "URIDictionary": dictionary]]]
+            try PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0)
+                .write(to: dir.appendingPathComponent("Bookmarks.plist"))
+            let profile = BrowserProfile(browser: "Safari", profile: "Synthetic", path: dir, hasHistory: true, hasBookmarks: true)
+            XCTAssertThrowsError(try BrowserImport.importAll(from: profile, profileID: safariID))
+            XCTAssertTrue(Store.store(for: safariID).history().isEmpty)
+            XCTAssertTrue(Store.store(for: safariID).bookmarks().isEmpty)
+        }
+    }
+
     func testUnrepresentableBookmarkDateUsesMissingDateNormalization() {
         for date in ["1e300", "-1e300", "nan", "inf", "not-a-date"] {
             let parsed = Export.parseNetscapeEntries("<DL><DT><A HREF='https://fixture.invalid/' ADD_DATE='\(date)'>Title</A></DL>")

@@ -78,7 +78,7 @@ are unsupported.
 The pre-fix fixture run reproduced multiline/attribute HTML loss, BOM rejection, malformed
 CSV reaching save callbacks, truncated bookmark prefix imports, source JSON failures being
 swallowed, latest-only history loss, repeated history imports, and cross-category partial
-writes. After fixes and the independent review repairs, 191 focused tests passed (two opt-in real
+writes. After fixes and the independent review repairs, 193 focused tests passed (two opt-in real
 Keychain integration tests skipped) on macOS 27.0.1. The expanded filter also covers
 password autofill/origin regressions, backup formats and Easels. Pure selfchecks and the
 CLI malformed-input/error/privacy fixtures passed. Fixtures include 2,500 HTML bookmarks

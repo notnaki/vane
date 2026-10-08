@@ -273,7 +273,7 @@ import UniformTypeIdentifiers
     }
 
     private static let attributeTokens = try! NSRegularExpression(
-        pattern: #"(?:^|\s)([A-Za-z_:][A-Za-z0-9_.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#)
+        pattern: #"(?:^|\s)([^\s="'<>]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#)
 
     private static func attribute(_ name: String, in attributes: String) -> String? {
         let ns = attributes as NSString
