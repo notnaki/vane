@@ -19,6 +19,7 @@ extension Downloads.Item {
                 received: received, total: total, bytesPerSecond: bytesPerSecond))
             return eta.isEmpty ? size : "\(size) — \(eta)"
         case .paused:
+            if case .failed(let why) = state, why != "Paused", !why.isEmpty { return why }
             return "Paused — \(Downloads.sizeText(received: received, total: total))"
         case .missing:
             return Downloads.missingText

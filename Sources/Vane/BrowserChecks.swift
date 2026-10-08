@@ -15,7 +15,7 @@ import WebKit
         guard let directory = Store.overrideDirectory,
               FileManager.default.fileExists(atPath: directory),
               let entries = try? FileManager.default.contentsOfDirectory(atPath: directory),
-              entries.isEmpty else {
+              (entries.isEmpty || CommandLine.arguments.contains("--download-resume")) else {
             fail("browsercheck requires VANE_DATA_DIR pointing to an existing empty directory", code: 2)
         }
         guard Bundle.main.bundleURL.pathExtension == "app", sandboxedSignature() else {
@@ -31,6 +31,9 @@ import WebKit
             fail("browsercheck exceeded its deadline", code: 1)
         }
         Task {
+            if CommandLine.arguments.contains("--download-pause") || CommandLine.arguments.contains("--download-resume") {
+                await DownloadChecks.run(directory: directory, resume: CommandLine.arguments.contains("--download-resume"))
+            }
             if publicMedia { exit(await PublicMediaChecks.run()) }
             if lifecycle { await BrowserLifecycleChecks.run() }
             await check.run()

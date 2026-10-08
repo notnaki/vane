@@ -726,6 +726,9 @@ Keychain reads. Keychain-dependent XCTest fixtures report a skip if storage is u
 For site-permission lifecycle fixtures and a fake display-capture check, see
 [Site permissions on macOS 27](docs/SITE-PERMISSIONS.md#validation-and-remaining-platform-coverage).
 
+For download interruption, resume, destination and process-restart fixtures, see
+[Download reliability on macOS 27](docs/DOWNLOAD-RELIABILITY.md).
+
 `swift test` covers search typing and cancellation, link gestures and previews,
 Space switching and deletion, tab ordering, Battery Saver, media permission popups and
 grant lifetimes, requesting-frame ownership and synthetic capture revocation, Easels, page capture,
