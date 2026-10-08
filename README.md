@@ -740,8 +740,19 @@ For download interruption, resume, destination and process-restart fixtures, see
 Space switching and deletion, tab ordering, Battery Saver, media permission popups and
 grant lifetimes, requesting-frame ownership and synthetic capture revocation, Easels, page capture,
 and other browser UI behavior. Search fixtures include a large history database,
-keyboard selection, live history changes, and private windows. GitHub credential
-regressions exercise the real Live Folder response handler with an isolated
+keyboard selection, live history changes, and private windows.
+
+The native History rendering performance budget is a separate, opt-in release
+benchmark on a quiet logged-in Mac. It retains its 100 ms limit; hosted debug CI
+cannot separate Vane work from window-server activation and timer scheduling.
+History correctness, profile isolation, search cancellation and input-thread search
+checks remain in the routine test suite.
+
+```sh
+VANE_UI_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter HistoryResponsivenessTests
+```
+
+GitHub credential regressions exercise the real Live Folder response handler with an isolated
 credential-storage fixture:
 
 ```sh
