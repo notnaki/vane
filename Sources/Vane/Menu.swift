@@ -1,4 +1,5 @@
 import AppKit
+import WebKit
 
 /// Menu items whose action is just a closure. NSMenuItem needs an ObjC target, so this is
 /// the smallest thing that gives one; `keepAlive` stops ARC eating them.
@@ -59,15 +60,22 @@ import AppKit
     return entry
 }
 
+@MainActor enum PagePrinting {
+    static func operation(for web: WKWebView, printInfo: NSPrintInfo) -> NSPrintOperation {
+        let operation = web.printOperation(with: printInfo)
+        // WebKit hands back a print view with no size; left alone it prints a blank sheet.
+        operation.view?.frame = web.bounds
+        return operation
+    }
+}
+
 /// File ▸ Print… prints the page, not the window. `printView:` down the responder chain
 /// reached whatever view was first responder — the sidebar's chrome, or the command bar's
 /// field — so this asks the active tab's web view for its own print operation instead.
 @MainActor private func printPage() {
     guard let store = Windows.current, let web = store.active?.existingWeb,
           let window = store.window else { return }
-    let op = web.printOperation(with: .shared)
-    // WebKit hands back a print view with no size; left alone it prints a blank sheet.
-    op.view?.frame = web.bounds
+    let op = PagePrinting.operation(for: web, printInfo: .shared)
     op.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
 }
 

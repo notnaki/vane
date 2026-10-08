@@ -121,6 +121,9 @@ import WebKit
             ScopedPaths.remove(path: path, from: myKey)
             ExtensionConsent.remove(for: URL(fileURLWithPath: path), profileID: profileID)
             claimed.remove(path)
+            var identities = contextIdentifiers
+            identities.removeValue(forKey: path)
+            contextIdentifiers = identities
             // An uninstalled extension must not keep a slot in the pill: the cap is three,
             // and a pin nothing can fill would silently cost one of them.
             setPins(pins.filter { $0 != path })
@@ -193,6 +196,13 @@ import WebKit
             addedBookmark = !alreadySaved
         }
         let context = WKWebExtensionContext(for: ext)
+        // WebKit's default identity changes on every load and makes storage.local
+        // ephemeral. Keep an installation identity in this profile's isolated defaults.
+        // Removing the extension drops it, so a reinstall cannot inherit old settings.
+        var identities = contextIdentifiers
+        let identity = identities[path].flatMap(UUID.init(uuidString:)) ?? UUID()
+        context.uniqueIdentifier = identity.uuidString.lowercased()
+        context.baseURL = URL(string: "webkit-extension://\(context.uniqueIdentifier)/")!
         context.isInspectable = Settings.inspectorEnabled
         context.inspectionName = ext.displayName
         for permission in ext.requestedPermissions {
@@ -204,6 +214,8 @@ import WebKit
         try controller.load(context)
         do { try ExtensionConsent.save(requested, for: folder, profileID: profileID) }
         catch { try? controller.unload(context); throw error }
+        identities[path] = identity.uuidString
+        contextIdentifiers = identities
         loaded.append((path, context))
         succeeded = true
         startPolling()
@@ -246,6 +258,11 @@ import WebKit
     /// Per profile, so an extension installed in one profile is not loaded into another.
     static func key(for profileID: UUID) -> String {
         ProfileManager.defaultsKey(baseKey, profileID)
+    }
+
+    private var contextIdentifiers: [String: String] {
+        get { UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey("extensionIdentifiers", profileID)) as? [String: String] ?? [:] }
+        set { UserDefaults.vane.set(newValue, forKey: ProfileManager.defaultsKey("extensionIdentifiers", profileID)) }
     }
 
     // MARK: Actions
