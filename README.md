@@ -384,7 +384,9 @@ swift test --filter 'WebsiteDataTests|WebsiteDataWebKitTests|ProfilePersistenceT
 
 Settings → Advanced → **Backup and Restore** exports one `.vanebackup` file with all
 regular profiles, Spaces, saved tabs and sessions, bookmark folders and bookmarks,
-history, Space templates, settings, imported blocking lists, and Easels with embedded images. Backups
+history, Space templates, offline articles with captured images and read state,
+settings (including Reader preferences and profile-scoped site Boosts), imported
+blocking lists, and Easels with embedded images. Backups
 are unencrypted and limited to 512 MB; oversized backups fail without omitting data.
 Passwords and tokens in Keychain, cookies and website sign-ins/storage, downloaded
 files, caches, and external extension folders are excluded. External folder choices
@@ -407,8 +409,11 @@ protection against disk loss. **Erase Everything…** removes local recovery poi
 Focused backup validation:
 
 ```sh
-swift test --filter 'Backup.*Tests|ProfilePersistenceTests|EaselTabTests|HistoryPersistenceTests'
+swift test --filter 'DataIntegrationTests|Backup.*Tests|SpaceTemplate.*Tests|ReadingQueue.*Tests|ProfilePersistenceTests|EaselTabTests|HistoryPersistenceTests'
 ```
+
+The [cross-feature integration evidence](docs/DATA-INTEGRATION.md) records the
+populated round trip, interruption recovery, profile/private checks, and limits.
 
 Profile save failures appear in browser windows and Settings → Profiles. Unsaved
 profile names, colors, new profiles, and selection changes stay in memory; **Retry
@@ -435,7 +440,9 @@ Enter Reader from Page Actions or **View → Reader Mode**. **Page Actions → R
 Preferences** offers text size (13–32 pt), serif type, compact/standard/relaxed line
 spacing, and narrow/standard/wide reading columns. Spacing and width are also in
 **View → Reading Preferences**. Preferences save locally and apply immediately to
-the current Reader; new Reader views use the saved choices. Changes animate briefly
+the current Reader; new Reader views use the saved choices. These preferences are
+shared across profiles and private Reader views and included in complete backups.
+Changes animate briefly
 unless Reduce Motion or Battery Saver is active. The header links to the source
 article, and article links remain usable.
 

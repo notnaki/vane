@@ -146,6 +146,16 @@ struct BackupPreview: Sendable {
         var allSpaces = Set<UUID>(), allBoards = Set<UUID>()
         for profile in disk.profiles {
             let suffix = ProfileManager.suffix(profile.id)
+            // Boosts live inside preferences rather than a standalone profile file.
+            // Reject unreadable records before replacing a healthy library; the runtime
+            // otherwise falls back to empty Boosts and hides the damaged saved data.
+            if let value = preferences[SiteBoostStore.key(profile.id)] {
+                guard let data = value as? Data,
+                      let records = try? JSONDecoder().decode([String: SiteBoost].self, from: data),
+                      records.keys.allSatisfy({ URL(string: $0).flatMap(SiteBoosts.origin) == $0 }) else {
+                    throw BackupError.invalid("Invalid saved site Boosts for \(profile.name).")
+                }
+            }
             if let data = files["space-templates\(suffix).json"] {
                 do { _ = try WorkspaceTemplates.validate(data, profile: profile.id) }
                 catch { throw BackupError.invalid("Invalid or unsupported Space templates.") }
