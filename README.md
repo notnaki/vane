@@ -484,6 +484,9 @@ global settings and extension metadata queries keep background rows parked.
 ```sh
 swift build
 python3 scripts/check-browser-smoke.py
+# Opt-in lifecycle measurement: 100 tab/window cycles, 200 parked session rows,
+# at least 30s settling and 60s idle sampling (logged-in desktop required).
+python3 scripts/check-browser-smoke.py --lifecycle
 ```
 
 The full `selfcheck` uses a keychain and a window server. Run it locally when

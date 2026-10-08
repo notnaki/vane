@@ -1,7 +1,7 @@
 import AppKit
 
 /// Menu items whose action is just a closure. NSMenuItem needs an ObjC target, so this is
-/// the smallest thing that gives one; `keepAlive` stops ARC eating them.
+/// the smallest thing that gives one; each item retains its own target.
 @MainActor private final class Act: NSObject, NSMenuItemValidation {
     let run: () -> Void
     /// Asked by `NSMenu.autoenablesItems`, which otherwise enables anything whose target
@@ -24,7 +24,6 @@ import AppKit
         return enabled?() ?? true
     }
 }
-@MainActor private var keepAlive: [Act] = []
 
 /// A live enabled-state for a closure-backed item: asked every time the menu opens, rather
 /// than frozen into `isEnabled` when the bar was built.
@@ -38,9 +37,9 @@ import AppKit
                   _ mods: NSEvent.ModifierFlags = .command,
                   _ run: @escaping () -> Void) -> NSMenuItem {
     let act = Act(run)
-    keepAlive.append(act)
     let i = NSMenuItem(title: title, action: #selector(Act.fire), keyEquivalent: key)
     i.target = act
+    i.representedObject = act
     i.keyEquivalentModifierMask = mods
     return i
 }
@@ -50,11 +49,11 @@ import AppKit
 @MainActor private func item(_ command: Command, _ run: @escaping @MainActor () -> Void) -> NSMenuItem {
     Keybindings.actions[command] = run
     let act = Act(run)
-    keepAlive.append(act)
     let binding = Keybindings.binding(for: command)
     let entry = NSMenuItem(title: command.title, action: #selector(Act.fire),
                            keyEquivalent: binding.menuKeyEquivalent)
     entry.target = act
+    entry.representedObject = act
     entry.keyEquivalentModifierMask = binding.menuModifierMask
     return entry
 }

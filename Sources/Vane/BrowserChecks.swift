@@ -25,10 +25,14 @@ import WebKit
         runner = check
         // Independent of any awaited WebKit callback. An unavailable process or delegate
         // callback must fail CI instead of leaving a task suspended indefinitely.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 55) {
-            fail("browsercheck exceeded its 55-second deadline", code: 1)
+        let lifecycle = CommandLine.arguments.contains("--lifecycle")
+        DispatchQueue.main.asyncAfter(deadline: .now() + (lifecycle ? 600 : 55)) {
+            fail("browsercheck exceeded its deadline", code: 1)
         }
-        Task { await check.run() }
+        Task {
+            if lifecycle { await BrowserLifecycleChecks.run() }
+            await check.run()
+        }
         NSApplication.shared.run()
         fail("browsercheck run loop ended before completion", code: 1)
     }
@@ -400,10 +404,10 @@ import WebKit
                 try require(try files.allSatisfy { try Data(contentsOf: $0) == Data("Vane download fixture\n".utf8) },
                             "real WKDownload writes complete bytes without replacing the earlier file")
 
+                try await batterySaverCheck(base: base, profile: profile)
                 try await multiWindow(base: base)
                 try swipeRenderCheck()
                 try await profileHopCheck(base: base)
-                try await batterySaverCheck(base: base, profile: profile)
 
                 await clean()
                 print("PASS browsercheck: \(assertions) real-WebKit assertions")
@@ -468,6 +472,17 @@ import WebKit
             try require(!saver.isActive && Previews.shared.current != nil,
                         "turning saving Off immediately restores hover previews")
             pip.pictureInPicture = false
+            let pressureVictim = makeTab(profile: profile)
+            try await load(pressureVictim, "\(base)/a", title: "Fixture A")
+            store.tabs.append(pressureVictim)
+            store.current = active.id
+            Suspension.relieve(critical: true)
+            try await wait("pressure releases an unprotected page") { pressureVictim.suspended }
+            // The pressure pass must protect the same real draft as the idle pass.
+            try await Task.sleep(for: .milliseconds(100))
+            try require(!draft.suspended, "critical memory pressure preserves unfinished forms")
+            let pressureInput = try await js(draft, "document.getElementById('query').value")
+            try require(pressureInput as? String == "keep my draft", "pressure retains draft contents")
         }
 
         private func swipeRenderCheck() throws {
@@ -1056,7 +1071,7 @@ import WebKit
             first.switchTo(space: destination)
             try require(first.tabs.contains { $0.currentURL == movedURL },
                         "entering a shared stashed Space includes tabs moved into it on disk")
-            try require(staleDestinationPage.web.navigationDelegate == nil,
+            try require(staleDestinationPage.existingWeb == nil,
                         "replacing stale shared stashes tears down pages no window holds")
             let anotherURL = URL(string: "\(base)/moved-again")!
             let another = second.newBlankTab(focus: false)
@@ -1361,8 +1376,9 @@ import WebKit
             secondStore.renamingFolder = nil
             secondStore.current = secondTab.id
 
-            try await wait("second profile shows its traffic lights") {
-                window.standardWindowButton(.closeButton)?.isHidden == false
+            // Sidebar visibility belongs to this window across profiles (PR #319).
+            try await wait("second profile preserves the window's hidden traffic lights") {
+                window.standardWindowButton(.closeButton)?.isHidden == true
             }
             let windowsBeforeLibrary = TabStore.all.filter { $0.window != nil }.count
             try require(Library.show(firstSpace, from: secondStore) === firstStore
@@ -1455,12 +1471,12 @@ import WebKit
                 window.standardWindowButton(.closeButton)?.isHidden == true
             }
             _ = Windows.switchTo(profile: first)
-            try await wait("returning profile restores its visible traffic lights") {
-                window.standardWindowButton(.closeButton)?.isHidden == false
+            try await wait("returning profile preserves the window's hidden traffic lights") {
+                window.standardWindowButton(.closeButton)?.isHidden == true
             }
             try require(VaneWindow.lightKinds.allSatisfy {
-                window.standardWindowButton($0)?.isHidden == false
-            }, "a cached profile restores visible window controls after a hidden sidebar")
+                window.standardWindowButton($0)?.isHidden == true
+            }, "a cached profile keeps window controls hidden with the window's sidebar")
             secondStore.sidebarShown = true
             renameSpace(secondSpace, in: firstStore)
             try require(secondStore.window === window && secondStore.renamingSpace == secondSpace.id,
@@ -1658,7 +1674,7 @@ import WebKit
                         "closing a hopped window removes both of its profile stores")
             window.contentView = nil
             window.delegate = nil
-            // tearDown() replaces each closed page with a fresh unloaded WKWebView. Release
+            // tearDown() releases each closed page. Release
             // those fixture tabs before the separate cleanup process unregisters the stores.
             firstStore.tabs.removeAll()
             secondStore.tabs.removeAll()

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 import uuid
 
 TEAM_ID = "T7X84HN3W3"
@@ -63,6 +64,28 @@ def executable_in(app, parser):
     return executable
 
 
+
+def run_fixture(command, environment, app, timeout):
+    with subprocess.Popen(command, env=environment) as process:
+        started = subprocess.check_output(
+            ["ps", "-p", str(process.pid), "-o", "lstart="], text=True).strip()
+        print(f"TEST PROCESS bundle={app} pid={process.pid} start={started} launched={datetime.now().isoformat()}", flush=True)
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # The unreaped child PID cannot be reused; target only this owned process.
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            print(f"TEST PROCESS terminated pid={process.pid}", flush=True)
+            raise
+        print(f"TEST PROCESS exited pid={process.pid} code={code}", flush=True)
+        return code
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     root = Path(__file__).resolve().parents[1]
@@ -73,6 +96,7 @@ def main():
                         help="existing signed app bundle to execute without changing it")
     parser.add_argument("--distribution", action="store_true",
                         help="require Developer ID, notarization, and Gatekeeper checks")
+    parser.add_argument("--lifecycle", action="store_true", help="100 tab/window cycles, 200 parked rows, settling and idle CPU")
     options = parser.parse_args()
     if options.distribution and options.app is None:
         parser.error("--distribution requires --app")
@@ -126,20 +150,17 @@ def main():
         print(message + " Requires a graphical session.", flush=True)
         try:
             try:
-                result = subprocess.run([str(executable), "browsercheck"],
-                                        env=environment, timeout=75)
-                browser_code = result.returncode
+                command = [str(executable), "browsercheck"] + (["--lifecycle"] if options.lifecycle else [])
+                browser_code = run_fixture(command, environment, app, 620 if options.lifecycle else 75)
             except subprocess.TimeoutExpired:
-                print("FAIL: browser smoke process exceeded 75 seconds", file=sys.stderr)
+                print("FAIL: browser smoke process exceeded its deadline", file=sys.stderr)
                 browser_code = 1
 
             # WebKit's network process holds the named data store open throughout the
             # browsercheck invocation. Re-enter the same signed app after it exits to
             # unregister the isolated store and verify that WebKit no longer lists it.
             try:
-                cleanup = subprocess.run([str(executable), "browsercheck-cleanup"],
-                                         env=environment, timeout=20)
-                cleanup_code = cleanup.returncode
+                cleanup_code = run_fixture([str(executable), "browsercheck-cleanup"], environment, app, 20)
             except subprocess.TimeoutExpired:
                 print("FAIL: browser smoke cleanup exceeded 20 seconds", file=sys.stderr)
                 cleanup_code = 1

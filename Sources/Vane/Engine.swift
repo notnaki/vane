@@ -934,11 +934,13 @@ struct TitleReveal: Equatable, Sendable {
     /// Split out of `suspend()` for `tearDown()`, which has to let go whatever the state of
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
-    private func release(replacing: Bool = true) {
+    private func release() {
         FileUploads.cancel(tabID: id)
         SitePermissions.endDocument(tabID: id)
         certificateDestinationURL = nil
         certificateNavigation = nil
+        MediaState.shared.forget(id)
+        NativePiPHostBridge.unregister(id)
         guard let old = existingWeb else { return }
         titleSettleTask?.cancel()
         titleSettleTask = nil
@@ -967,34 +969,16 @@ struct TitleReveal: Equatable, Sendable {
         old.configuration.userContentController.removeScriptMessageHandler(forName: StatusBar.messageName)
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: PageFocus.messageName, contentWorld: PageFocus.world)
-        old.removeFromSuperview()      // SwiftUI should have done this already; belt and braces
-        // ponytail: `old` is never deallocated — it survives at a high retain count, so
-        // Tab.close() has to use `_close` SPI to give the process back. The retainer is
-        // still unidentified, but these have been TESTED AND RULED OUT, so do not spend
-        // the time again: a WKWebExtensionController on the configuration, a script message
-        // handler (removed or left in place), an injected user script, and window
-        // membership. A standalone WKWebView with each of those deallocates cleanly, so the
-        // retainer is something in the live app graph — SwiftUI's hosting of the
-        // NSViewRepresentable is the next place to look. The leak is an empty view with no
-        // page and no process, bounded per suspend, so it is a wart, not a regression.
+        if let host = old.superview as? WebHost { host.remove(old) }
+        else { old.removeFromSuperview() }
+        // Explicitly stop the WebKit page before dropping our final ownership edge.
         Tab.close(old)
-        if replacing {
-            existingWeb = nil
-        }
+        existingWeb = nil
     }
 
-    /// Shut the page down explicitly. Dropping the last Swift reference *ought* to be
-    /// enough, and in a standalone harness it is — but measured inside Vane the web view
-    /// stays alive at a retain count of 26 and its WebContent process with it, so
-    /// suspension reclaimed nothing at all. `-[WKWebView _close]` is what WebKit's own
-    /// clients call and it tears the process down immediately: 8 processes / 632 MB became
-    /// 2 processes / 144 MB in the same run where the plain release changed nothing.
-    ///
-    /// ponytail: SPI, respondsToSelector-guarded exactly like `_inspector` in Develop.swift.
-    /// If it ever disappears, `about:blank` still drops the page's memory and leaves a mostly
-    /// empty process behind, which is a worse suspension rather than a broken browser.
-    /// Ceiling: whatever is really holding the view is still holding it — this closes the
-    /// page, it does not fix the leak. Upgrade path is finding that reference.
+    /// Stop the page synchronously, including media and its WebContent process.
+    /// WebKit can release internal references asynchronously after our owners let go.
+    /// The guarded SPI preserves immediate suspension; about:blank remains its fallback.
     private static func close(_ web: WKWebView) {
         let sel = Selector(("_close"))
         if web.responds(to: sel) { _ = web.perform(sel) }
@@ -1039,9 +1023,8 @@ struct TitleReveal: Equatable, Sendable {
         easelSession?.liveItems.removeAll()
         easelObservation = nil
         if isPrivate { SitePermissions.forgetPrivate(tabID: id) }
-        release(replacing: false)
+        release()
         TabAudio.forget(id)
-        MediaState.shared.forget(id)
     }
 
     /// Come up already suspended, so restoring thirty tabs costs one WebContent process
@@ -1129,7 +1112,7 @@ struct TitleReveal: Equatable, Sendable {
         if(e.value&&e.value!==e.defaultValue)return true}\
         return !!document.querySelector('[contenteditable=true],[contenteditable=""]')})()
         """
-        return (try? await web.evaluateJavaScript(js)) as? Bool ?? false
+        return (try? await web.evaluateJavaScript(js)) as? Bool ?? true
     }
 
     /// `blocking: false` is for the one caller that is about to throw this configuration's
@@ -1602,15 +1585,15 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        // A queued message from a released document must not recreate its page or media state.
+        guard !tornDown, let currentWeb = existingWeb, m.webView === currentWeb else { return }
         if m.name == LinkContextWebView.messageName {
-            guard m.webView === existingWeb else { return }
             guard let linkView = existingWeb as? LinkContextWebView else { return }
             linkView.receiveContextLink(m.body)
             return
         }
         if m.name == TabAudio.messageName { TabAudio.handle(m.body, for: self); return }
         if m.name == MediaTray.messageName {
-            guard m.webView === web else { return }
             MediaState.shared.handle(m.body, for: self, from: m.frameInfo)
             return
         }
@@ -1627,7 +1610,6 @@ struct TitleReveal: Equatable, Sendable {
             return
         }
         if m.name == PictureInPicture.messageName {
-            guard m.webView === web else { return }
             // Not a mode: the frame this page's video is in, so the toggle can be aimed at it.
             if m.body as? String == "has-video" {
                 // A later ad/player announcement must not steal the video already detached
@@ -2014,7 +1996,7 @@ struct Stash {
     /// True while this store is behind another profile's in the same window.
     var isParked: Bool { parkedIn != nil }
     /// Every live store, oldest first — the parked ones included.
-    static var all: [TabStore] = []
+    static var all: [TabStore] = [] { didSet { Suspension.updateLifecycle() } }
 
     var profile: Profile {
         isPrivate ? .incognito
@@ -2046,7 +2028,6 @@ struct Stash {
             SharedTabs.synchronize(from: self)
             SharedTabs.refreshPresentation()
         }
-        Suspension.begin()        // idempotent; here so main.swift needs no wiring
         if session == nil, sharesTabs,
            let shared = SharedTabs.state(for: self, space: currentSpaceID) {
             tabs = SharedTabs.favourites(for: self) + shared.tabs

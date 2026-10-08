@@ -174,8 +174,20 @@ extension Prefs {
 
     private static var timer: Timer?
     private static var pressure: DispatchSourceMemoryPressure?
+    static var isRunning: Bool { timer != nil }
 
-    /// Idempotent, and called from `TabStore.init` so there is nothing to wire in main.swift.
+    /// Match the lifetime of the live tab stores, including floating and parked stores.
+    /// The app may stay open after its last window closes; it needs no sweep then.
+    static func updateLifecycle() {
+        if TabStore.all.isEmpty {
+            timer?.invalidate()
+            timer = nil
+            pressure?.cancel()
+            pressure = nil
+        } else { begin() }
+    }
+
+    /// Idempotent; restarted when another store opens.
     static func begin() {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: sweepInterval, repeats: true) { _ in
@@ -237,7 +249,9 @@ extension Prefs {
         for tab in allTabs {
             var f = facts(tab, now: now)
             guard shouldSuspend(f, after: limit) else { continue }
-            Task { @MainActor in
+            Task { @MainActor [weak tab] in
+                guard let tab, let web = tab.existingWeb else { return }
+                let pageURL = web.url
                 if tab.pictureInPicture {
                     f.playing = true          // detached and being watched; do not ask further
                 } else {
@@ -252,11 +266,13 @@ extension Prefs {
                     f.playing = await tab.isPlayingMedia() && !TabAudio.isMuted(tab)
                 }
                 f.hasInput = await tab.hasUnsubmittedInput()
+                guard tab.existingWeb === web, web.url == pageURL else { return }
                 // Re-read the cheap facts too: the awaits above gave the user time to click.
                 let fresh = facts(tab, now: .now)
                 let playing = f.playing, hasInput = f.hasInput
                 f = fresh
                 f.playing = playing || tab.pictureInPicture
+                    || (MediaState.shared.isPlaying(tab) && !TabAudio.isMuted(tab))
                 f.hasInput = hasInput
                 // Re-read the policy too: saving may have stopped during the WebKit awaits.
                 let currentLimit = BatterySaver.idleLimit(normal: Prefs.suspendAfter,
@@ -275,26 +291,22 @@ extension Prefs {
         let ordered = lru(eligible.map { (id: $0.id, lastActive: $0.lastActive) })
         let doomed = Set(victims(ordered, critical: critical))
         for tab in eligible where doomed.contains(tab.id) {
-            Task { @MainActor in
-                // Media still wins under pressure: a video that stops because memory got
-                // tight is a bug the user watches happen. Unsubmitted input is *not*
-                // re-checked — the alternative here is the kernel taking a whole process,
-                // which loses strictly more than a half-typed comment.
-                var f = facts(tab, now: .now)
-                if tab.pictureInPicture {
-                    f.playing = true          // detached and being watched; do not ask further
-                } else {
-                    // requestMediaPlaybackState reports .playing for a page-muted tab, so
-                    // without the mute check, muting a tab would make it permanently
-                    // unsuspendable — backwards. Everything that could still want a muted
-                    // tab is excluded earlier: selected in any window, pinned on a strip,
-                    // or detached into PiP. What is left is a muted video in a background
-                    // tab of a background window, untouched for the idle limit.
-                    // ponytail: interactionState restores scroll and history, not playback
-                    // position, so a resumed tab restarts its player.
-                    f.playing = await tab.isPlayingMedia() && !TabAudio.isMuted(tab)
-                }
-                if shouldSuspend(f, after: 0) { tab.suspend() }
+            Task { @MainActor [weak tab] in
+                guard let tab, let web = tab.existingWeb,
+                      shouldSuspend(facts(tab, now: .now), after: 0) else { return }
+                let pageURL = web.url
+                // Pressure changes the idle threshold, not media or draft protections.
+                let playing: Bool
+                if tab.pictureInPicture { playing = true }
+                else { playing = await tab.isPlayingMedia() && !TabAudio.isMuted(tab) }
+                let hasInput = await tab.hasUnsubmittedInput()
+                guard tab.existingWeb === web, web.url == pageURL else { return }
+                // Selection, loading and the preference may have changed during either await.
+                var fresh = facts(tab, now: .now)
+                fresh.playing = playing || tab.pictureInPicture
+                    || (MediaState.shared.isPlaying(tab) && !TabAudio.isMuted(tab))
+                fresh.hasInput = hasInput
+                if Prefs.suspendTabs, shouldSuspend(fresh, after: 0) { tab.suspend() }
             }
         }
     }

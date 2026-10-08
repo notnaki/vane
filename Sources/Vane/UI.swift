@@ -42,6 +42,9 @@ struct WebView: NSViewRepresentable {
         if mayMount { host.show(web, keeping: live) } else { host.removePage() }
         host.offscreen = offscreen
     }
+    static func dismantleNSView(_ host: WebHost, coordinator: ()) {
+        host.removePage()
+    }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: WebHost, context: Context) -> CGSize? {
         CGSize(width: proposal.width ?? nsView.frame.width,
                height: proposal.height ?? nsView.frame.height)
@@ -94,6 +97,15 @@ final class WebHost: NSView {
         }
         web = nil
         recent.removeAll()
+    }
+
+    /// Release both ownership edges immediately when a tab closes or suspends.
+    /// Removing only the subview leaves the page in `recent` until another render.
+    func remove(_ page: WKWebView) {
+        Inspector.hideAttached(to: page, in: self)
+        if page.superview === self { page.removeFromSuperview() }
+        recent.removeAll { $0 === page }
+        if web === page { web = nil }
     }
 
     /// Whether the page card is already holding this page — showing it, or keeping it hidden
