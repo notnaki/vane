@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CryptoKit
 
 /// A crash-recoverable app-bundle replacement. All paths written by a transaction are
 /// siblings of its target, so staging and the final rename stay on the same volume.
@@ -9,7 +10,9 @@ enum BundleReplacement {
     }
     enum Step {
         case beforeCopy, afterCopy, beforeStageSync, beforeJournal,
-             beforeJournalSync, beforeSwap, afterSwap
+             beforeJournalSync, beforeSwap, afterSwapBeforeSync, afterSwap,
+             afterLaunchJournal, beforeRollback, afterRollback,
+             afterHealthyJournal, beforeCleanup, afterCleanup
     }
     enum Launch { case unchanged, waitingForHealth, rolledBack, needsAttention }
 
@@ -23,6 +26,12 @@ enum BundleReplacement {
         var launchPID: Int32?
         var launchStart: UInt64?
         var launchDeadline: TimeInterval? = nil
+        // Optional only to decode transactions written by an older Vane. Those require
+        // independent bundle verification before they can be upgraded or recovered.
+        var targetPath: String? = nil
+        var volumeID: UInt64? = nil
+        var newDigest: String? = nil
+        var oldDigest: String? = nil
     }
 
     private static func journalURL(_ target: URL) -> URL {
@@ -59,7 +68,7 @@ enum BundleReplacement {
     private static func removeOrphanStages(_ target: URL) throws {
         // A live transaction owns its stage. Only unjournaled, generated names are ours
         // to discard; the lock also excludes another process while it is copying.
-        guard !FileManager.default.fileExists(atPath: journalURL(target).path) else { return }
+        guard !entryExists(journalURL(target)) else { return }
         for stage in orphanStages(target) { try FileManager.default.removeItem(at: stage) }
     }
 
@@ -71,10 +80,10 @@ enum BundleReplacement {
 
     private static func sync(_ url: URL, directory: Bool) throws {
         let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | (directory ? O_DIRECTORY : 0))
-        guard descriptor >= 0 else { throw Fault.filesystem }
+        guard descriptor >= 0 else { throw filesystemError(url) }
         defer { close(descriptor) }
         // F_FULLFSYNC requests that macOS flush the device cache as well as the file.
-        guard fcntl(descriptor, F_FULLFSYNC) == 0 else { throw Fault.filesystem }
+        guard fcntl(descriptor, F_FULLFSYNC) == 0 else { throw filesystemError(url) }
     }
 
     private static func syncTree(_ url: URL) throws {
@@ -125,13 +134,88 @@ enum BundleReplacement {
         return pidExists()
     }
 
+    /// Kernel vnode path follows an executable when its bundle is atomically exchanged.
+    /// argv/Bundle.main paths alone can still name the new copy under an old process.
+    static func executing(_ expected: URL) -> Bool {
+        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidpath(getpid(), &path, UInt32(path.count)) > 0 else { return false }
+        return URL(fileURLWithPath: String(cString: path)).resolvingSymlinksInPath()
+            == expected.resolvingSymlinksInPath()
+    }
+
+    private static func entryExists(_ url: URL) -> Bool {
+        var info = stat()
+        return lstat(url.path, &info) == 0
+    }
+
+    private static func metadata(_ url: URL, type: mode_t) -> stat? {
+        var value = stat()
+        guard lstat(url.path, &value) == 0, value.st_mode & mode_t(S_IFMT) == type else { return nil }
+        return value
+    }
+
     private static func fileID(_ url: URL) -> UInt64? {
-        (try? FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber]
-            as? NSNumber)?.uint64Value
+        metadata(url, type: mode_t(S_IFDIR)).map { UInt64($0.st_ino) }
+    }
+
+    /// A directory inode survives edits and partial recursive deletion. Snapshot all
+    /// bundle contents, permissions and link destinations, without following symlinks.
+    private static func digest(_ root: URL) throws -> String {
+        guard fileID(root) != nil else { throw Fault.invalidStage }
+        var hash = SHA256()
+        func field(_ value: String) {
+            let data = Data(value.utf8)
+            hash.update(data: Data("\(data.count):".utf8))
+            hash.update(data: data)
+        }
+        func visit(_ url: URL, relative: String) throws {
+            var info = stat()
+            guard lstat(url.path, &info) == 0 else { throw filesystemError(url) }
+            field(relative); field(String(info.st_mode))
+            switch info.st_mode & mode_t(S_IFMT) {
+            case mode_t(S_IFDIR):
+                for child in try FileManager.default.contentsOfDirectory(at: url,
+                        includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                    if relative.isEmpty, child.lastPathComponent == "Icon\r" { continue }
+                    try visit(child, relative: relative + "/" + child.lastPathComponent)
+                }
+            case mode_t(S_IFREG):
+                field(String(info.st_size))
+                let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW)
+                guard descriptor >= 0 else { throw filesystemError(url) }
+                let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+                defer { try? handle.close() }
+                while let data = try handle.read(upToCount: 1024 * 1024), !data.isEmpty {
+                    hash.update(data: data)
+                }
+            case mode_t(S_IFLNK):
+                field(try FileManager.default.destinationOfSymbolicLink(atPath: url.path))
+            default: throw Fault.invalidStage
+            }
+        }
+        try visit(root, relative: "")
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func filesystemError(_ url: URL) -> NSError {
+        NSError(domain: NSPOSIXErrorDomain, code: Int(errno),
+                userInfo: [NSFilePathErrorKey: url.path])
+    }
+
+    private static func intact(_ url: URL, _ expected: String?) -> Bool {
+        guard let expected else { return false }
+        return (try? digest(url)) == expected
+    }
+
+    private static func bound(_ journal: Journal, to target: URL) -> Bool {
+        journal.targetPath == target.standardizedFileURL.path
+            && journal.volumeID == metadata(target.deletingLastPathComponent(), type: mode_t(S_IFDIR)).map { UInt64($0.st_dev) }
+            && journal.newDigest != nil && (journal.oldID == nil || journal.oldDigest != nil || journal.state == .healthy)
     }
 
     private static func read(_ target: URL) -> Journal? {
-        guard let data = try? Data(contentsOf: journalURL(target)) else { return nil }
+        guard metadata(journalURL(target), type: mode_t(S_IFREG)) != nil,
+              let data = try? Data(contentsOf: journalURL(target)) else { return nil }
         return try? JSONDecoder().decode(Journal.self, from: data)
     }
 
@@ -147,8 +231,8 @@ enum BundleReplacement {
     }
 
     private static func withLock<T>(_ target: URL, _ body: () throws -> T) throws -> T {
-        let descriptor = open(lockURL(target).path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-        guard descriptor >= 0 else { throw Fault.filesystem }
+        let descriptor = open(lockURL(target).path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw filesystemError(lockURL(target)) }
         defer { close(descriptor) }
         guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw Fault.busy }
         defer { flock(descriptor, LOCK_UN) }
@@ -167,7 +251,7 @@ enum BundleReplacement {
             if errno == ENOTSUP || errno == EOPNOTSUPP || errno == EINVAL {
                 throw Fault.unsupportedSwap
             }
-            throw Fault.filesystem
+            throw filesystemError(first)
         }
     }
 
@@ -177,14 +261,14 @@ enum BundleReplacement {
         let result = stage.path.withCString { a in
             target.path.withCString { b in renamex_np(a, b, UInt32(RENAME_EXCL)) }
         }
-        guard result == 0 else { throw Fault.filesystem }
+        guard result == 0 else { throw filesystemError(target) }
     }
 
     /// The caller supplies the same signature check it used on the unpacked source. It is
     /// run again on the *copied* bundle before any installed bundle can move. The target
     /// policy is mandatory and runs under the transaction lock at both decision points.
     static func install(source: URL, at target: URL, keepPrevious: Bool,
-                        verify: (URL) -> Bool,
+                        verify: (URL) throws -> Bool,
                         mayReplaceTarget: (URL) -> Bool,
                         prepare: (URL) throws -> Void = { _ in },
                         fault: ((Step) -> Bool)? = nil,
@@ -199,13 +283,18 @@ enum BundleReplacement {
             // recovery and must not be overwritten by this process.
             if let pending = read(target), pending.state == .prepared,
                let priorStage = stageURL(target, pending),
-               fileID(target) == pending.oldID, fileID(priorStage) == pending.newID {
-                try fm.removeItem(at: priorStage)
+               bound(pending, to: target),
+               fileID(target) == pending.oldID, (fileID(priorStage) == pending.newID || !entryExists(priorStage)),
+               pending.oldID == nil || intact(target, pending.oldDigest) {
+                if entryExists(priorStage) { try fm.removeItem(at: priorStage) }
                 try fm.removeItem(at: journalURL(target))
             }
-            guard !fm.fileExists(atPath: journalURL(target).path) else { throw Fault.busy }
+            guard !entryExists(journalURL(target)) else { throw Fault.busy }
             try removeOrphanStages(target)
-            guard mayReplaceTarget(target) else { throw Fault.staleTarget }
+            guard target.standardizedFileURL == target.resolvingSymlinksInPath(),
+                  mayReplaceTarget(target) else { throw Fault.staleTarget }
+            let originalID = fileID(target)
+            let originalDigest = originalID == nil ? nil : try digest(target)
             let stage = target.deletingLastPathComponent().appendingPathComponent(
                 ".\(target.lastPathComponent).vane-stage-\(UUID().uuidString)")
             var committed = false
@@ -219,17 +308,21 @@ enum BundleReplacement {
             if fault?(.beforeCopy) == true { throw Fault.injected }
             try fm.copyItem(at: source, to: stage)
             if fault?(.afterCopy) == true { throw Fault.injected }
-            guard verify(stage), let newID = fileID(stage) else { throw Fault.invalidStage }
+            guard try verify(stage), let newID = fileID(stage) else { throw Fault.invalidStage }
             // Installer preparation happens on the final, verified copy while the
             // transaction lock is held and before any journal or swap is committed.
             try prepare(stage)
             if fault?(.beforeStageSync) == true { throw Fault.injected }
             try syncTree(stage)
             try sync(target.deletingLastPathComponent(), directory: true)
-            let oldID = fileID(target)
-            let journal = Journal(stageName: stage.lastPathComponent, newID: newID,
+            let oldID = originalID
+            var journal = Journal(stageName: stage.lastPathComponent, newID: newID,
                                   oldID: oldID, keepPrevious: keepPrevious, state: .prepared,
                                   launchPID: nil, launchStart: nil)
+            journal.targetPath = target.standardizedFileURL.path
+            journal.volumeID = metadata(target.deletingLastPathComponent(), type: mode_t(S_IFDIR)).map { UInt64($0.st_dev) }
+            journal.newDigest = try digest(stage)
+            journal.oldDigest = originalDigest
             if fault?(.beforeJournal) == true { throw Fault.injected }
             journalWritten = true
             try write(journal, for: target, durable: false)
@@ -238,12 +331,15 @@ enum BundleReplacement {
             if fault?(.beforeSwap) == true { throw Fault.injected }
             // Another Vane installer cannot mutate this target while we hold the lock.
             // Also refuse an external change that happened while staging the copy.
-            guard fileID(target) == oldID, mayReplaceTarget(target) else {
+            guard fileID(target) == oldID, mayReplaceTarget(target),
+                  oldID == nil || intact(target, originalDigest),
+                  intact(stage, journal.newDigest), try verify(stage) else {
                 throw Fault.staleTarget
             }
             if oldID != nil { try swapOperation(target, stage) }
             else { try moveIntoEmptyTarget(stage, target) }
             committed = true
+            if fault?(.afterSwapBeforeSync) == true { throw Fault.injected }
             try sync(target.deletingLastPathComponent(), directory: true)
             if fault?(.afterSwap) == true { throw Fault.injected }
         }
@@ -253,81 +349,168 @@ enum BundleReplacement {
     /// A second attempt to start a replacement that never reached a healthy launch swaps
     /// the old bundle back, then asks the caller to relaunch that restored bundle.
     static func beginLaunch(at target: URL,
-                            processAlive: (Int32, UInt64?, TimeInterval?) -> Bool = sameProcess) -> Launch {
-        guard FileManager.default.fileExists(atPath: journalURL(target).path) else {
+                            processAlive: (Int32, UInt64?, TimeInterval?) -> Bool = sameProcess,
+                            verifyRecovery: ((URL) -> Bool)? = nil,
+                            verifyPrevious: ((URL) -> Bool)? = nil,
+                            expectedExecutable: URL? = nil,
+                            fault: ((Step) -> Bool)? = nil) -> Launch {
+        guard entryExists(journalURL(target)) else {
             if !orphanStages(target).isEmpty {
                 _ = try? withLock(target) { try removeOrphanStages(target) }
             }
             return .unchanged
         }
-        return (try? withLock(target) {
+        do { return try withLock(target) {
             let fm = FileManager.default
-            guard var journal = read(target), let stage = stageURL(target, journal) else {
+            guard target.standardizedFileURL == target.resolvingSymlinksInPath(),
+                  var journal = read(target), let stage = stageURL(target, journal),
+                  expectedExecutable.map(executing) != false else {
                 return Launch.needsAttention
             }
             let targetID = fileID(target), stageID = fileID(stage)
+            let previousVerifier = verifyPrevious ?? verifyRecovery
+            if !bound(journal, to: target) {
+                // A legacy journal has no content snapshot. Only independently verified
+                // bundles can authorize migration; malformed/current records fail closed.
+                guard journal.targetPath == nil, journal.volumeID == nil,
+                      journal.newDigest == nil, journal.oldDigest == nil,
+                      let verifyRecovery else { return Launch.needsAttention }
+                if targetID == journal.oldID, previousVerifier?(target) == true,
+                   stageID == journal.newID || !entryExists(stage) {
+                    journal.oldDigest = try digest(target)
+                    journal.newDigest = stageID == nil ? "discarded" : try digest(stage)
+                } else if targetID == journal.newID {
+                    let newVerified = verifyRecovery(target)
+                    if journal.oldID != nil {
+                        if stageID == journal.oldID, previousVerifier?(stage) == true {
+                            journal.oldDigest = try digest(stage)
+                            if !newVerified { journal.state = .launching }
+                        } else if newVerified, journal.state == .healthy, !entryExists(stage), !journal.keepPrevious {
+                            // The durable healthy record precedes old-bundle deletion.
+                        } else if newVerified, journal.state == .healthy, journal.keepPrevious,
+                                  fileID(backupURL(stage)) == journal.oldID, previousVerifier?(backupURL(stage)) == true {
+                            journal.oldDigest = try digest(backupURL(stage))
+                        } else { return Launch.needsAttention }
+                    } else if entryExists(stage) || !newVerified { return Launch.needsAttention }
+                    journal.newDigest = newVerified ? try digest(target) : "rejected"
+                } else { return Launch.needsAttention }
+                journal.targetPath = target.standardizedFileURL.path
+                journal.volumeID = metadata(target.deletingLastPathComponent(), type: mode_t(S_IFDIR)).map { UInt64($0.st_dev) }
+                try write(journal, for: target)
+            }
             if targetID == journal.oldID,
-               stageID == journal.newID || stageID == nil {
+               stageID == journal.newID || !entryExists(stage),
+               journal.oldID == nil || intact(target, journal.oldDigest) {
                 // The app crashed before the rename; the original installation is intact.
-                if stageID != nil { try? fm.removeItem(at: stage) }
-                try? fm.removeItem(at: journalURL(target))
+                if stageID != nil { try fm.removeItem(at: stage) }
+                try fm.removeItem(at: journalURL(target))
+                try sync(target.deletingLastPathComponent(), directory: true)
                 return .unchanged
             }
-            if journal.state == .healthy, targetID == journal.newID {
+            if journal.state == .healthy, targetID == journal.newID,
+               intact(target, journal.newDigest), verifyRecovery?(target) != false {
                 // Cleanup may have removed the old bundle and crashed before deleting the
                 // journal. Missing stage is valid only in this already-healthy state.
                 if let stageID, journal.oldID != stageID { return .needsAttention }
-                finish(journal, stage: stage, target: target)
+                finish(journal, stage: stage, target: target, fault: fault)
                 return .unchanged
             }
             guard targetID == journal.newID,
-                  journal.oldID == nil || stageID == journal.oldID else {
+                  journal.oldID == nil ? !entryExists(stage) : stageID == journal.oldID else {
                 return .needsAttention
             }
-            if journal.state == .launching, journal.oldID != nil {
+            if journal.oldID != nil, journal.state == .launching || !intact(target, journal.newDigest) || verifyRecovery?(target) == false {
                 if let pid = journal.launchPID,
                    processAlive(pid, journal.launchStart, journal.launchDeadline) {
                     // Another copy is still starting. Its health decision owns this
                     // transaction; a second launch must not roll it back underneath it.
                     return .needsAttention
                 }
-                do { try swap(target, stage) } catch { return .needsAttention }
-                guard (try? sync(target.deletingLastPathComponent(), directory: true)) != nil
-                else { return .needsAttention }
+                guard intact(stage, journal.oldDigest), previousVerifier?(stage) != false else { return .needsAttention }
+                if fault?(.beforeRollback) == true { throw Fault.injected }
+                try swap(target, stage)
+                if fault?(.afterRollback) == true { throw Fault.injected }
+                try sync(target.deletingLastPathComponent(), directory: true)
                 // Only the staged failed version is removed. The restored old app is now
                 // at the original target path and can be opened by the caller.
-                try? fm.removeItem(at: stage)
-                try? fm.removeItem(at: journalURL(target))
+                try fm.removeItem(at: stage)
+                try fm.removeItem(at: journalURL(target))
+                try sync(target.deletingLastPathComponent(), directory: true)
                 return .rolledBack
             }
+            guard intact(target, journal.newDigest), verifyRecovery?(target) != false else { return .needsAttention }
             journal.state = .launching
             journal.launchPID = getpid()
             journal.launchStart = processStart(getpid())
             journal.launchDeadline = Date().timeIntervalSince1970 + fallbackLease
-            guard (try? write(journal, for: target)) != nil else { return .needsAttention }
+            try write(journal, for: target)
+            if fault?(.afterLaunchJournal) == true { throw Fault.injected }
             return .waitingForHealth
-        }) ?? .needsAttention
+        } } catch {
+            NSLog("[vane] update recovery at %@ failed: %@", target.path, String(describing: error))
+            return .needsAttention
+        }
+    }
+
+    static func awaitingBootstrap(at target: URL) -> Bool {
+        guard let journal = read(target) else { return false }
+        return bound(journal, to: target) && journal.state == .prepared && fileID(target) == journal.newID
+    }
+
+    /// The detached relaunch helper calls this only after proving no application remains
+    /// at this destination. A replacement that died before browser bootstrap never wrote
+    /// a launching journal, so normal next-launch recovery cannot run inside it.
+    static func restoreUnlaunched(at target: URL, verifyPrevious: (URL) -> Bool,
+                                  fault: ((Step) -> Bool)? = nil) throws -> Launch {
+        guard entryExists(journalURL(target)) else { return .unchanged }
+        return try withLock(target) {
+            guard let journal = read(target), let stage = stageURL(target, journal),
+                  target.standardizedFileURL == target.resolvingSymlinksInPath(),
+                  bound(journal, to: target) else { return .needsAttention }
+            // A process that reached bootstrap owns its own health/rollback decision.
+            guard journal.state == .prepared else { return .unchanged }
+            guard fileID(target) == journal.newID, let oldID = journal.oldID,
+                  fileID(stage) == oldID, intact(stage, journal.oldDigest),
+                  verifyPrevious(stage) else { return .needsAttention }
+            if fault?(.beforeRollback) == true { throw Fault.injected }
+            try swap(target, stage)
+            if fault?(.afterRollback) == true { throw Fault.injected }
+            try sync(target.deletingLastPathComponent(), directory: true)
+            try FileManager.default.removeItem(at: stage)
+            try FileManager.default.removeItem(at: journalURL(target))
+            try sync(target.deletingLastPathComponent(), directory: true)
+            return .rolledBack
+        }
     }
 
     /// Called after AppKit has entered its run loop. A previous copy is retained until
     /// this point; a relocation leaves it on disk for the user, while an update removes it.
-    static func markHealthy(at target: URL) {
-        guard FileManager.default.fileExists(atPath: journalURL(target).path) else { return }
+    static func markHealthy(at target: URL, verifyRecovery: ((URL) -> Bool)? = nil,
+                            verifyPrevious: ((URL) -> Bool)? = nil,
+                            expectedExecutable: URL? = nil, fault: ((Step) -> Bool)? = nil) {
+        guard entryExists(journalURL(target)) else { return }
         _ = try? withLock(target) {
             guard var journal = read(target), let stage = stageURL(target, journal),
+                  bound(journal, to: target),
+                  target.standardizedFileURL == target.resolvingSymlinksInPath(),
+                  intact(target, journal.newDigest), verifyRecovery?(target) != false,
+                  expectedExecutable.map(executing) != false,
                   journal.state == .launching, journal.launchPID == getpid(),
                   journal.launchStart == processStart(getpid()),
                   fileID(target) == journal.newID,
-                  journal.oldID == nil || fileID(stage) == journal.oldID else { return }
+                  journal.oldID == nil || (fileID(stage) == journal.oldID && intact(stage, journal.oldDigest) && (verifyPrevious ?? verifyRecovery)?(stage) != false) else { return }
             journal.state = .healthy
             try write(journal, for: target)
-            finish(journal, stage: stage, target: target)
+            if fault?(.afterHealthyJournal) == true { throw Fault.injected }
+            finish(journal, stage: stage, target: target, fault: fault)
         }
     }
 
-    private static func finish(_ journal: Journal, stage: URL, target: URL) {
+    private static func finish(_ journal: Journal, stage: URL, target: URL,
+                               fault: ((Step) -> Bool)? = nil) {
         let fm = FileManager.default
         let parent = target.deletingLastPathComponent()
+        if fault?(.beforeCleanup) == true { return }
         if journal.keepPrevious, let oldID = journal.oldID {
             let backup = backupURL(stage)
             if fileID(stage) == oldID {
@@ -340,6 +523,7 @@ enum BundleReplacement {
             do { try fm.removeItem(at: stage) } catch { return }
         }
         guard (try? sync(parent, directory: true)) != nil else { return }
+        if fault?(.afterCleanup) == true { return }
         try? fm.removeItem(at: journalURL(target))
         try? sync(parent, directory: true)
     }
@@ -401,13 +585,13 @@ enum BundleReplacement {
             markHealthy(at: target)
             results.append(("the updating process cannot mark its own replacement healthy",
                             stages(target).count == 1
-                                && fm.fileExists(atPath: journalURL(target).path)))
+                                && entryExists(journalURL(target))))
             results.append(("first launch keeps the previous app until healthy",
                             beginLaunch(at: target) == .waitingForHealth
                                 && stages(target).count == 1))
             markHealthy(at: target)
             results.append(("healthy update removes only its own previous copy",
-                            stages(target).isEmpty && !fm.fileExists(atPath: journalURL(target).path)
+                            stages(target).isEmpty && !entryExists(journalURL(target))
                                 && label(target) == "new"))
         } catch { results.append(("normal replacement fixture", false)) }
 
@@ -425,7 +609,7 @@ enum BundleReplacement {
                 } catch { /* expected */ }
                 results.append(("\(name) failure preserves the installed app and cleans staging",
                                 label(target) == "old" && stages(target).isEmpty
-                                    && !fm.fileExists(atPath: journalURL(target).path)))
+                                    && !entryExists(journalURL(target))))
             } catch { results.append(("\(name) fixture", false)) }
         }
 
@@ -437,7 +621,7 @@ enum BundleReplacement {
             } catch { /* expected */ }
             results.append(("unsupported atomic swap refuses the update safely",
                             label(target) == "old" && stages(target).isEmpty
-                                && !fm.fileExists(atPath: journalURL(target).path)))
+                                && !entryExists(journalURL(target))))
         } catch { results.append(("unsupported-volume fixture", false)) }
 
         do {
@@ -448,7 +632,7 @@ enum BundleReplacement {
             } catch { /* expected verification failure */ }
             results.append(("a failed check of the copied bundle leaves the old app in place",
                             label(target) == "old" && stages(target).isEmpty
-                                && !fm.fileExists(atPath: journalURL(target).path)))
+                                && !entryExists(journalURL(target))))
         } catch { results.append(("invalid-copied-bundle fixture", false)) }
 
         do {
@@ -468,7 +652,7 @@ enum BundleReplacement {
             results.append(("older installer rejects a newer target under the lock",
                             preflightAllowed && rejected && label(target) == "3"
                                 && stages(target).isEmpty
-                                && !fm.fileExists(atPath: journalURL(target).path)))
+                                && !entryExists(journalURL(target))))
         } catch { results.append(("newer-installer-won fixture", false)) }
 
         do {
@@ -494,7 +678,7 @@ enum BundleReplacement {
             results.append(("target version is rechecked immediately before swap",
                             checks == 2 && rejected && label(target) == "3"
                                 && stages(target).isEmpty
-                                && !fm.fileExists(atPath: journalURL(target).path)))
+                                && !entryExists(journalURL(target))))
         } catch { results.append(("target-changed-during-stage fixture", false)) }
 
         do {
@@ -524,14 +708,18 @@ enum BundleReplacement {
                 ".\(target.lastPathComponent).vane-stage-\(UUID().uuidString)")
             try fm.copyItem(at: source, to: stage)
             guard let stagedID = fileID(stage) else { throw Fault.filesystem }
-            let journal = Journal(stageName: stage.lastPathComponent, newID: stagedID,
+            var journal = Journal(stageName: stage.lastPathComponent, newID: stagedID,
                                   oldID: fileID(target), keepPrevious: false, state: .prepared,
                                   launchPID: nil, launchStart: nil)
+            journal.targetPath = target.standardizedFileURL.path
+            journal.volumeID = metadata(target.deletingLastPathComponent(), type: mode_t(S_IFDIR)).map { UInt64($0.st_dev) }
+            journal.newDigest = try digest(stage)
+            journal.oldDigest = try digest(target)
             try write(journal, for: target)
             results.append(("startup cleans an interrupted pre-swap transaction",
                             beginLaunch(at: target) == .unchanged && label(target) == "old"
                                 && stages(target).isEmpty
-                                && !fm.fileExists(atPath: journalURL(target).path)))
+                                && !entryExists(journalURL(target))))
         } catch { results.append(("interrupted-before-swap fixture", false)) }
 
         do {
@@ -540,9 +728,14 @@ enum BundleReplacement {
                 ".\(target.lastPathComponent).vane-stage-\(UUID().uuidString)")
             try fm.copyItem(at: source, to: stage)
             guard let stagedID = fileID(stage) else { throw Fault.filesystem }
-            try write(Journal(stageName: stage.lastPathComponent, newID: stagedID,
-                              oldID: fileID(target), keepPrevious: false,
-                              state: .prepared, launchPID: nil, launchStart: nil), for: target)
+            var journal = Journal(stageName: stage.lastPathComponent, newID: stagedID,
+                                  oldID: fileID(target), keepPrevious: false,
+                                  state: .prepared, launchPID: nil, launchStart: nil)
+            journal.targetPath = target.standardizedFileURL.path
+            journal.volumeID = metadata(target.deletingLastPathComponent(), type: mode_t(S_IFDIR)).map { UInt64($0.st_dev) }
+            journal.newDigest = try digest(stage)
+            journal.oldDigest = try digest(target)
+            try write(journal, for: target)
             try fixtureInstall(source: source, at: target, keepPrevious: false, verify: verify)
             results.append(("a reopened source retries after an interrupted pre-swap copy",
                             label(target) == "new" && stages(target).count == 1
@@ -618,7 +811,7 @@ enum BundleReplacement {
             try fm.removeItem(at: stage)
             results.append(("startup finishes cleanup interrupted after deleting the backup",
                             beginLaunch(at: target) == .unchanged && label(target) == "new"
-                                && !fm.fileExists(atPath: journalURL(target).path)))
+                                && !entryExists(journalURL(target))))
         } catch { results.append(("interrupted-cleanup fixture", false)) }
 
         do {
@@ -646,7 +839,7 @@ enum BundleReplacement {
                             beginLaunch(at: target) == .unchanged && label(target) == "new"
                                 && stages(target).isEmpty && backups(target).count == 1
                                 && label(backups(target)[0]) == "old"
-                                && !fm.fileExists(atPath: journalURL(target).path)))
+                                && !entryExists(journalURL(target))))
         } catch { results.append(("relocation-cleanup fixture", false)) }
 
         do {
@@ -657,7 +850,7 @@ enum BundleReplacement {
             results.append(("first install uses an exclusive rename and completes cleanly",
                             first == .waitingForHealth && label(target) == "new"
                                 && stages(target).isEmpty
-                                && !fm.fileExists(atPath: journalURL(target).path)))
+                                && !entryExists(journalURL(target))))
         } catch { results.append(("empty-destination fixture", false)) }
 
         return results

@@ -717,6 +717,9 @@ python3 scripts/test-release-workflow.py
 python3 scripts/test-default-browser-prompt.py
 ./scripts/test-build-dmg.sh
 bash scripts/test-update-installer.sh Vane.app --unsigned
+scripts/test-updater-recovery.sh
+python3 scripts/test-updater-transport.py
+scripts/test-updater-relaunch.sh
 ```
 
 For focused password validation on a logged-in macOS desktop:
@@ -828,6 +831,27 @@ those services are available:
 ```sh
 ./Vane.app/Contents/MacOS/Vane selfcheck
 ```
+
+Updater failure checks use disposable directories and child processes. The headless
+recovery suite kills processes at transaction boundaries, verifies retained contents,
+and exercises stale records, retries, rollback and cleanup. The loopback transport
+suite probes actual URLSession cancellation and interrupted/truncated HTTP responses;
+its host is simulated and never bypasses the production GitHub trust policy.
+
+For real signed/notarized input, pass an unchanged release app to
+`scripts/test-update-installer.sh`. Developer ID rejection fixtures can be created with
+`SIGN_ID=… scripts/make-updater-rejection-fixtures.sh /path/to/release/Vane.app /path/to/new-fixture-directory`,
+then tested with `scripts/test-update-installer.sh /path/to/release/Vane.app --fixtures /path/to/new-fixture-directory`.
+These deliberately unnotarized copies check identity, version, native architecture,
+signature diagnostics and actual Gatekeeper rejection. Never use them as a release.
+
+After coordinating a graphical test slot, native recovery can be checked with
+`python3 scripts/test-updater-native.py --app /path/to/signed-new/Vane.app --previous /path/to/unchanged-old/Vane.app --evidence /path/to/evidence`.
+Add `--bootstrap-failure` with `SIGN_ID` to cover a signed executable that exits
+before updater startup, plus failed opens with stale or malformed journals. The driver
+uses Vane’s sandbox entitlements, disposable bundles under Downloads, isolated data
+and tracked process cleanup. It simulates notarization for the local candidate at the transaction boundary;
+actual distribution verification remains the separate installer/release-candidate check.
 
 To verify an *unchanged, notarized* release ZIP on a graphical test machine:
 

@@ -27,7 +27,7 @@ swift build -c "$CONF" >/dev/null
 echo ">> building update installer..."
 INSTALLER_BIN=".build/$CONF/VaneUpdateInstaller"
 xcrun swiftc -O Sources/Vane/BundleReplacement.swift Sources/Vane/UpdateVersion.swift Sources/Vane/UpdateInstaller.swift \
-  Sources/UpdateInstaller/UpdateInstallation.swift Sources/UpdateInstaller/InstallerService.swift \
+  Sources/UpdateInstaller/UpdateInstallation.swift Sources/UpdateInstaller/InstallerService.swift Sources/UpdateInstaller/InstallerRelaunch.swift Sources/Vane/UpdateRelaunch.swift \
   Sources/UpdateInstaller/main.swift -o "$INSTALLER_BIN"
 
 echo ">> building icon persistence service..."

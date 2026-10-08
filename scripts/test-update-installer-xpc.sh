@@ -2,9 +2,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 APP="${1:-Vane.app}"
+APP="$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")"
 : "${SIGN_ID:?Set SIGN_ID to the Vane Developer ID signing identity}"
 WORK=$(mktemp -d "$HOME/Downloads/vane-installer-xpc.XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+cleanup() {
+  python3 scripts/run-updater-test-client.py "$WORK" --cleanup
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+mkdir -p "$WORK/source"
+cp -R "$APP" "$WORK/source/Vane.app"
+CLIENT_SOURCE="$WORK/source/Vane.app"
 FIXTURE="$WORK/Installer Check.app"
 mkdir -p "$FIXTURE/Contents/MacOS" "$FIXTURE/Contents/XPCServices"
 cp -R "$APP/Contents/XPCServices/io.github.notnaki.vane.UpdateInstaller.xpc" "$FIXTURE/Contents/XPCServices/"
@@ -21,11 +29,13 @@ cat > "$FIXTURE/Contents/Info.plist" <<'PLIST'
 PLIST
 codesign --force --options runtime --timestamp --entitlements Vane.entitlements --sign "$SIGN_ID" "$FIXTURE"
 # Direct execution avoids registering the fixture as the user's browser in LaunchServices.
-"$FIXTURE/Contents/MacOS/Check" /Applications/Vane.app
+python3 scripts/run-updater-test-client.py "$WORK" -- "$FIXTURE/Contents/MacOS/Check" "$CLIENT_SOURCE"
 # An unrelated signed caller must fail XPC authentication before receiving a policy reply.
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.github.notnaki.vane.installer-check' "$FIXTURE/Contents/Info.plist"
 codesign --force --options runtime --timestamp --entitlements Vane.entitlements --sign "$SIGN_ID" "$FIXTURE"
-"$FIXTURE/Contents/MacOS/Check" /Applications/Vane.app --unauthorized
+python3 scripts/run-updater-test-client.py "$WORK" -- "$FIXTURE/Contents/MacOS/Check" "$CLIENT_SOURCE" --unauthorized
+
+python3 scripts/run-updater-test-client.py "$WORK" --cleanup
 
 # Exercise successful installation through the same service and engine, with only the
 # allowed Applications directory injected as an isolated fixture directory. This is a
@@ -46,5 +56,5 @@ xcrun swiftc -O Sources/Vane/BundleReplacement.swift Sources/Vane/UpdateVersion.
 codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$SERVICE"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.github.notnaki.vane' "$FIXTURE/Contents/Info.plist"
 codesign --force --options runtime --timestamp --entitlements Vane.entitlements --sign "$SIGN_ID" "$FIXTURE"
-"$FIXTURE/Contents/MacOS/Check" /Applications/Vane.app "$DESTINATION/Vane.app" --install
+python3 scripts/run-updater-test-client.py "$WORK" -- "$FIXTURE/Contents/MacOS/Check" "$CLIENT_SOURCE" "$DESTINATION/Vane.app" --install
 codesign --verify --deep --strict "$DESTINATION/Vane.app"
