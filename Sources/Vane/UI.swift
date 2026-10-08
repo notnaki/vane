@@ -1282,6 +1282,7 @@ private struct PillBody: View {
                 Button("Site Controls") { showingSiteControls = true }
                 if tab.readerAvailable || Reader.isOn(tab) {
                     Button(Reader.isOn(tab) ? "Exit Reader" : "Enter Reader") { Reader.toggle(tab) }
+                    ReaderPreferencesMenu(tab: tab)
                 }
             }
             if let zoom, let tab {

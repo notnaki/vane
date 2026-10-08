@@ -5,6 +5,33 @@ import SwiftUI
 @testable import vane
 
 @MainActor final class EaselTests: XCTestCase {
+    func testCaptureImportPreservesNativePixelsRatherThanCanvasThumbnail() throws {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 3600, pixelsHigh: 1800,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        bitmap.size = NSSize(width: 1800, height: 900)
+        let image = NSImage(size: bitmap.size); image.addRepresentation(bitmap)
+        let item = try EaselWindow.imageItem(image, source: "https://capture.test/article")
+        let saved = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(item.image)))
+        XCTAssertEqual(saved.pixelsWide, 3600); XCTAssertEqual(saved.pixelsHigh, 1800)
+        XCTAssertEqual(item.width, 520); XCTAssertEqual(item.source, "https://capture.test/article")
+    }
+    func testAnnotationUsesExistingObjectsAndPreservesCaptureAcrossUndoAndReload() throws {
+        let repository = repository(); let session = EaselSession(repository); session.create()
+        let image = try imageItem(); XCTAssertTrue(session.add(image)); session.toggleLive(image.id)
+        XCTAssertTrue(session.prepareAnnotation(image.id)); XCTAssertFalse(session.liveItems.contains(image.id))
+        XCTAssertTrue(session.add(EaselItem(kind: .arrow, points: [EaselPoint(x: 5, y: 5), EaselPoint(x: 80, y: 60)], color: "red", x: image.x, y: image.y)))
+        let id = try XCTUnwrap(session.selected)
+        XCTAssertEqual(session.board?.items.first?.image, image.image)
+        session.undo(); XCTAssertEqual(session.board?.items.count, 1)
+        session.redo(); XCTAssertEqual(session.board?.items.count, 2)
+        let reopened = EaselStore(profileID: repository.profileID, directory: repository.directory)
+        XCTAssertEqual(reopened.board(id)?.items.first?.source, image.source)
+        XCTAssertEqual(reopened.board(id)?.items.first?.image, image.image)
+        XCTAssertEqual(reopened.board(id)?.items.last?.kind, .arrow)
+        let other = EaselStore(profileID: UUID(), directory: repository.directory)
+        XCTAssertNil(other.board(id)); XCTAssertFalse(EaselSession(other).prepareAnnotation(image.id))
+        XCTAssertFalse(session.prepareAnnotation(UUID()))
+    }
     func testLegacyTextSizeMatchesTheSelectedObjectControls() {
         XCTAssertEqual(EaselItem(kind: .note).textSize, 18)
         XCTAssertEqual(EaselItem(kind: .text).textSize, 28)

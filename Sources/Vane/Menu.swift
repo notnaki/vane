@@ -252,6 +252,20 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     return entry
 }
 
+@MainActor private func readerPreferencesItem() -> NSMenuItem {
+    let spacing = Reader.spacingChoices.map { title, value in
+        let entry = item(title, "") { Reader.setLineSpacing(value, in: Windows.current?.active); rebuild() }
+        entry.state = Reader.lineSpacing == value ? .on : .off
+        return entry
+    }
+    let widths = Reader.widthChoices.map { title, value in
+        let entry = item(title, "") { Reader.setReadingWidth(value, in: Windows.current?.active); rebuild() }
+        entry.state = Reader.readingWidth == value ? .on : .off
+        return entry
+    }
+    return menu("Reading Preferences", [menu("Line Spacing", spacing), menu("Reading Width", widths)])
+}
+
 /// Arc keeps passwords and per-site controls in Settings, not in the menu bar; Vane's live
 /// as submenus of the app menu so the bar stays Arc's ten menus wide.
 @MainActor private func passwordItems() -> [NSMenuItem] {
@@ -796,6 +810,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.biggerReaderText) { Reader.adjustFontSize(1, in: Windows.current?.active) },
         item(.smallerReaderText) { Reader.adjustFontSize(-1, in: Windows.current?.active) },
         readerTypefaceItem(),
+        readerPreferencesItem(),
         .separator(),
         // Arc files its developer tools under View; a top-level Develop menu is Safari's.
         menu("Developer", developItems()),

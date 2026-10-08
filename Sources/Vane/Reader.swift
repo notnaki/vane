@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import SwiftUI
 
 /// Which tabs are currently showing the stripped page. Reader state is per-tab — two tabs
 /// on two articles are independent — and lives here rather than as a flag on `Tab` so the
@@ -10,6 +11,7 @@ import WebKit
 @MainActor final class ReaderState: ObservableObject {
     static let shared = ReaderState()
     @Published fileprivate var tabs: Set<UUID> = []
+    @Published var preferenceRevision = 0
 }
 
 /// Reader mode: throw away the page's chrome and show the article.
@@ -28,6 +30,7 @@ import WebKit
 
     /// Cleared when the tab navigates anywhere, since the reader document goes with it.
     private static var watch: [UUID: NSKeyValueObservation] = [:]
+    private static var entering: Set<UUID> = []
 
     // MARK: - Preferences
 
@@ -48,6 +51,43 @@ import WebKit
         set { UserDefaults.vane.set(newValue, forKey: "readerSerif") }
     }
 
+    static var lineSpacing: Double {
+        get {
+            let value = UserDefaults.vane.object(forKey: "readerLineSpacing") as? Double ?? 1.65
+            return value.isFinite ? min(max(value, 1.35), 2.1) : 1.65
+        }
+        set { UserDefaults.vane.set(newValue.isFinite ? min(max(newValue, 1.35), 2.1) : 1.65, forKey: "readerLineSpacing") }
+    }
+
+    static var readingWidth: Int {
+        get { min(max(UserDefaults.vane.object(forKey: "readerWidth") as? Int ?? 68, 44), 90) }
+        set { UserDefaults.vane.set(min(max(newValue, 44), 90), forKey: "readerWidth") }
+    }
+
+    static let spacingChoices: [(String, Double)] = [("Compact", 1.4), ("Standard", 1.65), ("Relaxed", 1.9)]
+    static let widthChoices: [(String, Int)] = [("Narrow", 52), ("Standard", 68), ("Wide", 82)]
+
+    static func setLineSpacing(_ value: Double, in tab: Tab?) {
+        lineSpacing = value; applyPreferences(in: tab)
+    }
+
+    static func setReadingWidth(_ value: Int, in tab: Tab?) {
+        readingWidth = value; applyPreferences(in: tab)
+    }
+
+    /// Only trusted values reach the live document. Native controls share these setters.
+    static func applyPreferences(in tab: Tab?) {
+        ReaderState.shared.preferenceRevision += 1
+        guard let tab, isOn(tab) else { return }
+        tab.web.evaluateJavaScript("""
+            document.body.style.transition = '\(Motion.reduced ? "none" : "font-size 120ms ease-out, line-height 120ms ease-out, max-width 120ms ease-out")';
+            document.documentElement.style.setProperty('--r-size','\(fontSize)px');
+            document.documentElement.style.setProperty('--r-font',\(jsString(serif ? serifStack : sansStack)));
+            document.documentElement.style.setProperty('--r-spacing','\(lineSpacing)');
+            document.documentElement.style.setProperty('--r-width','\(readingWidth)ch');
+            """)
+    }
+
     static func clampSize(_ v: Int) -> Int { min(max(v, 13), 32) }
 
     private static let serifStack =
@@ -57,16 +97,12 @@ import WebKit
 
     static func adjustFontSize(_ delta: Int, in tab: Tab?) {
         fontSize = fontSize + delta
-        guard let tab, isOn(tab) else { return }
-        tab.web.evaluateJavaScript(
-            "document.documentElement.style.setProperty('--r-size','\(fontSize)px')")
+        applyPreferences(in: tab)
     }
 
     static func setSerif(_ on: Bool, in tab: Tab?) {
         serif = on
-        guard let tab, isOn(tab) else { return }
-        tab.web.evaluateJavaScript(
-            "document.documentElement.style.setProperty('--r-font',\(jsString(on ? serifStack : sansStack)))")
+        applyPreferences(in: tab)
     }
 
     // MARK: - Entry points
@@ -85,22 +121,28 @@ import WebKit
     static func toggle(_ tab: Tab) { isOn(tab) ? exit(tab) : enter(tab) }
 
     static func enter(_ tab: Tab) {
-        guard tab.easelID == nil, !isOn(tab) else { return }
+        guard tab.easelID == nil, !isOn(tab), let web = tab.existingWeb,
+              let source = web.url, !web.isLoading, entering.insert(tab.id).inserted else { return }
         let id = tab.id
         Task {
-            guard let e = await extract(from: tab.web), isEnough(words: e.words) else {
+            defer { entering.remove(id) }
+            guard web.url == source, !web.isLoading else { return }
+            guard let e = await extract(from: web), isEnough(words: e.words) else {
                 NSSound.beep()          // nothing to read here; say so rather than blank the page
                 return
             }
-            let doc = html(for: e, url: tab.web.url)
+            guard tab.existingWeb === web, web.url == source, !web.isLoading, !isOn(tab) else { return }
+            let doc = html(for: e, url: source)
             // Replacing documentElement.innerHTML is *not* a navigation, which is the whole
             // reason to do it this way: the back/forward list is never touched, so no
             // forward entries get truncated the way loadHTMLString or loadSimulatedRequest
             // would truncate them, and nothing lands in history. Fragment parsing with
             // <html> as the context element starts in "before head", so head/body parse.
-            _ = try? await tab.web.evaluateJavaScript(
-                "document.documentElement.innerHTML = \(jsString(doc));"
-                + "document.scrollingElement && (document.scrollingElement.scrollTop = 0);")
+            let replaced = try? await web.evaluateJavaScript(
+                "(() => { if (location.href !== \(jsString(source.absoluteString)) || document.readyState !== 'complete') return false;"
+                + "document.documentElement.innerHTML = \(jsString(doc));"
+                + "document.scrollingElement && (document.scrollingElement.scrollTop = 0); return true; })()")
+            guard replaced as? Bool == true, web.url == source else { return }
             ReaderState.shared.tabs.insert(id)
             // The reader document dies with any real navigation — a link the user clicked
             // inside it, a redirect, back/forward. Drop the flag when that happens.
@@ -201,7 +243,7 @@ import WebKit
         for n in nodes {
             if let t = n.x { out += t }
             if let kids = n.c { out += plainText(kids) }
-            if n.e == "p" || n.e == "br" || n.e == "li" { out += " " }
+            if ["p", "br", "li", "pre", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6"].contains(n.e ?? "") { out += " " }
         }
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -215,6 +257,7 @@ import WebKit
         "p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "code",
         "ul", "ol", "li", "figure", "figcaption", "img", "a", "em", "strong",
         "b", "i", "br", "hr", "sup", "sub", "dl", "dt", "dd",
+        "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption",
     ]
 
     /// Enough for element content and for a double-quoted attribute value.
@@ -302,6 +345,8 @@ import WebKit
           :root {
             color-scheme: light dark;
             --r-size: \(fontSize)px;
+            --r-spacing: \(lineSpacing);
+            --r-width: \(readingWidth)ch;
             --r-font: \(serif ? serifStack : sansStack);
             --bg: #fbfaf7; --fg: #1b1b1d; --dim: #6d6d73;
             --line: #e2e0d9; --link: #0a56c2; --code: #f1efe9;
@@ -314,9 +359,9 @@ import WebKit
           }
           html { background: var(--bg); }
           body {
-            margin: 0 auto; max-width: 68ch; padding: 4.5rem 1.5rem 9rem;
+            margin: 0 auto; max-width: var(--r-width); padding: 4.5rem 1.5rem 9rem;
             background: var(--bg); color: var(--fg);
-            font: var(--r-size)/1.65 var(--r-font);
+            font: var(--r-size)/var(--r-spacing) var(--r-font);
             -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
             overflow-wrap: break-word;
           }
@@ -344,6 +389,9 @@ import WebKit
           pre { background: var(--code); padding: .9em 1em; border-radius: 6px; overflow-x: auto; }
           code { background: var(--code); padding: .1em .3em; border-radius: 3px; }
           pre code { background: none; padding: 0; }
+          table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; margin: 1.6em 0; }
+          th, td { border: 1px solid var(--line); padding: .4em .65em; text-align: start; }
+          caption { text-align: start; color: var(--dim); }
           hr { border: 0; border-top: 1px solid var(--line); margin: 2.5em 0; }
         </style>
         </head>
@@ -351,7 +399,7 @@ import WebKit
         <header>
           <h1>\(esc(e.title))</h1>
           \(e.byline.isEmpty ? "" : "<p class=\"by\">\(esc(e.byline))</p>")
-          \(host.isEmpty ? "" : "<p class=\"src\">\(esc(host))</p>")
+          \(host.isEmpty ? "" : "<p class=\"src\"><a href=\"\(esc(resolve(url?.absoluteString ?? "", base: nil) ?? ""))\">\(esc(host))</a></p>")
         </header>
         <article>
         \(showLead ? "<img src=\"\(esc(lead!))\" alt=\"\">" : "")
@@ -377,9 +425,8 @@ import WebKit
     /// (halved, then thirded), penalise class and id names that read like furniture, then
     /// discount each candidate by its link density and take the winner's subtree.
     ///
-    /// ponytail deliberately skipped: Readability's sibling-append pass, so an article body
-    /// split across several equal siblings loses the tail; and <table>, because a table
-    /// worth reading and a table used for layout look identical from here.
+    /// Scored siblings preserve split stories; table headers/captions distinguish data
+    /// tables from legacy layout wrappers. Hidden content never votes or survives.
     ///
     /// `probe: true` runs the identical walk and hands back only `{words: n}`. That is all
     /// availability needs, and an article's node tree is a few hundred kilobytes of JSON to
@@ -392,10 +439,10 @@ import WebKit
       var GOOD = /article|body|content|entry|hentry|h-entry|main|page|post|text|blog|story|prose/i;
       var DROP = {SCRIPT:1,STYLE:1,NOSCRIPT:1,IFRAME:1,FORM:1,BUTTON:1,INPUT:1,SELECT:1,
                   TEXTAREA:1,SVG:1,CANVAS:1,VIDEO:1,AUDIO:1,NAV:1,ASIDE:1,FOOTER:1,HEADER:1,
-                  OBJECT:1,EMBED:1,TEMPLATE:1,LABEL:1,TABLE:1};
+                  OBJECT:1,EMBED:1,TEMPLATE:1,LABEL:1};
       var KEEP = {P:1,H1:1,H2:1,H3:1,H4:1,H5:1,H6:1,BLOCKQUOTE:1,PRE:1,CODE:1,UL:1,OL:1,LI:1,
                   FIGURE:1,FIGCAPTION:1,IMG:1,A:1,EM:1,STRONG:1,B:1,I:1,BR:1,HR:1,SUP:1,SUB:1,
-                  DL:1,DT:1,DD:1};
+                  DL:1,DT:1,DD:1,TABLE:1,THEAD:1,TBODY:1,TFOOT:1,TR:1,TH:1,TD:1,CAPTION:1};
 
       function txt(e) { return (e.textContent || '').replace(/\s+/g, ' ').trim(); }
       function sig(e) {
@@ -409,6 +456,26 @@ import WebKit
         return Math.min(l / t, 1);
       }
 
+      // A layout class can mention sidebars while containing the page's actual main.
+      // Semantic main's ancestors are layout, not furniture; its sidebars still drop.
+      var semanticMain = document.querySelector('main,[role="main"]');
+      function bad(e) { return BAD.test(sig(e)) && !(semanticMain && e.contains(semanticMain)); }
+      var visibility = new WeakMap();
+      function hidden(e) {
+        if (!e || e === document.documentElement) { return false; }
+        if (visibility.has(e)) { return visibility.get(e); }
+        var style = getComputedStyle(e);
+        var value = e.hidden || e.getAttribute('aria-hidden') === 'true'
+          || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse'
+          || hidden(e.parentElement);
+        visibility.set(e, value); return value;
+      }
+      function furniture(e) {
+        for (; e && e !== document.body; e = e.parentElement) {
+          if (DROP[e.tagName] || bad(e)) { return true; }
+        }
+        return false;
+      }
       var scores = new Map(), cands = [];
       function seed(e) {
         var b = 0, t = e.tagName;
@@ -418,7 +485,7 @@ import WebKit
         else if (t === 'BLOCKQUOTE' || t === 'PRE' || t === 'TD') { b += 3; }
         var g = sig(e);
         if (GOOD.test(g)) { b += 25; }
-        if (BAD.test(g)) { b -= 25; }
+        if (bad(e)) { b -= 25; }
         var role = e.getAttribute('role');
         if (role === 'navigation' || role === 'complementary' || role === 'banner') { b -= 40; }
         return b;
@@ -432,12 +499,15 @@ import WebKit
       // Only prose blocks seed the scores. Scoring <li> as well sounds harmless and is not:
       // on Wikipedia the reference list is hundreds of comma-heavy list items and it beats
       // the article outright. Lists still survive into the output, they just don't vote.
-      var blocks = document.body ? document.body.querySelectorAll('p, pre, blockquote') : [];
+      var blocks = document.body ? document.body.querySelectorAll('p, pre, blockquote, td, div') : [];
       for (var i = 0; i < blocks.length; i++) {
-        var t = txt(blocks[i]);
+        var block = blocks[i];
+        if (hidden(block) || furniture(block)) { continue; }
+        if ((block.tagName === 'DIV' || block.tagName === 'TD') && block.querySelector('p,pre,blockquote,div,table')) { continue; }
+        var t = txt(block);
         if (t.length < 25) { continue; }
         var s = 1 + (t.split(',').length - 1) + Math.min(t.length / 100, 3);
-        var p1 = blocks[i].parentElement;
+        var p1 = (block.tagName === 'TD' || block.tagName === 'DIV') ? block : block.parentElement;
         var p2 = p1 && p1.parentElement, p3 = p2 && p2.parentElement;
         bump(p1, s); bump(p2, s / 2); bump(p3, s / 3);
       }
@@ -451,14 +521,14 @@ import WebKit
       if (!best) { return JSON.stringify({ nodes: [] }); }
 
       var BLOCKY = 'p,div,ul,ol,blockquote,pre,figure,h1,h2,h3,h4,h5,h6,table';
-      function ser(n) {
+      function ser(n, preformatted) {
         if (n.nodeType === 3) {
-          var v = n.nodeValue.replace(/\s+/g, ' ');
+          var v = preformatted ? n.nodeValue : n.nodeValue.replace(/\s+/g, ' ');
           return /\S/.test(v) ? { x: v } : null;
         }
         if (n.nodeType !== 1) { return null; }
         var tag = n.tagName;
-        if (DROP[tag]) { return null; }
+        if (DROP[tag] || hidden(n)) { return null; }
         if (tag === 'IMG') {
           var src = n.getAttribute('data-src') || n.getAttribute('src') || '';
           if (!src) {
@@ -467,20 +537,28 @@ import WebKit
           }
           // A loaded image narrower than 100px is a spacer, an icon or a tracking pixel.
           if (!src || (n.naturalWidth && n.naturalWidth < 100)) { return null; }
+          try { src = new URL(src, document.baseURI).href; } catch (_) { return null; }
           return { e: 'img', a: { src: src, alt: n.getAttribute('alt') || '' } };
         }
         if (tag === 'BR' || tag === 'HR') { return { e: tag.toLowerCase() }; }
         // Furniture nested inside the article body: share rails, related-story boxes.
-        if (n !== best && BAD.test(sig(n)) && txt(n).length < 300) { return null; }
+        if (n !== best && bad(n)) { return null; }
         var kids = [];
         for (var i = 0; i < n.childNodes.length; i++) {
-          var k = ser(n.childNodes[i]);
+          var k = ser(n.childNodes[i], preformatted || tag === 'PRE');
           if (k) { kids.push(k); }
         }
         if (!kids.length) { return null; }
         if (tag === 'A') {
           var href = n.getAttribute('href') || '';
-          return href ? { e: 'a', a: { href: href }, c: kids } : { e: '', c: kids };
+          return href ? { e: 'a', a: { href: n.href }, c: kids } : { e: '', c: kids };
+        }
+        // Layout tables retain prose without pretending their grid is article data.
+        if (/^(TABLE|THEAD|TBODY|TFOOT|TR|TD)$/.test(tag)) {
+          var table = tag === 'TABLE' ? n : n.closest('table');
+          if (table && !table.querySelector('th,caption')) {
+            return { e: tag === 'TD' ? 'p' : '', c: kids };
+          }
         }
         if (KEEP[tag]) { return { e: tag.toLowerCase(), c: kids }; }
         // Sites that mark paragraphs up as divs would otherwise run together as one blob.
@@ -505,8 +583,24 @@ import WebKit
                || (who ? txt(who).slice(0, 140) : '');
       var lead = meta('meta[property="og:image"]') || meta('meta[name="twitter:image"]');
 
-      var root = ser(best);
-      var nodes = !root ? [] : (root.e === '' && root.c) ? root.c : [root];
+      // Equal sibling sections commonly split a story. Add only scored prose siblings,
+      // never all of main/body (which would bring back recommendations and navigation).
+      var roots = [best];
+      if (best.parentElement && best.tagName !== 'TD') {
+        var siblings = best.parentElement.children;
+        roots = [];
+        for (var i = 0; i < siblings.length; i++) {
+          var sibling = siblings[i];
+          var score = (scores.get(sibling) || 0) * (1 - density(sibling));
+          if (sibling === best || (!hidden(sibling) && !furniture(sibling)
+              && score >= Math.max(10, bestScore * 0.2))) { roots.push(sibling); }
+        }
+      }
+      var nodes = [];
+      roots.forEach(function(e) {
+        var root = ser(e, false);
+        if (root) { nodes = nodes.concat(root.e === '' && root.c ? root.c : [root]); }
+      });
       if (PROBE) {
         // `Reader.plainText` and `build`, in the two places they are allowed to be: the
         // same separators, the same headline de-duplication, the same whitespace split.
@@ -516,7 +610,7 @@ import WebKit
             var n = ns[i];
             if (n.x) { out += n.x; }
             if (n.c) { out += flat(n.c); }
-            if (n.e === 'p' || n.e === 'br' || n.e === 'li') { out += ' '; }
+            if (['p','br','li','pre','td','th','h1','h2','h3','h4','h5','h6'].indexOf(n.e) >= 0) { out += ' '; }
           }
           return out.trim();
         }
@@ -643,7 +737,7 @@ import WebKit
 
             // the document
             ("the document adapts to dark mode", doc.contains("prefers-color-scheme: dark")),
-            ("the reading column has a measure", doc.contains("max-width: 68ch")),
+            ("the reading column has a measure", doc.contains("max-width: var(--r-width)")),
             ("the byline is shown when there is one", doc.contains("Ada Lovelace")),
             ("no byline means no empty byline line", !anon.contains("class=\"by\"")),
             ("the source host is shown", doc.contains(">example.com<")),
@@ -655,5 +749,25 @@ import WebKit
 
     private static func decode(_ json: String) -> Payload {
         (try? JSONDecoder().decode(Payload.self, from: Data(json.utf8))) ?? Payload()
+    }
+}
+
+/// Native menus keep controls outside the untrusted page and reuse the existing setters.
+struct ReaderPreferencesMenu: View {
+    let tab: Tab
+    @ObservedObject private var state = ReaderState.shared
+    var body: some View {
+        Menu("Reading Preferences") {
+            Button("Larger Text (\(Reader.fontSize) pt)") { Reader.adjustFontSize(1, in: tab) }
+                .disabled(Reader.fontSize >= 32)
+            Button("Smaller Text") { Reader.adjustFontSize(-1, in: tab) }.disabled(Reader.fontSize <= 13)
+            Toggle("Serif Typeface", isOn: Binding(get: { Reader.serif }, set: { Reader.setSerif($0, in: tab) }))
+            Picker("Line Spacing", selection: Binding(get: { Reader.lineSpacing }, set: { Reader.setLineSpacing($0, in: tab) })) {
+                ForEach(Reader.spacingChoices, id: \.1) { Text($0.0).tag($0.1) }
+            }
+            Picker("Reading Width", selection: Binding(get: { Reader.readingWidth }, set: { Reader.setReadingWidth($0, in: tab) })) {
+                ForEach(Reader.widthChoices, id: \.1) { Text($0.0).tag($0.1) }
+            }
+        }
     }
 }
