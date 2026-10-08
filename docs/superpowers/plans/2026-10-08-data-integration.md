@@ -15,3 +15,9 @@
 7. Refresh verified documentation/TODOs, open the PR, independently review its current diff, fix findings, wait for passing required CI, squash-merge, verify the merge, and quit all owned test instances.
 
 **Review focus:** interrupted restore after nested article writes; settings restored alongside profile files; missing referenced Easels/images; private data reaching persistent repositories; damaged settings retained as recoverable evidence.
+
+**Verified progress:** Steps 1–6 completed; evidence and native automation limits
+are recorded in `docs/DATA-INTEGRATION.md`. The combined native restore/restart
+used `8a271be` after smoothness merged as `b92602e`. All task-owned test processes
+were stopped and disposable storage removed. Step 7's current-head reviews,
+required CI and squash-merge are tracked in PR #339.

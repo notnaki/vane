@@ -58,12 +58,56 @@ swift test --filter 'DataIntegrationTests|Backup.*Tests|ProfilePersistenceTests|
 197 tests passed, one opt-in public Reader-page test skipped, zero failures.
 Pure selfcheck passed. The corrupt-Boost regressions were observed failing before
 the fix and passing afterward.
+The initial PR CI also passed its full 829-test suite (13 skips) and packaging checks.
+After incorporating the smoothness merge `b92602e`, the focused 197-test run,
+pure selfcheck and debug app build passed again. CI on combined head `8a271be`
+passed 874 tests (22 skips), zero failures, and packaging checks.
 
 ## Native combined verification
 
-Pending the smoothness change's merge and the coordinated native UI window.
-Automated cold repository reopens exercise the launch transaction, but are not a
-claim that the native Restore and Restart flow has been checked on the combined build.
+The initial native pass used a unique test bundle and a synthetic fixture under
+an isolated data-directory override. The saved article opened with its original
+content and 27-point Reader setting; the Easel showed its original note and image.
+Native export produced a populated backup. Selecting corrupt input displayed
+“The backup file could not be read” without restarting; all eight template,
+Easel, article and image files still matched the exported bytes. The test app
+was quit and its process exit verified before releasing the shared UI slot.
+
+The sandboxed XPC file picker was inaccessible to computer-use. Export/restore
+UI automation therefore uses a dedicated unsandboxed debug copy with the same
+isolated data-directory override and a private settings suite. This is not a
+claim that sandboxed file-picker interaction has been verified; CI separately
+checks the packaged sandbox entitlements.
+
+The final native pass used combined head `8a271be`, including the smoothness
+merge `b92602e`, in the explicitly released foreground slot. With the app stopped,
+the two profiles' templates and articles were deleted, Easel notes/titles were
+changed, Boost tables were emptied, and Reader settings were replaced. The
+native restore preview showed the original two profiles and their inventory.
+Restore and Restart exited the old process and launched a replacement retaining
+the isolated storage override.
+
+Before further UI interaction, all eight template/Easel/article/image files
+matched the native export byte for byte; Reader and both profile Boost settings
+matched exactly. Both profiles' Space identities, URLs, custom tab names,
+membership and 30/70 split weights matched. After another confirmed quit and
+explicit launch, these comparisons passed again. Unnamed tab labels normalize
+from null to an empty string on save; their displayed meaning stays unchanged.
+
+The restored Personal template preview showed two tabs, one 30/70 split and
+one excluded local Easel. Both profiles' Easels displayed their own original note
+and embedded image. After stopping the fixture HTTP server, each profile's saved
+article displayed its distinct original offline body; Personal remained unread
+and Research read. Research's Reader menu reported the restored 27-point setting.
+Boost records were compared through persisted settings and automated tests;
+native editor interaction was not verified because computer-use activation of
+the Boost row opened the Website Data window instead. No data-clear action was
+performed, and this observation does not establish the cause of the mismatch.
+
+All tracked app instances and the fixture server exited. The task app bundle,
+fixtures, settings suites, WebKit and cache directories were removed. macOS
+retained only the test container's protected metadata plist; its Data directory
+was removed. The regular app and other tasks' instances were left running.
 
 ## Remaining limits
 
@@ -76,4 +120,5 @@ claim that the native Restore and Restart flow has been checked on the combined 
   hardening remains open.
 - macOS 26, migration to another Mac, authenticated image downloads, external
   extension folders, real accounts and physical storage failure need separate
-  environments. No user's regular Vane data or accounts were used.
+  environments. All validation fixtures were synthetic; the regular app's data
+  and preferences were not modified.
