@@ -121,6 +121,26 @@ import XCTest
         XCTAssertTrue(model.entries.isEmpty)
     }
 
+    func testSlowVerificationAllowsRefreshAndIgnoresItsLateSnapshot() async throws {
+        let backend = WebsiteDataFixture()
+        backend.entries = [.init(name: "example.com", types: [WKWebsiteDataTypeCookies])]
+        let model = WebsiteDataModel(profileID: UUID(), backend: backend, timeout: .milliseconds(20))
+        model.refresh()
+        model.select("example.com")
+        backend.deferFetch = true
+        model.clearSelection()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(model.isBusy, "Removal finished; only the verification read timed out")
+        XCTAssertNotNil(model.error)
+        XCTAssertNil(model.message)
+        backend.deferFetch = false
+        model.refresh()
+        XCTAssertTrue(model.entries.isEmpty)
+        XCTAssertNil(model.error)
+        backend.completeFetch([.init(name: "stale.invalid", types: [WKWebsiteDataTypeCookies])])
+        XCTAssertTrue(model.entries.isEmpty, "The expired verification read cannot replace a fresh snapshot")
+    }
+
     func testPublicUsageAndUnknownCategoriesAreHonest() {
         let entry = WebsiteDataEntry(name: "example.com", types: ["FutureType"])
         XCTAssertNil(entry.diskUsage)
@@ -134,8 +154,14 @@ import XCTest
     var removalError: Error?
     var deferRemove = false
     var keepData = false
+    var deferFetch = false
+    private var pendingFetch: ((Result<[WebsiteDataEntry], Error>) -> Void)?
+    func completeFetch(_ entries: [WebsiteDataEntry]) {
+        let completion = pendingFetch; pendingFetch = nil; completion?(.success(entries))
+    }
     private var pending: (() -> Void)?
     func fetch(_ completion: @escaping (Result<[WebsiteDataEntry], Error>) -> Void) {
+        if deferFetch { pendingFetch = completion; return }
         if let fetchError { completion(.failure(fetchError)) }
         else { completion(.success(entries)) }
     }

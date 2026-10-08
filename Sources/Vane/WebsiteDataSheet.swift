@@ -14,7 +14,7 @@ struct WebsiteDataSheet: View {
          initialHost: String? = nil, isValid: (() -> Bool)? = nil, onClose: (() -> Void)? = nil) {
         let valid = isValid ?? { ProfileManager.shared.profiles.contains { $0.id == profileID } }
         self.init(model: WebsiteDataModel(profileID: profileID,
-            store: store ?? ProfileManager.dataStore(for: profileID), isValid: valid, initialHost: initialHost),
+            store: store ?? (valid() ? ProfileManager.dataStore(for: profileID) : .nonPersistent()), isValid: valid, initialHost: initialHost),
             profileName: profileName, isPrivate: profileID == Profile.incognito.id, onClose: onClose)
     }
 
@@ -30,7 +30,7 @@ struct WebsiteDataSheet: View {
             Text("Website Data").font(Look.heading)
             Text(isPrivate ? "Temporary data from this private tab. Saved profiles are not touched."
                  : "Stored by websites in “\(profileName)”. Other profiles are not touched.")
-                .font(Look.footnote).foregroundStyle(Look.inkQuiet)
+                .font(Look.footnote).foregroundStyle(Look.inkSecondary)
             HStack {
                 TextField("Search sites", text: $model.query)
                     .textFieldStyle(.roundedBorder).accessibilityLabel("Search stored website data")
@@ -43,14 +43,14 @@ struct WebsiteDataSheet: View {
             }
             .frame(maxHeight: .infinity)
             Text("Disk usage unavailable: WebKit’s public API does not report per-site sizes. Site entries may include subdomains.")
-                .font(Look.footnote).foregroundStyle(Look.inkQuiet)
+                .font(Look.footnote).foregroundStyle(Look.inkSecondary)
             if model.isBusy {
                 HStack { ProgressView().controlSize(.small); Text(model.activity).font(Look.footnote) }
             }
             if let error = model.error { Text(error).font(Look.footnote).foregroundStyle(.red) }
             if let message = model.message { Text(message).font(Look.footnote).foregroundStyle(Look.inkSecondary) }
             HStack {
-                if model.isBusy { Text("Operations continue if you close this view.").font(Look.footnote).foregroundStyle(Look.inkQuiet) }
+                if model.isBusy { Text("Operations continue if you close this view.").font(Look.footnote).foregroundStyle(Look.inkSecondary) }
                 Spacer()
                 Button("Done") { if let onClose { onClose() } else { dismiss() } }.keyboardShortcut(.cancelAction)
                 Button("Clear Selected Data…", role: .destructive) { confirming = true }
@@ -76,12 +76,12 @@ struct WebsiteDataSheet: View {
 
     private var siteList: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(model.filteredEntries.count) sites").font(Look.caption).foregroundStyle(Look.inkSecondary)
+            Text("\(model.filteredEntries.count) \(model.filteredEntries.count == 1 ? "site" : "sites")").font(Look.caption).foregroundStyle(Look.inkSecondary)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 3) {
                     if model.hasLoaded && model.filteredEntries.isEmpty {
                         Text(model.entries.isEmpty ? "No stored website data." : "No matching sites.")
-                            .font(Look.footnote).foregroundStyle(Look.inkQuiet).padding(10)
+                            .font(Look.footnote).foregroundStyle(Look.inkSecondary).padding(10)
                     }
                     ForEach(model.filteredEntries) { entry in
                         Button {
@@ -90,7 +90,7 @@ struct WebsiteDataSheet: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(entry.name).lineLimit(2).foregroundStyle(.primary)
                                 Text("\(entry.types.count) data categories · Usage unavailable")
-                                    .font(Look.footnote).foregroundStyle(Look.inkQuiet)
+                                    .font(Look.footnote).foregroundStyle(Look.inkSecondary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(10)
                             .background(model.selectedName == entry.name ? Look.accentSelected : .clear,
@@ -121,14 +121,14 @@ struct WebsiteDataSheet: View {
                             .disabled(model.isBusy)
                     }
                     Text(WebsiteDataCategory.effects(model.selectedTypes))
-                        .font(Look.footnote).foregroundStyle(Look.inkQuiet)
+                        .font(Look.footnote).foregroundStyle(Look.inkSecondary)
                     Text("Open pages can retain login state or recreate data. Close this site’s tabs before clearing, then reopen them when needed.")
-                        .font(Look.footnote).foregroundStyle(Look.inkQuiet)
+                        .font(Look.footnote).foregroundStyle(Look.inkSecondary)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
             Text("Select a site to inspect its stored data and choose what to clear.")
-                .font(Look.text).foregroundStyle(Look.inkQuiet).padding(.top, 30)
+                .font(Look.text).foregroundStyle(Look.inkSecondary).padding(.top, 30)
         }
     }
 }

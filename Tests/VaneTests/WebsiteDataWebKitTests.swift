@@ -14,12 +14,24 @@ import XCTest
 
     override func tearDown() async throws {
         for id in identifiers {
+            var fixture: WKWebsiteDataStore? = ProfileManager.dataStore(for: id)
+            await fixture!.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+            let remaining = await fixture!.dataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes())
+            XCTAssertTrue(remaining.isEmpty, "Fixture contents must be erased even if WebKit cannot unregister its store yet")
+            fixture = nil
             ProfileManager.releaseDataStore(for: id)
             let storeID = ProfileManager.dataStoreIdentifier(for: id, dataDirectory: Store.overrideDirectory)!
-            await withCheckedContinuation { continuation in
-                WKWebsiteDataStore.remove(forIdentifier: storeID) { _ in continuation.resume() }
+            let error: Error? = await withCheckedContinuation { continuation in
+                WKWebsiteDataStore.remove(forIdentifier: storeID) { continuation.resume(returning: $0) }
+            }
+            if let error {
+                let failure = error as NSError
+                XCTAssertEqual(failure.domain, "WKWebSiteDataStore")
+                XCTAssertEqual(failure.code, 1, "Unexpected fixture-unregister failure: \(error)")
+                print("Website-data fixture \(storeID): contents erased; WebKit still has the empty store in use.")
             }
         }
+        identifiers = []
     }
 
     private func store() -> (UUID, WKWebsiteDataStore) {

@@ -194,6 +194,7 @@ enum WebsiteDataCategory {
                 self.finish()
             case .success:
                 self.activity = "Checking remaining website data…"
+                self.watch(operation, removing: false, verifying: true)
                 self.backend.fetch { [weak self] result in
                     guard let self, self.token == operation else { return }
                     guard self.validate() else { self.finish(); return }
@@ -241,6 +242,11 @@ enum WebsiteDataCategory {
         error = nil
         message = nil
         self.activity = activity
+        watch(operation, removing: removing)
+        return operation
+    }
+
+    private func watch(_ operation: UUID, removing: Bool, verifying: Bool = false) {
         watchdog?.cancel()
         watchdog = Task { [weak self, timeout] in
             do { try await Task.sleep(for: timeout) } catch { return }
@@ -249,11 +255,12 @@ enum WebsiteDataCategory {
                 self.error = "WebKit is taking longer than expected. Clearing may still be running; its result has not been verified."
                 // A timeout does not cancel WebKit. Prevent overlapping destructive retries.
             } else {
-                self.error = "WebKit hasn’t returned website data. Refresh to try again."
+                self.error = verifying
+                    ? "Clearing finished, but WebKit hasn’t returned updated data. Refresh to verify the result."
+                    : "WebKit hasn’t returned website data. Refresh to try again."
                 self.finish() // Late read callbacks are ignored by the operation token.
             }
         }
-        return operation
     }
 
     private func finish() {
