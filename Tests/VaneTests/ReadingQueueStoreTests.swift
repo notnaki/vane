@@ -118,6 +118,24 @@ import XCTest
         XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
         XCTAssertTrue(repository.invalidated)
     }
+    func testRetryRemovesAbandonedFileAndLinkTrashWithoutFollowingLink() async throws {
+        let directory = root(), outside = root(), profile = ProfileManager.defaultID
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let sentinel = outside.appendingPathComponent("keep.txt")
+        try Data("outside stays".utf8).write(to: sentinel)
+        let stage = ReadingQueueFiles.root(in: directory).appendingPathComponent(".staging/" + profile.uuidString.lowercased())
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        let file = stage.appendingPathComponent(UUID().uuidString.lowercased()), link = stage.appendingPathComponent(UUID().uuidString.lowercased())
+        try Data("unfinished trash".utf8).write(to: file)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: sentinel)
+        let repository = try ReadingQueueStore(profileID: profile, directory: directory)
+        await repository.waitUntilReady()
+        XCTAssertNil(repository.error); XCTAssertEqual(repository.usage.pendingCleanupBytes, 0)
+        XCTAssertFalse(ReadingQueueFiles.exists(file)); XCTAssertFalse(ReadingQueueFiles.exists(link))
+        XCTAssertEqual(try Data(contentsOf: sentinel), Data("outside stays".utf8))
+        try await repository.publish(.init(article: makeReadingArticle(), images: [:]))
+        XCTAssertEqual(repository.articles.count, 1)
+    }
     func testProfileInvalidationDiscardsPreparedSaveBeforePublication() async throws {
         let directory = root(), profile = ProfileManager.defaultID
         let repository = try ReadingQueueStore.shared(profileID: profile, directory: directory)

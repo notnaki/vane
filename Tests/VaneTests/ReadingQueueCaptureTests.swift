@@ -13,6 +13,11 @@ actor HeldReadingImages: ReadingQueueImageLoading {
     func resume() { continuation?.resume(returning: .init()); continuation = nil }
 }
 
+actor CountingReadingImages: ReadingQueueImageLoading {
+    var calls = 0
+    func collect(urls: [URL]) async -> ReadingQueueImageResult { calls += 1; return .init() }
+}
+
 @MainActor final class ReadingQueueCaptureTests: XCTestCase {
     func testPrivateSaveHasNoRepositoryOrImageWork() async throws {
         TestEnvironment.prepare()
@@ -22,6 +27,34 @@ actor HeldReadingImages: ReadingQueueImageLoading {
         XCTAssertFalse(ReadingQueueCapture.canSave(tab: store.active, in: store))
         if let tab = store.active { await capture.save(tab: tab, in: store) }
         XCTAssertTrue(capture.capturing.isEmpty)
+    }
+    func testColdQueueReportsDuplicateAndPreservesSavedCopyWithoutImageWork() async throws {
+        TestEnvironment.prepare(); NSApplication.shared.setActivationPolicy(.prohibited)
+        let server = try CompatibilityServer(); defer { server.stop() }
+        server.pages["/article"] = "<title>Changed live title</title><article><p>" + String(repeating: "Readable live article words. ", count: 100) + "</p></article>"
+        try await compatibilityWait { server.port != nil }
+        let url = try server.url("/article"), store = TabStore(profileID: ProfileManager.defaultID)
+        store.newTab(url); let tab = try XCTUnwrap(store.active)
+        defer { store.tabs.forEach { $0.tearDown() }; TabStore.all.removeAll { $0 === store } }
+        try await compatibilityWait { !tab.web.isLoading && tab.web.url == url }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var article = makeReadingArticle(); article.sourceURL = url.absoluteString
+        article.title = "Original saved title"; article.isRead = true; article.capturedAt = Date(timeIntervalSince1970: 1_000)
+        let folder = ReadingQueueFiles.articleURL(profileID: article.profileID, articleID: article.id, in: root)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try ReadingArticleCodec.encode(article).write(to: folder.appendingPathComponent("article.json"))
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let repository = try ReadingQueueStore(profileID: article.profileID, directory: root, scanCheckpoint: { gate.wait() })
+        let loader = CountingReadingImages()
+        XCTAssertTrue(repository.loading)
+        var duplicate = false
+        let pending = Task { try await ReadingQueueCapture.capture(tab: tab, in: store, repository: repository, images: loader, onAlreadySaved: { duplicate = true }) }
+        await Task.yield(); gate.signal()
+        let saved = try await pending.value, calls = await loader.calls
+        XCTAssertTrue(duplicate); XCTAssertEqual(saved, article); XCTAssertEqual(calls, 0)
+        XCTAssertEqual(repository.articles.count, 1)
     }
     func testSameURLDocumentChangeCancelsPublication() async throws {
         TestEnvironment.prepare()

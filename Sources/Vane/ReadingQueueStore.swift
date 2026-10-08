@@ -141,7 +141,7 @@ private struct ReadingQueueScan: Sendable {
                 try ReadingQueueFiles.check(staging, directory: true)
                 for item in try FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil) {
                     try Task.checkCancellation()
-                    do { try ReadingQueueFiles.check(item, directory: true); try FileManager.default.removeItem(at: item) }
+                    do { try FileManager.default.removeItem(at: item) }
                     catch {
                         result.pendingBytes += (try? ReadingQueueFiles.diskBytes(item)) ?? 0
                         result.cleanupError = "Some unfinished files could not be removed. Choose Retry. \(error.localizedDescription)"

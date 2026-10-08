@@ -23,9 +23,9 @@ import WebKit
         defer { sources.remove(key); Motion.list { capturing.remove(tab.id) } }
         do {
             let repository = try ReadingQueueStore.shared(profileID: store.profileID, directory: Store.directory)
-            let existing = repository.articles.first { $0.sourceURL == tab.existingWeb?.url?.absoluteString }
-            let article = try await Self.capture(tab: tab, in: store, repository: repository, images: ReadingQueueImages())
-            let text = existing != nil ? "Already saved." : (article.missingImages > 0 ? "Article saved. Some images were unavailable." : "Article saved for offline reading.")
+            var alreadySaved = false
+            let article = try await Self.capture(tab: tab, in: store, repository: repository, images: ReadingQueueImages(), onAlreadySaved: { alreadySaved = true })
+            let text = alreadySaved ? "Already saved." : (article.missingImages > 0 ? "Article saved. Some images were unavailable." : "Article saved for offline reading.")
             Motion.list { messages[tab.id] = text }
             Toasts.show(text, action: ("Reading Queue", { Library.open(.readingQueue, in: store) }), in: store)
         } catch {
@@ -34,7 +34,7 @@ import WebKit
         }
     }
     static func capture(tab: Tab, in store: TabStore, repository: ReadingQueueStore,
-                        images: any ReadingQueueImageLoading) async throws -> ReadingArticle {
+                        images: any ReadingQueueImageLoading, onAlreadySaved: () -> Void = {}) async throws -> ReadingArticle {
         guard !store.isPrivate, !tab.isPrivate, repository.profileID != Profile.incognito.id else { throw ReadingQueueFailure.privateBrowsing }
         guard tab.profileID == store.profileID, repository.profileID == store.profileID,
               let web = tab.existingWeb, !web.isLoading,
@@ -48,7 +48,7 @@ import WebKit
         }
         await repository.waitUntilReady()
         try current()
-        if let existing = repository.articles.first(where: { $0.sourceURL == url.absoluteString }) { return existing }
+        if let existing = repository.articles.first(where: { $0.sourceURL == url.absoluteString }) { onAlreadySaved(); return existing }
         let extracted: Reader.Extraction?
         if let retained = Reader.savedExtraction(for: tab) { extracted = retained }
         else { extracted = await Reader.extract(from: web) }
@@ -92,7 +92,9 @@ import WebKit
             sourceURL: url.absoluteString, nodes: body)
         article.byline = extraction.byline
         article.resources = collected.resources; article.missingImages = collected.missingCount
-        return try await repository.publish(.init(article: article, images: collected.images), validity: current)
+        let saved = try await repository.publish(.init(article: article, images: collected.images), validity: current)
+        if saved.id != article.id { onAlreadySaved() }
+        return saved
     }
     private static func bodyImage(_ nodes: [ReadingArticle.Node]) -> Bool {
         nodes.contains { $0.e == "img" || bodyImage($0.c ?? []) }
