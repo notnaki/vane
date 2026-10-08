@@ -1362,7 +1362,7 @@ private struct PrivacyPane: View {
             SettingsSection("Site Permissions") {
                 SettingsCard {
                     if grants.isEmpty && httpExceptions.isEmpty {
-                        Footnote("No site has been given camera or microphone access, and no "
+                        Footnote("No camera, microphone, or location decisions are saved, and no "
                                  + "site has been allowed to load without encryption.")
                     }
                     ForEach(grants) { grant in
@@ -1389,9 +1389,9 @@ private struct PrivacyPane: View {
                                 .accessibilityLabel("Stop allowing \(host) without encryption")
                         }
                     }
-                    SettingsRow("Camera and microphone") {
+                    SettingsRow("Site permissions") {
                         Button("Reset Permissions…") {
-                            if confirm("Forget camera and microphone permissions for every site in this profile?",
+                            if confirm("Forget camera, microphone, and location permissions for every site in this profile?",
                                        "Reset") {
                                 SitePermissions.resetAll(profileID: profile.id)
                                 reload()

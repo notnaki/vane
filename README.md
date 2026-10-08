@@ -239,10 +239,21 @@ theme. It inherits no saved profile's Spaces, history, passwords, or extensions,
 its browsing data and download records are not restored after quitting.
 
 Camera and microphone requests open a sheet on the requesting window with **Allow Once**,
-**Always Allow**, and **Don’t Allow**. Allow Once lasts until the tab navigates or closes.
-Saved choices belong to the requesting origin and profile; private-tab choices stay in
-memory and disappear when that tab closes. Site Controls shows temporary grants and lets
-you return each device to Ask.
+**Always Allow**, and **Don’t Allow**. Builds made with Xcode 27 also offer location
+choices and a Location row on macOS 27. Allow Once belongs to the requesting document
+and expires when it navigates or closes. Embedded camera, microphone, and location
+requests fail closed because the public APIs do not identify their original document
+reliably. Saved choices belong to the requesting main frame’s exact origin and profile;
+private choices stay in memory in that private tab. Site Controls returns decisions to Ask or Block and stops
+camera/microphone capture for the affected device. Revoking location reloads pages
+using its decision; location watches end when reload completes. Cancelling the reload
+can leave existing watches alive until the document is replaced.
+
+These are Vane’s **site decisions**. macOS independently authorizes Vane to access
+camera, microphone, Location Services, and screen recording; Allow in Vane cannot
+override a macOS denial. Screen-sharing selection and permission remain managed by
+WebKit and macOS. Vane has no supported screen-sharing persistence or per-source
+revocation API. See [permission lifecycle and platform limits](docs/SITE-PERMISSIONS.md).
 
 Settings → Passwords lets you search by website and username, add, edit, reveal,
 copy, and delete saved logins. Add/edit forms can generate random passwords of
@@ -696,9 +707,12 @@ The autofill fixtures exercise real WebKit documents, controlled input events, d
 visibility, account continuity, embedded forms, stale chooser targets, and scoped
 Keychain reads. Keychain-dependent XCTest fixtures report a skip if storage is unavailable.
 
+For site-permission lifecycle fixtures and a fake display-capture check, see
+[Site permissions on macOS 27](docs/SITE-PERMISSIONS.md#validation-and-remaining-platform-coverage).
+
 `swift test` covers search typing and cancellation, link gestures and previews,
 Space switching and deletion, tab ordering, Battery Saver, media permission popups and
-grant lifetimes, Easels, page capture,
+grant lifetimes, requesting-frame ownership and synthetic capture revocation, Easels, page capture,
 and other browser UI behavior. Search fixtures include a large history database,
 keyboard selection, live history changes, and private windows. GitHub credential
 regressions exercise the real Live Folder response handler with an isolated
@@ -849,8 +863,10 @@ with `check-release-candidate.sh` before treating it as a distribution build.
   lists added from disk do not update on a schedule.
 - Data does not sync between Macs. Imports do not bring over browser cookies or
   signed-in sessions.
-- Location and screen-capture permission work and broader real-site permission lifecycle
-  verification remain deferred.
+- Location site decisions require a build with Xcode 27 and macOS 27. Screen-sharing
+  decisions remain WebKit/macOS-managed. Synthetic permission lifecycle checks do not
+  establish real-device authorization or native chooser behavior; see
+  [permission limits and validation](docs/SITE-PERMISSIONS.md).
 - Extensions load from unpacked MV2/MV3 folders. This does not guarantee Chrome
   extension compatibility. Installation requires permission review, and expanded
   manifest access requires another review before the extension loads.

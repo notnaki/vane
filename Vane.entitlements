@@ -14,10 +14,16 @@
   <key>com.apple.security.network.client</key><true/>
   <key>com.apple.security.network.server</key><true/>
 
-  <!-- getUserMedia. A hardened/sandboxed app is denied the device before any site prompt
-       is reached, so SitePermissions would ask and then fail. -->
+  <!-- Camera and microphone need resource eligibility in addition to Vane's site
+       decisions and the user's separate macOS authorization. -->
   <key>com.apple.security.device.camera</key><true/>
+  <key>com.apple.security.device.microphone</key><true/>
+  <!-- Retain audio-input for Hardened Runtime and older sandbox configurations. -->
   <key>com.apple.security.device.audio-input</key><true/>
+
+  <!-- WebKit geolocation needs sandbox access as well as the site decision. This
+       entitlement does not grant the user's separate Location Services authorization. -->
+  <key>com.apple.security.personal-information.location</key><true/>
 
   <!-- ⌘P on a page. -->
   <key>com.apple.security.print</key><true/>
@@ -95,9 +101,6 @@
          ad-hoc-signed build does not have. A sandboxed app reaches its OWN keychain items
          without it; the entitlement is only for sharing a group between apps. Add
          "$(AppIdentifierPrefix)io.github.notnaki.vane" the day a Developer ID exists.
-       * personal-information.location — Info.plist advertises geolocation but nothing in
-         the app implements it, so the entitlement would grant access to a feature that
-         does not exist.
        * files.user-selected.read-write, downloads read beyond ~/Downloads, home-relative
          exceptions for other browsers' profile folders (see BrowserImport in the report). -->
 </dict>

@@ -46,7 +46,7 @@ import XCTest
         return try XCTUnwrap(window.attachedSheet)
     }
 
-    private func answer(_ scope: SitePermissions.Scope, type: WKMediaCaptureType,
+    private func answer(_ scope: SitePermissions.Scope, type: SitePermissions.Kind,
                         tabID: UUID, response: NSApplication.ModalResponse) async throws -> WKPermissionDecision {
         let host = window()
         let task = Task { await SitePermissions.request(scope: scope, type: type, tabID: tabID,
@@ -57,7 +57,7 @@ import XCTest
     }
 
     func testWantsToUsePopupsNameExactOriginAndDevice() {
-        for (type, phrase) in [(WKMediaCaptureType.camera, "camera"), (.microphone, "microphone"),
+        for (type, phrase) in [(SitePermissions.Kind.camera, "camera"), (.microphone, "microphone"),
                                (.cameraAndMicrophone, "camera and microphone")] {
             let alert = SitePermissions.makePrompt(scope: scope(), type: type)
             XCTAssertEqual(alert.messageText, "“https://permission.example:8443” wants to use your \(phrase)")
@@ -278,5 +278,93 @@ import XCTest
         XCTAssertNil(SitePermissions.effective(scope: firstScope, type: .camera, tabID: firstID))
         XCTAssertEqual(SitePermissions.effective(scope: secondScope, type: .camera, tabID: secondID), true)
     }
+
+    func testRegularSiteChangesPreservePrivateOnceForMatchingProfileAndOrigin() async throws {
+        let id = tabID(), privateScope = scope(privateTab: id), regularScope = scope()
+        let grant = try await answer(privateScope, type: .camera, tabID: id, response: .alertFirstButtonReturn)
+        XCTAssertEqual(grant, .grant)
+        SitePermissions.set(scope: regularScope, type: .camera, answer: nil)
+        XCTAssertEqual(SitePermissions.effective(scope: privateScope, type: .camera, tabID: id), true)
+        SitePermissions.reset(scope: regularScope)
+        XCTAssertEqual(SitePermissions.effective(scope: privateScope, type: .camera, tabID: id), true)
+        SitePermissions.resetAll(profileID: profile)
+        XCTAssertNil(SitePermissions.effective(scope: privateScope, type: .camera, tabID: id))
+    }
+
+    func testInvalidOwnerCancelsPromptWithoutAUserResponse() async throws {
+        let host = window(), id = tabID(), s = scope()
+        var current = true
+        var result: WKPermissionDecision?
+        let task = Task { result = await SitePermissions.request(scope: s, type: .camera, tabID: id,
+                                                                 window: host, isCurrent: { current }) }
+        _ = try await waitForSheet(host)
+        current = false
+        let deadline = ContinuousClock.now + .seconds(2)
+        while result == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(result, .deny, "An invalid owner must cancel without waiting for a sheet response")
+        SitePermissions.endDocument(tabID: id)
+        await task.value
+        XCTAssertNil(SitePermissions.remembered(scope: s, type: .camera))
+    }
+
+
+    func testLocationDecisionDoesNotSplitCombinedMediaDecision() async throws {
+        guard SitePermissions.supportsLocation else { throw XCTSkip("Requires macOS 27 SDK and runtime") }
+        let id = tabID(), s = scope()
+        SitePermissions.remember(scope: s, type: .cameraAndMicrophone, allow: true)
+        let result = try await answer(s, type: .location, tabID: id, response: .alertFirstButtonReturn)
+        XCTAssertEqual(result, .grant)
+        XCTAssertEqual(SitePermissions.effective(scope: s, type: .location, tabID: id), true)
+        SitePermissions.set(scope: s, type: .location, answer: false, tabID: id)
+        XCTAssertEqual(SitePermissions.remembered(scope: s, type: .cameraAndMicrophone), true)
+        XCTAssertEqual(SitePermissions.effective(scope: s, type: .location, tabID: id), false)
+        SitePermissions.endDocument(tabID: id)
+        XCTAssertEqual(SitePermissions.effective(scope: s, type: .location), false)
+        SitePermissions.reset(scope: s)
+        XCTAssertNil(SitePermissions.effective(scope: s, type: .location))
+    }
+
+    func testPrivateLocationNeverPersistsAndExpiresWithPrivateTab() async throws {
+        guard SitePermissions.supportsLocation else { throw XCTSkip("Requires macOS 27 SDK and runtime") }
+        let id = tabID(), s = scope(privateTab: id)
+        _ = try await answer(s, type: .location, tabID: id, response: .alertSecondButtonReturn)
+        SitePermissions.endDocument(tabID: id)
+        XCTAssertEqual(SitePermissions.remembered(scope: s, type: .location), true)
+        XCTAssertTrue(SitePermissions.all(profileID: profile).isEmpty)
+        SitePermissions.forgetPrivate(tabID: id)
+        XCTAssertNil(SitePermissions.remembered(scope: s, type: .location))
+    }
+
+    func testRevocationDuringFinalDocumentValidationCannotSaveLateAllow() async throws {
+        let host = window(), id = tabID(), s = scope()
+        var validations = 0
+        var hold = false
+        let task = Task { await SitePermissions.request(scope: s, type: .camera, tabID: id,
+                                                       window: host, isCurrent: { true }, validate: {
+            validations += 1
+            while hold { try? await Task.sleep(for: .milliseconds(10)) }
+            return true
+        }) }
+        let sheet = try await waitForSheet(host)
+        hold = true
+        host.endSheet(sheet, returnCode: .alertSecondButtonReturn)
+        let deadline = ContinuousClock.now + .seconds(2)
+        while validations < 2, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertGreaterThanOrEqual(validations, 2)
+        SitePermissions.reset(scope: s)
+        hold = false
+        let result = await task.value
+        XCTAssertEqual(result, .deny)
+        XCTAssertNil(SitePermissions.remembered(scope: s, type: .camera))
+    }
+
+    func testAskRevokesOnceInEveryTabForThisOriginAndProfile() async throws {
+        let first = tabID(), second = tabID(), s = scope()
+        _ = try await answer(s, type: .camera, tabID: first, response: .alertFirstButtonReturn)
+        _ = try await answer(s, type: .camera, tabID: second, response: .alertFirstButtonReturn)
+        SitePermissions.set(scope: s, type: .camera, answer: nil, tabID: first)
+        XCTAssertNil(SitePermissions.effective(scope: s, type: .camera, tabID: second))
+    }
+
 
 }

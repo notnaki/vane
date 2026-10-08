@@ -5,10 +5,30 @@ import WebKit
     static let messageName = "vaneBoost"
 
     static func install(on controller: WKUserContentController) {
+        // A page-world marker lets queued user code reject a replacement document.
+        // Store it on Document, whose identity changes even if WebKit reuses a Window.
+        controller.addUserScript(WKUserScript(source: pageIdentity, injectionTime: .atDocumentStart,
+                                             forMainFrameOnly: true, in: .page))
         controller.addUserScript(WKUserScript(source: runtime, injectionTime: .atDocumentStart,
                                              forMainFrameOnly: true, in: world))
         controller.addUserScript(WKUserScript(source: "window.__vaneBoost?.post('loaded');", injectionTime: .atDocumentEnd,
                                              forMainFrameOnly: true, in: world))
+    }
+
+    static let pageIdentity = #"""
+    (() => {
+      if (!/^https?:$/.test(location.protocol)) return;
+      const token = [...crypto.getRandomValues(new Uint32Array(4))].map(n => n.toString(16).padStart(8, '0')).join('');
+      Object.defineProperty(document, '__vaneBoostPageToken', {value: token});
+    })();
+    """#
+
+    static func guardedScript(_ script: String) -> String {
+        """
+        if (location.origin !== __vaneOrigin || document.__vaneBoostPageToken !== __vaneToken) return 'Page changed. Reload and try again.';
+        \(script)
+        ;return 'Script applied.';
+        """
     }
 
     static let runtime = #"""

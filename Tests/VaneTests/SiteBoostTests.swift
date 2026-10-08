@@ -197,6 +197,91 @@ import XCTest
         XCTAssertEqual(result, "Script applied.")
     }
 
+    func testTimeOriginDriftKeepsLiveControlsOnTheSameDocument() async throws {
+        let tab = try await page()
+        // macOS 26 WebKit can move this getter by 1 ms without replacing the document.
+        let drift = "Object.defineProperty(performance, 'timeOrigin', {value: performance.timeOrigin + 1}); null;"
+        _ = try await visual(drift, tab: tab)
+        _ = try await tab.web.evaluateJavaScript(drift)
+        var boost = SiteBoost(); boost.textColor = "#123456"; boost.scriptEnabled = true
+        boost.script = "window.afterDrift = 1;"
+        SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        let result = await SiteBoosts.runScript(tab: tab)
+        XCTAssertEqual(result, "Script applied.")
+        let ran = try await tab.web.evaluateJavaScript("window.afterDrift") as? Int
+        XCTAssertEqual(ran, 1)
+        let color = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: tab) as? String
+        XCTAssertEqual(color, "rgb(18, 52, 86)")
+    }
+
+    func testQueuedScriptRejectsReplacementAtTheSameOrigin() async throws {
+        let tab = try await page()
+        let old = try XCTUnwrap(SiteBoosts.document(for: tab))
+        let token = try XCTUnwrap(old.pageToken)
+        try await load(tab, origin: "https://boost.test")
+        XCTAssertNotEqual(SiteBoosts.document(for: tab)?.pageToken, token)
+        let result: String? = await withCheckedContinuation { continuation in
+            tab.web.callAsyncJavaScript(SiteBoostScripts.guardedScript("window.staleBoost = 1;"),
+                arguments: ["__vaneOrigin": old.origin, "__vaneToken": token], in: nil, in: .page) { result in
+                continuation.resume(returning: (try? result.get()) as? String)
+            }
+        }
+        XCTAssertEqual(result, "Page changed. Reload and try again.")
+        let ran = try await tab.web.evaluateJavaScript("window.staleBoost")
+        XCTAssertNil(ran)
+    }
+
+    func testDisablingScriptWhileDocumentTokenIsCapturedPreventsExecution() async throws {
+        let tab = try await page()
+        let doc = try XCTUnwrap(SiteBoosts.document(for: tab))
+        var boost = SiteBoost(); boost.scriptEnabled = true; boost.script = "window.disabledDuringCapture = 1;"
+        SiteBoosts.set(boost, origin: doc.origin, tab: tab)
+        doc.pageToken = nil
+        let running = Task { await SiteBoosts.runScript(tab: tab) }
+        let deadline = Date.now.addingTimeInterval(5)
+        while doc.tokenCapture == nil, Date.now < deadline { await Task.yield() }
+        XCTAssertNotNil(doc.tokenCapture)
+        boost.scriptEnabled = false
+        SiteBoosts.set(boost, origin: doc.origin, tab: tab)
+        let result = await running.value
+        XCTAssertEqual(result, "Enable JavaScript to run this script.")
+        let ran = try await tab.web.evaluateJavaScript("window.disabledDuringCapture")
+        XCTAssertNil(ran)
+    }
+
+    func testRestoredRuntimeCapturesImmutablePageMarkerWithoutRerunningSavedScript() async throws {
+        let tab = try await page()
+        let original = try XCTUnwrap(SiteBoosts.document(for: tab))
+        var boost = SiteBoost(); boost.scriptEnabled = true
+        boost.script = "window.restoreCount = (window.restoreCount || 0) + 1;"
+        SiteBoosts.set(boost, origin: original.origin, tab: tab)
+        let first = await SiteBoosts.runScript(tab: tab)
+        XCTAssertEqual(first, "Script applied.")
+        _ = try await visual("window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted:true})); null;", tab: tab)
+        let deadline = Date.now.addingTimeInterval(5)
+        while Date.now < deadline {
+            if let doc = SiteBoosts.document(for: tab), doc !== original, doc.scriptRan, doc.pageToken != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let restored = try XCTUnwrap(SiteBoosts.document(for: tab))
+        XCTAssertFalse(restored === original)
+        XCTAssertTrue(restored.scriptRan)
+        XCTAssertEqual(restored.pageToken, original.pageToken)
+        let count = try await tab.web.evaluateJavaScript("window.restoreCount") as? Int
+        XCTAssertEqual(count, 1)
+        let markerIsImmutable = try await tab.web.evaluateJavaScript("""
+            (() => {
+                const before = document.__vaneBoostPageToken;
+                try { Object.defineProperty(document, '__vaneBoostPageToken', {value:'copied'}); } catch (_) {}
+                const descriptor = Object.getOwnPropertyDescriptor(document, '__vaneBoostPageToken');
+                return document.__vaneBoostPageToken === before && !descriptor.writable && !descriptor.configurable;
+            })()
+            """) as? Bool
+        XCTAssertEqual(markerIsImmutable, true)
+        let manual = await SiteBoosts.runScript(tab: tab)
+        XCTAssertEqual(manual, "Script applied.")
+    }
+
     func testSiteResetRemovesBoostForHostAndKeepsOtherHosts() async throws {
         let tab = try await page()
         var boost = SiteBoost(); boost.font = "Georgia"; boost.scriptEnabled = true; boost.script = "window.test=1"
@@ -340,4 +425,3 @@ import XCTest
         XCTAssertEqual(result12, true)
     }
 }
-
