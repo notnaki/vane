@@ -79,6 +79,8 @@ private struct HistoryView: View {
     }
     @State private var query = ""
     @State private var visits: [Visit] = []
+    @State private var groups: [(title: String, visits: [Visit])] = []
+    @State private var searching = true
     @State private var selection: Visit.ID?
     @State private var hovered: Visit.ID?
     /// Which half of the window the keyboard is talking to: typing goes to the field, ⌫
@@ -96,10 +98,10 @@ private struct HistoryView: View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) {
             header
             filters
-            if groups.isEmpty {
-                empty
-            } else {
-                list
+            // Keep the scroll/focus host mounted through debounce, empty results and
+            // completion. A keystroke must not replace the entire navigation surface.
+            list.overlay(alignment: .topLeading) {
+                if visits.isEmpty { empty }
             }
         }
         .padding(.top, Look.inset * 2)
@@ -111,7 +113,7 @@ private struct HistoryView: View {
         .onChange(of: selectedProfileID) { clearResults() }
         .onChange(of: period) { clearResults() }
         .task(id: request) {
-            guard profileID != Profile.incognito.id else { visits = []; return }
+            guard profileID != Profile.incognito.id else { clearResults(); searching = false; return }
             let asked = request
             if !query.isEmpty {
                 try? await Task.sleep(for: LocalSuggestionReader.debounce)
@@ -121,6 +123,9 @@ private struct HistoryView: View {
                                                    interval: asked.period.interval())
             guard !Task.isCancelled, asked == request else { return }
             visits = results
+            groups = asked.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? HistoryWindow.grouped(results) : (results.isEmpty ? [] : [("Results", results)])
+            searching = false
             if let selected = selection, !results.contains(where: { $0.id == selected }) {
                 selection = nil
             }
@@ -130,11 +135,7 @@ private struct HistoryView: View {
         }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: period)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selectedProfileID)
-    }
-
-    private var groups: [(title: String, visits: [Visit])] {
-        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? HistoryWindow.grouped(visits) : (visits.isEmpty ? [] : [("Results", visits)])
+        .vaneMotionPolicy()
     }
 
     private var filters: some View {
@@ -194,7 +195,7 @@ private struct HistoryView: View {
     }
 
     private var empty: some View {
-        Text(query.isEmpty
+        Text(searching ? "Searching history…" : query.isEmpty
              ? "Nothing here yet — pages you visit are listed by the day you saw them."
              : "No page matches \u{201C}\(query)\u{201D}")
             .font(Look.text).foregroundStyle(.secondary)
@@ -210,9 +211,18 @@ private struct HistoryView: View {
                 LazyVStack(alignment: .leading, spacing: Look.inset * 1.5) {
                     ForEach(groups, id: \.title) { group in
                         SettingsSection(group.title) {
-                            SettingsCard {
-                                ForEach(group.visits) { visit in row(visit).id(visit.id) }
+                            // SettingsCard's variadic VStack eagerly builds every row
+                            // of a day. The common 500-result group must stay lazy too.
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(group.visits) { visit in
+                                    row(visit).id(visit.id)
+                                    if visit.id != group.visits.last?.id {
+                                        Hairline().padding(.horizontal, Look.cardInset)
+                                    }
+                                }
                             }
+                            .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
+                            .hairline(radius: Look.cardRadius, Look.cardStroke)
                         }
                     }
                 }
@@ -286,7 +296,9 @@ private struct HistoryView: View {
 
     private func reload() { revision += 1 }
 
-    private func clearResults() { visits = []; selection = nil; hovered = nil }
+    private func clearResults() {
+        visits = []; groups = []; selection = nil; hovered = nil; searching = true
+    }
 
     /// Opens the page in a new tab and *stays* — the browser window is not pulled to the
     /// front. A history window you are working through is a list you are still reading, and

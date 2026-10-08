@@ -31,7 +31,9 @@ import XCTest
         XCTAssertEqual(store.spaceGesture.previewDirection, 1)
         XCTAssertFalse(store.spaceGesture.travelsFavorites)
         XCTAssertNotNil(store.spaceGesture.previews[spaces[2].id])
-        XCTAssertNil(store.beginSpaceSelection(spaces[1]), "Do not overwrite a landing in progress")
+        XCTAssertEqual(store.beginSpaceSelection(spaces[1]), 1)
+        XCTAssertEqual(store.spaceGesture.neighbour?.id, spaces[1].id,
+                       "The preview follows the latest click")
     }
 
     func testEarlierSpaceArrivesFromTheLeft() {
@@ -82,9 +84,9 @@ import XCTest
         monitor.abort()
         XCTAssertTrue(store.spaceSwiping, "A committed click, like a swipe landing, must finish")
         monitor.select(spaces[1], in: store)
-        XCTAssertEqual(store.spaceGesture.neighbour?.id, spaces[2].id)
+        XCTAssertEqual(store.spaceGesture.neighbour?.id, spaces[1].id)
         try await Task.sleep(for: .milliseconds(500))
-        XCTAssertEqual(store.currentSpaceID, spaces[2].id)
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
         XCTAssertFalse(store.spaceSwiping)
         XCTAssertEqual(store.spaceDrag, 0)
     }

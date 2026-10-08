@@ -282,6 +282,7 @@ private struct SettingsView: View {
         .controlSize(.small)
         .onAppear { SettingsWindow.retitle(current.title) }
         .onChange(of: selection.id) { SettingsWindow.retitle(current.title) }
+        .vaneMotionPolicy()
     }
 
     private var pane: some View {
