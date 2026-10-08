@@ -263,3 +263,116 @@ media keys, advancing decoded video and no media error. Record source revision,
 macOS/build, signing and test-account scope. Quit and verify exit of every owned
 test process, then unregister only its isolated WebKit stores using
 `browsercheck-cleanup`; never use the installed profile as a fixture.
+
+## Directory-form root-cause investigation — 2026-10-08
+
+A repeat investigation on **macOS 27.0.1 (26A434), Xcode 27.0 (27A266a)**
+started from `1fe9513`. The original opt-in Vane test failed again: directory
+selection produced readable files, but the receiver timed out with **zero form
+POSTs**. This remains a failed upload, not a successful compatibility test.
+
+The [standalone reproduction](../scripts/fixtures/directory-upload/README.md)
+imports only AppKit and WebKit. It uses a default `WKWebView`, an `NSOpenPanel`
+returning the selected URLs unchanged, and a navigation delegate that always
+allows navigation. A separate loopback Python server records readable selection
+metadata and independently validates complete multipart parts. The probe was
+ad hoc signed with unchanged production `Vane.entitlements` and a unique bundle
+identifier; the synthetic folder was outside the Downloads entitlement.
+
+### Observed boundary trace
+
+| Boundary | Directory root selection | Ordinary file selection |
+| --- | --- | --- |
+| Picker | `allowsDirectories=true`, `allowsMultipleSelection=true`; native Open returns the `tree/` URL | `allowsDirectories=false`; native Open returns two file URLs |
+| Enumeration | Exactly `tree/top.txt` and `tree/nested/child.bin` | Exactly `top.txt` and `child.bin`; empty relative paths |
+| Access | `arrayBuffer()` reads both complete files; `/observe` records them | Same complete text/binary reads |
+| Form navigation policy | **No POST callback reaches the standalone navigation delegate**; `webViewWebContentProcessDidTerminate` fires | Delegate receives `method=POST`, navigation type `formSubmitted`, returns `.allow` |
+| Multipart receipt | **No `/receive/directory` request** | Receiver validates exactly two filenames and all 23 payload bytes |
+
+The standalone diagnostic `ExcUserFault_probe-2026-10-08-093532.ips` reports
+`EXC_GUARD`, `GUARD_TYPE_USER`, namespace **WEBKIT (31)**, codes
+`0x600000000000001f, 0x0`. Its stack includes
+`WebKit::WebPageProxy::decidePolicyForNavigationAction` and
+`decidePolicyForNavigationActionAsync`. The Vane XCTest repeat also generated
+`ExcUserFault_xctest-2026-10-08-093550.ips`. The standalone signed executable
+SHA-256 was `8e0c432165ce1052ec19c63b9d3d90ae662f924d1d371e34d5ac168189e1c77e`.
+The source subsequently gained only command-line argument validation.
+
+Synthetic contents in the standalone and signed-Vane checks:
+
+| Directory path / ordinary filename | Bytes | SHA-256 |
+| --- | --- | --- |
+| `tree/top.txt` / `top.txt` | 17; hex `666f6c64657220746f70206c6576656c0a` | `7929cf2e178b66167d9cab2bdb3fa1b221840e5c27856078916049cea95444c5` |
+| `tree/nested/child.bin` / `child.bin` | 6; hex `00ff01800d0a` | `37a6b9c37dd5855326f8891fc0d4daf62843fbbced74f32e0c5cb9c342474f10` |
+
+### Attribution and supported-API limits
+
+The independent client establishes that Vane's scripts, navigation routing,
+HTTPS policy, and tab lifecycle are not required to trigger this failure. The
+fault originates in the system WebKit upload path on this tested host.
+
+Source inspection at upstream commit
+[`b72f728779eeb25525e8f03bce217806b443c0e8`](https://github.com/WebKit/WebKit/commit/b72f728779eeb25525e8f03bce217806b443c0e8)
+provides a matching explanation:
+
+1. [`WebPageProxy::didChooseFilesForOpenPanel`](https://github.com/WebKit/WebKit/blob/b72f728779eeb25525e8f03bce217806b443c0e8/Source/WebKit/UIProcess/WebPageProxy.cpp)
+   approves each callback URL and issues read-only sandbox handles for those paths.
+2. [`DirectoryFileListCreator`](https://github.com/WebKit/WebKit/blob/b72f728779eeb25525e8f03bce217806b443c0e8/Source/WebCore/html/DirectoryFileListCreator.cpp)
+   enumerates the selected root into child files carrying relative paths.
+3. Form navigation in `WebPageProxy::decidePolicyForNavigationAction` checks each
+   encoded file using `hasGrantedSandboxExtensionForFile` before consulting the
+   application navigation client. [`WebProcessProxy`](https://github.com/WebKit/WebKit/blob/b72f728779eeb25525e8f03bce217806b443c0e8/Source/WebKit/UIProcess/WebProcessProxy.cpp)
+   accepts assumed directory access or exact previously approved file paths;
+   picker root approval does not by itself add its children to that exact set.
+
+This is an inference from upstream source and the observed stack, not a claim
+that this upstream revision exactly matches Apple's shipped source. The public
+[`WKUIDelegate` contract](https://github.com/WebKit/WebKit/blob/b72f728779eeb25525e8f03bce217806b443c0e8/Source/WebKit/UIProcess/API/Cocoa/WKUIDelegate.h)
+provides selected URLs or `nil`, without a separate API for approving descendants
+while keeping the directory selection unchanged.
+
+Two supported callback experiments ruled out simple URL expansion:
+`testChildFileURLsSubmitBytesButLoseDirectoryRelativePaths` receives correct
+bytes but loses every relative path and sends only leaf filenames.
+`testRootAndChildFileURLsDuplicateDirectoryEntries` creates four entries from
+two files: the root's relative-path entries plus two unwanted flat duplicates.
+Neither meets the website's folder contract. No safe application-level fix was
+established. No private file-grant APIs, universal file access, sandbox changes,
+local-document preload, or site-specific JavaScript multipart rewrites were used.
+
+### User-facing handling and validation
+
+Vane now cancels folder requests on the **macOS 27.0 release family** and displays
+“Folder uploads unavailable,” explaining that the system engine may stop the
+page and offering the site's individual-file option or another browser. It
+returns `nil` exactly once, never reports an upload as successful, and preserves
+ordinary file selection. The guard is deliberately broader than the one observed
+27.0.1 build; retest before removing it or claiming another version is fixed.
+macOS 26 and 27.1+ keep their existing picker behavior; successful directory
+submission there is **unverified**.
+
+A unique signed Vane app with isolated data displayed that explanation. Native
+ordinary-file cancellation left the input empty; reopening and selecting both
+fixtures submitted `/receive/files`, and the server verified the table's exact
+filenames, lengths and bytes. Its executable SHA-256 was
+`5b870d9b9c297f907a9dcfd5aa36c8891572fce35ddbb1162e027f231f45dc4e`.
+
+Focused validation covers explanation dismissal/reopening, navigation,
+teardown and window closure with exactly-once callbacks, version boundaries,
+ordinary single/multiple picker cancellation, busy/detached requests, nested
+relative paths/readability, complete text/binary multipart receipt and an
+embedded cross-origin submission. Run:
+
+```sh
+swift test --filter 'FileUploadTests|UploadSubmissionTests|SitePermissionTests'
+./make-app.sh debug
+python3 scripts/fixtures/directory-upload/build-probe.py
+```
+
+The focused run passed **34 tests with zero failures**, with two explicit skips
+(36 discovered). The signed debug bundle and standalone probe build also passed.
+
+The raw opt-in directory-form failure remains available independently of the
+production safeguard. Its normal-suite skip and the intentionally skipped
+27.0 native directory-picker acceptance test do **not** count as upload passes.
+The standalone fixture README includes task-owned app/server cleanup steps.

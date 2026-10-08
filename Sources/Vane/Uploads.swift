@@ -10,6 +10,7 @@ import WebKit
         let isCurrent: @MainActor () -> Bool
         let completion: @MainActor ([URL]?) -> Void
         var closeObserver: NSObjectProtocol?
+        var explanation: NSAlert?
 
         init(window: NSWindow, isCurrent: @escaping @MainActor () -> Bool,
              completion: @escaping @MainActor ([URL]?) -> Void) {
@@ -22,6 +23,14 @@ import WebKit
         }
     }
     private static var pending: [UUID: Pending] = [:]
+
+    // Confirmed on 27.0.1, kept for the 27.0 release family pending a verified
+    // engine fix. WKUIDelegate grants selected roots, but WebKit's form policy
+    // rejects enumerated children before our navigation delegate is called.
+    static func directoryUploadsUnavailable(on version: OperatingSystemVersion =
+        ProcessInfo.processInfo.operatingSystemVersion) -> Bool {
+        version.majorVersion == 27 && version.minorVersion == 0
+    }
 
     static func choose(parameters: WKOpenPanelParameters, tab: Tab, web: WKWebView,
                        completion: @escaping @MainActor ([URL]?) -> Void) {
@@ -47,6 +56,20 @@ import WebKit
                     if pending[id] === request { cancel(tabID: id) }
                 }
             }
+        if parameters.allowsDirectories && directoryUploadsUnavailable() {
+            let alert = NSAlert()
+            alert.messageText = "Folder uploads unavailable"
+            alert.informativeText = "This version of macOS WebKit can stop the page before a folder upload reaches the website. Vane has cancelled this folder selection. Use the website’s individual-file upload option, or try a different browser."
+            alert.addButton(withTitle: "OK")
+            request.explanation = alert
+            alert.beginSheetModal(for: window) { _ in
+                guard pending[id] === request else { return }
+                pending.removeValue(forKey: id)
+                request.stopObserving()
+                completion(nil)
+            }
+            return
+        }
         panel.beginSheetModal(for: window) { response in
             guard pending[id] === request else { return }
             pending.removeValue(forKey: id)
@@ -60,7 +83,10 @@ import WebKit
     static func cancel(tabID: UUID) {
         guard let request = pending.removeValue(forKey: tabID) else { return }
         request.stopObserving()
-        request.panel.cancel(nil)
+        if let alert = request.explanation {
+            request.window?.endSheet(alert.window, returnCode: .abort)
+            alert.window.orderOut(nil)
+        } else { request.panel.cancel(nil) }
         request.completion(nil)
     }
 }
