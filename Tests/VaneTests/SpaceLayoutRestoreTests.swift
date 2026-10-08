@@ -81,6 +81,24 @@ import XCTest
         XCTAssertFalse(TabOrganization(store: source).rows.contains { $0.spaceID == copy.id })
     }
 
+    func testPublicDuplicateCannotMoveLockedCopyThroughURLAddressedLibrary() throws {
+        let source = store()
+        var copy = try coldCopy(in: source, locked: true)
+        var layout = try XCTUnwrap(copy.layout)
+        let first = layout.today.entries.remove(at: 1)
+        layout.today.entries.insert(.init(row: first.row), at: 0)
+        copy.layout = layout
+        XCTAssertTrue(ProfileManager.shared.updateSpace(copy))
+        let duplicate = layout.tabs[0].savedURL
+        let shape = try XCTUnwrap(TabStore.savedShape(.today, space: copy.id, profileID: source.profileID))
+        XCTAssertFalse(shape.lockedFolders(for: duplicate.absoluteString, unlocked: []).isEmpty)
+        let target = ProfileManager.shared.createSpace(name: "Target", in: source.profileID)
+        Library.move(duplicate, from: copy.id, to: target.id, pinned: false, profile: source.profileID)
+        XCTAssertEqual(source.spaces.first { $0.id == copy.id }?.layout, layout)
+        XCTAssertEqual(source.spaces.first { $0.id == target.id }?.tabURLs, [])
+        XCTAssertEqual(TabOrganization(store: source).rows.filter { $0.spaceID == copy.id }.map(\.title), ["Alpha"])
+    }
+
     func testRecreatedSpaceLoadsDuplicatePagesWithIndependentNamesAndNoPageState() throws {
         let source = store()
         let tabs = (0..<2).map { _ in source.newBlankTab(focus: false) }
