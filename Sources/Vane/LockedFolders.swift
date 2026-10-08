@@ -104,10 +104,14 @@ extension Pins {
     /// Outer protections must be satisfied before inner protections, including the row
     /// itself when it is a folder. A collapsed ordinary folder never blocks tab selection.
     func lockedFolders(for row: String, unlocked: Set<UUID>) -> [Folder] {
-        guard let index = index(of: row) else { return [] }
-        let path = ancestors(of: index).reversed() + [entries[index].folder?.id].compactMap { $0 }
+        // Legacy disk readers address rows by URL and can act on every duplicate.
+        // Any protected occurrence must therefore block that URL-addressed action.
+        let path = entries.indices.filter { entries[$0].id == row }.flatMap { index in
+            ancestors(of: index).reversed() + [entries[index].folder?.id].compactMap { $0 }
+        }
+        var seen = Set<UUID>()
         return path.compactMap { folder($0) }.filter {
-            $0.requiresAuthentication == true && !unlocked.contains($0.id)
+            $0.requiresAuthentication == true && !unlocked.contains($0.id) && seen.insert($0.id).inserted
         }
     }
 }

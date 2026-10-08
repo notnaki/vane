@@ -56,7 +56,7 @@ enum BackupPaths {
     static func names(for id: UUID) -> Set<String> {
         let suffix = ProfileManager.suffix(id)
         return Set(["spaces\(suffix).json", "session\(suffix).json", "spacestate\(suffix).json",
-                    "vane\(suffix).db", "easels-\(id.uuidString).json"])
+                    "vane\(suffix).db", "easels-\(id.uuidString).json", "space-templates\(suffix).json"])
     }
     static func isOwned(_ name: String) -> Bool {
         if ReadingQueueFiles.parseOwnedName(name) != nil { return true }
@@ -67,7 +67,8 @@ enum BackupPaths {
                 && !part.contains("/") && !part.contains("\\")
         }
         guard !name.contains("/"), !name.contains("\\") else { return false }
-        for (prefix, ext) in [("spaces", ".json"), ("session", ".json"), ("spacestate", ".json"), ("vane", ".db")] {
+        for (prefix, ext) in [("spaces", ".json"), ("session", ".json"), ("spacestate", ".json"), ("vane", ".db"),
+                              ("space-templates", ".json")] {
             if name == prefix + ext { return true }
             if name.hasPrefix(prefix + "-"), name.hasSuffix(ext) {
                 let value = String(name.dropFirst(prefix.count + 1).dropLast(ext.count))
