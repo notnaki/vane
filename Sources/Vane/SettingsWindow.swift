@@ -1285,6 +1285,7 @@ private struct AdvancedPane: View {
                             .onChange(of: inspector) { Settings.apply(); rebuild() }
                     }
                     SettingsRow("Extensions") {
+                        Button("Manage Extensions…") { ExtensionManagement.show() }
                         Button("Install Extension…") {
                             ExtensionHost.shared.chooseAndInstall(); rebuild()
                         }

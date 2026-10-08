@@ -63,6 +63,7 @@ struct ExtensionAccess: Codable, Equatable {
         let requested: ExtensionAccess
         let previous: ExtensionAccess?
         let installing: Bool
+        var limitations: [String] = []
 
         var needsApproval: Bool {
             installing || previous.map { !requested.additions(over: $0).isEmpty } ?? true
@@ -101,7 +102,7 @@ struct ExtensionAccess: Codable, Equatable {
         alert.informativeText = "Review the extension’s capabilities and the websites it can access. "
             + "Allowing website access can let it read and change data on those pages. "
             + (review.installing ? "Cancel leaves it uninstalled."
-               : "Don’t Allow leaves it disabled; choose Install Extension again to review it later.")
+               : "Don’t Allow leaves it inactive; use Manage Extensions to review it later.")
         let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 440, height: 240))
         text.isEditable = false
         text.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -113,6 +114,9 @@ struct ExtensionAccess: Codable, Equatable {
             text.string = "New access\n\n" + review.requested.additions(over: previous).description
                 + "\n\nAll requested access\n\n" + review.requested.description
         } else { text.string = review.requested.description }
+        if !review.limitations.isEmpty {
+            text.string += "\n\nCompatibility limitations\n\n" + review.limitations.joined(separator: "\n")
+        }
         let scroll = NSScrollView(frame: text.frame)
         scroll.hasVerticalScroller = true
         scroll.documentView = text
