@@ -19,12 +19,13 @@ import UniformTypeIdentifiers
 /// Boosts remain outside the rail until implemented. `history` raises the existing
 /// searchable history window (⌘Y) and leaves the rail on its previous section.
 enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
-    case media, downloads, easels, spaces, archived, history
+    case media, downloads, readingQueue, easels, spaces, archived, history
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .readingQueue: "Reading Queue"
         case .easels:    "Easels"
         case .media:     "Media"
         case .archived:  "Archived Tabs"
@@ -37,6 +38,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
     /// Outlined symbols, at tile size: Arc's rail draws the thing itself, not a badge.
     var icon: String {
         switch self {
+        case .readingQueue: "text.book.closed"
         case .easels:    "scribble.variable"
         case .media:     "photo.on.rectangle"
         // Not `archivebox`: that is the footer glyph that opens the Library, and a section
@@ -55,7 +57,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
 
     /// Whether the column has anything to filter. Media is every picture there is, so a
     /// Filter chip beside its field would open an empty menu.
-    var filterable: Bool { self == .archived || self == .downloads }
+    var filterable: Bool { self == .archived || self == .downloads || self == .readingQueue }
 
     /// Whether the section has a search field at all. Spaces is a row of cards, not a list,
     /// so ⌘T over it has nowhere to land and ⌘F must mean the page instead.
@@ -63,7 +65,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
 
     /// A private window is in no Space and owns no profile furniture, so the Spaces cards
     /// would have nothing to show and nothing they could safely move.
-    func available(private isPrivate: Bool) -> Bool { !(isPrivate && (self == .spaces || self == .easels)) }
+    func available(private isPrivate: Bool) -> Bool { !(isPrivate && (self == .spaces || self == .easels || self == .readingQueue)) }
 }
 
 // MARK: - State

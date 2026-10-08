@@ -31,13 +31,15 @@ import SwiftUI
     /// Cleared when the tab navigates anywhere, since the reader document goes with it.
     private static var watch: [UUID: NSKeyValueObservation] = [:]
     private static var entering: [UUID: UUID] = [:]
-
-    /// URL KVO cannot see a reload of the same source URL. A committed document
-    /// also cancels extraction work belonging to the previous document.
-    static func navigationCommitted(_ tab: Tab) {
+    private static var retained: [UUID: (generation: UUID, extraction: Extraction)] = [:]
+    static func savedExtraction(for tab: Tab) -> Extraction? {
+        guard isOn(tab), let entry = retained[tab.id], entry.generation == tab.readingDocumentGeneration else { return nil }
+        return entry.extraction
+    }
+    static func navigationCommitted(_ tab: Tab) { forget(tab: tab) }
+    static func forget(tab: Tab) {
+        watch[tab.id] = nil; retained[tab.id] = nil; entering[tab.id] = nil
         ReaderState.shared.tabs.remove(tab.id)
-        watch[tab.id] = nil
-        entering[tab.id] = nil
     }
 
     // MARK: - Preferences
@@ -132,6 +134,7 @@ import SwiftUI
         guard tab.easelID == nil, !isOn(tab), let web = tab.existingWeb,
               let source = web.url, !web.isLoading, entering[tab.id] == nil else { return }
         let id = tab.id, token = UUID()
+        let generation = tab.readingDocumentGeneration
         entering[id] = token
         Task {
             defer { if entering[id] == token { entering[id] = nil } }
@@ -140,7 +143,8 @@ import SwiftUI
                 NSSound.beep()          // nothing to read here; say so rather than blank the page
                 return
             }
-            guard entering[id] == token, tab.existingWeb === web, web.url == source, !web.isLoading, !isOn(tab) else { return }
+            guard entering[id] == token, generation == tab.readingDocumentGeneration,
+                  tab.existingWeb === web, web.url == source, !web.isLoading, !isOn(tab) else { return }
             let doc = html(for: e, url: source)
             // Replacing documentElement.innerHTML is *not* a navigation, which is the whole
             // reason to do it this way: the back/forward list is never touched, so no
@@ -151,14 +155,17 @@ import SwiftUI
                 "(() => { if (location.href !== \(jsString(source.absoluteString)) || document.readyState !== 'complete' || document.documentElement.__vaneReaderToken !== \(jsString(token.uuidString))) return false;"
                 + "document.documentElement.innerHTML = \(jsString(doc));"
                 + "document.scrollingElement && (document.scrollingElement.scrollTop = 0); return true; })()")
-            guard replaced as? Bool == true, entering[id] == token, web.url == source else { return }
+            guard replaced as? Bool == true, entering[id] == token, generation == tab.readingDocumentGeneration, web.url == source else { return }
+
             ReaderState.shared.tabs.insert(id)
+            retained[id] = (generation, e)
             // The reader document dies with any real navigation — a link the user clicked
             // inside it, a redirect, back/forward. Drop the flag when that happens.
             watch[id] = tab.web.observe(\.url, options: [.new]) { _, _ in
                 MainActor.assumeIsolated {
                     ReaderState.shared.tabs.remove(id)
                     watch[id] = nil
+                    retained[id] = nil
                 }
             }
         }
@@ -174,6 +181,7 @@ import SwiftUI
     static func exit(_ tab: Tab) {
         guard ReaderState.shared.tabs.remove(tab.id) != nil else { return }
         watch[tab.id] = nil
+        retained[tab.id] = nil
         tab.web.reload()
     }
 
