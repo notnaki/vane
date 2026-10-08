@@ -63,7 +63,7 @@ import Darwin
         try BackupIO.directory(staging)
         defer { try? FileManager.default.removeItem(at: staging) }
         let original = try library.capture(reason: .beforeRestore, allowDamaged: true)
-        try savePoint(original)
+        try BackupRecovery(library: library).save(original)
         let encoded = try BackupCodec.encode(incoming)
         try BackupIO.write(encoded, staging.appendingPathComponent("incoming.vanebackup"))
         try BackupIO.write(plist(Journal(phase: .prepared, incomingDigest: BackupCodec.digest(encoded))),
@@ -182,11 +182,6 @@ import Darwin
         try BackupIO.syncDirectory(recoveryRoot)
         try FileManager.default.removeItem(at: garbage)
         try BackupIO.syncDirectory(recoveryRoot)
-    }
-    private func savePoint(_ archive: BackupArchive) throws {
-        let points = recoveryRoot.appendingPathComponent("Points")
-        try BackupIO.directory(points)
-        try BackupCodec.write(archive, to: points.appendingPathComponent("\(archive.id.uuidString).vanebackup"))
     }
 }
 
