@@ -836,8 +836,7 @@ private struct Sidebar: View {
                 CreateSpaceForm(store: store)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
-            SpaceSidebarStrip(store: store, favorites: Favorites(), sections:
-                SidebarSpaceSections())
+            SidebarSpaceContent()
             .overlayPreferenceValue(SidebarDropLineBounds.self) { bounds in
                 SidebarDropLineOverlay(marker: dropMarker, bounds: bounds)
             }
@@ -2845,9 +2844,12 @@ private struct SpaceDots: View {
 
 /// The settled sidebar and its swipe preview share the fixed heading and scroll viewport.
 struct SpaceSectionsLayout<Header: View, Rows: View>: View {
+    var initialOffset: CGFloat = 0
+    var reportOffset: (CGFloat) -> Void = { _ in }
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
     @State private var scrollHeight: CGFloat = 0
+    @State private var scrollPosition = ScrollPosition(edge: .top)
 
     var body: some View {
         VStack(spacing: Look.rowGap) {
@@ -2858,14 +2860,32 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
                     .background(WindowDragArea())
             }
             .scrollIndicators(.never)
+            .scrollPosition($scrollPosition)
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
+                reportOffset(offset)
+            }
+            .onAppear {
+                if initialOffset != 0 { scrollPosition.scrollTo(y: initialOffset) }
+            }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
         }
     }
 }
 
-struct SidebarSpaceSections: View {
+/// The live content mounted for both ordinary Space switches and profile handoffs.
+struct SidebarSpaceContent: View {
+    @EnvironmentObject var store: TabStore
+
     var body: some View {
-        SpaceSectionsLayout { SpaceRow() } rows: {
+        SpaceSidebarStrip(store: store, favorites: Favorites(), sections: SidebarSpaceSections())
+    }
+}
+
+struct SidebarSpaceSections: View {
+    @EnvironmentObject private var store: TabStore
+
+    var body: some View {
+        SpaceSectionsLayout(reportOffset: { store.spaceGesture.sidebarOffset = $0 }) { SpaceRow() } rows: {
             PinnedTabs()
             TidyRow()
             NewTabRow()
@@ -3795,11 +3815,12 @@ struct SidebarTabSurface: View {
     var action: () -> Void
     /// A swipe renders the incoming selection without mutating the outgoing window.
     var previewSelected: Bool? = nil
+    var previewTicked = false
     @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
         let selected = previewSelected ?? (store.current == tab.id)
-        let ticked = previewSelected == nil && store.selection.contains(tab.id)
+        let ticked = previewSelected == nil ? store.selection.contains(tab.id) : previewTicked
         let returning = tab.kind == .pinned && !tab.atHome
         let title = TidyTitles.title(for: tab)
         SidebarRow(selected: selected, ticked: ticked, held: held, action: action) {

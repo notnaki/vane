@@ -24,6 +24,11 @@ import XCTest
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
         host.layoutSubtreeIfNeeded()
+        return try pixels(in: host)
+    }
+
+    static func pixels(in host: NSView) throws -> Data {
+        let bounds = host.bounds
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: bounds))
         host.cacheDisplay(in: bounds, to: bitmap)
         if let directory = ProcessInfo.processInfo.environment["VANE_SIDEBAR_SNAPSHOT_DIR"] {

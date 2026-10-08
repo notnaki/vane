@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import XCTest
 @testable import vane
@@ -186,7 +187,225 @@ import XCTest
         XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
     }
 
+    func testNewProfileDoesNotBorrowAnotherWindowsFavouriteSelection() throws {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let incoming = Space(name: "Incoming", profileID: profile)
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([incoming], for: profile))
+        let owner = TabStore(profileID: profile, space: incoming, session: [])
+        let favourite = owner.newBlankTab(focus: false, as: .favourite)
+        let today = owner.newBlankTab(focus: false)
+        owner.current = favourite.id
+        let source = TabStore(profileID: UUID(), session: [])
+        var destination: TabStore?
+        defer {
+            for store in [source, owner, destination].compactMap({ $0 }) {
+                store.dropStashes()
+                let tabs = store.tabs
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+                Store.forget(store.profileID)
+            }
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
+        }
+        let before = try pixels(source.swipePreview(in: incoming))
+        let restored = TabStore(profileID: profile, space: incoming)
+        destination = restored
+        XCTAssertEqual(restored.current, today.id)
+        let after = try pixels(SidebarSpaceContent().environmentObject(restored)
+            .environmentObject(SidebarDragPreview()))
+        XCTAssertEqual(before.count, after.count)
+        XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
+    }
+
+    func testParkedProfileGhostKeepsFavouritePanesAndBulkSelection() throws {
+        TestEnvironment.prepare()
+        let incoming = Space(name: "Incoming", profileID: UUID())
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([incoming], for: incoming.profileID))
+        let owner = TabStore(profileID: incoming.profileID, space: incoming, session: [])
+        let favourite = owner.newBlankTab(focus: false, as: .favourite)
+        let first = owner.newBlankTab(focus: false), second = owner.newBlankTab(focus: false)
+        owner.splits = [try XCTUnwrap(Split(tabs: [favourite.id, first.id]))]
+        owner.current = favourite.id
+        owner.selection.selectAll(in: Selection.Section(kind: .today, ids: [first.id, second.id]))
+        let source = TabStore(profileID: UUID(), session: [])
+        let window = NSWindow()
+        window.isReleasedWhenClosed = false
+        source.window = window
+        owner.parkedIn = window
+        defer {
+            owner.parkedIn = nil
+            source.window = nil
+            window.close()
+            for store in [source, owner] {
+                store.dropStashes()
+                let tabs = store.tabs
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+                Store.forget(store.profileID)
+            }
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: incoming.profileID, in: Store.directory))
+        }
+        let before = try pixels(source.swipePreview(in: incoming))
+        let after = try pixels(SidebarSpaceContent().environmentObject(owner)
+            .environmentObject(SidebarDragPreview()))
+        XCTAssertEqual(before.count, after.count)
+        XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
+    }
+
+    func testParkedProfileGhostKeepsItsNativeSidebarScrollOffset() throws {
+        TestEnvironment.prepare()
+        let incoming = Space(name: "Incoming", profileID: UUID())
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([incoming], for: incoming.profileID))
+        let owner = TabStore(profileID: incoming.profileID, space: incoming, session: [])
+        for _ in 0..<30 { _ = owner.newBlankTab(focus: false) }
+        let source = TabStore(profileID: UUID(), session: [])
+        let bounds = NSRect(x: 0, y: 0, width: 250, height: 400)
+        let window = NSWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .darkAqua)
+        let host = NSHostingView(rootView: SidebarSpaceContent().environmentObject(owner)
+            .environmentObject(SidebarDragPreview()).frame(width: 250, height: 400)
+            .environment(\.colorScheme, .dark).background(Color(white: 0.25)))
+        host.frame = bounds
+        window.contentView = host
+        source.window = window
+        owner.parkedIn = window
+        defer {
+            owner.parkedIn = nil
+            source.window = nil
+            window.contentView = nil
+            window.close()
+            for store in [source, owner] {
+                store.dropStashes()
+                let tabs = store.tabs
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+                Store.forget(store.profileID)
+            }
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: incoming.profileID, in: Store.directory))
+        }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+        func scrollView(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+        }
+        let scroll = try XCTUnwrap(scrollView(in: host))
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 200))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        XCTAssertGreaterThan(scroll.contentView.bounds.minY, 150)
+        let before = try pixels(source.swipePreview(in: incoming))
+        let after = try SidebarSnapshot.pixels(in: host)
+        XCTAssertEqual(before.count, after.count)
+        XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
+    }
+
+    func testNewProfileGhostUsesTheKeyWindowsSharedSelection() throws {
+        TestEnvironment.prepare()
+        let incoming = Space(name: "Incoming", profileID: UUID())
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([incoming], for: incoming.profileID))
+        let first = TabStore(profileID: incoming.profileID, space: incoming, session: [])
+        let a = first.newBlankTab(focus: false), b = first.newBlankTab(focus: false)
+        let key = TabStore(profileID: incoming.profileID, space: incoming)
+        first.current = a.id
+        key.current = b.id
+        let keyWindow = PreviewKeyWindow()
+        keyWindow.isReleasedWhenClosed = false
+        key.window = keyWindow
+        let source = TabStore(profileID: UUID(), session: [])
+        var destination: TabStore?
+        defer {
+            key.window = nil
+            keyWindow.close()
+            for store in [source, first, key, destination].compactMap({ $0 }) {
+                store.dropStashes()
+                let tabs = store.tabs
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+                Store.forget(store.profileID)
+            }
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: incoming.profileID, in: Store.directory))
+        }
+        let before = try pixels(source.swipePreview(in: incoming))
+        let restored = TabStore(profileID: incoming.profileID, space: incoming)
+        destination = restored
+        XCTAssertEqual(restored.current, b.id)
+        let after = try pixels(SidebarSpaceContent().environmentObject(restored)
+            .environmentObject(SidebarDragPreview()))
+        XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
+    }
+
+    func testNewProfileGhostDoesNotBorrowAnotherWindowsTidySpinner() throws {
+        TestEnvironment.prepare()
+        let incoming = Space(name: "Incoming", profileID: UUID())
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([incoming], for: incoming.profileID))
+        let owner = TabStore(profileID: incoming.profileID, space: incoming, session: [])
+        for _ in 0..<7 { _ = owner.newBlankTab(focus: false) }
+        let enabled = TidyTabs.enabled
+        TidyTabs.enabled = true
+        let run = TidyProgress.shared.began(owner, onDeadline: {})
+        let source = TabStore(profileID: UUID(), session: [])
+        var destination: TabStore?
+        defer {
+            TidyProgress.shared.ended(run)
+            TidyTabs.enabled = enabled
+            for store in [source, owner, destination].compactMap({ $0 }) {
+                store.dropStashes()
+                let tabs = store.tabs
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+                Store.forget(store.profileID)
+            }
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: incoming.profileID, in: Store.directory))
+        }
+        let before = try pixels(source.swipePreview(in: incoming))
+        let restored = TabStore(profileID: incoming.profileID, space: incoming)
+        destination = restored
+        XCTAssertFalse(TidyProgress.shared.isRunning(restored))
+        let after = try pixels(SidebarSpaceContent().environmentObject(restored)
+            .environmentObject(SidebarDragPreview()))
+        XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
+    }
+
+    func testNewProfileGhostIncludesMigratedFavouriteGrid() throws {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let urls = (0..<3).map { URL(string: "https://invalid.test/favourite/\($0)")! }
+        let incoming = Space(name: "Incoming", profileID: profile, pinnedURLs: urls)
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([incoming], for: profile))
+        let source = TabStore(profileID: UUID(), session: [])
+        var destination: TabStore?
+        defer {
+            for store in [source, destination].compactMap({ $0 }) {
+                store.dropStashes()
+                let tabs = store.tabs
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(tabs)
+                Store.forget(store.profileID)
+            }
+            UserDefaults.vane.removeObject(forKey: TabStore.defaultsKey(.favourite, profile))
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
+        }
+        let before = try pixels(source.swipePreview(in: incoming))
+        XCTAssertNil(UserDefaults.vane.object(forKey: TabStore.defaultsKey(.favourite, profile)),
+                     "Previewing the migration must not write preferences")
+        let restored = TabStore(profileID: profile, space: incoming)
+        destination = restored
+        XCTAssertEqual(restored.tabs.filter { $0.kind == .favourite }.count, 3)
+        let after = try pixels(SidebarSpaceContent().environmentObject(restored)
+            .environmentObject(SidebarDragPreview()))
+        XCTAssertEqual(before.count, after.count)
+        XCTAssertLessThanOrEqual(zip(before, after).filter { abs(Int($0) - Int($1)) > 2 }.count, 10)
+    }
+
     private func pixels<V: View>(_ preview: V) throws -> Data {
         try SidebarSnapshot.pixels(preview)
     }
+}
+
+/// Exercise SharedTabs' key-window preference without focusing a test window on screen.
+@MainActor private final class PreviewKeyWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
 }

@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
     @Published var pull: CGFloat = 0
     @Published var swiping = false
     @Published var travelsFavorites = false
+    var sidebarOffset: CGFloat = 0
     var strip: [Space]?
     var neighbour: Space?
     var previewDirection = 0
@@ -355,6 +356,9 @@ struct SpacePreviewList: View, Equatable {
     private let selectedSavedRow: String?
     private let capturedPRs: [UUID: GitHub.Row]
     private let renderStore: TabStore?
+    private let selection: Set<UUID>
+    private let scrollOffset: CGFloat
+    private let tidyRunning: Bool
     private let splits: [Split]
     private let unlocked: Set<UUID>
     private let live: LiveFolders?
@@ -369,7 +373,8 @@ struct SpacePreviewList: View, Equatable {
     init(space requested: Space, liveTabs: [Tab]?, state: Stash? = nil,
          favorites: [URL] = [], includingFavorites: Bool = false, pinnedCollapsed: Bool = false,
          live: LiveFolders? = nil, renderStore: TabStore? = nil,
-         favoriteTabs: [Tab] = [], unlocked: Set<UUID> = [], newProfile: Bool = false) {
+         favoriteTabs: [Tab] = [], unlocked: Set<UUID> = [], newProfile: Bool = false,
+         selection: Set<UUID> = [], scrollOffset: CGFloat = 0) {
         var space = requested
         if newProfile && state == nil && liveTabs == nil {
             // A newly mounted profile uses TabStore.init's restoration path, which removes
@@ -383,6 +388,9 @@ struct SpacePreviewList: View, Equatable {
         self.includingFavorites = includingFavorites
         self.pinnedCollapsed = pinnedCollapsed
         self.renderStore = renderStore
+        self.selection = selection
+        self.scrollOffset = scrollOffset
+        tidyRunning = !newProfile && (renderStore.map { TidyProgress.shared.isRunning($0) } ?? false)
         favoriteItems = favoriteTabs.isEmpty ? favorites.map { ($0, nil) }
             : favoriteTabs.map { ($0.pinnedURL, $0) }
         self.unlocked = unlocked
@@ -458,7 +466,7 @@ struct SpacePreviewList: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: Look.rowGap) {
             if includingFavorites { favoriteGrid }
-            SpaceSectionsLayout {
+            SpaceSectionsLayout(initialOffset: scrollOffset) {
                 HStack(spacing: 0) {
                     HStack(spacing: Look.rowSpacing) {
                         Image(systemName: (space.icon ?? "cloud") == "cloud" ? "cloud.fill" : (space.icon ?? "cloud"))
@@ -569,7 +577,7 @@ struct SpacePreviewList: View, Equatable {
     /// Draw the same housekeeping controls with inert actions while the preview moves.
     private var tidy: some View {
         let control = TidyTabs.control(today: todayCount, threshold: TidyTabs.threshold,
-            enabled: TidyTabs.enabled, running: renderStore.map { TidyProgress.shared.isRunning($0) } ?? false)
+            enabled: TidyTabs.enabled, running: tidyRunning)
         return SidebarTidySurface {
             switch control {
             case .hidden: EmptyView()
@@ -594,12 +602,14 @@ struct SpacePreviewList: View, Equatable {
             if let tab = liveTab(for: row), let renderStore {
                 if let split = splits.first(where: { $0.contains(tab.id) }) {
                     let focused = selectedID.flatMap { split.contains($0) ? split.focusing($0) : nil } ?? split
-                    let panes = focused.tabs.compactMap { id in liveTabs?.first { $0.id == id } }
+                    let candidates = (liveTabs ?? []) + favoriteItems.compactMap(\.tab)
+                    let panes = focused.tabs.compactMap { id in candidates.first { $0.id == id } }
                     PaneStrip(store: renderStore, split: focused, panes: panes, selected: selected,
-                              ticked: false, previewPRs: capturedPRs)
+                              ticked: selection.contains(tab.id), previewPRs: capturedPRs)
                 } else {
                     SidebarTabSurface(store: renderStore, tab: tab, returnHovering: .constant(false),
-                                      pr: row.pr, action: {}, previewSelected: selected)
+                                      pr: row.pr, action: {}, previewSelected: selected,
+                                      previewTicked: selection.contains(tab.id))
                         .environment(\.livePR, row.pr)
                 }
             } else if case .folder(let folder, _) = row {
@@ -726,16 +736,26 @@ extension TabStore {
         let presentationOwner = space.profileID == profileID ? self : TabStore.all.first {
             $0.profileID == space.profileID && window != nil && $0.parkedIn === window
         }
-        let favorites = owner?.tabs.filter { $0.kind == .favourite }.compactMap(\.pinnedURL)
-            ?? (UserDefaults.vane.stringArray(forKey: TabStore.defaultsKey(.favourite, space.profileID)) ?? [])
+        let favorites = owner?.tabs.filter { $0.kind == .favourite }.compactMap(\.pinnedURL) ?? {
+            let existing = (UserDefaults.vane.stringArray(forKey: TabStore.defaultsKey(.favourite, space.profileID)) ?? [])
                 .compactMap { URL(string: $0) }
+            let legacy = ProfileManager.shared.spaces(for: space.profileID).map(\.pinnedURLs)
+            // Match first-mount migration without writing preferences during a gesture.
+            return legacy.contains(where: { !$0.isEmpty })
+                ? Spaces.mergedFavourites(existing: existing, perSpace: legacy)
+                : Array(existing.prefix(Spaces.favouritesCap))
+        }()
         let preview = SpacePreviewList(space: space, liveTabs: state?.tabs, state: state,
                                        favorites: favorites, includingFavorites: space.profileID != profileID,
                                        pinnedCollapsed: presentationOwner?.collapsedPinnedSpaces.contains(space.id) ?? false,
-                                       renderStore: owner ?? self,
+                                       renderStore: presentationOwner ?? owner ?? self,
                                        favoriteTabs: owner?.tabs.filter { $0.kind == .favourite } ?? [],
                                        unlocked: (presentationOwner ?? self).folderAuthentication.grants(for: space.profileID),
-                                       newProfile: space.profileID != profileID && presentationOwner == nil)
+                                       newProfile: space.profileID != profileID && presentationOwner == nil,
+                                       selection: presentationOwner?.currentSpaceID == space.id
+                                           ? presentationOwner?.selection.ids ?? [] : [],
+                                       scrollOffset: presentationOwner?.currentSpaceID == space.id
+                                           ? presentationOwner?.spaceGesture.sidebarOffset ?? 0 : 0)
         if spaceSwiping { spaceGesture.previews[space.id] = preview }
         return preview
     }
@@ -747,8 +767,14 @@ extension TabStore {
     }
 
     func previewState(in space: Space) -> Stash? {
-        guard let owner = previewOwner(for: space) else { return nil }
-        if owner !== self { return owner.previewState(in: space) }
+        if space.profileID != profileID {
+            if let parked = TabStore.all.first(where: {
+                $0.profileID == space.profileID && window != nil && $0.parkedIn === window
+            }) {
+                return parked.previewState(in: space)
+            }
+            return SharedTabs.state(profileID: space.profileID, space: space.id)
+        }
         if currentSpaceID == space.id {
             return Stash(tabs: tabs.filter { $0.kind != .favourite }, pins: pins, todayShape: todayShape,
                          splits: splits, current: current, fingerprint: "")
