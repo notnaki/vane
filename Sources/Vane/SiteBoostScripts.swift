@@ -16,7 +16,7 @@ import WebKit
       if (!/^https?:$/.test(location.protocol) || window.__vaneBoost) return;
       const stamp = performance.timeOrigin, origin = location.origin;
       const style = new CSSStyleSheet();
-      let overlay = null, selected = null;
+      let overlay = null, cover = null, selected = null;
       const sizeSelector = 'p,h1,h2,h3,h4,h5,h6,a,span,li,td,th,button,input,textarea,label,blockquote';
       const sizes = new Map();
       let sizeObserver = null, sizeFrame = null;
@@ -77,8 +77,16 @@ import WebKit
         });
         sizeObserver.observe(document, {childList: true, subtree: true});
       };
+      const elementAt = event => {
+        if (event.target !== cover) return event.target;
+        // A top-document glass intercepts embedded-frame input and selects the frame as a whole.
+        cover.style.setProperty('pointer-events', 'none', 'important');
+        const el = document.elementFromPoint(event.clientX, event.clientY);
+        cover.style.setProperty('pointer-events', 'auto', 'important');
+        return el;
+      };
       const hover = event => {
-        let el = event.target;
+        const el = elementAt(event);
         selected = selector(el) ? el : null;
         if (!selected) { overlay.style.display = 'none'; return; }
         const r = selected.getBoundingClientRect();
@@ -86,7 +94,7 @@ import WebKit
       };
       const pick = event => {
         event.preventDefault(); event.stopImmediatePropagation();
-        const key = selector(event.target);
+        const key = selector(elementAt(event));
         if (key) { post('pick', {selector:key}); overlay.style.display = 'none'; selected = null; }
       };
       const block = event => { event.preventDefault(); event.stopImmediatePropagation(); };
@@ -97,7 +105,10 @@ import WebKit
         zapOff();
         if (!on || !document.body) return;
         api.zapping = true;
-        overlay = document.createElement('div'); overlay.dataset.vaneZap = '';
+        cover = document.createElement('vane-boost-zap-cover'); cover.dataset.vaneZap = ''; cover.dataset.vaneZapCover = '';
+        cover.style.cssText = 'position:fixed;inset:0;z-index:2147483646;cursor:crosshair;display:block;background:transparent;';
+        document.documentElement.append(cover);
+        overlay = document.createElement('vane-boost-zap-highlight'); overlay.dataset.vaneZap = '';
         overlay.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;border:2px solid #8b5cf6;border-radius:4px;background:#8b5cf622;box-sizing:border-box;display:none;';
         document.documentElement.append(overlay);
         window.addEventListener('pointermove', hover, true);
@@ -113,7 +124,7 @@ import WebKit
         window.removeEventListener('pointerdown', block, true);
         window.removeEventListener('mousedown', block, true);
         window.removeEventListener('keydown', key, true);
-        overlay?.remove(); overlay = null; selected = null;
+        cover?.remove(); cover = null; overlay?.remove(); overlay = null; selected = null;
       };
       const api = window.__vaneBoost = {apply, selector, zap, post, zapping:false};
       window.addEventListener('pagehide', zapOff);

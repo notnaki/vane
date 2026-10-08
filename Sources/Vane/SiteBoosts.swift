@@ -181,6 +181,9 @@ struct SiteBoost: Codable, Equatable, Sendable {
         return result
     }
 
+    /// A provisional load can be cancelled or turn into a download; its old document survives.
+    static func beginNavigation(tab: Tab) { SiteBoostEditor.close(tab: tab) }
+
     static func navigation(tab: Tab) {
         SiteBoostEditor.close(tab: tab)
         documents.removeValue(forKey: tab.id)
@@ -189,6 +192,12 @@ struct SiteBoost: Codable, Equatable, Sendable {
         navigation(tab: tab)
         privateValues.removeValue(forKey: tab.id)
     }
+    static func forget(host: String, tab: Tab) {
+        let records = tab.isPrivate ? privateValues[tab.id] ?? [:] : store.records(profile: tab.profileID)
+        let matching = records.keys.filter { URL(string: $0)?.host()?.lowercased() == host.lowercased() }
+        for origin in matching { set(SiteBoost(), origin: origin, tab: tab) }
+    }
+
     static func forget(profile: UUID) {
         store.forget(profile: profile)
         for doc in documents.values where doc.tab?.profileID == profile {

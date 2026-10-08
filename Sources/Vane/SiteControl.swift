@@ -398,13 +398,15 @@ extension SiteControlModel {
             + "subdomains go, and you will be signed out of it. Vane also forgets the camera, "
             + "microphone and zoom answers you gave this site, the apps you let it open, "
             + "any certificate warning you clicked through for it, and its exemption from "
-            + "HTTPS-only mode. History and passwords are not touched."
+            + "HTTPS-only mode, along with its Boost and custom code. Reload the page to remove "
+            + "effects from scripts already run. History and passwords are not touched."
         alert.addButton(withTitle: "Clear")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         if let permissionScope { SitePermissions.reset(scope: permissionScope) }
         Zoom.forget(host: host, profile: tab.profileID)
+        SiteBoosts.forget(host: host, tab: tab)
         // The header advertises both of these — "a certificate problem was accepted here",
         // and http that HTTPS-only was told to allow. Clearing a site cannot leave standing
         // the two decisions that made it less safe than the others.

@@ -1356,6 +1356,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
         guard w === existingWeb else { return }
+        SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
         SitePermissions.endDocument(tabID: id)
         pictureInPicture = false
@@ -1364,7 +1365,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        if w === existingWeb { SiteBoosts.navigation(tab: self) }
+        if w === existingWeb { SiteBoosts.beginNavigation(tab: self) }
         if w === existingWeb {
             FileUploads.cancel(tabID: id)
             SitePermissions.endDocument(tabID: id)

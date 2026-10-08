@@ -27,7 +27,7 @@
 - [x] 1. Write origin, model, persistence, private-lifetime, and Site Controls tests. Run `swift test --filter SiteBoostTests` to confirm missing-feature failures. Implement `SiteBoosts.swift` and re-run.
 - [x] 2. Add WKWebView tests for styling/reset, dynamic elements, navigation isolation, selector picking/undo, and opt-in script errors. Implement `SiteBoostScripts.swift`, Engine controller/message/lifecycle hooks, and re-run the focused tests.
 - [x] 3. Build `SiteBoostEditor.swift`: native panel, live controls, presets, CSS/JS tabs, Zap/undo/reset, and script feedback. Wire Site Controls and profile deletion; document the flow in README.
-- [ ] 4. Run debug build, relevant XCTest and pure selfcheck. Inspect the native editor and Zap with a tracked task-owned fixture; close it afterward. Commit and open a PR.
+- [x] 4. Run debug build, relevant XCTest and pure selfcheck. Inspect the native editor and Zap with a tracked task-owned fixture; close it afterward. Commit and open a PR.
 - [ ] 5. Independently review the current PR diff; fix findings and revalidate. Wait for required CI/approvals, squash-merge, verify the merge, and sync main when safe.
 
 ## Execution ledger
@@ -39,3 +39,7 @@
 - Ruling: Use a constructed stylesheet and directly compiled page-world scripts; a restrictive-CSP fixture proved style elements and eval() were blocked. This keeps customization working without altering the site policy.
 
 - Verification: 11 focused tests passed, including restrictive CSP; full XCTest passed 523 tests with one existing skip and zero failures. Debug build and pure selfcheck passed. Native editor flow is covered by a window fixture; GUI automation resolved the duplicate app identity to another Vane instance, so no UI actions were sent to it.
+
+- Review 3fa17192: fixed cancelled-navigation document retention, whole-iframe Zap hit testing, and per-host Boost cleanup during Clear Site Data. Three regression scenarios failed before these fixes.
+
+- Review fixes verified: integrated Boost/autofill/blocker run passed 35 tests; pure selfcheck passed. Persistent and private host reset, sibling-tab updates, iframe selection, and cancellation are covered.
