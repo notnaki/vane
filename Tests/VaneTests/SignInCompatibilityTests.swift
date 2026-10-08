@@ -41,19 +41,22 @@ import XCTest
         </script>
         """
         let tab = Tab(isPrivate: true)
-        let window = host(tab)
+        let window = Self.host(tab)
+        let profile = tab.profileID
         var child: Tab?
         var childWindow: NSWindow?
         var closed = false
         tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         tab.onPopup = { configuration, _ in
-            let made = Tab(popup: configuration, isPrivate: true, profileID: tab.profileID)
+            let made = Tab(popup: configuration, isPrivate: true, profileID: profile)
             child = made
-            childWindow = self.host(made)
+            childWindow = Self.host(made)
             made.onClose = { closed = true }
             return made.web
         }
         addTeardownBlock { @MainActor in
+            tab.onPopup = nil
+            child?.onClose = nil
             child?.tearDown(); childWindow?.close(); tab.tearDown(); window.close()
         }
         tab.web.load(URLRequest(url: app))
@@ -86,7 +89,7 @@ import XCTest
         XCTAssertEqual(loggedOut, true)
     }
 
-    private func host(_ tab: Tab) -> NSWindow {
+    private static func host(_ tab: Tab) -> NSWindow {
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 640, height: 480),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

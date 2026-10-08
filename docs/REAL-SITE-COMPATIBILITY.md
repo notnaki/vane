@@ -196,9 +196,95 @@ selected; that is not a playback-failure result. Subsequent checks selected asse
 in Vane. Switching assets through the uncompiled demo also produced JavaScript
 assertions before later asset loads completed, so that experiment does not earn a
 Clear Key playback pass. Only the advancing FairPlay video above earns a protected
-playback pass. `drmcheck <url>` currently treats video time above one second as
-success even without checking media keys; use additional page/player evidence
-before interpreting its output as proof of decryption.
+playback pass. At that time, `drmcheck <url>` treated video time above one second as
+success and incorrectly described it as protected video even without media keys.
+The real-service follow-up below corrects that reporting. Additional asset/player
+evidence is still required before interpreting progress as proof of decryption.
+
+## Real-service follow-up — 2026-10-08
+
+### Prerequisites and account-service verification
+
+No designated Google, Microsoft or GitHub browser test account, MFA resource,
+streaming subscription, or second device/participant on a separate network was
+identified for this pass. The request for those resources did not receive an
+answer during execution. Repository GitHub CLI access is not a designated
+browser sign-in account and was not used as one.
+
+| Requested service flow | Outcome | Missing prerequisite / limit |
+| --- | --- | --- |
+| Google completed sign-in, redirects, MFA, cancel/retry, logout, quit/relaunch | **Unverified** | Designated Google test account, authorized MFA method and relying party. |
+| Microsoft completed sign-in, redirects, MFA, cancel/retry, logout, quit/relaunch | **Unverified** | Designated Microsoft test account/tenant, authorized MFA method and relying party. |
+| GitHub completed browser sign-in/OAuth, MFA, cancel/retry, logout, quit/relaunch | **Unverified** | Designated browser test account and authorized OAuth relying party. CLI access does not verify the browser flow. |
+| Subscription streaming, captions, seeking, sustained playback and recovery | **Unverified** | Authorized subscription/account and specific service/title. Public FairPlay demos are scored separately below. |
+| Cross-network audio/video call, screen transmission, reconnect and interruption | **Unverified** | Authorized second device/participant on a separate network and designated call service. |
+| Native capture Stop, camera/microphone/screen permission revocation during a call | **Unverified** | Designated live capture/call setup. Synthetic canvas source stop and permission-state regressions do not exercise native device capture or system revocation. |
+
+No personal credentials, new accounts, paid subscriptions, external participants,
+camera/microphone recordings or saved screen captures were used.
+
+### Independent fixtures
+
+The implementation source is `a5e699985afba63ea8f4e69baedfaa1009358f07`
+(based on `1fe9513c98f82b58d32e9617f7507b6c5b9c00b4`). Host: macOS **27.0.1 (26A434)**, arm64, Xcode **27.0
+(27A266a)**, Apple Swift **6.4 (swiftlang-6.4.0.34.1)**. XCTest uses production
+Vane `Tab` objects and real system WebKit, with isolated test data; it is not a
+signed sandbox app. No distribution or macOS 26 compatibility claim is made.
+
+| Fixture flow | Outcome | Exact exercised behavior and limitation |
+| --- | --- | --- |
+| Cross-origin redirect/challenge/return | Pass | `SignInCompatibilityTests/testCrossOriginPopupReturnReloadAndLogout`: an opener at `127.0.0.1` opens a popup, HTTP 302 sends it to `localhost`, a synthetic six-digit challenge redirects back, same-origin return writes synthetic cookie/localStorage, posts to opener and script-closes. The opener keeps its URL; reload preserves state and logout removes both stores. This is an MFA-shaped fixture, not OAuth, provider MFA, or process relaunch. |
+| Cancel and retry | Pass | `testCancelledPopupLeavesOpenerSignedOutAndCanReopen`: script-closing the challenge leaves the opener signed out; a new popup completes the same synthetic round trip. This tests WebKit's close callback, not every provider's cancellation UI. |
+| Video call interruption/reconnection/source stop | Pass | `CallCompatibilityTests/testSyntheticCallInterruptionReconnectAndSourceStop`: a 320×180 canvas at 20 fps feeds two in-page peers. Connected peers decode increasing inbound frames; `replaceTrack(null)` stops frame delivery after draining, reattachment resumes; both peers close, a fresh negotiated pair decodes again; cleanup ends source tracks, closes peers and detaches remote media. Local peers and synthetic video only: no microphone, TURN, network outage, remote call service or screen capture. |
+| Permission choices and session/media baseline | Pass | Existing permission grant/block/Ask, cancellation/navigation/window teardown, disk-session restore, decoded video pause/seek/resume/end and navigation clearing checks passed. These do not establish active-device revocation or provider session persistence. |
+| DRM evidence reporting | Pass after fix | Four focused regressions cover progress-only false positives and a frozen seeked frame. `drmcheck <url>` requires advancing consecutive samples of the same video, finite time beyond one second, decoded width and no media error; it distinguishes absent/present modern media keys without claiming subscription licensing. Attached keys alone do not establish an encrypted asset or successful license exchange. A 50-second watchdog bounds missing WebKit callbacks. |
+
+```sh
+swift test --filter 'DRMPlaybackEvidenceTests|CallCompatibilityTests|SignInCompatibilityTests|SitePermissionTests|SessionRestoreCompatibilityTests|MediaControlsWebKitTests/testDecodedPlayback|MediaControlsWebKitTests/testNavigationClears'
+```
+
+The final focused run passed **27 tests, zero failures**, at 09:47 TRT. The prior
+permission baseline passed **17 tests, zero failures**. The DRM policy's red run
+executed three tests with three assertion failures before the fix.
+The frozen-frame/first-sample red run failed two assertions before requiring
+consecutive advancing samples. A fixture-only follow-up releases popup callbacks
+explicitly during teardown; its two sign-in tests were rerun separately.
+
+### Separate signed public-demo playback
+
+The opt-in `python3 scripts/check-browser-smoke.py --public-media` mode uses a
+fresh ad hoc signed sandbox bundle, production entitlements, a unique bundle ID
+and empty `VANE_DATA_DIR`. It hosts production `Tab`/WebKit and drives the public
+[Shaka demo](https://shaka-project.github.io/shaka-player/demo/?build=uncompiled)
+through its player API. It uses muted playback; audible output is unverified.
+The minimal host window does not exercise normal browser chrome or native player
+button interaction. Asset selection and pause/seek/resume use page JavaScript.
+The mode replaces the deterministic smoke pass and is never run implicitly by CI.
+
+An initial probe stopped because its instrumentation used a removed Shaka caption
+API and checked the previous document before navigation committed. That run earns
+no sustained-playback pass and is not a Vane defect. Its owned app (PID 10035,
+started 09:39:53 TRT) exited, its cleanup process (PID 10666) exited and one
+temporary WebKit store was unregistered. A corrected probe was run separately.
+
+The first corrected bundle's executable SHA-256 was
+`29da4c03ee13278388ba30fa764fc5a38c8ca97b2103fb902ec37729eb5dd026`.
+Its clear HLS run passed six 15-second sampling intervals, pause (stable for one
+second), seek to 30 seconds, resume, and unload/reload recovery. Media time at the
+six samples was 46.895, 62.844, 78.779, 94.758, 110.737 and 126.693 seconds;
+width 1252, readyState 4, no keys or media/player error. Recovery decoded to
+1.014 seconds. No caption tracks were offered by this asset.
+
+In that same run, the Axinom FairPlay asset advanced to 46.851 and 62.385 seconds,
+width 1920, readyState 4, `com.apple.fps` and attached keys. English text track 3
+was active and its text displayer reported visible (French/German tracks also
+available); rendered cue text was not independently verified. At the third
+sample it was paused at 75.352 seconds with no media/player error. Thus this
+attempt **failed sustained playback** and did not reach recovery. The cause was
+not established. Native UI inspection was attempted during that run; this does
+not establish that UI inspection caused the pause or that Vane caused it.
+PID 12544 (start 09:42:26 TRT) and cleanup PID 14865 exited; one temporary store
+was unregistered. An unattended repeat with event diagnostics is scored below.
 
 ## Remaining work and reproduction
 

@@ -604,6 +604,17 @@ python3 scripts/check-browser-smoke.py
 python3 scripts/check-browser-smoke.py --lifecycle
 ```
 
+For an opt-in network-dependent public streaming pass on a graphical test Mac:
+
+```sh
+python3 scripts/check-browser-smoke.py --public-media
+```
+
+This separately samples 90 seconds per clear/FairPlay Shaka demo asset, with
+pause/seek/resume and player unload/reload. It uses no service accounts and does
+not verify subscription playback, cross-network calls or system capture revocation.
+Exact outcomes and limits belong in [the compatibility log](docs/REAL-SITE-COMPATIBILITY.md).
+
 The full `selfcheck` uses a keychain and a window server. Run it locally when
 those services are available:
 
