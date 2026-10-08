@@ -403,13 +403,12 @@ import SwiftUI
     /// is private to that file, and one item type is not worth exporting.
     private static func entry(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
         let act = MenuAction(run)
-        keptActions.append(act)
         let item = NSMenuItem(title: title, action: #selector(MenuAction.fire), keyEquivalent: "")
         item.target = act
+        item.representedObject = act // NSMenuItem.target is weak; the menu owns its action.
         return item
     }
 
-    private static var keptActions: [MenuAction] = []
     private static var keptDelegates: [Delegate] = []
 
     /// The closure behind one of those items.
@@ -457,6 +456,8 @@ import SwiftUI
         func windowDidResignKey(_ n: Notification) { recentre() }
         func windowWillClose(_ n: Notification) {
             MainActor.assumeIsolated {
+                store.clearSuggestions()
+                store.palette = nil
                 store.tabs.forEach { $0.tearDown() }
                 TabStore.all.removeAll { $0 === store }
                 LittleArc.keptDelegates.removeAll { $0 === self }
@@ -655,7 +656,6 @@ private struct OpenInButton: View {
     /// "come back to the Little Vane". Not read in `body`: `store.spaces` decodes
     /// spaces.json on every touch, and this label is drawn on every hover.
     @State private var space: String?
-    @State private var watch: (any NSObjectProtocol)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var title: String {
@@ -707,18 +707,11 @@ private struct OpenInButton: View {
                 Button("Choose a Space") { LittleArc.pickSpace(store) }
             }
         }
-        .onAppear {
+        .onAppear { refresh() }
+        // SwiftUI owns this subscription. A raw NotificationCenter block captured this
+        // view/store and could keep both alive without delivering onDisappear on close.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             refresh()
-            // The Space the label names belongs to *another* window, which publishes
-            // nothing this view is watching. A focus change is the only moment between a
-            // Space switch over there and a click on this button over here.
-            watch = NotificationCenter.default.addObserver(
-                forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
-            ) { _ in MainActor.assumeIsolated { refresh() } }
-        }
-        .onDisappear {
-            if let watch { NotificationCenter.default.removeObserver(watch) }
-            watch = nil
         }
     }
 

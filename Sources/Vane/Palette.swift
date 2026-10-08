@@ -1171,7 +1171,8 @@ struct CommandField: NSViewRepresentable {
         let isCurrent = owner === store && tab.id == store.current
         return PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
                           image: tab.favicon, title: tab.title, detail: detail, matchURL: tab.address, subtitle: place,
-                          trailing: isCurrent ? "" : "Switch to Tab", kind: "Open tab") { _ in
+                          trailing: isCurrent ? "" : "Switch to Tab", kind: "Open tab") { [weak tab, weak owner] _ in
+            guard let tab, let owner else { return }
             Windows.reveal(tab, in: owner)
         }
     }
@@ -1195,12 +1196,12 @@ struct CommandField: NSViewRepresentable {
     private func reportRow() -> PaletteRow {
         let issues = "https://github.com/notnaki/vane/issues/new"
         return PaletteRow(id: "report", icon: "bubble.left", title: "Report a Problem",
-                          detail: issues, chip: true, kind: "Feedback") { _ in
+                          detail: issues, chip: true, kind: "Feedback") { [weak store] _ in
             guard let url = URL(string: issues) else { return }
             // This bar's own window, not whichever one is key: the palette can be up in a
             // window that is not `Windows.current`, and the issue belongs beside the tabs
             // the user was looking at when they pressed it.
-            store.newTab(url)
+            store?.newTab(url)
         }
     }
 

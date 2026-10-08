@@ -42,6 +42,11 @@ passing release checks.
   baseline, average idle CPU below 3% over 60 seconds, and no continuing timers, media
   activity, or wakeups attributable to the closed objects.
 
+The [macOS 27 lifecycle investigation](LIFECYCLE-EFFICIENCY.md) records confirmed
+ownership fixes and signed local fixture measurements. Its counters cover Vane's
+parent process and weak object survivors; WebKit helper-process accounting and a
+complete Instruments allocation/energy/wakeup pass remain open.
+
 ## Final documentation and compatibility pass
 
 - The [2026-10-06 public-demo evidence](REAL-SITE-COMPATIBILITY.md) records scoped

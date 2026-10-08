@@ -235,8 +235,12 @@ import WebKit
 
     /// Before the web view is torn down. KVO on a dead observee is a crash, not a leak.
     static func unwatch(_ tab: Tab) {
-        guard let w = watches.removeValue(forKey: tab.id) else { return }
-        w.web?.removeObserver(w.watcher, forKeyPath: playingKey)
+        if let w = watches.removeValue(forKey: tab.id) {
+            w.web?.removeObserver(w.watcher, forKeyPath: playingKey)
+        }
+        audibleIDs.remove(tab.id)
+        tell(tab.id, false, playing: false)
+        sinks[tab.id] = nil
     }
 
     /// The tab is gone. Without this the maps grow by one entry per tab ever opened.

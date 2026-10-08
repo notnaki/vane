@@ -43,6 +43,11 @@ import WebKit
         installEntry()
     }
 
+    static func unregister(_ id: UUID) {
+        sources[id] = nil
+        cancel(for: id)
+    }
+
     static func cancel(for id: UUID) {
         captures.removeValue(forKey: id)?.session.endPresentation()
     }
