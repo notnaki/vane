@@ -1,8 +1,8 @@
 # Updater recovery audit — macOS 27
 
 Audited on macOS 27.0.1 (26A434), arm64, starting from `main` at `dee7b89`
-in an isolated `codex/updater-failure-recovery` worktree. The installed Vane and
-its data were not modified. Heavy checks and foreground launches were scheduled
+in an isolated `codex/updater-failure-recovery` worktree. The installed Vane bundle was not modified. The earlier failed native relaunch
+runs could not establish data isolation; see the limits below. Heavy checks and foreground launches were scheduled
 with the smoothness chat.
 
 ## Confirmed defects and fixes
@@ -26,7 +26,9 @@ with the smoothness chat.
   journals can restore independently verified previous bundles even if the new
   bundle is damaged; interrupted legacy cleanup remains recoverable.
 - Restart could lose `VANE_DATA_DIR` and select an existing app instance. Relaunch
-  now preserves isolation and requests a new instance. The shell verifies the
+  requests a new instance for ordinary launches. Apple ignores LaunchServices
+  environment overrides from sandboxed callers, so isolated launches now start the
+  verified executable directly. The shell verifies the
   current host and helper against pinned signature requirements before execution.
   Real native testing also caught and fixed the missing `=` prefix for inline
   `codesign -R` requirements.
@@ -34,7 +36,9 @@ with the smoothness chat.
   so repeated starts could leave it active indefinitely. A restricted mode of the
   existing installer helper watches LaunchServices' actual application object. It
   restores the verified previous bundle when that process dies before bootstrap;
-  a slow live launch is allowed to continue. Once bootstrap claims the journal,
+  a slow live launch is allowed to continue. A claim must match the actual child
+  PID and nonnil kernel start time; unavailable start observations keep supervision
+  active. Once bootstrap claims the journal,
   existing browser recovery owns health and rollback. Failed opens return failure
   even when a stale or malformed record prevents recovery.
 - Transport and verification failures lost diagnostic context. Known download
@@ -51,7 +55,7 @@ and durable healthy record. Unsafe recovery stops before opening a browser windo
 | Area | Coverage |
 | --- | --- |
 | Transport/extraction | Real URLSession loopback complete, truncated, interrupted, cancellation and HTTP failure cases; real ditto corrupt/truncated/empty ZIP and missing/unsigned bundle rejection. The release host is simulated; production host trust is unchanged. |
-| Transaction | 107 headless assertions, including actual SIGKILL at copy, sync, journal, swap, launch, rollback and healthy/cleanup boundaries; failed writes/destinations/replacement; repeated attempts; stale, legacy, wrong-target/volume and symlink records; damaged old/new bundles and old executing inode. Bundle verification predicates in generic directory fixtures are simulated. |
+| Transaction | 111 headless assertions, including actual SIGKILL at copy, sync, journal, swap, launch, rollback and healthy/cleanup boundaries; failed writes/destinations/replacement; repeated attempts; stale, legacy, wrong-target/volume and symlink records; damaged old/new bundles and old executing inode. Bundle verification predicates in generic directory fixtures are simulated. |
 | Relaunch | Literal shell arguments, isolated environment, three failed-open retries, simulated verifier/helper failures, refusal to execute an unverified helper, and real ad-hoc `codesign` requirement parsing. |
 | Distribution | Unchanged published v0.0.23 and v0.0.24 fixtures passed strict deep/all-architecture signature verification, stapled-ticket validation and real Gatekeeper assessment as Notarized Developer ID, team `T7X84HN3W3`. |
 | Rejections | Real Developer ID re-signed wrong identity, version and architecture fixtures were rejected. A locally signed unnotarized candidate passed signature verification but failed real Gatekeeper assessment, preserving the old destination and detailed error. Tampered signatures were rejected. |
@@ -60,8 +64,10 @@ and durable healthy record. Unsafe recovery stops before opening a browser windo
 
 Native launch results and final review/CI are recorded with the PR. The scripts are
 documented in README and headless transaction/transport/relaunch checks run in CI.
-Native fixtures use isolated data and disposable app copies. Their driver inherits
-Vane's sandbox entitlements for the shell/helper chain. All native process signals
+Final native fixtures use isolated data and disposable app copies. Transaction
+staging runs outside the browser sandbox, as XPC does; the restart driver inherits
+Vane's sandbox entitlements for the shell/helper chain. App Translocation paths are
+resolved to original fixture paths before process cleanup. All native process signals
 are limited to recorded executable paths, PIDs and start times.
 
 ## Limits
@@ -75,3 +81,18 @@ prerequisites. Power loss/storage failure is represented by durable-boundary pro
 interruption and injected failures, not physical power removal. Invalid records or
 an untrusted helper retain the previous bundle for attention rather than executing
 unverified recovery code.
+
+Early failed sandboxed relaunch runs (approximately 14:03 and 14:12 local time)
+were discovered to lose their environment override. Those restored release copies
+could access the normal data directory; any profile impact cannot be attributed
+or ruled out while the user's regular instance and other tasks were active. They
+were stopped, and those runs are excluded from the final isolated evidence.
+No installed app bundle was changed. The corrected native early-exit fixture
+records its actual isolated environment before exiting.
+
+The fixture clears its own preference domain, processes and disposable bundles.
+macOS protects the unique driver's sandbox registration and standard container
+scaffold; those OS-managed registrations may remain after its app is removed.
+
+Apple documents the sandbox environment restriction in
+[NSWorkspace.OpenConfiguration.environment](https://developer.apple.com/documentation/appkit/nsworkspace/openconfiguration/environment).

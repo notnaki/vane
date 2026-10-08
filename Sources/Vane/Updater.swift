@@ -949,7 +949,8 @@ extension Release {
     private static func launchAfterExit(_ target: URL, recoverUnlaunched: Bool = true) throws {
         let script = UpdateRelaunch.script(parentPID: getpid(), target: target,
                                           isolatedDirectory: Store.overrideDirectory,
-                                          recoveryTool: recoverUnlaunched ? target.appendingPathComponent("Contents/XPCServices/\(UpdateInstaller.serviceName).xpc/Contents/MacOS/VaneUpdateInstaller") : nil)
+                                          recoveryTool: recoverUnlaunched ? target.appendingPathComponent("Contents/XPCServices/\(UpdateInstaller.serviceName).xpc/Contents/MacOS/VaneUpdateInstaller") : nil,
+                                          directExecutable: Store.overrideDirectory == nil ? nil : Bundle(url: target)?.executableURL)
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
         helper.arguments = ["-c", script]

@@ -452,6 +452,17 @@ enum BundleReplacement {
         }
     }
 
+    static func hasPendingRecord(at target: URL) -> Bool { entryExists(journalURL(target)) }
+
+    static func launchClaimed(at target: URL, by pid: Int32,
+                              observeStart: (Int32) -> UInt64? = processStart) -> Bool {
+        guard let journal = read(target), let recordedStart = journal.launchStart,
+              let observedStart = observeStart(pid) else { return false }
+        return bound(journal, to: target) && journal.state == .launching
+            && journal.launchPID == pid && recordedStart == observedStart
+            && fileID(target) == journal.newID
+    }
+
     static func awaitingBootstrap(at target: URL) -> Bool {
         guard let journal = read(target) else { return false }
         return bound(journal, to: target) && journal.state == .prepared && fileID(target) == journal.newID

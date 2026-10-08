@@ -849,8 +849,11 @@ After coordinating a graphical test slot, native recovery can be checked with
 `python3 scripts/test-updater-native.py --app /path/to/signed-new/Vane.app --previous /path/to/unchanged-old/Vane.app --evidence /path/to/evidence`.
 Add `--bootstrap-failure` with `SIGN_ID` to cover a signed executable that exits
 before updater startup, plus failed opens with stale or malformed journals. The driver
-uses Vane’s sandbox entitlements, disposable bundles under Downloads, isolated data
-and tracked process cleanup. It simulates notarization for the local candidate at the transaction boundary;
+uses unsandboxed staging and Vane’s sandbox entitlements for restart, disposable
+bundles under Downloads, isolated data and tracked process cleanup, including
+App Translocation. macOS may retain the driver's protected sandbox registration.
+Isolated relaunches execute the verified bundle directly because LaunchServices
+ignores environment overrides from sandboxed callers. It simulates notarization for the local candidate at the transaction boundary;
 actual distribution verification remains the separate installer/release-candidate check.
 
 To verify an *unchanged, notarized* release ZIP on a graphical test machine:

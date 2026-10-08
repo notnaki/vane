@@ -28,11 +28,12 @@ enum InstallerRelaunch {
         }
         do {
             try UpdateInstallation.verifyForRelaunch(target)
+            if let directory = ProcessInfo.processInfo.environment["VANE_DATA_DIR"] {
+                try launchIsolated(target, directory: directory)
+                return
+            }
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.createsNewApplicationInstance = true
-            if let directory = ProcessInfo.processInfo.environment["VANE_DATA_DIR"] {
-                configuration.environment = ["VANE_DATA_DIR": directory]
-            }
             let reply = Reply()
             NSWorkspace.shared.openApplication(at: target, configuration: configuration) { app, error in
                 reply.finish(app, error)
@@ -51,7 +52,8 @@ enum InstallerRelaunch {
             // live bootstrap; don't mistake an unregistered window or elapsed timer for
             // process death. Once bootstrap claims the journal, normal launch recovery owns it.
             while let application, !application.isTerminated,
-                  BundleReplacement.awaitingBootstrap(at: target) {
+                  BundleReplacement.hasPendingRecord(at: target),
+                  !BundleReplacement.launchClaimed(at: target, by: application.processIdentifier) {
                 RunLoop.current.run(until: Date().addingTimeInterval(0.1))
             }
             let restored = BundleReplacement.awaitingBootstrap(at: target) ? try recover(target) : false
@@ -64,6 +66,25 @@ enum InstallerRelaunch {
                 NSLog("[vane] unlaunched update recovery failed: %@", String(describing: error))
                 exit(1)
             }
+        }
+    }
+
+    private static func launchIsolated(_ target: URL, directory: String) throws {
+        // NSWorkspace ignores environment when called from an inherited sandbox.
+        // Process retains the explicit override and the child's exact process identity.
+        let application = Process()
+        application.executableURL = Bundle(url: target)?.executableURL
+        var environment = ProcessInfo.processInfo.environment
+        environment["VANE_DATA_DIR"] = directory
+        application.environment = environment
+        try application.run()
+        while application.isRunning, BundleReplacement.hasPendingRecord(at: target),
+              !BundleReplacement.launchClaimed(at: target, by: application.processIdentifier) {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        if !application.isRunning {
+            let restored = BundleReplacement.awaitingBootstrap(at: target) ? try recover(target) : false
+            if !restored { exit(1) }
         }
     }
 
@@ -81,7 +102,8 @@ enum InstallerRelaunch {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", UpdateRelaunch.script(parentPID: getpid(), target: target,
-                isolatedDirectory: ProcessInfo.processInfo.environment["VANE_DATA_DIR"])]
+                isolatedDirectory: ProcessInfo.processInfo.environment["VANE_DATA_DIR"],
+                directExecutable: ProcessInfo.processInfo.environment["VANE_DATA_DIR"] == nil ? nil : Bundle(url: target)?.executableURL)]
             try process.run()
             return true
         case .needsAttention:

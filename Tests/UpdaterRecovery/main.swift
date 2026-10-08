@@ -258,7 +258,16 @@ do {
 do {
     let (source, target) = try scene("bootstrapped-owner")
     try install(source, target)
+    check("prepared transaction has no claimed launch", BundleReplacement.hasPendingRecord(at: target) && !BundleReplacement.launchClaimed(at: target, by: getpid()))
     _ = BundleReplacement.beginLaunch(at: target)
+    check("supervisor recognizes exact bootstrap owner", BundleReplacement.launchClaimed(at: target, by: getpid()))
+    check("stale owner cannot certify a different process", !BundleReplacement.launchClaimed(at: target, by: Int32.max))
+    let saved = try Data(contentsOf: journal(target))
+    var missingStart = try JSONSerialization.jsonObject(with: saved) as! [String: Any]
+    missingStart.removeValue(forKey: "launchStart")
+    try JSONSerialization.data(withJSONObject: missingStart).write(to: journal(target))
+    check("unavailable start times never certify bootstrap ownership", !BundleReplacement.launchClaimed(at: target, by: getpid(), observeStart: { _ in nil }))
+    try saved.write(to: journal(target))
     let result = try BundleReplacement.restoreUnlaunched(at: target, verifyPrevious: { _ in true })
     check("external helper cannot take over bootstrapped launch", result == .unchanged && label(target) == "new" && stages(target).contains { label($0) == "old" })
 }
