@@ -394,17 +394,32 @@ import WebKit
                 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
                 downloads.destinationDirectory = destination
                 DownloadLocation.setAskEveryTime(false, for: profile)
+                var arrivals: [DownloadFeedback.Start] = []
+                let arrivalObservation = NotificationCenter.default.publisher(for: DownloadFeedback.started)
+                    .sink { notification in
+                        MainActor.assumeIsolated {
+                            if let start = notification.object as? DownloadFeedback.Start { arrivals.append(start) }
+                        }
+                    }
+                defer { arrivalObservation.cancel() }
                 for expected in 1...2 {
                     tab.web.load(URLRequest(url: URL(string: "\(base)/download")!))
                     try await wait("attachment download completes") {
                         downloads.items.filter { $0.status == .done }.count == expected
                     }
+                    try require(arrivals.count == expected && arrivals.last?.window === tab.web.window
+                                && arrivals.last?.profileID == profile,
+                                "each accepted WKDownload signals arrival only in its originating window")
+                    try require(arrivals.last?.name == downloads.items.first?.name,
+                                "download arrival uses the accepted destination's file type")
                 }
                 let files = downloads.items.compactMap(\.url)
                 try require(files.count == 2 && Set(files).count == 2,
                             "repeated attachment downloads use distinct destinations")
                 try require(try files.allSatisfy { try Data(contentsOf: $0) == Data("Vane download fixture\n".utf8) },
                             "real WKDownload writes complete bytes without replacing the earlier file")
+                _ = Downloads(profileID: profile, directory: Store.directory, sandboxed: true)
+                try require(arrivals.count == 2, "loading download history does not replay arrival feedback")
 
                 try await batterySaverCheck(base: base, profile: profile)
                 try await multiWindow(base: base)
