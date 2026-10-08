@@ -155,12 +155,12 @@ struct BrowserProfile {
 
         let history = visits.compactMap { visit -> (url: URL, title: String, at: Date)? in
             guard let url = URL(string: visit.url), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-                  url.host != nil else { return nil }
+                  url.host?.isEmpty == false else { return nil }
             return (url, visit.title, visit.at)
         }
         let bookmarks = marks.compactMap { mark -> BookmarkImportItem? in
             guard let url = URL(string: mark.url), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
-                  url.host != nil else { return nil }
+                  url.host?.isEmpty == false else { return nil }
             return BookmarkImportItem(url: url, title: mark.title, folder: nil)
         }
         let store = Store.store(for: profileID)
@@ -254,32 +254,53 @@ struct BrowserProfile {
             throw Failure("The Bookmarks file has no supported bookmark roots.")
         }
         var out: [(url: String, title: String)] = []
-        func walk(_ node: Any?) {
-            guard let n = node as? [String: Any] else { return }
-            if n["type"] as? String == "url", let u = n["url"] as? String {
-                out.append((u, n["name"] as? String ?? ""))
+        func walk(_ node: Any) throws {
+            guard let n = node as? [String: Any], let type = n["type"] as? String else {
+                throw Failure("The Bookmarks file contains a malformed node.")
             }
-            for child in n["children"] as? [Any] ?? [] { walk(child) }
+            switch type {
+            case "url":
+                guard let url = n["url"] as? String else { throw Failure("A bookmark is missing its URL.") }
+                out.append((url, n["name"] as? String ?? ""))
+            case "folder": break
+            case "separator": return
+            default: throw Failure("The Bookmarks file contains an unsupported node type.")
+            }
+            if let children = n["children"] {
+                guard let children = children as? [Any] else { throw Failure("A bookmark folder has malformed children.") }
+                for child in children { try walk(child) }
+            }
         }
-        for key in ["bookmark_bar", "other", "synced"] { walk(roots[key]) }
+        for key in ["bookmark_bar", "other", "synced"] {
+            if let node = roots[key] { try walk(node) }
+        }
         return out
     }
 
-    /// Safari's Bookmarks.plist: WebBookmarkTypeList nodes hold Children, WebBookmarkTypeLeaf
-    /// nodes hold the url. Anything else (WebBookmarkTypeProxy — History, Bonjour) has no
-    /// Children and falls out on its own.
+    /// Safari proxies are unsupported, while damaged leaves/list structures fail closed.
     static func safariBookmarks(_ node: Any?) -> [(url: String, title: String)] {
-        guard let n = node as? [String: Any] else { return [] }
-        if n["WebBookmarkType"] as? String == "WebBookmarkTypeLeaf" {
-            guard let u = n["URLString"] as? String else { return [] }
-            return [(u, (n["URIDictionary"] as? [String: Any])?["title"] as? String ?? "")]
+        (try? checkedSafariBookmarks(node)) ?? []
+    }
+
+    private static func checkedSafariBookmarks(_ node: Any?) throws -> [(url: String, title: String)] {
+        guard let n = node as? [String: Any], let type = n["WebBookmarkType"] as? String else {
+            throw Failure("The bookmarks plist contains a malformed node.")
         }
-        return (n["Children"] as? [Any] ?? []).flatMap { safariBookmarks($0) }
+        switch type {
+        case "WebBookmarkTypeLeaf":
+            guard let url = n["URLString"] as? String else { throw Failure("A bookmark is missing its URL.") }
+            return [(url, (n["URIDictionary"] as? [String: Any])?["title"] as? String ?? "")]
+        case "WebBookmarkTypeProxy": return []
+        case "WebBookmarkTypeList":
+            guard let raw = n["Children"] else { return [] }
+            guard let children = raw as? [Any] else { throw Failure("A bookmark folder has malformed children.") }
+            return try children.flatMap { try checkedSafariBookmarks($0) }
+        default: throw Failure("The bookmarks plist contains an unsupported node type.")
+        }
     }
 
     private static func safariBookmarksFile(_ file: URL) throws -> [(url: String, title: String)] {
-        safariBookmarks(try PropertyListSerialization.propertyList(from: try read(file),
-                                                                   format: nil))
+        try checkedSafariBookmarks(PropertyListSerialization.propertyList(from: try read(file), format: nil))
     }
 
     /// Safari stores a title on each visit, so retain each visit and its own title.

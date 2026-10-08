@@ -62,4 +62,48 @@ import Security
         TestEnvironment.prepare()
         XCTAssertTrue(try Passwords.exportEntries(profileID: UUID()) { _, _ in errSecItemNotFound }.isEmpty)
     }
+
+    func testIsolatedKeychainCSVRoundTripAndRepeatPreserveExistingCredentials() throws {
+        TestEnvironment.prepare()
+        guard ProcessInfo.processInfo.environment["VANE_TEST_KEYCHAIN"] == "1" else {
+            throw XCTSkip("Set VANE_TEST_KEYCHAIN=1 for isolated Keychain round trips")
+        }
+        let source = UUID(), target = UUID(), host = "fixture-\(UUID().uuidString.lowercased()).invalid"
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("vane-password-roundtrip-\(UUID())")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer {
+            Passwords.deleteAll(profileID: source); Passwords.deleteAll(profileID: target)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        let entries = [PasswordImport.Entry(origin: PasswordOrigin(host: host), account: " 雪,\"ada\" ", password: "fixture\n🔑"),
+                       PasswordImport.Entry(origin: PasswordOrigin(host: host, port: 8443), account: "", password: "second"),
+                       PasswordImport.Entry(origin: PasswordOrigin(host: host, scheme: "http"), account: "ada", password: "third")]
+        for entry in entries { XCTAssertTrue(Passwords.save(origin: entry.origin, account: entry.account, password: entry.password, profileID: source)) }
+        let exported = try Export.savedPasswords(profileID: source)
+        XCTAssertEqual(exported.count, 3)
+        let file = dir.appendingPathComponent("passwords.csv")
+        try Export.write(Export.passwordsCSV(exported), to: file, secret: true)
+        let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(mode?.intValue, 0o600)
+        for attempt in 0...1 {
+            let result = try PasswordImport.importFile(file, existing: Set(Passwords.all(profileID: target).map(\.id))) { entry in
+                Passwords.save(origin: entry.origin, account: entry.account, password: entry.password,
+                               profileID: target, replacingExisting: false)
+            }
+            XCTAssertEqual(result.imported, attempt == 0 ? 3 : 0)
+            XCTAssertEqual(result.skipped, attempt == 0 ? 0 : 3)
+            XCTAssertEqual(result.failed, 0)
+        }
+        for entry in entries {
+            XCTAssertEqual(Passwords.password(origin: entry.origin, account: entry.account, profileID: target), entry.password)
+        }
+        XCTAssertTrue(Passwords.save(origin: entries[0].origin, account: entries[0].account, password: "existing-newer", profileID: target))
+        let refused = try PasswordImport.importFile(file) { entry in
+            Passwords.save(origin: entry.origin, account: entry.account, password: entry.password,
+                           profileID: target, replacingExisting: false)
+        }
+        XCTAssertEqual(refused.failed, 3)
+        XCTAssertEqual(Passwords.password(origin: entries[0].origin, account: entries[0].account, profileID: target), "existing-newer")
+    }
+
 }

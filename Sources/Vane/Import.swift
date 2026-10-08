@@ -78,6 +78,7 @@ enum PasswordImport {
 
         var entries: [Entry] = [], skipped = 0
         for row in rows.dropFirst() {
+            guard row.count <= header.count else { throw Failure("A CSV row has more fields than its header. Check its quoting.") }
             func field(_ i: Int?) -> String {
                 guard let i, i < row.count else { return "" }
                 return row[i]
@@ -97,7 +98,7 @@ enum PasswordImport {
     }
 
     @discardableResult
-    static func importFile(_ url: URL, existing: Set<String> = [],
+    static func importFile(_ url: URL, existing: @autoclosure () -> Set<String> = [],
                            save: (Entry) -> Bool = {
                                Passwords.save(origin: $0.origin, account: $0.account,
                                               password: $0.password, replacingExisting: false)
@@ -105,7 +106,7 @@ enum PasswordImport {
         let text = try String(contentsOf: url, encoding: .utf8)
         let parsed = try parse(text)
         var imported = 0, skipped = parsed.skipped, failed = 0
-        var saved = existing
+        var saved = existing()
         for entry in parsed.entries {
             let key = entry.origin.key(account: entry.account)
             guard !saved.contains(key) else { skipped += 1; continue }
@@ -132,8 +133,7 @@ enum PasswordImport {
 
         let alert = NSAlert()
         do {
-            let existing = Set(Passwords.all(profileID: profileID).map(\.id))
-            let result = try importFile(file, existing: existing, save: {
+            let result = try importFile(file, existing: Set(Passwords.all(profileID: profileID).map(\.id)), save: {
                 return Passwords.save(origin: $0.origin, account: $0.account, password: $0.password,
                                       profileID: profileID, replacingExisting: false)
             })
@@ -165,8 +165,8 @@ enum PasswordImport {
         let entries = try Export.checkedNetscapeEntries(String(contentsOf: url, encoding: .utf8))
         guard !entries.isEmpty else { throw PasswordImport.Failure("no bookmarks were found") }
         let items = entries.compactMap { entry -> BookmarkImportItem? in
-            guard let url = URL(string: entry.row.url), url.scheme == "http" || url.scheme == "https"
-            else { return nil }
+            guard let url = URL(string: entry.row.url), ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                  url.host?.isEmpty == false else { return nil }
             return BookmarkImportItem(url: url, title: entry.row.title,
                                       folder: entry.folder, at: entry.importedAt)
         }

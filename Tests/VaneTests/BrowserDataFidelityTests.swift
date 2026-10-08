@@ -87,6 +87,29 @@ import SQLite3
         }
     }
 
+    func testInvalidPasswordFileDoesNotReadExistingCredentialMetadata() throws {
+        let file = try directory().appendingPathComponent("missing.csv")
+        var reads = 0
+        func existing() -> Set<String> { reads += 1; return [] }
+        XCTAssertThrowsError(try PasswordImport.importFile(file, existing: existing()) { _ in
+            XCTFail("An unreadable file must not save credentials"); return false
+        })
+        XCTAssertEqual(reads, 0)
+    }
+
+    func testPasswordOverwideRowsRejectBeforeAnySave() throws {
+        let file = try directory().appendingPathComponent("passwords.csv")
+        try Export.write("url,username,password\nhttps://good.invalid,ada,valid\nhttps://bad.invalid,bob,part1,part2", to: file)
+        var saves = 0
+        XCTAssertThrowsError(try PasswordImport.importFile(file) { _ in saves += 1; return true })
+        XCTAssertEqual(saves, 0)
+    }
+
+    func testHTMLAttributesInsideQuotedValuesCannotOverrideRealURL() {
+        let rows = Export.parseNetscape(#"<DT><A TITLE='x HREF="https://wrong.invalid/"' HREF='https://right.invalid/'>T</A>"#)
+        XCTAssertEqual(rows.first?.url, "https://right.invalid/")
+    }
+
     func testPasswordBOMAliasesOriginAndQuotedFields() throws {
         let aliases = [("url", "username", "password"), ("Website URL", "User Name", "Password"),
                        ("login_uri", "login_username", "login_password"), ("Web Site", "Login", "Password"),
@@ -242,6 +265,107 @@ import SQLite3
         XCTAssertEqual(objects.first?["url"] as? String, rows[0].url)
         XCTAssertEqual(objects.first?["title"] as? String, rows[0].title)
         XCTAssertEqual(objects.first?["epoch"] as? Double, 1700000000.125)
+    }
+
+    func testStructurallyDamagedNativeBookmarksRejectValidPrefixAndHistory() throws {
+        let chrome = try chromium(in: directory()), chromeID = destination()
+        try Export.write("""
+            {"roots":{"bookmark_bar":{"type":"folder","children":[
+                {"type":"url","url":"https://valid.invalid/","name":"Keep"},
+                {"type":"folder","children":"damaged"}]}}}
+            """, to: chrome.path.appendingPathComponent("Bookmarks"))
+        XCTAssertThrowsError(try BrowserImport.importAll(from: chrome, profileID: chromeID))
+        XCTAssertTrue(Store.store(for: chromeID).history().isEmpty)
+        XCTAssertTrue(Store.store(for: chromeID).bookmarks().isEmpty)
+
+        let dir = try directory(), id = destination()
+        try sql(dir.appendingPathComponent("History.db"), """
+            CREATE TABLE history_items (id INTEGER, url TEXT);
+            CREATE TABLE history_visits (history_item INTEGER, title TEXT, visit_time REAL);
+            INSERT INTO history_items VALUES (1, 'https://valid.invalid/');
+            INSERT INTO history_visits VALUES (1, 'Keep', 721692800);
+            """)
+        for plist in ["unrelated plist" as Any,
+                      ["WebBookmarkType": "WebBookmarkTypeList", "Children": [
+                        ["WebBookmarkType": "WebBookmarkTypeLeaf", "URLString": "https://valid.invalid/"],
+                        ["WebBookmarkType": "WebBookmarkTypeLeaf"]]] as Any] {
+            try PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0)
+                .write(to: dir.appendingPathComponent("Bookmarks.plist"))
+            let profile = BrowserProfile(browser: "Safari", profile: "Synthetic", path: dir, hasHistory: true, hasBookmarks: true)
+            XCTAssertThrowsError(try BrowserImport.importAll(from: profile, profileID: id))
+            XCTAssertTrue(Store.store(for: id).history().isEmpty)
+            XCTAssertTrue(Store.store(for: id).bookmarks().isEmpty)
+        }
+    }
+
+    func testUnrepresentableBookmarkDateUsesMissingDateNormalization() {
+        for date in ["1e300", "-1e300", "nan", "inf", "not-a-date"] {
+            let parsed = Export.parseNetscapeEntries("<DL><DT><A HREF='https://fixture.invalid/' ADD_DATE='\(date)'>Title</A></DL>")
+            XCTAssertEqual(parsed.count, 1)
+            XCTAssertNil(parsed.first?.importedAt)
+        }
+    }
+
+    func testCorruptStoredDatesFailExportBeforeReplacingOutput() throws {
+        let id = destination(), dir = try directory(), output = dir.appendingPathComponent("existing.html")
+        try Export.write("existing output", to: output)
+        try sql(ProfileManager.dbURL(for: id, in: Store.directory), "INSERT INTO bookmarks (url, title, at) VALUES ('https://fixture.invalid/', 'Title', 1e300)")
+        XCTAssertThrowsError(try Export.bookmarkEntries(profileID: id))
+        try sql(ProfileManager.dbURL(for: id, in: Store.directory), "INSERT INTO visits (url, title, at) VALUES ('https://fixture.invalid/', 'Title', 1e300)")
+        XCTAssertThrowsError(try Export.text(for: .historyJSON, profileID: id))
+        XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "existing output")
+    }
+
+    func testBookmarkImportCountsUnsupportedURLsAndRejectsHostlessWebURLs() throws {
+        let file = try directory().appendingPathComponent("bookmarks.html"), id = destination()
+        try Export.write("""
+            <DL><DT><A HREF="HTTPS://fixture.invalid/UPPER">Keep</A>
+            <DT><A HREF="https:///">No host</A><DT><A HREF="about:blank">Not web</A></DL>
+            """, to: file)
+        let result = try BookmarkImport.importFile(file, profileID: id)
+        XCTAssertEqual(result.imported, 1)
+        XCTAssertEqual(Store.store(for: id).bookmarks().map(\.title), ["Keep"])
+    }
+
+    func testPasswordExistingEntriesAndFailedDuplicateRetryHaveAccurateCounts() throws {
+        let file = try directory().appendingPathComponent("passwords.csv")
+        try Export.write(Export.csv([["url", "username", "password"],
+            ["https://existing.invalid", "ada", "replacement"],
+            ["https://retry.invalid", "ada", "failed"],
+            ["https://retry.invalid", "ada", "succeeds"]]), to: file)
+        var passwords: [String] = []
+        let result = try PasswordImport.importFile(file,
+            existing: [PasswordOrigin(host: "existing.invalid").key(account: "ada")]) { entry in
+                passwords.append(entry.password); return entry.password == "succeeds"
+            }
+        XCTAssertEqual(passwords, ["failed", "succeeds"])
+        XCTAssertEqual(result.imported, 1)
+        XCTAssertEqual(result.skipped, 1)
+        XCTAssertEqual(result.failed, 1)
+    }
+
+    func testBookmarkImportCommitFailureRollsBackFoldersAndRows() throws {
+        let dir = try directory(), path = dir.appendingPathComponent("db.sqlite"), store = Store(path: path.path)
+        var reader: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path.path, &reader), SQLITE_OK)
+        defer { sqlite3_close(reader) }
+        let writer = try XCTUnwrap(Mirror(reflecting: store).children.first { $0.label == "db" }?.value as? OpaquePointer)
+        XCTAssertEqual(sqlite3_exec(writer, "PRAGMA journal_mode=DELETE", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(reader, "BEGIN; SELECT * FROM bookmarks", nil, nil, nil), SQLITE_OK)
+        let items = [BookmarkImportItem(url: URL(string: "https://fixture.invalid/")!, title: "Keep", folder: "Folder")]
+        XCTAssertNil(store.importBookmarks(items))
+        XCTAssertEqual(sqlite3_exec(reader, "ROLLBACK", nil, nil, nil), SQLITE_OK)
+        XCTAssertTrue(store.bookmarks().isEmpty)
+        XCTAssertTrue(store.bookmarkFolders().isEmpty)
+        XCTAssertEqual(store.importBookmarks(items)?.imported, 1)
+    }
+
+    func testNativeCorruptHistoryRejectsBothCategoriesAndPreservesExistingOutput() throws {
+        let profile = try chromium(in: directory()), id = destination()
+        try Data("not a SQLite database".utf8).write(to: profile.path.appendingPathComponent("History"))
+        XCTAssertThrowsError(try BrowserImport.importAll(from: profile, profileID: id))
+        XCTAssertTrue(Store.store(for: id).bookmarks().isEmpty)
+        XCTAssertTrue(Store.store(for: id).history().isEmpty)
     }
 
     func testUnreadableSourcesAndFailedExportsPreserveExistingOutput() throws {

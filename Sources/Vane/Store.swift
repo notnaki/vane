@@ -432,7 +432,8 @@ struct BookmarkImportResult: Equatable, Sendable {
     private func insertBookmarks(_ source: [BookmarkImportItem]) -> BookmarkImportResult? {
         var seen = Set<String>()
         let rows = source.filter {
-            ($0.url.scheme == "http" || $0.url.scheme == "https")
+            ["http", "https"].contains($0.url.scheme?.lowercased() ?? "")
+                && $0.url.host?.isEmpty == false
                 && seen.insert($0.url.absoluteString).inserted
         }
         var existing = Set<String>()

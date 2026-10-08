@@ -56,7 +56,7 @@ import UniformTypeIdentifiers
     /// A complete read snapshot. Returning only after SQLITE_DONE is the important part:
     /// SQLite may yield rows and then fail, and those rows are not a successful export.
     private static func snapshot<T>(_ sql: String, path: String,
-                                    row: (OpaquePointer) -> T) throws -> [T] {
+                                    row: (OpaquePointer) throws -> T) throws -> [T] {
         var db: OpaquePointer?
         defer { sqlite3_close(db) }
         let opened = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil)
@@ -74,7 +74,7 @@ import UniformTypeIdentifiers
         var out: [T] = []
         var stepped = sqlite3_step(statement)
         while stepped == SQLITE_ROW {
-            out.append(row(statement))
+            out.append(try row(statement))
             stepped = sqlite3_step(statement)
         }
         guard stepped == SQLITE_DONE else { throw message("read", db: db, code: stepped) }
@@ -86,13 +86,23 @@ import UniformTypeIdentifiers
         return out
     }
 
+    /// Keep all supported dates representable by the HTML integer and ISO-8601 writers.
+    private static func usableEpoch(_ epoch: Double) -> Bool {
+        epoch.isFinite && epoch >= -62_135_596_800 && epoch < 253_402_300_800 // years 0001–9999
+    }
+
+    private static func storedDate(_ epoch: Double) throws -> Date {
+        guard usableEpoch(epoch) else { throw Failure("The browsing database contains an unsupported timestamp. No file was exported.") }
+        return Date(timeIntervalSince1970: epoch)
+    }
+
     private static func rows(_ sql: String, path: String) throws -> [Row] {
         try snapshot(sql, path: path) { st in
             func text(_ c: Int32) -> String {
                 sqlite3_column_text(st, c).map { String(cString: $0) } ?? ""
             }
             return Row(url: text(0), title: text(1),
-                       at: Date(timeIntervalSince1970: sqlite3_column_double(st, 2)))
+                       at: try storedDate(sqlite3_column_double(st, 2)))
         }
     }
 
@@ -116,7 +126,7 @@ import UniformTypeIdentifiers
                 sqlite3_column_text(st, col).map { String(cString: $0) } ?? ""
             }
             let folder = sqlite3_column_type(st, 3) == SQLITE_NULL ? nil : text(3)
-            let at = Date(timeIntervalSince1970: sqlite3_column_double(st, 2))
+            let at = try storedDate(sqlite3_column_double(st, 2))
             return BookmarkEntry(row: Row(url: text(0), title: text(1), at: at),
                                  folder: folder, importedAt: at)
         }
@@ -159,7 +169,7 @@ import UniformTypeIdentifiers
         func anchor(_ r: Row, indent: String) -> String {
             // The url is escaped too: a query string with a bare `&` is legal in a url and
             // illegal in an attribute, and browsers that re-serialize the file will mangle it.
-            indent + "<DT><A HREF=\"\(escape(r.url))\" ADD_DATE=\"\(Int(r.at.timeIntervalSince1970))\">"
+            indent + "<DT><A HREF=\"\(escape(r.url))\" ADD_DATE=\"\(Int(exactly: r.at.timeIntervalSince1970.rounded(.towardZero)) ?? 0)\">"
                 + escape(r.title) + "</A>\n"
         }
         for entry in entries where entry.folder == nil { s += anchor(entry.row, indent: "    ") }
@@ -236,7 +246,7 @@ import UniformTypeIdentifiers
                 let attributes = ns.substring(with: match.range(at: 3))
                 guard let href = attribute("HREF", in: attributes) else { continue }
                 let at = attribute("ADD_DATE", in: attributes).flatMap(Double.init)
-                    .flatMap { $0.isFinite ? Date(timeIntervalSince1970: $0) : nil }
+                    .flatMap { usableEpoch($0) ? Date(timeIntervalSince1970: $0) : nil }
                 out.append(BookmarkEntry(row: Row(url: unescape(href),
                     title: unescape(ns.substring(with: match.range(at: 4))),
                     at: at ?? Date(timeIntervalSince1970: 0)),
@@ -262,12 +272,16 @@ import UniformTypeIdentifiers
         return out
     }
 
+    private static let attributeTokens = try! NSRegularExpression(
+        pattern: #"(?:^|\s)([A-Za-z_:][A-Za-z0-9_.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#)
+
     private static func attribute(_ name: String, in attributes: String) -> String? {
-        let re = try! NSRegularExpression(pattern: "(?:^|\\s)\(name)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))", options: .caseInsensitive)
         let ns = attributes as NSString
-        guard let match = re.firstMatch(in: attributes, range: NSRange(location: 0, length: ns.length)) else { return nil }
-        for group in 1...3 where match.range(at: group).location != NSNotFound {
-            return ns.substring(with: match.range(at: group))
+        for match in attributeTokens.matches(in: attributes, range: NSRange(location: 0, length: ns.length)) {
+            guard ns.substring(with: match.range(at: 1)).caseInsensitiveCompare(name) == .orderedSame else { continue }
+            for group in 2...4 where match.range(at: group).location != NSNotFound {
+                return ns.substring(with: match.range(at: group))
+            }
         }
         return nil
     }

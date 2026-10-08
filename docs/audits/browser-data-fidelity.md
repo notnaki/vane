@@ -37,7 +37,8 @@ credential enumeration/read failures and secret-free diagnostics.
 Only HTTP(S) bookmarks/history are stored. Foundation URL serialization percent-encodes
 Unicode and other URL characters where needed; query strings, fragments and path distinctions
 are retained. Bookmark titles remain unchanged. Missing/invalid HTML ADD_DATE receives an
-import-time date; HTML exports truncate stored dates to whole Unix seconds. Native history
+import-time date. Supported exported dates span years 0001–9999; out-of-range
+HTML dates use the missing-date policy, and invalid stored dates fail export; HTML exports truncate stored dates to whole Unix seconds. Native history
 transition types, redirects, visit IDs, source browser visit counters and download records
 are unsupported.
 
@@ -53,8 +54,8 @@ are unsupported.
   test-instance namespace. Existing credentials are preserved. In a CSV the first successful
   save wins; a failed save permits a later duplicate to retry. Imported/skipped/failed counts
   describe those outcomes. The CLI exits nonzero if any save fails.
-* CSV syntax is validated in full before saving. Truncated HTML anchors/folder blocks and
-  invalid JSON/plist/database reads fail before destination changes. Invalid individual
+* CSV syntax and overwide records are validated in full before saving or reading credential metadata. Truncated HTML anchors/folder blocks and
+  invalid or structurally damaged JSON/plist/database reads fail before destination changes. Invalid individual
   password rows are explicitly counted as skipped; non-web bookmark/history rows are omitted
   under the format's HTTP(S) policy. Empty bookmark files fail as having no usable entries.
 * A browser import commits history and bookmarks together. A failure in either category,
@@ -77,7 +78,11 @@ are unsupported.
 The pre-fix fixture run reproduced multiline/attribute HTML loss, BOM rejection, malformed
 CSV reaching save callbacks, truncated bookmark prefix imports, source JSON failures being
 swallowed, latest-only history loss, repeated history imports, and cross-category partial
-writes. After fixes, 50 focused tests passed (one opt-in real Keychain integration test was
-skipped) on macOS 27.0.1. Fixtures include 2,500 HTML bookmarks and 10,000 database visits,
-SQLite abort triggers, missing/invalid sources and output preservation. Additional validation
-and final review evidence will be recorded after the coordinated profiling window.
+writes. After fixes and the independent review repairs, 191 focused tests passed (two opt-in real
+Keychain integration tests skipped) on macOS 27.0.1. The expanded filter also covers
+password autofill/origin regressions, backup formats and Easels. Pure selfchecks and the
+CLI malformed-input/error/privacy fixtures passed. Fixtures include 2,500 HTML bookmarks
+and 10,000 database visits, SQLite abort/commit failures, missing/invalid sources, malformed
+native bookmark structure, attribute spoofing, unrepresentable dates and output preservation.
+Native checks and optional Keychain runs are coordinated separately with the smoothness chat;
+the PR records their final outcomes. Fixtures remove their temporary data and scratch preferences.
