@@ -99,4 +99,25 @@ import XCTest
         try source.write([space], name: "spaces.json")
         XCTAssertThrowsError(try source.library.capture(reason: .manual))
     }
+
+    func testLegacyURLListEditsReconcileTemplateLayoutBeforeBackup() throws {
+        let source = try fixture(), manager = source.seed()
+        let saved = try seedTemplate(manager, profile: manager.active.id, name: "Template")
+        var space = try WorkspaceTemplates(manager: manager).create(saved.id, profile: manager.active.id, name: "Copy",
+            unlocked: Set(saved.layout.protectedFolders.map(\.id)))
+        let original = try XCTUnwrap(space.layout)
+        space.tabURLs.append(URL(string: "https://example.test/incoming")!)
+        XCTAssertTrue(manager.updateSpace(space))
+        space = try XCTUnwrap(manager.spaces(for: manager.active.id).first)
+        XCTAssertTrue(try XCTUnwrap(space.layout).matches(space))
+        XCTAssertEqual(space.layout?.tabs.prefix(2).map(\.customName), ["Roadmap", "Notes"])
+        XCTAssertEqual(space.layout?.splits, original.splits)
+        XCTAssertNoThrow(try source.library.capture(reason: .manual))
+        space.pinnedTabURLs = []
+        XCTAssertTrue(manager.updateSpace(space))
+        space = try XCTUnwrap(manager.spaces(for: manager.active.id).first)
+        XCTAssertTrue(try XCTUnwrap(space.layout).matches(space))
+        XCTAssertEqual(space.layout?.splits, [])
+        XCTAssertNoThrow(try source.library.capture(reason: .manual))
+    }
 }

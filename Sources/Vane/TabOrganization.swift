@@ -26,6 +26,7 @@ import Combine
         var kind: TabKind
         var parked: Parked
         var tab: Tab?
+        var customName: String? = nil
         var savedURL: URL? { home ?? url }
     }
     private struct State {
@@ -202,10 +203,11 @@ import Combine
             || record.tab.map(TabAudio.isPlaying) == true
         return Row(id: record.id, spaceID: state.space.id, spaceName: state.space.name, url: url,
                    title: record.tab.map { TidyTitles.title(for: $0) }
+                    ?? record.customName.map { $0.isEmpty ? record.parked.title : $0 }
                     ?? TidyTitles.previewName(for: record.savedURL ?? url, in: profileID,
                                               saved: record.parked.title, stays: record.kind != .today),
                    kind: record.kind, canChange: record.kind == .today && !split,
-                   named: TidyTitles.override(for: record.savedURL ?? url, in: profileID) != nil,
+                   named: record.customName.map { !$0.isEmpty } ?? (TidyTitles.override(for: record.savedURL ?? url, in: profileID) != nil),
                    active: active)
     }
 
@@ -230,6 +232,20 @@ import Combine
                 }
             }
             let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
+            if let layout = space.layout, layout.matches(space), (try? layout.validate()) != nil {
+                let records = layout.tabs.map { page in
+                    Record(id: page.id, url: page.url, home: page.home, kind: page.kind,
+                           parked: parked[page.savedURL.absoluteString] ?? Parked(title: page.title),
+                           tab: nil, customName: page.customName ?? "")
+                }
+                let splits = layout.splits.compactMap { saved -> Split? in
+                    guard let ids = saved.ids?.compactMap(UUID.init(uuidString:)),
+                          var split = Split(tabs: ids, vertical: saved.vertical) else { return nil }
+                    if let weights = saved.weights { split = split.withWeights(weights) }
+                    return split.focusing(ids[saved.active])
+                }
+                return State(space: space, records: records, pins: layout.pins, today: layout.today, splits: splits)
+            }
             var records: [Record] = []
             for kind in [TabKind.pinned, .today] {
                 let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
@@ -255,7 +271,8 @@ import Combine
 
     private func state(_ space: Space, tabs: [Tab], pins: Pins, today: Pins, splits: [Split]) -> State {
         State(space: space, records: tabs.filter { $0.kind != .favourite }.map {
-            Record(id: $0.id, url: $0.currentURL, home: $0.homeURL, kind: $0.kind, parked: $0.snapshot, tab: $0)
+            Record(id: $0.id, url: $0.currentURL, home: $0.homeURL, kind: $0.kind, parked: $0.snapshot, tab: $0,
+                   customName: $0.workspaceName ?? $0.pinnedURL.flatMap { TidyTitles.override(for: $0, in: profileID) })
         }, pins: pins, today: today, splits: splits)
     }
 
@@ -455,6 +472,25 @@ import Combine
             let index = spaces.firstIndex { $0.id == state.space.id }!
             spaces[index].tabURLs = state.records.filter { $0.kind == .today }.compactMap(\.savedURL).filter(TabAddress.restorable)
             spaces[index].pinnedTabURLs = state.records.filter { $0.kind == .pinned }.compactMap(\.savedURL).filter(TabAddress.restorable)
+            if spaces[index].layout != nil || state.records.contains(where: { $0.customName != nil }) {
+                let pages = state.records.compactMap { record -> SpaceLayout.Page? in
+                    guard let url = record.url, let saved = record.savedURL,
+                          TabAddress.restorable(url), TabAddress.restorable(saved) else { return nil }
+                    return .init(id: record.id, url: url, kind: record.kind, title: record.parked.title,
+                                 customName: record.customName, home: record.home)
+                }
+                let kept = Set(pages.map(\.id))
+                let splits = state.splits.compactMap { split -> Split.Saved? in
+                    guard split.tabs.allSatisfy(kept.contains) else { return nil }
+                    return .init(urls: split.tabs.map { id in pages.first { $0.id == id }!.url.absoluteString },
+                                 vertical: split.vertical, active: split.active,
+                                 ids: split.tabs.map(\.uuidString), weights: split.weights)
+                }
+                spaces[index].layout = SpaceLayout(tabs: pages,
+                    pins: state.pins.mapped { UUID(uuidString: $0).map(kept.contains) == true ? $0 : nil },
+                    today: state.today.mapped { UUID(uuidString: $0).map(kept.contains) == true ? $0 : nil }, splits: splits,
+                    selected: state.space.layout?.selected.flatMap { kept.contains($0) ? $0 : nil })
+            }
         }
         guard ProfileManager.shared.saveSpaces(spaces, for: profileID) else {
             message = "Could not save Spaces. No tabs were changed."
@@ -504,6 +540,7 @@ import Combine
                 let tabs = state.records.map { record -> Tab in
                     if let existing = materialized[record.id] { return existing }
                     let tab = record.tab ?? Tab(id: record.id, profileID: profileID)
+                    tab.workspaceName = record.customName
                     if record.tab == nil {
                         tab.kind = record.kind
                         if let url = record.url { tab.restore(url: url, home: record.home, parked: record.parked) }

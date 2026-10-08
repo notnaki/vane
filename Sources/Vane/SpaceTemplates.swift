@@ -159,6 +159,38 @@ struct SpaceLayout: Codable, Equatable {
         tabs.filter { $0.kind == .today }.map(\.savedURL) == space.tabURLs
             && tabs.filter { $0.kind == .pinned }.map(\.savedURL) == (space.pinnedTabURLs ?? [])
     }
+
+    /// Older disk editors change URL lists. Keep surviving occurrence identities and
+    /// chrome when those edits append/remove rows, rather than discarding the layout.
+    func reconciled(with space: Space) -> SpaceLayout {
+        var out = self
+        var remaining = tabs
+        out.tabs = [TabKind.pinned, .today].flatMap { kind in
+            let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
+            return urls.map { url in
+                if let index = remaining.firstIndex(where: { $0.kind == kind && $0.savedURL == url }) {
+                    return remaining.remove(at: index)
+                }
+                return Page(id: UUID(), url: url, kind: kind, title: url.host ?? url.absoluteString,
+                            home: kind == .pinned ? url : nil)
+            }
+        }
+        let kept = Set(out.tabs.map { $0.id.uuidString })
+        out.pins = pins.mapped { kept.contains($0) ? $0 : nil }
+        out.today = today.mapped { kept.contains($0) ? $0 : nil }
+        out.pins.sync(tabs: out.tabs.filter { $0.kind == .pinned }.map { $0.id.uuidString })
+        out.today.sync(tabs: out.tabs.filter { $0.kind == .today }.map { $0.id.uuidString })
+        out.splits = splits.compactMap { saved in
+            let surviving = (saved.ids ?? []).enumerated().filter { kept.contains($0.element) }
+            guard surviving.count >= 2 else { return nil }
+            return .init(urls: surviving.map { name in out.tabs.first { $0.id.uuidString == name.element }!.url.absoluteString },
+                         vertical: saved.vertical, active: surviving.firstIndex { $0.offset == saved.active } ?? 0,
+                         ids: surviving.map(\.element),
+                         weights: saved.weights.map { weights in Split.normalised(surviving.map { weights[$0.offset] }) })
+        }
+        out.selected = selected.flatMap { kept.contains($0.uuidString) ? $0 : nil }
+        return out
+    }
 }
 
 struct WorkspaceTemplate: Codable, Equatable, Identifiable {

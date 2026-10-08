@@ -18,6 +18,69 @@ import XCTest
         return store
     }
 
+    private func coldCopy(in store: TabStore, locked: Bool = false) throws -> Space {
+        let ids = (0..<3).map { _ in UUID() }
+        let urls = ["https://example.test/same", "https://example.test/same", "https://example.test/free"].map { URL(string: $0)! }
+        var folder = Folder(name: "Saved folder"); folder.requiresAuthentication = locked ? true : nil
+        let layout = SpaceLayout(tabs: ids.indices.map { .init(id: ids[$0], url: urls[$0], kind: .today,
+                                                              title: "Page", customName: ["Alpha", "Beta", "Free"][$0]) },
+            pins: Pins(), today: Pins(entries: [.init(row: .folder(folder))] + ids.map { .init(row: .tab($0.uuidString), parent: folder.id) }),
+            splits: [.init(urls: Array(urls.prefix(2)).map(\.absoluteString), vertical: true, active: 1,
+                           ids: Array(ids.prefix(2)).map(\.uuidString), weights: [0.25, 0.75])], selected: ids[1])
+        let library = WorkspaceTemplates(manager: .shared)
+        let saved = try library.save(name: "Saved", space: try XCTUnwrap(store.currentSpace), layout: layout,
+                                     unlocked: locked ? [folder.id] : [])
+        return try library.create(saved.id, profile: store.profileID, name: "Cold copy",
+                                  unlocked: Set(saved.layout.protectedFolders.map(\.id)))
+    }
+
+    func testMovingTabsIntoAndOutOfColdTemplateSpaceKeepsDetailedLayout() throws {
+        let source = store(), copy = try coldCopy(in: source)
+        let incoming = source.newBlankTab(focus: false)
+        incoming.park(url: URL(string: "https://example.test/incoming")!, Parked(title: "Incoming"))
+        Spaces.move(incoming.id, to: copy.id, as: .today, from: source)
+        var saved = try XCTUnwrap(source.spaces.first { $0.id == copy.id })
+        XCTAssertTrue(try XCTUnwrap(saved.layout).matches(saved))
+        XCTAssertEqual(saved.layout?.tabs.prefix(3).map(\.customName), ["Alpha", "Beta", "Free"])
+        XCTAssertEqual(saved.layout?.splits, copy.layout?.splits)
+        let destination = ProfileManager.shared.createSpace(name: "Destination", in: source.profileID)
+        Library.move(URL(string: "https://example.test/free")!, from: copy.id, to: destination.id,
+                          pinned: false, profile: source.profileID)
+        saved = try XCTUnwrap(source.spaces.first { $0.id == copy.id })
+        XCTAssertTrue(try XCTUnwrap(saved.layout).matches(saved))
+        XCTAssertEqual(saved.layout?.tabs.compactMap(\.customName), ["Alpha", "Beta"])
+        source.switchTo(space: saved)
+        XCTAssertEqual(source.splits.first?.weights, [0.25, 0.75])
+        XCTAssertEqual(source.todayShape.entries.compactMap { $0.folder?.name }, ["Saved folder"])
+    }
+
+    func testOrganizerOfColdTemplateSpaceKeepsNamesSplitsFoldersAndUndo() throws {
+        let source = store(), copy = try coldCopy(in: source)
+        let model = TabOrganization(store: source)
+        let rows = model.rows.filter { $0.spaceID == copy.id }
+        XCTAssertEqual(rows.map(\.title), ["Alpha", "Beta", "Free"])
+        XCTAssertEqual(rows.map(\.canChange), [false, false, true])
+        model.selection = [try XCTUnwrap(rows.last).id]
+        XCTAssertTrue(model.archiveSelected())
+        let after = try XCTUnwrap(source.spaces.first { $0.id == copy.id })
+        XCTAssertTrue(try XCTUnwrap(after.layout).matches(after))
+        XCTAssertEqual(after.layout?.tabs.map(\.customName), ["Alpha", "Beta"])
+        XCTAssertEqual(after.layout?.splits, copy.layout?.splits)
+        XCTAssertTrue(model.undo())
+        let restored = try XCTUnwrap(source.spaces.first { $0.id == copy.id })
+        XCTAssertEqual(restored.layout?.tabs, copy.layout?.tabs)
+        XCTAssertEqual(restored.layout?.today, copy.layout?.today)
+        XCTAssertEqual(restored.layout?.splits, copy.layout?.splits)
+    }
+
+    func testColdTemplateLockedShapeIsAvailableToExistingLibraryReaders() throws {
+        let source = store(), copy = try coldCopy(in: source, locked: true)
+        let page = try XCTUnwrap(copy.layout?.tabs.last)
+        let shape = try XCTUnwrap(TabStore.savedShape(.today, space: copy.id, profileID: source.profileID))
+        XCTAssertFalse(shape.lockedFolders(for: page.savedURL.absoluteString, unlocked: []).isEmpty)
+        XCTAssertFalse(TabOrganization(store: source).rows.contains { $0.spaceID == copy.id })
+    }
+
     func testRecreatedSpaceLoadsDuplicatePagesWithIndependentNamesAndNoPageState() throws {
         let source = store()
         let tabs = (0..<2).map { _ in source.newBlankTab(focus: false) }

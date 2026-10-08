@@ -897,7 +897,13 @@ struct Space: Identifiable, Codable, Equatable {
     /// queuing these bytes could later replay a cancelled deletion or profile transfer.
     @discardableResult
     func saveSpaces(_ spaces: [Space], for profileID: UUID) -> Bool {
-        let owned = spaces.filter { $0.profileID == profileID }
+        let owned = spaces.filter { $0.profileID == profileID }.map { space in
+            var space = space
+            if let layout = space.layout, (try? layout.validate()) != nil, !layout.matches(space) {
+                space.layout = layout.reconciled(with: space)
+            }
+            return space
+        }
         let target = SaveFailure.Target.spaces(profileID)
         let message = "The last saved version is safe. Check storage and folder access, then make the change again."
         do {

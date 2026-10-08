@@ -1437,6 +1437,12 @@ extension TabStore {
     /// nil for a Space that has never had folders in that section — and for junk in the key,
     /// which loads as "no folders" rather than as a failure to bring the Space up at all.
     static func savedShape(_ kind: TabKind = .pinned, space: UUID?, profileID: UUID) -> Pins? {
+        if kind != .favourite, let space,
+           let saved = ProfileManager.shared.spaces(for: profileID).first(where: { $0.id == space }),
+           let layout = saved.layout, layout.matches(saved), (try? layout.validate()) != nil {
+            let urls = Dictionary(uniqueKeysWithValues: layout.tabs.map { ($0.id.uuidString, $0.savedURL.absoluteString) })
+            return (kind == .pinned ? layout.pins : layout.today).mapped { urls[$0] }
+        }
         guard let data = UserDefaults.vane.data(forKey: shapeKey(kind, space: space,
                                                                  profileID: profileID))
         else { return nil }
