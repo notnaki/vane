@@ -19,14 +19,14 @@ XCTest fixtures separate from opt-in signed public-demo checks and account flows
 
 ## Execution
 
-- [ ] Audit baseline/environment and request designated test resources.
-- [ ] Add DRM evidence regressions; observe failure, correct clear/protected wording,
+- [x] Audit baseline/environment and request designated test resources.
+- [x] Add DRM evidence regressions; observe failure, correct clear/protected wording,
   and run `swift test --filter DRMPlaybackEvidenceTests`.
-- [ ] Add deterministic real-WebKit synthetic call lifecycle coverage for canvas
+- [x] Add deterministic real-WebKit synthetic call lifecycle coverage for canvas
   video, peer reconnection/interruption and explicit source stop.
-- [ ] Add an opt-in signed public-media check using the Shaka demo's assets,
+- [x] Add an opt-in signed public-media check using the Shaka demo's assets,
   with sampled sustained playback, pause/seek/resume, available captions and reload.
-- [ ] Run focused fixtures and signed public probes; record exact binary/source,
+- [x] Run focused fixtures and signed public probes; record exact binary/source,
   environment, outcomes and limits in the compatibility log.
 - [ ] Open PR, obtain independent review, fix findings, confirm required checks,
   squash-merge and verify cleanup of task-owned fixtures/apps.
