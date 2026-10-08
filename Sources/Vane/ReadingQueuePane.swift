@@ -84,7 +84,6 @@ struct ReadingQueuePane: View {
             guard !Task.isCancelled, request == asked else { return }
             Motion.list { results = found; searching = false }
         }
-        .accessibilityLabel("Reading Queue for this profile")
     }
     private func row(_ article: ReadingArticle) -> some View {
         HStack(alignment: .top, spacing: 7) {

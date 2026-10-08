@@ -143,7 +143,7 @@ private struct SavedReaderView: View {
             if (session.article?.missingImages ?? 0) > 0 { Text("Some images were unavailable when this article was saved.").font(.caption).foregroundStyle(.secondary).padding(6) }
             Divider()
             SavedReaderWeb(web: session.web)
-        }.accessibilityLabel("Saved article Reader")
+        }
             .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: UserDefaults.vane).receive(on: RunLoop.main)) { _ in session.applyPreferences() }
     }
 }
