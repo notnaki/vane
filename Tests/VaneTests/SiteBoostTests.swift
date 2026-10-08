@@ -84,6 +84,27 @@ import XCTest
         return try data.map { try JSONSerialization.jsonObject(with: $0, options: .fragmentsAllowed) }
     }
 
+    private func documentDiagnostics(_ tab: Tab, expected: SiteBoosts.Document) async -> String {
+        var snapshots = ["nativeStamp: \(String(format: "%.21g", expected.stamp)), bits: \(expected.stamp.bitPattern)"]
+        for (name, world) in [("visual", SiteBoostScripts.world), ("page", WKContentWorld.page)] {
+            let snapshot: String = await withCheckedContinuation { continuation in
+                tab.web.callAsyncJavaScript("""
+                    const actualStamp = performance.timeOrigin;
+                    return JSON.stringify({href:location.href, origin:location.origin, expectedOrigin:origin,
+                        stamp:actualStamp.toPrecision(21), expectedStamp:stamp.toPrecision(21),
+                        sameStamp:actualStamp === stamp, delta:actualStamp-stamp,
+                        samples:Array.from({length:8}, () => performance.timeOrigin.toPrecision(21)), runtime:!!window.__vaneBoost,
+                        readyState:document.readyState});
+                    """, arguments: ["origin": expected.origin, "stamp": expected.stamp], in: nil, in: world) { result in
+                    continuation.resume(returning: String(describing: result))
+                }
+            }
+            snapshots.append("\(name): \(snapshot)")
+        }
+        snapshots.append("sameDocument: \(SiteBoosts.document(for: tab) === expected)")
+        return snapshots.joined(separator: "\n")
+    }
+
     func testLiveStylesDynamicHidingAndReset() async throws {
         let tab = try await page()
         var boost = SiteBoost(); boost.font = "Georgia"; boost.textColor = "#123456"; boost.background = "#fefefe"
@@ -138,6 +159,7 @@ import XCTest
         let color = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: tab) as? String
         XCTAssertEqual(color, "rgb(18, 52, 86)")
         let result = await SiteBoosts.runScript(tab: tab)
+        if result != "Script applied." { print("Canceled navigation Boost diagnostics:\n\(await documentDiagnostics(tab, expected: original))") }
         XCTAssertEqual(result, "Script applied.")
     }
 
@@ -165,6 +187,9 @@ import XCTest
         XCTAssertEqual(SiteBoosts.value(origin: "https://boost.test", tab: sibling), boost)
         try await Task.sleep(for: .milliseconds(100))
         let styled = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: sibling) as? String
+        if styled != "rgb(18, 52, 86)", let doc = SiteBoosts.document(for: sibling) {
+            print("Sibling style Boost diagnostics:\n\(await documentDiagnostics(sibling, expected: doc))")
+        }
         XCTAssertEqual(styled, "rgb(18, 52, 86)")
         SiteBoosts.forget(host: "boost.test", tab: tab)
         try await Task.sleep(for: .milliseconds(100))
@@ -271,4 +296,3 @@ import XCTest
         XCTAssertEqual(result12, true)
     }
 }
-
