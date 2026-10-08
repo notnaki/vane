@@ -659,7 +659,19 @@ Expired, partitioned, or unsupported cookies are skipped and reported; those ses
 may need a fresh sign-in. No decrypted value is logged or written to an import file.
 
 Password exports contain plain text credentials. Delete a CSV export when you no
-longer need it. The same importer is available from Vane's Passwords UI.
+longer need it. The same importer is available from Vane's Passwords UI. CSV imports
+preserve existing passwords, keep the first successfully saved duplicate, and report
+invalid/skipped rows and Keychain write failures. Malformed CSV quoting fails before
+any saves. A password export fails if any owned credential cannot be read.
+
+Bookmark HTML retains titles, URLs, whole-second dates and readable folder paths;
+nested paths become one `Parent / Child` folder. Native browser bookmark imports
+currently retain only URLs and titles. Browser history imports retain each available
+visit and deduplicate by URL and timestamp, so repeated imports add nothing. A failure
+reading or saving either selected browser category leaves both categories unchanged.
+History CSV/JSON files are export formats; they have no user-facing file importer.
+See [browser data fidelity and unsupported fields](docs/audits/browser-data-fidelity.md)
+for normalization, duplicate rules, synthetic coverage and failure behavior.
 
 ### WebKit and protected media
 
@@ -868,8 +880,8 @@ with `check-release-candidate.sh` before treating it as a distribution build.
   unusual, multi-step, or embedded login forms may still need manual entry.
 - Content blocking supports a documented subset of EasyList syntax. Filter
   lists added from disk do not update on a schedule.
-- Data does not sync between Macs. Imports do not bring over browser cookies or
-  signed-in sessions.
+- Data does not sync between Macs. General browser imports do not bring over cookies
+  or signed-in sessions; the dedicated Arc import can copy supported sessions as described above.
 - Location site decisions require a build with Xcode 27 and macOS 27. Screen-sharing
   decisions remain WebKit/macOS-managed. Synthetic permission lifecycle checks do not
   establish real-device authorization or native chooser behavior; see

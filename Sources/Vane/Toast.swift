@@ -192,8 +192,8 @@ struct ToastPill: View {
     let tint: Color
     @ObservedObject private var toasts = Toasts.shared
 
-    /// Compact text and gaps keep short update prompts beside their controls.
-    /// Only content that cannot fit at its natural width needs a second row.
+    /// Short toasts hug their content. Longer messages give up width to the controls,
+    /// keeping the action and dismiss target beside the message at every sidebar width.
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: Look.inset / 2) {
@@ -202,19 +202,10 @@ struct ToastPill: View {
             }
             .fixedSize(horizontal: true, vertical: false)
 
-            if toast.action != nil {
-                VStack(alignment: .leading, spacing: Look.inset / 2) {
-                    text(toast)
-                    HStack(spacing: Look.inset / 2) {
-                        Spacer(minLength: 0)
-                        controls(toast, fixed: false)
-                    }
-                }
-            } else {
-                HStack(spacing: Look.inset / 2) {
-                    text(toast)
-                    controls(toast, fixed: false)
-                }
+            HStack(spacing: Look.inset / 2) {
+                text(toast)
+                controls(toast, fixed: false)
+                    .layoutPriority(1)
             }
         }
         .padding(.leading, Look.pillInset)
@@ -241,10 +232,11 @@ struct ToastPill: View {
     private func text(_ toast: Toasts.Toast) -> some View {
         // No `.font` modifier — a font on the view replaces the one a bold run carries, and
         // the version would stop being the bold half of "Vane v0.2.0";
-        // `styled` sets both weights itself. Two lines is the ceiling: past that a toast is
-        // an essay, and the tail can go.
+        // `styled` sets both weights itself. Page titles truncate on one line; persistent
+        // update notices can use two lines to keep their status readable.
         Text(styled(toast.text, emphasis: toast.sticky))
-            .lineLimit(2)
+            .lineLimit(toast.sticky ? 2 : 1)
+            .truncationMode(.tail)
             .fixedSize(horizontal: false, vertical: true)
             .foregroundStyle(Look.barSelectedText)
     }

@@ -22,6 +22,15 @@ import XCTest
         }
     }
 
+    func testLongArchiveTitleKeepsUndoOnOneRow() throws {
+        for width in [SidebarWidth.minimum, SidebarWidth.standard, 249, SidebarWidth.maximum] {
+            let image = try render("Archived CIALFO – University Applications, Made Easy", width: width)
+            XCTAssertLessThanOrEqual(image.pixelsHigh, 32,
+                "Long page titles should truncate rather than move Undo and dismiss below the message")
+            XCTAssertLessThanOrEqual(image.pixelsWide, Int(width - Look.inset * 2))
+        }
+    }
+
     func testShortUpdatePromptsStayOneRow() throws {
         for width in [220, SidebarWidth.standard, 249, SidebarWidth.maximum] {
             for phase in [Updater.Phase.available("v0.0.23"), .available("v0.23.123"), .ready, .failed(nil)] {
@@ -42,6 +51,8 @@ import XCTest
             width: SidebarWidth.minimum, sticky: true)
         XCTAssertLessThanOrEqual(image.pixelsWide, Int(SidebarWidth.minimum - Look.inset * 2))
         XCTAssertGreaterThan(image.pixelsHigh, Int(Look.toastHeight))
+        XCTAssertLessThanOrEqual(image.pixelsHigh, 48,
+            "The update message can wrap, but its controls should stay beside it")
     }
 
     func testLongActionAndMessageStayWithinNarrowSidebar() throws {
@@ -51,10 +62,10 @@ import XCTest
         XCTAssertGreaterThan(image.pixelsHigh, Int(Look.toastHeight))
     }
 
-    func testMessageWithoutActionWrapsWithinNarrowSidebar() throws {
+    func testMessageWithoutActionTruncatesWithinNarrowSidebar() throws {
         let image = try render("Archived a very long page title that needs to wrap",
             action: nil, width: SidebarWidth.minimum)
         XCTAssertLessThanOrEqual(image.pixelsWide, Int(SidebarWidth.minimum - Look.inset * 2))
-        XCTAssertLessThanOrEqual(image.pixelsHigh, Int(Look.toastHeight + 16))
+        XCTAssertLessThanOrEqual(image.pixelsHigh, 32)
     }
 }
