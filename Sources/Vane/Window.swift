@@ -874,15 +874,58 @@ extension TabStore {
     /// "Nobody has it" is either of AppKit's two spellings — the window is its own first
     /// responder, or the first responder is a view that has already left the window — so the
     /// answer does not depend on which of the two happens first.
-    func focusPage() {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let window else { return }
+    func focusPage(from previousPage: NSView? = nil, remaining: Int = 12,
+                   waitingFor dismissedResponder: NSResponder? = nil) {
+        DispatchQueue.main.async { [weak self, weak previousPage, weak dismissedResponder] in
+            guard let self, let window, palette == nil,
+                  NSApp.modalWindow == nil, window.attachedSheet == nil else { return }
             let holder = window.firstResponder
-            let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
+            let heldPreviousPage = previousPage.map { previous in
+                (holder as? NSView).map { $0 === previous || $0.isDescendant(of: previous) } ?? false
+            } ?? false
+            let nobody = holder == nil || holder === window || heldPreviousPage
+                || (holder as? NSView).map { $0.window !== window } ?? false
             let page = activePageResponder
-            guard Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
-                                            libraryOpen: libraryOpen), let page else { return }
+            if Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
+                                         libraryOpen: libraryOpen), let page,
+               page.window === window, window.makeFirstResponder(page) { return }
+            guard !libraryOpen,
+                  nobody || dismissedResponder == nil || holder === dismissedResponder else { return }
+            // Search creates its tab on the next turn, and its dismissed field can remain
+            // mounted during the exit transition. Wait for that same responder to leave;
+            // another control taking focus or a new overlay cancels the handoff.
+            if remaining > 1 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+                    self?.focusPage(from: previousPage, remaining: remaining - 1,
+                                    waitingFor: dismissedResponder ?? holder)
+                }
+            }
+        }
+    }
+
+    /// F6 crosses the page/chrome boundary even when WebKit keeps Tab inside its document.
+    func focusNextArea() {
+        guard let window, palette == nil, window.attachedSheet == nil,
+              NSApp.modalWindow == nil else { return }
+        let holder = window.firstResponder
+        let page = activePageResponder
+        let onPage = (holder as? NSView).map { responder in
+            page.map { responder === $0 || responder.isDescendant(of: $0) } ?? false
+        } ?? false
+        if !onPage, holder != nil, holder !== window,
+           let page, page.window === window {
             window.makeFirstResponder(page)
+            return
+        }
+        Motion.list {
+            libraryOpen = false
+            sidebarShown = true
+        }
+        DispatchQueue.main.async { [weak self, weak holder] in
+            guard let self, let window = self.window, self.palette == nil,
+                  window.attachedSheet == nil, NSApp.modalWindow == nil,
+                  window.firstResponder === holder else { return }
+            self.chromeFocusRequested = true
         }
     }
 

@@ -1980,6 +1980,8 @@ struct Stash {
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
     @Published var sidebarShown = true
+    /// One-shot handoff from the webpage to the sidebar address pill.
+    @Published var chromeFocusRequested = false
     /// Presentation only, per Space and window: hiding pins never changes their contents.
     @Published private(set) var collapsedPinnedSpaces: Set<UUID> = []
     var pinnedSectionCollapsed: Bool {
@@ -2693,7 +2695,9 @@ struct Stash {
     func cycle(_ delta: Int) {
         let allowed = accessibleTabs
         guard let i = allowed.firstIndex(where: { $0.id == current }), allowed.count > 1 else { return }
+        let previousPage = activePageResponder
         current = allowed[(i + delta + allowed.count) % allowed.count].id
+        focusPage(from: previousPage)
     }
 
     // MARK: Reorder + sections

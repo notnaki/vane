@@ -413,11 +413,26 @@ sharing or collaboration.
 | New tab | `⌘T` |
 | Reopen closed tab | `⇧⌘T` |
 | Find on page | `⌘F` |
+| Move between page and browser controls | `F6` or `⇧F6` |
 | Search tabs | `⇧⌘A` |
 | Search commands | `⇧⌘P` |
 | Open Library | `⇧⌘L` |
 
-Shortcuts can be changed in Settings. The menu bar shows the current bindings.
+Shortcuts can be changed in Settings. The menu bar shows the current bindings,
+including numbered tab selection and search commands. Choose **Prefer Website**
+for a shortcut to leave it with a focused webpage; the command remains available
+from the menu and while browser controls have focus. Option-only shortcuts also
+leave character entry and caret movement with a focused text editor.
+
+Use **F6** (or **Shift-F6**) to move between the page and browser controls, revealing
+the sidebar if needed. Use **Tab** and **Shift-Tab** to move through browser controls. Sidebar tabs,
+favourites, folders, Spaces, split panes, and the address pill show a focus outline;
+**Return** or **Space** activates the focused control. Enable macOS **Keyboard
+navigation** to include native buttons and menus in Tab navigation. Search results
+use **Up/Down** and **Return**; **Tab** keeps its site-search and actions behavior.
+**Escape** dismisses search or Find and returns focus to the page when no other
+control has taken it. **⌘F** refocuses an already-open Find field. VoiceOver can
+activate sidebar items directly and use their Actions menu for secondary commands.
 
 While hovering a webpage link, hold a modifier to see where clicking will open it:
 
