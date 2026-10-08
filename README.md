@@ -220,6 +220,56 @@ a temporary green lightning popup at the page's top right, with an **Edit this s
 button. Hovering keeps the popup visible; sleeping tabs reload when selected. The mode respects
 the existing idle-suspension preference and preserves an already shorter timeout.
 
+### Content blocking and filter subscriptions
+
+Settings → Privacy and Security → Content Blocking separates **Import from Disk**
+(local snapshots, never downloaded again) from **Subscribe by URL** (HTTPS lists).
+The built-in starter list stays available offline. Existing imported snapshots and
+legacy file references are preserved. Sources are shared across profiles; the main
+blocking switch and site exceptions belong to each profile.
+
+URL subscriptions update daily while Vane is running. Vane checks overdue lists at
+startup, after wake, and hourly; failed attempts retry after one hour. **Update Now**
+or a list's **Update** button retries immediately. Status shows updating, last/next
+check times, and failures. Conditional HTTP requests use the accepted list's ETag
+and Last-Modified values. Downloads use an ephemeral session, not browsing cookies,
+and are limited to 8 MB of UTF-8 text per list.
+
+Vane compiles the combined candidate using WebKit's public `WKContentRuleListStore`
+before saving a changed subscription. Download, compilation, or storage failures
+retain the accepted source and last working compiled rules, including across
+relaunch. A saved base-rule snapshot also lets new site exceptions take effect when
+a legacy source is missing. URL text and metadata live together in an atomic
+`FilterSubscriptions/subscriptions.json` document; disk imports stay in `FilterLists`.
+The feature does not depend on a managed Apple entitlement.
+
+**Site Controls → Block Ads on This Site** changes an exception for the exact host
+and reloads the page after rules attach. Exceptions also cover that page's embedded
+requests and cosmetic rules; subdomains have their own choices. **Filter Lists and
+Diagnostics** opens update status, unsupported rules, and saved exceptions. Resume
+blocking there to remove an exception, then reload other open pages. Subscription
+updates preserve exceptions; private-window choices are not saved as preferences.
+Private compiled variants use a separate transient WebKit store, removed on normal
+quit; the next launch sweeps crash leftovers while preserving other live Vane instances.
+
+The converter supports a subset of EasyList: host/start/end anchors, wildcards,
+network exceptions, supported resource/party options, positive-only or negative-only
+domain restrictions, and ordinary CSS hiding. Resource types follow WebKit's
+vocabulary: subdocuments use `document`, and XHR/WebSocket/ping use `raw`.
+Regex rules, scriptlets, procedural selectors, cosmetic exception variants, unknown
+options, mixed/invalid domain restrictions, and rules inside conditional branches
+are skipped. Unbalanced conditional directives reject a subscription update, and
+each source has independent preprocessing state. **Unsupported Rules** reports totals by reason and the first 20 samples
+with line numbers; local imports can be inspected separately. Vane does not claim
+full uBlock Origin or AdGuard compatibility or expose request-by-request block counts.
+
+Focused regression checks (including real WebKit network and cosmetic behavior):
+
+```sh
+swift test --filter 'BlockerTests|BlockerSubscriptionTests|BlockerWebKitTests'
+./.build/debug/vane selfcheck --pure
+```
+
 ### Saving profiles
 
 Profile save failures appear in browser windows and Settings → Profiles. Unsaved

@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import Combine
 
 // MARK: - The rule shape WebKit compiles
 
@@ -9,13 +10,14 @@ import WebKit
 ///
 /// Declaration order is the encoding order, so the same filter text always produces the
 /// same bytes. That matters: the JSON's hash is the compile-cache identifier.
-private struct BlockRule: Encodable, Equatable {
-    struct Trigger: Encodable, Equatable {
+private struct BlockRule: Codable, Equatable {
+    struct Trigger: Codable, Equatable {
         var urlFilter: String
         var ifDomain: [String]?
         var unlessDomain: [String]?
         var resourceType: [String]?
         var loadType: [String]?
+        var unlessTopURL: [String]?
 
         enum CodingKeys: String, CodingKey {
             case urlFilter     = "url-filter"
@@ -23,10 +25,11 @@ private struct BlockRule: Encodable, Equatable {
             case unlessDomain  = "unless-domain"
             case resourceType  = "resource-type"
             case loadType      = "load-type"
+            case unlessTopURL = "unless-top-url"
         }
     }
 
-    struct Action: Encodable, Equatable {
+    struct Action: Codable, Equatable {
         var type: String
         var selector: String?
     }
@@ -74,6 +77,40 @@ private struct BlockRule: Encodable, Equatable {
         refresh()
     }
 
+    private static var privateSiteExceptions: [String] = []
+
+    static func siteExceptions(for profileID: UUID) -> [String] {
+        if profileID == Profile.incognito.id { return privateSiteExceptions }
+        return UserDefaults.vane.stringArray(forKey: ProfileManager.defaultsKey("blockerSiteExceptions", profileID)) ?? []
+    }
+
+    static func enabled(for profileID: UUID, url: URL?) -> Bool {
+        enabled(for: profileID) && !siteExceptions(for: profileID).contains(url?.host?.lowercased() ?? "")
+    }
+
+    static func setSiteException(_ host: String, allowed: Bool, profileID: UUID, recompile: Bool = true) {
+        let host = host.lowercased()
+        guard !host.isEmpty else { return }
+        var hosts = Set(siteExceptions(for: profileID))
+        if allowed { hosts.insert(host) } else { hosts.remove(host) }
+        if profileID == Profile.incognito.id { privateSiteExceptions = hosts.sorted() }
+        else { UserDefaults.vane.set(hosts.sorted(), forKey: ProfileManager.defaultsKey("blockerSiteExceptions", profileID)) }
+        SiteChanges.shared.bump()
+        BlockerStatus.shared.revision &+= 1
+        if recompile { refresh() }
+    }
+
+    private static func exceptionKey(_ profileID: UUID, hosts: [String]) -> String {
+        profileID.uuidString + ":" + hash(hosts.sorted().joined(separator: "\n"))
+    }
+
+    private static func list(for profileID: UUID) -> WKContentRuleList? {
+        let hosts = siteExceptions(for: profileID)
+        if hosts.isEmpty { return compiled }
+        return profileLists[exceptionKey(profileID, hosts: hosts)]
+            ?? profileLists.first { $0.key.hasPrefix(profileID.uuidString + ":") }?.value ?? compiled
+    }
+
     /// Attach the compiled list to a web view that is about to be created. Synchronous and
     /// cheap; if the first compile has not finished yet this does nothing and `refresh()`
     /// picks the tab up when it lands.
@@ -87,27 +124,44 @@ private struct BlockRule: Encodable, Equatable {
     /// See `Tab.contentController`.
     static func apply(to controller: WKUserContentController,
                       profileID: UUID = ProfileManager.shared.active.id) {
-        guard enabled(for: profileID), let compiled else { return }
-        controller.add(compiled)
+        if let attached = controllers.object(forKey: controller)?.list { controller.remove(attached) }
+        let next = enabled(for: profileID) ? list(for: profileID) : nil
+        if let next { controller.add(next) }
+        controllers.setObject(Attachment(profileID: profileID, list: next), forKey: controller)
     }
 
     /// Recompile from the current sources and reattach to every live web view. Cheap after
     /// the first run — the identifier is a hash of the generated JSON, so an unchanged
     /// filter set is a store lookup rather than a compile. Call it at startup.
-    static func refresh() {
+    private static var pendingReloads: [() -> Void] = []
+
+    static func refresh(completion: (() -> Void)? = nil) {
+        if let completion { pendingReloads.append(completion) }
         let generation = refreshState.begin()
+        BlockerStatus.shared.updating = true
         Task {
             let wanted = enabled(for: Profile.incognito.id)
                 || ProfileManager.shared.profiles.contains { enabled(for: $0.id) }
             if wanted {
                 do {
                     let fresh = try await build()
-                    guard refreshState.finish(.success(fresh), generation: generation) else { return }
-                    UserDefaults.vane.set(fresh.identifier, forKey: "blockerLastGoodList")
+                    guard refreshState.isCurrent(generation) else { return }
+                    // Keep accepted base rules available for site troubleshooting even
+                    // when a legacy source disappears. No private host is in this snapshot.
+                    try FileManager.default.createDirectory(at: snapshotURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try JSONEncoder().encode(Snapshot(json: fresh.json, report: fresh.report)).write(to: snapshotURL, options: .atomic)
+                    guard refreshState.finish(.success(fresh.base), generation: generation) else { return }
+                    profileLists = fresh.profiles
+                    UserDefaults.vane.set(fresh.base.identifier, forKey: "blockerLastGoodList")
+                    let saved = fresh.profiles.filter { !$0.key.hasPrefix(Profile.incognito.id.uuidString + ":") }
+                    UserDefaults.vane.set(saved.mapValues { $0.identifier! }, forKey: "blockerLastGoodProfiles")
+                    BlockerStatus.shared.report = fresh.report
+                    BlockerStatus.shared.message = fresh.sourceFailure.map { "Previous working rules active. " + $0 }
+                        ?? "Working rules active · " + fresh.report.summary
                     lastFailure = nil
                     // Publish first: recovery must always name a list that still exists.
                     // Only then can prior Vane-owned compile results be swept.
-                    await sweepCompiledLists(keeping: fresh.identifier, generation: generation)
+                    await sweepCompiledLists(keeping: fresh.base.identifier, generation: generation)
                 } catch {
                     // On relaunch, recover the last successful WebKit list even if an
                     // imported source has since gone missing or become unreadable.
@@ -115,10 +169,16 @@ private struct BlockRule: Encodable, Equatable {
                        let id = UserDefaults.vane.string(forKey: "blockerLastGoodList"),
                        let store = WKContentRuleListStore.default(),
                        let previous = try? await store.contentRuleList(forIdentifier: id) {
+                        var recovered: [String: WKContentRuleList] = [:]
+                        for (key, identifier) in UserDefaults.vane.dictionary(forKey: "blockerLastGoodProfiles") as? [String: String] ?? [:] {
+                            if let list = try? await store.contentRuleList(forIdentifier: identifier) { recovered[key] = list }
+                        }
                         guard refreshState.finish(.success(previous), generation: generation) else { return }
+                        profileLists = recovered
                     }
                     guard refreshState.finish(.failure(error), generation: generation) else { return }
                     let detail = error.localizedDescription
+                    BlockerStatus.shared.message = (compiled == nil ? "Content blocking unavailable. " : "Previous working rules active. ") + detail
                     if lastFailure != detail {
                         lastFailure = detail
                         NSLog("[vane] content blocker update failed: %@", detail)
@@ -129,14 +189,17 @@ private struct BlockRule: Encodable, Equatable {
                 }
             }
             guard refreshState.isCurrent(generation) else { return }
-            for store in TabStore.all {
-                let on = enabled(for: store.profileID)
-                for tab in store.everyTab {
-                    guard let controller = tab.existingWeb?.configuration.userContentController else { continue }
-                    controller.removeAllContentRuleLists()
-                    if on, let compiled { controller.add(compiled) }
-                }
+            BlockerStatus.shared.updating = false
+            SiteChanges.shared.bump()
+            // Include hover previews and Easel live views, which are not browser tabs.
+            // Weak keys do not keep those temporary renderers alive.
+            for controller in controllers.keyEnumerator().allObjects.compactMap({ $0 as? WKUserContentController }) {
+                guard let attachment = controllers.object(forKey: controller) else { continue }
+                apply(to: controller, profileID: attachment.profileID)
             }
+            let reloads = pendingReloads
+            pendingReloads.removeAll()
+            reloads.forEach { $0() }
         }
     }
 
@@ -175,7 +238,7 @@ private struct BlockRule: Encodable, Equatable {
                 guard let ruleStore = WKContentRuleListStore.default() else {
                     throw BlockerFiles.Failure("WebKit’s content-blocking store is unavailable.")
                 }
-                let candidate = convert(try sources() + "\n" + text).json
+                let candidate = convertSources(try sources() + [text]).json
                 let candidateID = "vane-\(hash(candidate))"
                 validationID = candidateID
                 guard try await ruleStore.compileContentRuleList(forIdentifier: candidateID,
@@ -186,6 +249,9 @@ private struct BlockRule: Encodable, Equatable {
                 var names = UserDefaults.vane.stringArray(forKey: "blockerImportedLists") ?? []
                 if !names.contains(name) { names.append(name) }
                 UserDefaults.vane.set(names, forKey: "blockerImportedLists")
+                var titles = UserDefaults.vane.dictionary(forKey: "blockerImportedNames") as? [String: String] ?? [:]
+                titles[name] = file.lastPathComponent
+                UserDefaults.vane.set(titles, forKey: "blockerImportedNames")
             } catch {
                 if let validationID { await removeValidationCompileIfUnreferenced(validationID) }
                 alert.alertStyle = .warning
@@ -196,12 +262,20 @@ private struct BlockRule: Encodable, Equatable {
             }
             refresh()
 
-            alert.messageText = "Added \(result.rules) rule\(result.rules == 1 ? "" : "s")."
-            alert.informativeText = result.skipped > 0
-                ? "\(result.skipped) line(s) use syntax WebKit cannot express and were skipped."
-                : "Every line converted."
-            alert.runModal()
+            let success = makeImportSuccessAlert(result.report)
+            if success.runModal() == .alertSecondButtonReturn {
+                BlockerSettingsSection.showReport(result.report, title: file.lastPathComponent)
+            }
         }
+    }
+
+    static func makeImportSuccessAlert(_ report: BlockerReport) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Added \(report.rules) rule\(report.rules == 1 ? "" : "s")."
+        alert.informativeText = report.summary
+        alert.addButton(withTitle: "Done")
+        if report.skipped > 0 { alert.addButton(withTitle: "Unsupported Rules…") }
+        return alert
     }
 
     // MARK: - Compilation
@@ -210,7 +284,37 @@ private struct BlockRule: Encodable, Equatable {
     private static let compileGate = BlockerAsyncGate()
     private static var compiled: WKContentRuleList? { refreshState.current }
     private static var lastFailure: String?
-    private nonisolated static var importedDirectory: URL { Store.directory.appendingPathComponent("FilterLists", isDirectory: true) }
+    private static var profileLists: [String: WKContentRuleList] = [:]
+    private static var privateCache: BlockerPrivateCache?
+    static func closePrivateRules() { privateCache?.close(); privateCache = nil }
+    static func hasCurrentExceptionVariant(for profile: UUID) -> Bool {
+        profileLists[exceptionKey(profile, hosts: siteExceptions(for: profile))] != nil
+    }
+    private final class Attachment {
+        let profileID: UUID
+        let list: WKContentRuleList?
+        init(profileID: UUID, list: WKContentRuleList?) { self.profileID = profileID; self.list = list }
+    }
+    private static let controllers = NSMapTable<WKUserContentController, Attachment>(keyOptions: .weakMemory, valueOptions: .strongMemory)
+
+    private struct Compilation {
+        var base: WKContentRuleList
+        var profiles: [String: WKContentRuleList]
+        var report: BlockerReport
+        var json: String
+        var sourceFailure: String?
+    }
+    private struct Snapshot: Codable {
+        var json: String
+        var report: BlockerReport
+    }
+    private nonisolated static var snapshotURL: URL { Store.directory.appendingPathComponent("FilterLists/last-good-rules.json") }
+    private static var protectedIdentifiers: Set<String> {
+        Set(([compiled?.identifier, UserDefaults.vane.string(forKey: "blockerLastGoodList")].compactMap { $0 })
+            + profileLists.values.compactMap { $0.identifier }
+            + Array((UserDefaults.vane.dictionary(forKey: "blockerLastGoodProfiles") as? [String: String] ?? [:]).values))
+    }
+    nonisolated static var importedDirectory: URL { Store.directory.appendingPathComponent("FilterLists", isDirectory: true) }
 
     /// Sweep only after the caller has persisted `identifier` as last-good. Re-read both
     /// protected identifiers after WebKit answers so a newer refresh that ran while this
@@ -221,8 +325,7 @@ private struct BlockRule: Encodable, Equatable {
         guard refreshState.isCurrent(generation) else { return }
         guard let store = WKContentRuleListStore.default(),
               let available = await store.availableIdentifiers() else { return }
-        let protected = Set([identifier, compiled?.identifier,
-                             UserDefaults.vane.string(forKey: "blockerLastGoodList")].compactMap { $0 })
+        let protected = protectedIdentifiers.union([identifier])
         for stale in BlockerCache.stale(available, keeping: protected) {
             guard refreshState.isCurrent(generation) else { return }
             try? await store.removeContentRuleList(forIdentifier: stale)
@@ -232,8 +335,7 @@ private struct BlockRule: Encodable, Equatable {
     /// A prospective import compile is disposable when persistence fails, unless another
     /// refresh has meanwhile published that same identifier as current or last-good.
     private static func removeValidationCompileIfUnreferenced(_ identifier: String) async {
-        let protected = Set([compiled?.identifier,
-                             UserDefaults.vane.string(forKey: "blockerLastGoodList")].compactMap { $0 })
+        let protected = protectedIdentifiers
         guard BlockerCache.stale([identifier], keeping: protected) == [identifier],
               let store = WKContentRuleListStore.default() else { return }
         try? await store.removeContentRuleList(forIdentifier: identifier)
@@ -242,7 +344,7 @@ private struct BlockRule: Encodable, Equatable {
     /// nonisolated, and called from `build`'s detached task: resolving a dozen bookmarks
     /// and reading the filter lists off disk is file work, not UI work, and it used to
     /// happen on the main actor at launch with the first page already loading.
-    private nonisolated static func sources() throws -> String {
+    private nonisolated static func sources(includeSubscriptions: Bool = true) throws -> [String] {
         var files: [URL] = []
         // Resolve legacy selections without ScopedPaths.urls: that helper drops failed
         // bookmarks, which would silently discard part of the user's blocking rules.
@@ -271,34 +373,90 @@ private struct BlockRule: Encodable, Equatable {
             }
             files.append(importedDirectory.appendingPathComponent(name))
         }
-        return try BlockerFiles.sources(builtin: builtin, files: files)
+        var text = try BlockerFiles.sourceTexts(builtin: builtin, files: files)
+        if includeSubscriptions {
+            for item in try FilterSubscriptions.read(directory: FilterSubscriptions.directory) {
+                text.append(item.text)
+            }
+        }
+        return text
     }
 
     /// Compile the full candidate before touching any installed rules. A failed source
     /// read or compiler response is an error, never an empty replacement list.
-    private static func build() async throws -> WKContentRuleList {
+    private static func build() async throws -> Compilation {
         await compileGate.acquire()
         defer { compileGate.release() }
-        // Off the actor: reading a few megabytes of filter text and parsing every line of
-        // it into WebKit's rule vocabulary is the whole cost of a refresh, and none of it
-        // touches a window.
-        let json = try await Task.detached(priority: .utility) { try convert(sources()).json }.value
-        guard json != "[]" else { throw BlockerFiles.Failure("The filter lists contain no usable rules.") }
-        let id = "vane-\(hash(json))"
+        do {
+            let text = try await Task.detached(priority: .utility) { try sources() }.value
+            return try await compile(text)
+        } catch {
+            let failure = error.localizedDescription
+            guard let snapshot = try? JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: snapshotURL)) else { throw error }
+            var recovered = try await compile(base: BlockerConversion(json: snapshot.json, report: snapshot.report))
+            recovered.sourceFailure = failure
+            return recovered
+        }
+    }
+
+    /// Keep validation and the manifest write under the same source gate as disk imports.
+    /// An import cannot commit a different source set between validation and acceptance.
+    static func commitSubscriptions(_ subscriptionText: String, items: [FilterSubscription]) async throws {
+        await compileGate.acquire()
+        defer { compileGate.release() }
+        let text = try await Task.detached(priority: .utility) {
+            try sources(includeSubscriptions: false) + items.map(\.text)
+        }.value
+        _ = try await compile(text)
+        try FilterSubscriptions.write(items, directory: FilterSubscriptions.directory)
+    }
+
+    private static func compile(_ texts: [String]) async throws -> Compilation {
+        let base = await Task.detached(priority: .utility) { convertSources(texts) }.value
+        return try await compile(base: base)
+    }
+
+    private static func compile(base: BlockerConversion) async throws -> Compilation {
         guard let store = WKContentRuleListStore.default() else {
             throw BlockerFiles.Failure("WebKit’s content-blocking store is unavailable. Try restarting Vane.")
         }
-        if let hit = try? await store.contentRuleList(forIdentifier: id) { return hit }
-        do {
-            guard let fresh = try await store.compileContentRuleList(forIdentifier: id, encodedContentRuleList: json) else {
-                throw BlockerFiles.Failure("WebKit did not return compiled rules.")
+        let profileIDs = ProfileManager.shared.profiles.map(\.id) + [Profile.incognito.id]
+        let exceptions = profileIDs.map { ($0, siteExceptions(for: $0)) }.filter { !$0.1.isEmpty }
+        guard base.rules > 0 else { throw BlockerFiles.Failure("The filter lists contain no usable rules.") }
+        func compiledList(_ json: String, store: WKContentRuleListStore) async throws -> WKContentRuleList {
+            let id = "vane-\(hash(json))"
+            if let hit = try? await store.contentRuleList(forIdentifier: id) { return hit }
+            do {
+                guard let fresh = try await store.compileContentRuleList(forIdentifier: id, encodedContentRuleList: json) else {
+                    throw BlockerFiles.Failure("WebKit did not return compiled rules.")
+                }
+                return fresh
+            } catch {
+                throw BlockerFiles.Failure("WebKit couldn’t compile the filter lists. Previous working rules remain active. " + error.localizedDescription)
             }
-            return fresh
-        } catch {
-            throw BlockerFiles.Failure("WebKit couldn’t compile the filter lists. Restore the most recently changed list and try again.")
         }
-        // Keep prior compiled versions available for recovery after a failed refresh or
-        // relaunch. A stale concurrent task must never sweep another task's active list.
+        let compiledBase = try await compiledList(base.json, store: store)
+        var variants: [String: WKContentRuleList] = [:]
+        for (profile, hosts) in exceptions {
+            let json = try await Task.detached(priority: .utility) { try excluding(hosts, from: base.json) }.value
+            let variantStore: WKContentRuleListStore
+            if profile == Profile.incognito.id {
+                if privateCache == nil { privateCache = try BlockerPrivateCache() }
+                guard let privateCache else { throw BlockerFiles.Failure("The private filter store is unavailable.") }
+                variantStore = privateCache.store
+            } else { variantStore = store }
+            variants[exceptionKey(profile, hosts: hosts)] = try await compiledList(json, store: variantStore)
+        }
+        return Compilation(base: compiledBase, profiles: variants, report: base.report, json: base.json)
+    }
+
+    private nonisolated static func excluding(_ hosts: [String], from json: String) throws -> String {
+        var rules = try JSONDecoder().decode([BlockRule].self, from: Data(json.utf8))
+        let patterns = hosts.sorted().map { "^https?://" + NSRegularExpression.escapedPattern(for: $0.lowercased()) + "(:[0-9]+)?/" }
+        for index in rules.indices where !rules[index].isException { rules[index].trigger.unlessTopURL = patterns }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
+        return String(decoding: try encoder.encode(rules), as: UTF8.self)
     }
 
     /// FNV-1a. `hashValue` is seeded per process, which would miss the cache every launch.
@@ -313,7 +471,7 @@ private struct BlockRule: Encodable, Equatable {
     /// Supported: `||domain^` host anchors, `|` start/end anchors, `*` wildcards,
     /// `@@` exceptions, `$third-party` / `$~third-party`, the resource-type options
     /// (`script`, `image`, `stylesheet`, `document`, `subdocument`, `font`, `media`,
-    /// `xmlhttprequest`, `websocket`, `ping`, `popup`), `$domain=a.com|~b.com`, and
+    /// `xmlhttprequest`, `websocket`, `ping`, `popup`), positive-only or negative-only `$domain` restrictions, and
     /// `domains##selector` cosmetic rules.
     ///
     /// Skipped and counted: `/regex/` rules, `#@#` / `#?#` / `#$#` cosmetic variants,
@@ -321,26 +479,57 @@ private struct BlockRule: Encodable, Equatable {
     /// `$redirect`, `$csp`, `$removeparam`, non-ASCII patterns, and anything with an
     /// option this does not know — an unknown option can invert a rule's meaning, so an
     /// unrecognised one drops the whole line.
-    nonisolated static func convert(_ text: String) -> (json: String, rules: Int, skipped: Int) {
-        var rules: [BlockRule] = []
-        var skipped = 0
-        for raw in text.split(whereSeparator: \.isNewline) {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty || line.hasPrefix("!") || line.hasPrefix("[") { continue }
-            if let r = rule(for: line) { rules.append(r) } else { skipped += 1 }
-        }
-        // WebKit applies rules in order and `ignore-previous-rules` only cancels what came
-        // *before* it, so every allowlist rule has to sort after every block rule. Two
-        // filters rather than sort(by:) because Swift's sort is not stable.
-        let ordered = rules.filter { !$0.isException } + rules.filter { $0.isException }
+    nonisolated static func convert(_ text: String, excludingHosts: [String] = []) -> BlockerConversion {
+        convertSources([text], excludingHosts: excludingHosts)
+    }
 
+    nonisolated static func convertSources(_ texts: [String], excludingHosts: [String] = []) -> BlockerConversion {
+        var rules: [BlockRule] = []
+        var report = BlockerReport()
+        for (source, text) in texts.enumerated() {
+            var conditionalDepth = 0
+            for (index, raw) in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines).enumerated() {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("!#if") { conditionalDepth += 1; continue }
+                if line.hasPrefix("!#endif") { conditionalDepth = max(0, conditionalDepth - 1); continue }
+                if line.isEmpty || line.hasPrefix("!") || line.hasPrefix("[") { continue }
+                if conditionalDepth == 0, var rule = rule(for: line) {
+                    if !excludingHosts.isEmpty, !rule.isException {
+                        rule.trigger.unlessTopURL = excludingHosts.sorted().map {
+                            "^https?://" + NSRegularExpression.escapedPattern(for: $0.lowercased()) + "(:[0-9]+)?/"
+                        }
+                    }
+                    rules.append(rule)
+                } else {
+                    let reason = conditionalDepth > 0 ? "Conditional rule" : unsupportedReason(line)
+                    report.skipped += 1
+                    report.reasonCounts[reason, default: 0] += 1
+                    if report.diagnostics.count < 20 {
+                        report.diagnostics.append(.init(line: index + 1, reason: reason, sample: String(line.prefix(240)), source: source + 1))
+                    }
+                }
+            }
+        }
+        // Exceptions must follow blocks across all sources.
+        let ordered = rules.filter { !$0.isException } + rules.filter { $0.isException }
         let encoder = JSONEncoder()
-        // sortedKeys is load-bearing, not cosmetic: JSONEncoder does not promise a stable
-        // key order, and the cache identifier is a hash of this string. Without it the hash
-        // changes between runs and the rule list recompiles on every launch.
         encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
-        guard let data = try? encoder.encode(ordered) else { return ("[]", 0, skipped) }
-        return (String(decoding: data, as: UTF8.self), ordered.count, skipped)
+        let data = (try? encoder.encode(ordered)) ?? Data("[]".utf8)
+        report.rules = ordered.count
+        return BlockerConversion(json: String(decoding: data, as: UTF8.self), report: report)
+    }
+
+    private nonisolated static func unsupportedReason(_ line: String) -> String {
+        if line.contains("##+js(") || [":has-text(", ":-abp-", ":style(", ":remove(", ":matches-css", ":upward(", ":xpath(", ":nth-ancestor(", ":watch-attr("].contains(where: line.contains) {
+            return "Scriptlet or procedural selector"
+        }
+        if line.contains("#@#") || line.contains("#?#") || line.contains("#$#") { return "Cosmetic variant or exception" }
+        if !line.allSatisfy({ $0.isASCII }) { return "Non-ASCII rule" }
+        let body = line.hasPrefix("@@") ? String(line.dropFirst(2)) : line
+        if body.hasPrefix("/"), body.split(separator: "$", maxSplits: 1).first?.hasSuffix("/") == true { return "Regular expression" }
+        if line.contains("domain=") || line.contains("##") { return "Invalid or mixed domain restriction / selector" }
+        if line.contains("$") { return "Unsupported or invalid option" }
+        return "Unsupported pattern"
     }
 
     /// One filter line to one rule, or nil if WebKit cannot express it.
@@ -382,7 +571,7 @@ private struct BlockRule: Encodable, Equatable {
                             ":matches-css", ":upward(", ":xpath(", ":nth-ancestor(", ":watch-attr("] {
             if selector.contains(unsupported) { return nil }
         }
-        let domains = domainLists(line[..<hash.lowerBound].split(separator: ","))
+        guard let domains = domainLists(line[..<hash.lowerBound].split(separator: ",", omittingEmptySubsequences: false)) else { return nil }
         // `.*` because a cosmetic rule applies to every URL its domains allow.
         return BlockRule(trigger: .init(urlFilter: ".*",
                                         ifDomain: domains.yes,
@@ -404,7 +593,7 @@ private struct BlockRule: Encodable, Equatable {
     private nonisolated static func applyOptions(_ options: String,
                                                  to trigger: inout BlockRule.Trigger) -> Bool {
         var types: [String] = []
-        for part in options.split(separator: ",") {
+        for part in options.split(separator: ",", omittingEmptySubsequences: false) {
             let option = part.trimmingCharacters(in: .whitespaces).lowercased()
             switch option {
             case "third-party", "3p":
@@ -415,7 +604,7 @@ private struct BlockRule: Encodable, Equatable {
                 if let type = resourceTypes[option] {
                     if !types.contains(type) { types.append(type) }
                 } else if option.hasPrefix("domain=") {
-                    let list = domainLists(option.dropFirst(7).split(separator: "|"))
+                    guard let list = domainLists(option.dropFirst(7).split(separator: "|", omittingEmptySubsequences: false)) else { return false }
                     guard list.yes != nil || list.no != nil else { return false }
                     trigger.ifDomain = list.yes
                     trigger.unlessDomain = list.no
@@ -428,23 +617,22 @@ private struct BlockRule: Encodable, Equatable {
         return true
     }
 
-    /// `*` prefixes mean "this domain and its subdomains", which is what a filter list
-    /// always means by a bare domain.
-    /// ponytail: WebKit rejects a trigger carrying both if-domain and unless-domain, so a
-    /// mixed `$domain=a.com|~b.a.com` keeps the positives and drops the exclusions —
-    /// over-blocks a subdomain rather than under-blocking everything.
-    private nonisolated static func domainLists(_ parts: [Substring]) -> (yes: [String]?, no: [String]?) {
+    /// Mixed positive/negative restrictions cannot be represented with WebKit's domain
+    /// triggers. Reject the whole rule rather than silently discard an exclusion.
+    private nonisolated static func domainLists(_ parts: [Substring]) -> (yes: [String]?, no: [String]?)? {
+        if parts.isEmpty || parts == [""] { return (nil, nil) }
         var yes: [String] = [], no: [String] = []
         for part in parts {
             let negated = part.hasPrefix("~")
-            let domain = String(negated ? part.dropFirst() : part)
-                .trimmingCharacters(in: .whitespaces).lowercased()
-            guard !domain.isEmpty, domain.contains("."), !domain.contains("/"),
-                  domain.allSatisfy({ $0.isASCII }) else { continue }
+            let domain = String(negated ? part.dropFirst() : part).lowercased()
+            guard domain.contains("."), !domain.hasPrefix("."), !domain.hasSuffix("."),
+                  domain.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({
+                    !$0.isEmpty && !$0.hasPrefix("-") && !$0.hasSuffix("-") && $0.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+                  }) else { return nil }
             if negated { no.append("*" + domain) } else { yes.append("*" + domain) }
         }
-        if !yes.isEmpty { return (yes, nil) }
-        return (nil, no.isEmpty ? nil : no)
+        guard yes.isEmpty || no.isEmpty else { return nil }
+        return (yes.isEmpty ? nil : yes, no.isEmpty ? nil : no)
     }
 
     /// Translate an EasyList pattern into WebKit's url-filter regex, or nil if it uses
@@ -496,7 +684,7 @@ private struct BlockRule: Encodable, Equatable {
     /// nothing that breaks logins or payments, and no generic cosmetic rules (those are
     /// what break layouts, and they are the reason people turn blockers off).
     /// ponytail: a static constant, not a downloaded-and-updated subscription. There is no
-    /// updater, no schedule and no server; the upgrade path is Add Filter List.
+    /// network dependency; URL subscriptions are separate opt-in sources.
     private nonisolated static let builtin = """
     ! Vane built-in starter list
     ||doubleclick.net^
@@ -597,7 +785,7 @@ private struct BlockRule: Encodable, Equatable {
         assert("$document is a resource type, not an option",
                rule(for: "||ads.example.com^$document")?.trigger.resourceType == ["document"])
 
-        let scoped = rule(for: "||track.example.com^$domain=a.com|~b.com")
+        let scoped = rule(for: "||track.example.com^$domain=a.com")
         assert("$domain= positives become if-domain with a subdomain wildcard",
                scoped?.trigger.ifDomain == ["*a.com"])
         assert("if-domain and unless-domain never appear together",
@@ -821,9 +1009,13 @@ enum BlockerFiles {
     }
 
     static func sources(builtin: String, files: [URL]) throws -> String {
-        var result = builtin
+        try sourceTexts(builtin: builtin, files: files).joined(separator: "\n")
+    }
+
+    static func sourceTexts(builtin: String, files: [URL]) throws -> [String] {
+        var result = [builtin]
         for file in files {
-            do { result += "\n" + (try String(contentsOf: file, encoding: .utf8)) }
+            do { result.append(try String(contentsOf: file, encoding: .utf8)) }
             catch { throw Failure("Couldn’t read filter list “\(file.lastPathComponent)”. Restore that file or reconnect its drive, then retry.") }
         }
         return result
