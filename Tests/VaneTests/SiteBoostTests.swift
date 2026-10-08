@@ -1,0 +1,221 @@
+import AppKit
+import WebKit
+import XCTest
+@testable import vane
+
+@MainActor final class SiteBoostTests: XCTestCase {
+    override func setUp() async throws { TestEnvironment.prepare(); _ = NSApplication.shared }
+
+    func testOriginNormalizesPortsAndKeepsSubdomainsAndSchemesSeparate() {
+        XCTAssertEqual(SiteBoosts.origin(URL(string: "https://EXAMPLE.com:443/a?q=1")!), "https://example.com")
+        XCTAssertEqual(SiteBoosts.origin(URL(string: "http://example.com:80")!), "http://example.com")
+        XCTAssertEqual(SiteBoosts.origin(URL(string: "https://example.com:8443")!), "https://example.com:8443")
+        XCTAssertNotEqual(SiteBoosts.origin(URL(string: "https://www.example.com")!), SiteBoosts.origin(URL(string: "https://example.com")!))
+        XCTAssertNil(SiteBoosts.origin(URL(string: "file:///tmp/example.html")!))
+        XCTAssertNil(SiteBoosts.origin(URL(string: "about:blank")!))
+    }
+
+    func testProfilePersistenceResetAndMalformedRecords() throws {
+        let suite = "boost-tests-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let store = SiteBoostStore(defaults: defaults)
+        let profile = UUID(), other = UUID(), origin = "https://example.com"
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var boost = SiteBoost(); boost.font = "Georgia"; boost.css = "a { color: red }"; boost.script = "window.test = 1"
+        store.set(boost, origin: origin, profile: profile)
+        XCTAssertEqual(SiteBoostStore(defaults: defaults).get(origin: origin, profile: profile), boost)
+        XCTAssertEqual(store.get(origin: origin, profile: other), SiteBoost())
+        XCTAssertFalse(store.get(origin: origin, profile: profile).scriptEnabled)
+        store.set(SiteBoost(), origin: origin, profile: profile)
+        XCTAssertTrue(store.records(profile: profile).isEmpty)
+        defaults.set(Data("bad json".utf8), forKey: SiteBoostStore.key(profile))
+        XCTAssertEqual(store.get(origin: origin, profile: profile), SiteBoost())
+    }
+
+    func testPrivateBoostIsPerTabAndDoesNotInheritSavedScripts() {
+        let tab = Tab(isPrivate: true), other = Tab(isPrivate: true)
+        let origin = "https://example.com"
+        var boost = SiteBoost(); boost.css = "body { color: red }"; boost.scriptEnabled = true
+        SiteBoosts.set(boost, origin: origin, tab: tab)
+        XCTAssertEqual(SiteBoosts.value(origin: origin, tab: tab), boost)
+        XCTAssertEqual(SiteBoosts.value(origin: origin, tab: other), SiteBoost())
+        tab.tearDown()
+        XCTAssertEqual(SiteBoosts.value(origin: origin, tab: tab), SiteBoost())
+        other.tearDown()
+    }
+
+    func testSiteControlOffersBoostOnlyForWebPages() {
+        XCTAssertTrue(SiteControlModel(host: "example.com", scheme: "https").rows.contains { $0.id == .boost })
+        XCTAssertFalse(SiteControlModel(host: "example.com", scheme: "file").rows.contains { $0.id == .boost })
+    }
+}
+
+@MainActor final class SiteBoostWebTests: XCTestCase {
+    override func setUp() async throws { TestEnvironment.prepare(); _ = NSApplication.shared }
+
+    private func page() async throws -> Tab {
+        let tab = Tab(isPrivate: true)
+        addTeardownBlock { @MainActor in tab.tearDown() }
+        tab.web.frame = CGRect(x: 0, y: 0, width: 600, height: 400)
+        try await load(tab, origin: "https://boost.test")
+        return tab
+    }
+
+    private func load(_ tab: Tab, origin: String) async throws {
+        tab.web.loadHTMLString("<html><body><div id='ad:one'>Ad</div><a id='link'>Link</a><p id='copy'>Text</p></body></html>", baseURL: URL(string: origin))
+        let deadline = Date.now.addingTimeInterval(10)
+        while Date.now < deadline {
+            if !tab.web.isLoading, SiteBoosts.document(for: tab)?.origin == origin, SiteBoosts.document(for: tab)?.scriptRan == true { return }
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        XCTFail("Boost runtime did not attach"); throw NSError(domain: "fixture", code: 1)
+    }
+
+    private func visual(_ code: String, tab: Tab) async throws -> Any? {
+        let data: Data? = try await withCheckedThrowingContinuation { continuation in
+            tab.web.evaluateJavaScript(code, in: nil, in: SiteBoostScripts.world) { result in
+                switch result {
+                case .success(let value):
+                    continuation.resume(returning: try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed))
+                case .failure(let error): continuation.resume(throwing: error)
+                }
+            }
+        }
+        return try data.map { try JSONSerialization.jsonObject(with: $0, options: .fragmentsAllowed) }
+    }
+
+    func testLiveStylesDynamicHidingAndReset() async throws {
+        let tab = try await page()
+        var boost = SiteBoost(); boost.font = "Georgia"; boost.textColor = "#123456"; boost.background = "#fefefe"
+        boost.hidden = ["#ad\\:one"]; boost.css = "#copy { font-weight: 700 !important; }"
+        SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        try await Task.sleep(for: .milliseconds(150))
+        let result1 = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: tab) as? String
+        XCTAssertEqual(result1, "rgb(18, 52, 86)")
+        let result2 = try await visual("getComputedStyle(document.getElementById('ad:one')).display", tab: tab) as? String
+        XCTAssertEqual(result2, "none")
+        _ = try await visual("document.getElementById('ad:one').remove(); const ad=document.createElement('div'); ad.id='ad:one'; document.body.append(ad);", tab: tab)
+        let result3 = try await visual("getComputedStyle(document.getElementById('ad:one')).display", tab: tab) as? String
+        XCTAssertEqual(result3, "none")
+        SiteBoosts.set(SiteBoost(), origin: "https://boost.test", tab: tab)
+        try await Task.sleep(for: .milliseconds(100))
+        let result4 = try await visual("getComputedStyle(document.getElementById('ad:one')).display", tab: tab) as? String
+        XCTAssertEqual(result4, "block")
+    }
+
+    func testScriptOptInErrorsAndOriginIsolation() async throws {
+        let tab = try await page()
+        var boost = SiteBoost(); boost.script = "window.boostCount = (window.boostCount || 0) + 1;"; boost.css = "body { background: red }"
+        SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        let disabled = await SiteBoosts.runScript(tab: tab)
+        XCTAssertEqual(disabled, "Enable JavaScript to run this script.")
+        let result5 = try await tab.web.evaluateJavaScript("window.boostCount") as? Int
+        XCTAssertNil(result5)
+        boost.scriptEnabled = true; SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        let result6 = await SiteBoosts.runScript(tab: tab)
+        XCTAssertEqual(result6, "Script applied.")
+        let result7 = try await tab.web.evaluateJavaScript("window.boostCount") as? Int
+        XCTAssertEqual(result7, 1)
+        boost.script = "throw new Error('fixture error')"; SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        let failedScript = await SiteBoosts.runScript(tab: tab)
+        XCTAssertTrue(failedScript.contains("fixture error"))
+        try await load(tab, origin: "https://other.test")
+        let result8 = try await tab.web.evaluateJavaScript("window.boostCount") as? Int
+        XCTAssertNil(result8)
+        let result9 = try await visual("getComputedStyle(document.body).backgroundColor", tab: tab) as? String
+        XCTAssertNotEqual(result9, "rgb(255, 0, 0)")
+    }
+
+    func testScriptsWorkOnPagesWithRestrictiveCSP() async throws {
+        let tab = try await page()
+        tab.web.loadHTMLString("<meta http-equiv='Content-Security-Policy' content=\"script-src 'none'; style-src 'none'\"><p id='copy'>Text</p>", baseURL: URL(string: "https://boost.test"))
+        try await Task.sleep(for: .milliseconds(200))
+        var boost = SiteBoost(); boost.scriptEnabled = true; boost.script = "window.cspBoost = 42;"; boost.textColor = "#123456"
+        SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        let result = await SiteBoosts.runScript(tab: tab)
+        XCTAssertEqual(result, "Script applied.")
+        let value = try await tab.web.evaluateJavaScript("window.cspBoost") as? Int
+        XCTAssertEqual(value, 42)
+        try await Task.sleep(for: .milliseconds(100))
+        let color = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: tab) as? String
+        XCTAssertEqual(color, "rgb(18, 52, 86)")
+    }
+
+    func testTextSizeScalesFixedPixelFontsAndRestoresThem() async throws {
+        let tab = try await page()
+        _ = try await visual("document.getElementById('copy').style.fontSize = '20px'", tab: tab)
+        var boost = SiteBoost(); boost.textScale = 1.5
+        SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        try await Task.sleep(for: .milliseconds(100))
+        let large = try await visual("getComputedStyle(document.getElementById('copy')).fontSize", tab: tab)
+        XCTAssertEqual(large as? String, "30px")
+        boost.enabled = false; SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        try await Task.sleep(for: .milliseconds(100))
+        let restored = try await visual("getComputedStyle(document.getElementById('copy')).fontSize", tab: tab)
+        XCTAssertEqual(restored as? String, "20px")
+    }
+
+    func testSavedVisualsAndScriptsReapplyOnNewDocumentsOnly() async throws {
+        let tab = try await page()
+        var boost = SiteBoost(); boost.background = "#123456"; boost.scriptEnabled = true
+        boost.script = "window.boostCount = (window.boostCount || 0) + 1;"
+        SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        try await load(tab, origin: "https://boost.test")
+        try await Task.sleep(for: .milliseconds(100))
+        let count = try await tab.web.evaluateJavaScript("window.boostCount") as? Int
+        XCTAssertEqual(count, 1)
+        let background = try await visual("getComputedStyle(document.body).backgroundColor", tab: tab) as? String
+        XCTAssertEqual(background, "rgb(18, 52, 86)")
+        boost.font = "Georgia"; SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        try await Task.sleep(for: .milliseconds(100))
+        let unchanged = try await tab.web.evaluateJavaScript("window.boostCount") as? Int
+        XCTAssertEqual(unchanged, 1)
+    }
+
+    func testNativeEditorOwnsZapAndCleansUpOnClose() async throws {
+        let tab = try await page()
+        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 900, height: 800), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = tab.web; window.makeKeyAndOrderFront(nil)
+        addTeardownBlock { @MainActor in SiteBoostEditor.close(tab: tab); window.close() }
+        SiteBoostEditor.open(tab: tab)
+        try await Task.sleep(for: .milliseconds(150))
+        let panel = try XCTUnwrap(window.childWindows?.first)
+        SiteBoostEditor.toggleZap(tab: tab)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(SiteBoostEditor.acceptsPick(tab: tab))
+        _ = try await visual("document.getElementById('ad:one').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))", tab: tab)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(SiteBoosts.value(origin: "https://boost.test", tab: tab).hidden, ["#ad\\:one"])
+        SiteBoostEditor.undo(tab: tab)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(SiteBoosts.value(origin: "https://boost.test", tab: tab).hidden.isEmpty)
+        if let view = panel.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/vane-boost-editor.png"))
+        }
+        panel.close()
+        try await Task.sleep(for: .milliseconds(100))
+        let active = try await visual("window.__vaneBoost.zapping", tab: tab) as? Bool
+        XCTAssertEqual(active, false)
+        XCTAssertFalse(SiteBoostEditor.acceptsPick(tab: tab))
+    }
+
+    func testZapEscapesSelectorsAndCanUndoAndExit() async throws {
+        let tab = try await page()
+        let selector = try await visual("window.__vaneBoost.selector(document.getElementById('ad:one'))", tab: tab) as? String
+        XCTAssertEqual(selector, "#ad\\:one")
+        let result10 = try await visual("window.__vaneBoost.selector(document.body)", tab: tab) as? String
+        XCTAssertNil(result10)
+        _ = try await visual("window.__vaneBoost.zap(true); document.getElementById('ad:one').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));", tab: tab)
+        try await Task.sleep(for: .milliseconds(100))
+        // Picking is accepted only while a native editor owns this tab's Zap session.
+        XCTAssertTrue(SiteBoosts.value(origin: "https://boost.test", tab: tab).hidden.isEmpty)
+        _ = try await visual("window.__vaneBoost.zap(false)", tab: tab)
+        let result11 = try await visual("window.__vaneBoost.zapping", tab: tab) as? Bool
+        XCTAssertEqual(result11, false)
+        let result12 = try await visual("document.querySelector('[data-vane-zap]') === null", tab: tab) as? Bool
+        XCTAssertEqual(result12, true)
+    }
+}
+

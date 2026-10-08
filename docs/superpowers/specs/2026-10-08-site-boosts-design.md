@@ -60,9 +60,9 @@ controller setup, including popup and resumed-tab paths. Do not clear or
 replace unrelated scripts, message handlers, or content-blocking rules.
 
 Visual customization runs in a dedicated isolated content world. A single
-owned style element combines generated font/color/size rules, hidden-element
+owned constructed stylesheet combines generated font/color/size rules, hidden-element
 rules, and custom CSS. Updating or disabling a Boost replaces or removes that
-element instead of accumulating styles. The visual script checks the actual
+stylesheet instead of accumulating styles. The visual script checks the actual
 document's origin before applying; redirects cannot carry a previous website's
 Boost onto a different origin. Styles must be ready early in document loading
 and work after a reload. CSS hiding also covers elements added later by a

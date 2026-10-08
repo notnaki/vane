@@ -1386,6 +1386,15 @@ private struct PrivacyPane: View {
                         }
                         .disabled(grants.isEmpty)
                     }
+                    SettingsRow("Website Boosts") {
+                        Button("Reset Boosts…") {
+                            if confirm("Reset every website Boost in this profile?", "Reset",
+                                       "Fonts, colors, hidden elements, and custom code will be removed. Reload pages to remove script effects.") {
+                                SiteBoosts.forget(profile: profile.id)
+                                reload()
+                            }
+                        }
+                    }
                     SettingsRow("Certificates you trusted anyway") {
                         Button("Forget Exceptions…") {
                             if confirm("Forget certificate exceptions for “\(profile.name)”?",

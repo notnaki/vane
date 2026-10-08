@@ -696,6 +696,7 @@ struct Space: Identifiable, Codable, Equatable {
         if !sandboxed { EaselWindow.forget(id) }
         TidyTitles.forget(id)
         Zoom.forget(profile: id)
+        SiteBoosts.forget(profile: id)
         CertificateTrust.forget(profile: id)
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
         try? fm.removeItem(at: Self.faviconDir(for: id, in: directory))

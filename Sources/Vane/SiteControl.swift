@@ -61,6 +61,7 @@ struct SiteControlModel: Equatable, Sendable {
     var extensions: [Ext] = []
     /// The apps this site is allowed to open without asking. See ExternalApps.swift.
     var apps: [App] = []
+    var boosted = false
     var developer = false
 }
 
@@ -68,7 +69,7 @@ extension SiteControlModel {
 
     /// Which row, so the view can act on one without matching on its title.
     enum RowID: Hashable, Sendable {
-        case camera, microphone, pictureInPicture, zoom, blocker, blockerSettings, reader, capture, clearData, developer
+        case camera, microphone, pictureInPicture, zoom, blocker, blockerSettings, reader, capture, boost, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
@@ -209,6 +210,9 @@ extension SiteControlModel {
                            control: .toggle(true),
                            note: "Always opens " + app.scheme + ": links from this site."))
         }
+        if scheme?.lowercased() == "http" || scheme?.lowercased() == "https" {
+            out.append(Row(id: .boost, title: boosted ? "Edit Boost" : "Boost This Site", glyph: "paintbrush.pointed", control: .action))
+        }
         out.append(Row(id: .capture, title: "Capture a Portion of This Page",
                        glyph: "camera.viewfinder", control: .action))
         out.append(Row(id: .clearData, title: "Clear Site Data…", glyph: "trash",
@@ -270,6 +274,7 @@ extension SiteControlModel {
             let handler = URL(string: scheme + "://open").flatMap(ExternalApps.handler(for:))
             return App(scheme: scheme, name: ExternalApps.name(of: handler) ?? scheme)
         }
+        if let origin = SiteBoosts.origin(url) { boosted = SiteBoosts.value(origin: origin, tab: tab) != SiteBoost() }
         developer = tab.developer
     }
 }
@@ -320,6 +325,7 @@ extension SiteControlModel {
         case .blockerSettings: SettingsWindow.show(tab: "privacy", profileID: tab.profileID)
         case .reader: Reader.toggle(tab)
         case .capture: PageCapture.start(tab)
+        case .boost: SiteBoostEditor.open(tab: tab)
         case .ext(let i): toggleExtension(i, on: tab)
         // The switch is on because the answer exists; the only thing it can do is take it
         // back, which puts the site back to being asked.
@@ -824,6 +830,8 @@ private struct SiteControlRow: View {
         case .zoom:   return "Resets the page to actual size. Zoom In and Zoom Out are also available."
         case .action where row.id == .blockerSettings:
             return "Opens filter subscriptions, update status, unsupported rules, and site exceptions."
+        case .action where row.id == .boost:
+            return "Change this website’s fonts and colors, hide distractions, or add custom code."
         case .action where row.id == .capture:
             return "Click an element or drag a region to capture. Escape cancels."
         case .action: return "Signs you out of this site and forgets what it stored. This cannot be undone."
