@@ -25,9 +25,12 @@ import XCTest
         TestEnvironment.prepare()
         let article = makeReadingArticle()
         let data = try ReadingArticleCodec.encode(article), old = Reader.fontSize
-        defer { Reader.fontSize = old }
-        Reader.fontSize = 27
+        let oldSpacing = Reader.lineSpacing, oldWidth = Reader.readingWidth
+        defer { Reader.fontSize = old; Reader.lineSpacing = oldSpacing; Reader.readingWidth = oldWidth }
+        Reader.fontSize = 27; Reader.lineSpacing = 1.9; Reader.readingWidth = 80
         XCTAssertTrue(SavedReaderDocument.html(article: article).contains("--r-size: 27px"))
+        XCTAssertTrue(SavedReaderDocument.html(article: article).contains("--r-spacing: 1.9"))
+        XCTAssertTrue(SavedReaderDocument.html(article: article).contains("--r-width: 80ch"))
         XCTAssertEqual(try ReadingArticleCodec.encode(article), data)
         XCTAssertFalse(article.isRead)
     }

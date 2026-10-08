@@ -776,18 +776,19 @@ import SwiftUI
 
 /// Native menus keep controls outside the untrusted page and reuse the existing setters.
 struct ReaderPreferencesMenu: View {
-    let tab: Tab
+    var tab: Tab? = nil
+    var onChange: () -> Void = {}
     @ObservedObject private var state = ReaderState.shared
     var body: some View {
         Menu("Reading Preferences") {
-            Button("Larger Text (\(Reader.fontSize) pt)") { Reader.adjustFontSize(1, in: tab) }
+            Button("Larger Text (\(Reader.fontSize) pt)") { Reader.adjustFontSize(1, in: tab); onChange() }
                 .disabled(Reader.fontSize >= 32)
-            Button("Smaller Text") { Reader.adjustFontSize(-1, in: tab) }.disabled(Reader.fontSize <= 13)
-            Toggle("Serif Typeface", isOn: Binding(get: { Reader.serif }, set: { Reader.setSerif($0, in: tab) }))
-            Picker("Line Spacing", selection: Binding(get: { Reader.lineSpacing }, set: { Reader.setLineSpacing($0, in: tab) })) {
+            Button("Smaller Text") { Reader.adjustFontSize(-1, in: tab); onChange() }.disabled(Reader.fontSize <= 13)
+            Toggle("Serif Typeface", isOn: Binding(get: { Reader.serif }, set: { Reader.setSerif($0, in: tab); onChange() }))
+            Picker("Line Spacing", selection: Binding(get: { Reader.lineSpacing }, set: { Reader.setLineSpacing($0, in: tab); onChange() })) {
                 ForEach(Reader.spacingChoices, id: \.1) { Text($0.0).tag($0.1) }
             }
-            Picker("Reading Width", selection: Binding(get: { Reader.readingWidth }, set: { Reader.setReadingWidth($0, in: tab) })) {
+            Picker("Reading Width", selection: Binding(get: { Reader.readingWidth }, set: { Reader.setReadingWidth($0, in: tab); onChange() })) {
                 ForEach(Reader.widthChoices, id: \.1) { Text($0.0).tag($0.1) }
             }
         }

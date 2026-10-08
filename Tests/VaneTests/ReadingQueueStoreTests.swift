@@ -84,6 +84,18 @@ import XCTest
         try ReadingQueueStore.forget(profileID: ProfileManager.defaultID, directory: clean)
         XCTAssertThrowsError(try repository.publish(.init(article: makeReadingArticle(), images: [:])))
     }
+    func testProfileDeletionRemovesUnfinishedSnapshots() throws {
+        let directory = root(), profile = ProfileManager.defaultID
+        let repository = try ReadingQueueStore.shared(profileID: profile, directory: directory)
+        try repository.publish(.init(article: makeReadingArticle(), images: [:]))
+        let staging = ReadingQueueFiles.root(in: directory).appendingPathComponent(".staging").appendingPathComponent(profile.uuidString.lowercased())
+        let abandoned = staging.appendingPathComponent(UUID().uuidString.lowercased())
+        try FileManager.default.createDirectory(at: abandoned, withIntermediateDirectories: false)
+        try Data("unfinished private profile article".utf8).write(to: abandoned.appendingPathComponent("article.json"))
+        try ReadingQueueStore.forget(profileID: profile, directory: directory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertTrue(repository.invalidated)
+    }
     func testPathGrammarExcludesStagingTraversalAndUppercase() {
         let profile = UUID().uuidString.lowercased(), article = UUID().uuidString.lowercased()
         XCTAssertNotNil(ReadingQueueFiles.parseOwnedName("ReadingQueue/\(profile)/\(article)/article.json"))

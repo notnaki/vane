@@ -20,6 +20,10 @@ struct ReadingQueueUsage { var articleCount = 0; var publishedBytes: Int64 = 0; 
         SavedReaderWindow.forget(profileID: profileID)
         try ReadingQueueFiles.checkRoot(directory)
         if ReadingQueueFiles.exists(key) { try ReadingQueueFiles.check(key, directory: true); try FileManager.default.removeItem(at: key) }
+        let stagingRoot = ReadingQueueFiles.root(in: directory).appendingPathComponent(".staging")
+        try ReadingQueueFiles.check(stagingRoot, directory: true, mayBeMissing: true)
+        let pending = stagingRoot.appendingPathComponent(profileID.uuidString.lowercased())
+        if ReadingQueueFiles.exists(pending) { try ReadingQueueFiles.check(pending, directory: true); try FileManager.default.removeItem(at: pending) }
     }
     let profileID: UUID
     let directory: URL

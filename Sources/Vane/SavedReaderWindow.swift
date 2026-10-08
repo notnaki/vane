@@ -94,8 +94,6 @@ enum SavedReaderNavigation {
         if ReadingArticleCodec.webURL(url.absoluteString) != nil { origin.newTab(url); origin.window?.makeKeyAndOrderFront(nil) }
         else if url.scheme?.lowercased() == "mailto" { NSWorkspace.shared.open(url) }
     }
-    func changeSize(_ delta: Int) { Reader.adjustFontSize(delta, in: nil); applyPreferences() }
-    func changeTypeface() { Reader.setSerif(!Reader.serif, in: nil); applyPreferences() }
     func applyPreferences() {
         guard let article else { return }
         // Reuse Reader's style values without reloading or changing the saved payload/scroll.
@@ -137,11 +135,7 @@ private struct SavedReaderView: View {
                     Button(article.isRead ? "Mark Unread" : "Mark Read") {
                         do { try repository.setRead(!article.isRead, id: article.id) } catch { session.message = error.localizedDescription }
                     }
-                    Menu("Reading Preferences") {
-                        Button("Larger Text (\(Reader.fontSize) pt)") { session.changeSize(1) }.disabled(Reader.fontSize >= 32)
-                        Button("Smaller Text") { session.changeSize(-1) }.disabled(Reader.fontSize <= 13)
-                        Button(Reader.serif ? "Use Sans Serif" : "Use Serif") { session.changeTypeface() }
-                    }
+                    ReaderPreferencesMenu(onChange: { session.applyPreferences() })
                     Button("Open Live Page") { if let url = URL(string: article.sourceURL) { session.open(url) } }
                 }
             }.padding(14)
