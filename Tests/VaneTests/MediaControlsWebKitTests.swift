@@ -37,6 +37,33 @@ import XCTest
         return (tab, window)
     }
 
+    func testDecodedPlaybackPauseSeekResumeAndEndUpdateTray() async throws {
+        let (tab, _) = try await fixture("<video id='player' muted autoplay src='data:video/mp4;base64,\(Self.video)'></video>")
+        try await wait { try await tab.web.evaluateJavaScript("player.currentTime > 0.15 && player.videoWidth === 640 && player.error === null") as? Bool == true }
+        try await wait { MediaState.shared.info(for: tab.id)?.playing == true }
+        MediaState.shared.send(.playpause, to: tab)
+        try await wait { try await tab.web.evaluateJavaScript("player.paused") as? Bool == true }
+        _ = try await tab.web.evaluateJavaScript("player.currentTime=0.5; true")
+        try await wait { try await tab.web.evaluateJavaScript("!player.seeking && Math.abs(player.currentTime-0.5)<0.05") as? Bool == true }
+        try await wait { MediaState.shared.info(for: tab.id)?.playing == false }
+        MediaState.shared.send(.playpause, to: tab)
+        try await wait { try await tab.web.evaluateJavaScript("!player.paused && player.currentTime>0.8 && player.error===null") as? Bool == true }
+        try await wait { try await tab.web.evaluateJavaScript("player.ended") as? Bool == true }
+        try await wait { MediaState.shared.info(for: tab.id)?.playing == false }
+    }
+
+    func testNavigationClearsPlayingMediaAndFreshDocumentCanPlay() async throws {
+        let html = "<video id='player' muted autoplay loop src='data:video/mp4;base64,\(Self.video)'></video>"
+        let (tab, _) = try await fixture(html)
+        try await wait { MediaState.shared.info(for: tab.id)?.playing == true }
+        tab.web.loadHTMLString("<title>Quiet replacement</title>", baseURL: nil)
+        try await wait { !tab.web.isLoading && tab.web.title == "Quiet replacement" }
+        XCTAssertNil(MediaState.shared.info(for: tab.id))
+        tab.web.loadHTMLString(html, baseURL: nil)
+        try await wait { try await tab.web.evaluateJavaScript("!!document.getElementById('player') && player.currentTime>0.1 && player.error===null") as? Bool == true }
+        try await wait { MediaState.shared.info(for: tab.id)?.playing == true }
+    }
+
     func testEmbeddedPlayerCanPauseAndResumeWithoutStartingMainFrameDecoy() async throws {
         let player = "<video id='player' loop autoplay muted src='data:video/mp4;base64,\(Self.video)'></video>" +
             "<script>navigator.mediaSession.metadata=new MediaMetadata({title:'Embedded movie'});</script>"
