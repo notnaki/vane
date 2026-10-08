@@ -227,7 +227,8 @@ and are limited to 8 MB of UTF-8 text per list.
 Vane compiles the combined candidate using WebKit's public `WKContentRuleListStore`
 before saving a changed subscription. Download, compilation, or storage failures
 retain the accepted source and last working compiled rules, including across
-relaunch. URL text and metadata live together in an atomic
+relaunch. A saved base-rule snapshot also lets new site exceptions take effect when
+a legacy source is missing. URL text and metadata live together in an atomic
 `FilterSubscriptions/subscriptions.json` document; disk imports stay in `FilterLists`.
 The feature does not depend on a managed Apple entitlement.
 
@@ -237,6 +238,8 @@ requests and cosmetic rules; subdomains have their own choices. **Filter Lists a
 Diagnostics** opens update status, unsupported rules, and saved exceptions. Resume
 blocking there to remove an exception, then reload other open pages. Subscription
 updates preserve exceptions; private-window choices are not saved as preferences.
+Private compiled variants use a separate transient WebKit store, removed on normal
+quit; the next launch sweeps crash leftovers while preserving other live Vane instances.
 
 The converter supports a subset of EasyList: host/start/end anchors, wildcards,
 network exceptions, supported resource/party options, positive-only or negative-only
@@ -244,7 +247,8 @@ domain restrictions, and ordinary CSS hiding. Resource types follow WebKit's
 vocabulary: subdocuments use `document`, and XHR/WebSocket/ping use `raw`.
 Regex rules, scriptlets, procedural selectors, cosmetic exception variants, unknown
 options, mixed/invalid domain restrictions, and rules inside conditional branches
-are skipped. **Unsupported Rules** reports totals by reason and the first 20 samples
+are skipped. Unbalanced conditional directives reject a subscription update, and
+each source has independent preprocessing state. **Unsupported Rules** reports totals by reason and the first 20 samples
 with line numbers; local imports can be inspected separately. Vane does not claim
 full uBlock Origin or AdGuard compatibility or expose request-by-request block counts.
 

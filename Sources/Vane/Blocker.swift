@@ -10,8 +10,8 @@ import Combine
 ///
 /// Declaration order is the encoding order, so the same filter text always produces the
 /// same bytes. That matters: the JSON's hash is the compile-cache identifier.
-private struct BlockRule: Encodable, Equatable {
-    struct Trigger: Encodable, Equatable {
+private struct BlockRule: Codable, Equatable {
+    struct Trigger: Codable, Equatable {
         var urlFilter: String
         var ifDomain: [String]?
         var unlessDomain: [String]?
@@ -29,7 +29,7 @@ private struct BlockRule: Encodable, Equatable {
         }
     }
 
-    struct Action: Encodable, Equatable {
+    struct Action: Codable, Equatable {
         var type: String
         var selector: String?
     }
@@ -145,13 +145,19 @@ private struct BlockRule: Encodable, Equatable {
             if wanted {
                 do {
                     let fresh = try await build()
+                    guard refreshState.isCurrent(generation) else { return }
+                    // Keep accepted base rules available for site troubleshooting even
+                    // when a legacy source disappears. No private host is in this snapshot.
+                    try FileManager.default.createDirectory(at: snapshotURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try JSONEncoder().encode(Snapshot(json: fresh.json, report: fresh.report)).write(to: snapshotURL, options: .atomic)
                     guard refreshState.finish(.success(fresh.base), generation: generation) else { return }
                     profileLists = fresh.profiles
                     UserDefaults.vane.set(fresh.base.identifier, forKey: "blockerLastGoodList")
                     let saved = fresh.profiles.filter { !$0.key.hasPrefix(Profile.incognito.id.uuidString + ":") }
                     UserDefaults.vane.set(saved.mapValues { $0.identifier! }, forKey: "blockerLastGoodProfiles")
                     BlockerStatus.shared.report = fresh.report
-                    BlockerStatus.shared.message = "Working rules active · " + fresh.report.summary
+                    BlockerStatus.shared.message = fresh.sourceFailure.map { "Previous working rules active. " + $0 }
+                        ?? "Working rules active · " + fresh.report.summary
                     lastFailure = nil
                     // Publish first: recovery must always name a list that still exists.
                     // Only then can prior Vane-owned compile results be swept.
@@ -232,7 +238,7 @@ private struct BlockRule: Encodable, Equatable {
                 guard let ruleStore = WKContentRuleListStore.default() else {
                     throw BlockerFiles.Failure("WebKit’s content-blocking store is unavailable.")
                 }
-                let candidate = convert(try sources() + "\n" + text).json
+                let candidate = convertSources(try sources() + [text]).json
                 let candidateID = "vane-\(hash(candidate))"
                 validationID = candidateID
                 guard try await ruleStore.compileContentRuleList(forIdentifier: candidateID,
@@ -256,10 +262,20 @@ private struct BlockRule: Encodable, Equatable {
             }
             refresh()
 
-            alert.messageText = "Added \(result.rules) rule\(result.rules == 1 ? "" : "s")."
-            alert.informativeText = result.report.details
-            alert.runModal()
+            let success = makeImportSuccessAlert(result.report)
+            if success.runModal() == .alertSecondButtonReturn {
+                BlockerSettingsSection.showReport(result.report, title: file.lastPathComponent)
+            }
         }
+    }
+
+    static func makeImportSuccessAlert(_ report: BlockerReport) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Added \(report.rules) rule\(report.rules == 1 ? "" : "s")."
+        alert.informativeText = report.summary
+        alert.addButton(withTitle: "Done")
+        if report.skipped > 0 { alert.addButton(withTitle: "Unsupported Rules…") }
+        return alert
     }
 
     // MARK: - Compilation
@@ -269,6 +285,11 @@ private struct BlockRule: Encodable, Equatable {
     private static var compiled: WKContentRuleList? { refreshState.current }
     private static var lastFailure: String?
     private static var profileLists: [String: WKContentRuleList] = [:]
+    private static var privateCache: BlockerPrivateCache?
+    static func closePrivateRules() { privateCache?.close(); privateCache = nil }
+    static func hasCurrentExceptionVariant(for profile: UUID) -> Bool {
+        profileLists[exceptionKey(profile, hosts: siteExceptions(for: profile))] != nil
+    }
     private final class Attachment {
         let profileID: UUID
         let list: WKContentRuleList?
@@ -280,7 +301,14 @@ private struct BlockRule: Encodable, Equatable {
         var base: WKContentRuleList
         var profiles: [String: WKContentRuleList]
         var report: BlockerReport
+        var json: String
+        var sourceFailure: String?
     }
+    private struct Snapshot: Codable {
+        var json: String
+        var report: BlockerReport
+    }
+    private nonisolated static var snapshotURL: URL { Store.directory.appendingPathComponent("FilterLists/last-good-rules.json") }
     private static var protectedIdentifiers: Set<String> {
         Set(([compiled?.identifier, UserDefaults.vane.string(forKey: "blockerLastGoodList")].compactMap { $0 })
             + profileLists.values.compactMap { $0.identifier }
@@ -316,7 +344,7 @@ private struct BlockRule: Encodable, Equatable {
     /// nonisolated, and called from `build`'s detached task: resolving a dozen bookmarks
     /// and reading the filter lists off disk is file work, not UI work, and it used to
     /// happen on the main actor at launch with the first page already loading.
-    private nonisolated static func sources(includeSubscriptions: Bool = true) throws -> String {
+    private nonisolated static func sources(includeSubscriptions: Bool = true) throws -> [String] {
         var files: [URL] = []
         // Resolve legacy selections without ScopedPaths.urls: that helper drops failed
         // bookmarks, which would silently discard part of the user's blocking rules.
@@ -345,10 +373,10 @@ private struct BlockRule: Encodable, Equatable {
             }
             files.append(importedDirectory.appendingPathComponent(name))
         }
-        var text = try BlockerFiles.sources(builtin: builtin, files: files)
+        var text = try BlockerFiles.sourceTexts(builtin: builtin, files: files)
         if includeSubscriptions {
             for item in try FilterSubscriptions.read(directory: FilterSubscriptions.directory) {
-                text += "\n" + item.text
+                text.append(item.text)
             }
         }
         return text
@@ -359,19 +387,16 @@ private struct BlockRule: Encodable, Equatable {
     private static func build() async throws -> Compilation {
         await compileGate.acquire()
         defer { compileGate.release() }
-        let text = try await Task.detached(priority: .utility) { try sources() }.value
-        return try await compile(text)
-    }
-
-    /// Compile the full subscription candidate, including local sources and current site
-    /// exceptions, before the subscription manager commits its atomic manifest.
-    static func validateSubscriptionText(_ subscriptionText: String) async throws {
-        await compileGate.acquire()
-        defer { compileGate.release() }
-        let text = try await Task.detached(priority: .utility) {
-            try sources(includeSubscriptions: false) + "\n" + subscriptionText
-        }.value
-        _ = try await compile(text)
+        do {
+            let text = try await Task.detached(priority: .utility) { try sources() }.value
+            return try await compile(text)
+        } catch {
+            let failure = error.localizedDescription
+            guard let snapshot = try? JSONDecoder().decode(Snapshot.self, from: Data(contentsOf: snapshotURL)) else { throw error }
+            var recovered = try await compile(base: BlockerConversion(json: snapshot.json, report: snapshot.report))
+            recovered.sourceFailure = failure
+            return recovered
+        }
     }
 
     /// Keep validation and the manifest write under the same source gate as disk imports.
@@ -380,21 +405,25 @@ private struct BlockRule: Encodable, Equatable {
         await compileGate.acquire()
         defer { compileGate.release() }
         let text = try await Task.detached(priority: .utility) {
-            try sources(includeSubscriptions: false) + "\n" + subscriptionText
+            try sources(includeSubscriptions: false) + items.map(\.text)
         }.value
         _ = try await compile(text)
         try FilterSubscriptions.write(items, directory: FilterSubscriptions.directory)
     }
 
-    private static func compile(_ text: String) async throws -> Compilation {
+    private static func compile(_ texts: [String]) async throws -> Compilation {
+        let base = await Task.detached(priority: .utility) { convertSources(texts) }.value
+        return try await compile(base: base)
+    }
+
+    private static func compile(base: BlockerConversion) async throws -> Compilation {
         guard let store = WKContentRuleListStore.default() else {
             throw BlockerFiles.Failure("WebKit’s content-blocking store is unavailable. Try restarting Vane.")
         }
         let profileIDs = ProfileManager.shared.profiles.map(\.id) + [Profile.incognito.id]
         let exceptions = profileIDs.map { ($0, siteExceptions(for: $0)) }.filter { !$0.1.isEmpty }
-        let base = await Task.detached(priority: .utility) { convert(text) }.value
         guard base.rules > 0 else { throw BlockerFiles.Failure("The filter lists contain no usable rules.") }
-        func compiledList(_ json: String) async throws -> WKContentRuleList {
+        func compiledList(_ json: String, store: WKContentRuleListStore) async throws -> WKContentRuleList {
             let id = "vane-\(hash(json))"
             if let hit = try? await store.contentRuleList(forIdentifier: id) { return hit }
             do {
@@ -406,13 +435,28 @@ private struct BlockRule: Encodable, Equatable {
                 throw BlockerFiles.Failure("WebKit couldn’t compile the filter lists. Previous working rules remain active. " + error.localizedDescription)
             }
         }
-        let compiledBase = try await compiledList(base.json)
+        let compiledBase = try await compiledList(base.json, store: store)
         var variants: [String: WKContentRuleList] = [:]
         for (profile, hosts) in exceptions {
-            let json = await Task.detached(priority: .utility) { convert(text, excludingHosts: hosts).json }.value
-            variants[exceptionKey(profile, hosts: hosts)] = try await compiledList(json)
+            let json = try await Task.detached(priority: .utility) { try excluding(hosts, from: base.json) }.value
+            let variantStore: WKContentRuleListStore
+            if profile == Profile.incognito.id {
+                if privateCache == nil { privateCache = try BlockerPrivateCache() }
+                guard let privateCache else { throw BlockerFiles.Failure("The private filter store is unavailable.") }
+                variantStore = privateCache.store
+            } else { variantStore = store }
+            variants[exceptionKey(profile, hosts: hosts)] = try await compiledList(json, store: variantStore)
         }
-        return Compilation(base: compiledBase, profiles: variants, report: base.report)
+        return Compilation(base: compiledBase, profiles: variants, report: base.report, json: base.json)
+    }
+
+    private nonisolated static func excluding(_ hosts: [String], from json: String) throws -> String {
+        var rules = try JSONDecoder().decode([BlockRule].self, from: Data(json.utf8))
+        let patterns = hosts.sorted().map { "^https?://" + NSRegularExpression.escapedPattern(for: $0.lowercased()) + "(:[0-9]+)?/" }
+        for index in rules.indices where !rules[index].isException { rules[index].trigger.unlessTopURL = patterns }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
+        return String(decoding: try encoder.encode(rules), as: UTF8.self)
     }
 
     /// FNV-1a. `hashValue` is seeded per process, which would miss the cache every launch.
@@ -427,7 +471,7 @@ private struct BlockRule: Encodable, Equatable {
     /// Supported: `||domain^` host anchors, `|` start/end anchors, `*` wildcards,
     /// `@@` exceptions, `$third-party` / `$~third-party`, the resource-type options
     /// (`script`, `image`, `stylesheet`, `document`, `subdocument`, `font`, `media`,
-    /// `xmlhttprequest`, `websocket`, `ping`, `popup`), `$domain=a.com|~b.com`, and
+    /// `xmlhttprequest`, `websocket`, `ping`, `popup`), positive-only or negative-only `$domain` restrictions, and
     /// `domains##selector` cosmetic rules.
     ///
     /// Skipped and counted: `/regex/` rules, `#@#` / `#?#` / `#$#` cosmetic variants,
@@ -436,31 +480,37 @@ private struct BlockRule: Encodable, Equatable {
     /// option this does not know — an unknown option can invert a rule's meaning, so an
     /// unrecognised one drops the whole line.
     nonisolated static func convert(_ text: String, excludingHosts: [String] = []) -> BlockerConversion {
+        convertSources([text], excludingHosts: excludingHosts)
+    }
+
+    nonisolated static func convertSources(_ texts: [String], excludingHosts: [String] = []) -> BlockerConversion {
         var rules: [BlockRule] = []
         var report = BlockerReport()
-        var conditionalDepth = 0
-        for (index, raw) in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines).enumerated() {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("!#if") { conditionalDepth += 1; continue }
-            if line.hasPrefix("!#endif") { conditionalDepth = max(0, conditionalDepth - 1); continue }
-            if line.isEmpty || line.hasPrefix("!") || line.hasPrefix("[") { continue }
-            if conditionalDepth == 0, var rule = rule(for: line) {
-                if !excludingHosts.isEmpty, !rule.isException {
-                    rule.trigger.unlessTopURL = excludingHosts.sorted().map {
-                        "^https?://" + NSRegularExpression.escapedPattern(for: $0.lowercased()) + "(:[0-9]+)?/"
+        for (source, text) in texts.enumerated() {
+            var conditionalDepth = 0
+            for (index, raw) in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines).enumerated() {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("!#if") { conditionalDepth += 1; continue }
+                if line.hasPrefix("!#endif") { conditionalDepth = max(0, conditionalDepth - 1); continue }
+                if line.isEmpty || line.hasPrefix("!") || line.hasPrefix("[") { continue }
+                if conditionalDepth == 0, var rule = rule(for: line) {
+                    if !excludingHosts.isEmpty, !rule.isException {
+                        rule.trigger.unlessTopURL = excludingHosts.sorted().map {
+                            "^https?://" + NSRegularExpression.escapedPattern(for: $0.lowercased()) + "(:[0-9]+)?/"
+                        }
                     }
-                }
-                rules.append(rule)
-            } else {
-                let reason = conditionalDepth > 0 ? "Conditional rule" : unsupportedReason(line)
-                report.skipped += 1
-                report.reasonCounts[reason, default: 0] += 1
-                if report.diagnostics.count < 20 {
-                    report.diagnostics.append(.init(line: index + 1, reason: reason, sample: String(line.prefix(240))))
+                    rules.append(rule)
+                } else {
+                    let reason = conditionalDepth > 0 ? "Conditional rule" : unsupportedReason(line)
+                    report.skipped += 1
+                    report.reasonCounts[reason, default: 0] += 1
+                    if report.diagnostics.count < 20 {
+                        report.diagnostics.append(.init(line: index + 1, reason: reason, sample: String(line.prefix(240)), source: source + 1))
+                    }
                 }
             }
         }
-        // Exceptions must follow blocks: WebKit only ignores preceding rules.
+        // Exceptions must follow blocks across all sources.
         let ordered = rules.filter { !$0.isException } + rules.filter { $0.isException }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
@@ -959,9 +1009,13 @@ enum BlockerFiles {
     }
 
     static func sources(builtin: String, files: [URL]) throws -> String {
-        var result = builtin
+        try sourceTexts(builtin: builtin, files: files).joined(separator: "\n")
+    }
+
+    static func sourceTexts(builtin: String, files: [URL]) throws -> [String] {
+        var result = [builtin]
         for file in files {
-            do { result += "\n" + (try String(contentsOf: file, encoding: .utf8)) }
+            do { result.append(try String(contentsOf: file, encoding: .utf8)) }
             catch { throw Failure("Couldn’t read filter list “\(file.lastPathComponent)”. Restore that file or reconnect its drive, then retry.") }
         }
         return result

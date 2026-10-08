@@ -143,3 +143,11 @@ extension BlockerSubscriptionTests {
         XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
     }
 }
+
+extension BlockerSubscriptionTests {
+    func testUnbalancedConditionalsCannotReplaceAcceptedSource() {
+        for text in ["||a.example^\n!#if env_chromium", "!#endif\n||a.example^", "!#else\n||a.example^"] {
+            XCTAssertThrowsError(try FilterSubscriptions.usableText(.init(status: 200, text: text)))
+        }
+    }
+}

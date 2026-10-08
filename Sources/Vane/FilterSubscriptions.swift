@@ -32,7 +32,7 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
     private struct Document: Codable { var version = 1; var items: [FilterSubscription] }
     nonisolated static var directory: URL { Store.directory.appendingPathComponent("FilterSubscriptions", isDirectory: true) }
     static let shared = FilterSubscriptions(directory: directory, fetch: download,
-        validate: { try await Blocker.validateSubscriptionText($0) }, transaction: { try await Blocker.commitSubscriptions($0, items: $1) }, changed: { Blocker.refresh() })
+        validate: { _ in }, transaction: { try await Blocker.commitSubscriptions($0, items: $1) }, changed: { Blocker.refresh() })
 
     @Published private(set) var items: [FilterSubscription] = []
     @Published private(set) var updating: Set<UUID> = []
@@ -156,12 +156,24 @@ struct FilterSubscription: Codable, Equatable, Identifiable, Sendable {
     nonisolated static func usableText(_ response: Response) throws -> String {
         guard response.status == 200 else { throw BlockerFiles.Failure("Filter server returned HTTP \(response.status).") }
         let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard balancedConditionals(text) else { throw BlockerFiles.Failure("Filter list contains unbalanced conditional directives. Previous rules remain active.") }
         guard text.utf8.count <= 8 * 1024 * 1024 else { throw BlockerFiles.Failure("Filter list exceeds the 8 MB limit.") }
         guard !text.isEmpty, !text.lowercased().contains("<html"), !text.lowercased().contains("<!doctype html"),
               !text.contains("\0"), Blocker.convert(text).rules > 0 else {
             throw BlockerFiles.Failure("The response is not a usable UTF-8 filter list. Previous rules remain active.")
         }
         return text
+    }
+
+    private nonisolated static func balancedConditionals(_ text: String) -> Bool {
+        var depth = 0
+        for raw in text.split(whereSeparator: \.isNewline) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("!#if") { depth += 1 }
+            else if line.hasPrefix("!#endif") { depth -= 1; if depth < 0 { return false } }
+            else if line.hasPrefix("!#else"), depth == 0 { return false }
+        }
+        return depth == 0
     }
 
     nonisolated static func read(directory: URL) throws -> [FilterSubscription] {

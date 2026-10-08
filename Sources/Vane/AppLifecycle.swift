@@ -94,6 +94,8 @@ enum QuitAsk {
 @MainActor final class AppLifecycle: NSObject, NSApplicationDelegate {
     static let shared = AppLifecycle()
 
+    func applicationWillTerminate(_ notification: Notification) { Blocker.closePrivateRules() }
+
     private final class MinimizedWindow {
         weak var window: NSWindow?
         init(_ window: NSWindow) { self.window = window }

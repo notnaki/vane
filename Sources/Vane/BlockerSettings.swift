@@ -115,7 +115,7 @@ struct BlockerSettingsSection: View {
         }
     }
 
-    private static func showReport(_ report: BlockerReport, title: String) {
+    static func showReport(_ report: BlockerReport, title: String) {
         let alert = NSAlert()
         alert.messageText = title
         // A selectable scrolling report keeps real lists with many reasons readable.

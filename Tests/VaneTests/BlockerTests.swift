@@ -74,3 +74,61 @@ extension BlockerTests {
         XCTAssertEqual(result.diagnostics.first?.line, 3)
     }
 }
+
+extension BlockerTests {
+    func testConditionalStateCannotSuppressAnotherSourceOrItsExceptions() {
+        let result = Blocker.convertSources(["||first.example^\n!#if env_chromium", "||second.example^\n@@||allowed.example^"])
+        XCTAssertEqual(result.rules, 3)
+        XCTAssertTrue(result.json.contains("second"))
+        XCTAssertTrue(result.json.contains("ignore-previous-rules"))
+    }
+
+    func testImportDialogKeepsLongDiagnosticsInScrollingReport() {
+        let report = Blocker.convert(Array(repeating: String(repeating: "x", count: 230) + "$redirect=noop", count: 20).joined(separator: "\n")).report
+        let alert = Blocker.makeImportSuccessAlert(report)
+        XCTAssertLessThan(alert.informativeText.count, 500)
+        XCTAssertEqual(alert.buttons.map(\.title), ["Done", "Unsupported Rules…"])
+    }
+
+    func testAcceptedSnapshotStillRecompilesSiteExceptionsAfterSourceFailure() async throws {
+        let profile = ProfileManager.shared.active.id
+        let saved = UserDefaults.vane.object(forKey: "blockerLists")
+        let exceptionKey = ProfileManager.defaultsKey("blockerSiteExceptions", profile)
+        let savedExceptions = UserDefaults.vane.object(forKey: exceptionKey)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("legacy.txt")
+        try "||fixture.example^".write(to: file, atomically: true, encoding: .utf8)
+        UserDefaults.vane.set([file.path], forKey: "blockerLists")
+        defer {
+            UserDefaults.vane.set(saved, forKey: "blockerLists")
+            UserDefaults.vane.set(savedExceptions, forKey: exceptionKey)
+            try? FileManager.default.removeItem(at: root)
+        }
+        await withCheckedContinuation { continuation in Blocker.refresh(completion: { continuation.resume() }) }
+        try FileManager.default.removeItem(at: file)
+        Blocker.setSiteException("fixture.example", allowed: true, profileID: profile, recompile: false)
+        await withCheckedContinuation { continuation in Blocker.refresh(completion: { continuation.resume() }) }
+        XCTAssertTrue(Blocker.hasCurrentExceptionVariant(for: profile))
+        XCTAssertTrue(BlockerStatus.shared.message.contains("Previous working rules"))
+    }
+
+    func testPrivateRuleCacheIsSeparateAndSweepingPreservesLiveOwners() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var cache: BlockerPrivateCache? = try BlockerPrivateCache(root: root)
+        let directory = try XCTUnwrap(cache?.directory)
+        let store = try XCTUnwrap(cache?.store)
+        let id = "vane-private-test-\(UUID())"
+        let json = Blocker.convert("||ads.example^", excludingHosts: ["private.example"]).json
+        _ = try await store.compileContentRuleList(forIdentifier: id, encodedContentRuleList: json)
+        let defaultIDs = await WKContentRuleListStore.default()?.availableIdentifiers() ?? []
+        XCTAssertFalse(defaultIDs.contains(id))
+        try BlockerPrivateCache.sweep(root: root)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+        cache?.close(removeFiles: false) // Simulate a crashed process releasing its owner lock.
+        cache = nil
+        try BlockerPrivateCache.sweep(root: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+    }
+}

@@ -53,6 +53,7 @@ BatterySaver.shared.begin()
 // Before any window: the refresh reattaches the compiled rules to every live web view, and
 // doing that to pages that are already loading is reconfiguring a load underneath itself.
 // Its work is a detached read-and-convert either way — see `Blocker.build`.
+try? BlockerPrivateCache.sweep()
 Blocker.refresh()
 FilterSubscriptions.shared.start()
 
