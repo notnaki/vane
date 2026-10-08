@@ -814,8 +814,6 @@ private struct Sidebar: View {
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ObservedObject private var sidebar = SidebarWidth.shared
     @ObservedObject private var previewProfiles = ProfileManager.shared
-    /// The scroll viewport's height, so its content can be made to fill it. See below.
-    @State private var scrollHeight: CGFloat = 0
     @State private var sidebarHeight: CGFloat = 0
 
     private var downloads: DownloadLibrary { DownloadLibrary.library(for: store.profileID) }
@@ -839,26 +837,7 @@ private struct Sidebar: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             } else {
             SpaceSidebarStrip(store: store, favorites: Favorites(), sections:
-                VStack(spacing: Look.rowGap) {
-                    // Keep the profile/Space card and everything above it fixed. Only
-                    // the tab sections below the card belong to the scroll viewport.
-                    SpaceRow()
-                    ScrollView {
-                        VStack(spacing: Look.rowGap) {
-                            PinnedTabs()
-                            TidyRow()
-                            NewTabRow()
-                            OpenTabs()
-                            TodayEndDropArea()
-                        }
-                        // Fill the blank content below Today, with at least one row
-                        // beyond a full list, outside even the last collapsed folder.
-                        .frame(minHeight: scrollHeight, alignment: .top)
-                        .background(WindowDragArea())
-                    }
-                    .scrollIndicators(.never)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
-                })
+                SidebarSpaceSections())
             .overlayPreferenceValue(SidebarDropLineBounds.self) { bounds in
                 SidebarDropLineOverlay(marker: dropMarker, bounds: bounds)
             }
@@ -2019,6 +1998,7 @@ struct PaneStrip: View {
     let ticked: Bool
     /// The ghost includes the same controls and frozen hover fill as the source row.
     var held = false
+    var previewPRs: [UUID: GitHub.Row]? = nil
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.ghostTileMorph) private var morph
@@ -2027,7 +2007,7 @@ struct PaneStrip: View {
         HStack(spacing: Look.paneGap * (1 - (morph?.progress ?? 0))) {
             ForEach(Array(panes.enumerated()), id: \.element.id) { i, pane in
                 PanePill(store: store, tab: pane, active: pane.id == split.activeTab,
-                         index: i, of: panes.count, held: held)
+                         index: i, of: panes.count, held: held, previewing: previewPRs != nil)
                     .environment(\.livePR, presentation(of: pane))
             }
             // A split's row is still a row: the pane making the noise says so and can be
@@ -2062,6 +2042,7 @@ struct PaneStrip: View {
 
     /// A split can mix a live PR with unrelated pages. Each pane owns its own icon metadata.
     private func presentation(of tab: Tab) -> GitHub.Row? {
+        if let previewPRs { return previewPRs[tab.id] }
         guard let folder = store.pins.folder(holding: tab.id.uuidString),
               folder.live != nil, let url = store.rowURL(tab.id.uuidString) else { return nil }
         return LiveFolders.existing(for: store.profileID)?.row(of: url, in: folder)
@@ -2093,13 +2074,14 @@ private struct PanePill: View {
     let index: Int
     let of: Int
     var held = false
+    var previewing = false
     @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
         HStack(spacing: Look.rowSpacing * (1 - (morph?.progress ?? 0))) {
             TabIcon(tab: tab, size: Look.rowIcon).opacity(morph == nil ? 1 : 0)
                 .frame(width: Look.rowIcon * (1 - (morph?.progress ?? 0)))
-            if !held && store.renamingTab == tab.id {
+            if !previewing && !held && store.renamingTab == tab.id {
                 RenameField(store: store, tab: tab)
             } else {
                 Text(TidyTitles.title(for: tab))
@@ -2861,6 +2843,38 @@ private struct SpaceDots: View {
 
 // MARK: - Pinned
 
+/// The settled sidebar and its swipe preview share the fixed heading and scroll viewport.
+struct SpaceSectionsLayout<Header: View, Rows: View>: View {
+    @ViewBuilder let header: () -> Header
+    @ViewBuilder let rows: () -> Rows
+    @State private var scrollHeight: CGFloat = 0
+
+    var body: some View {
+        VStack(spacing: Look.rowGap) {
+            header()
+            ScrollView {
+                VStack(spacing: Look.rowGap) { rows() }
+                    .frame(minHeight: scrollHeight, alignment: .top)
+                    .background(WindowDragArea())
+            }
+            .scrollIndicators(.never)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
+        }
+    }
+}
+
+struct SidebarSpaceSections: View {
+    var body: some View {
+        SpaceSectionsLayout { SpaceRow() } rows: {
+            PinnedTabs()
+            TidyRow()
+            NewTabRow()
+            OpenTabs()
+            TodayEndDropArea()
+        }
+    }
+}
+
 /// Arc's Pinned section: the tabs that stay, drawn as ordinary rows between the space's name
 /// and the New Tab divider. Deliberately the same row as a Today tab — in Arc the two are
 /// indistinguishable to look at, and the divider below is the only thing that says which is
@@ -3060,22 +3074,7 @@ private struct FolderRow: View {
                 Text(folder.name).font(Look.folderTitle)
             }
         } trailing: {
-            HStack(spacing: 6) {
-                if folder.requiresAuthentication == true {
-                    Image(systemName: locked ? "lock.fill" : "lock.open.fill")
-                        .font(Look.rowGlyph)
-                        .contentTransition(.symbolEffect(.replace))
-                        .transaction { if Motion.reduced { $0.disablesAnimations = true } }
-                }
-                if !locked {
-                    Image(systemName: "chevron.down")
-                        .font(Look.rowGlyph)
-                        .rotationEffect(.degrees(folder.collapsed ? -90 : 0))
-                        .animation(Motion.reduced ? nil : Look.quick, value: folder.collapsed)
-                }
-            }
-            .foregroundStyle(Look.inkSecondary)
-            .accessibilityHidden(true)
+            FolderDisclosure(folder: folder, locked: locked)
         }
     }
 
@@ -3091,10 +3090,35 @@ private struct FolderRow: View {
     }
 }
 
+
+struct FolderDisclosure: View {
+    let folder: Folder
+    let locked: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if folder.requiresAuthentication == true {
+                Image(systemName: locked ? "lock.fill" : "lock.open.fill")
+                    .font(Look.rowGlyph)
+                    .contentTransition(.symbolEffect(.replace))
+                    .transaction { if Motion.reduced { $0.disablesAnimations = true } }
+            }
+            if !locked {
+                Image(systemName: "chevron.down")
+                    .font(Look.rowGlyph)
+                    .rotationEffect(.degrees(folder.collapsed ? -90 : 0))
+                    .animation(Motion.reduced ? nil : Look.quick, value: folder.collapsed)
+            }
+        }
+        .foregroundStyle(Look.inkSecondary)
+        .accessibilityHidden(true)
+    }
+}
+
 /// A folder’s glyph in a favicon’s box, so its name lines up with the tab titles around it.
 /// An emoji is text and an SF Symbol is an image; `Folder.iconIsEmoji` is what tells them
 /// apart, and it does so by looking at the string rather than by a second stored field.
-private struct FolderGlyph: View {
+struct FolderGlyph: View {
     let folder: Folder
     /// nil where the badge would be noise rather than news — the drag preview.
     var live: LiveFolders? = nil
@@ -3273,7 +3297,7 @@ private struct FolderDrop: DropDelegate {
 
 /// Every clickable line in the sidebar: an icon, a title, and whatever the row wants on the
 /// trailing edge. One shape so the list reads as one list.
-private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
+struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     let selected: Bool
     /// In a multi-select. It wears the same fill as `selected` — a selection is a selection —
     /// and the row that is *also* `selected` is picked out by an accent hairline, so the
@@ -3331,7 +3355,7 @@ private struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
 
 /// A symbol in a favicon's box, so a row led by a glyph lines its title up with the tab
 /// titles around it.
-private struct GlyphBox: View {
+struct GlyphBox: View {
     let name: String
     var body: some View { Image(systemName: name).frame(width: Look.tileIcon) }
 }
@@ -3360,7 +3384,7 @@ extension EnvironmentValues {
         get { self[RowHoveringKey.self] }
         set { self[RowHoveringKey.self] = newValue }
     }
-    fileprivate var livePR: GitHub.Row? {
+    var livePR: GitHub.Row? {
         get { self[LivePRKey.self] }
         set { self[LivePRKey.self] = newValue }
     }
@@ -3374,6 +3398,26 @@ extension View {
     /// A tab's place in the strip's geometry group, when it is in one.
     @ViewBuilder fileprivate func inStrip(_ id: Tab.ID, _ ns: Namespace.ID?) -> some View {
         if let ns { matchedGeometryEffect(id: id, in: ns) } else { self }
+    }
+}
+
+
+/// Common divider geometry and control styling for the live list and incoming preview.
+struct SidebarTidySurface<Actions: View>: View {
+    @ViewBuilder let actions: () -> Actions
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Hairline()
+            actions()
+        }
+        .buttonStyle(TactileButtonStyle())
+        .font(Look.sectionCaption)
+        .foregroundStyle(Look.inkTertiary)
+        .padding(.horizontal, Look.rowInset)
+        // Split the section gap equally around the divider, accounting for the stack gap.
+        .frame(height: Look.tidyRow)
+        .padding(.vertical, Look.sectionGap / 2 - Look.rowGap)
     }
 }
 
@@ -3410,8 +3454,7 @@ private struct TidyRow: View {
     var body: some View {
         let offering = TidyTabs.offersHousekeeping(store)
         let tidy = TidyTabs.control(store)
-        HStack(spacing: 8) {
-            Hairline()
+        SidebarTidySurface {
             // Two questions, one count: Clear is offered as soon as the section is a pile,
             // Tidy the same — unless it has been switched off, in which case it is not drawn
             // at all rather than drawn and refusing to work. See `TidyTabs.control`.
@@ -3446,13 +3489,6 @@ private struct TidyRow: View {
         }
         .animation(reduceMotion ? nil : Look.list, value: offering)
         .animation(reduceMotion ? nil : Look.list, value: tidy)
-        .buttonStyle(TactileButtonStyle())
-        .font(Look.sectionCaption)
-        .foregroundStyle(Look.inkTertiary)
-        .padding(.horizontal, Look.rowInset)
-        // Split the section gap equally around the divider, accounting for the stack gap.
-        .frame(height: Look.tidyRow)
-        .padding(.vertical, Look.sectionGap / 2 - Look.rowGap)
         // The divider is the end of the Pinned list, so a tab let go on it pins, at the end
         // — otherwise the band between the last pinned row and the New Tab row is a hole a
         // drag can be released into and have nothing happen. It is also the whole of an
@@ -3757,11 +3793,13 @@ struct SidebarTabSurface: View {
     @Binding var returnHovering: Bool
     var pr: GitHub.Row?
     var action: () -> Void
+    /// A swipe renders the incoming selection without mutating the outgoing window.
+    var previewSelected: Bool? = nil
     @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
-        let selected = store.current == tab.id
-        let ticked = store.selection.contains(tab.id)
+        let selected = previewSelected ?? (store.current == tab.id)
+        let ticked = previewSelected == nil && store.selection.contains(tab.id)
         let returning = tab.kind == .pinned && !tab.atHome
         let title = TidyTitles.title(for: tab)
         SidebarRow(selected: selected, ticked: ticked, held: held, action: action) {
@@ -3776,7 +3814,7 @@ struct SidebarTabSurface: View {
                         .accessibilityHidden(true)
                 }
                 // Keep the away marker visible during rename and Return hover too.
-                if !held && store.renamingTab == tab.id {
+                if previewSelected == nil && !held && store.renamingTab == tab.id {
                     RenameField(store: store, tab: tab, initialTitle: title)
                 } else if returning && returnHovering {
                     VStack(alignment: .leading, spacing: 0) {
@@ -4654,6 +4692,26 @@ struct SiteIcon: View {
     }
 }
 
+/// The icon rule shared by live tabs and previews restored from saved metadata.
+struct SidebarPageIcon: View {
+    let icon: NSImage?
+    var easel = false
+    var pr: GitHub.Row? = nil
+    var rounded = true
+    var size: CGFloat = Look.rowIcon
+
+    var body: some View {
+        Group {
+            if pr != nil { GitHubMark().fill(Look.inkPrimary) }
+            else if easel { EaselIcon().frame(width: 16, height: 16) }
+            else if let icon { SiteIcon(icon: icon, size: size, rounded: rounded) }
+            else { FaviconPlaceholder(size: size) }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
 /// The same, for a tab — separate only because it has to observe the tab to redraw when the
 /// favicon lands, and because what it draws while none has is the whole of the rule below.
 ///
@@ -4676,22 +4734,8 @@ struct TabIcon: View {
     @Environment(\.livePR) private var pr
 
     var body: some View {
-        Group {
-            if pr != nil {
-                // A live folder's rows are parked until they are clicked, so github.com's
-                // own icon has not been fetched for most of them and a bare "G" is what the
-                // folder would otherwise be full of. The mark is what Arc draws there, and
-                // here it is only ever drawn on a row a GitHub folder owns.
-                GitHubMark().fill(Look.inkPrimary)
-            } else if tab.easelID != nil {
-                EaselIcon().frame(width: 16, height: 16)
-            } else if let icon = tab.favicon {
-                SiteIcon(icon: icon, size: size, rounded: tab.currentURL?.isFileURL != true)
-            } else {
-                FaviconPlaceholder(size: size)
-            }
-        }
-        .frame(width: size, height: size)
+        SidebarPageIcon(icon: tab.favicon, easel: tab.easelID != nil, pr: pr,
+                        rounded: tab.currentURL?.isFileURL != true, size: size)
         // The swap, when it comes, is a fade rather than a cut — the same 0.15s the rest of
         // the sidebar's hovers use.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.favicon)

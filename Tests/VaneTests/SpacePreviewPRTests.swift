@@ -62,9 +62,7 @@ import XCTest
     }
 
     private func pixels(_ preview: SpacePreviewList) throws -> Data {
-        let renderer = ImageRenderer(content: preview.frame(width: 250, height: 320))
-        let image = try XCTUnwrap(renderer.cgImage)
-        return try XCTUnwrap(image.dataProvider?.data) as Data
+        try SidebarSnapshot.pixels(preview, height: 320)
     }
 
     private func pixelDifference(_ first: Data, _ second: Data) -> Int {
