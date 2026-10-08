@@ -50,6 +50,8 @@ struct SiteControlModel: Equatable, Sendable {
     /// nil is not "off": it means this site has never been answered, so it will be asked.
     var camera: Bool?
     var microphone: Bool?
+    var location: Bool?
+    var locationOnce = false
     var cameraOnce = false
     var microphoneOnce = false
     var pictureInPicture = false
@@ -69,7 +71,7 @@ extension SiteControlModel {
 
     /// Which row, so the view can act on one without matching on its title.
     enum RowID: Hashable, Sendable {
-        case camera, microphone, pictureInPicture, zoom, blocker, blockerSettings, reader, capture, boost, clearData, developer
+        case camera, microphone, location, pictureInPicture, zoom, blocker, blockerSettings, reader, capture, boost, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
@@ -213,6 +215,10 @@ extension SiteControlModel {
         if scheme?.lowercased() == "http" || scheme?.lowercased() == "https" {
             out.append(Row(id: .boost, title: boosted ? "Edit Boost" : "Boost This Site", glyph: "paintbrush.pointed", control: .action))
         }
+        if SitePermissions.supportsLocation {
+            out.insert(Row(id: .location, title: "Location", glyph: "location", control: .permission(location),
+                           note: locationOnce ? "Allowed once, until this tab navigates or closes." : nil), at: 2)
+        }
         out.append(Row(id: .capture, title: "Capture a Portion of This Page",
                        glyph: "camera.viewfinder", control: .action))
         out.append(Row(id: .clearData, title: "Clear Site Data…", glyph: "trash",
@@ -251,6 +257,8 @@ extension SiteControlModel {
             camera = SitePermissions.effective(scope: permissionScope, type: .camera, tabID: tab.id)
             microphone = SitePermissions.effective(scope: permissionScope, type: .microphone, tabID: tab.id)
             cameraOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .camera, tabID: tab.id)
+            location = SitePermissions.effective(scope: permissionScope, type: .location, tabID: tab.id)
+            locationOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .location, tabID: tab.id)
             microphoneOnce = SitePermissions.isAllowedOnce(scope: permissionScope, type: .microphone, tabID: tab.id)
         }
         pictureInPicture = tab.pictureInPicture
@@ -315,6 +323,7 @@ extension SiteControlModel {
         switch id {
         case .camera:     cycle(.camera, on: tab)
         case .microphone: cycle(.microphone, on: tab)
+        case .location: cycle(.location, on: tab)
         case .pictureInPicture: PictureInPicture.toggle(tab)
         case .zoom: Zoom.reset(tab)
         case .blocker:
@@ -338,13 +347,13 @@ extension SiteControlModel {
 
     /// The permission row's own control is a picker; this is what a click on the row body
     /// does, so the keyboard and VoiceOver have a route that is not a menu.
-    private static func cycle(_ type: WKMediaCaptureType, on tab: Tab) {
+    private static func cycle(_ type: SitePermissions.Kind, on tab: Tab) {
         guard let scope = SitePermissions.scope(for: tab) else { return }
         let current = SitePermissions.effective(scope: scope, type: type, tabID: tab.id)
         set(type, to: current == nil ? true : (current == true ? false : nil), on: tab)
     }
 
-    static func set(_ type: WKMediaCaptureType, to answer: Bool?, on tab: Tab) {
+    static func set(_ type: SitePermissions.Kind, to answer: Bool?, on tab: Tab) {
         guard let scope = SitePermissions.scope(for: tab) else { return }
         SitePermissions.set(scope: scope, type: type, answer: answer, tabID: tab.id)
         SiteChanges.shared.bump()
@@ -396,7 +405,7 @@ extension SiteControlModel {
         alert.messageText = "Clear the data “\(host)” has stored?"
         alert.informativeText = "Cookies, local storage and cached files for this site and its "
             + "subdomains go, and you will be signed out of it. Vane also forgets the camera, "
-            + "microphone and zoom answers you gave this site, the apps you let it open, "
+            + "microphone, location and zoom answers you gave this site, the apps you let it open, "
             + "any certificate warning you clicked through for it, and its exemption from "
             + "HTTPS-only mode, along with its Boost and custom code. Reload the page to remove "
             + "effects from scripts already run. History and passwords are not touched."
@@ -856,7 +865,7 @@ private struct SiteControlRow: View {
         case .permission(let answer):
             Picker("", selection: Binding(
                 get: { PermissionAnswer(answer) },
-                set: { SiteControl.set(row.id == .camera ? .camera : .microphone,
+                set: { SiteControl.set(row.id == .camera ? .camera : (row.id == .location ? .location : .microphone),
                                        to: $0.value, on: tab) })) {
                 ForEach(PermissionAnswer.allCases) { Text($0.title).tag($0) }
             }

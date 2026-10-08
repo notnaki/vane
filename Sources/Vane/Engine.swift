@@ -338,6 +338,7 @@ struct TitleReveal: Equatable, Sendable {
     @Published var presentationOwner: UUID?
     @Published var windowSnapshot: NSImage?
     var presentationGeneration = 0
+    var permissionGeneration: UInt = 0
     var sharedSpaceID: UUID?
     /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
     /// maintenance and session persistence use `existingWeb` to avoid creating one.
@@ -625,6 +626,8 @@ struct TitleReveal: Equatable, Sendable {
     private static func contentController(profileID: UUID) -> WKUserContentController {
         let c = WKUserContentController()
         SiteBoostScripts.install(on: c)
+        c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,
+                                    forMainFrameOnly: true, in: SitePermissionDocument.world))
         c.addUserScript(
             WKUserScript(source: Autofill.script, injectionTime: .atDocumentEnd,
                          forMainFrameOnly: true, in: Autofill.world))
@@ -943,7 +946,7 @@ struct TitleReveal: Equatable, Sendable {
         passwordStep = nil
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
-        SitePermissions.endDocument(tabID: id)
+        endPermissionDocument()
         certificateDestinationURL = nil
         certificateNavigation = nil
         MediaState.shared.forget(id)
@@ -1026,7 +1029,7 @@ struct TitleReveal: Equatable, Sendable {
         guard !tornDown else { return }
         tornDown = true
         SiteBoosts.forget(tab: self)
-        SitePermissions.endDocument(tabID: id)
+        endPermissionDocument()
         presentationGeneration += 1
         windowSnapshot = nil
         easelSession?.liveItems.removeAll()
@@ -1358,7 +1361,7 @@ struct TitleReveal: Equatable, Sendable {
         guard w === existingWeb else { return }
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
-        SitePermissions.endDocument(tabID: id)
+        endPermissionDocument()
         pictureInPicture = false
         pipFrame = nil
         MediaState.shared.forget(id)
@@ -1368,7 +1371,7 @@ struct TitleReveal: Equatable, Sendable {
         if w === existingWeb { SiteBoosts.beginNavigation(tab: self) }
         if w === existingWeb {
             FileUploads.cancel(tabID: id)
-            SitePermissions.endDocument(tabID: id)
+            endPermissionDocument(navigationStarted: true)
             certificateNavigation = navigation
         }
         Trace.begin(id)
@@ -1432,8 +1435,7 @@ struct TitleReveal: Equatable, Sendable {
                                responseHTML: ErrorPage.html(for: error, url: failed))
     }
 
-    // 4: per-site camera/microphone. WebKit owns the geolocation prompt itself, so there
-    // is no location equivalent to implement here.
+    // Camera/microphone and, on macOS 27, location use supported permission delegates.
     func webView(_ w: WKWebView, respondTo challenge: URLAuthenticationChallenge) async
         -> (URLSession.AuthChallengeDisposition, URLCredential?) {
         Trace.note("trust")
@@ -1441,10 +1443,21 @@ struct TitleReveal: Equatable, Sendable {
         return await CertificateTrust.handle(challenge: challenge, tab: self, web: w)
     }
 
-    func webView(_ w: WKWebView, decideMediaCapturePermissionsFor origin: WKSecurityOrigin,
-                 initiatedBy frame: WKFrameInfo, type: WKMediaCaptureType) async -> WKPermissionDecision {
-        await SitePermissions.decide(origin: origin, type: type, tab: self, web: w)
+    func webView(_ w: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                 decisionHandler: @escaping @MainActor (WKPermissionDecision) -> Void) {
+        guard let kind = SitePermissions.Kind(type) else { decisionHandler(.deny); return }
+        SitePermissions.handle(origin: origin, frame: frame, type: kind, tab: self, web: w, completion: decisionHandler)
     }
+
+    #if compiler(>=6.4)
+    @available(macOS 27.0, *)
+    func webView(_ w: WKWebView, requestGeolocationPermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo,
+                 decisionHandler: @escaping @MainActor (WKPermissionDecision) -> Void) {
+        SitePermissions.handle(origin: origin, frame: frame, type: .location, tab: self, web: w, completion: decisionHandler)
+    }
+    #endif
 
     /// The destination is final here — redirects are done — and the new document has not
     /// laid out yet, so the remembered zoom is on before the page is ever painted.
@@ -1454,7 +1467,7 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
         if w === existingWeb {
             FileUploads.cancel(tabID: id)
-            SitePermissions.endDocument(tabID: id)
+            endPermissionDocument()
         }
         finishCertificateNavigation(navigation, in: w)
         Trace.note("committed")
