@@ -9,7 +9,7 @@ import SwiftUI
 /// The dark glass card sits *in* the window that asked, on a scrim that dims and blurs the
 /// page, so the question reads as part of the window rather than a
 /// second one floating over it. No sheet: a sheet hangs off a title bar and Vane's windows
-/// have none to hang it from. When no window is up (the Dock's menu with everything closed)
+/// have none to hang it from. When open windows are minimized and there is no key window,
 /// a plain borderless panel stands in.
 ///
 /// ponytail: `runModal(for:)` on the host window, so the answer comes back as a value and
@@ -40,7 +40,7 @@ import SwiftUI
         // window for the life of the process.
         panel.contentView = NSHostingView(rootView: Card { [weak panel] in panel?.answer?($0) })
         panel.setContentSize(panel.contentView!.fittingSize)
-        // Centred over the window that asked, or the screen when none did (the Dock's menu).
+        // Centred over the window that asked, or the screen when all windows are minimized.
         let anchor = host?.frame ?? NSScreen.main?.visibleFrame ?? .zero
         panel.setFrameOrigin(NSPoint(x: anchor.midX - panel.frame.width / 2,
                                      y: anchor.midY - panel.frame.height / 2))

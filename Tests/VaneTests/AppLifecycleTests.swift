@@ -35,6 +35,62 @@ import XCTest
         XCTAssertTrue(window.isVisible)
     }
 
+    private func quitByCommandQ() throws -> NSApplication.TerminateReply {
+        TestEnvironment.prepare()
+        let app = NSApplication.shared
+        let lifecycle = AppLifecycle()
+        let warning = Prefs.warnBeforeQuit
+        Prefs.warnBeforeQuit = true
+        defer { Prefs.warnBeforeQuit = warning }
+        // Cancel a warning if one appears, so the assertion can detect it without
+        // leaving a modal session running or changing the warning preference.
+        let timer = Timer(timeInterval: 0.01, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                if QuitDialog.isUp { app.stopModal() }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .modalPanel)
+        defer { timer.invalidate() }
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                                                  modifierFlags: .command,
+                                                  timestamp: ProcessInfo.processInfo.systemUptime,
+                                                  windowNumber: app.keyWindow?.windowNumber ?? 0,
+                                                  context: nil, characters: "q",
+                                                  charactersIgnoringModifiers: "q",
+                                                  isARepeat: false, keyCode: 12))
+        app.postEvent(event, atStart: true)
+        _ = app.nextEvent(matching: .keyDown, until: Date.now.addingTimeInterval(1),
+                          inMode: .default, dequeue: true)
+        XCTAssertEqual(app.currentEvent?.charactersIgnoringModifiers, "q")
+        let reply = lifecycle.applicationShouldTerminate(app)
+        XCTAssertTrue(Prefs.warnBeforeQuit)
+        return reply
+    }
+
+    func testCommandQQuitsImmediatelyAfterTheLastWindowCloses() throws {
+        let closed = window()
+        closed.close()
+        XCTAssertEqual(try quitByCommandQ(), .terminateNow)
+    }
+
+    func testCommandQStillWarnsWithAnOpenWindow() throws {
+        _ = window()
+        XCTAssertEqual(try quitByCommandQ(), .terminateCancel)
+    }
+
+    func testCommandQStillWarnsWithAMinimizedWindow() async throws {
+        let minimized = window()
+        try await minimize(minimized)
+        XCTAssertEqual(try quitByCommandQ(), .terminateCancel)
+    }
+
+    func testOffscreenPreviewHostDoesNotCauseAQuitWarning() throws {
+        let host = window()
+        host.isExcludedFromWindowsMenu = true
+        host.setFrameOrigin(NSPoint(x: -12_000, y: -12_000))
+        XCTAssertEqual(try quitByCommandQ(), .terminateNow)
+    }
+
     func testDockClickRestoresAMinimizedWindowDespiteTheVisibleWindowsFlag() async throws {
         let lifecycle = AppLifecycle()
         let window = window()
