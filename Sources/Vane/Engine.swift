@@ -1453,6 +1453,7 @@ struct TitleReveal: Equatable, Sendable {
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
         if w === existingWeb {
+            Reader.navigationCommitted(self)
             FileUploads.cancel(tabID: id)
             SitePermissions.endDocument(tabID: id)
         }

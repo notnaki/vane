@@ -30,7 +30,15 @@ import SwiftUI
 
     /// Cleared when the tab navigates anywhere, since the reader document goes with it.
     private static var watch: [UUID: NSKeyValueObservation] = [:]
-    private static var entering: Set<UUID> = []
+    private static var entering: [UUID: UUID] = [:]
+
+    /// URL KVO cannot see a reload of the same source URL. A committed document
+    /// also cancels extraction work belonging to the previous document.
+    static func navigationCommitted(_ tab: Tab) {
+        ReaderState.shared.tabs.remove(tab.id)
+        watch[tab.id] = nil
+        entering[tab.id] = nil
+    }
 
     // MARK: - Preferences
 
@@ -122,16 +130,17 @@ import SwiftUI
 
     static func enter(_ tab: Tab) {
         guard tab.easelID == nil, !isOn(tab), let web = tab.existingWeb,
-              let source = web.url, !web.isLoading, entering.insert(tab.id).inserted else { return }
-        let id = tab.id
+              let source = web.url, !web.isLoading, entering[tab.id] == nil else { return }
+        let id = tab.id, token = UUID()
+        entering[id] = token
         Task {
-            defer { entering.remove(id) }
+            defer { if entering[id] == token { entering[id] = nil } }
             guard web.url == source, !web.isLoading else { return }
-            guard let e = await extract(from: web), isEnough(words: e.words) else {
+            guard let e = await extract(from: web, documentToken: token.uuidString), isEnough(words: e.words) else {
                 NSSound.beep()          // nothing to read here; say so rather than blank the page
                 return
             }
-            guard tab.existingWeb === web, web.url == source, !web.isLoading, !isOn(tab) else { return }
+            guard entering[id] == token, tab.existingWeb === web, web.url == source, !web.isLoading, !isOn(tab) else { return }
             let doc = html(for: e, url: source)
             // Replacing documentElement.innerHTML is *not* a navigation, which is the whole
             // reason to do it this way: the back/forward list is never touched, so no
@@ -139,10 +148,10 @@ import SwiftUI
             // would truncate them, and nothing lands in history. Fragment parsing with
             // <html> as the context element starts in "before head", so head/body parse.
             let replaced = try? await web.evaluateJavaScript(
-                "(() => { if (location.href !== \(jsString(source.absoluteString)) || document.readyState !== 'complete') return false;"
+                "(() => { if (location.href !== \(jsString(source.absoluteString)) || document.readyState !== 'complete' || document.documentElement.__vaneReaderToken !== \(jsString(token.uuidString))) return false;"
                 + "document.documentElement.innerHTML = \(jsString(doc));"
                 + "document.scrollingElement && (document.scrollingElement.scrollTop = 0); return true; })()")
-            guard replaced as? Bool == true, web.url == source else { return }
+            guard replaced as? Bool == true, entering[id] == token, web.url == source else { return }
             ReaderState.shared.tabs.insert(id)
             // The reader document dies with any real navigation — a link the user clicked
             // inside it, a redirect, back/forward. Drop the flag when that happens.
@@ -215,8 +224,9 @@ import SwiftUI
     static func isEnough(words: Int) -> Bool { words >= minimumWords }
 
     // internal, not private: the throwaway real-page harness drives this directly.
-    static func extract(from web: WKWebView) async -> Extraction? {
-        let raw: Any? = try? await web.evaluateJavaScript(extractJS())
+    static func extract(from web: WKWebView, documentToken: String? = nil) async -> Extraction? {
+        let mark = documentToken.map { "document.documentElement.__vaneReaderToken = \(jsString($0));\n" } ?? ""
+        let raw: Any? = try? await web.evaluateJavaScript(mark + extractJS())
         guard let json = raw as? String, let data = json.data(using: .utf8),
               let p = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
         return build(p)
@@ -436,6 +446,9 @@ import SwiftUI
     static func extractJS(probe: Bool = false) -> String { #"""
     (function (PROBE) {
       var BAD = /combx|comment|com-|contact|foot|masthead|outbrain|promo|related|scroll|shoutbox|sidebar|sponsor|shopping|widget|nav|menu|share|social|banner|newsletter|subscribe|popup|modal|cookie|breadcrumb|advert|recirc|teaser|paywall|\bads?\b/i;
+      // Broad layout words such as scroll/content are scoring signals, not deletion
+      // rules. Hard deletion is reserved for clear furniture tokens and semantic tags.
+      var FURNITURE = /(^|[\s_-])(comments?|related|sidebar|share|social|newsletter|subscribe|popup|modal|cookie|breadcrumb|advert(?:isement)?|ads?|recirc|paywall|promo|sponsor|navigation|menu)(?=$|[\s_-])/i;
       var GOOD = /article|body|content|entry|hentry|h-entry|main|page|post|text|blog|story|prose/i;
       var DROP = {SCRIPT:1,STYLE:1,NOSCRIPT:1,IFRAME:1,FORM:1,BUTTON:1,INPUT:1,SELECT:1,
                   TEXTAREA:1,SVG:1,CANVAS:1,VIDEO:1,AUDIO:1,NAV:1,ASIDE:1,FOOTER:1,HEADER:1,
@@ -459,7 +472,7 @@ import SwiftUI
       // A layout class can mention sidebars while containing the page's actual main.
       // Semantic main's ancestors are layout, not furniture; its sidebars still drop.
       var semanticMain = document.querySelector('main,[role="main"]');
-      function bad(e) { return BAD.test(sig(e)) && !(semanticMain && e.contains(semanticMain)); }
+      function bad(e) { return FURNITURE.test(sig(e)) && !(semanticMain && e.contains(semanticMain)); }
       var visibility = new WeakMap();
       function hidden(e) {
         if (!e || e === document.documentElement) { return false; }
@@ -485,7 +498,7 @@ import SwiftUI
         else if (t === 'BLOCKQUOTE' || t === 'PRE' || t === 'TD') { b += 3; }
         var g = sig(e);
         if (GOOD.test(g)) { b += 25; }
-        if (bad(e)) { b -= 25; }
+        if (BAD.test(g)) { b -= 25; }
         var role = e.getAttribute('role');
         if (role === 'navigation' || role === 'complementary' || role === 'banner') { b -= 40; }
         return b;
@@ -524,7 +537,7 @@ import SwiftUI
       function ser(n, preformatted) {
         if (n.nodeType === 3) {
           var v = preformatted ? n.nodeValue : n.nodeValue.replace(/\s+/g, ' ');
-          return /\S/.test(v) ? { x: v } : null;
+          return (preformatted ? v.length > 0 : /\S/.test(v)) ? { x: v } : null;
         }
         if (n.nodeType !== 1) { return null; }
         var tag = n.tagName;

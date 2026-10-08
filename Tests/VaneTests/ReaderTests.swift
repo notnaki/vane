@@ -126,6 +126,31 @@ import XCTest
         let rewritten = try await tab.web.evaluateJavaScript("!!document.querySelector('.src')") as? Bool
         XCTAssertEqual(rewritten, false)
     }
+    func testLayoutClassDoesNotDiscardSemanticArticleProse() async throws {
+        let result = try await extraction("<article><div class='scroll-content'><p>SCROLL \(prose)</p></div></article>")
+        XCTAssertTrue(Reader.plainText(result.nodes).contains("SCROLL"))
+    }
+    func testSyntaxHighlightedCodeKeepsWhitespaceOnlyNewlineNodes() async throws {
+        let result = try await extraction("<article><p>\(prose)</p><pre><code><span>alpha</span>\n<span>  beta</span>\n<span>    gamma</span></code></pre></article>")
+        XCTAssertTrue(Reader.render(result.nodes, base: nil).contains("alpha\n  beta\n    gamma"))
+    }
+    func testSameURLDocumentNavigationClearsReaderState() async throws {
+        TestEnvironment.prepare(); WebKitStartup.prepare()
+        let tab = Tab(isPrivate: true)
+        defer { if Reader.isOn(tab) { Reader.exit(tab) }; tab.tearDown() }
+        let url = URL(string: "https://reader.test/article")!
+        let html = "<!doctype html><article><p>\(prose)</p></article>"
+        tab.web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+        var deadline = Date().addingTimeInterval(10)
+        while tab.web.isLoading, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        Reader.enter(tab)
+        while !Reader.isOn(tab), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(Reader.isOn(tab))
+        tab.web.loadSimulatedRequest(URLRequest(url: url), responseHTML: html)
+        deadline = Date().addingTimeInterval(10)
+        while tab.web.isLoading, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertFalse(Reader.isOn(tab))
+    }
     func testSplitArticleKeepsSiblingSectionsAndRejectsLongFurniture() async throws {
         let result = try await extraction("<main><div class='article-body'><p>FIRST \(prose)</p></div><div class='article-body'><h2>Continuation</h2><p>LAST \(prose)</p></div><div class='related'><p>RELATED \(prose)</p></div></main>")
         let text = Reader.plainText(result.nodes)
