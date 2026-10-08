@@ -360,6 +360,22 @@ the containing app bundle outside the browser sandbox; read-only or translocated
 copies retain the live Dock choice and restore it on launch. The bare SwiftPM
 executable has no bundled icon catalogue; build `Vane.app` to use these finishes.
 
+### Reader
+
+Enter Reader from Page Actions or **View → Reader Mode**. **Page Actions → Reading
+Preferences** offers text size (13–32 pt), serif type, compact/standard/relaxed line
+spacing, and narrow/standard/wide reading columns. Spacing and width are also in
+**View → Reading Preferences**. Preferences save locally and apply immediately to
+the current Reader; new Reader views use the saved choices. Changes animate briefly
+unless Reduce Motion or Battery Saver is active. The header links to the source
+article, and article links remain usable.
+
+Extraction retains scored sibling sections, prose in legacy table layouts, technical
+data tables, code indentation, and lazy image captions while omitting hidden content
+and navigation. It remains heuristic: unavailable/paywalled text, embedded frames,
+and articles below the 140-word threshold are not recovered. Exit Reader reloads the
+original page; it does not add a history entry.
+
 ### Easels
 
 Easels open as native tabs inside the browser. Choose **New Easel** from the sidebar's
@@ -386,11 +402,20 @@ edges, solid/dashed/dotted strokes, solid/hachure/crosshatch fills, three sloppi
 levels, and opacity. The hand tool pans the canvas; the lock keeps
 a drawing tool active. Tool shortcuts are shown in the toolbar. Arrow keys nudge a
 selected item (Shift moves ten points), Enter edits its text, and ⌘D duplicates it.
-Notes, links, and clipboard paste are in the **…** menu. Double-click an image to edit
+Notes, links, and clipboard paste are in the **…** menu. New captures are selected when their board opens. Click an image's pencil,
+**Annotate Image** in its context menu, or the selected image's properties to pause
+its live source and activate the existing drawing tool with the tool lock on. Draw
+on the saved capture, or choose arrows, shapes, and text in the same toolbar. Choose
+Select or press Escape to move items afterwards. Double-click an image to edit
 its caption or crop it. Undo/redo and zoom controls sit at the bottom left.
 Choose Select to move items after drawing. Scroll in either direction
 and choose a zoom level. New items appear near the current canvas viewport.
-Standard Undo/Redo work on the board and inside its text editors.
+Standard Undo/Redo work on the board and inside its text editors. Annotations remain
+independent editable objects; moving or cropping an image does not transform its
+annotations with it. Image import preserves the available pixel resolution while
+keeping the canvas card compact; images beyond 8 MiB PNG, 16,000 pixels on either
+side, or 32 million pixels are refused rather than silently downsampled. Board PNG
+export still uses the 4,096-pixel limit below.
 
 A web capture's play button opens its source page as an interactive live view using
 that profile's cookies and content blocker. Pause returns to the saved image. Live
