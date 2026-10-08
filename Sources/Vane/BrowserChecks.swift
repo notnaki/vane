@@ -26,10 +26,12 @@ import WebKit
         // Independent of any awaited WebKit callback. An unavailable process or delegate
         // callback must fail CI instead of leaving a task suspended indefinitely.
         let lifecycle = CommandLine.arguments.contains("--lifecycle")
-        DispatchQueue.main.asyncAfter(deadline: .now() + (lifecycle ? 600 : 55)) {
+        let publicMedia = CommandLine.arguments.contains("--public-media")
+        DispatchQueue.main.asyncAfter(deadline: .now() + (lifecycle || publicMedia ? 600 : 55)) {
             fail("browsercheck exceeded its deadline", code: 1)
         }
         Task {
+            if publicMedia { exit(await PublicMediaChecks.run()) }
             if lifecycle { await BrowserLifecycleChecks.run() }
             await check.run()
         }
