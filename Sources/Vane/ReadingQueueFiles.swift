@@ -95,4 +95,16 @@ enum ReadingQueueFiles {
     static func bytes(_ files: [URL]) throws -> Int64 {
         try files.reduce(0) { try $0 + Int64($1.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) }
     }
+    /// Account for damaged/unrecognized files too, without following links outside the queue.
+    static func diskBytes(_ url: URL) throws -> Int64 {
+        var stack = [url], bytes: Int64 = 0, count = 0
+        while let item = stack.popLast() {
+            count += 1; guard count <= 50_000 else { throw ReadingQueueFailure.tooLarge }
+            var info = stat()
+            guard lstat(item.path, &info) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            if info.st_mode & S_IFMT == S_IFDIR { stack += try FileManager.default.contentsOfDirectory(at: item, includingPropertiesForKeys: nil) }
+            else { bytes += max(0, Int64(info.st_size)) }
+        }
+        return bytes
+    }
 }

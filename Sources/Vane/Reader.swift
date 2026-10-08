@@ -309,36 +309,37 @@ import SwiftUI
         return u.absoluteString
     }
 
-    static func render(_ nodes: [Node], base: URL?) -> String {
+    static func render(_ nodes: [Node], base: URL?, localImages: [String: String] = [:]) -> String {
         var out = ""
-        render(nodes, base: base, into: &out)
+        render(nodes, base: base, localImages: localImages, into: &out)
         return out
     }
 
-    private static func render(_ nodes: [Node], base: URL?, into out: inout String) {
+    private static func render(_ nodes: [Node], base: URL?, localImages: [String: String], into out: inout String) {
         for n in nodes {
             if let t = n.x { out += esc(t); continue }
             guard let tag = n.e?.lowercased(), allowed.contains(tag) else {
-                render(n.c ?? [], base: base, into: &out)   // unknown wrapper: keep the words
+                render(n.c ?? [], base: base, localImages: localImages, into: &out)   // unknown wrapper: keep the words
                 continue
             }
             switch tag {
             case "br", "hr":
                 out += "<\(tag)>"
             case "img":
-                guard let src = resolve(n.a?["src"] ?? "", base: base) else { continue }
+                let raw = n.a?["src"] ?? ""
+                guard let src = localImages[raw] ?? resolve(raw, base: base) else { continue }
                 out += "<img src=\"\(esc(src))\" alt=\"\(esc(n.a?["alt"] ?? ""))\" loading=\"lazy\">"
             case "a":
                 guard let href = resolve(n.a?["href"] ?? "", base: base) else {
-                    render(n.c ?? [], base: base, into: &out)   // dead link, live words
+                    render(n.c ?? [], base: base, localImages: localImages, into: &out)   // dead link, live words
                     continue
                 }
                 out += "<a href=\"\(esc(href))\">"
-                render(n.c ?? [], base: base, into: &out)
+                render(n.c ?? [], base: base, localImages: localImages, into: &out)
                 out += "</a>"
             default:
                 out += "<\(tag)>"
-                render(n.c ?? [], base: base, into: &out)
+                render(n.c ?? [], base: base, localImages: localImages, into: &out)
                 out += "</\(tag)>"
             }
         }
@@ -347,8 +348,8 @@ import SwiftUI
     /// The reader document: head + body, no doctype. It is assigned onto the existing
     /// documentElement, so the parse mode was already settled by the original page.
     /// ponytail: a page served in quirks mode renders this in quirks mode too.
-    static func html(for e: Extraction, url: URL?) -> String {
-        let body = render(e.nodes, base: url)
+    static func html(for e: Extraction, url: URL?, localImages: [String: String] = [:]) -> String {
+        let body = render(e.nodes, base: url, localImages: localImages)
         let lead = e.lead.isEmpty ? nil : resolve(e.lead, base: url)
         // og:image is usually the same picture the article already opens with; only show it
         // when the body did not bring one of its own.
@@ -428,7 +429,7 @@ import SwiftUI
     }
 
     /// A JS string literal for `s`, via the one encoder already in the stdlib.
-    private static func jsString(_ s: String) -> String {
+    static func jsString(_ s: String) -> String {
         let d = try! JSONSerialization.data(withJSONObject: [s])
         var out = String(decoding: d, as: UTF8.self)
         out.removeFirst()      // [

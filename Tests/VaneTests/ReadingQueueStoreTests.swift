@@ -67,6 +67,10 @@ import XCTest
         XCTAssertEqual(repository.articles.count, 1)
         XCTAssertEqual(repository.damaged.map(\.id), [badID])
         XCTAssertEqual(try Data(contentsOf: bad.appendingPathComponent("article.json")), Data("damaged".utf8))
+        let beforeExtra = repository.usage.publishedBytes
+        try Data(repeating: 7, count: 32_768).write(to: bad.appendingPathComponent("extra.bin"))
+        repository.reload()
+        XCTAssertEqual(repository.usage.publishedBytes, beforeExtra + 32_768, "Damaged files must still count toward storage usage")
         try repository.remove(badID)
         XCTAssertTrue(repository.damaged.isEmpty)
     }

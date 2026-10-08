@@ -17,6 +17,7 @@ struct ReadingQueueUsage { var articleCount = 0; var publishedBytes: Int64 = 0; 
         guard profileID != Profile.incognito.id else { return }
         let key = ReadingQueueFiles.profileURL(profileID, in: directory).standardizedFileURL
         if let store = stores.removeValue(forKey: key) { store.invalidated = true; store.articles = []; store.damaged = [] }
+        SavedReaderWindow.forget(profileID: profileID)
         try ReadingQueueFiles.checkRoot(directory)
         if ReadingQueueFiles.exists(key) { try ReadingQueueFiles.check(key, directory: true); try FileManager.default.removeItem(at: key) }
     }
@@ -52,13 +53,12 @@ struct ReadingQueueUsage { var articleCount = 0; var publishedBytes: Int64 = 0; 
             try ReadingQueueFiles.check(profileURL, directory: true, mayBeMissing: true)
             var fresh: [ReadingArticle] = [], damage: [ReadingQueueDamage] = [], size: Int64 = 0
             if ReadingQueueFiles.exists(profileURL) {
+                size = try ReadingQueueFiles.diskBytes(profileURL)
                 let entries = try FileManager.default.contentsOfDirectory(at: profileURL, includingPropertiesForKeys: nil)
                 guard entries.count <= ReadingArticleCodec.articleLimit else { throw ReadingQueueFailure.tooLarge }
                 for entry in entries {
                     guard let id = ReadingQueueFiles.canonicalUUID(entry.lastPathComponent) else { throw ReadingQueueFailure.invalid("Unexpected reading queue folder.") }
                     do {
-                        let files = try ReadingQueueFiles.articleFiles(entry)
-                        size += try ReadingQueueFiles.bytes(files)
                         fresh.append(try ReadingQueueFiles.load(entry, profileID: profileID, articleID: id).article)
                     } catch { damage.append(.init(id: id, message: error.localizedDescription)) }
                 }
@@ -71,7 +71,7 @@ struct ReadingQueueUsage { var articleCount = 0; var publishedBytes: Int64 = 0; 
                     for item in try FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil) {
                         do { try ReadingQueueFiles.check(item, directory: true); try FileManager.default.removeItem(at: item) }
                         catch {
-                            residual += (try? ReadingQueueFiles.bytes(ReadingQueueFiles.articleFiles(item))) ?? 0
+                            residual += (try? ReadingQueueFiles.diskBytes(item)) ?? 0
                             cleanupError = "Some unfinished files could not be removed. Choose Retry. \(error.localizedDescription)"
                         }
                     }
@@ -137,6 +137,7 @@ struct ReadingQueueUsage { var articleCount = 0; var publishedBytes: Int64 = 0; 
         try checkpoint("delete")
         let trash = staging.appendingPathComponent(UUID().uuidString.lowercased())
         try FileManager.default.moveItem(at: folder, to: trash)
+        SavedReaderWindow.close(articleID: id, profileID: profileID)
         reload()
     }
     func candidate(_ id: UUID) throws -> ReadingQueueCandidate {

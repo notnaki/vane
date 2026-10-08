@@ -69,7 +69,8 @@ enum ReadingArticleCodec {
     static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
     static func encode(_ article: ReadingArticle) throws -> Data {
         try validateRecord(article)
-        let data = try JSONEncoder().encode(article)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(article)
         guard data.count <= recordLimit else { throw ReadingQueueFailure.tooLarge }
         return data
     }
