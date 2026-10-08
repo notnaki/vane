@@ -8,7 +8,7 @@ import WebKit
     @Published private(set) var messages: [UUID: String] = [:]
     private var sources = Set<String>()
     static func canSave(tab: Tab?, in store: TabStore?) -> Bool {
-        guard let tab, let store, !store.isPrivate, !tab.isPrivate, !tab.loading,
+        guard let tab, let store, !store.isPrivate, !store.isParked, !tab.isPrivate, !tab.loading,
               tab.easelID == nil, tab.profileID == store.profileID,
               let url = tab.existingWeb?.url else { return false }
         return ReadingArticleCodec.webURL(url.absoluteString) != nil
@@ -44,8 +44,9 @@ import WebKit
         func current() throws {
             guard tab.readingDocumentGeneration == generation, tab.existingWeb === web,
                   web.url == url, !web.isLoading, store.profileID == repository.profileID,
-                  !repository.invalidated, store.everyTab.contains(where: { $0 === tab }) else { throw ReadingQueueFailure.staleCapture }
+                  !repository.invalidated, !store.isParked, store.everyTab.contains(where: { $0 === tab }) else { throw ReadingQueueFailure.staleCapture }
         }
+        await repository.waitUntilReady()
         try current()
         if let existing = repository.articles.first(where: { $0.sourceURL == url.absoluteString }) { return existing }
         let extracted: Reader.Extraction?
@@ -61,7 +62,9 @@ import WebKit
             stack += (node.c ?? []).map { ($0, depth + 1) }
         }
         if imageURLs.isEmpty, let lead = Reader.resolve(extraction.lead, base: url), let image = ReadingArticleCodec.webURL(lead) { imageURLs.append(image) }
-        let collected = await images.collect(urls: imageURLs)
+        let urls = imageURLs
+        let worker = Task.detached(priority: .userInitiated) { await images.collect(urls: urls) }
+        let collected = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
         try Task.checkCancellation(); try current()
         func normalize(_ nodes: [Reader.Node]) -> [ReadingArticle.Node] {
             nodes.flatMap { node -> [ReadingArticle.Node] in
@@ -89,7 +92,7 @@ import WebKit
             sourceURL: url.absoluteString, nodes: body)
         article.byline = extraction.byline
         article.resources = collected.resources; article.missingImages = collected.missingCount
-        return try repository.publish(.init(article: article, images: collected.images))
+        return try await repository.publish(.init(article: article, images: collected.images), validity: current)
     }
     private static func bodyImage(_ nodes: [ReadingArticle.Node]) -> Bool {
         nodes.contains { $0.e == "img" || bodyImage($0.c ?? []) }

@@ -248,9 +248,12 @@ import XCTest
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/vane-boost-editor.png"))
         }
         panel.close()
-        try await Task.sleep(for: .milliseconds(100))
-        let active = try await visual("window.__vaneBoost.zapping", tab: tab) as? Bool
-        XCTAssertEqual(active, false)
+        // Closing the native panel schedules a WebKit call; CI can take longer than
+        // 100 ms to deliver it. Wait for the observable cleanup, not an elapsed guess.
+        try await compatibilityWait {
+            let active = try await self.visual("window.__vaneBoost.zapping", tab: tab) as? Bool
+            return active == false
+        }
         XCTAssertFalse(SiteBoostEditor.acceptsPick(tab: tab))
     }
 

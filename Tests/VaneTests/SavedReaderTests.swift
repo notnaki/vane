@@ -34,6 +34,42 @@ import XCTest
         XCTAssertEqual(try ReadingArticleCodec.encode(article), data)
         XCTAssertFalse(article.isRead)
     }
+    func testLiveSourceReopensClosedProfileWindow() throws {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared, previous = ProfileManager.shared.active
+        let profile = manager.create(name: "Saved source closure")
+        let original = Windows.open(profile: profile, focus: false)
+        let oldWindow = try XCTUnwrap(original.window)
+        var newWindow: NSWindow?
+        defer { newWindow?.close(); oldWindow.close(); _ = manager.delete(profile.id); manager.active = previous }
+        oldWindow.close()
+        XCTAssertFalse(TabStore.all.contains { $0 === original })
+        let url = URL(string: "https://example.test/closed-origin")!
+        let reopened = try XCTUnwrap(SavedReaderLivePage.open(url, profileID: profile.id))
+        newWindow = reopened.window
+        XCTAssertEqual(reopened.profileID, profile.id)
+        XCTAssertFalse(reopened.isPrivate); XCTAssertFalse(reopened.isParked)
+        XCTAssertNotNil(newWindow); XCTAssertTrue(newWindow?.isVisible == true)
+        XCTAssertFalse(newWindow === oldWindow)
+        XCTAssertEqual(reopened.active?.address, url.absoluteString)
+    }
+    func testLiveSourceRevealsParkedProfileInsteadOfCreatingHiddenTab() throws {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared, previous = ProfileManager.shared.active
+        let first = manager.create(name: "Saved first"), second = manager.create(name: "Saved second")
+        let a = manager.createSpace(name: "Article", in: first.id), b = manager.createSpace(name: "Other", in: second.id)
+        let origin = Windows.open(profile: first, space: a, focus: false)
+        let window = try XCTUnwrap(origin.window)
+        defer { window.close(); _ = manager.delete(first.id); _ = manager.delete(second.id); manager.active = previous }
+        let other = try XCTUnwrap(Windows.hop(origin, to: b))
+        XCTAssertTrue(origin.isParked); XCTAssertNil(origin.window)
+        let url = URL(string: "https://example.test/parked-origin")!
+        let shown = try XCTUnwrap(SavedReaderLivePage.open(url, profileID: first.id))
+        XCTAssertTrue(shown === origin); XCTAssertTrue(shown.window === window)
+        XCTAssertFalse(shown.isParked); XCTAssertTrue(other.isParked)
+        XCTAssertEqual(shown.active?.address, url.absoluteString)
+        XCTAssertTrue(window.isVisible)
+    }
     func testActualSavedWindowRendersLocalImageAndClosesOnRemoval() async throws {
         TestEnvironment.prepare(); NSApplication.shared.setActivationPolicy(.prohibited)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -44,10 +80,11 @@ import XCTest
         var article = makeReadingArticle(); article.title = "Saved fixture \(UUID())"
         article.resources = [raster.resource]
         article.nodes.append(.init(e: "img", a: ["src": "images/" + raster.resource.name, "alt": "Offline image"]))
-        try repository.publish(.init(article: article, images: [raster.resource.name: raster.data]))
+        try await repository.publish(.init(article: article, images: [raster.resource.name: raster.data]))
         let origin = TabStore(profileID: article.profileID)
         defer { origin.tabs.forEach { $0.tearDown() }; TabStore.all.removeAll { $0 === origin }; SavedReaderWindow.forget(profileID: article.profileID) }
         SavedReaderWindow.show(articleID: article.id, repository: repository, origin: origin)
+        try await compatibilityWait { NSApp.windows.contains { $0.title == "Saved copy — \(article.title)" } }
         let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Saved copy — \(article.title)" })
         func findWeb(_ view: NSView) -> WKWebView? { if let web = view as? WKWebView { return web }; return view.subviews.compactMap(findWeb).first }
         try await compatibilityWait { window.contentView?.layoutSubtreeIfNeeded(); return window.contentView.flatMap(findWeb) != nil }
@@ -62,7 +99,7 @@ import XCTest
         XCTAssertTrue(text.contains("Saved copy")); XCTAssertTrue(text.contains("nebula"))
         XCTAssertFalse(repository.articles[0].isRead)
         let directory = try XCTUnwrap(web.url?.deletingLastPathComponent())
-        try repository.remove(article.id)
+        try await repository.remove(article.id)
         XCTAssertFalse(window.isVisible)
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
     }

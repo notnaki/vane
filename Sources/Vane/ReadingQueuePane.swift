@@ -40,7 +40,9 @@ struct ReadingQueuePane: View {
     private struct Request: Equatable { var profile: UUID; var query: String; var filter: ReadingQueueFilter; var revision: Int }
     private var request: Request { .init(profile: repository.profileID, query: library.query, filter: filter, revision: repository.revision) }
     private func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
-    private func perform(_ work: () throws -> Void) { do { try work(); message = nil } catch { message = error.localizedDescription } }
+    private func perform(_ work: @escaping @MainActor () async throws -> Void) {
+        Task { do { try await work(); message = nil } catch { message = error.localizedDescription } }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset) {
             LibraryHead(section: .readingQueue, filtering: filter != .all, query: $library.query) {
@@ -56,10 +58,11 @@ struct ReadingQueuePane: View {
                     Button("Retry") { repository.reload(); message = nil }
                 }.accessibilityElement(children: .contain)
             }
+            if repository.loading { Text("Loading saved articles…").font(Look.caption).foregroundStyle(Look.inkSecondary) }
             if searching { Text("Searching…").font(Look.caption).foregroundStyle(Look.inkSecondary) }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Look.rowGap) {
-                    if results.isEmpty && !searching {
+                    if results.isEmpty && !searching && !repository.loading {
                         VStack(alignment: .leading, spacing: 7) {
                             Text(repository.articles.isEmpty ? "Read it later, offline" : "No matching articles").font(Look.heading)
                             Text(repository.articles.isEmpty ? "Choose Save for Offline in Page Actions on an article. Saved copies stay in this profile." : "Try another search or choose All in Filter.").font(Look.small).foregroundStyle(Look.inkSecondary)
@@ -70,7 +73,7 @@ struct ReadingQueuePane: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("Unreadable saved article").font(Look.small)
                             Text(entry.message).font(Look.caption).foregroundStyle(Look.inkSecondary)
-                            HStack { Button("Retry") { repository.reload() }; Button("Remove", role: .destructive) { perform { try repository.remove(entry.id) } } }
+                            HStack { Button("Retry") { repository.reload() }; Button("Remove", role: .destructive) { perform { try await repository.remove(entry.id) } } }
                         }.padding(8)
                     }
                 }
@@ -109,13 +112,13 @@ struct ReadingQueuePane: View {
     }
     @ViewBuilder private func actions(_ article: ReadingArticle) -> some View {
         Button("Open Saved Copy") { SavedReaderWindow.show(articleID: article.id, repository: repository, origin: origin) }
-        Button(article.isRead ? "Mark Unread" : "Mark Read") { perform { try repository.setRead(!article.isRead, id: article.id) } }
+        Button(article.isRead ? "Mark Unread" : "Mark Read") { perform { try await repository.setRead(!article.isRead, id: article.id) } }
         Button("Open Live Page") {
             guard !origin.isPrivate, origin.profileID == repository.profileID, let url = ReadingArticleCodec.webURL(article.sourceURL) else { return }
-            origin.newTab(url); Library.close(origin)
+            SavedReaderLivePage.open(url, profileID: repository.profileID); Library.close(origin)
         }
         Text("\(size(repository.bytes(for: article))) saved")
         Divider()
-        Button("Remove", role: .destructive) { perform { try repository.remove(article.id) } }
+        Button("Remove", role: .destructive) { perform { try await repository.remove(article.id) } }
     }
 }

@@ -56,7 +56,9 @@ enum ReadingQueueFiles {
             if child.lastPathComponent == "article.json" { try check(child, directory: false); files.append(child) }
             else if child.lastPathComponent == "images" {
                 try check(child, directory: true)
-                for image in try FileManager.default.contentsOfDirectory(at: child, includingPropertiesForKeys: nil) {
+                let images = try FileManager.default.contentsOfDirectory(at: child, includingPropertiesForKeys: nil)
+                guard images.count <= 20 else { throw ReadingQueueFailure.tooLarge }
+                for image in images {
                     guard ReadingArticleCodec.resourceName(image.lastPathComponent) else { throw ReadingQueueFailure.invalid("Unexpected saved image filename.") }
                     try check(image, directory: false); files.append(image)
                 }
@@ -85,9 +87,27 @@ enum ReadingQueueFiles {
     }
     static func load(_ url: URL, profileID: UUID, articleID: UUID) throws -> ReadingQueueCandidate {
         let files = try articleFiles(url)
-        let article = try ReadingArticleCodec.decode(read(url.appendingPathComponent("article.json"), limit: ReadingArticleCodec.recordLimit), profileID: profileID, articleID: articleID)
+        let record = try read(url.appendingPathComponent("article.json"), limit: ReadingArticleCodec.recordLimit)
+        let article = try ReadingArticleCodec.decode(record, profileID: profileID, articleID: articleID)
+        let imageFiles = files.filter { $0.lastPathComponent != "article.json" }
+        guard Set(imageFiles.map(\.lastPathComponent)) == Set(article.resources.map(\.name)) else {
+            throw ReadingQueueFailure.invalid("Saved image files do not match the article.")
+        }
+        var remaining = ReadingArticleCodec.snapshotLimit - record.count
+        let resources = Dictionary(uniqueKeysWithValues: article.resources.map { ($0.name, $0) })
+        // Preflight the complete inventory before allocating any image bytes.
+        for file in imageFiles {
+            let count = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
+            guard let resource = resources[file.lastPathComponent], count == resource.byteCount else { throw ReadingQueueFailure.invalid("A saved image is damaged.") }
+            guard count <= remaining else { throw ReadingQueueFailure.tooLarge }
+            remaining -= count
+        }
         var images: [String: Data] = [:]
-        for file in files where file.lastPathComponent != "article.json" { images[file.lastPathComponent] = try read(file, limit: ReadingArticleCodec.imageLimit) }
+        remaining = ReadingArticleCodec.snapshotLimit - record.count
+        for file in imageFiles {
+            let bytes = try read(file, limit: min(ReadingArticleCodec.imageLimit, remaining))
+            remaining -= bytes.count; images[file.lastPathComponent] = bytes
+        }
         let candidate = ReadingQueueCandidate(article: article, images: images)
         try ReadingArticleCodec.validate(candidate)
         return candidate

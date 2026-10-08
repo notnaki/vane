@@ -29,22 +29,65 @@ enum SavedReaderNavigation {
 @MainActor enum SavedReaderWindow {
     private struct Key: Hashable { var profile: UUID; var article: UUID }
     private static var sessions: [Key: SavedReaderSession] = [:]
+    private static var opening = Set<Key>()
     static func show(articleID: UUID, repository: ReadingQueueStore, origin: TabStore) {
         guard !origin.isPrivate, origin.profileID == repository.profileID, !repository.invalidated else { return }
         let key = Key(profile: repository.profileID, article: articleID)
         if let session = sessions[key] { session.window.makeKeyAndOrderFront(nil); return }
-        do {
-            let session = try SavedReaderSession(articleID: articleID, repository: repository, origin: origin)
-            sessions[key] = session
-            session.onClose = { sessions[key] = nil }
-            session.window.makeKeyAndOrderFront(nil)
-        } catch { Toasts.show(error.localizedDescription, in: origin) }
+        guard opening.insert(key).inserted else { return }
+        Task {
+            defer { opening.remove(key) }
+            do {
+                let candidate = try await repository.candidate(articleID)
+                let html = SavedReaderDocument.html(article: candidate.article)
+                let directory = try await Task.detached(priority: .userInitiated) {
+                    try SavedReaderPresentation.prepare(candidate: candidate, html: html)
+                }.value
+                guard !repository.invalidated, repository.articles.contains(where: { $0.id == articleID }) else {
+                    try? FileManager.default.removeItem(at: directory); return
+                }
+                let session = SavedReaderSession(article: candidate.article, directory: directory, repository: repository, origin: origin)
+                sessions[key] = session
+                session.onClose = { sessions[key] = nil }
+                session.window.makeKeyAndOrderFront(nil)
+            } catch { Toasts.show(error.localizedDescription, in: origin) }
+        }
     }
     static func forget(profileID: UUID) {
         for key in Array(sessions.keys) where key.profile == profileID { sessions[key]?.window.close() }
     }
     static func close(articleID: UUID, profileID: UUID) {
         sessions[Key(profile: profileID, article: articleID)]?.window.close()
+    }
+}
+
+/// File preparation uses only validated immutable bytes, away from browser input.
+private enum SavedReaderPresentation {
+    static func prepare(candidate: ReadingQueueCandidate, html: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vane-saved-reader-\(UUID().uuidString)")
+        try ReadingQueueFiles.ensureDirectory(directory)
+        do {
+            if !candidate.images.isEmpty {
+                let images = directory.appendingPathComponent("images"); try ReadingQueueFiles.ensureDirectory(images)
+                for (name, bytes) in candidate.images { try bytes.write(to: images.appendingPathComponent(name), options: .atomic) }
+            }
+            try Data(html.utf8).write(to: directory.appendingPathComponent("article.html"), options: .atomic)
+            return directory
+        } catch { try? FileManager.default.removeItem(at: directory); throw error }
+    }
+}
+
+@MainActor enum SavedReaderLivePage {
+    @discardableResult static func open(_ url: URL, profileID: UUID) -> TabStore? {
+        guard profileID != Profile.incognito.id,
+              let profile = ProfileManager.shared.profiles.first(where: { $0.id == profileID }) else { return nil }
+        if ReadingArticleCodec.webURL(url.absoluteString) != nil {
+            let store = Windows.switchTo(profile: profile)
+            store.newTab(url); store.window?.makeKeyAndOrderFront(nil)
+            return store
+        }
+        if url.scheme?.lowercased() == "mailto" { NSWorkspace.shared.open(url) }
+        return nil
     }
 }
 
@@ -58,18 +101,9 @@ enum SavedReaderNavigation {
     var onClose: (() -> Void)?
     @Published var message: String?
     private var observation: AnyCancellable?
-    init(articleID: UUID, repository: ReadingQueueStore, origin: TabStore) throws {
-        let candidate = try repository.candidate(articleID)
+    init(article: ReadingArticle, directory: URL, repository: ReadingQueueStore, origin: TabStore) {
+        let articleID = article.id
         self.articleID = articleID; self.repository = repository; self.origin = origin
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("vane-saved-reader-\(UUID().uuidString)")
-        try ReadingQueueFiles.ensureDirectory(directory)
-        do {
-            if !candidate.images.isEmpty {
-                let images = directory.appendingPathComponent("images"); try ReadingQueueFiles.ensureDirectory(images)
-                for (name, bytes) in candidate.images { try bytes.write(to: images.appendingPathComponent(name), options: .atomic) }
-            }
-            try Data(SavedReaderDocument.html(article: candidate.article).utf8).write(to: directory.appendingPathComponent("article.html"), options: .atomic)
-        } catch { try? FileManager.default.removeItem(at: directory); throw error }
         presentation = directory
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -77,7 +111,7 @@ enum SavedReaderNavigation {
         web = WKWebView(frame: .zero, configuration: configuration)
         window = NSWindow(contentRect: .init(x: 0, y: 0, width: 850, height: 760), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         super.init()
-        window.title = "Saved copy — \(candidate.article.title)"
+        window.title = "Saved copy — \(article.title)"
         window.minSize = .init(width: 520, height: 360); window.isReleasedWhenClosed = false
         window.delegate = self; web.navigationDelegate = self
         window.contentView = NSHostingView(rootView: SavedReaderView(session: self, repository: repository))
@@ -90,9 +124,8 @@ enum SavedReaderNavigation {
     }
     var article: ReadingArticle? { repository.articles.first { $0.id == articleID } }
     func open(_ url: URL) {
-        guard let origin, !origin.isPrivate, origin.profileID == repository.profileID, article != nil else { return }
-        if ReadingArticleCodec.webURL(url.absoluteString) != nil { origin.newTab(url); origin.window?.makeKeyAndOrderFront(nil) }
-        else if url.scheme?.lowercased() == "mailto" { NSWorkspace.shared.open(url) }
+        guard !repository.invalidated, article != nil else { return }
+        SavedReaderLivePage.open(url, profileID: repository.profileID)
     }
     func applyPreferences() {
         guard let article else { return }
@@ -133,7 +166,7 @@ private struct SavedReaderView: View {
                 Spacer()
                 if let article = session.article {
                     Button(article.isRead ? "Mark Unread" : "Mark Read") {
-                        do { try repository.setRead(!article.isRead, id: article.id) } catch { session.message = error.localizedDescription }
+                        Task { do { try await repository.setRead(!article.isRead, id: article.id) } catch { session.message = error.localizedDescription } }
                     }
                     ReaderPreferencesMenu(onChange: { session.applyPreferences() })
                     Button("Open Live Page") { if let url = URL(string: article.sourceURL) { session.open(url) } }
