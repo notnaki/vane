@@ -1882,6 +1882,8 @@ struct Stash {
     @Published var announcing: UUID?
     /// Fallback token sheet requested from a foreign Space dot after its window has hopped.
     @Published var liveFolderSheet = false
+    @Published var tidyPreview: TidyPreview?
+    @Published var organizationSheet = false
     /// The window's split views: 2–4 of the tabs above shown side by side in one page card
     /// and as one sidebar row. Ids, not tabs, so a split survives its panes moving section,
     /// being renamed or being suspended. Everything done to them is in SplitView.swift.

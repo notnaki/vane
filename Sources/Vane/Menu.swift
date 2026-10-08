@@ -390,6 +390,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     // session that never returns must not leave the sidebar's Tidy disabled for the life of
     // the window. `AppleAI` races its own 30s sleep inside every call, so this only ever
     // fires for an await that has stopped answering altogether.
+    let preview = TidyPreview(store: s)
     let stamp = TidyProgress.shared.began(s) { tidyTask?.cancel() }
     tidyTask = Task { @MainActor [s] in
         defer {
@@ -400,17 +401,18 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         // Cancelled is the one silent exit: the user asked for it, and the spinner going
         // away is the answer.
         guard !Task.isCancelled else { return }
-        guard let groups, TidyTabs.apply(groups, to: s) > 0 else {
-            // Nothing to say and nothing moved. Say *that*, rather than leaving the click
-            // looking like a control that does not work.
+        guard preview.isCurrent(in: s) else {
+            Toasts.show("Tabs changed. Run Tidy again to review a fresh proposal.", in: s)
+            return
+        }
+        guard let groups, !TidyTabs.reviewed(groups, in: s).isEmpty else {
             Toasts.show("Nothing to tidy", in: s)
             return
         }
-        Toasts.show("Tidied tabs", action: ("Undo", { [weak s] in
-            guard let s else { return }
-            TidyTabs.undo(s)
-            rebuild()
-        }), in: s)
+        var proposal = preview
+        proposal.groups = TidyTabs.deduped(TidyTabs.reviewed(groups, in: s),
+            existing: s.todayShape.entries.compactMap(\.folder).map(\.name))
+        Motion.list { s.tidyPreview = proposal }
     }
 }
 
@@ -472,7 +474,18 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         entry.isEnabled = store?.activeSplit != nil
     }
     let split = [addSplit, removeSplit, nextPane, separate]
-    return [favourite, pin, .separator(), tidy, undo, clear, .separator()]
+    let organize = item("Organize Tabs…", "", []) {
+        guard let s = Windows.main else { return }
+        s.organizationSheet = true
+    }
+    organize.isEnabled = store.map { !$0.isPrivate && !$0.isLittle } ?? false
+    let undoOrganization = item("Undo Tab Organization", "", []) {
+        guard let s = Windows.main else { return }
+        let model = TabOrganization(store: s)
+        if !model.undo() { Toasts.show(model.message, in: s) }
+    }
+    undoOrganization.isEnabled = store.map(TabOrganization.hasUndo) ?? false
+    return [favourite, pin, .separator(), tidy, undo, clear, organize, undoOrganization, .separator()]
         + split + [.separator()] + navigation
 }
 
