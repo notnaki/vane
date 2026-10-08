@@ -217,7 +217,8 @@ extension SiteControlModel {
         }
         if SitePermissions.supportsLocation {
             out.insert(Row(id: .location, title: "Location", glyph: "location", control: .permission(location),
-                           note: locationOnce ? "Allowed once, until this tab navigates or closes." : nil), at: 2)
+                           note: (locationOnce ? "Allowed once, until this tab navigates or closes. " : "")
+                            + "Revoking location reloads this page. Existing access ends when reload completes."), at: 2)
         }
         out.append(Row(id: .capture, title: "Capture a Portion of This Page",
                        glyph: "camera.viewfinder", control: .action))

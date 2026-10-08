@@ -279,6 +279,18 @@ import XCTest
         XCTAssertEqual(SitePermissions.effective(scope: secondScope, type: .camera, tabID: secondID), true)
     }
 
+    func testRegularSiteChangesPreservePrivateOnceForMatchingProfileAndOrigin() async throws {
+        let id = tabID(), privateScope = scope(privateTab: id), regularScope = scope()
+        let grant = try await answer(privateScope, type: .camera, tabID: id, response: .alertFirstButtonReturn)
+        XCTAssertEqual(grant, .grant)
+        SitePermissions.set(scope: regularScope, type: .camera, answer: nil)
+        XCTAssertEqual(SitePermissions.effective(scope: privateScope, type: .camera, tabID: id), true)
+        SitePermissions.reset(scope: regularScope)
+        XCTAssertEqual(SitePermissions.effective(scope: privateScope, type: .camera, tabID: id), true)
+        SitePermissions.resetAll(profileID: profile)
+        XCTAssertNil(SitePermissions.effective(scope: privateScope, type: .camera, tabID: id))
+    }
+
     func testInvalidOwnerCancelsPromptWithoutAUserResponse() async throws {
         let host = window(), id = tabID(), s = scope()
         var current = true

@@ -107,7 +107,6 @@ import XCTest
         XCTAssertEqual(tab.web.microphoneCaptureState, .active)
     }
 
-
     func testEmbeddedCaptureIsDeniedEvenWithSavedAllowForEitherOrigin() async throws {
         let child = try server.url("/child", host: "localhost")
         server.pages["/child"] = "<script>\(mediaScript)</script>"
@@ -208,7 +207,6 @@ import XCTest
     }
 
 
-
     func testTerminatingOwnedWebContentProcessExpiresTemporaryCapture() async throws {
         try await load("<script>\(mediaScript)</script>")
         try await start()
@@ -250,6 +248,31 @@ import XCTest
     }
 
     #if compiler(>=6.4)
+    func testCancelledLocationRevocationReloadRetainsOwnerForLaterRevocation() async throws {
+        guard #available(macOS 27.0, *) else { throw XCTSkip("Requires macOS 27") }
+        try await load("<script>window.oldDocument = 'original'</script>")
+        let frame = try XCTUnwrap(recorder.mainFrame)
+        decision = Task { await withCheckedContinuation { continuation in
+            self.tab.webView(self.tab.web, requestGeolocationPermissionFor: frame.securityOrigin,
+                             initiatedByFrame: frame, decisionHandler: { continuation.resume(returning: $0) })
+        } }
+        try await compatibilityWait { self.window.attachedSheet != nil }
+        try answer(.alertFirstButtonReturn)
+        let grant = await decision!.value
+        XCTAssertEqual(grant, .grant)
+        let blocker = PermissionReloadBlocker()
+        tab.web.navigationDelegate = blocker
+        defer { tab.existingWeb?.navigationDelegate = tab }
+        try await evaluate("window.oldDocument = 'reload cancelled'")
+        SiteControl.set(.location, to: nil, on: tab)
+        try await compatibilityWait { blocker.attempts > 0 && !self.tab.web.isLoading }
+        let unchanged = try await tab.web.evaluateJavaScript("window.oldDocument") as? String
+        XCTAssertEqual(unchanged, "reload cancelled")
+        tab.web.navigationDelegate = tab
+        SiteControl.set(.location, to: false, on: tab)
+        try await compatibilityWait { try await self.tab.web.evaluateJavaScript("window.oldDocument") as? String == "original" }
+    }
+
     func testLocationRevocationStillReloadsAfterCancelledProvisionalNavigation() async throws {
         guard #available(macOS 27.0, *) else { throw XCTSkip("Requires macOS 27") }
         try await load("<script>window.oldDocument = 'still here'</script>")
@@ -284,5 +307,14 @@ import XCTest
         guard let host = message.body as? String else { return }
         frames[host] = message.frameInfo
         if message.frameInfo.isMainFrame { mainFrame = message.frameInfo }
+    }
+}
+
+@MainActor private final class PermissionReloadBlocker: NSObject, WKNavigationDelegate {
+    var attempts = 0
+    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                 decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        attempts += 1
+        decisionHandler(.cancel)
     }
 }

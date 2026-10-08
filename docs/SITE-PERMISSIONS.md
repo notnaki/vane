@@ -4,14 +4,17 @@ Vane’s permission store records what a website’s main document may request. 
 (TCC and Location Services) separately determines whether Vane may access the device.
 Neither a saved Allow nor Allow Once changes or bypasses that authorization. macOS
 controls live device indicators and its privacy settings; Vane’s Allowed labels describe
-site decisions, not evidence that a device is capturing.
+site decisions, not evidence that a device is capturing. The packaged app includes
+`com.apple.security.personal-information.location` for sandbox access and the existing
+`NSLocationWhenInUseUsageDescription`. This makes location eligible for system
+authorization; it does not grant authorization or guarantee delivered coordinates.
 
 ## Supported decisions
 
 | Capability | Supported application hooks | Vane behavior and limits |
 | --- | --- | --- |
 | Camera and microphone | `WKUIDelegate` media permission request; `WKWebView.cameraCaptureState`, `microphoneCaptureState`, and their setters | Allow Once, saved Allow/Block, private-tab answers, Ask/reset, and stopping the revoked device with `.none`. State/setters cover the whole web view, so revoking one frame’s camera can also stop another frame’s camera. The untouched device continues. |
-| Location | macOS 27 `WKUIDelegate` geolocation permission request | Same site decisions. No public API stops individual WebKit location watches. Ask/Block/reset reloads every live page recorded as using the affected origin’s location decision; this destroys watches and may interrupt other page activity. |
+| Location | macOS 27 `WKUIDelegate` geolocation permission request | Same site decisions. No public API stops individual WebKit location watches. Ask/Block/reset reloads every live page recorded as using the affected origin’s location decision; a completed reload destroys watches and may interrupt other page activity. Cancelling the reload can leave existing watches alive; Vane retains ownership so a later revocation can retry. |
 | Screen sharing | WebKit’s `getDisplayMedia` flow and macOS source chooser | No public `WKUIDelegate` display-capture permission callback, per-site persistence, capture-state setter, or source-specific stop hook in the macOS 27 SDK. Camera/microphone grants do not authorize display capture. Vane leaves selection, cancellation, and authorization to WebKit/macOS; document destruction ends its capture. No nonfunctional screen-sharing picker is offered. |
 
 Location’s new delegate requires Xcode 27 (Swift 6.4) and macOS 27. The minimum runtime
@@ -72,7 +75,10 @@ answer is split when changing one device, preserving the other device’s answer
 Provisional navigation invalidates pending/once answers and stops camera/microphone;
 location ownership is retained until commit/destruction because cancellation or a
 download may leave the old document and its watches alive. Later location revocation
-can still find and reload it. Top-level navigation and page release stop both devices through public
+can still find and reload it. Revocation also retains location ownership until its reload
+commits: cancelling that reload can leave watches alive, and the Location row explains
+that existing access ends when reload completes. A later Ask/Block/reset retries.
+Top-level navigation and page release stop both devices through public
 WebKit setters, including when another object retains the web view. Tab/window
 closure uses Vane’s existing page teardown; shared tabs retained by another window
 keep their owning document rather than destroying it just because a snapshot window
@@ -99,7 +105,8 @@ app host so WebKit can receive a focused user gesture. It bypasses the chooser w
 fake screen source and retains its stream in a same-origin parent to verify frame
 removal ends its track. The runner records its bundle, PID, and launch identity,
 verifies exit, and removes the temporary app. Location fixtures call the actual public delegate with WebKit-created
-frame information and verify reload revocation; they request no coordinates.
+frame information and verify reload revocation, including cancelling the revocation
+reload and then retrying; they request no coordinates.
 These exercise policy and engine cleanup without collecting physical device data or
 changing macOS authorization.
 
@@ -114,6 +121,7 @@ or private permission delegate is used to bypass these platform limits.
 Primary references: [Apple media capture delegate](https://developer.apple.com/documentation/webkit/wkuidelegate/webview(_:decidemediacapturepermissionsfor:initiatedby:type:)),
 [Apple geolocation delegate](https://developer.apple.com/documentation/webkit/wkuidelegate/webview(_:requestgeolocationpermissionfor:initiatedbyframe:decisionhandler:)),
 [Apple capture state setter](https://developer.apple.com/documentation/webkit/wkwebview/setcameracapturestate(_:completionhandler:)),
+[Apple location entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.personal-information.location),
 and [WebKit Cocoa delegate implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Cocoa/UIDelegate.mm).
 The installed Xcode 27 `WKUIDelegate.h` and `WKWebView.h` were inspected alongside these
 sources on macOS 27.0.1.

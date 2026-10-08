@@ -50,7 +50,9 @@ import WebKit
             if devices.contains(.camera) { web.setCameraCaptureState(.none, completionHandler: nil) }
             if devices.contains(.microphone) { web.setMicrophoneCaptureState(.none, completionHandler: nil) }
             if devices.contains(.location) {
-                tab.endPermissionDocument()
+                // Reload can be cancelled without destroying the old watches. Keep
+                // ownership until commit/destruction so a later revocation can retry.
+                tab.endPermissionDocument(navigationStarted: true)
                 web.reload()
             } else {
                 owner.permissions[scope]?.subtract(devices)
@@ -60,7 +62,7 @@ import WebKit
 
     private static var defaults: UserDefaults = .vane
     private static var privateAnswers: [UUID: [String: Bool]] = [:]
-    private static var onceAnswers: [UUID: [String: Bool]] = [:]
+    private static var onceAnswers: [UUID: [Scope: Set<Kind>]] = [:]
     @MainActor private final class Pending {
         let token = UUID()
         let scope: Scope
@@ -159,13 +161,13 @@ import WebKit
         let pair = remembered(scope: scope, type: .cameraAndMicrophone)
         let camera = remembered(scope: scope, type: .camera)
         let microphone = remembered(scope: scope, type: .microphone)
-        let once = tabID.flatMap { onceAnswers[$0] } ?? [:]
+        let once = tabID.flatMap { onceAnswers[$0]?[scope] } ?? []
         if type == .location {
-            return remembered(scope: scope, type: type) ?? once[key(scope: scope, type: type)]
+            return remembered(scope: scope, type: type) ?? (once.contains(type) ? true : nil)
         }
-        let oncePair = once[key(scope: scope, type: .cameraAndMicrophone)]
-        let cameraAnswer = camera ?? pair ?? once[key(scope: scope, type: .camera)] ?? oncePair
-        let microphoneAnswer = microphone ?? pair ?? once[key(scope: scope, type: .microphone)] ?? oncePair
+        let oncePair: Bool? = once.contains(.cameraAndMicrophone) ? true : nil
+        let cameraAnswer = camera ?? pair ?? (once.contains(.camera) ? true : nil) ?? oncePair
+        let microphoneAnswer = microphone ?? pair ?? (once.contains(.microphone) ? true : nil) ?? oncePair
         switch type {
         case .camera:
             if camera == false || pair == false { return false }
@@ -186,16 +188,14 @@ import WebKit
         cancelPrompts(scope: scope, type: type)
         // Split a combined one-time grant just like a saved combined answer, so changing
         // Camera to Ask does not also discard Microphone's one-time access.
-        let owner = scope.privateTabID
-        for id in Array(onceAnswers.keys) where owner == nil || id == owner {
-            let pairKey = key(scope: scope, type: .cameraAndMicrophone)
-            if type != .location && type != .cameraAndMicrophone, onceAnswers[id]?[pairKey] == true {
-                for kind in [Kind.camera, .microphone] {
-                    onceAnswers[id, default: [:]][key(scope: scope, type: kind)] = true
-                }
-                onceAnswers[id]?.removeValue(forKey: pairKey)
+        for id in Array(onceAnswers.keys) {
+            guard var grants = onceAnswers[id]?[scope] else { continue }
+            if type != .location && type != .cameraAndMicrophone, grants.contains(.cameraAndMicrophone) {
+                grants.formUnion([.camera, .microphone])
+                grants.remove(.cameraAndMicrophone)
             }
-            onceAnswers[id]?.removeValue(forKey: key(scope: scope, type: type))
+            grants.remove(type)
+            onceAnswers[id]?[scope] = grants.isEmpty ? nil : grants
             if onceAnswers[id]?.isEmpty == true { onceAnswers.removeValue(forKey: id) }
         }
         if type != .location, let pair = remembered(scope: scope, type: .cameraAndMicrophone) {
@@ -301,7 +301,7 @@ import WebKit
         guard valid, !Task.isCancelled, isCurrent() else { return .deny }
         switch response {
         case .alertFirstButtonReturn:
-            onceAnswers[tabID, default: [:]][key(scope: scope, type: type)] = true
+            onceAnswers[tabID, default: [:]][scope, default: []].insert(type)
         case .alertSecondButtonReturn:
             remember(scope: scope, type: type, allow: true)
         case .alertThirdButtonReturn:
@@ -344,10 +344,8 @@ import WebKit
     static func reset(scope: Scope) {
         cancelPrompts(scope: scope)
         revoke(scope: scope)
-        for id in Array(onceAnswers.keys) where scope.privateTabID == nil || id == scope.privateTabID {
-            for kind in Kind.allCases {
-                onceAnswers[id]?.removeValue(forKey: key(scope: scope, type: kind))
-            }
+        for id in Array(onceAnswers.keys) {
+            onceAnswers[id]?.removeValue(forKey: scope)
             if onceAnswers[id]?.isEmpty == true { onceAnswers.removeValue(forKey: id) }
         }
         for type in Kind.allCases {
@@ -404,7 +402,7 @@ import WebKit
             cancel(tabID: id)
         }
         for id in Array(onceAnswers.keys) {
-            onceAnswers[id] = onceAnswers[id]?.filter { profileID != nil && parse(key: $0.key)?.scope.profileID != profileID }
+            onceAnswers[id] = onceAnswers[id]?.filter { profileID != nil && $0.key.profileID != profileID }
             if onceAnswers[id]?.isEmpty == true { onceAnswers.removeValue(forKey: id) }
         }
         for name in defaults.dictionaryRepresentation().keys where name.hasPrefix("sitePermission.") {
