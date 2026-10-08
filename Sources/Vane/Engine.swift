@@ -3,9 +3,9 @@ import Combine
 import WebKit
 
 /// Safari's UA string. WKWebView's own UA gets Netflix/Disney+ bounced on sight, and
-/// FairPlay is only offered to clients that look like Safari. macOS 26 / Safari 26.
-let safariUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-    + "(KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+/// FairPlay is only offered to clients that look like Safari. Keep its version current
+/// so sites select rendering paths compatible with the installed WebKit.
+let safariUA = BrowserIdentity.safari
 
 /// One tab. Owns its WKWebView and republishes the bits the chrome needs via KVO.
 /// Which of Arc's three sidebar sections a tab lives in, in the order they are drawn.

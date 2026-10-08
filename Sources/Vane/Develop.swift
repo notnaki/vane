@@ -87,8 +87,12 @@ import WebKit
     ]
 
     static var userAgent: String {
-        get { UserDefaults.vane.string(forKey: "userAgent") ?? safariUA }
-        set { UserDefaults.vane.set(newValue, forKey: "userAgent"); apply() }
+        get { BrowserIdentity.resolve(UserDefaults.vane.string(forKey: "userAgent")) }
+        set {
+            // Persist the choice of default, rather than pinning a Safari version.
+            UserDefaults.vane.set(newValue == safariUA ? "" : newValue, forKey: "userAgent")
+            apply()
+        }
     }
 
     /// Defaults on: this is a browser, and Chrome does not hide its dev tools either.
