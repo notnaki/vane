@@ -971,8 +971,9 @@ extension TabStore {
         var state: String?
         var kind: TabKind?
         var home: String?
+        var customName: String?
 
-        private enum CodingKeys: String, CodingKey { case id, url, title, state, kind, home }
+        private enum CodingKeys: String, CodingKey { case id, url, title, state, kind, home, customName }
 
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -981,17 +982,19 @@ extension TabStore {
             title = try? values.decode(String.self, forKey: .title)
             state = try? values.decode(String.self, forKey: .state)
             kind = try? values.decode(TabKind.self, forKey: .kind)
+            customName = try? values.decode(String.self, forKey: .customName)
             home = try? values.decode(String.self, forKey: .home)
         }
 
         init(id: String? = nil, url: String, title: String? = nil, state: String? = nil,
-             kind: TabKind? = nil, home: String? = nil) {
+             kind: TabKind? = nil, home: String? = nil, customName: String? = nil) {
             self.id = id
             self.url = url
             self.title = title
             self.state = state
             self.kind = kind
             self.home = home
+            self.customName = customName
         }
     }
 
@@ -1202,7 +1205,7 @@ extension TabStore {
                 let snap = tab.snapshot
                 return Entry(id: tab.id.uuidString, url: u.absoluteString, title: snap.title,
                              state: snap.state?.base64EncodedString(), kind: tab.kind,
-                             home: tab.homeURL?.absoluteString)
+                             home: tab.homeURL?.absoluteString, customName: tab.workspaceName)
             }
             byProfile[store.profileID, default: []]
                 .append((entries, store.savedSplits, store.currentSpaceID?.uuidString ?? "",

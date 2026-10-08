@@ -148,6 +148,13 @@ struct Split: Equatable, Sendable {
         return out
     }
 
+    func withWeights(_ weights: [Double]) -> Split {
+        guard weights.count == tabs.count, weights.allSatisfy({ $0.isFinite && $0 > 0 }) else { return self }
+        var out = self
+        out.weights = Self.normalised(weights)
+        return out
+    }
+
     func resized(divider i: Int, from base: [Double], by delta: Double) -> Split {
         var out = self
         out.weights = Split.resized(base, divider: i, by: delta)
@@ -216,12 +223,14 @@ struct Split: Equatable, Sendable {
         var vertical: Bool
         var active: Int
         var ids: [String]?
+        var weights: [Double]?
 
-        init(urls: [String], vertical: Bool, active: Int, ids: [String]? = nil) {
+        init(urls: [String], vertical: Bool, active: Int, ids: [String]? = nil, weights: [Double]? = nil) {
             self.urls = urls
             self.vertical = vertical
             self.active = active
             self.ids = ids
+            self.weights = weights
         }
     }
 }
@@ -433,7 +442,8 @@ struct Split: Equatable, Sendable {
             // have landed on that index once the blanks were taken out.
             let active = kept.firstIndex { $0.pane == split.active } ?? 0
             return Split.Saved(urls: kept.map(\.url), vertical: split.vertical, active: active,
-                               ids: kept.map { split.tabs[$0.pane].uuidString })
+                               ids: kept.map { split.tabs[$0.pane].uuidString },
+                               weights: Split.normalised(kept.map { split.weights[$0.pane] }))
         }
     }
 
@@ -455,6 +465,10 @@ struct Split: Equatable, Sendable {
                 ids = Split.restoredIDs(urls: entry.urls, candidates: candidates, taken: taken)
             }
             guard var split = Split(tabs: ids, vertical: entry.vertical) else { continue }
+            if let weights = entry.weights, weights.count == split.tabs.count,
+               weights.allSatisfy({ $0.isFinite && $0 > 0 }) {
+                split = split.withWeights(weights)
+            }
             split.tabs.forEach { taken.insert($0) }
             if split.tabs.indices.contains(entry.active) {
                 split = split.focusing(split.tabs[entry.active])

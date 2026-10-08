@@ -142,6 +142,10 @@ struct BackupPreview: Sendable {
         var allSpaces = Set<UUID>(), allBoards = Set<UUID>()
         for profile in disk.profiles {
             let suffix = ProfileManager.suffix(profile.id)
+            if let data = files["space-templates\(suffix).json"] {
+                do { _ = try WorkspaceTemplates.validate(data, profile: profile.id) }
+                catch { throw BackupError.invalid("Invalid or unsupported Space templates.") }
+            }
             let spaces = try files["spaces\(suffix).json"].map { try decode([Space].self, $0, "Spaces") } ?? []
             guard spaces.allSatisfy({ $0.profileID == profile.id && allSpaces.insert($0.id).inserted }) else {
                 throw BackupError.invalid("Duplicate Spaces or cross-profile Space ownership.")
@@ -160,6 +164,15 @@ struct BackupPreview: Sendable {
             let boardIDs = Set(boards.map(\.id))
             for space in spaces {
                 for url in space.tabURLs + space.pinnedURLs + (space.pinnedTabURLs ?? []) { try validateURL(url, boards: boardIDs) }
+                if let layout = space.layout {
+                    do { try layout.validate() }
+                    catch { throw BackupError.invalid("Invalid Space layout.") }
+                    guard layout.matches(space) else { throw BackupError.invalid("The Space layout does not match its saved tabs.") }
+                    for page in layout.tabs {
+                        try validateURL(page.url, boards: boardIDs)
+                        if let home = page.home { try validateURL(home, boards: boardIDs) }
+                    }
+                }
             }
             if let data = files["spacestate\(suffix).json"] {
                 let sidecar = try decode([String: [String: StateRow]].self, data, "Space state")

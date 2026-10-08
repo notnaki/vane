@@ -400,6 +400,9 @@ struct BrowserWindow: View {
         .sheet(item: $store.tidyPreview) { preview in
             TidyPreviewSheet(store: store, preview: preview)
         }
+        .sheet(item: $store.workspaceSheet) { request in
+            SpaceTemplatesSheet(store: store, request: request)
+        }
         .sheet(isPresented: $store.organizationSheet) {
             TabOrganizationSheet(store: store)
         }
@@ -2531,6 +2534,10 @@ private struct SpaceMenu: View {
         // by side, draggable between columns — rather than a settings pane.
         Button("Manage Spaces…") { Library.open(.spaces, in: store) }
         Button("Organize Tabs…") { store.organizationSheet = true }
+        Button("Save Space as Template…") {
+            spaceMenuTarget(space, from: store)?.showWorkspaceTemplates(saving: true)
+        }
+        Button("Space Templates…") { store.showWorkspaceTemplates() }
         Divider()
         Button("Delete Space") { deleteSpace(space, in: store) }
     }
