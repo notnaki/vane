@@ -874,12 +874,15 @@ extension TabStore {
     /// "Nobody has it" is either of AppKit's two spellings — the window is its own first
     /// responder, or the first responder is a view that has already left the window — so the
     /// answer does not depend on which of the two happens first.
-    func focusPage(remaining: Int = 6) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let window, palette == nil, !findOpen,
+    func focusPage(from previousPage: NSView? = nil, remaining: Int = 6) {
+        DispatchQueue.main.async { [weak self, weak previousPage] in
+            guard let self, let window, palette == nil,
                   NSApp.modalWindow == nil, window.attachedSheet == nil else { return }
             let holder = window.firstResponder
-            let nobody = holder == nil || holder === window
+            let heldPreviousPage = previousPage.map { previous in
+                (holder as? NSView).map { $0 === previous || $0.isDescendant(of: previous) } ?? false
+            } ?? false
+            let nobody = holder == nil || holder === window || heldPreviousPage
                 || (holder as? NSView).map { $0.window !== window } ?? false
             let page = activePageResponder
             if Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
@@ -890,7 +893,7 @@ extension TabStore {
             // Retry only while nobody has taken focus and no new overlay is open.
             if remaining > 1 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
-                    self?.focusPage(remaining: remaining - 1)
+                    self?.focusPage(from: previousPage, remaining: remaining - 1)
                 }
             }
         }
@@ -901,8 +904,12 @@ extension TabStore {
         guard let window, palette == nil, window.attachedSheet == nil,
               NSApp.modalWindow == nil else { return }
         let holder = window.firstResponder
-        if !keyboardOnPage, holder != nil, holder !== window,
-           let page = activePageResponder, page.window === window {
+        let page = activePageResponder
+        let onPage = (holder as? NSView).map { responder in
+            page.map { responder === $0 || responder.isDescendant(of: $0) } ?? false
+        } ?? false
+        if !onPage, holder != nil, holder !== window,
+           let page, page.window === window {
             window.makeFirstResponder(page)
             return
         }

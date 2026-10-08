@@ -5,10 +5,10 @@ import XCTest
 @testable import vane
 
 @MainActor final class KeyboardAccessibilityTests: XCTestCase {
-    private func fixture() -> (TabStore, NSWindow, WKWebView) {
+    private func fixture(isPrivate: Bool = true) -> (TabStore, NSWindow, WKWebView) {
         TestEnvironment.prepare()
         _ = NSApplication.shared
-        let store = TabStore(isPrivate: true)
+        let store = TabStore(isPrivate: isPrivate, profileID: UUID())
         let tab = store.newBlankTab(focus: false)
         store.current = tab.id
         store.palette = nil
@@ -24,6 +24,7 @@ import XCTest
             store.window = nil
             window.close()
             store.dropStashes()
+            SharedTabs.release(store.tabs)
             TabStore.all.removeAll { $0 === store }
         }
         return (store, window, web)
@@ -246,6 +247,56 @@ import XCTest
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertTrue(window.firstResponder === web)
         XCTAssertNil(store.palette)
+    }
+
+    func testPaletteDismissalReturnsFocusWhenFindRemainsOpen() async throws {
+        let (store, window, web) = fixture()
+        store.openFind()
+        store.palette = .all
+        // The palette removes its field on Escape while the existing Find bar stays mounted.
+        window.makeFirstResponder(nil)
+        store.palette = nil
+        store.focusPage()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(store.findOpen)
+        XCTAssertTrue(window.firstResponder === web)
+    }
+
+    func testF6LeavesTheLocalEaselForBrowserControls() async throws {
+        let (store, window, _) = fixture(isPrivate: false)
+        let tab = try XCTUnwrap(store.openEasel(create: true))
+        let session = try XCTUnwrap(tab.easelSession)
+        let page = EaselHostingView(rootView: EaselWorkspace(session: session, browser: store))
+        let chrome = NSHostingView(rootView: AddressPill(tab: tab).environmentObject(store))
+        let container = NSView(frame: window.contentView!.frame)
+        page.frame = NSRect(x: 250, y: 0, width: 550, height: 600)
+        chrome.frame = NSRect(x: 0, y: 520, width: 250, height: 80)
+        container.addSubview(chrome)
+        container.addSubview(page)
+        window.contentView = container
+        chrome.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(window.makeFirstResponder(page))
+        store.focusNextArea()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(window.firstResponder === page, "F6 must leave the canvas for the address pill")
+        XCTAssertFalse(window.firstResponder === window)
+        store.focusNextArea()
+        XCTAssertTrue(window.firstResponder === page)
+    }
+
+    func testSearchResultHandsFocusFromOldPageToNewTab() async throws {
+        let (store, window, oldPage) = fixture()
+        window.makeFirstResponder(oldPage)
+        let next = store.newBlankTab()
+        let newPage = next.web
+        store.focusPage(from: oldPage)
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) {
+            window.contentView = newPage
+        }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertTrue(window.firstResponder === newPage,
+                      "Submitting another tab must not strand the keyboard on the old page")
     }
 
 }

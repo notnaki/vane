@@ -1014,6 +1014,7 @@ struct CommandField: NSViewRepresentable {
         guard rows.indices.contains(index) else { return }
         let row = rows[index]
         // Dismiss first: a command may close this very window.
+        let previousPage = store.activePageResponder
         close()
         // …and then wait a turn. `close()` only sets `store.palette = nil`; the overlay and
         // its field editor are still first responder until SwiftUI's next pass, and an
@@ -1023,7 +1024,12 @@ struct CommandField: NSViewRepresentable {
         //
         // The tab is made lazily, inside the row: a command row opens nothing, and eagerly
         // making a tab for it would leave a blank one behind.
-        DispatchQueue.main.async { row.run { target(inNewTab: inNewTab) } }
+        DispatchQueue.main.async {
+            row.run { target(inNewTab: inNewTab) }
+            // A result can replace the page that dismissal just focused. Finish the handoff
+            // after that selection, while leaving newly focused fields and overlays alone.
+            store.focusPage(from: previousPage)
+        }
     }
 
     /// The suggestion list belongs to the window, not to this view, so it has to be handed

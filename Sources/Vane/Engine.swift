@@ -2695,7 +2695,9 @@ struct Stash {
     func cycle(_ delta: Int) {
         let allowed = accessibleTabs
         guard let i = allowed.firstIndex(where: { $0.id == current }), allowed.count > 1 else { return }
+        let previousPage = activePageResponder
         current = allowed[(i + delta + allowed.count) % allowed.count].id
+        focusPage(from: previousPage)
     }
 
     // MARK: Reorder + sections

@@ -484,8 +484,10 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
             let tabs = store.accessibleTabs
             let index = n == 9 ? tabs.count - 1 : n - 1
             guard tabs.indices.contains(index) else { return }
+            let previousPage = store.activePageResponder
             store.selection.clear()
             store.current = tabs[index].id
+            store.focusPage(from: previousPage)
             axAnnounce("\(tabs[index].title), tab \(index + 1) of \(tabs.count)")
         }
     }
