@@ -84,6 +84,17 @@ import XCTest
         return try data.map { try JSONSerialization.jsonObject(with: $0, options: .fragmentsAllowed) }
     }
 
+    private func documentDiagnostics(_ tab: Tab) async throws -> String {
+        let document = SiteBoosts.document(for: tab)
+        let state = try await visual("JSON.stringify({stamp:performance.timeOrigin, origin:location.origin, zapping:window.__vaneBoost?.zapping, sheets:document.adoptedStyleSheets.map(s => [...s.cssRules].map(r => r.cssText).join(' '))})", tab: tab)
+        let boundary: String = await withCheckedContinuation { continuation in
+            tab.web.callAsyncJavaScript("return JSON.stringify({stamp, origin, stampMatches:performance.timeOrigin === stamp, originMatches:location.origin === origin, runtimePresent:!!window.__vaneBoost});", arguments: ["stamp": document?.stamp ?? 0, "origin": document?.origin ?? ""], in: nil, in: SiteBoostScripts.world) { result in
+                continuation.resume(returning: String(describing: result))
+            }
+        }
+        return "native stamp=\(document?.stamp.description ?? "nil"), origin=\(document?.origin ?? "nil"), acceptsPick=\(SiteBoostEditor.acceptsPick(tab: tab)); runtime=\(state ?? "nil"); bridge=\(boundary)"
+    }
+
     func testLiveStylesDynamicHidingAndReset() async throws {
         let tab = try await page()
         var boost = SiteBoost(); boost.font = "Georgia"; boost.textColor = "#123456"; boost.background = "#fefefe"
@@ -171,6 +182,7 @@ import XCTest
         XCTAssertEqual(SiteBoosts.value(origin: "https://boost.test", tab: sibling), SiteBoost())
         XCTAssertEqual(SiteBoosts.value(origin: "https://boost.test", tab: other), boost)
         let restored = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: sibling) as? String
+        if restored == "rgb(18, 52, 86)" { XCTFail(try await documentDiagnostics(sibling)) }
         XCTAssertNotEqual(restored, "rgb(18, 52, 86)")
     }
 
@@ -229,6 +241,7 @@ import XCTest
         SiteBoostEditor.open(tab: tab)
         try await Task.sleep(for: .milliseconds(150))
         let panel = try XCTUnwrap(window.childWindows?.first)
+        XCTAssertEqual(panel.title, "Boost This Site")
         SiteBoostEditor.toggleZap(tab: tab)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(SiteBoostEditor.acceptsPick(tab: tab))
@@ -250,9 +263,15 @@ import XCTest
         panel.close()
         // Closing the native panel schedules a WebKit call; CI can take longer than
         // 100 ms to deliver it. Wait for the observable cleanup, not an elapsed guess.
-        try await compatibilityWait {
-            let active = try await self.visual("window.__vaneBoost.zapping", tab: tab) as? Bool
-            return active == false
+        XCTAssertFalse(SiteBoostEditor.acceptsPick(tab: tab))
+        do {
+            try await compatibilityWait {
+                let active = try await self.visual("window.__vaneBoost.zapping", tab: tab) as? Bool
+                return active == false
+            }
+        } catch {
+            XCTFail("panel visible=\(panel.isVisible), delegate=\(String(describing: panel.delegate)); " + (try await documentDiagnostics(tab)))
+            throw error
         }
         XCTAssertFalse(SiteBoostEditor.acceptsPick(tab: tab))
     }
