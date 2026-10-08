@@ -10,6 +10,9 @@ import WebKit
         let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 1100, height: 700),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        // This is a foreground playback probe. Other desktop windows must not turn it
+        // into a hidden, muted-autoplay policy probe halfway through a sample interval.
+        window.level = .floating
         window.contentView = tab.web
         window.makeKeyAndOrderFront(nil)
         defer { tab.tearDown(); window.close() }
@@ -50,13 +53,17 @@ import WebKit
         try await wait("old document replaced", tab: tab, "document.title==='Public media reset'")
         tab.web.load(URLRequest(url: URL(string: "https://shaka-project.github.io/shaka-player/demo/?build=uncompiled")!))
         try await wait("demo initialized", tab: tab,
-                       "typeof shakaDemoMain !== 'undefined' && typeof shakaAssets !== 'undefined' && !!document.querySelector('video')?.ui")
+                       "typeof shakaDemoMain !== 'undefined' && shakaDemoMain.fullyLoaded_ && typeof shakaAssets !== 'undefined' && !!document.querySelector('video')?.ui")
         let quoted = String(data: try JSONSerialization.data(withJSONObject: [name]), encoding: .utf8)!
         _ = try await js(tab, """
         window.probeError=''; window.probeLoaded=false;
         window.probeVideo=document.querySelector('video');
         window.probePlayer=probeVideo.ui.getControls().getPlayer();
+        window.probeFrames=0;
+        (function(){const video=probeVideo; function delivered(){if(window.probeVideo!==video)return;probeFrames++;video.requestVideoFrameCallback(delivered)};video.requestVideoFrameCallback(delivered);})();
         window.probeEvents=[];
+        window.probePauseCalls=[];
+        (function(){const original=probeVideo.pause; probeVideo.pause=function(){probePauseCalls.push({time:this.currentTime,stack:(new Error().stack||'').split('\\n').map(s=>s.split('@')[0]).slice(0,5)}); return original.call(this);}})();
         ['pause','waiting','stalled','ended','error'].forEach(type=>probeVideo.addEventListener(type,()=>probeEvents.push({type,time:probeVideo.currentTime,wall:Date.now()})));
         probePlayer.addEventListener('error', e=>probeError=JSON.stringify({code:e.detail.code,category:e.detail.category}));
         window.probeAsset=shakaAssets.testAssets.find(a=>a.name===\(quoted)[0]);
@@ -72,12 +79,16 @@ import WebKit
           paused:probeVideo.paused,keys:!!probeVideo.mediaKeys,keySystem:probePlayer.keySystem(),
           error:probeVideo.error?.code||null,playerError:probeError,
           textTracks:probePlayer.getTextTracks().map(t=>({id:t.id,language:t.language,active:t.active})),
-          textVisible:probePlayer.getTextDisplayer()?.isTextVisible()||false,events:probeEvents.slice(-5)})
+          textVisible:probePlayer.getTextDisplayer()?.isTextVisible()||false,events:probeEvents.slice(-5),
+          pauseCalls:probePauseCalls.slice(-3),loaded:probeLoaded,visibility:document.visibilityState,
+          muted:probeVideo.muted,volume:probeVideo.volume,
+          deliveredFrames:probeFrames,
+          captionCharacters:(document.querySelector('.shaka-text-container')?.innerText||'').trim().length})
         """) as? String ?? "unavailable"
     }
 
     private static func exercise(_ tab: Tab, protected: Bool) async throws {
-        _ = try await js(tab, "probeVideo.muted=true; probeVideo.play().catch(e=>probeError=String(e)); true")
+        _ = try await js(tab, "probeVideo.scrollIntoView({block:'center'}); probeVideo.muted=true; probeVideo.play().catch(e=>probeError=String(e)); true")
         try await wait("decoded progress", tab: tab, "probeVideo.currentTime>1 && probeVideo.videoWidth>0 && !probeVideo.paused")
         let encryption = protected ? "probeVideo.mediaKeys && probePlayer.keySystem()==='com.apple.fps'" : "!probeVideo.mediaKeys"
         guard try await js(tab, "!!(\(encryption))") as? Bool == true else {
@@ -100,17 +111,21 @@ import WebKit
             print("PARTIAL public-media captions selected; rendered cue text is not independently verified")
         } else { print("UNVERIFIED public-media captions: asset exposes no text tracks") }
         var prior = try await js(tab, "probeVideo.currentTime") as? Double ?? 0
-        _ = try await js(tab, "probeEvents=[]; true")
+        let framesScript = "probeFrames"
+        var priorFrames = try await js(tab, framesScript) as? Int ?? 0
+        _ = try await js(tab, "probeEvents=[]; probePauseCalls=[]; true")
         for sample in 1...6 {
             try await Task.sleep(for: .seconds(15))
             let time = try await js(tab, "probeVideo.currentTime") as? Double ?? 0
+            let frames = try await js(tab, framesScript) as? Int ?? 0
             print("SAMPLE elapsed=\(sample * 15)s \(try await snapshot(tab))")
             fflush(stdout)
-            guard time > prior + 10,
+            guard time > prior + 10, frames > priorFrames,
                   try await js(tab, "!probeVideo.paused && probeVideo.videoWidth>0 && !probeVideo.error && !probeError && !!(\(encryption))") as? Bool == true else {
                 throw Failure(description: "sustained playback stopped or errored")
             }
             prior = time
+            priorFrames = frames
         }
         // Detach/reload the same asset to exercise a player interruption and recovery.
         _ = try await js(tab, "window.probeRecovered=false; probePlayer.unload().then(()=>shakaDemoMain.loadAsset(shakaDemoMain.selectedAsset)).then(()=>{probeVideo.play().catch(e=>probeError=String(e)); probeRecovered=true}).catch(e=>probeError=String(e)); true")

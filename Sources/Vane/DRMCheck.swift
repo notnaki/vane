@@ -13,11 +13,15 @@ import WebKit
     private static var tick = 0
     private static var previousTime: Double?
     private static var previousVideoID: String?
+    private static var previousFrames: Int?
     enum PlaybackResult { case unverified, withoutKeys, keysAttached }
 
-    static func playbackResult(time: Double, previousTime: Double? = nil, width: Int, hasKeys: Bool, error: Int?) -> PlaybackResult {
+    static func playbackResult(time: Double, previousTime: Double? = nil, width: Int, hasKeys: Bool, error: Int?,
+                               paused: Bool = false, seeking: Bool = false,
+                               frames: Int? = nil, previousFrames: Int? = nil) -> PlaybackResult {
         guard let previousTime, previousTime.isFinite, time.isFinite,
-              time > 1, time > previousTime + 0.05, width > 0, error == nil else { return .unverified }
+              time > 1, time > previousTime + 0.05, width > 0, error == nil,
+              !paused, !seeking, let frames, let previousFrames, frames > previousFrames else { return .unverified }
         return hasKeys ? .keysAttached : .withoutKeys
     }
 
@@ -79,13 +83,19 @@ import WebKit
                     print("  t+\(tick * 3)s  \(state)")
                     let videoID = state["id"] as? String
                     let time = state["time"] as? Double ?? 0
+                    let frames = state["frames"] as? Int
                     let evidence = playbackResult(time: state["time"] as? Double ?? 0,
                                                   previousTime: videoID != nil && videoID == previousVideoID ? previousTime : nil,
                                                   width: state["width"] as? Int ?? 0,
                                                   hasKeys: state["keys"] as? Bool ?? false,
-                                                  error: state["error"] as? Int)
+                                                  error: state["error"] as? Int,
+                                                  paused: state["paused"] as? Bool ?? true,
+                                                  seeking: state["seeking"] as? Bool ?? true,
+                                                  frames: frames,
+                                                  previousFrames: videoID != nil && videoID == previousVideoID ? previousFrames : nil)
                     previousVideoID = videoID
                     previousTime = time
+                    previousFrames = frames
                     if tick >= 15 || evidence != .unverified {
                         poller?.invalidate()
                         print("")
@@ -105,7 +115,7 @@ import WebKit
     }
 
     /// Finds the biggest <video> on the page, nudges it into playing, and reports its state.
-    private static let videoProbe = """
+    static let videoProbe = """
     (function () {
       var vs = Array.prototype.slice.call(document.querySelectorAll('video'));
       if (!vs.length) {
@@ -115,10 +125,25 @@ import WebKit
       var v = vs[0];
       var sample = window.__vaneDrmcheckSample;
       if (!sample || sample.video !== v) {
-        sample = window.__vaneDrmcheckSample = {video:v,id:Math.random().toString(36)};
+        sample = window.__vaneDrmcheckSample = {video:v,id:Math.random().toString(36),frames:0};
+        if (v.requestVideoFrameCallback) {
+          var delivered = function() {
+            if (window.__vaneDrmcheckSample !== sample || !v.isConnected) return;
+            sample.frames++;
+            v.requestVideoFrameCallback(delivered);
+          };
+          v.requestVideoFrameCallback(delivered);
+        }
+        // Invalidate continuity even if a seek completes between native polling ticks.
+        ['seeking','emptied'].forEach(function(type){v.addEventListener(type,function(){sample.id=Math.random().toString(36);});});
       }
       if (v.paused) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
-      return {id:sample.id,time:v.currentTime,ready:v.readyState,width:v.videoWidth,keys:!!v.mediaKeys,error:v.error ? v.error.code : null};
+      var quality = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+      // Native HLS can expose zero quality counters while delivering frame callbacks.
+      var frames = v.requestVideoFrameCallback ? sample.frames :
+        (quality ? quality.totalVideoFrames - quality.droppedVideoFrames : v.webkitDecodedFrameCount);
+      return {id:sample.id,time:v.currentTime,ready:v.readyState,width:v.videoWidth,keys:!!v.mediaKeys,error:v.error ? v.error.code : null,
+        paused:v.paused,seeking:v.seeking,frames:typeof frames==='number'?frames:null};
     })()
     """
 
