@@ -61,6 +61,7 @@ def main():
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    container_identifier = None
     try:
         with tempfile.TemporaryDirectory(prefix="vane-downloadcheck-") as bundle, tempfile.TemporaryDirectory(prefix=".vane-downloadcheck-", dir=Path.home() / "Downloads") as data:
             app = Path(bundle) / "Vane Download Check.app"
@@ -71,6 +72,7 @@ def main():
                     "CFBundleExecutable": "vane", "CFBundleName": "Vane Download Check",
                     "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "CFBundleShortVersionString": "0.1",
                     "NSPrincipalClass": "NSApplication", "LSMinimumSystemVersion": "26.0"}
+            container_identifier = info["CFBundleIdentifier"]
             (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
             print(f"TEST BUNDLE identifier={info['CFBundleIdentifier']}", flush=True)
             subprocess.run(["codesign", "--force", "--sign", "-", "--entitlements", str(ROOT / "Vane.entitlements"), str(app)], check=True)
@@ -113,6 +115,14 @@ def main():
         server.server_close()
         thread.join(timeout=5)
         print("TEST SERVER stopped; temporary bundle/files removed", flush=True)
+        if container_identifier:
+            container = Path.home() / "Library/Containers" / container_identifier
+            data = container / "Data"
+            if data.exists():
+                shutil.rmtree(data)
+                print("TEST SANDBOX data removed", flush=True)
+            if container.exists():
+                print(f"NOTE: macOS retains empty sandbox registration metadata: {container}", flush=True)
 
 if __name__ == "__main__":
     main()

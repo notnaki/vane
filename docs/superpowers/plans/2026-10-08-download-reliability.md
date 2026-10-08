@@ -33,3 +33,5 @@ Review focus: stale async pause/resume callbacks after cancellation/removal; com
 
 - Source review approved 941533d and its CI passed. Signed running-quit and pending-pause-quit restart rounds passed hashes/state/Range/blob cleanup. All six tracked processes exited, server port closed, bundle/data fixtures removed. macOS retains an empty protected sandbox registration; its Data directory is removed.
 - A prior CI run timed out waiting for WebKit to fail a known readonly folder. Preflight now rejects known missing/unwritable parents before native writes; targeted real fixtures and pure checks pass. Full slot remains queued while updater fixes a LaunchServices environment-isolation issue.
+
+- Full native slot released after updater cleanup. 908 XCTest cases pass (5 skipped), signed restart repeated successfully after destination preflight, and standard browser smoke passes 195 assertions. Eight tracked signed app/cleanup PIDs and runner PID6654 exited; server64803 closed, exact task bundles/fixtures/namespaces/sandbox Data removed. Slot handed back through smoothness to Integration. Only protected empty OS registration records remain.

@@ -37,9 +37,11 @@ changed validators/length, gzip/unknown length, destination loss/write denial,
 resume-storage failures and repeated/cancelled/pending actions.
 
 Local validation: all 52 focused tests and `selfcheck --pure` pass on macOS
-27.0.1 (26A434). The signed restart driver passes both running-transfer quit and pending-manual-pause
-quit, with exact final SHA-256, persisted state and Range requests. Full XCTest and
-standard browser smoke remain queued outside the smoothness chat's native window.
+27.0.1 (26A434). Full XCTest passes 908 cases (5 skipped, zero failures). The signed restart driver
+passes both running-transfer quit and pending-manual-pause quit, with exact final
+SHA-256, persisted state, destination, Range requests and resume cleanup. Standard
+signed browser smoke passes 195 assertions and unregisters its 14 fixture stores.
+All native runs occurred outside profiling windows in the coordinated slot.
 
 ## Reproduce
 
@@ -97,3 +99,10 @@ a server-provided digest; WebKit still determines transfer success.
 Known missing/unwritable destinations are rejected before handing the path to
 WebKit, with an explicit failed row. A macOS 26 CI run exposed delayed native
 failure delivery for a readonly folder; destination preflight removes that stall.
+
+The 262,144-byte deterministic fixture has SHA-256 `31a1f9dea0169551092d05e8bf4a446228c8c3eb4c9b713c66adcb7fd53c89be`.
+
+Cleanup verification confirms every tracked signed app/cleanup process and the
+XCTest runner exited, all loopback servers stopped, and owned bundles, synthetic
+files, data namespaces and sandbox Data directories were removed. macOS protects
+empty container registration metadata; those OS records remain without task data.
