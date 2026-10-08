@@ -67,6 +67,11 @@ paths for GPU. Helpers were included individually in the footprint capture. Thes
 are single snapshots, not peak-memory distributions. Summed footprints are not a
 deduplicated system-wide total. Live malloc measurements are retained allocations,
 not allocation throughput. Helper memory varied between samples.
+Final executable-path cleanup also discovered two earlier fixture copies implicitly
+relaunched by UI observation after Quit/crash. They used separate sandbox containers
+and were already running during both controlled captures. They were outside the
+profiled instance/PID set; this was not a completely isolated system-wide energy
+experiment. Both relaunches were tracked, specifically terminated and verified exited.
 
 `ps` sampled CPU/RSS once per second. At the resource snapshot all four processes
 were idle at 0% CPU. Accumulated Vane CPU time was 7.64 s baseline / 3.69 s revised;
@@ -150,3 +155,11 @@ Full local XCTest: **834 tests, 4 skipped, 0 failures**. The warmed History main
 delay was **29.90 ms** in that run. This full run also retains the existing search,
 drop-marker, preview parity, media, focus, window ownership and profile-isolation
 coverage. Release pure checks and the final signed smoke are recorded in the PR.
+The first CI run failed an existing autofill attribute/visibility test's fixed
+200 ms message-delivery sleep. Its bounded fixture wait now observes the required
+`ready` notification before the unchanged notification-count and fill assertions;
+it still fails if delivery never occurs. The focused autofill suite validates this
+synchronization change; required CI must pass before merge.
+
+After final Quit, verify exit through process/path inspection; another native UI
+observation may automatically launch the app again without `VANE_DATA_DIR`.
