@@ -5,22 +5,43 @@ import WebKit
     static let messageName = "vaneBoost"
 
     static func install(on controller: WKUserContentController) {
+        // A page-world marker lets queued user code reject a replacement document.
+        // Store it on Document, whose identity changes even if WebKit reuses a Window.
+        controller.addUserScript(WKUserScript(source: pageIdentity, injectionTime: .atDocumentStart,
+                                             forMainFrameOnly: true, in: .page))
         controller.addUserScript(WKUserScript(source: runtime, injectionTime: .atDocumentStart,
                                              forMainFrameOnly: true, in: world))
         controller.addUserScript(WKUserScript(source: "window.__vaneBoost?.post('loaded');", injectionTime: .atDocumentEnd,
                                              forMainFrameOnly: true, in: world))
     }
 
+    static let pageIdentity = #"""
+    (() => {
+      if (!/^https?:$/.test(location.protocol)) return;
+      const token = [...crypto.getRandomValues(new Uint32Array(4))].map(n => n.toString(16).padStart(8, '0')).join('');
+      Object.defineProperty(document, '__vaneBoostPageToken', {value: token});
+    })();
+    """#
+
+    static func guardedScript(_ script: String) -> String {
+        """
+        if (location.origin !== __vaneOrigin || document.__vaneBoostPageToken !== __vaneToken) return 'Page changed. Reload and try again.';
+        \(script)
+        ;return 'Script applied.';
+        """
+    }
+
     static let runtime = #"""
     (() => {
       if (!/^https?:$/.test(location.protocol) || window.__vaneBoost) return;
-      const stamp = performance.timeOrigin, origin = location.origin;
+      const token = [...crypto.getRandomValues(new Uint32Array(4))].map(n => n.toString(16).padStart(8, '0')).join('');
+      const origin = location.origin;
       const style = new CSSStyleSheet();
       let overlay = null, cover = null, selected = null;
       const sizeSelector = 'p,h1,h2,h3,h4,h5,h6,a,span,li,td,th,button,input,textarea,label,blockquote';
       const sizes = new Map();
       let sizeObserver = null, sizeFrame = null;
-      const post = (kind, extra = {}) => window.webkit.messageHandlers.vaneBoost.postMessage({kind, stamp, origin, ...extra});
+      const post = (kind, extra = {}) => window.webkit.messageHandlers.vaneBoost.postMessage({kind, token, origin, ...extra});
       const selector = el => {
         if (!el || !el.parentElement || el.getRootNode() !== document || el === document.body || el === document.documentElement || el.hasAttribute('data-vane-zap')) return null;
         if (el.id) {
@@ -126,7 +147,7 @@ import WebKit
         window.removeEventListener('keydown', key, true);
         cover?.remove(); cover = null; overlay?.remove(); overlay = null; selected = null;
       };
-      const api = window.__vaneBoost = {apply, selector, zap, post, zapping:false};
+      const api = window.__vaneBoost = {token, apply, selector, zap, post, zapping:false};
       window.addEventListener('pagehide', zapOff);
       window.addEventListener('pageshow', event => { if (event.persisted) post('restored'); });
       post('ready');

@@ -75,9 +75,11 @@ struct SiteBoost: Codable, Equatable, Sendable {
     final class Document {
         weak var tab: Tab?
         let origin: String
-        let stamp: Double
+        let token: String
+        var pageToken: String?
+        var tokenCapture: (id: UUID, task: Task<String?, Never>)?
         var scriptRan = false
-        init(tab: Tab, origin: String, stamp: Double) { self.tab = tab; self.origin = origin; self.stamp = stamp }
+        init(tab: Tab, origin: String, token: String) { self.tab = tab; self.origin = origin; self.token = token }
     }
     private static let store = SiteBoostStore(defaults: .vane)
     private static var privateValues: [UUID: [String: SiteBoost]] = [:]
@@ -114,30 +116,35 @@ struct SiteBoost: Codable, Equatable, Sendable {
     static func receive(_ message: WKScriptMessage, tab: Tab) {
         guard message.webView === tab.existingWeb, message.frameInfo.isMainFrame,
               let body = message.body as? [String: Any], let origin = body["origin"] as? String,
-              let stamp = body["stamp"] as? Double, stamp.isFinite,
+              let token = body["token"] as? String, validToken(token),
               let frameURL = message.frameInfo.request.url, Self.origin(frameURL) == origin,
               let url = tab.currentURL, Self.origin(url) == origin else { return }
         switch body["kind"] as? String {
         case "ready", "restored":
-            let doc = Document(tab: tab, origin: origin, stamp: stamp)
+            let doc = Document(tab: tab, origin: origin, token: token)
             documents[tab.id] = doc
             apply(to: tab, document: doc)
+            if body["kind"] as? String == "restored" {
+                // BFCache restoration does not run document-end scripts again.
+                doc.scriptRan = true
+                Task { _ = await pageToken(tab: tab, document: doc) }
+            }
         case "loaded":
-            guard let doc = documents[tab.id], doc.stamp == stamp, !doc.scriptRan else { return }
-            doc.scriptRan = true
-            apply(to: tab, document: doc)
+            guard let doc = documents[tab.id], doc.token == token, !doc.scriptRan else { return }
             Task {
-                guard documents[tab.id] === doc else { return }
+                guard await pageToken(tab: tab, document: doc) != nil, documents[tab.id] === doc, !doc.scriptRan else { return }
+                doc.scriptRan = true
+                apply(to: tab, document: doc)
                 let result = await runScript(tab: tab)
                 if documents[tab.id] === doc { SiteBoostEditor.report(result, tab: tab) }
             }
         case "pick":
-            guard let doc = documents[tab.id], doc.stamp == stamp,
+            guard let doc = documents[tab.id], doc.token == token,
                   let selector = body["selector"] as? String, !selector.isEmpty,
                   selector.utf8.count <= 4096, SiteBoostEditor.acceptsPick(tab: tab) else { return }
             SiteBoostEditor.pick(selector, tab: tab)
         case "done":
-            guard documents[tab.id]?.stamp == stamp else { return }
+            guard documents[tab.id]?.token == token else { return }
             SiteBoostEditor.stopZap(tab: tab)
         default: break
         }
@@ -145,30 +152,75 @@ struct SiteBoost: Codable, Equatable, Sendable {
 
     private static func apply(to tab: Tab, document: Document) {
         guard let web = tab.existingWeb else { return }
-        web.callAsyncJavaScript("if (window.__vaneBoost && performance.timeOrigin === stamp && location.origin === origin) window.__vaneBoost.apply(css, scale);",
-            arguments: ["stamp": document.stamp, "origin": document.origin, "css": value(origin: document.origin, tab: tab).style, "scale": value(origin: document.origin, tab: tab).enabled ? value(origin: document.origin, tab: tab).sanitized.textScale : 1],
+        web.callAsyncJavaScript("if (window.__vaneBoost?.token === token && location.origin === origin) window.__vaneBoost.apply(css, scale);",
+            arguments: ["token": document.token, "origin": document.origin, "css": value(origin: document.origin, tab: tab).style, "scale": value(origin: document.origin, tab: tab).enabled ? value(origin: document.origin, tab: tab).sanitized.textScale : 1],
             in: nil, in: SiteBoostScripts.world) { _ in }
     }
 
     static func zap(_ on: Bool, tab: Tab) {
         guard let doc = documents[tab.id], let web = tab.existingWeb else { return }
-        web.callAsyncJavaScript("if (window.__vaneBoost && performance.timeOrigin === stamp && location.origin === origin) window.__vaneBoost.zap(on);",
-            arguments: ["stamp": doc.stamp, "origin": doc.origin, "on": on], in: nil, in: SiteBoostScripts.world) { _ in }
+        web.callAsyncJavaScript("if (window.__vaneBoost?.token === token && location.origin === origin) window.__vaneBoost.zap(on);",
+            arguments: ["token": doc.token, "origin": doc.origin, "on": on], in: nil, in: SiteBoostScripts.world) { _ in }
+    }
+
+    private static func validToken(_ token: String) -> Bool {
+        token.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil
+    }
+
+    private static func matches(_ doc: Document, tab: Tab, web: WKWebView) async -> Bool {
+        guard documents[tab.id] === doc, tab.existingWeb === web else { return false }
+        let matches: Bool = await withCheckedContinuation { continuation in
+            web.callAsyncJavaScript("return window.__vaneBoost?.token === token && location.origin === origin;",
+                arguments: ["token": doc.token, "origin": doc.origin], in: nil, in: SiteBoostScripts.world) { result in
+                continuation.resume(returning: (try? result.get()) as? Bool ?? false)
+            }
+        }
+        return matches && documents[tab.id] === doc && tab.existingWeb === web
+    }
+
+    /// timeOrigin can drift in a live WebKit document. Bind the immutable page marker
+    /// to its isolated token, checking both sides of the asynchronous cross-world read.
+    /// Manual and automatic script runs share this capture instead of racing it.
+    private static func pageToken(tab: Tab, document doc: Document) async -> String? {
+        guard let web = tab.existingWeb, await matches(doc, tab: tab, web: web) else { return nil }
+        if let token = doc.pageToken { return token }
+        let capture: (id: UUID, task: Task<String?, Never>)
+        if let existing = doc.tokenCapture { capture = existing }
+        else {
+            capture = (UUID(), Task { @MainActor [weak tab, weak web, weak doc] in
+                guard let tab, let web, let doc, await matches(doc, tab: tab, web: web) else { return nil }
+                let token: String? = await withCheckedContinuation { continuation in
+                    web.callAsyncJavaScript("return document.__vaneBoostPageToken;", arguments: [:], in: nil, in: .page) { result in
+                        continuation.resume(returning: (try? result.get()) as? String)
+                    }
+                }
+                guard let token, validToken(token), await matches(doc, tab: tab, web: web) else { return nil }
+                return token
+            })
+            doc.tokenCapture = capture
+        }
+        let token = await capture.task.value
+        if doc.tokenCapture?.id == capture.id { doc.tokenCapture = nil }
+        guard let token, documents[tab.id] === doc, tab.existingWeb === web else { return nil }
+        doc.pageToken = token
+        return token
     }
 
     static func runScript(tab: Tab) async -> String {
         guard let doc = documents[tab.id], let web = tab.existingWeb else { return "Load a page first." }
-        let boost = value(origin: doc.origin, tab: tab)
+        var boost = value(origin: doc.origin, tab: tab)
+        guard boost.enabled, boost.scriptEnabled else { return "Enable JavaScript to run this script." }
+        guard !boost.script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "The script is empty." }
+        guard let token = await pageToken(tab: tab, document: doc) else { return "Page changed. Reload and try again." }
+        // The user's settings can change during token capture. Queue only current code
+        // and current opt-in, with no asynchronous gap after reading either one.
+        boost = value(origin: doc.origin, tab: tab)
         guard boost.enabled, boost.scriptEnabled else { return "Enable JavaScript to run this script." }
         guard !boost.script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "The script is empty." }
         // Compile user code directly through WebKit: page CSP can block JavaScript eval().
-        let source = """
-        if (location.origin !== __vaneOrigin || performance.timeOrigin !== __vaneStamp) return 'Page changed. Reload and try again.';
-        \(boost.script)
-        ;return 'Script applied.';
-        """
+        let source = SiteBoostScripts.guardedScript(boost.script)
         let result: String = await withCheckedContinuation { continuation in
-            web.callAsyncJavaScript(source, arguments: ["__vaneOrigin": doc.origin, "__vaneStamp": doc.stamp], in: nil, in: .page) { result in
+            web.callAsyncJavaScript(source, arguments: ["__vaneOrigin": doc.origin, "__vaneToken": token], in: nil, in: .page) { result in
                 switch result {
                 case .success(let value): continuation.resume(returning: value as? String ?? "Script applied.")
                 case .failure(let error):
