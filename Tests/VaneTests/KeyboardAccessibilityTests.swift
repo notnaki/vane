@@ -4,6 +4,11 @@ import WebKit
 import XCTest
 @testable import vane
 
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    // XCTest's application may remain inactive; still deliver the fixture's click.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 @MainActor final class KeyboardAccessibilityTests: XCTestCase {
     private func fixture(isPrivate: Bool = true) -> (TabStore, NSWindow, WKWebView) {
         TestEnvironment.prepare()
@@ -117,6 +122,75 @@ import XCTest
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertTrue(window.firstResponder is NSTextView,
                       "Command-F must refocus a find field that is already open")
+    }
+
+    func testPointerActivationHidesOutlineAndKeyboardActivationRestoresIt() async throws {
+        _ = NSApplication.shared
+        var presses = 0
+        let previousPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        defer { NSApp.setActivationPolicy(previousPolicy) }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 250, height: 150),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = FirstMouseHostingView(rootView: SidebarRow(icon: "globe", title: "Example",
+                                                      selected: false) { presses += 1 }.accentColor(.blue)
+            .transaction { $0.disablesAnimations = true })
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 150))
+        host.frame = NSRect(x: 0, y: 80, width: 250, height: 50)
+        let field = NSTextField(string: "Typing")
+        field.frame = NSRect(x: 10, y: 10, width: 200, height: 30)
+        container.addSubview(host)
+        container.addSubview(field)
+        window.contentView = container
+        defer { window.contentView = nil; window.close() }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(200))
+        window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        func clickRow() async throws {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = try XCTUnwrap(NSEvent.mouseEvent(
+                    with: type, location: NSPoint(x: 100, y: 105), modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+                NSApp.sendEvent(event)
+                try await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        try await clickRow()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(presses, 1, "Click still activates the row")
+        func outlinePixels() throws -> Int {
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            var count = 0
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                    if color.blueComponent > color.redComponent + 0.2,
+                       color.blueComponent > color.greenComponent + 0.1 { count += 1 }
+                }
+            }
+            return count
+        }
+        XCTAssertEqual(try outlinePixels(), 0, "Mouse activation must not show the blue focus outline")
+        let space = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: " ",
+            charactersIgnoringModifiers: " ", isARepeat: false, keyCode: 49))
+        NSApp.sendEvent(space)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(presses, 2, "Keyboard activation remains available after a click")
+        XCTAssertGreaterThan(try outlinePixels(), 50, "Keyboard input must restore the focus outline")
+        try await clickRow()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(presses, 3)
+        XCTAssertEqual(try outlinePixels(), 0, "A click must hide the outline on an already focused row")
     }
 
     func testSidebarRowCanBeFocusedAndActivatedWithoutPointer() async throws {
