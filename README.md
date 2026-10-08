@@ -333,6 +333,34 @@ app-opening permissions.
 swift test --filter 'WebsiteDataTests|WebsiteDataWebKitTests|ProfilePersistenceTests'
 ```
 
+Settings → Advanced → **Backup and Restore** exports one `.vanebackup` file with all
+regular profiles, Spaces, saved tabs and sessions, bookmark folders and bookmarks,
+history, settings, imported blocking lists, and Easels with embedded images. Backups
+are unencrypted and limited to 512 MB; oversized backups fail without omitting data.
+Passwords and tokens in Keychain, cookies and website sign-ins/storage, downloaded
+files, caches, and external extension folders are excluded. External folder choices
+are remembered, but another Mac may require you to select those folders again.
+
+**Restore Backup…** validates the file and shows its date, profiles, item counts, and
+current saved-library totals before replacing anything. Cancel leaves the library
+alone. **Restore and Restart** preserves a local recovery point, then restores all
+saved profiles and settings during a controlled restart. It replaces the library;
+it does not merge it. An interrupted restore rolls back before normal startup.
+
+Vane creates a recovery point after startup and checks hourly while running, saving
+another only when saved data changes. The latest ten completed points are kept under
+the data folder's `Recovery/Points`, including points made before restores. The last
+healthy point is protected if damaged originals need preserving. Preview and restore
+them from the same Settings section. A write failure keeps previous points and shows
+an error with Retry. These local copies share your disk: export to another disk for
+protection against disk loss. **Erase Everything…** removes local recovery points too.
+
+Focused backup validation:
+
+```sh
+swift test --filter 'Backup.*Tests|ProfilePersistenceTests|EaselTabTests|HistoryPersistenceTests'
+```
+
 Profile save failures appear in browser windows and Settings → Profiles. Unsaved
 profile names, colors, new profiles, and selection changes stay in memory; **Retry
 Save** writes their latest state. Quitting retries them first and asks before
@@ -405,11 +433,26 @@ sharing or collaboration.
 | New tab | `⌘T` |
 | Reopen closed tab | `⇧⌘T` |
 | Find on page | `⌘F` |
+| Move between page and browser controls | `F6` or `⇧F6` |
 | Search tabs | `⇧⌘A` |
 | Search commands | `⇧⌘P` |
 | Open Library | `⇧⌘L` |
 
-Shortcuts can be changed in Settings. The menu bar shows the current bindings.
+Shortcuts can be changed in Settings. The menu bar shows the current bindings,
+including numbered tab selection and search commands. Choose **Prefer Website**
+for a shortcut to leave it with a focused webpage; the command remains available
+from the menu and while browser controls have focus. Option-only shortcuts also
+leave character entry and caret movement with a focused text editor.
+
+Use **F6** (or **Shift-F6**) to move between the page and browser controls, revealing
+the sidebar if needed. Use **Tab** and **Shift-Tab** to move through browser controls. Sidebar tabs,
+favourites, folders, Spaces, split panes, and the address pill show a focus outline;
+**Return** or **Space** activates the focused control. Enable macOS **Keyboard
+navigation** to include native buttons and menus in Tab navigation. Search results
+use **Up/Down** and **Return**; **Tab** keeps its site-search and actions behavior.
+**Escape** dismisses search or Find and returns focus to the page when no other
+control has taken it. **⌘F** refocuses an already-open Find field. VoiceOver can
+activate sidebar items directly and use their Actions menu for secondary commands.
 
 While hovering a webpage link, hold a modifier to see where clicking will open it:
 

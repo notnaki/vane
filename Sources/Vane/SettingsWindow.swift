@@ -1298,6 +1298,10 @@ private struct AdvancedPane: View {
                 }
             }
 
+            SettingsSection("Backup and Restore") {
+                BackupSettings(controller: .shared)
+            }
+
             SettingsSection("Reset Vane") {
                 SettingsCard {
                     SettingsRow("Start over") {
