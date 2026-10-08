@@ -693,6 +693,8 @@ struct Space: Identifiable, Codable, Equatable {
         try? fm.removeItem(at: Suspension.SpaceState.url(for: id, in: directory))
         Downloads.forget(id, in: directory)
         EaselStore.forget(id, directory: directory)
+        do { try ReadingQueueStore.forget(profileID: id, directory: directory) }
+        catch { Toasts.show("Could not remove offline articles: \(error.localizedDescription)") }
         if !sandboxed { EaselWindow.forget(id) }
         TidyTitles.forget(id)
         Zoom.forget(profile: id)
