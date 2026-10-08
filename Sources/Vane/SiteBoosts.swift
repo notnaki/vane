@@ -76,8 +76,9 @@ struct SiteBoost: Codable, Equatable, Sendable {
         weak var tab: Tab?
         let origin: String
         let stamp: Double
+        let token: String
         var scriptRan = false
-        init(tab: Tab, origin: String, stamp: Double) { self.tab = tab; self.origin = origin; self.stamp = stamp }
+        init(tab: Tab, origin: String, stamp: Double, token: String) { self.tab = tab; self.origin = origin; self.stamp = stamp; self.token = token }
     }
     private static let store = SiteBoostStore(defaults: .vane)
     private static var privateValues: [UUID: [String: SiteBoost]] = [:]
@@ -115,15 +116,17 @@ struct SiteBoost: Codable, Equatable, Sendable {
         guard message.webView === tab.existingWeb, message.frameInfo.isMainFrame,
               let body = message.body as? [String: Any], let origin = body["origin"] as? String,
               let stamp = body["stamp"] as? Double, stamp.isFinite,
+              let token = body["token"] as? String, token.utf8.count == 32,
+              token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
               let frameURL = message.frameInfo.request.url, Self.origin(frameURL) == origin,
               let url = tab.currentURL, Self.origin(url) == origin else { return }
         switch body["kind"] as? String {
         case "ready", "restored":
-            let doc = Document(tab: tab, origin: origin, stamp: stamp)
+            let doc = Document(tab: tab, origin: origin, stamp: stamp, token: token)
             documents[tab.id] = doc
             apply(to: tab, document: doc)
         case "loaded":
-            guard let doc = documents[tab.id], doc.stamp == stamp, !doc.scriptRan else { return }
+            guard let doc = documents[tab.id], doc.token == token, !doc.scriptRan else { return }
             doc.scriptRan = true
             apply(to: tab, document: doc)
             Task {
@@ -132,12 +135,12 @@ struct SiteBoost: Codable, Equatable, Sendable {
                 if documents[tab.id] === doc { SiteBoostEditor.report(result, tab: tab) }
             }
         case "pick":
-            guard let doc = documents[tab.id], doc.stamp == stamp,
+            guard let doc = documents[tab.id], doc.token == token,
                   let selector = body["selector"] as? String, !selector.isEmpty,
                   selector.utf8.count <= 4096, SiteBoostEditor.acceptsPick(tab: tab) else { return }
             SiteBoostEditor.pick(selector, tab: tab)
         case "done":
-            guard documents[tab.id]?.stamp == stamp else { return }
+            guard documents[tab.id]?.token == token else { return }
             SiteBoostEditor.stopZap(tab: tab)
         default: break
         }
@@ -145,15 +148,15 @@ struct SiteBoost: Codable, Equatable, Sendable {
 
     private static func apply(to tab: Tab, document: Document) {
         guard let web = tab.existingWeb else { return }
-        web.callAsyncJavaScript("if (window.__vaneBoost && performance.timeOrigin === stamp && location.origin === origin) window.__vaneBoost.apply(css, scale);",
-            arguments: ["stamp": document.stamp, "origin": document.origin, "css": value(origin: document.origin, tab: tab).style, "scale": value(origin: document.origin, tab: tab).enabled ? value(origin: document.origin, tab: tab).sanitized.textScale : 1],
+        web.callAsyncJavaScript("if (window.__vaneBoost && window.__vaneBoost.documentToken === token && location.origin === origin) window.__vaneBoost.apply(css, scale);",
+            arguments: ["token": document.token, "origin": document.origin, "css": value(origin: document.origin, tab: tab).style, "scale": value(origin: document.origin, tab: tab).enabled ? value(origin: document.origin, tab: tab).sanitized.textScale : 1],
             in: nil, in: SiteBoostScripts.world) { _ in }
     }
 
     static func zap(_ on: Bool, tab: Tab) {
         guard let doc = documents[tab.id], let web = tab.existingWeb else { return }
-        web.callAsyncJavaScript("if (window.__vaneBoost && performance.timeOrigin === stamp && location.origin === origin) window.__vaneBoost.zap(on);",
-            arguments: ["stamp": doc.stamp, "origin": doc.origin, "on": on], in: nil, in: SiteBoostScripts.world) { _ in }
+        web.callAsyncJavaScript("if (window.__vaneBoost && window.__vaneBoost.documentToken === token && location.origin === origin) window.__vaneBoost.zap(on);",
+            arguments: ["token": doc.token, "origin": doc.origin, "on": on], in: nil, in: SiteBoostScripts.world) { _ in }
     }
 
     static func runScript(tab: Tab) async -> String {

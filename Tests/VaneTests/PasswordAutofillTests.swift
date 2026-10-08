@@ -331,7 +331,7 @@ import XCTest
         expectTrue(try await fill(web))
         let before = capture.messages.filter { $0["ready"] as? Bool == true }.count
         _ = try await js(web, "field.value=''; field.type='password'; field.autocomplete='current-password'")
-        try await Task.sleep(for: .milliseconds(150))
+        try await wait { capture.messages.filter { $0["ready"] as? Bool == true }.count > before }
         XCTAssertGreaterThan(capture.messages.filter { $0["ready"] as? Bool == true }.count, before)
         expectEqual(capture.messages.last { $0["ready"] as? Bool == true }?["accountHint"] as? String, "ada")
         expectFalse(try await fill(web, account: "bob", automatic: true))

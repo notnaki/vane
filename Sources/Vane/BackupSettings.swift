@@ -11,7 +11,7 @@ struct BackupSettings: View {
                 }
                 .disabled(controller.busy)
             }
-            Footnote("Includes all profiles, Spaces, tabs, bookmarks, history, settings, and Easels with their images. Exported backups are not encrypted. Passwords, cookies, sign-ins, downloaded files, and external extension folders are excluded.")
+            Footnote("Includes all profiles, Spaces, tabs, bookmarks, history, settings, Easels, and the offline Reading Queue with saved images. Exported backups are not encrypted. Passwords, cookies, sign-ins, downloaded files, and external extension folders are excluded.")
             if controller.busy {
                 HStack { ProgressView().controlSize(.small); Text(controller.progress.isEmpty ? "Saving a recovery point…" : controller.progress) }
                     .font(Look.footnote).padding(Look.cardInset)
@@ -77,7 +77,7 @@ struct BackupPreviewView: View {
                     ForEach(candidate.incoming.profiles) { profile in
                         VStack(alignment: .leading, spacing: 5) {
                             Text(profile.name).font(.headline)
-                            Text("\(profile.spaces) Spaces · \(profile.tabs) tabs · \(profile.bookmarks) bookmarks · \(profile.history) history entries · \(profile.easels) Easels")
+                            Text("\(profile.spaces) Spaces · \(profile.tabs) tabs · \(profile.bookmarks) bookmarks · \(profile.history) history entries · \(profile.easels) Easels · \(profile.readingQueue) saved articles")
                                 .font(.subheadline).foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -85,7 +85,7 @@ struct BackupPreviewView: View {
                     Divider()
                     Text("Backup: \(candidate.incoming.settings) saved settings across \(candidate.incoming.profiles.count) profiles.")
                     if let current = candidate.current {
-                        Text("Current saved library: \(current.profiles.count) profiles · \(current.spaces) Spaces · \(current.tabs) tabs · \(current.bookmarks) bookmarks · \(current.history) history entries · \(current.easels) Easels · \(current.settings) settings.")
+                        Text("Current saved library: \(current.profiles.count) profiles · \(current.spaces) Spaces · \(current.tabs) tabs · \(current.bookmarks) bookmarks · \(current.history) history entries · \(current.easels) Easels · \(current.readingQueue) saved articles · \(current.settings) settings.")
                     }
                     if let message = candidate.currentError {
                         Text("Current data could not be previewed. Its original files will still be preserved before restoring.")

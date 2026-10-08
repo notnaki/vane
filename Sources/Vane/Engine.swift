@@ -338,6 +338,7 @@ struct TitleReveal: Equatable, Sendable {
     @Published var presentationOwner: UUID?
     @Published var windowSnapshot: NSImage?
     var presentationGeneration = 0
+    var readingDocumentGeneration = UUID()
     var sharedSpaceID: UUID?
     /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
     /// maintenance and session persistence use `existingWeb` to avoid creating one.
@@ -942,6 +943,8 @@ struct TitleReveal: Equatable, Sendable {
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
+        readingDocumentGeneration = UUID()
+        Reader.forget(tab: self)
         passwordStep = nil
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
@@ -1367,6 +1370,7 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if w === existingWeb { readingDocumentGeneration = UUID(); Reader.forget(tab: self) }
         if w === existingWeb { SiteBoosts.beginNavigation(tab: self) }
         if w === existingWeb {
             FileUploads.cancel(tabID: id)

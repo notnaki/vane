@@ -31,13 +31,15 @@ import SwiftUI
     /// Cleared when the tab navigates anywhere, since the reader document goes with it.
     private static var watch: [UUID: NSKeyValueObservation] = [:]
     private static var entering: [UUID: UUID] = [:]
-
-    /// URL KVO cannot see a reload of the same source URL. A committed document
-    /// also cancels extraction work belonging to the previous document.
-    static func navigationCommitted(_ tab: Tab) {
+    private static var retained: [UUID: (generation: UUID, extraction: Extraction)] = [:]
+    static func savedExtraction(for tab: Tab) -> Extraction? {
+        guard isOn(tab), let entry = retained[tab.id], entry.generation == tab.readingDocumentGeneration else { return nil }
+        return entry.extraction
+    }
+    static func navigationCommitted(_ tab: Tab) { forget(tab: tab) }
+    static func forget(tab: Tab) {
+        watch[tab.id] = nil; retained[tab.id] = nil; entering[tab.id] = nil
         ReaderState.shared.tabs.remove(tab.id)
-        watch[tab.id] = nil
-        entering[tab.id] = nil
     }
 
     // MARK: - Preferences
@@ -132,6 +134,7 @@ import SwiftUI
         guard tab.easelID == nil, !isOn(tab), let web = tab.existingWeb,
               let source = web.url, !web.isLoading, entering[tab.id] == nil else { return }
         let id = tab.id, token = UUID()
+        let generation = tab.readingDocumentGeneration
         entering[id] = token
         Task {
             defer { if entering[id] == token { entering[id] = nil } }
@@ -140,7 +143,8 @@ import SwiftUI
                 NSSound.beep()          // nothing to read here; say so rather than blank the page
                 return
             }
-            guard entering[id] == token, tab.existingWeb === web, web.url == source, !web.isLoading, !isOn(tab) else { return }
+            guard entering[id] == token, generation == tab.readingDocumentGeneration,
+                  tab.existingWeb === web, web.url == source, !web.isLoading, !isOn(tab) else { return }
             let doc = html(for: e, url: source)
             // Replacing documentElement.innerHTML is *not* a navigation, which is the whole
             // reason to do it this way: the back/forward list is never touched, so no
@@ -151,14 +155,17 @@ import SwiftUI
                 "(() => { if (location.href !== \(jsString(source.absoluteString)) || document.readyState !== 'complete' || document.documentElement.__vaneReaderToken !== \(jsString(token.uuidString))) return false;"
                 + "document.documentElement.innerHTML = \(jsString(doc));"
                 + "document.scrollingElement && (document.scrollingElement.scrollTop = 0); return true; })()")
-            guard replaced as? Bool == true, entering[id] == token, web.url == source else { return }
+            guard replaced as? Bool == true, entering[id] == token, generation == tab.readingDocumentGeneration, web.url == source else { return }
+
             ReaderState.shared.tabs.insert(id)
+            retained[id] = (generation, e)
             // The reader document dies with any real navigation — a link the user clicked
             // inside it, a redirect, back/forward. Drop the flag when that happens.
             watch[id] = tab.web.observe(\.url, options: [.new]) { _, _ in
                 MainActor.assumeIsolated {
                     ReaderState.shared.tabs.remove(id)
                     watch[id] = nil
+                    retained[id] = nil
                 }
             }
         }
@@ -174,6 +181,7 @@ import SwiftUI
     static func exit(_ tab: Tab) {
         guard ReaderState.shared.tabs.remove(tab.id) != nil else { return }
         watch[tab.id] = nil
+        retained[tab.id] = nil
         tab.web.reload()
     }
 
@@ -301,36 +309,37 @@ import SwiftUI
         return u.absoluteString
     }
 
-    static func render(_ nodes: [Node], base: URL?) -> String {
+    static func render(_ nodes: [Node], base: URL?, localImages: [String: String] = [:]) -> String {
         var out = ""
-        render(nodes, base: base, into: &out)
+        render(nodes, base: base, localImages: localImages, into: &out)
         return out
     }
 
-    private static func render(_ nodes: [Node], base: URL?, into out: inout String) {
+    private static func render(_ nodes: [Node], base: URL?, localImages: [String: String], into out: inout String) {
         for n in nodes {
             if let t = n.x { out += esc(t); continue }
             guard let tag = n.e?.lowercased(), allowed.contains(tag) else {
-                render(n.c ?? [], base: base, into: &out)   // unknown wrapper: keep the words
+                render(n.c ?? [], base: base, localImages: localImages, into: &out)   // unknown wrapper: keep the words
                 continue
             }
             switch tag {
             case "br", "hr":
                 out += "<\(tag)>"
             case "img":
-                guard let src = resolve(n.a?["src"] ?? "", base: base) else { continue }
+                let raw = n.a?["src"] ?? ""
+                guard let src = localImages[raw] ?? resolve(raw, base: base) else { continue }
                 out += "<img src=\"\(esc(src))\" alt=\"\(esc(n.a?["alt"] ?? ""))\" loading=\"lazy\">"
             case "a":
                 guard let href = resolve(n.a?["href"] ?? "", base: base) else {
-                    render(n.c ?? [], base: base, into: &out)   // dead link, live words
+                    render(n.c ?? [], base: base, localImages: localImages, into: &out)   // dead link, live words
                     continue
                 }
                 out += "<a href=\"\(esc(href))\">"
-                render(n.c ?? [], base: base, into: &out)
+                render(n.c ?? [], base: base, localImages: localImages, into: &out)
                 out += "</a>"
             default:
                 out += "<\(tag)>"
-                render(n.c ?? [], base: base, into: &out)
+                render(n.c ?? [], base: base, localImages: localImages, into: &out)
                 out += "</\(tag)>"
             }
         }
@@ -339,8 +348,8 @@ import SwiftUI
     /// The reader document: head + body, no doctype. It is assigned onto the existing
     /// documentElement, so the parse mode was already settled by the original page.
     /// ponytail: a page served in quirks mode renders this in quirks mode too.
-    static func html(for e: Extraction, url: URL?) -> String {
-        let body = render(e.nodes, base: url)
+    static func html(for e: Extraction, url: URL?, localImages: [String: String] = [:]) -> String {
+        let body = render(e.nodes, base: url, localImages: localImages)
         let lead = e.lead.isEmpty ? nil : resolve(e.lead, base: url)
         // og:image is usually the same picture the article already opens with; only show it
         // when the body did not bring one of its own.
@@ -420,7 +429,7 @@ import SwiftUI
     }
 
     /// A JS string literal for `s`, via the one encoder already in the stdlib.
-    private static func jsString(_ s: String) -> String {
+    static func jsString(_ s: String) -> String {
         let d = try! JSONSerialization.data(withJSONObject: [s])
         var out = String(decoding: d, as: UTF8.self)
         out.removeFirst()      // [
@@ -767,18 +776,19 @@ import SwiftUI
 
 /// Native menus keep controls outside the untrusted page and reuse the existing setters.
 struct ReaderPreferencesMenu: View {
-    let tab: Tab
+    var tab: Tab? = nil
+    var onChange: () -> Void = {}
     @ObservedObject private var state = ReaderState.shared
     var body: some View {
         Menu("Reading Preferences") {
-            Button("Larger Text (\(Reader.fontSize) pt)") { Reader.adjustFontSize(1, in: tab) }
+            Button("Larger Text (\(Reader.fontSize) pt)") { Reader.adjustFontSize(1, in: tab); onChange() }
                 .disabled(Reader.fontSize >= 32)
-            Button("Smaller Text") { Reader.adjustFontSize(-1, in: tab) }.disabled(Reader.fontSize <= 13)
-            Toggle("Serif Typeface", isOn: Binding(get: { Reader.serif }, set: { Reader.setSerif($0, in: tab) }))
-            Picker("Line Spacing", selection: Binding(get: { Reader.lineSpacing }, set: { Reader.setLineSpacing($0, in: tab) })) {
+            Button("Smaller Text") { Reader.adjustFontSize(-1, in: tab); onChange() }.disabled(Reader.fontSize <= 13)
+            Toggle("Serif Typeface", isOn: Binding(get: { Reader.serif }, set: { Reader.setSerif($0, in: tab); onChange() }))
+            Picker("Line Spacing", selection: Binding(get: { Reader.lineSpacing }, set: { Reader.setLineSpacing($0, in: tab); onChange() })) {
                 ForEach(Reader.spacingChoices, id: \.1) { Text($0.0).tag($0.1) }
             }
-            Picker("Reading Width", selection: Binding(get: { Reader.readingWidth }, set: { Reader.setReadingWidth($0, in: tab) })) {
+            Picker("Reading Width", selection: Binding(get: { Reader.readingWidth }, set: { Reader.setReadingWidth($0, in: tab); onChange() })) {
                 ForEach(Reader.widthChoices, id: \.1) { Text($0.0).tag($0.1) }
             }
         }

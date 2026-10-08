@@ -1248,6 +1248,10 @@ private struct PillBody: View {
                     Button(Reader.isOn(tab) ? "Exit Reader" : "Enter Reader") { Reader.toggle(tab) }
                     ReaderPreferencesMenu(tab: tab)
                 }
+                Button(store.isPrivate ? "Save for Offline (Unavailable in Private Browsing)" : "Save for Offline") {
+                    Task { await ReadingQueueCapture.shared.save(tab: tab, in: store) }
+                }.disabled(!ReadingQueueCapture.canSave(tab: tab, in: store))
+                if !store.isPrivate { Button("Reading Queue") { Library.open(.readingQueue, in: store) } }
             }
             if let zoom, let tab {
                 Button("Actual Size (\(zoom))") { Zoom.reset(tab) }

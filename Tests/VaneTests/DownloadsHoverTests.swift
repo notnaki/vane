@@ -82,7 +82,8 @@ import Combine
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertTrue(hover.isVisible)
         hover.setHovered(false, over: .preview)
-        try await Task.sleep(for: .milliseconds(300))
+        // The close task can start later than this test's continuation on a busy runner.
+        try await compatibilityWait { !hover.isVisible }
         XCTAssertFalse(hover.isVisible)
     }
 

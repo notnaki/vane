@@ -68,7 +68,8 @@ import XCTest
             if !tab.web.isLoading, SiteBoosts.document(for: tab)?.origin == origin, SiteBoosts.document(for: tab)?.scriptRan == true { return }
             try await Task.sleep(for: .milliseconds(30))
         }
-        XCTFail("Boost runtime did not attach"); throw NSError(domain: "fixture", code: 1)
+        let state = try await visual("JSON.stringify({origin:location.origin, secure:isSecureContext, crypto:typeof crypto, random:typeof crypto?.getRandomValues, runtime:typeof window.__vaneBoost})", tab: tab)
+        XCTFail("Boost runtime did not attach: currentURL=\(String(describing: tab.currentURL)), state=\(state ?? "nil")"); throw NSError(domain: "fixture", code: 1)
     }
 
     private func visual(_ code: String, tab: Tab) async throws -> Any? {
@@ -82,6 +83,61 @@ import XCTest
             }
         }
         return try data.map { try JSONSerialization.jsonObject(with: $0, options: .fragmentsAllowed) }
+    }
+
+    private func documentDiagnostics(_ tab: Tab) async throws -> String {
+        let document = SiteBoosts.document(for: tab)
+        let state = try await visual("JSON.stringify({stamp:performance.timeOrigin, token:window.__vaneBoost?.documentToken, origin:location.origin, zapping:window.__vaneBoost?.zapping, sheets:document.adoptedStyleSheets.map(s => [...s.cssRules].map(r => r.cssText).join(' '))})", tab: tab)
+        let boundary: String = await withCheckedContinuation { continuation in
+            tab.web.callAsyncJavaScript("return JSON.stringify({token, origin, tokenMatches:window.__vaneBoost?.documentToken === token, originMatches:location.origin === origin, runtimePresent:!!window.__vaneBoost});", arguments: ["token": document?.token ?? "", "origin": document?.origin ?? ""], in: nil, in: SiteBoostScripts.world) { result in
+                continuation.resume(returning: String(describing: result))
+            }
+        }
+        return "native token=\(document?.token ?? "nil"), stamp=\(document?.stamp.description ?? "nil"), origin=\(document?.origin ?? "nil"), acceptsPick=\(SiteBoostEditor.acceptsPick(tab: tab)); runtime=\(state ?? "nil"); bridge=\(boundary)"
+    }
+
+    func testVisualResetAndZapCleanupSurviveDocumentClockDrift() async throws {
+        let tab = try await page()
+        var boost = SiteBoost(); boost.textColor = "#123456"
+        SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
+        SiteBoosts.zap(true, tab: tab)
+        try await compatibilityWait {
+            try await self.visual("window.__vaneBoost.zapping && getComputedStyle(document.getElementById('copy')).color === 'rgb(18, 52, 86)'", tab: tab) as? Bool == true
+        }
+        // CI observed the live clock differing from the captured clock in this document.
+        _ = try await visual("Object.defineProperty(performance, 'timeOrigin', {value: performance.timeOrigin + 6, configurable:true}); true", tab: tab)
+        SiteBoosts.set(SiteBoost(), origin: "https://boost.test", tab: tab)
+        SiteBoosts.zap(false, tab: tab)
+        try await compatibilityWait {
+            try await self.visual("!window.__vaneBoost.zapping && getComputedStyle(document.getElementById('copy')).color !== 'rgb(18, 52, 86)'", tab: tab) as? Bool == true
+        }
+    }
+
+    func testHTTPDocumentTokenChangesOnSameURLReloadAndRejectsStaleDone() async throws {
+        let tab = try await page()
+        try await load(tab, origin: "http://boost.local")
+        let previous = try XCTUnwrap(SiteBoosts.document(for: tab)?.token)
+        try await load(tab, origin: "http://boost.local")
+        try await compatibilityWait { SiteBoosts.document(for: tab)?.token != previous }
+        let current = try XCTUnwrap(SiteBoosts.document(for: tab)?.token)
+        XCTAssertEqual(current.count, 32)
+        XCTAssertNotEqual(previous, current)
+        let runtimeToken = try await visual("window.__vaneBoost.documentToken", tab: tab) as? String
+        XCTAssertEqual(runtimeToken, current)
+        let pageWorld = try await tab.web.evaluateJavaScript("typeof window.__vaneBoost") as? String
+        XCTAssertEqual(pageWorld, "undefined")
+        let window = NSWindow(contentRect: tab.web.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = tab.web; window.makeKeyAndOrderFront(nil)
+        addTeardownBlock { @MainActor in SiteBoostEditor.close(tab: tab); window.close() }
+        SiteBoostEditor.open(tab: tab)
+        SiteBoostEditor.toggleZap(tab: tab)
+        XCTAssertTrue(SiteBoostEditor.acceptsPick(tab: tab))
+        // Both messages use the same channel. A stale done must not disable the
+        // editor before its current-document pick is handled.
+        _ = try await visual("window.webkit.messageHandlers.vaneBoost.postMessage({kind:'done', stamp:performance.timeOrigin, origin:location.origin, token:'\(previous)'}); window.__vaneBoost.post('pick', {selector:'#link'}); true", tab: tab)
+        try await compatibilityWait { SiteBoosts.value(origin: "http://boost.local", tab: tab).hidden == ["#link"] }
+        XCTAssertTrue(SiteBoostEditor.acceptsPick(tab: tab))
     }
 
     func testLiveStylesDynamicHidingAndReset() async throws {
@@ -167,10 +223,13 @@ import XCTest
         let styled = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: sibling) as? String
         XCTAssertEqual(styled, "rgb(18, 52, 86)")
         SiteBoosts.forget(host: "boost.test", tab: tab)
-        try await Task.sleep(for: .milliseconds(100))
+        try await compatibilityWait {
+            try await self.visual("getComputedStyle(document.getElementById('copy')).color !== 'rgb(18, 52, 86)'", tab: sibling) as? Bool == true
+        }
         XCTAssertEqual(SiteBoosts.value(origin: "https://boost.test", tab: sibling), SiteBoost())
         XCTAssertEqual(SiteBoosts.value(origin: "https://boost.test", tab: other), boost)
         let restored = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: sibling) as? String
+        if restored == "rgb(18, 52, 86)" { XCTFail(try await documentDiagnostics(sibling)) }
         XCTAssertNotEqual(restored, "rgb(18, 52, 86)")
     }
 
@@ -229,6 +288,7 @@ import XCTest
         SiteBoostEditor.open(tab: tab)
         try await Task.sleep(for: .milliseconds(150))
         let panel = try XCTUnwrap(window.childWindows?.first)
+        XCTAssertEqual(panel.title, "Boost This Site")
         SiteBoostEditor.toggleZap(tab: tab)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(SiteBoostEditor.acceptsPick(tab: tab))
@@ -248,9 +308,18 @@ import XCTest
             try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/tmp/vane-boost-editor.png"))
         }
         panel.close()
-        try await Task.sleep(for: .milliseconds(100))
-        let active = try await visual("window.__vaneBoost.zapping", tab: tab) as? Bool
-        XCTAssertEqual(active, false)
+        // Closing the native panel schedules a WebKit call; CI can take longer than
+        // 100 ms to deliver it. Wait for the observable cleanup, not an elapsed guess.
+        XCTAssertFalse(SiteBoostEditor.acceptsPick(tab: tab))
+        do {
+            try await compatibilityWait {
+                let active = try await self.visual("window.__vaneBoost.zapping", tab: tab) as? Bool
+                return active == false
+            }
+        } catch {
+            XCTFail("panel visible=\(panel.isVisible), delegate=\(String(describing: panel.delegate)); " + (try await documentDiagnostics(tab)))
+            throw error
+        }
         XCTAssertFalse(SiteBoostEditor.acceptsPick(tab: tab))
     }
 
