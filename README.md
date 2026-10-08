@@ -81,6 +81,17 @@ Vimeo, Letterboxd, Goodreads, Medium, Etsy, Target, Dribbble, Behance, Unsplash,
 Pexels, GitLab, and DEV.to. Full site names work with `!` too, such as `!youtube`
 and `!github`; `twitter` and `!twitter` search X. Some sites require sign-in.
 
+Search ranks exact page titles and addresses before prefixes, partial words, and
+fuzzy letter matches. Accents and case do not affect matching. Bookmarks, visit
+frequency, and recency break relevance ties. Tab search searches the current
+profile and offers an **All open Spaces** filter for the live tabs it can access.
+History (`⌘Y`) offers explicit profile selection and Today, Yesterday, Last 7 days,
+and Last 30 days filters. Search results show relevance first and include each
+visit's date; an empty search groups visits by day. History has no Space filter
+because visits do not store which Space they belonged to. Private windows show
+neither saved history nor other windows' tabs. Searches run off the input thread
+and discard superseded results.
+
 Windows in the same Space share tabs. When both show the same tab, the focused
 window holds its live page and the other shows a gray snapshot. Switching windows
 preserves input, scroll position, and history; closing a tab removes it from every

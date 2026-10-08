@@ -64,8 +64,8 @@ struct BookmarkImportResult: Equatable, Sendable {
 
 /// History and bookmarks in one SQLite file.
 /// ponytail: sqlite3 ships in the OS, so no wrapper dependency and no Core Data. One
-/// connection, used from the main thread — writes are a single row and reads are indexed.
-/// If that ever shows up in a profile the fix is a serial queue, not a different database.
+/// write connection on the main actor, with independent background readers for palette
+/// suggestions and History so one window's search cannot hold up the other.
 @MainActor final class Store {
     static let historyChanged = Notification.Name("vane.historyChanged")
     /// The active profile's store. Still spelled `Store.shared` everywhere; it just resolves
@@ -118,10 +118,12 @@ struct BookmarkImportResult: Equatable, Sendable {
     }
 
     private let suggestionReader: LocalSuggestionReader
+    private let historyReader: LocalSuggestionReader
 
     init(path: String? = nil) {
         let path = path ?? Store.directory.appendingPathComponent("vane.db").path
         suggestionReader = LocalSuggestionReader(path: path)
+        historyReader = LocalSuggestionReader(path: path)
         sqlite3_open(path, &db)
         exec("""
         PRAGMA journal_mode=WAL;
@@ -320,31 +322,15 @@ struct BookmarkImportResult: Equatable, Sendable {
         return out
     }
 
-    /// Every visit, newest first, optionally narrowed by a substring of the title or the
-    /// url. The search is SQL rather than a filter in the window, so a long history does
-    /// not have to be in memory to be searchable; the wildcards are escaped for the same
-    /// reason `suggest` escapes them.
-    func history(matching query: String = "", limit: Int = 500) -> [Visit] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        var out: [Visit] = []
-        let read: (OpaquePointer) -> Void = { st in
-            out.append(Visit(id: sqlite3_column_int64(st, 0),
-                             url: self.text(st, 1), title: self.text(st, 2),
-                             at: Date(timeIntervalSince1970: sqlite3_column_double(st, 3))))
-        }
-        guard !q.isEmpty else {
-            run("SELECT id, url, title, at FROM visits ORDER BY at DESC LIMIT ?", [limit], read)
-            return out
-        }
-        let like = "%" + q.replacingOccurrences(of: "\\", with: "\\\\")
-                          .replacingOccurrences(of: "%", with: "\\%")
-                          .replacingOccurrences(of: "_", with: "\\_") + "%"
-        run("""
-            SELECT id, url, title, at FROM visits
-            WHERE url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
-            ORDER BY at DESC LIMIT ?
-            """, [like, like, limit], read)
-        return out
+    /// Relevance first while searching; chronological when the query is empty.
+    func history(matching query: String = "", limit: Int = 500,
+                 interval: DateInterval? = nil) -> [Visit] {
+        LocalSuggestionReader.readHistory(db, query: query, limit: limit, interval: interval)
+    }
+
+    func historyAsync(matching query: String = "", limit: Int = 500,
+                      interval: DateInterval? = nil) async -> [Visit] {
+        await historyReader.history(query, limit: limit, interval: interval)
     }
 
     /// ⌫ in the History window: one line, not every visit to that page.
@@ -571,8 +557,7 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     // MARK: Address bar
 
-    /// Bookmarks first, then history ranked by visit count and recency — the ordering that
-    /// makes an address bar feel like it knows you. Duplicates of a bookmarked url are dropped.
+    /// Relevance first; bookmarks, visit count, and recency break ties. URLs are unique.
     func suggest(_ query: String, limit: Int = 8) -> [Suggestion] {
         LocalSuggestionReader.read(db, query: query, limit: limit)
     }
