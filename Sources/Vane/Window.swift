@@ -874,15 +874,47 @@ extension TabStore {
     /// "Nobody has it" is either of AppKit's two spellings — the window is its own first
     /// responder, or the first responder is a view that has already left the window — so the
     /// answer does not depend on which of the two happens first.
-    func focusPage() {
+    func focusPage(remaining: Int = 6) {
         DispatchQueue.main.async { [weak self] in
-            guard let self, let window else { return }
+            guard let self, let window, palette == nil, !findOpen,
+                  NSApp.modalWindow == nil, window.attachedSheet == nil else { return }
             let holder = window.firstResponder
-            let nobody = holder === window || (holder as? NSView).map { $0.window !== window } ?? false
+            let nobody = holder == nil || holder === window
+                || (holder as? NSView).map { $0.window !== window } ?? false
             let page = activePageResponder
-            guard Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
-                                            libraryOpen: libraryOpen), let page else { return }
+            if Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
+                                         libraryOpen: libraryOpen), let page,
+               page.window === window, window.makeFirstResponder(page) { return }
+            guard nobody, !libraryOpen else { return }
+            // Search creates its first tab on the next turn; SwiftUI then mounts its page.
+            // Retry only while nobody has taken focus and no new overlay is open.
+            if remaining > 1 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+                    self?.focusPage(remaining: remaining - 1)
+                }
+            }
+        }
+    }
+
+    /// F6 crosses the page/chrome boundary even when WebKit keeps Tab inside its document.
+    func focusNextArea() {
+        guard let window, palette == nil, window.attachedSheet == nil,
+              NSApp.modalWindow == nil else { return }
+        let holder = window.firstResponder
+        if !keyboardOnPage, holder != nil, holder !== window,
+           let page = activePageResponder, page.window === window {
             window.makeFirstResponder(page)
+            return
+        }
+        Motion.list {
+            libraryOpen = false
+            sidebarShown = true
+        }
+        DispatchQueue.main.async { [weak self, weak holder] in
+            guard let self, let window = self.window, self.palette == nil,
+                  window.attachedSheet == nil, NSApp.modalWindow == nil,
+                  window.firstResponder === holder else { return }
+            self.chromeFocusRequested = true
         }
     }
 

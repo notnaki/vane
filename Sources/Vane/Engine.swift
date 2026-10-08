@@ -1980,6 +1980,8 @@ struct Stash {
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
     @Published var sidebarShown = true
+    /// One-shot handoff from the webpage to the sidebar address pill.
+    @Published var chromeFocusRequested = false
     /// Presentation only, per Space and window: hiding pins never changes their contents.
     @Published private(set) var collapsedPinnedSpaces: Set<UUID> = []
     var pinnedSectionCollapsed: Bool {

@@ -417,6 +417,8 @@ struct CommandField: NSViewRepresentable {
     let hint: String
     /// The bar's size by default; the find bar asks for its own, smaller one.
     var font: NSFont = Look.Typography.input.native
+    /// A new request refocuses an already-mounted field without reselecting on every edit.
+    var focusRequest = 0
     /// Return true to swallow the key; false lets the field editor have it.
     let onKey: (Key) -> Bool
 
@@ -465,8 +467,8 @@ struct CommandField: NSViewRepresentable {
         if f.placeholderString != prompt { f.placeholderString = prompt }
         if f.accessibilityLabel() != label { f.setAccessibilityLabel(label) }
         // Once only — otherwise every keystroke would reselect what was just typed.
-        guard !context.coordinator.focused else { return }
-        context.coordinator.focused = true
+        guard context.coordinator.focusRequest != focusRequest else { return }
+        context.coordinator.focusRequest = focusRequest
         context.coordinator.take(f, selectAll: selectAll)
     }
 
@@ -474,7 +476,7 @@ struct CommandField: NSViewRepresentable {
 
     @MainActor final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: CommandField
-        var focused = false
+        var focusRequest: Int?
         init(_ parent: CommandField) { self.parent = parent }
 
         /// First responder can only be taken once the field is in a window, and SwiftUI
