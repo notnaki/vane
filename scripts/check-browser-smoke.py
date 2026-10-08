@@ -8,6 +8,7 @@ Developer ID, notarization, and Gatekeeper checks used for a release candidate.
 """
 
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import plistlib
@@ -97,7 +98,10 @@ def main():
     parser.add_argument("--distribution", action="store_true",
                         help="require Developer ID, notarization, and Gatekeeper checks")
     parser.add_argument("--lifecycle", action="store_true", help="100 tab/window cycles, 200 parked rows, settling and idle CPU")
+    parser.add_argument("--public-media", action="store_true", help="opt-in sustained Shaka public-demo playback (network required, no accounts)")
     options = parser.parse_args()
+    if options.lifecycle and options.public_media:
+        parser.error("--lifecycle and --public-media are separate passes")
     if options.distribution and options.app is None:
         parser.error("--distribution requires --app")
     if sys.platform != "darwin":
@@ -147,11 +151,14 @@ def main():
                        ("HOME", "PATH", "TMPDIR", "USER", "LOGNAME", "LANG")
                        if name in os.environ}
         environment["VANE_DATA_DIR"] = data
+        print("TEST EXECUTABLE sha256=" + hashlib.sha256(executable.read_bytes()).hexdigest(), flush=True)
         print(message + " Requires a graphical session.", flush=True)
         try:
             try:
                 command = [str(executable), "browsercheck"] + (["--lifecycle"] if options.lifecycle else [])
-                browser_code = run_fixture(command, environment, app, 620 if options.lifecycle else 75)
+                if options.public_media:
+                    command.append("--public-media")
+                browser_code = run_fixture(command, environment, app, 620 if options.lifecycle or options.public_media else 75)
             except subprocess.TimeoutExpired:
                 print("FAIL: browser smoke process exceeded its deadline", file=sys.stderr)
                 browser_code = 1

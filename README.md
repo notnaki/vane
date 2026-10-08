@@ -526,29 +526,59 @@ Shift-hover previews still require Previews to be enabled; holding Command or
 Option hides the preview so it does not cover the opening hint. Floating windows
 keep their existing one-page behavior and do not grow Split Views.
 
-## Extension permissions
+## Extensions and permissions
 
-Choose **Install Extension…** and select an unpacked MV2/MV3 folder. Before it loads,
-Vane lists the requested capabilities and website access. Cancel saves nothing.
-Approvals belong to that folder in that profile; private profiles cannot install extensions.
+Choose **Extensions → Install Extension…** and select an unpacked MV2/MV3 folder.
+Before loading, Vane checks its manifest and referenced scripts, popups, options pages,
+and rulesets, then lists the capabilities and website access for consent. Cancel saves
+nothing. Approvals and extension data belong to that installation in that profile;
+private profiles cannot install extensions.
 
-On launch, Vane compares the folder's current requested access with its last approved
-set. Added capabilities or website patterns require review, and declining leaves the
-extension disabled. Choose **Install Extension…** again to review and enable it later.
-Existing installations require one review when first opened with this version. Removing
-an extension clears its saved approval and installation identity. Its identity and
-`storage.local` settings survive host restoration; reinstalling starts a fresh identity.
-Runtime requests for additional access still ask;
-those grants last for the current extension session.
+**Extensions → Manage Extensions…** (also in Settings → Advanced) lists enabled,
+disabled, and failed installations in the current profile. **Access & Diagnostics…**
+shows the folder, WebKit error details, compatibility limitations, and currently granted
+access. Missing or unreadable resources name the manifest entry and file to repair.
+Unsupported capabilities are disclosed before installation as well as in diagnostics.
 
-Unpacked folder changes are checked when loaded, normally on the next launch. Vane does
-not monitor or package those folders; only install code you trust. Location, screen sharing,
-and broader real-site permission lifecycle coverage remain separate readiness work.
+**Update from Folder** validates current files and reviews added capabilities or website
+patterns before replacing the context. **Retry** does the same for an inactive installation.
+A failed or declined update stops the extension, closes its options/popup windows, and
+removes its active toolbar controls while retaining its bookmark, consent, installation
+identity, settings, and saved pin for recovery. Repair the folder and retry. Vane does
+not keep a backup of unpacked code, roll back folder edits, or monitor folders automatically;
+folder changes are otherwise checked on the next launch. Only install code you trust.
+
+**Disable** stops the context and its extension pages, and persists across restart.
+**Enable** checks the folder and reuses unchanged consent and `storage.local` identity.
+**Remove** clears the bookmark, consent, identity, disabled state, and pin, including for
+failed installations; reinstalling uses a new identity and cannot inherit old settings.
+Unavailable saved folders remain recoverable when their disk or access returns, and can
+be removed while unavailable. Bookmarks that follow a moved folder carry its consent,
+identity, disabled state, and pins to the new location on restart. Disabled installations
+keep their saved pin; Manage Extensions lets you unpin them to free one of three slots.
+Existing installations without a saved approval require review before loading.
+
+Runtime requests ask separately. Optional capabilities and sites are not granted by
+installation consent. Runtime grants last for the current context session: update,
+disable, or quitting ends them. **Revoke Additional Access** clears additional runtime
+grants and denials; required manifest access stays approved. Disable the extension to
+stop all access. Requests pending when an extension is removed or disabled fail closed.
+WebKit enforces permission expiration dates; manifest consent is separate from runtime grants.
+
+Vane uses Apple's WebKit WebExtension APIs, not Chromium. On macOS 27, isolated synthetic
+fixtures exercise MV2 background scripts and MV3 service workers, runtime messaging,
+`storage.local`, action badges/popup declarations, content-script origin/profile isolation,
+and runtime permission grant, rejection, revocation, expiration, and restoration.
+This does **not** establish general Chrome-extension or Chrome Web Store compatibility,
+nor certify arbitrary extensions, real-site behavior, every API, or full popup interaction.
+Vane does not provide native messaging hosts, extension page-menu items, extension keyboard
+shortcuts, replacement browser pages, side panels, developer-tools panels, omnibox keywords,
+or Chrome OAuth integration. Other API availability depends on the installed WebKit.
 
 Focused regression checks:
 
 ```sh
-swift test --filter 'ExtensionConsentTests|ExtensionAccessLifecycleTests|SitePermissionTests'
+swift test --filter 'ExtensionConsentTests|ExtensionAccessLifecycleTests|ExtensionCompatibilityTests|ExtensionManagementTests|ExtensionRuntimePermissionTests|ExtensionPinsTests|SitePermissionTests'
 ```
 
 ## AI providers and your own keys
@@ -724,6 +754,17 @@ python3 scripts/check-browser-smoke.py
 # at least 30s settling and 60s idle sampling (logged-in desktop required).
 python3 scripts/check-browser-smoke.py --lifecycle
 ```
+
+For an opt-in network-dependent public streaming pass on a graphical test Mac:
+
+```sh
+python3 scripts/check-browser-smoke.py --public-media
+```
+
+This separately samples 90 seconds per clear/FairPlay Shaka demo asset, with
+pause/seek/resume and player unload/reload. It uses no service accounts and does
+not verify subscription playback, cross-network calls or system capture revocation.
+Exact outcomes and limits belong in [the compatibility log](docs/REAL-SITE-COMPATIBILITY.md).
 
 The full `selfcheck` uses a keychain and a window server. Run it locally when
 those services are available:

@@ -52,6 +52,30 @@ import XCTest
         try await wait { MediaState.shared.info(for: tab.id)?.playing == false }
     }
 
+    func testDRMProbeInvalidatesSamplesOnSeek() async throws {
+        let (tab, _) = try await fixture("<video id='player' muted autoplay src='data:video/mp4;base64,\(Self.video)'></video>")
+        try await wait { try await tab.web.evaluateJavaScript("player.currentTime>0.15 && player.videoWidth===640") as? Bool == true }
+        let firstValue = try await tab.web.evaluateJavaScript(DRMCheck.videoProbe)
+        let first = try XCTUnwrap(firstValue as? [String: Any])
+        XCTAssertEqual(first["paused"] as? Bool, false)
+        _ = try await tab.web.evaluateJavaScript("player.pause(); player.currentTime=0.5; true")
+        try await wait {
+            let id = try await tab.web.evaluateJavaScript("window.__vaneDrmcheckSample.id") as? String
+            return id != first["id"] as? String
+        }
+        // Hidden WebKit surfaces can defer a paused seek's final frame. Resume to
+        // finish the seek, then sample after completion as the CLI would.
+        _ = try await tab.web.evaluateJavaScript("player.play(); true")
+        try await wait { try await tab.web.evaluateJavaScript("!player.seeking && player.currentTime>0.5") as? Bool == true }
+        let seekValue = try await tab.web.evaluateJavaScript(DRMCheck.videoProbe)
+        let afterSeek = try XCTUnwrap(seekValue as? [String: Any])
+        XCTAssertNotEqual(first["id"] as? String, afterSeek["id"] as? String,
+                          "A completed seek must invalidate continuity between native polling ticks")
+        XCTAssertNotNil(afterSeek["frames"] as? Int)
+        // Hidden XCTest surfaces may suppress compositor frame callbacks. Actual
+        // delivered-frame progress is checked separately by the signed CLI probe.
+    }
+
     func testNavigationClearsPlayingMediaAndFreshDocumentCanPlay() async throws {
         let html = "<video id='player' muted autoplay loop src='data:video/mp4;base64,\(Self.video)'></video>"
         let (tab, _) = try await fixture(html)

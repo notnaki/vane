@@ -11,6 +11,7 @@ import XCTest
     var connections: [NWConnection] = []
     var submissions: [Data] = []
     var pages: [String: String] = [:]
+    var redirects: [String: URL] = [:]
 
     init() throws {
         listener = try NWListener(using: .tcp, on: .any)
@@ -61,7 +62,10 @@ import XCTest
                     self.submissions.append(body)
                     responseBody = "<title>Upload received</title><p>\(body.count) bytes</p>"
                 } else { responseBody = self.pages[path] ?? "<title>Page \(path)</title><p>\(path)</p>" }
-                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(responseBody.utf8.count)\r\nConnection: close\r\n\r\n" + responseBody
+                let destination = self.redirects[path]
+                let status = destination == nil ? "200 OK" : "302 Found"
+                let location = destination.map { "Location: \($0.absoluteString)\r\n" } ?? ""
+                let response = "HTTP/1.1 \(status)\r\n\(location)Content-Type: text/html; charset=utf-8\r\nContent-Length: \(responseBody.utf8.count)\r\nConnection: close\r\n\r\n" + responseBody
                 connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
             }
         }
