@@ -9,7 +9,7 @@ import SwiftUI
 /// app has no window-controller hierarchy and the frame autosave is what "remembers where
 /// it was" costs. Rows come off the store on demand rather than being held in an
 /// ObservableObject: history changes while you browse, and a window you have open is
-/// refreshed by typing in it or reopening it, which is what a history page does anyway.
+/// refreshed by cancellable searches and committed history-change notifications.
 @MainActor enum HistoryWindow {
     private static var window: NSWindow?
 
@@ -55,7 +55,28 @@ import SwiftUI
 
 private struct HistoryView: View {
     let profileID: UUID
-    private var store: Store { Store.store(for: profileID) }
+    @State private var selectedProfileID: UUID
+    @State private var period = HistoryPeriod.all
+    @State private var revision = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @ObservedObject private var profiles = ProfileManager.shared
+    private var store: Store { Store.store(for: selectedProfileID) }
+
+    init(profileID: UUID) {
+        self.profileID = profileID
+        _selectedProfileID = State(initialValue: profileID)
+    }
+
+    private struct Request: Equatable {
+        let profileID: UUID
+        let query: String
+        let period: HistoryPeriod
+        let revision: Int
+    }
+    private var request: Request {
+        Request(profileID: selectedProfileID, query: query, period: period, revision: revision)
+    }
     @State private var query = ""
     @State private var visits: [Visit] = []
     @State private var selection: Visit.ID?
@@ -74,6 +95,7 @@ private struct HistoryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) {
             header
+            filters
             if groups.isEmpty {
                 empty
             } else {
@@ -84,12 +106,59 @@ private struct HistoryView: View {
         .padding(.horizontal, Look.paneMargin)
         .padding(.bottom, Look.paneMargin)
         .background(.windowBackground)
-        .onAppear { reload(); focus = .search }
-        .onChange(of: query) { reload() }
+        .onAppear { focus = .search }
+        .onChange(of: query) { clearResults() }
+        .onChange(of: selectedProfileID) { clearResults() }
+        .onChange(of: period) { clearResults() }
+        .task(id: request) {
+            guard profileID != Profile.incognito.id else { visits = []; return }
+            let asked = request
+            if !query.isEmpty {
+                try? await Task.sleep(for: LocalSuggestionReader.debounce)
+            }
+            guard !Task.isCancelled else { return }
+            let results = await store.historyAsync(matching: asked.query, limit: Self.limit,
+                                                   interval: asked.period.interval())
+            guard !Task.isCancelled, asked == request else { return }
+            visits = results
+            if let selected = selection, !results.contains(where: { $0.id == selected }) {
+                selection = nil
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Store.historyChanged)) { note in
+            if note.object as? Store === store { reload() }
+        }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: period)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selectedProfileID)
     }
 
     private var groups: [(title: String, visits: [Visit])] {
-        HistoryWindow.grouped(visits)
+        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? HistoryWindow.grouped(visits) : (visits.isEmpty ? [] : [("Results", visits)])
+    }
+
+    private var filters: some View {
+        HStack(spacing: Look.inset) {
+            if profileID != Profile.incognito.id {
+                Picker("Profile", selection: $selectedProfileID) {
+                    ForEach(profiles.profiles) { profile in
+                        Text(profile.name).tag(profile.id)
+                    }
+                }
+                .fixedSize()
+                .accessibilityHint("Searches only the selected profile's saved history.")
+                Picker("Date", selection: $period) {
+                    ForEach(HistoryPeriod.allCases, id: \.self) { period in
+                        Text(period.title).tag(period)
+                    }
+                }
+                .fixedSize()
+            }
+            Spacer()
+            Text("\(visits.count)\(visits.count == Self.limit ? "+" : "") visits")
+                .font(Look.caption).foregroundStyle(.secondary)
+                .accessibilityLabel("Showing \(visits.count) visits")
+        }
     }
 
     // MARK: Header
@@ -107,7 +176,7 @@ private struct HistoryView: View {
             .frame(height: Look.control)
             .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
             .accessibilityLabel("Search History")
-            .accessibilityHint("Matches the title or the address of a page you have visited.")
+            .accessibilityHint("Matches titles and addresses, including partial letters in order.")
 
             Button("Clear History…") {
                 guard confirm("Clear all browsing history?", "Clear",
@@ -136,33 +205,51 @@ private struct HistoryView: View {
     // MARK: List
 
     private var list: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: Look.inset * 1.5) {
-                ForEach(groups, id: \.title) { group in
-                    SettingsSection(group.title) {
-                        SettingsCard {
-                            ForEach(group.visits) { row($0) }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Look.inset * 1.5) {
+                    ForEach(groups, id: \.title) { group in
+                        SettingsSection(group.title) {
+                            SettingsCard {
+                                ForEach(group.visits) { visit in row(visit).id(visit.id) }
+                            }
                         }
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .focusable()
+            .focusEffectDisabled()
+            .focused($focus, equals: .list)
+            .onDeleteCommand { deleteSelected() }
+            .onMoveCommand { direction in
+                if direction == .up { moveSelection(-1) }
+                if direction == .down { moveSelection(1) }
+            }
+            .onKeyPress(.return) {
+                guard let visit = visits.first(where: { $0.id == selection }) else { return .ignored }
+                open(visit)
+                return .handled
+            }
+            .onChange(of: selection) {
+                guard let selection else { return }
+                withAnimation(reduceMotion || batterySaver.isActive ? nil : Look.quick) {
+                    proxy.scrollTo(selection, anchor: .center)
+                }
+            }
+            .accessibilityLabel("History")
         }
-        .scrollContentBackground(.hidden)
-        // The list takes the key focus as soon as a row is clicked, so ⌫ has somewhere to
-        // land — without it the keystroke goes back to the search field and edits the query.
-        .focusable()
-        .focusEffectDisabled()
-        .focused($focus, equals: .list)
-        .onDeleteCommand { deleteSelected() }
-        .accessibilityLabel("History")
     }
 
     private func row(_ visit: Visit) -> some View {
         let isSelected = selection == visit.id
         return HStack(spacing: Look.inset) {
-            Text(HistoryWindow.time(visit.at))
+            Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                 ? HistoryWindow.time(visit.at)
+                 : DateText.string(visit.at, template: "yMdjmm", calendar: .current))
                 .font(Look.caption).foregroundStyle(Look.inkQuiet)
-                .frame(width: 56, alignment: .leading)
+                .frame(width: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 56 : 125,
+                       alignment: .leading)
                 .monospacedDigit()
             VStack(alignment: .leading, spacing: 1) {
                 Text(visit.display).font(Look.text).foregroundStyle(Look.inkPrimary).lineLimit(1)
@@ -189,7 +276,7 @@ private struct HistoryView: View {
         .onTapGesture { open(visit) }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(visit.display)
-        .accessibilityValue(visit.url)
+        .accessibilityValue("\(visit.url), \(DateText.string(visit.at, template: "yMdjmm", calendar: .current))")
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Opens this page in a new tab.")
         .accessibilityAction { open(visit) }
@@ -197,10 +284,9 @@ private struct HistoryView: View {
 
     // MARK: Doing things
 
-    private func reload() {
-        visits = store.history(matching: query, limit: Self.limit)
-        if let id = selection, !visits.contains(where: { $0.id == id }) { selection = nil }
-    }
+    private func reload() { revision += 1 }
+
+    private func clearResults() { visits = []; selection = nil; hovered = nil }
 
     /// Opens the page in a new tab and *stays* — the browser window is not pulled to the
     /// front. A history window you are working through is a list you are still reading, and
@@ -209,7 +295,7 @@ private struct HistoryView: View {
         selection = visit.id
         focus = .list
         guard let url = URL(string: visit.url) else { return }
-        BookmarkManager.browserWindow(for: profileID)?.newTab(url)
+        BookmarkManager.browserWindow(for: selectedProfileID)?.newTab(url)
         axAnnounce("Opened \(visit.display) in a new tab.")
     }
 
@@ -218,6 +304,14 @@ private struct HistoryView: View {
         if selection == visit.id { selection = nil }
         reload()
         axAnnounce("Forgot \(visit.display).")
+    }
+
+    private func moveSelection(_ delta: Int) {
+        guard !visits.isEmpty else { return }
+        let current = visits.firstIndex { $0.id == selection } ?? (delta > 0 ? -1 : visits.count)
+        let next = max(0, min(visits.count - 1, current + delta))
+        selection = visits[next].id
+        axAnnounce(visits[next].display)
     }
 
     private func deleteSelected() {
@@ -351,5 +445,29 @@ extension HistoryWindow {
             ("a visit with no title falls back to its url",
              visit(9, 0, "").display == "https://example.com/9"),
         ]
+    }
+}
+
+/// Calendar ranges use inclusive starts and exclusive ends, including across DST.
+/// There is deliberately no Space filter: visits have no stored Space association.
+enum HistoryPeriod: String, CaseIterable, Sendable {
+    case all, today, yesterday, week, month
+    var title: String {
+        switch self {
+        case .all: "All time"
+        case .today: "Today"
+        case .yesterday: "Yesterday"
+        case .week: "Last 7 days"
+        case .month: "Last 30 days"
+        }
+    }
+    func interval(now: Date = .now, calendar: Calendar = .current) -> DateInterval? {
+        guard self != .all else { return nil }
+        let today = calendar.startOfDay(for: now)
+        let offset = self == .yesterday ? -1 : (self == .week ? -6 : (self == .month ? -29 : 0))
+        guard let start = calendar.date(byAdding: .day, value: offset, to: today),
+              let end = calendar.date(byAdding: .day, value: self == .yesterday ? 0 : 1, to: today)
+        else { return nil }
+        return DateInterval(start: start, end: end)
     }
 }

@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
     @Published var pull: CGFloat = 0
     @Published var swiping = false
     @Published var travelsFavorites = false
+    var sidebarOffset: CGFloat = 0
     var strip: [Space]?
     var neighbour: Space?
     var previewDirection = 0
@@ -34,9 +35,6 @@ extension Look {
     /// A committed swipe should hand focus to the destination promptly. Keep its final
     /// travel short; canceled gestures still use the more forgiving return spring.
     static let spaceLanding = Animation.spring(response: 0.16, dampingFraction: 0.9)
-    /// How many rows the neighbouring Space's preview draws. Past what a sidebar shows at
-    /// once the rows are scrolled-off content nobody sees, costing a favicon lookup each.
-    static let spacePreviewRows = 16
     /// A footer-height target leaves room for a rounded hover fill around the glyph.
     static let spaceDotHit: CGFloat = Look.footer
 }
@@ -291,6 +289,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
             let preview = store.swipePreview(in: space)
             preview.equatable()
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .environment(\.colorScheme, preview.colorScheme)
                 // Within a profile the grid stays put, so its ghost starts below it.
                 // Across profiles the ghost includes its own grid and starts at the top.
                 .padding(.top, preview.includingFavorites ? 0 : favoriteHeight)
@@ -350,101 +349,193 @@ struct SpacePreviewList: View, Equatable {
     let liveTabs: [Tab]?
     private let identity = UUID()
     private let saved: [String: Parked]
+    private let savedNames: [String: String]
     let rows: (pinned: [Row], today: [Row])
     private let todayCount: Int
+    private let selectedID: UUID?
+    private let selectedSavedRow: String?
+    private let capturedPRs: [UUID: GitHub.Row]
+    private let renderStore: TabStore?
+    private let selection: Set<UUID>
+    private let scrollOffset: CGFloat
+    private let tidyRunning: Bool
+    private let splits: [Split]
+    private let unlocked: Set<UUID>
+    private let live: LiveFolders?
+    private let favoriteItems: [(url: URL?, tab: Tab?)]
+    private let pinnedAvailable: Bool
     let favorites: [URL]
     let includingFavorites: Bool
     let pinnedCollapsed: Bool
 
     /// Capture once, before the preview moves. Decoding interaction states and rebuilding
     /// folders in body would repeat disk work on every frame of a populated Space swipe.
-    init(space: Space, liveTabs: [Tab]?, state: Stash? = nil,
+    init(space requested: Space, liveTabs: [Tab]?, state: Stash? = nil,
          favorites: [URL] = [], includingFavorites: Bool = false, pinnedCollapsed: Bool = false,
-         live: LiveFolders? = nil) {
+         live: LiveFolders? = nil, renderStore: TabStore? = nil,
+         favoriteTabs: [Tab] = [], unlocked: Set<UUID> = [], newProfile: Bool = false,
+         selection: Set<UUID> = [], scrollOffset: CGFloat = 0) {
+        var space = requested
+        if newProfile && state == nil && liveTabs == nil {
+            // A newly mounted profile uses TabStore.init's restoration path, which removes
+            // Today URLs already present in its favourites or pinned section.
+            let kept = Set(favorites + (space.pinnedTabURLs ?? []))
+            space.tabURLs.removeAll { kept.contains($0) }
+        }
         self.space = space
         self.liveTabs = state?.tabs ?? liveTabs
         self.favorites = favorites
         self.includingFavorites = includingFavorites
         self.pinnedCollapsed = pinnedCollapsed
-        saved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
+        self.renderStore = renderStore
+        self.selection = selection
+        self.scrollOffset = scrollOffset
+        tidyRunning = !newProfile && (renderStore.map { TidyProgress.shared.isRunning($0) } ?? false)
+        favoriteItems = favoriteTabs.isEmpty ? favorites.map { ($0, nil) }
+            : favoriteTabs.map { ($0.pinnedURL, $0) }
+        self.unlocked = unlocked
+        self.splits = state?.splits ?? []
+        let last = Spaces.lastTab(in: space.id)
+        let tabs = state?.tabs ?? liveTabs
+        self.selectedID = state?.current ?? tabs.flatMap { tabs in
+            if newProfile { return tabs.first { $0.kind == .today }?.id }
+            return Spaces.landing(on: tabs.map { ($0.pinnedURL?.absoluteString, $0.kind) }, last: last)
+                .map { tabs[$0].id }
+        }
+        let pinURLs = TabStore.pinOrder(shape: TabStore.savedShape(.pinned, space: space.id,
+            profileID: space.profileID), urls: space.pinnedTabURLs ?? [])
+        let todayURLs = TabStore.pinOrder(shape: TabStore.savedShape(.today, space: space.id,
+            profileID: space.profileID), urls: space.tabURLs)
+        let diskTabs = pinURLs.enumerated().map { (url: $0.element, kind: TabKind.pinned, index: $0.offset) }
+            + todayURLs.enumerated().map { (url: $0.element, kind: TabKind.today, index: $0.offset) }
+        let landing = newProfile ? diskTabs.firstIndex { $0.kind == .today }
+            : Spaces.landing(on: diskTabs.map { ($0.url.absoluteString, $0.kind) }, last: last)
+        self.selectedSavedRow = landing.map { "\(diskTabs[$0].kind)-\(diskTabs[$0].index)" }
+        let capturedSaved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
                                             in: Store.directory)
+        saved = capturedSaved
+        savedNames = Dictionary((self.liveTabs == nil ? diskTabs : []).map { item in
+            let name = Self.savedName(url: item.url, kind: item.kind, profile: space.profileID, saved: capturedSaved)
+            return ("\(item.kind)-\(item.url.absoluteString)", name)
+        }, uniquingKeysWith: { first, _ in first })
         let live = live ?? LiveFolders.existing(for: space.profileID)
-        let pinned = pinnedCollapsed ? [] : Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
-                                                         liveShape: state?.pins, splits: state?.splits ?? [], live: live)
+        self.live = live
+        capturedPRs = Dictionary((self.liveTabs ?? []).compactMap { tab in
+            guard let folder = state?.pins.folder(holding: tab.id.uuidString), folder.live != nil,
+                  let url = tab.pinnedURL,
+                  let pr = live?.row(of: url.absoluteString, in: folder) else { return nil }
+            return (tab.id, pr)
+        }, uniquingKeysWith: { first, _ in first })
+        let pinned = Self.section(space: space, kind: .pinned, tabs: self.liveTabs,
+                                  liveShape: state?.pins, splits: splits, live: live, unlocked: unlocked)
         let today = Self.section(space: space, kind: .today, tabs: self.liveTabs,
-                                 liveShape: state?.todayShape, splits: state?.splits ?? [], live: nil)
+                                 liveShape: state?.todayShape, splits: splits, live: nil, unlocked: unlocked)
+        pinnedAvailable = !pinned.isEmpty
         todayCount = self.liveTabs?.filter { $0.kind == .today }.count ?? space.tabURLs.count
-        let room = max(0, Look.spacePreviewRows - pinned.count)
-        rows = (Array(pinned.prefix(Look.spacePreviewRows)), Array(today.prefix(room)))
+        rows = (pinnedCollapsed ? [] : pinned, today)
     }
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool { lhs.identity == rhs.identity }
 
     enum Row {
         case folder(Folder, depth: Int = 0)
-        case site(URL, TabKind, Tab? = nil, depth: Int = 0, pr: GitHub.Row? = nil)
+        case blank(Tab, depth: Int = 0)
+        case site(URL, TabKind, Tab? = nil, depth: Int = 0, pr: GitHub.Row? = nil, savedIndex: Int? = nil)
 
         var depth: Int {
             switch self {
-            case .folder(_, let depth), .site(_, _, _, let depth, _): return depth
+            case .folder(_, let depth), .blank(_, let depth), .site(_, _, _, let depth, _, _): return depth
             }
         }
 
         var pr: GitHub.Row? {
-            guard case .site(_, _, _, _, let pr) = self else { return nil }
+            guard case .site(_, _, _, _, let pr, _) = self else { return nil }
             return pr
+        }
+    }
+
+    var colorScheme: ColorScheme {
+        switch space.appearance {
+        case "light": return .light
+        case "dark": return .dark
+        default:
+            return NSApplication.shared.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? .dark : .light
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.rowGap) {
             if includingFavorites { favoriteGrid }
-            // The same metrics as `SpaceRow`, glyph for glyph: the ghost slides under the real
-            // heading and any difference in size or ink reads as the row jumping on landing.
-            HStack(spacing: 0) {
-                HStack(spacing: Look.rowSpacing) {
-                    Image(systemName: (space.icon ?? "cloud") == "cloud" ? "cloud.fill" : (space.icon ?? "cloud"))
-                        .font(Look.spaceIcon).foregroundStyle(Look.inkPrimary).frame(width: Look.tileIcon)
-                    Text(space.name).font(Look.spaceTitle).lineLimit(1)
-                    Spacer(minLength: 0)
+            SpaceSectionsLayout(initialOffset: scrollOffset) {
+                HStack(spacing: 0) {
+                    HStack(spacing: Look.rowSpacing) {
+                        Image(systemName: (space.icon ?? "cloud") == "cloud" ? "cloud.fill" : (space.icon ?? "cloud"))
+                            .font(Look.spaceIcon).foregroundStyle(Look.inkPrimary).frame(width: Look.tileIcon)
+                        Text(space.name).font(Look.spaceTitle).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity)
+                    Color.clear.frame(width: Look.rowTarget)
                 }
-                .frame(maxWidth: .infinity)
-                Color.clear.frame(width: Look.rowTarget)
+                .foregroundStyle(Look.inkTertiary)
+                .padding(.leading, Look.rowInset)
+                .padding(.trailing, Look.rowInset / 2)
+                .frame(height: Look.rowHeight)
+                .padding(.bottom, pinnedCollapsed || !pinnedAvailable ? 0 : Look.sectionGap / 2 - Look.rowGap)
+            } rows: {
+                if pinnedAvailable {
+                    VStack(spacing: Look.rowGap) {
+                        ForEach(Array(rows.pinned.enumerated()), id: \.offset) { _, entry in
+                            row(entry, selected: isSelected(entry))
+                        }
+                    }
+                    .padding(.bottom, pinnedCollapsed ? -Look.rowGap : 0)
+                }
+                tidy
+                newTab
+                VStack(spacing: Look.rowGap) {
+                    ForEach(Array(rows.today.enumerated()), id: \.offset) { _, entry in
+                        row(entry, selected: isSelected(entry))
+                    }
+                }
+                Color.clear.frame(maxWidth: .infinity, minHeight: Look.rowHeight)
             }
-            .foregroundStyle(Look.inkTertiary)
-            .padding(.leading, Look.rowInset)
-            .padding(.trailing, Look.rowInset / 2)
-            .frame(height: Look.rowHeight)
-            .padding(.bottom, rows.pinned.isEmpty ? 0 : Look.sectionGap / 2 - Look.rowGap)
-            // Offsets, not the url: the same page can be pinned and open at once, and two
-            // rows sharing an id makes SwiftUI draw one of them.
-            ForEach(Array(rows.pinned.enumerated()), id: \.offset) { row($0.element) }
-            tidy
-            newTab
-            ForEach(Array(rows.today.enumerated()), id: \.offset) { row($0.element) }
-            Spacer(minLength: 0)
         }
+    }
+
+    private func isSelected(_ row: Row) -> Bool {
+        if let tab = liveTab(for: row) {
+            if let split = splits.first(where: { $0.contains(tab.id) }) {
+                return selectedID.map(split.contains) ?? false
+            }
+            return tab.id == selectedID
+        }
+        guard case .site(_, let kind, _, _, _, let index) = row, let index else { return false }
+        return selectedSavedRow == "\(kind)-\(index)"
     }
 
     /// Use the same visible outline as the live sidebar, including nesting and collapse.
     /// Disk shapes name URLs; live shapes name Tab IDs, so restore the former with the
     /// same counted URL mapping as the real section (duplicates remain distinct).
     private static func section(space: Space, kind: TabKind, tabs: [Tab]?,
-                                liveShape: Pins?, splits: [Split], live: LiveFolders?) -> [Row] {
+                                liveShape: Pins?, splits: [Split], live: LiveFolders?, unlocked: Set<UUID>) -> [Row] {
         let urls = kind == .pinned ? space.pinnedTabURLs ?? [] : space.tabURLs
         let loaded = tabs?.filter { $0.kind == kind }
+        let savedShape = TabStore.savedShape(kind, space: space.id, profileID: space.profileID)
+        // Match restorePins' stale-shape guard when the saved section has lost all its URLs.
+        let disk = kind == .pinned && urls.isEmpty && savedShape?.tabs.isEmpty == false ? nil : savedShape
+        let ordered = TabStore.pinOrder(shape: disk, urls: urls)
         let opened: [(url: String, id: String)] = loaded.map { tabs in
-            tabs.compactMap { tab in tab.pinnedURL.map { ($0.absoluteString, tab.id.uuidString) } }
-        } ?? urls.enumerated().map { ($0.element.absoluteString, String($0.offset)) }
-        let disk = TabStore.savedShape(kind, space: space.id, profileID: space.profileID)
+            tabs.map { tab in (tab.pinnedURL?.absoluteString ?? "", tab.id.uuidString) }
+        } ?? ordered.enumerated().map { ($0.element.absoluteString, String($0.offset)) }
         var shape = liveShape ?? TabStore.adopted(disk, opened: opened)
         if kind == .today { shape.removeEmptyFolders() }
         let byID = Dictionary(uniqueKeysWithValues: opened.map { ($0.id, $0.url) })
         let liveByID = Dictionary(uniqueKeysWithValues: (loaded ?? []).map { ($0.id.uuidString, $0) })
         let strip = (tabs ?? []).map { ($0.id, $0.kind) }
-        return shape.visible.compactMap { visible in
+        return shape.visible(unlocked: unlocked).compactMap { visible in
             if let folder = visible.entry.folder { return .folder(folder, depth: visible.depth) }
-            guard let id = visible.entry.tab, let name = byID[id], let url = URL(string: name) else { return nil }
+            guard let id = visible.entry.tab, let name = byID[id] else { return nil }
             let tab = liveByID[id]
             if let tab, let split = splits.first(where: { $0.contains(tab.id) }),
                Split.lead(of: split.tabs, strip: strip) != tab.id { return nil }
@@ -452,20 +543,30 @@ struct SpacePreviewList: View, Equatable {
             // Capture metadata here so a refresh cannot change the label during a swipe.
             let folder = shape.folder(holding: id)
             let pr = folder.flatMap { $0.live == nil ? nil : live?.row(of: name, in: $0) }
-            return .site(url, kind, tab, depth: visible.depth, pr: pr)
+            guard let url = URL(string: name), !name.isEmpty else {
+                return tab.map { .blank($0, depth: visible.depth) }
+            }
+            return .site(url, kind, tab, depth: visible.depth, pr: pr, savedIndex: tab == nil ? Int(id) : nil)
         }
     }
 
     private var favoriteGrid: some View {
         Group {
-            if !favorites.isEmpty {
+            if !favoriteItems.isEmpty {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Look.inset),
-                    count: SidebarWidth.favouriteColumns(favorites.count, width: SidebarWidth.shared.width)),
+                    count: SidebarWidth.favouriteColumns(favoriteItems.count, width: SidebarWidth.shared.width)),
                     spacing: Look.inset) {
-                    ForEach(Array(favorites.enumerated()), id: \.offset) { _, url in
-                        SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.tileIcon)
+                    ForEach(Array(favoriteItems.enumerated()), id: \.offset) { _, item in
+                        let tab = item.tab
+                        let page = tab?.currentURL ?? item.url.flatMap { saved[$0.absoluteString]?.page ?? $0 }
+                        let icon = if let tab { tab.favicon } else { page.flatMap {
+                            $0.isFileURL ? Files.icon(for: $0) : Favicons.cache(for: space.profileID).icon(for: $0)
+                        } }
+                        SidebarPageIcon(icon: icon, easel: page.flatMap(EaselAddress.boardID) != nil,
+                                        rounded: page?.isFileURL != true, size: Look.tileIcon)
                             .frame(maxWidth: .infinity, minHeight: Look.tileHeight)
-                            .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+                            .background(FavoriteTileBackground(selected: tab?.id == selectedID && tab != nil,
+                                                              hovering: false, icon: icon))
                     }
                 }
                 .padding(.bottom, Look.inset - Look.rowGap)
@@ -473,93 +574,129 @@ struct SpacePreviewList: View, Equatable {
         }
     }
 
-    /// The divider under Pinned. Not the real `TidyRow`: its two buttons act on the window's
-    /// own tabs, and a preview has none — the line is the part that holds the shape. The
-    /// words only when the real row would have them (six Today tabs, `Look.tidyThreshold`):
-    /// drawn always, they flashed in beside a bare line on every swipe into a small Space.
+    /// Draw the same housekeeping controls with inert actions while the preview moves.
     private var tidy: some View {
-        HStack(spacing: 8) {
-            Hairline()
-            if todayCount >= Look.tidyThreshold {
-                Text("Tidy | Clear").font(Look.sectionCaption).foregroundStyle(Look.inkTertiary)
+        let control = TidyTabs.control(today: todayCount, threshold: TidyTabs.threshold,
+            enabled: TidyTabs.enabled, running: tidyRunning)
+        return SidebarTidySurface {
+            switch control {
+            case .hidden: EmptyView()
+            case .tidy: Button("Tidy", action: {})
+            case .tidying:
+                ProgressView().controlSize(.small).scaleEffect(Look.tidySpinnerScale)
+                    .frame(height: Look.tidyRow)
+            }
+            if TidyTabs.offersHousekeeping(today: todayCount, threshold: Look.tidyThreshold) {
+                if control != .hidden { Text("|").foregroundStyle(Look.inkQuiet) }
+                Button("Clear", action: {})
             }
         }
-        .padding(.horizontal, Look.rowInset)
-        .frame(height: Look.tidyRow)
-        .padding(.vertical, Look.sectionGap / 2 - Look.rowGap)
     }
 
     private var newTab: some View {
-        HStack(spacing: Look.rowSpacing) {
-            Image(systemName: "plus").frame(width: Look.rowIcon)
-            Text("New Tab").font(Look.rowTitle).lineLimit(1)
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(Look.inkTertiary)
-        .padding(.leading, Look.rowInset)
-        .padding(.trailing, Look.rowTrailingInset)
-        .frame(height: Look.rowHeight)
+        SidebarRow(icon: "plus", title: "New Tab", selected: false, dimmed: true, action: {})
     }
 
-    @ViewBuilder private func row(_ row: Row) -> some View {
-        let tab = liveTab(for: row)
-        let page = pageURL(for: row, saved: saved, tab: tab)
-        let developer = page.map { DeveloperMode.wants($0, profile: space.profileID) } ?? false
-        HStack(spacing: Look.rowSpacing) {
-            switch row {
-            case .folder(let f, _):
-                Group {
-                    if f.iconIsEmoji { Text(f.icon).font(Look.small) } else { Image(systemName: f.icon) }
+    @ViewBuilder private func row(_ row: Row, selected: Bool) -> some View {
+        Group {
+            if let tab = liveTab(for: row), let renderStore {
+                if let split = splits.first(where: { $0.contains(tab.id) }) {
+                    let focused = selectedID.flatMap { split.contains($0) ? split.focusing($0) : nil } ?? split
+                    let candidates = (liveTabs ?? []) + favoriteItems.compactMap(\.tab)
+                    let panes = focused.tabs.compactMap { id in candidates.first { $0.id == id } }
+                    PaneStrip(store: renderStore, split: focused, panes: panes, selected: selected,
+                              ticked: selection.contains(tab.id), previewPRs: capturedPRs)
+                } else {
+                    SidebarTabSurface(store: renderStore, tab: tab, returnHovering: .constant(false),
+                                      pr: row.pr, action: {}, previewSelected: selected,
+                                      previewTicked: selection.contains(tab.id))
+                        .environment(\.livePR, row.pr)
                 }
-                .frame(width: Look.tileIcon)
-                // A live folder wears its source here too, or the badge pops in on landing.
-                .overlay(alignment: .bottomTrailing) {
-                    if f.live != nil {
-                        LiveBadge(live: LiveFolders.shared(for: space.profileID), folder: f.id)
-                            .offset(x: Look.sourceBadgeOffset, y: Look.sourceBadgeOffset)
-                    }
+            } else if case .folder(let folder, _) = row {
+                SidebarRow(selected: false, action: {}) {
+                    FolderGlyph(folder: folder, live: live)
+                } label: {
+                    Text(folder.name).font(Look.folderTitle)
+                } trailing: {
+                    FolderDisclosure(folder: folder,
+                                     locked: folder.requiresAuthentication == true && !unlocked.contains(folder.id))
                 }
-                Text(f.name).font(Look.folderTitle).lineLimit(1).foregroundStyle(Look.inkPrimary)
-            case .site(let url, _, _, _, _):
-                SiteIcon(icon: Favicons.cache(for: space.profileID).icon(for: url), size: Look.rowIcon)
-                LivePRTitle(title: title(for: row),
-                            pr: row.pr, developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
-                    .font(Look.rowTitle).lineLimit(1)
-                    .foregroundStyle(Look.inkPrimary)
-            }
-            Spacer(minLength: 0)
-            if case .folder(let folder, _) = row {
-                Image(systemName: "chevron.down")
-                    .font(Look.rowGlyph).foregroundStyle(Look.inkSecondary)
-                    .rotationEffect(.degrees(folder.collapsed ? -90 : 0))
+            } else {
+                savedRow(row, selected: selected)
             }
         }
-        .padding(.leading, Look.rowInset)
-        .padding(.trailing, Look.rowTrailingInset)
-        .frame(height: Look.rowHeight)
-        .overlay { if developer { DeveloperTabBorder() } }
         .padding(.leading, CGFloat(row.depth) * Look.folderIndent)
     }
 
-    func title(for row: Row) -> String { title(for: row, saved: saved) }
+    private func savedRow(_ row: Row, selected: Bool) -> some View {
+        let tab = liveTab(for: row)
+        let page = pageURL(for: row, saved: saved, tab: tab)
+        let developer = page.map { DeveloperMode.wants($0, profile: space.profileID) } ?? false
+        let returning: Bool = {
+            guard case .site(let url, .pinned, _, _, _, _) = row else { return false }
+            return tab.map { !$0.atHome } ?? (page != url)
+        }()
+        let icon = tab?.favicon ?? page.flatMap { $0.isFileURL ? Files.icon(for: $0)
+            : Favicons.cache(for: space.profileID).icon(for: $0) }
+        return SidebarRow(selected: selected, action: {}) {
+            SidebarPageIcon(icon: icon, easel: page.flatMap(EaselAddress.boardID) != nil,
+                            pr: row.pr, rounded: page?.isFileURL != true)
+        } label: {
+            HStack(spacing: 6) {
+                if returning {
+                    Text("/").fontWeight(.bold).foregroundStyle(Look.inkTertiary).fixedSize()
+                }
+                LivePRTitle(title: title(for: row), pr: row.pr,
+                            developerEndpoint: developer ? DeveloperMode.endpoint(page) : nil)
+            }
+        } trailing: {
+            if let tab, tab.audible || TabAudio.isMuted(tab) {
+                Image(systemName: TabAudio.isMuted(tab) ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(Look.rowGlyph).frame(width: Look.rowTarget, height: Look.rowTarget).foregroundStyle(Look.inkSecondary)
+            }
+        }
+        .overlay { if developer { DeveloperTabBorder() } }
+    }
+
+    func title(for row: Row) -> String {
+        if case .site(let url, let kind, nil, _, _, _) = row,
+           let title = savedNames["\(kind)-\(url.absoluteString)"] { return title }
+        return title(for: row, saved: saved)
+    }
 
     func title(for row: Row, saved: [String: Parked]) -> String {
         switch row {
         case .folder(let folder, _): return folder.name
-        case .site(let url, let kind, _, _, _):
+        case .blank(let tab, _): return TidyTitles.title(for: tab)
+        case .site(let url, let kind, _, _, _, _):
             return liveTab(for: row).map { TidyTitles.title(for: $0) }
-                ?? TidyTitles.previewName(for: url, in: space.profileID,
-                    saved: saved[url.absoluteString]?.title, stays: kind != .today)
+                ?? Self.savedName(url: url, kind: kind, profile: space.profileID, saved: saved)
         }
     }
 
+    private static func savedName(url: URL, kind: TabKind, profile: UUID, saved: [String: Parked]) -> String {
+        let parked = saved[url.absoluteString]
+        let page = parked?.page ?? url
+        if let id = EaselAddress.boardID(page) {
+            let board = EaselStore.shared(profileID: profile, directory: Store.directory).board(id)
+            return board.map { $0.title.isEmpty ? "Untitled Easel" : $0.title } ?? "Easel unavailable"
+        }
+        let raw = TabStore.parkedTitle(saved: parked?.title ?? "",
+            remembered: Store.store(for: profile).title(for: page), url: page)
+        return TidyTitles.previewName(for: url, in: profile, saved: raw, stays: kind != .today)
+    }
+
     private func liveTab(for row: Row) -> Tab? {
-        guard case .site(let url, let kind, let live, _, _) = row else { return nil }
-        return live ?? liveTabs?.first { $0.kind == kind && $0.pinnedURL == url }
+        switch row {
+        case .blank(let tab, _): return tab
+        case .site(_, _, let tab, _, _, _): return tab
+        case .folder: return nil
+        }
     }
 
     private func pageURL(for row: Row, saved: [String: Parked], tab: Tab?) -> URL? {
-        guard case .site(let url, _, _, _, _) = row else { return nil }
+        if case .blank(let tab, _) = row { return tab.currentURL }
+        guard case .site(let url, _, _, _, _, _) = row else { return nil }
         return tab?.currentURL ?? saved[url.absoluteString]?.page ?? url
     }
 }
@@ -599,12 +736,26 @@ extension TabStore {
         let presentationOwner = space.profileID == profileID ? self : TabStore.all.first {
             $0.profileID == space.profileID && window != nil && $0.parkedIn === window
         }
-        let favorites = owner?.tabs.filter { $0.kind == .favourite }.compactMap(\.pinnedURL)
-            ?? (UserDefaults.vane.stringArray(forKey: TabStore.defaultsKey(.favourite, space.profileID)) ?? [])
+        let favorites = owner?.tabs.filter { $0.kind == .favourite }.compactMap(\.pinnedURL) ?? {
+            let existing = (UserDefaults.vane.stringArray(forKey: TabStore.defaultsKey(.favourite, space.profileID)) ?? [])
                 .compactMap { URL(string: $0) }
+            let legacy = ProfileManager.shared.spaces(for: space.profileID).map(\.pinnedURLs)
+            // Match first-mount migration without writing preferences during a gesture.
+            return legacy.contains(where: { !$0.isEmpty })
+                ? Spaces.mergedFavourites(existing: existing, perSpace: legacy)
+                : Array(existing.prefix(Spaces.favouritesCap))
+        }()
         let preview = SpacePreviewList(space: space, liveTabs: state?.tabs, state: state,
                                        favorites: favorites, includingFavorites: space.profileID != profileID,
-                                       pinnedCollapsed: presentationOwner?.collapsedPinnedSpaces.contains(space.id) ?? false)
+                                       pinnedCollapsed: presentationOwner?.collapsedPinnedSpaces.contains(space.id) ?? false,
+                                       renderStore: presentationOwner ?? owner ?? self,
+                                       favoriteTabs: owner?.tabs.filter { $0.kind == .favourite } ?? [],
+                                       unlocked: (presentationOwner ?? self).folderAuthentication.grants(for: space.profileID),
+                                       newProfile: space.profileID != profileID && presentationOwner == nil,
+                                       selection: presentationOwner?.currentSpaceID == space.id
+                                           ? presentationOwner?.selection.ids ?? [] : [],
+                                       scrollOffset: presentationOwner?.currentSpaceID == space.id
+                                           ? presentationOwner?.spaceGesture.sidebarOffset ?? 0 : 0)
         if spaceSwiping { spaceGesture.previews[space.id] = preview }
         return preview
     }
@@ -616,13 +767,29 @@ extension TabStore {
     }
 
     func previewState(in space: Space) -> Stash? {
-        guard let owner = previewOwner(for: space) else { return nil }
-        if owner !== self { return owner.previewState(in: space) }
+        if space.profileID != profileID {
+            if let parked = TabStore.all.first(where: {
+                $0.profileID == space.profileID && window != nil && $0.parkedIn === window
+            }) {
+                return parked.previewState(in: space)
+            }
+            return SharedTabs.state(profileID: space.profileID, space: space.id)
+        }
         if currentSpaceID == space.id {
             return Stash(tabs: tabs.filter { $0.kind != .favourite }, pins: pins, todayShape: todayShape,
                          splits: splits, current: current, fingerprint: "")
         }
-        if let shared = SharedTabs.state(for: self, space: space.id) { return shared }
+        if var shared = SharedTabs.state(for: self, space: space.id) {
+            if let remembered = stashes[space.id] {
+                shared.current = remembered.current.flatMap { id in shared.tabs.contains { $0.id == id } ? id : nil }
+                    ?? shared.current
+                shared.splits = shared.splits.map { split in
+                    let focus = remembered.splits.first { Set($0.tabs) == Set(split.tabs) }?.activeTab
+                    return focus.map { split.focusing($0) } ?? split
+                }
+            }
+            return shared
+        }
         guard let kept = stashes[space.id], kept.fingerprint == fingerprint(of: space.id) else { return nil }
         return kept
     }
