@@ -73,6 +73,8 @@ import Security
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer {
             Passwords.deleteAll(profileID: source); Passwords.deleteAll(profileID: target)
+            XCTAssertEqual(try? Passwords.exportEntries(profileID: source).count, 0)
+            XCTAssertEqual(try? Passwords.exportEntries(profileID: target).count, 0)
             try? FileManager.default.removeItem(at: dir)
         }
         let entries = [PasswordImport.Entry(origin: PasswordOrigin(host: host), account: " 雪,\"ada\" ", password: "fixture\n🔑"),

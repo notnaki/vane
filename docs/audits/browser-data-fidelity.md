@@ -81,12 +81,27 @@ are unsupported.
 The pre-fix fixture run reproduced multiline/attribute HTML loss, BOM rejection, malformed
 CSV reaching save callbacks, truncated bookmark prefix imports, source JSON failures being
 swallowed, latest-only history loss, repeated history imports, and cross-category partial
-writes. After fixes and the independent review repairs, 194 focused tests passed (two opt-in real
-Keychain integration tests skipped) on macOS 27.0.1. The expanded filter also covers
+writes. After fixes and the independent review repairs, 194 focused tests passed with the
+real Keychain integration enabled (zero skips) on macOS 27.0.1. The expanded filter also covers
 password autofill/origin regressions, backup formats and Easels. Pure selfchecks and the
 CLI malformed-input/error/privacy fixtures passed. Fixtures include 2,500 HTML bookmarks
 and 10,000 database visits, SQLite abort/commit failures, missing/invalid sources, malformed
 native bookmark structure, attribute spoofing, adjacent Chromium microsecond visits,
 unrepresentable dates and output preservation.
-Native checks and optional Keychain runs are coordinated separately with the smoothness chat;
-the PR records their final outcomes. Fixtures remove their temporary data and scratch preferences.
+Both opt-in real Keychain tests also passed: isolated origin save/read/update/delete and CSV
+round-trip/repeat/existing-credential preservation, with fresh reads confirming credential cleanup.
+Those cleanup reads exposed macOS bulk deletion retaining matching entries unless the query
+explicitly requested all matches; profile-scoped deletion now includes that limit. A metadata-only
+cleanup in the original test runner removed the ten earlier disposable entries, restricted by
+the recorded launch windows, synthetic UUID hosts, creator and isolated namespaces.
+Native sandboxed checks, coordinated with the smoothness chat, retained the synthetic HTML
+fields, reported zero additions on repeat, rejected truncated HTML and CSV, and exported the
+supported HTML fields. Incorrect typed password-export confirmation and Cancel produced no
+password file; Return from the empty field did not export. The existing Cancel default remains
+in source. The app exited through its normal Quit confirmation without changing that preference.
+The first fixture launch used a data directory outside its unique sandbox container and stopped
+at startup recovery; moving disposable data into that container allowed the native pass.
+The accessibility observation after Quit implicitly relaunched the fixture; its new process and
+owned helper were tracked, revalidated and terminated. A full executable-path sweep confirmed
+all task-owned processes exited. Fixture bundles, data, exports, logs and scratch preferences
+were removed; macOS retained only protected metadata for the empty unique sandbox container.

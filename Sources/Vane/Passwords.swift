@@ -564,6 +564,7 @@ enum Passwords {
                 kSecClass as String: kSecClassInternetPassword,
                 kSecAttrCreator as String: creator,
                 kSecAttrSecurityDomain as String: d,
+                kSecMatchLimit as String: kSecMatchLimitAll,
             ] as CFDictionary)
             return
         }
