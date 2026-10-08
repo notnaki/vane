@@ -92,7 +92,9 @@ import XCTest
         try await Task.sleep(for: .milliseconds(150))
         let before = capture.messages.filter { $0["ready"] as? Bool == true }.count
         _ = try await js(web, "password.type='password'; password.disabled=false; login.hidden=false")
-        try await Task.sleep(for: .milliseconds(200))
+        // Offscreen WebKit can defer its MutationObserver/message delivery under
+        // load. Wait for the tested notification, with the fixture's bounded timeout.
+        try await wait { capture.messages.filter { $0["ready"] as? Bool == true }.count > before }
         XCTAssertGreaterThan(capture.messages.filter { $0["ready"] as? Bool == true }.count, before)
         expectTrue(try await fill(web))
     }
