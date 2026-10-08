@@ -313,6 +313,26 @@ swift test --filter 'BlockerTests|BlockerSubscriptionTests|BlockerWebKitTests'
 
 ### Saving profiles
 
+**Settings → Profiles → Website Data** (also in Privacy and Security) lists the
+selected profile’s stored website data. Search for a site, select its available
+categories, and choose **Clear Selected Data…**. **Site Controls → Clear Site Data…**
+opens the same view focused on the current site. WebKit groups sites by registrable
+domain, so an entry can include subdomains. Public WebKit APIs do not expose reliable
+per-site byte counts on macOS 27; the view labels disk usage unavailable.
+
+Clearing cookies or storage can sign you out or remove offline website work. Close
+that site’s tabs first: live pages can retain state and recreate data. The view waits
+for removal, fetches a fresh snapshot, and reports retained data or an unverified
+result instead of announcing success early. A slow operation remains pending.
+History, bookmarks, saved passwords and Vane’s site settings are kept. Private site
+controls inspect only that tab’s temporary store, without opening a saved profile’s
+store. Bulk browsing-data clearing also waits for WebKit completion and keeps shared
+app-opening permissions.
+
+```sh
+swift test --filter 'WebsiteDataTests|WebsiteDataWebKitTests|ProfilePersistenceTests'
+```
+
 Profile save failures appear in browser windows and Settings → Profiles. Unsaved
 profile names, colors, new profiles, and selection changes stay in memory; **Retry
 Save** writes their latest state. Quitting retries them first and asks before
