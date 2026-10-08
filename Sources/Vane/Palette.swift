@@ -10,47 +10,41 @@ import SwiftUI
 /// database, no network — so `vane selfcheck --pure` can assert the ranking on a headless
 /// box. The view below is the only part that touches the app.
 enum Palette {
-    /// Score `target` against `query`, or nil when `query` is not a subsequence of it.
-    /// Higher is better. Case-insensitive. An empty query matches everything, flatly, so
-    /// the palette can open showing its whole list.
-    ///
-    /// ponytail: a greedy leftmost subsequence walk, not an optimal alignment. Ceiling: a
-    /// target that repeats the query's leading letters can be scored on a worse alignment
-    /// than the best one available. That is invisible at the length of a tab title or a
-    /// url; the day it isn't, the fix is Smith-Waterman, not more bonus terms.
+    /// Literal relevance tiers followed by the best fuzzy subsequence alignment.
     static func score(_ query: String, _ target: String) -> Int? {
-        let q = Array(query.lowercased())
-        guard !q.isEmpty else { return 0 }
-        let t = Array(target.lowercased())
-        var qi = 0, structural = 0, previous = -2
-        for (i, c) in t.enumerated() {
-            guard qi < q.count else { break }
-            guard c == q[qi] else { continue }
-            structural += 1
-            if i == 0 {
-                structural += 12                                  // matched at the very start
-            } else if !t[i - 1].isLetter && !t[i - 1].isNumber {
-                structural += 6                                   // matched at the start of a word
-            }
-            if i == previous + 1 { structural += 8 }              // extends a contiguous run
-            previous = i
-            qi += 1
-        }
-        guard qi == q.count else { return nil }
-        // Target length is scaled into the last two digits: a shorter target breaks a tie
-        // and can never outrank a structurally better match.
-        return structural * 100 - min(t.count, 99)
+        SearchMatch(query).score(target)
     }
 
     /// Filter to what matches, best first. Stable — equal scores keep their input order,
     /// which is what makes the list predictable between keystrokes (and testable).
     static func rank<T>(_ query: String, _ items: [T], key: (T) -> String) -> [T] {
+        let match = SearchMatch(query)
         var hits: [(score: Int, order: Int, item: T)] = []
         for (i, item) in items.enumerated() {
-            if let s = score(query, key(item)) { hits.append((s, i, item)) }
+            if let s = match.score(key(item)) { hits.append((s, i, item)) }
         }
         hits.sort { $0.score == $1.score ? $0.order < $1.order : $0.score > $1.score }
         return hits.map(\.item)
+    }
+
+    /// Titles and addresses are independent fields; joining them loses exact titles
+    /// and can create a fuzzy match spanning unrelated row metadata.
+    static func rankPages<T>(_ query: String, _ items: [T],
+                             title: (T) -> String, url: (T) -> String) -> [T] {
+        let match = SearchMatch(query)
+        var hits: [(score: Int, order: Int, item: T)] = []
+        for (index, item) in items.enumerated() {
+            if let score = match.page(title: title(item), url: url(item)) {
+                hits.append((score, index, item))
+            }
+        }
+        hits.sort { $0.score == $1.score ? $0.order < $1.order : $0.score > $1.score }
+        return hits.map(\.item)
+    }
+
+    static func tabSourceAllowed(profileID: UUID, isPrivate: Bool, ownWindow: Bool,
+                                 sourceProfileID: UUID, sourcePrivate: Bool, sourceLittle: Bool) -> Bool {
+        ownWindow || (!isPrivate && !sourcePrivate && !sourceLittle && profileID == sourceProfileID)
     }
 
     /// Whether an open tab is a *strong* answer to the query — the kind that deserves to sit
@@ -59,15 +53,12 @@ enum Palette {
     /// query is how the title, the host, or a word of the title begins (a word only once the
     /// query is three characters, so a single letter does not claim every tab).
     static func strong(_ query: String, title: String, url: String) -> Bool {
-        let q = query.lowercased().trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return false }
-        let t = title.lowercased()
-        if t.hasPrefix(q) { return true }
-        if let host = URL(string: url)?.host?.lowercased() {
-            if host.hasPrefix(q) || host.hasPrefix("www." + q) { return true }
-        }
-        guard q.count >= 3 else { return false }
-        return t.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains { $0.hasPrefix(q) }
+        let match = SearchMatch(query)
+        guard !match.query.isEmpty,
+              let score = match.page(title: title, url: url, fuzzy: false) else { return false }
+        return score >= SearchMatch.prefixFloor
+            || (match.query.count >= 3 && score >= SearchMatch.wordFloor)
+
     }
 
     /// The bar before a character is typed (ref 2). Arc's ⌘T opens on this window's own
@@ -378,6 +369,8 @@ private struct PaletteRow: Identifiable {
     var image: NSImage? = nil
     let title: String
     var detail: String = ""
+    /// Actual address for matching; descriptive labels are never search fields.
+    var matchURL: String = ""
     var subtitle: String = ""
     var trailing: String = ""
     /// Draw `icon` inside a filled square rather than bare. Arc marks the one row in the bar
@@ -569,6 +562,7 @@ struct CommandField: NSViewRepresentable {
     /// Arc's ⇥: the bar narrows to its actions catalogue and says so with a scope chip in
     /// the field. Escape takes the filter off before it closes the bar.
     @State private var actionsOnly = false
+    @State private var tabSpaceID: UUID?
     @State private var activeBang: Bang?
     /// The field is held back one frame so it is created with the prefilled address already
     /// in it — an NSTextField can only select text it has.
@@ -592,7 +586,9 @@ struct CommandField: NSViewRepresentable {
     }
     private var fieldHeight: CGFloat { sidebarAddress ? Look.barRowHeight : Look.barFieldHeight }
     private var barHeight: CGFloat {
-        fieldHeight + (rows.isEmpty ? 0 : 1 + listHeight + listPadding)
+        fieldHeight + (mode == .tabs && !store.isPrivate && !store.isLittle && !actionsOnly
+                       ? Look.control + Look.barRowGap : 0)
+            + (rows.isEmpty ? 0 : 1 + listHeight + listPadding)
     }
 
     /// Nil under Reduce Motion, which SwiftUI reads as "just change".
@@ -670,11 +666,22 @@ struct CommandField: NSViewRepresentable {
             if mode != .tabs, !actionsOnly { store.suggest(typed, scopedTo: activeBang) }
             refresh()
         }
+        // Search Tabs can replace the mode of an already-open bar. SwiftUI keeps
+        // its state in that case, so rows/scopes must refresh without another onAppear.
+        .onChange(of: mode) {
+            actionsOnly = false
+            activeBang = nil
+            tabSpaceID = nil
+            store.clearSuggestions()
+            if mode != .tabs { store.suggest(typed) }
+            refresh()
+        }
         // Completions land later than the keystroke that asked for them; the list has to
         // grow under the user without moving what they had already arrowed onto. The same
         // goes for a tab that renames itself or gets its favicon while the bar is up.
         .onChange(of: store.suggestions) { refresh(reset: false) }
         .onChange(of: tabs.revision) { refresh(reset: false) }
+        .onChange(of: tabSpaceID) { refresh() }
         // Tabs opened or closed while the bar is up: watch the new set, and list it.
         .onChange(of: allTabs.map(\.id)) { tabs.watch(allTabs); refresh(reset: false) }
     }
@@ -754,6 +761,20 @@ struct CommandField: NSViewRepresentable {
             .padding(.horizontal, Look.barInset + Look.barRowInset)
             .frame(height: fieldHeight)
             .animation(motion(Look.quick), value: activeBang)
+
+            if mode == .tabs, !store.isPrivate, !store.isLittle, !actionsOnly {
+                Picker("Space", selection: $tabSpaceID) {
+                    Text("All open Spaces").tag(nil as UUID?)
+                    ForEach(store.spaces) { space in
+                        Text(space.name).tag(Optional(space.id))
+                    }
+                }
+                .pickerStyle(.menu)
+                .padding(.horizontal, Look.barInset + Look.barRowInset)
+                .padding(.bottom, Look.barRowGap)
+                .accessibilityHint("Filters open tabs in this profile by their current Space.")
+                .animation(motion(Look.quick), value: tabSpaceID)
+            }
 
             if !rows.isEmpty {
                 Hairline().padding(.horizontal, Look.barInset)
@@ -1016,7 +1037,7 @@ struct CommandField: NSViewRepresentable {
         let selectedID = rows.indices.contains(index) ? rows[index].id : nil
         var out: [PaletteRow] = []
         func matchingTabs() -> [PaletteRow] {
-            Palette.rank(query, tabRows(), key: { $0.title + " " + $0.detail })
+            Palette.rankPages(query, tabRows(), title: \.title, url: \.matchURL)
         }
         if actionsOnly {
             // ⇥: the catalogue and nothing else, so the bar reads as one list of verbs.
@@ -1035,15 +1056,15 @@ struct CommandField: NSViewRepresentable {
             // typing two letters means a search far more often than "Archive Tab" — but
             // they are always *there*, from the first character on. Archived tabs and Spaces
             // are places, so they are searched the moment there is something to search with.
-            let places = Palette.rank(typed, archiveRows() + spaceRows(),
-                                      key: { $0.title + " " + $0.detail })
+            let places = Palette.rankPages(typed, archiveRows() + spaceRows(),
+                                           title: \.title, url: \.matchURL)
             // Only a strong match leads, and only one: a search is what two typed letters
             // mean far more often than "Switch to Tab", so the tabs that merely fuzz-match
             // wait until after what the engine completes the words to.
             // A tab row's detail is "address — Window n" when there are several windows.
             let tabs = matchingTabs()
             let strong = tabs.filter {
-                Palette.strong(typed, title: $0.title, url: $0.detail.components(separatedBy: " — ")[0])
+                Palette.strong(typed, title: $0.title, url: $0.matchURL)
             }
             let weak = tabs.filter { row in !strong.contains { $0.id == row.id } }
             out = Palette.arrange(
@@ -1128,14 +1149,16 @@ struct CommandField: NSViewRepresentable {
         }
     }
 
-    /// Every window, not just this one — a tab you are looking for is as likely to be
-    /// behind another window as in front of you. Private windows and Little Arcs are the
-    /// exceptions, and only from the outside: each is listed in its own bar and nowhere else.
+    /// Other ordinary windows in this profile are searchable. Private and Little Vane
+    /// tabs are visible only in their own window; private searches never read other windows.
     private func tabRows() -> [PaletteRow] {
         var out: [PaletteRow] = []
         let manyWindows = TabStore.all.count > 1
         for (w, other) in TabStore.all.enumerated()
-        where other === store || !(other.isPrivate || other.isLittle) {
+        where Palette.tabSourceAllowed(profileID: store.profileID, isPrivate: store.isPrivate,
+                                       ownWindow: other === store, sourceProfileID: other.profileID,
+                                       sourcePrivate: other.isPrivate, sourceLittle: other.isLittle)
+            && (tabSpaceID == nil || other.currentSpaceID == tabSpaceID) {
             let place = manyWindows ? "Window \(w + 1)" : ""
             out += other.accessibleTabs.map { tabRow($0, in: other, place: place) }
         }
@@ -1147,7 +1170,7 @@ struct CommandField: NSViewRepresentable {
         let detail = [tab.address, place].filter { !$0.isEmpty }.joined(separator: " — ")
         let isCurrent = owner === store && tab.id == store.current
         return PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
-                          image: tab.favicon, title: tab.title, detail: detail, subtitle: place,
+                          image: tab.favicon, title: tab.title, detail: detail, matchURL: tab.address, subtitle: place,
                           trailing: isCurrent ? "" : "Switch to Tab", kind: "Open tab") { _ in
             Windows.reveal(tab, in: owner)
         }
@@ -1190,7 +1213,7 @@ struct CommandField: NSViewRepresentable {
             PaletteRow(id: "archived:" + entry.url, icon: "archivebox",
                        // Resolve icons only after ranking and the displayed-row cap.
                        title: entry.title.isEmpty ? entry.url : entry.title,
-                       detail: entry.url,
+                       detail: entry.url, matchURL: entry.url,
                        trailing: "Restore Tab", kind: "Archived tab") { _ in
                 Windows.current?.unarchive(entry)
             }
