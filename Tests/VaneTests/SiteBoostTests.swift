@@ -223,7 +223,9 @@ import XCTest
         let styled = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: sibling) as? String
         XCTAssertEqual(styled, "rgb(18, 52, 86)")
         SiteBoosts.forget(host: "boost.test", tab: tab)
-        try await Task.sleep(for: .milliseconds(100))
+        try await compatibilityWait {
+            try await self.visual("getComputedStyle(document.getElementById('copy')).color !== 'rgb(18, 52, 86)'", tab: sibling) as? Bool == true
+        }
         XCTAssertEqual(SiteBoosts.value(origin: "https://boost.test", tab: sibling), SiteBoost())
         XCTAssertEqual(SiteBoosts.value(origin: "https://boost.test", tab: other), boost)
         let restored = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: sibling) as? String
