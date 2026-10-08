@@ -310,7 +310,7 @@ import WebKit
           if (p.pass) {
             if (!liveDocument() || !usableInput(p.pass) || hasRole(p.pass, 'new-password') ||
                 rootFor(p.pass) !== root || token(targetPair()) !== token(p) ||
-                (p.user && p.user.isConnected && p.user.value !== account)) return false;
+                (p.user && p.user.value !== account)) return false;
             var current = pairFor(p.pass), currentIdentity = pair(root, true);
             if (!current || token(current) !== token(p)) return false;
             var hint = currentIdentity && currentIdentity.user;

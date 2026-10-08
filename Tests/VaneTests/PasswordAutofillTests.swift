@@ -279,6 +279,17 @@ import XCTest
         expectEqual(try await js(web, "[user.value,password.value].join('|')") as? String, "bob|")
     }
 
+    func testDetachedUsernameCannotChangeIdentityBeforeSecretWrite() async throws {
+        let (web, _) = try await fixture("""
+            <form><input id=user autocomplete=username><input id=password type=password></form>
+            <script>user.addEventListener('input',()=>{
+              user.value='bob'; user.remove();
+            });</script>
+            """)
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "")
+    }
+
     func testDomainRelaxationCannotShareCredentialsAcrossPorts() async throws {
         // document.domain makes these ports DOM-accessible, but not the same origin.
         let listener = try NWListener(using: .tcp, on: .any)
