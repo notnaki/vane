@@ -28,6 +28,9 @@ and controls under Settings → Advanced. Restore does not merge libraries.
   archived tabs, search engines, shortcuts, permissions, and sidebar metadata.
   Capture only Vane's own persistent domain, never global or registered defaults.
   Exclude transient startup/crash/restore bookkeeping and backup scheduling metadata.
+- Include app-owned imported content-blocking lists under FilterLists, so restoring
+  settings does not leave their saved list names pointing to missing content. Legacy
+  external filter files follow the same relinking limitation as external folders.
 - Include every Easel, item, drawing, style, title, and embedded image. Preserve
   board IDs so Easel tab references still point to the restored boards.
 - Exclude private windows and Little Vane sessions, Keychain passwords and tokens,
@@ -58,7 +61,9 @@ Foundation, CryptoKit, SQLite, and the app's existing UI frameworks; add no depe
 Archive entries are logical names from the owned-file allowlist, not arbitrary
 destination paths. Reject duplicate names, traversal, absolute paths, symlinks,
 unexpected files, missing required metadata, invalid digests, and orphan profile
-references. Bound archive reads to 512 MiB and total decoded payloads to 512 MiB;
+references. The only nested entries are FilterLists files with validated imported
+list names; do not allow arbitrary nested paths. Bound archive reads to 512 MiB
+and total decoded payloads to 512 MiB;
 report the limit without trimming any requested data. Respect existing Easel limits.
 
 ## Consistent capture

@@ -41,7 +41,7 @@
 **Interfaces:**
 - Consumes: Foundation Data and CryptoKit SHA256.
 - Produces: `BackupArchive: Codable, Sendable`, `BackupArchive.File: Codable, Sendable`, `BackupReason: String, Codable, Sendable` (`manual`, `automatic`, `beforeRestore`), `BackupCodec.encode(_:) throws -> Data`, `BackupCodec.decode(_:) throws -> BackupArchive`, `BackupCodec.read(_:) throws -> BackupArchive`, `BackupCodec.write(_:to:) throws`, `BackupPaths.isOwned(_:) -> Bool`, and `BackupPaths.names(for:) -> Set<String>`.
-- Archive fields: format identifier, version, id, created, appVersion, reason, preferences Data, preference digest, files `[File]`; File fields: name, data, SHA256 digest. Capture excludes local bookkeeping. Names are flat allowlisted profiles.json, per-profile spaces/session/spacestate JSON, Easel JSON, and profile databases.
+- Archive fields: format identifier, version, id, created, appVersion, reason, preferences Data, preference digest, files `[File]`; File fields: name, data, SHA256 digest. Capture excludes local bookkeeping. Names are allowlisted profiles.json, per-profile spaces/session/spacestate JSON, Easel JSON, profile databases, and FilterLists entries with validated imported list names.
 
 - [ ] **Step 1: Write codec rejection and round-trip tests.** Use small immutable payloads; decoding enforces format/version, size, uniqueness, flat owned names, and digests before any library I/O.
 
@@ -65,7 +65,8 @@ func testTraversalAndDuplicateEntriesAreRejected() throws {
 ```
 
 Add tests for altered file/preference digests, future version, malformed plist,
-the boundary helper without allocating 512 MiB, symlink reads, exact profile-name
+the boundary helper without allocating 512 MiB, symlink reads, imported FilterLists
+names versus traversal/nested paths, exact profile-name
 rules (default suffix versus UUID suffix, Easel uppercase UUID), and failed atomic
 export preserving an existing file. Add a writer injection seam for I/O failures.
 
@@ -131,7 +132,8 @@ that drops the suite and directory. Use explicit XCTest teardown ownership.
 Test SQLite with a live connection, disabled autocheckpoint, WAL-only bookmark and
 history writes; compare captured counts after opening the snapshot independently.
 Test missing optional databases without creating them, empty Spaces, multi-profile
-folder/settings bytes, archived tabs, actual PNG image bytes, favourites/pinned/split
+folder/settings bytes, imported filter files and their preference references, archived tabs,
+actual PNG image bytes, favourites/pinned/split
 and session metadata. Test repeated URLs and two windows sharing tab IDs. Test invalid
 profile IDs, orphan ownership, bad session/Space sidecar/Easel schemas and images,
 malformed SQLite, symlink source files, and preference filtering of global defaults.
