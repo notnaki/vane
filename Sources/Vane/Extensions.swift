@@ -254,6 +254,7 @@ import WebKit
 
     /// Security-scoped bookmarks, isolated by profile.
     static let baseKey = "extensionFolders"
+    static let identifiersKey = "extensionIdentifiers"
 
     /// Per profile, so an extension installed in one profile is not loaded into another.
     static func key(for profileID: UUID) -> String {
@@ -261,8 +262,8 @@ import WebKit
     }
 
     private var contextIdentifiers: [String: String] {
-        get { UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey("extensionIdentifiers", profileID)) as? [String: String] ?? [:] }
-        set { UserDefaults.vane.set(newValue, forKey: ProfileManager.defaultsKey("extensionIdentifiers", profileID)) }
+        get { UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.identifiersKey, profileID)) as? [String: String] ?? [:] }
+        set { UserDefaults.vane.set(newValue, forKey: ProfileManager.defaultsKey(Self.identifiersKey, profileID)) }
     }
 
     // MARK: Actions

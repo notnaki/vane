@@ -25,10 +25,31 @@ import XCTest
     override func tearDown() async throws {
         for view in views { view.stopLoading(); view.removeFromSuperview() }
         views.removeAll()
+        let host = ExtensionHost.host(for: profile)
+        for context in host.installed { host.remove(context) }
         ExtensionHost.forget(profile)
         ScopedPaths.remove(path: folder.path, from: ExtensionHost.key(for: profile))
         ExtensionConsent.remove(for: folder, profileID: profile)
         try? FileManager.default.removeItem(at: folder)
+    }
+
+    func testDeletingProfileRemovesOnlyItsExtensionIdentities() {
+        let manager = ProfileManager.shared
+        let deleted = manager.create(name: "Extension deletion fixture")
+        let retained = manager.create(name: "Extension retained fixture")
+        let deletedKey = ProfileManager.defaultsKey("extensionIdentifiers", deleted.id)
+        let retainedKey = ProfileManager.defaultsKey("extensionIdentifiers", retained.id)
+        defer {
+            _ = manager.delete(deleted.id)
+            _ = manager.delete(retained.id)
+            UserDefaults.vane.removeObject(forKey: deletedKey)
+            UserDefaults.vane.removeObject(forKey: retainedKey)
+        }
+        UserDefaults.vane.set([folder.path: UUID().uuidString], forKey: deletedKey)
+        UserDefaults.vane.set([folder.path: UUID().uuidString], forKey: retainedKey)
+        XCTAssertTrue(manager.delete(deleted.id))
+        XCTAssertNil(UserDefaults.vane.object(forKey: deletedKey))
+        XCTAssertNotNil(UserDefaults.vane.object(forKey: retainedKey))
     }
 
     private func load() async throws -> WKWebExtensionContext {
@@ -87,7 +108,10 @@ import XCTest
         let tab = Tab(profileID: profile)
         let other = Tab(profileID: UUID())
         let privateTab = Tab(isPrivate: true)
-        defer { tab.tearDown(); other.tearDown(); privateTab.tearDown() }
+        defer {
+            tab.tearDown(); other.tearDown(); privateTab.tearDown()
+            ExtensionHost.forget(other.profileID)
+        }
         for candidate in [tab, other, privateTab] {
             candidate.web.loadHTMLString("<title>Content fixture</title>", baseURL: URL(string: "https://example.test/page"))
         }
