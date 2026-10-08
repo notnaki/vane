@@ -106,6 +106,10 @@ import XCTest
         let frame = try XCTUnwrap(selection.frame)
         XCTAssertFalse(frame.isMainFrame)
         XCTAssertEqual(frame.securityOrigin.host, "localhost")
+        try await compatibilityWait {
+            try await self.tab.web.callAsyncJavaScript("return document.getElementById('files').files.length;",
+                                                       arguments: [:], in: frame, contentWorld: .page) as? Int == 1
+        }
         let count = try await tab.web.callAsyncJavaScript("return document.getElementById('files').files.length;", arguments: [:], in: frame, contentWorld: .page)
         XCTAssertEqual(count as? Int, 1)
         _ = try await tab.web.callAsyncJavaScript("document.querySelector('form').submit(); return true;", arguments: [:], in: frame, contentWorld: .page)
