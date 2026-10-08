@@ -34,9 +34,14 @@ import WebKit
     }
 
     static func state(for store: TabStore, space: UUID?) -> Stash? {
+        state(profileID: store.profileID, space: space, excluding: store)
+    }
+
+    /// Preview a not-yet-mounted profile using the same source as its initializer.
+    static func state(profileID: UUID, space: UUID?, excluding store: TabStore? = nil) -> Stash? {
         guard let space else { return nil }
         let peers = TabStore.all.filter {
-            $0 !== store && $0.sharesTabs && $0.profileID == store.profileID
+            $0 !== store && $0.sharesTabs && $0.profileID == profileID
         }
         let live = peers.filter { $0.currentSpaceID == space }
         if let source = live.first(where: { $0.window?.isKeyWindow == true }) ?? live.first {
