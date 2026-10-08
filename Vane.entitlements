@@ -14,9 +14,11 @@
   <key>com.apple.security.network.client</key><true/>
   <key>com.apple.security.network.server</key><true/>
 
-  <!-- getUserMedia. A hardened/sandboxed app is denied the device before any site prompt
-       is reached, so SitePermissions would ask and then fail. -->
+  <!-- Camera and microphone need resource eligibility in addition to Vane's site
+       decisions and the user's separate macOS authorization. -->
   <key>com.apple.security.device.camera</key><true/>
+  <key>com.apple.security.device.microphone</key><true/>
+  <!-- Retain audio-input for Hardened Runtime and older sandbox configurations. -->
   <key>com.apple.security.device.audio-input</key><true/>
 
   <!-- WebKit geolocation needs sandbox access as well as the site decision. This

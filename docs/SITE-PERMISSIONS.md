@@ -5,9 +5,12 @@ Vane’s permission store records what a website’s main document may request. 
 Neither a saved Allow nor Allow Once changes or bypasses that authorization. macOS
 controls live device indicators and its privacy settings; Vane’s Allowed labels describe
 site decisions, not evidence that a device is capturing. The packaged app includes
-`com.apple.security.personal-information.location` for sandbox access and the existing
-`NSLocationWhenInUseUsageDescription`. This makes location eligible for system
-authorization; it does not grant authorization or guarantee delivered coordinates.
+`com.apple.security.personal-information.location` for sandbox access and the required macOS
+`NSLocationUsageDescription` (alongside the existing when-in-use description). This
+makes location eligible for system authorization; it does not grant authorization or guarantee delivered coordinates.
+Camera and microphone retain their usage descriptions and camera/audio-input
+entitlements; microphone also has the current App Sandbox `device.microphone`
+entitlement. These packaging capabilities likewise do not grant user authorization.
 
 ## Supported decisions
 
@@ -123,7 +126,9 @@ or private permission delegate is used to bypass these platform limits.
 Primary references: [Apple media capture delegate](https://developer.apple.com/documentation/webkit/wkuidelegate/webview(_:decidemediacapturepermissionsfor:initiatedby:type:)),
 [Apple geolocation delegate](https://developer.apple.com/documentation/webkit/wkuidelegate/webview(_:requestgeolocationpermissionfor:initiatedbyframe:decisionhandler:)),
 [Apple capture state setter](https://developer.apple.com/documentation/webkit/wkwebview/setcameracapturestate(_:completionhandler:)),
+[Apple microphone sandbox entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.microphone),
 [Apple location entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.personal-information.location),
+[Apple macOS location usage description](https://developer.apple.com/documentation/bundleresources/information-property-list/nslocationusagedescription),
 and [WebKit Cocoa delegate implementation](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/Cocoa/UIDelegate.mm).
 The installed Xcode 27 `WKUIDelegate.h` and `WKWebView.h` were inspected alongside these
 sources on macOS 27.0.1.
