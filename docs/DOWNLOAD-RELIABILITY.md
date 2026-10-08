@@ -96,9 +96,11 @@ syntactically valid legacy data is not proof of resumability. Server responses
 without a usable length cannot be independently checked for truncation without
 a server-provided digest; WebKit still determines transfer success.
 
-Known missing/unwritable destinations are rejected before handing the path to
+Known missing/unwritable automatic folder destinations are rejected before handing the path to
 WebKit, with an explicit failed row. A macOS 26 CI run exposed delayed native
 failure delivery for a readonly folder; destination preflight removes that stall.
+Save-panel choices retain WebKit's selected-file authorization path, since the
+sandbox grant does not necessarily include access to the containing folder.
 
 The 262,144-byte deterministic fixture has SHA-256 `31a1f9dea0169551092d05e8bf4a446228c8c3eb4c9b713c66adcb7fd53c89be`.
 
