@@ -6,7 +6,12 @@ passing release checks.
 
 ## Storage hardening
 
-- Surface storage failures instead of silently losing profile, history, or settings data.
+- Completed cross-feature backup/recovery checks for templates, offline articles,
+  Easels, Reader settings and site Boosts are recorded in
+  [data integration evidence](DATA-INTEGRATION.md), including populated restore
+  interruptions, unavailable storage, retry and corrupt Boost validation.
+- Extend surfaced save failures beyond the verified profile/Space, template, Easel,
+  article and backup paths to remaining history and UserDefaults settings writes.
 - Keep bulk writes atomic when the data directory is locked, unavailable, corrupt, or full.
 - Verify profile-owned website-data deletion cannot touch another profile or test store.
 
