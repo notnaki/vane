@@ -8,7 +8,7 @@ import XCTest
         // AppKit activation, the window server and timer scheduling all contribute.
         // Keep the 100 ms budget for an explicitly controlled release benchmark.
         try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1",
-                          "Run VANE_UI_PERFORMANCE=1 swift test -c release --filter HistoryResponsivenessTests on a quiet logged-in Mac")
+                          "Run VANE_UI_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter HistoryResponsivenessTests on a quiet logged-in Mac")
         #if DEBUG
         try XCTSkipIf(true, "The native UI performance budget requires a release build")
         #endif

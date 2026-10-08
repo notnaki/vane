@@ -749,7 +749,7 @@ History correctness, profile isolation, search cancellation and input-thread sea
 checks remain in the routine test suite.
 
 ```sh
-VANE_UI_PERFORMANCE=1 swift test -c release --filter HistoryResponsivenessTests
+VANE_UI_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter HistoryResponsivenessTests
 ```
 
 GitHub credential regressions exercise the real Live Folder response handler with an isolated

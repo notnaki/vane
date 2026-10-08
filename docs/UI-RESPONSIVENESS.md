@@ -143,7 +143,7 @@ python3 scripts/ui-responsiveness-fixture.py --binary .build/release/vane \
 # Quit only this fixture, or Ctrl-C its supervisor; it verifies child exit and
 # unregisters its isolated WebKit store. Repeat without --large for the small set.
 swift test --filter 'HistoryResponsivenessTests|SpaceSelectionContinuityTests|SpaceDotBlendTests|SpaceButtonSelectionTests'
-VANE_UI_PERFORMANCE=1 swift test -c release --filter HistoryResponsivenessTests
+VANE_UI_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter HistoryResponsivenessTests
 python3 scripts/check-browser-smoke.py --binary .build/release/vane
 ```
 
