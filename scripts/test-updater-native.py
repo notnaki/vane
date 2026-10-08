@@ -26,6 +26,8 @@ parser.add_argument('--previous', type=pathlib.Path, required=True)
 parser.add_argument('--bootstrap-failure', action='store_true', help='requires SIGN_ID to sign an early-exit candidate')
 parser.add_argument('--evidence', type=pathlib.Path, required=True)
 options = parser.parse_args()
+if not os.environ.get('SIGN_ID'):
+    parser.error('SIGN_ID is required for the pinned Developer ID XPC caller/helper authentication')
 options.evidence.mkdir(parents=True, exist_ok=True)
 owned = {}
 
@@ -102,6 +104,7 @@ def stop(pid, root, sig=signal.SIGTERM):
 def until(predicate, seconds=20):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
+        if 'work' in globals(): track(work)
         if predicate():
             return
         time.sleep(.1)
@@ -132,6 +135,25 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
     # rights; it runs only transaction/relaunch code, never browser storage code.
     subprocess.run(['codesign', '--force', '--options', 'runtime', '--sign', os.environ.get('SIGN_ID', '-'),
                     '--entitlements', str(ROOT / 'Vane.entitlements'), str(driver)], check=True)
+    scenarios = ['healthy', 'crashed-launch', 'corrupted-new', 'legacy-rollback', 'unsupervised-rollback'] + (['failed-bootstrap', 'failed-bootstrap-stale', 'failed-bootstrap-malformed'] if options.bootstrap_failure else [])
+    service = driver / 'Contents/XPCServices/io.github.notnaki.vane.UpdateInstaller.xpc'
+    (service / 'Contents/MacOS').mkdir(parents=True)
+    shutil.copy2(ROOT / 'installer/UpdateInstaller-Info.plist', service / 'Contents/Info.plist')
+    service_main = work / 'main.swift'
+    roots = ', '.join('URL(fileURLWithPath: ' + json.dumps(str(work / name)) + ')' for name in scenarios)
+    service_main.write_text((ROOT / 'Sources/UpdateInstaller/main.swift').read_text().replace(
+        'let service = InstallerService()', 'let service = InstallerService(applicationsDirectories: [' + roots + '])'))
+    service_source = work / 'FixtureService.swift'
+    service_source.write_text((ROOT / 'Sources/UpdateInstaller/InstallerService.swift').read_text().replace(
+        'try worker.run()', 'let logURL = URL(fileURLWithPath: isolatedDirectory).appendingPathComponent("worker.log"); FileManager.default.createFile(atPath: logURL.path, contents: nil); worker.standardError = try FileHandle(forWritingTo: logURL); try worker.run()'))
+    sources = ['Sources/Vane/BundleReplacement.swift' , 'Sources/Vane/UpdateVersion.swift', 'Sources/Vane/UpdateInstaller.swift',
+               'Sources/Vane/UpdateRelaunch.swift', 'Sources/UpdateInstaller/UpdateInstallation.swift',
+               'Sources/UpdateInstaller/InstallerRelaunch.swift']
+    subprocess.run(['xcrun', 'swiftc', '-O'] + [str(ROOT / name) for name in sources]
+                   + [str(service_source), str(service_main), '-o', str(service / 'Contents/MacOS/VaneUpdateInstaller')], check=True)
+    subprocess.run(['codesign', '--force', '--options', 'runtime', '--sign', os.environ.get('SIGN_ID', '-'), str(service)], check=True)
+    subprocess.run(['codesign', '--force', '--options', 'runtime', '--sign', os.environ.get('SIGN_ID', '-'),
+                    '--entitlements', str(ROOT / 'Vane.entitlements'), str(driver)], check=True)
     templates = {}
     for kind, original in [('old', options.previous), ('new', options.app)]:
         app = work / (kind + '.app')
@@ -157,7 +179,7 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
         templates['stub'] = stub
     environment = {key: os.environ[key] for key in ['HOME', 'PATH', 'TMPDIR', 'USER', 'LOGNAME', 'LANG'] if key in os.environ}
     try:
-        for scenario in ['healthy', 'crashed-launch', 'corrupted-new'] + (['failed-bootstrap', 'failed-bootstrap-stale', 'failed-bootstrap-malformed'] if options.bootstrap_failure else []):
+        for scenario in scenarios:
             scene = work / scenario
             scene.mkdir()
             target = scene / 'Vane.app'
@@ -167,46 +189,79 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
             journal = json.loads(record.read_text())
             previous = scene / journal['stageName']
             assert version(previous) == old_version
-            if scenario == 'failed-bootstrap-stale':
+            if scenario == 'legacy-rollback':
+                for key in ['targetPath', 'volumeID', 'newDigest', 'oldDigest']:
+                    journal.pop(key, None)
+                journal.update(state='launching', launchPID=2147483647, launchStart=1, launchDeadline=0)
+                record.write_text(json.dumps(journal))
+            elif scenario == 'failed-bootstrap-stale':
                 journal.update(state='launching', launchPID=2147483647, launchStart=1, launchDeadline=0)
                 record.write_text(json.dumps(journal))
             elif scenario == 'failed-bootstrap-malformed':
                 record.write_text('{')
-            if scenario == 'corrupted-new':
+            if scenario in ['corrupted-new', 'unsupervised-rollback']:
                 (target / 'unexpected-content').write_text('corrupted replacement')
             data = scene / 'isolated-data'
             data.mkdir()
             environment['VANE_DATA_DIR'] = str(data)
             log_path = options.evidence / (scenario + '.log')
             with log_path.open('wb') as log:
-                command = [str(sandboxed_helper), '--restart', str(target)] if scenario == 'healthy' or scenario.startswith('failed-bootstrap') else [str(target / 'Contents/MacOS/Vane')]
+                restart_worker = [str(target / 'Contents/XPCServices/io.github.notnaki.vane.UpdateInstaller.xpc/Contents/MacOS/VaneUpdateInstaller'), '--relaunch', str(target)]
+                command = [str(sandboxed_helper), '--restart', str(target)] if scenario == 'healthy' else ([str(target / 'Contents/MacOS/Vane')] if scenario == 'unsupervised-rollback' else restart_worker)
                 process = subprocess.Popen(command, env=environment, stdout=log, stderr=log)
                 track(work)
-                if scenario != 'corrupted-new' and not scenario.startswith('failed-bootstrap'):
+                if scenario == 'healthy':
+                    process.wait(timeout=10)  # Reap the exited requesting parent before launch.
+                    assert process.returncode == 0
+                if scenario not in ['corrupted-new', 'legacy-rollback', 'unsupervised-rollback'] and not scenario.startswith('failed-bootstrap'):
                     until(lambda: record.exists() and json.loads(record.read_text())['state'] == 'launching')
                     assert previous.is_dir(), 'Previous bundle must remain before health'
                 if scenario in ['failed-bootstrap-stale', 'failed-bootstrap-malformed']:
                     process.wait(timeout=35)
                     assert process.returncode != 0, 'Failed launch must not report success'
                     assert version(target) == new_version and previous.is_dir() and record.exists()
+                elif scenario == 'unsupervised-rollback':
+                    process.wait(timeout=20)
+                    assert process.returncode != 0, 'Unsupervised isolated rollback must request manual reopen'
+                    assert version(target) == old_version and not record.exists()
+                    assert not any('/Vane.app/Contents/MacOS/Vane' in entry[1] for entry in track(work).values())
+                    process = subprocess.Popen([str(target / 'Contents/MacOS/Vane')], env=environment, stdout=log, stderr=log)
+                    until(lambda: (data / 'vane.db').exists())
                 elif scenario == 'healthy':
                     until(lambda: not record.exists())
                     assert version(target) == new_version and not previous.exists()
+                    assert (data / 'vane.db').exists(), 'XPC worker must preserve isolated browser storage'
                 elif scenario == 'crashed-launch':
-                    stop(process.pid, work, signal.SIGKILL)  # intentional crash, not cleanup
+                    children = [pid for pid, entry in track(work).items() if '/Vane.app/Contents/MacOS/Vane' in entry[1]]
+                    assert len(children) == 1
+                    stop(children[0], work, signal.SIGKILL)  # intentional crash, not cleanup
                     process.wait(timeout=5)
-                    process = subprocess.Popen([str(target / 'Contents/MacOS/Vane')], env=environment, stdout=log, stderr=log)
+                    assert process.returncode != 0
+                    process = subprocess.Popen(restart_worker, env=environment, stdout=log, stderr=log)
                     track(work)
                     until(lambda: version(target) == old_version and not record.exists())
                     process.wait(timeout=10)
+                    assert process.returncode == 0, 'Supervised restoration must return success'
                     until(lambda: any('/Vane.app/Contents/MacOS/Vane' in entry[1] for entry in track(work).values()))
-                    assert data.exists()
+                    assert process.returncode == 0, 'Supervised rollback must complete successfully'
                 else:
                     until(lambda: version(target) == old_version and not record.exists())
                     process.wait(timeout=10)
+                    assert process.returncode == 0, 'Supervised restoration must return success'
                     until(lambda: any('/Vane.app/Contents/MacOS/Vane' in entry[1] for entry in track(work).values()))
-                if scenario.startswith('failed-bootstrap'):
+                if scenario.startswith('failed-bootstrap') and scenario != 'failed-bootstrap-malformed':
                     assert (data / 'bootstrap-environment').read_text() == str(data), 'Sandboxed relaunch must preserve isolated environment'
+                if scenario not in ['failed-bootstrap-stale', 'failed-bootstrap-malformed']:
+                    until(lambda: (data / 'vane.db').exists())
+                    mains = [(pid, identity) for pid, identity in track(work).items()
+                             if '/Vane.app/Contents/MacOS/Vane' in identity[1]]
+                    assert len(mains) == 1, 'Exactly one disposable browser may own this profile'
+                    pid, identity = mains[0]
+                    # Inspect only a proven task-owned process; never print its full environment.
+                    actual = subprocess.check_output(['ps', 'eww', '-p', str(pid), '-o', 'command='], text=True)
+                    assert re.search(r'(?:^| )VANE_DATA_DIR=' + re.escape(str(data)) + r'(?: |$)', actual), 'Actual restored/healthy process lost isolated environment'
+                    report = {'pid': pid, 'start': identity[0], 'executable': identity[1], 'isolatedDirectory': str(data)}
+                    (options.evidence / (scenario + '-environment.json')).write_text(json.dumps(report, indent=2))
                 print(f'PASS: native {scenario}, active version={version(target)}', flush=True)
                 for pid in list(track(work)):
                     if '/Vane.app/Contents/MacOS/Vane' in owned[pid][1] and processes(work).get(pid) == owned[pid]:
@@ -225,6 +280,9 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
         for pid in list(track(work)):
             stop(pid, work, signal.SIGKILL)
         remaining = track(work)
+        for scene in scenarios:
+            worker_log = work / scene / 'isolated-data/worker.log'
+            if worker_log.exists(): shutil.copy2(worker_log, options.evidence / (scene + '-worker.log'))
         probe_report = work / 'probe-processes.jsonl'
         if probe_report.exists(): shutil.copy2(probe_report, options.evidence / 'probe-processes.jsonl')
         (options.evidence / 'processes.json').write_text(json.dumps({'tracked': owned, 'remaining': remaining}, indent=2))

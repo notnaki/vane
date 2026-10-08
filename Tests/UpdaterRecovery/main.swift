@@ -277,5 +277,45 @@ do {
     let result = try BundleReplacement.restoreUnlaunched(at: target, verifyPrevious: { _ in false })
     check("external helper refuses unverified previous bundle", result == .needsAttention && label(target) == "new" && stages(target).contains { label($0) == "old" })
 }
+do {
+    let (source, target) = try scene("supervised-restoration")
+    try install(source, target)
+    let witness = BundleReplacement.launchWitness(at: target)!
+    check("prepared witness cannot certify completed replacement", !BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { _ in true }))
+    check("prepared witness cannot authorize reopening old", !BundleReplacement.isRestoredPrevious(at: target, witness: witness, verifyPrevious: { _ in true }))
+    _ = try BundleReplacement.restoreUnlaunched(at: target, verifyPrevious: { label($0) == "old" })
+    check("completed rollback permits only its captured verified previous inode", BundleReplacement.isRestoredPrevious(at: target, witness: witness, verifyPrevious: { label($0) == "old" }))
+    check("witness cannot override previous signature rejection", !BundleReplacement.isRestoredPrevious(at: target, witness: witness, verifyPrevious: { _ in false }))
+    try Data("damaged".utf8).write(to: target.appendingPathComponent("fixture"))
+    check("witness cannot reopen damaged restored bundle", !BundleReplacement.isRestoredPrevious(at: target, witness: witness, verifyPrevious: { _ in true }))
+}
+do {
+    let (source, target) = try scene("supervised-health-cleanup")
+    try install(source, target)
+    let witness = BundleReplacement.launchWitness(at: target)!
+    _ = BundleReplacement.beginLaunch(at: target)
+    BundleReplacement.markHealthy(at: target, fault: { $0 == .beforeCleanup })
+    check("durable health releases supervisor despite interrupted cleanup", BundleReplacement.hasPendingRecord(at: target) && BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { label($0) == "new" }))
+    check("health witness still requires independent signature", !BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { _ in false }))
+    let (_, other) = try scene("supervised-wrong-target")
+    check("health witness cannot certify another target", !BundleReplacement.hasCompletedReplacement(at: other, witness: witness, verifyReplacement: { _ in true }))
+}
+check("live originating process delays detached worker", BundleReplacement.parentExit(123, start: 10, observeStart: { _ in 10 }) == .waiting)
+check("reused parent PID does not delay original exit", BundleReplacement.parentExit(123, start: 10, observeStart: { _ in 11 }) == .exited)
+check("unavailable live parent observation refuses relaunch", BundleReplacement.parentExit(123, start: 10, observeStart: { _ in nil }, exists: { _ in true }) == .unavailable)
+check("confirmed absent parent permits worker launch", BundleReplacement.parentExit(123, start: 10, observeStart: { _ in nil }, exists: { _ in false }) == .exited)
+do {
+    let (source, target) = try scene("legacy-supervised-restoration")
+    try install(source, target)
+    _ = BundleReplacement.beginLaunch(at: target)
+    var record = try JSONSerialization.jsonObject(with: Data(contentsOf: journal(target))) as! [String: Any]
+    for key in ["targetPath", "volumeID", "oldDigest", "newDigest"] { record.removeValue(forKey: key) }
+    try JSONSerialization.data(withJSONObject: record).write(to: journal(target))
+    check("legacy witness requires independent bundle verifiers", BundleReplacement.launchWitness(at: target) == nil)
+    let witness = BundleReplacement.launchWitness(at: target, verifyReplacement: { label($0) == "new" }, verifyPrevious: { label($0) == "old" })!
+    check("legacy witness cannot certify pending launch", !BundleReplacement.hasCompletedReplacement(at: target, witness: witness, verifyReplacement: { _ in true }))
+    let result = BundleReplacement.beginLaunch(at: target, processAlive: { _, _, _ in false }, verifyRecovery: { label($0) == "new" }, verifyPrevious: { label($0) == "old" })
+    check("legacy selfrollback retains witnessed complete previous launch", result == .rolledBack && BundleReplacement.isRestoredPrevious(at: target, witness: witness, verifyPrevious: { label($0) == "old" }))
+}
 print("\(failures) failure(s)")
 exit(failures == 0 ? 0 : 1)

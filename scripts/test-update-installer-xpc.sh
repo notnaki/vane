@@ -30,10 +30,12 @@ PLIST
 codesign --force --options runtime --timestamp --entitlements Vane.entitlements --sign "$SIGN_ID" "$FIXTURE"
 # Direct execution avoids registering the fixture as the user's browser in LaunchServices.
 python3 scripts/run-updater-test-client.py "$WORK" -- "$FIXTURE/Contents/MacOS/Check" "$CLIENT_SOURCE"
+python3 scripts/run-updater-test-client.py "$WORK" -- "$FIXTURE/Contents/MacOS/Check" "$CLIENT_SOURCE" --relaunch-rejected
 # An unrelated signed caller must fail XPC authentication before receiving a policy reply.
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.github.notnaki.vane.installer-check' "$FIXTURE/Contents/Info.plist"
 codesign --force --options runtime --timestamp --entitlements Vane.entitlements --sign "$SIGN_ID" "$FIXTURE"
 python3 scripts/run-updater-test-client.py "$WORK" -- "$FIXTURE/Contents/MacOS/Check" "$CLIENT_SOURCE" --unauthorized
+python3 scripts/run-updater-test-client.py "$WORK" -- "$FIXTURE/Contents/MacOS/Check" "$CLIENT_SOURCE" --relaunch-rejected --unauthorized
 
 python3 scripts/run-updater-test-client.py "$WORK" --cleanup
 
@@ -51,7 +53,7 @@ listener.resume()
 SWIFT
 SERVICE="$FIXTURE/Contents/XPCServices/io.github.notnaki.vane.UpdateInstaller.xpc"
 xcrun swiftc -O Sources/Vane/BundleReplacement.swift Sources/Vane/UpdateVersion.swift Sources/Vane/UpdateInstaller.swift \
-  Sources/UpdateInstaller/UpdateInstallation.swift Sources/UpdateInstaller/InstallerService.swift \
+  Sources/UpdateInstaller/UpdateInstallation.swift Sources/UpdateInstaller/InstallerService.swift Sources/Vane/UpdateRelaunch.swift \
   "$WORK/main.swift" -o "$SERVICE/Contents/MacOS/VaneUpdateInstaller"
 codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$SERVICE"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier io.github.notnaki.vane' "$FIXTURE/Contents/Info.plist"

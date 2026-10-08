@@ -903,6 +903,18 @@ extension Release {
             NSLog("[vane] update: pending bundle transaction needs manual attention; refusing to launch an unconfirmed bundle")
             exit(1)
         case .rolledBack:
+            if ProcessInfo.processInfo.environment["VANE_UPDATE_SUPERVISED"] == "1" {
+                // The unsandboxed worker independently verifies the restored bundle
+                // and reopens it with the isolated environment after this process exits.
+                exit(0)
+            }
+            if Store.overrideDirectory != nil {
+                // Released older helpers do not implement isolated relaunch scheduling.
+                // Retain isolation rather than falling back to sandboxed `open`, which
+                // drops the environment and could open the user's ordinary profile.
+                NSLog("[vane] previous bundle restored; reopen this isolated copy with VANE_DATA_DIR")
+                exit(1)
+            }
             do {
                 try launchAfterExit(Bundle.main.bundleURL, recoverUnlaunched: false)
                 exit(0)
@@ -947,10 +959,13 @@ extension Release {
     /// `Process` is reachable from inside the sandbox — `ditto` in `unpackAndSwap` is the
     /// same mechanism — and the child inherits the sandbox, which `open` does not mind.
     private static func launchAfterExit(_ target: URL, recoverUnlaunched: Bool = true) throws {
+        if let directory = Store.overrideDirectory {
+            try UpdateInstaller.scheduleRelaunch(target: target, isolatedDirectory: directory)
+            return
+        }
         let script = UpdateRelaunch.script(parentPID: getpid(), target: target,
                                           isolatedDirectory: Store.overrideDirectory,
-                                          recoveryTool: recoverUnlaunched ? target.appendingPathComponent("Contents/XPCServices/\(UpdateInstaller.serviceName).xpc/Contents/MacOS/VaneUpdateInstaller") : nil,
-                                          directExecutable: Store.overrideDirectory == nil ? nil : Bundle(url: target)?.executableURL)
+                                          recoveryTool: recoverUnlaunched ? target.appendingPathComponent("Contents/XPCServices/\(UpdateInstaller.serviceName).xpc/Contents/MacOS/VaneUpdateInstaller") : nil)
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: "/bin/sh")
         helper.arguments = ["-c", script]

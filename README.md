@@ -846,14 +846,18 @@ These deliberately unnotarized copies check identity, version, native architectu
 signature diagnostics and actual Gatekeeper rejection. Never use them as a release.
 
 After coordinating a graphical test slot, native recovery can be checked with
-`python3 scripts/test-updater-native.py --app /path/to/signed-new/Vane.app --previous /path/to/unchanged-old/Vane.app --evidence /path/to/evidence`.
-Add `--bootstrap-failure` with `SIGN_ID` to cover a signed executable that exits
-before updater startup, plus failed opens with stale or malformed journals. The driver
-uses unsandboxed staging and Vane’s sandbox entitlements for restart, disposable
-bundles under Downloads, isolated data and tracked process cleanup, including
-App Translocation. macOS may retain the driver's protected sandbox registration.
-Isolated relaunches execute the verified bundle directly because LaunchServices
-ignores environment overrides from sandboxed callers. It simulates notarization for the local candidate at the transaction boundary;
+`SIGN_ID=… python3 scripts/test-updater-native.py --app /path/to/signed-new/Vane.app --previous /path/to/unchanged-old/Vane.app --evidence /path/to/evidence`.
+`SIGN_ID` is required for pinned Developer ID XPC authentication. Add
+`--bootstrap-failure` to cover a signed executable that exits before updater startup,
+plus stale and malformed journals. The driver uses unsandboxed staging, Vane’s exact
+sandbox identity and the authenticated installer service for isolated restart. It
+never starts or cleans browser preferences/profile data itself. Disposable bundles
+live under Downloads; the fixture records actual browser environment and exact
+process identities, including App Translocation, before cleanup. Isolated restarts
+use a detached unsandboxed installer worker and LaunchServices environment overrides;
+sandboxed LaunchServices callers drop those overrides, and direct execution from an
+inherited sandbox fails before main on macOS 27. The fixture simulates notarization
+for the local candidate at the transaction boundary;
 actual distribution verification remains the separate installer/release-candidate check.
 
 To verify an *unchanged, notarized* release ZIP on a graphical test machine:

@@ -27,8 +27,15 @@ with the smoothness chat.
   bundle is damaged; interrupted legacy cleanup remains recoverable.
 - Restart could lose `VANE_DATA_DIR` and select an existing app instance. Relaunch
   requests a new instance for ordinary launches. Apple ignores LaunchServices
-  environment overrides from sandboxed callers, so isolated launches now start the
-  verified executable directly. The shell verifies the
+  environment overrides from sandboxed callers. Direct execution from an inherited
+  sandbox also traps before main on macOS 27. Isolated restart now asks the existing
+  authenticated unsandboxed XPC installer to start a detached signed worker before
+  the browser exits. The worker observes the authenticated caller's PID/start,
+  uses LaunchServices with the explicit environment, and supervises through health
+  or verified rollback. Its immutable witness also supports independently verified
+  legacy records. An unsupervised isolated rollback restores the previous bundle
+  and explicitly requests manual reopening, since released older helpers lack the
+  new RPC. The shell verifies the
   current host and helper against pinned signature requirements before execution.
   Real native testing also caught and fixed the missing `=` prefix for inline
   `codesign -R` requirements.
@@ -55,7 +62,7 @@ and durable healthy record. Unsafe recovery stops before opening a browser windo
 | Area | Coverage |
 | --- | --- |
 | Transport/extraction | Real URLSession loopback complete, truncated, interrupted, cancellation and HTTP failure cases; real ditto corrupt/truncated/empty ZIP and missing/unsigned bundle rejection. The release host is simulated; production host trust is unchanged. |
-| Transaction | 111 headless assertions, including actual SIGKILL at copy, sync, journal, swap, launch, rollback and healthy/cleanup boundaries; failed writes/destinations/replacement; repeated attempts; stale, legacy, wrong-target/volume and symlink records; damaged old/new bundles and old executing inode. Bundle verification predicates in generic directory fixtures are simulated. |
+| Transaction | 126 headless assertions, including actual SIGKILL at copy, sync, journal, swap, launch, rollback and healthy/cleanup boundaries; failed writes/destinations/replacement; repeated attempts; stale, legacy, wrong-target/volume and symlink records; damaged old/new bundles and old executing inode. Bundle verification predicates in generic directory fixtures are simulated. |
 | Relaunch | Literal shell arguments, isolated environment, three failed-open retries, simulated verifier/helper failures, refusal to execute an unverified helper, and real ad-hoc `codesign` requirement parsing. |
 | Distribution | Unchanged published v0.0.23 and v0.0.24 fixtures passed strict deep/all-architecture signature verification, stapled-ticket validation and real Gatekeeper assessment as Notarized Developer ID, team `T7X84HN3W3`. |
 | Rejections | Real Developer ID re-signed wrong identity, version and architecture fixtures were rejected. A locally signed unnotarized candidate passed signature verification but failed real Gatekeeper assessment, preserving the old destination and detailed error. Tampered signatures were rejected. |
@@ -90,9 +97,11 @@ were stopped, and those runs are excluded from the final isolated evidence.
 No installed app bundle was changed. The corrected native early-exit fixture
 records its actual isolated environment before exiting.
 
-The fixture clears its own preference domain, processes and disposable bundles.
-macOS protects the unique driver's sandbox registration and standard container
-scaffold; those OS-managed registrations may remain after its app is removed.
+The current exact-identity driver runs only transaction/relaunch code and never
+starts or cleans browser preferences/profile data itself. The fixture cleans its
+owned processes, isolated data, WebKit stores and disposable bundles. Earlier
+unique-identity driver runs left macOS-protected sandbox registration/scaffold
+metadata; those historical OS-managed registrations may remain after app removal.
 
 Apple documents the sandbox environment restriction in
 [NSWorkspace.OpenConfiguration.environment](https://developer.apple.com/documentation/appkit/nsworkspace/openconfiguration/environment).

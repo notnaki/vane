@@ -31,6 +31,20 @@ func checkInstallation() -> Int32 {
 
 if CommandLine.arguments.contains("--install") { exit(checkInstallation()) }
 
+if CommandLine.arguments.contains("--relaunch-rejected") {
+    do {
+        try UpdateInstaller.scheduleRelaunch(target: URL(fileURLWithPath: "/tmp/Vane-installer-test/Vane.app"),
+                                            isolatedDirectory: "/tmp/Vane-installer-test/data")
+        print("FAIL: relaunch accepted an arbitrary destination")
+        exit(1)
+    } catch {
+        let policy = error.localizedDescription == "Invalid update relaunch destination or caller"
+        let expected = CommandLine.arguments.contains("--unauthorized") ? !policy : policy
+        print("\(expected ? "PASS" : "FAIL"): relaunch rejection: \(error.localizedDescription)")
+        exit(expected ? 0 : 1)
+    }
+}
+
 // Exercise the production service from a signed, sandboxed bundle. Use a forbidden
 // destination: no application directory or installed browser is modified by the test.
 do {

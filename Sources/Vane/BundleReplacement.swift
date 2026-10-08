@@ -106,11 +106,19 @@ enum BundleReplacement {
         }
     }
 
-    private static func processStart(_ pid: Int32) -> UInt64? {
+    static func processStart(_ pid: Int32) -> UInt64? {
         var info = proc_bsdinfo()
         let size = Int32(MemoryLayout<proc_bsdinfo>.size)
         guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
         return UInt64(info.pbi_start_tvsec) * 1_000_000 + UInt64(info.pbi_start_tvusec)
+    }
+
+    enum ParentExit { case waiting, exited, unavailable }
+    static func parentExit(_ pid: Int32, start: UInt64,
+                           observeStart: (Int32) -> UInt64? = processStart,
+                           exists: (Int32) -> Bool = { kill($0, 0) == 0 || errno != ESRCH }) -> ParentExit {
+        if let observed = observeStart(pid) { return observed == start ? .waiting : .exited }
+        return exists(pid) ? .unavailable : .exited
     }
 
     private static let fallbackLease: TimeInterval = 120
@@ -453,6 +461,77 @@ enum BundleReplacement {
     }
 
     static func hasPendingRecord(at target: URL) -> Bool { entryExists(journalURL(target)) }
+
+    struct LaunchWitness {
+        fileprivate let targetPath: String
+        fileprivate let volumeID: UInt64
+        fileprivate let oldID: UInt64?
+        fileprivate let oldDigest: String?
+        fileprivate let newID: UInt64
+        fileprivate let newDigest: String
+    }
+
+    /// Read-only evidence retained by the unsandboxed supervisor while browser
+    /// bootstrap may finish a rollback and remove its journal.
+    static func launchWitness(at target: URL, verifyReplacement: ((URL) -> Bool)? = nil,
+                              verifyPrevious: ((URL) -> Bool)? = nil) -> LaunchWitness? {
+        try? withLock(target) {
+            guard let journal = read(target) else { return nil }
+            if bound(journal, to: target), let newDigest = journal.newDigest,
+               let volumeID = journal.volumeID {
+                return LaunchWitness(targetPath: target.path, volumeID: volumeID,
+                    oldID: journal.oldID, oldDigest: journal.oldDigest,
+                    newID: journal.newID, newDigest: newDigest)
+            }
+            // Legacy records acquire read-only evidence only after independent
+            // signatures and exact inode/path checks. Browser bootstrap still owns
+            // migration and every mutation of the record.
+            guard journal.targetPath == nil, journal.volumeID == nil,
+                  journal.newDigest == nil, journal.oldDigest == nil,
+                  target.standardizedFileURL == target.resolvingSymlinksInPath(),
+                  fileID(target) == journal.newID, verifyReplacement?(target) == true,
+                  let stage = stageURL(target, journal),
+                  let volume = metadata(target.deletingLastPathComponent(), type: mode_t(S_IFDIR)).map({ UInt64($0.st_dev) }) else { return nil }
+            if journal.oldID != nil, journal.state != .healthy {
+                guard fileID(stage) == journal.oldID, verifyPrevious?(stage) == true else { return nil }
+            }
+            let oldDigest = fileID(stage) == journal.oldID && journal.oldID != nil
+                && verifyPrevious?(stage) == true ? try digest(stage) : nil
+            return LaunchWitness(targetPath: target.path, volumeID: volume,
+                oldID: journal.oldID, oldDigest: oldDigest,
+                newID: journal.newID, newDigest: try digest(target))
+        }
+    }
+
+    static func isRestoredPrevious(at target: URL, witness: LaunchWitness,
+                                   verifyPrevious: (URL) -> Bool) -> Bool {
+        (try? withLock(target) {
+            witness.oldID != nil && witness.oldDigest != nil
+                && !entryExists(journalURL(target)) && target.path == witness.targetPath
+                && target.standardizedFileURL == target.resolvingSymlinksInPath()
+                && metadata(target.deletingLastPathComponent(), type: mode_t(S_IFDIR)).map({ UInt64($0.st_dev) }) == witness.volumeID
+                && fileID(target) == witness.oldID
+                && intact(target, witness.oldDigest) && verifyPrevious(target)
+        }) == true
+    }
+
+    static func hasCompletedReplacement(at target: URL, witness: LaunchWitness,
+                                         verifyReplacement: (URL) -> Bool) -> Bool {
+        (try? withLock(target) {
+            let pending = entryExists(journalURL(target))
+            let journal = pending ? read(target) : nil
+            if pending {
+                guard let journal, bound(journal, to: target), journal.state == .healthy,
+                      journal.newID == witness.newID, journal.newDigest == witness.newDigest else { return false }
+            }
+            guard target.path == witness.targetPath,
+                  target.standardizedFileURL == target.resolvingSymlinksInPath(),
+                  metadata(target.deletingLastPathComponent(), type: mode_t(S_IFDIR)).map({ UInt64($0.st_dev) }) == witness.volumeID,
+                  fileID(target) == witness.newID, intact(target, witness.newDigest),
+                  verifyReplacement(target) else { return false }
+            return true
+        }) == true
+    }
 
     static func launchClaimed(at target: URL, by pid: Int32,
                               observeStart: (Int32) -> UInt64? = processStart) -> Bool {

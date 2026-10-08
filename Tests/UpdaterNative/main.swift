@@ -2,13 +2,9 @@ import AppKit
 import Security
 if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--restart" {
     let target = URL(fileURLWithPath: CommandLine.arguments[2])
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/bin/sh")
-    process.arguments = ["-c", UpdateRelaunch.script(parentPID: Int32.max, target: target,
-        isolatedDirectory: ProcessInfo.processInfo.environment["VANE_DATA_DIR"],
-        recoveryTool: target.appendingPathComponent("Contents/XPCServices/io.github.notnaki.vane.UpdateInstaller.xpc/Contents/MacOS/VaneUpdateInstaller"))]
-    try process.run(); process.waitUntilExit()
-    exit(process.terminationStatus)
+    try UpdateInstaller.scheduleRelaunch(target: target,
+        isolatedDirectory: ProcessInfo.processInfo.environment["VANE_DATA_DIR"]!)
+    exit(0)
 }
 if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--quit" {
     _ = NSRunningApplication(processIdentifier: Int32(CommandLine.arguments[2])!)?.terminate()

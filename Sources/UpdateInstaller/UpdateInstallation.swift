@@ -52,6 +52,10 @@ enum UpdateInstallation {
         try verifySignature(bundle)
     }
 
+    static func verifyRelaunchHelper(_ helper: URL) throws {
+        try verifySignature(helper, identifier: UpdateInstaller.serviceName)
+    }
+
     static func recoverablePrevious(_ bundle: URL) -> Bool {
         guard realDirectory(bundle), bundleInfo(bundle) != nil, version(bundle) != nil else { return false }
         return (try? verifySignature(bundle, pinned: false)) != nil
@@ -62,7 +66,7 @@ enum UpdateInstallation {
         return lstat(url.path, &metadata) == 0 && metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR)
     }
 
-    private static func allowed(_ target: URL, within roots: [URL]) -> Bool {
+    static func allowed(_ target: URL, within roots: [URL]) -> Bool {
         guard target.isFileURL, target.lastPathComponent == "Vane.app" else { return false }
         let normalized = target.standardizedFileURL
         guard normalized.resolvingSymlinksInPath() == normalized else { return false }
@@ -100,12 +104,13 @@ enum UpdateInstallation {
         return Bundle(url: bundle)?.executableArchitectures?.contains(architecture) == true
     }
 
-    private static func verifySignature(_ bundle: URL, pinned: Bool = true) throws {
+    private static func verifySignature(_ bundle: URL, pinned: Bool = true,
+                                        identifier: String = "io.github.notnaki.vane") throws {
         // Validate the private, final copy, not the source the client can still modify.
         var code: SecStaticCode?
         var requirement: SecRequirement?
-        let text = pinned ? UpdateInstaller.requirement(identifier: "io.github.notnaki.vane")
-                          : "identifier \"io.github.notnaki.vane\""
+        let text = pinned ? UpdateInstaller.requirement(identifier: identifier)
+                          : "identifier \"\(identifier)\""
         var status = SecStaticCodeCreateWithPath(bundle as CFURL, [], &code)
         guard status == errSecSuccess, let code else {
             throw failure("Cannot inspect update signature", status: status)

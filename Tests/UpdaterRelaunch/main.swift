@@ -69,17 +69,4 @@ real.arguments = ["-c", UpdateRelaunch.script(parentPID: Int32.max, target: sign
 try real.run(); real.waitUntilExit()
 let valid = signer.terminationStatus == 0 && real.terminationStatus == 0
 print("\(valid ? "PASS" : "FAIL"): real codesign accepts the relaunch identity requirement")
-let directExecutable = root.appendingPathComponent("direct app ' executable")
-let directReceipt = root.appendingPathComponent("direct environment")
-try Data("#!/bin/sh\nprintf '%s' \"$VANE_DATA_DIR\" > '\(directReceipt.path)'\n".utf8).write(to: directExecutable)
-try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directExecutable.path)
-try Data("#!/bin/sh\nexit 0\n".utf8).write(to: verifier)
-let direct = Process()
-direct.executableURL = URL(fileURLWithPath: "/bin/sh")
-direct.arguments = ["-c", UpdateRelaunch.script(parentPID: Int32.max, target: target,
-    isolatedDirectory: directory.path, verifier: verifier, directExecutable: directExecutable)]
-try direct.run(); direct.waitUntilExit()
-let directValue = try String(contentsOf: directReceipt, encoding: .utf8)
-let preserved = direct.terminationStatus == 0 && directValue == directory.path
-print("\(preserved ? "PASS" : "FAIL"): isolated rollback starts verified executable with literal data directory")
-exit(ok && refused && callback && guarded && valid && preserved ? 0 : 1)
+exit(ok && refused && callback && guarded && valid ? 0 : 1)
