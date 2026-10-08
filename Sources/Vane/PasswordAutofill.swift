@@ -405,4 +405,3 @@ import WebKit
         return "window.__vaneFill && window.__vaneFill.apply(null, \(String(decoding: args, as: UTF8.self)))"
     }
 }
-
