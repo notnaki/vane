@@ -118,7 +118,7 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
     sandboxed_helper = driver / 'Contents/MacOS/Driver'
     helper = work / 'install'
     sandboxed_helper.parent.mkdir(parents=True)
-    identifier = 'io.github.notnaki.vane.UpdaterNative.' + work.name.removeprefix('.vane-updater-native-').replace('_', '-')
+    identifier = 'io.github.notnaki.vane'
     (driver / 'Contents/Info.plist').write_bytes(plistlib.dumps({
         'CFBundleIdentifier': identifier, 'CFBundleExecutable': 'Driver',
         'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0.0',
@@ -127,8 +127,10 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
                     str(ROOT / 'Sources/Vane/UpdateInstaller.swift'), str(ROOT / 'Sources/Vane/UpdateRelaunch.swift'), str(ROOT / 'Tests/UpdaterNative/main.swift'), '-o', str(helper)], check=True)
     shutil.copy2(helper, sandboxed_helper)
     # Installation runs outside the sandbox, as XPC does. Only restart inherits
-    # the browser sandbox, including its shell and signed helper descendants.
-    subprocess.run(['codesign', '--force', '--sign', os.environ.get('SIGN_ID', '-'),
+    # the browser sandbox, including its shell and signed helper descendants. The
+    # driver uses Vane's exact code identity so children retain the same container
+    # rights; it runs only transaction/relaunch code, never browser storage code.
+    subprocess.run(['codesign', '--force', '--options', 'runtime', '--sign', os.environ.get('SIGN_ID', '-'),
                     '--entitlements', str(ROOT / 'Vane.entitlements'), str(driver)], check=True)
     templates = {}
     for kind, original in [('old', options.previous), ('new', options.app)]:
@@ -143,7 +145,13 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
         stub = work / 'stub.app'
         shutil.copytree(templates['new'], stub, symlinks=True)
         source_code = work / 'stub.c'
-        source_code.write_text('#include <stdlib.h>\n#include <stdio.h>\nint main(void) { const char *d=getenv("VANE_DATA_DIR"); if(d) { char p[4096]; snprintf(p,sizeof(p),"%s/bootstrap-environment",d); FILE *f=fopen(p,"w"); if(f) { fputs(d,f); fclose(f); } } return 1; }\n')
+        probe_report = work / 'probe-processes.jsonl'
+        probe_format = '{"pid":%d,"startSeconds":%llu,"startMicroseconds":%llu,"executable":"%s"}\n'
+        source_code.write_text('#include <stdlib.h>\n#include <stdio.h>\n#include <unistd.h>\n#include <libproc.h>\n#include <sys/proc_info.h>\n'
+            + 'int main(void) { struct proc_bsdinfo info={0}; proc_pidinfo(getpid(),PROC_PIDTBSDINFO,0,&info,sizeof(info)); char executable[4096]={0}; proc_pidpath(getpid(),executable,sizeof(executable)); FILE *report=fopen('
+            + json.dumps(str(probe_report)) + ',"a"); if(report) { fprintf(report,' + json.dumps(probe_format)
+            + ',getpid(),(unsigned long long)info.pbi_start_tvsec,(unsigned long long)info.pbi_start_tvusec,executable); fclose(report); } '
+            + 'const char *d=getenv("VANE_DATA_DIR"); if(d) { char p[4096]; snprintf(p,sizeof(p),"%s/bootstrap-environment",d); FILE *f=fopen(p,"w"); if(f) { fputs(d,f); fclose(f); } } return 1; }\n')
         subprocess.run(['xcrun', 'clang', str(source_code), '-o', str(stub / 'Contents/MacOS/Vane')], check=True)
         subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp', '--entitlements', str(ROOT / 'Vane.entitlements'), '--sign', identity, str(stub)], check=True)
         templates['stub'] = stub
@@ -217,14 +225,9 @@ with tempfile.TemporaryDirectory(prefix='.vane-updater-native-', dir=pathlib.Pat
         for pid in list(track(work)):
             stop(pid, work, signal.SIGKILL)
         remaining = track(work)
+        probe_report = work / 'probe-processes.jsonl'
+        if probe_report.exists(): shutil.copy2(probe_report, options.evidence / 'probe-processes.jsonl')
         (options.evidence / 'processes.json').write_text(json.dumps({'tracked': owned, 'remaining': remaining}, indent=2))
         if remaining:
             raise RuntimeError(f'Task test processes remain: {remaining}')
-        container = pathlib.Path.home() / 'Library/Containers' / identifier
-        if container.exists():
-            # The OS protects container registration and its standard Data scaffold.
-            # Clear the fixture's preference domain from its own identity, without
-            # traversing managed directories or touching the browser's real container.
-            subprocess.run([str(sandboxed_helper), '--cleanup-container'], check=True)
-            print('NOTE: macOS retains sandbox registration metadata: ' + str(container), flush=True)
         print('PASS: all tracked native test processes exited; disposable bundles removed', flush=True)

@@ -1,18 +1,5 @@
 import AppKit
 import Security
-if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--cleanup-container" {
-    let data = URL(fileURLWithPath: NSHomeDirectory())
-    guard let identifier = Bundle.main.bundleIdentifier,
-          identifier.hasPrefix("io.github.notnaki.vane.UpdaterNative."),
-          data.lastPathComponent == "Data", data.deletingLastPathComponent().lastPathComponent == identifier,
-          data.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "Containers" else { exit(1) }
-    let preferences = data.appendingPathComponent("Library/Preferences/" + identifier + ".plist")
-    if FileManager.default.fileExists(atPath: preferences.path) {
-        try FileManager.default.removeItem(at: preferences)
-    }
-    print("PASS: task driver preferences cleared; OS-managed sandbox registration retained")
-    exit(0)
-}
 if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--restart" {
     let target = URL(fileURLWithPath: CommandLine.arguments[2])
     let process = Process()
