@@ -1170,6 +1170,9 @@ private struct DownloadVerbs: View {
             if downloads.canResume(item) { Button("Resume") { _ = downloads.resume(item) } }
             Button("Cancel") { downloads.cancel(item) }
         }
+        if downloads.canRetry(item) {
+            Button("Retry") { _ = downloads.retry(item) }
+        }
         if let source = item.source {
             Button("Copy Link") {
                 NSPasteboard.general.clearContents()

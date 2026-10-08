@@ -685,10 +685,11 @@ struct TitleReveal: Equatable, Sendable {
                 guard let self else { return }
                 let manager = Downloads.manager(for: profileID)
                 let title = web.title
+                let sourceWeb = web
                 let origin = DownloadFeedback.Origin(window: web.window)
-                web.startDownload(using: URLRequest(url: url)) { download in
+                sourceWeb.startDownload(using: URLRequest(url: url)) { download in
                     TidyDownloads.remember(download, pageTitle: title)
-                    manager.attach(download, alwaysAsk: true, suggestedFilename: filename, from: origin.window)
+                    manager.attach(download, alwaysAsk: true, suggestedFilename: filename, from: sourceWeb, in: origin.window)
                 }
             }
         }
@@ -1634,13 +1635,13 @@ struct TitleReveal: Equatable, Sendable {
 
     func webView(_ w: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
-        Downloads.manager(for: profileID).attach(download, from: w.window)
+        Downloads.manager(for: profileID).attach(download, from: w)
         Peek.dismissIfBlank(self)      // a Peek opened for a download has no page to show
     }
 
     func webView(_ w: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
         TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
-        Downloads.manager(for: profileID).attach(download, from: w.window)
+        Downloads.manager(for: profileID).attach(download, from: w)
         Peek.dismissIfBlank(self)
     }
 
