@@ -129,6 +129,24 @@ import WebKit
         guard profileID != Profile.incognito.id else { return }
         folders = UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.namesKey, profileID)) as? [String: String] ?? [:]
         disabled = Set(UserDefaults.vane.stringArray(forKey: ProfileManager.defaultsKey(Self.disabledKey, profileID)) ?? [])
+        var blocked: Set<String> = []
+        for choice in ScopedPaths.savedChoices(myKey) {
+            let old = contextBookmarks.first(where: { $0.value == choice.data })?.key ?? choice.originalPath
+            if let old, folders[old] != nil || contextIdentifiers[old] != nil {
+                var bookmarks = contextBookmarks
+                bookmarks[old] = choice.data
+                contextBookmarks = bookmarks
+            }
+            if let old, let folder = choice.url,
+               folder.resolvingSymlinksInPath().path != old,
+               folders[old] != nil || contextIdentifiers[old] != nil {
+                do { try relocate(old, to: folder, bookmark: choice.data) }
+                catch {
+                    failures[old] = error.localizedDescription
+                    blocked.insert(folder.resolvingSymlinksInPath().path)
+                }
+            }
+        }
         // Keep unavailable choices recoverable; the management window can remove or retry them.
         let saved = ScopedPaths.urls(Self.key(for: profileID), preservingUnavailable: true)
         for path in contextIdentifiers.keys where folders[path] == nil {
@@ -136,11 +154,12 @@ import WebKit
         }
         for folder in saved {
             let path = folder.resolvingSymlinksInPath().path
+            if blocked.contains(path) { continue }
             if folders[path] == nil { folders[path] = folder.lastPathComponent }
             if !disabled.contains(path) { begin(folder) }
         }
         let available = Set(saved.map { $0.resolvingSymlinksInPath().path })
-        for path in folders.keys where !available.contains(path) && !disabled.contains(path) {
+        for path in folders.keys where !available.contains(path) && !disabled.contains(path) && failures[path] == nil {
             failures[path] = "The extension folder is unavailable. Reconnect its disk or choose Install Extension to grant folder access again."
         }
     }
@@ -176,7 +195,10 @@ import WebKit
     func remove(folder path: String) throws {
         cancelOperation(path)
         try deactivate(path)
-        ScopedPaths.remove(path: path, from: myKey)
+        ScopedPaths.remove(path: path, from: myKey, bookmark: contextBookmarks[path])
+        var bookmarks = contextBookmarks
+        bookmarks[path] = nil
+        contextBookmarks = bookmarks
         ExtensionConsent.remove(for: URL(fileURLWithPath: path), profileID: profileID)
         var identities = contextIdentifiers
         identities.removeValue(forKey: path)
@@ -317,8 +339,7 @@ import WebKit
                 addedBookmark = !alreadySaved
             }
             let context = WKWebExtensionContext(for: ext)
-            var identities = contextIdentifiers
-            let identity = identities[path].flatMap(UUID.init(uuidString:)) ?? UUID()
+            let identity = contextIdentifiers[path].flatMap(UUID.init(uuidString:)) ?? UUID()
             context.uniqueIdentifier = identity.uuidString.lowercased()
             context.baseURL = URL(string: "webkit-extension://\(context.uniqueIdentifier)/")!
             context.isInspectable = Settings.inspectorEnabled
@@ -340,8 +361,14 @@ import WebKit
             let contextErrors = ExtensionDiagnostics.blockingErrors(context.errors, manifest: manifest)
             guard contextErrors.isEmpty else { throw Failure(ExtensionDiagnostics.describe(contextErrors)) }
             try ExtensionConsent.save(requested, for: folder, profileID: profileID)
+            var identities = contextIdentifiers
             identities[path] = identity.uuidString
             contextIdentifiers = identities
+            if let bookmark = ScopedPaths.savedChoices(myKey).first(where: { $0.url?.resolvingSymlinksInPath().path == path })?.data {
+                var bookmarks = contextBookmarks
+                bookmarks[path] = bookmark
+                contextBookmarks = bookmarks
+            }
             folders[path] = ext.displayName ?? folder.lastPathComponent
             disabled.remove(path)
             failures[path] = nil
@@ -405,6 +432,7 @@ import WebKit
     static let identifiersKey = "extensionIdentifiers"
     static let namesKey = "extensionNames"
     static let disabledKey = "extensionDisabled"
+    static let bookmarksKey = "extensionBookmarks"
 
     /// Per profile, so an extension installed in one profile is not loaded into another.
     static func key(for profileID: UUID) -> String {
@@ -414,6 +442,36 @@ import WebKit
     private var contextIdentifiers: [String: String] {
         get { UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.identifiersKey, profileID)) as? [String: String] ?? [:] }
         set { UserDefaults.vane.set(newValue, forKey: ProfileManager.defaultsKey(Self.identifiersKey, profileID)) }
+    }
+
+    private var contextBookmarks: [String: Data] {
+        get { UserDefaults.vane.dictionary(forKey: ProfileManager.defaultsKey(Self.bookmarksKey, profileID)) as? [String: Data] ?? [:] }
+        set { UserDefaults.vane.set(newValue, forKey: ProfileManager.defaultsKey(Self.bookmarksKey, profileID)) }
+    }
+
+    /// A bookmark follows a folder moved in Finder. Carry the installation, including
+    /// its disabled state, to that resolved location rather than making a second install.
+    private func relocate(_ old: String, to folder: URL, bookmark: Data) throws {
+        let path = folder.resolvingSymlinksInPath().path
+        guard path != old else { return }
+        guard folders[path] == nil, contextIdentifiers[path] == nil else {
+            throw Failure("The moved folder conflicts with another saved extension. Remove the obsolete installation in Manage Extensions before retrying.")
+        }
+        if let consent = ExtensionConsent.saved(for: URL(fileURLWithPath: old), profileID: profileID) {
+            try ExtensionConsent.save(consent, for: folder, profileID: profileID)
+            ExtensionConsent.remove(for: URL(fileURLWithPath: old), profileID: profileID)
+        }
+        var identities = contextIdentifiers
+        identities[path] = identities.removeValue(forKey: old)
+        contextIdentifiers = identities
+        folders[path] = folders.removeValue(forKey: old) ?? folder.lastPathComponent
+        if disabled.remove(old) != nil { disabled.insert(path) }
+        var bookmarks = contextBookmarks
+        bookmarks[old] = nil
+        bookmarks[path] = bookmark
+        contextBookmarks = bookmarks
+        setPins(pins.map { $0 == old ? path : $0 })
+        saveManagement()
     }
 
     // MARK: Actions
@@ -550,6 +608,7 @@ import WebKit
     private func setPins(_ paths: [String]) {
         // No explicit bump: writing defaults posts `didChangeNotification`, which is exactly
         // what `SiteChanges` listens to. Bumping as well would redraw every pill twice.
+        objectWillChange.send()
         UserDefaults.vane.set(paths, forKey: pinKey)
     }
 
@@ -577,11 +636,17 @@ import WebKit
 
     /// True when the pill has room. False is the cap being reached, which the menu item says
     /// out loud rather than quietly dropping somebody else's pin.
-    var canPin: Bool { livePins.count < ExtensionPins.cap }
+    var canPin: Bool { savedPins.count < ExtensionPins.cap }
+
+    private var savedPins: [String] { ExtensionPins.visible(stored: pins, installed: Array(folders.keys)) }
 
     func togglePin(_ context: WKWebExtensionContext) {
-        guard let path = path(of: context),
-              let next = ExtensionPins.toggled(path, in: livePins) else { return }
+        guard let path = path(of: context) else { return }
+        togglePin(path)
+    }
+
+    func togglePin(_ path: String) {
+        guard folders[path] != nil, let next = ExtensionPins.toggled(path, in: savedPins) else { return }
         setPins(next)
     }
 

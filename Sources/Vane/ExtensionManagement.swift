@@ -105,6 +105,9 @@ private struct ExtensionManagementView: View {
                     Button("Disable") { perform { try host.disable(entry.path) } }
                 }
                 Button("Remove") { perform { try host.remove(folder: entry.path) } }
+                Button(host.pins.contains(entry.path) ? "Unpin" : "Pin") { host.togglePin(entry.path) }
+                    .disabled(!host.pins.contains(entry.path) && !host.canPin)
+                    .help("Up to three saved pins. Disabled extensions keep their pin until you unpin or remove them.")
                 Spacer()
                 Button("Access & Diagnostics…") {
                     ExtensionManagement.showDetails(host.diagnostic(for: entry), title: entry.name)

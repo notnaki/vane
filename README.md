@@ -434,7 +434,10 @@ folder changes are otherwise checked on the next launch. Only install code you t
 **Enable** checks the folder and reuses unchanged consent and `storage.local` identity.
 **Remove** clears the bookmark, consent, identity, disabled state, and pin, including for
 failed installations; reinstalling uses a new identity and cannot inherit old settings.
-Unavailable saved folders remain recoverable when their disk or access returns.
+Unavailable saved folders remain recoverable when their disk or access returns, and can
+be removed while unavailable. Bookmarks that follow a moved folder carry its consent,
+identity, disabled state, and pins to the new location on restart. Disabled installations
+keep their saved pin; Manage Extensions lets you unpin them to free one of three slots.
 Existing installations without a saved approval require review before loading.
 
 Runtime requests ask separately. Optional capabilities and sites are not granted by

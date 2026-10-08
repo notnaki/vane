@@ -48,16 +48,16 @@ import WebKit
     /// WebKit can parse a manifest while deferring resource errors until first use.
     /// Check executable/UI/ruleset entry points now, before any context can run.
     static func validateResources(_ manifest: [String: Any], in folder: URL) throws {
-        var resources: [(String, String)] = []
-        func single(_ value: Any?, _ key: String) {
-            if let path = value as? String { resources.append((key, path)) }
+        var resources: [(String, String, Bool)] = []
+        func single(_ value: Any?, _ key: String, pageURL: Bool = false, allowEmpty: Bool = false) {
+            if let path = value as? String, !allowEmpty || !path.isEmpty { resources.append((key, path, pageURL)) }
         }
         func list(_ value: Any?, _ key: String) {
-            for path in value as? [String] ?? [] { resources.append((key, path)) }
+            for path in value as? [String] ?? [] { resources.append((key, path, false)) }
         }
         if let background = manifest["background"] as? [String: Any] {
             single(background["service_worker"], "background.service_worker")
-            single(background["page"], "background.page")
+            single(background["page"], "background.page", pageURL: true)
             list(background["scripts"], "background.scripts")
         }
         for script in manifest["content_scripts"] as? [[String: Any]] ?? [] {
@@ -65,16 +65,24 @@ import WebKit
             list(script["css"], "content_scripts.css")
         }
         for key in ["action", "browser_action", "page_action"] {
-            if let action = manifest[key] as? [String: Any] { single(action["default_popup"], "\(key).default_popup") }
+            if let action = manifest[key] as? [String: Any] { single(action["default_popup"], "\(key).default_popup", pageURL: true, allowEmpty: true) }
         }
-        single(manifest["options_page"], "options_page")
-        single((manifest["options_ui"] as? [String: Any])?["page"], "options_ui.page")
+        single(manifest["options_page"], "options_page", pageURL: true)
+        single((manifest["options_ui"] as? [String: Any])?["page"], "options_ui.page", pageURL: true)
         if let dnr = manifest["declarative_net_request"] as? [String: Any] {
             for rule in dnr["rule_resources"] as? [[String: Any]] ?? [] { single(rule["path"], "declarative_net_request.rule_resources.path") }
         }
         let root = folder.resolvingSymlinksInPath().standardizedFileURL.path + "/"
-        for (key, path) in resources {
-            let resource = folder.appendingPathComponent(path).resolvingSymlinksInPath().standardizedFileURL
+        for (key, path, pageURL) in resources {
+            var resourcePath = path
+            if pageURL {
+                guard let components = URLComponents(string: path), components.scheme == nil, components.host == nil else {
+                    throw ExtensionHost.Failure("\(key): “\(path)” must be a URL inside the extension folder.")
+                }
+                resourcePath = components.path
+                if resourcePath.hasPrefix("/") { resourcePath.removeFirst() }
+            }
+            let resource = folder.appendingPathComponent(resourcePath).resolvingSymlinksInPath().standardizedFileURL
             var directory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: resource.path, isDirectory: &directory), !directory.boolValue,
                   FileManager.default.isReadableFile(atPath: resource.path) else {
