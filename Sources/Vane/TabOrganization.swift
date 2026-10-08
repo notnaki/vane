@@ -48,6 +48,30 @@ import Combine
         var pins: Pins
         var today: Pins
         var splits: [Split]
+
+        /// A saved Space receives fresh row IDs when opened. Compare its page/order and
+        /// folder membership, while retaining identity-sensitive ordering for live rows.
+        func matches(_ other: Mark) -> Bool {
+            guard pages == other.pages, homes == other.homes, kinds == other.kinds else { return false }
+            if Set(ids) == Set(other.ids), ids != other.ids { return false }
+            let names = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element.uuidString, "row:\($0.offset)") })
+            let otherNames = Dictionary(uniqueKeysWithValues: other.ids.enumerated().map { ($0.element.uuidString, "row:\($0.offset)") })
+            guard pins.mapped({ names[$0] }) == other.pins.mapped({ otherNames[$0] }),
+                  today.mapped({ names[$0] }) == other.today.mapped({ otherNames[$0] }) else { return false }
+            func splitMarks(_ list: [Split], ids: [UUID]) -> [SplitMark] {
+                list.map { split in
+                    SplitMark(rows: split.tabs.map { ids.firstIndex(of: $0) ?? -1 },
+                              vertical: split.vertical, weights: split.weights)
+                }
+            }
+            // Pane focus is window selection, and merely viewing a page must not block undo.
+            return splitMarks(splits, ids: ids) == splitMarks(other.splits, ids: other.ids)
+        }
+    }
+    private struct SplitMark: Equatable {
+        var rows: [Int]
+        var vertical: Bool
+        var weights: [Double]
     }
     private struct UndoRecord {
         var before: [State]
@@ -321,16 +345,37 @@ import Combine
     private func undoIsCurrent(_ states: [State]) -> Bool {
         guard let undo = Self.saved[profileID] else { return false }
         let current = Dictionary(uniqueKeysWithValues: states.map { ($0.space.id, $0.mark) })
-        return undo.after.allSatisfy { current[$0.key] == $0.value }
+        return undo.after.allSatisfy { id, mark in current[id].map { mark.matches($0) } == true }
     }
 
     @discardableResult func undo() -> Bool {
-        guard available, let undo = Self.saved[profileID], undoIsCurrent(capture()) else {
+        let current = available ? capture() : []
+        guard available, let undo = Self.saved[profileID], undoIsCurrent(current) else {
             message = "Tabs or folders changed since this action. Undo would overwrite those changes."
             refresh()
             return false
         }
-        guard commit(undo.before) else { return false }
+        // Surviving saved rows may now be live with new IDs. Keep those live objects and
+        // their latest page state; only resurrect the archived rows from the old snapshots.
+        var survivors: [UUID: Record] = [:]
+        for state in current {
+            guard let expected = undo.after[state.space.id] else { continue }
+            for (oldID, record) in zip(expected.ids, state.records) { survivors[oldID] = record }
+        }
+        var restoring = undo.before
+        for index in restoring.indices {
+            restoring[index].records = restoring[index].records.map { survivors[$0.id] ?? $0 }
+            restoring[index].pins = restoring[index].pins.mapped { raw in
+                UUID(uuidString: raw).flatMap { survivors[$0]?.id.uuidString } ?? raw
+            }
+            restoring[index].today = restoring[index].today.mapped { raw in
+                UUID(uuidString: raw).flatMap { survivors[$0]?.id.uuidString } ?? raw
+            }
+            if let live = current.first(where: { $0.space.id == restoring[index].space.id }) {
+                restoring[index].splits = live.splits
+            }
+        }
+        guard commit(restoring) else { return false }
         let archive = Archive.shared(for: profileID)
         for entry in undo.addedArchive where archive.entries.contains(entry) {
             archive.remove(entry.id)
@@ -364,9 +409,17 @@ import Combine
             message = "A Space changed profiles or was deleted. Refresh and try again."
             return false
         }
+        let sessionURL = ProfileManager.sessionURL(for: profileID, in: Store.directory)
+        let sessionBefore = try? Data(contentsOf: sessionURL)
+        @MainActor func restoreSession() {
+            if let sessionBefore, !SnapshotPersistence.write(sessionBefore, to: sessionURL) {
+                message = "Could not restore the session snapshot. Check storage and retry."
+            }
+        }
         for state in states {
             guard Session.forget(space: state.space.id, in: profileID) else {
                 message = "Could not save the session. No tabs were changed."
+                restoreSession()
                 return false
             }
         }
@@ -374,6 +427,7 @@ import Combine
             ($0.space.id, Suspension.SpaceState.load(space: $0.space.id, profileID: profileID, in: Store.directory))
         })
         @MainActor func rollback() {
+            restoreSession()
             for (id, parked) in previous {
                 if !Suspension.SpaceState.save(parked, space: id, profileID: profileID, in: Store.directory) {
                     message = "Could not restore saved page state. Check storage and retry."
@@ -382,15 +436,16 @@ import Combine
         }
         for state in states {
             var parked: [String: Parked] = [:]
-            for record in state.records {
-                guard let entry = TabStore.sidecarEntry(page: record.url, home: record.home, snapshot: record.parked) else { continue }
-                parked[entry.key] = entry.parked
-            }
-            // Preserve profile favourites' parked state in each affected sidecar.
+            // Match saveCurrentSpace's favourite → pinned → Today precedence. The
+            // sidecar is URL-keyed; a wandered favourite must not overwrite Today.
             for tab in TabStore.all.first(where: { $0.sharesTabs && $0.profileID == profileID })?.tabs.filter({ $0.kind == .favourite }) ?? [] {
                 if let entry = TabStore.sidecarEntry(page: tab.currentURL, home: tab.homeURL, snapshot: tab.snapshot) {
                     parked[entry.key] = entry.parked
                 }
+            }
+            for record in state.records {
+                guard let entry = TabStore.sidecarEntry(page: record.url, home: record.home, snapshot: record.parked) else { continue }
+                parked[entry.key] = entry.parked
             }
             guard Suspension.SpaceState.save(parked, space: state.space.id, profileID: profileID, in: Store.directory) else {
                 message = "Could not save page state. No tabs were changed."

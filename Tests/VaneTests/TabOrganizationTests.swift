@@ -221,6 +221,12 @@ import SwiftUI
     func testFailedSidecarWriteDoesNotChangeMembershipOrArchive() throws {
         let (store, first, _) = fixture()
         let a = tab("https://example.com/a", in: store)
+        XCTAssertTrue(Session.save())
+        let sessionURL = ProfileManager.sessionURL(for: store.profileID, in: Store.directory)
+        let sessionBefore = try Data(contentsOf: sessionURL)
+        var divergent = first
+        divergent.tabURLs = []
+        XCTAssertTrue(ProfileManager.shared.updateSpace(divergent))
         let model = TabOrganization(store: store)
         model.selection = [a.id]
         XCTAssertTrue(Suspension.SpaceState.save([:], space: first.id, profileID: store.profileID, in: Store.directory))
@@ -236,6 +242,50 @@ import SwiftUI
         XCTAssertEqual(store.tabs.map(\.id), [a.id])
         XCTAssertEqual(ProfileManager.shared.spaces(for: store.profileID).first { $0.id == first.id }?.tabURLs, [])
         XCTAssertTrue(Archive.shared(for: store.profileID).entries.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: sessionURL), sessionBefore)
+    }
+
+    func testDormantTodayStateIsNotOverwrittenByAWanderedFavourite() {
+        let (store, _, second) = fixture()
+        let home = URL(string: "https://example.com/home")!
+        let wander = URL(string: "https://example.com/wander")!
+        let extra = URL(string: "https://example.com/extra")!
+        let favourite = tab(home.absoluteString, in: store, kind: .favourite)
+        favourite.restore(url: wander, home: home, parked: Parked(title: "Favourite wander"))
+        var saved = second
+        saved.tabURLs = [home, extra]
+        XCTAssertTrue(ProfileManager.shared.updateSpace(saved))
+        XCTAssertTrue(Suspension.SpaceState.save([home.absoluteString: Parked(title: "Today at home"),
+            extra.absoluteString: Parked(title: "Extra")], space: second.id, profileID: store.profileID, in: Store.directory))
+        let model = TabOrganization(store: store)
+        model.selection = Set(model.rows.filter { $0.spaceID == second.id && $0.url == extra }.map(\.id))
+        XCTAssertTrue(model.archiveSelected())
+        let snapshot = Suspension.SpaceState.load(space: second.id, profileID: store.profileID, in: Store.directory)[home.absoluteString]
+        XCTAssertNil(snapshot?.page)
+        XCTAssertEqual(snapshot?.title, "Today at home")
+        XCTAssertEqual(favourite.currentURL, wander)
+        XCTAssertEqual(favourite.homeURL, home)
+        XCTAssertEqual(model.rows.first { $0.spaceID == second.id }?.url, home)
+    }
+
+    func testOpeningAnAffectedSavedSpaceDoesNotInvalidateUndo() {
+        let (store, _, second) = fixture()
+        let a = URL(string: "https://example.com/a")!
+        let b = URL(string: "https://example.com/b")!
+        var saved = second
+        saved.tabURLs = [a, b]
+        XCTAssertTrue(ProfileManager.shared.updateSpace(saved))
+        let model = TabOrganization(store: store)
+        model.selection = Set(model.rows.filter { $0.spaceID == second.id && $0.url == a }.map(\.id))
+        XCTAssertTrue(model.archiveSelected())
+        store.switchTo(space: saved)
+        // Hold the restored survivor parked while the fixture's initial resume settles.
+        store.current = nil
+        let survivor = store.tabs.first { $0.kind == .today }!
+        survivor.park(url: b, Parked(title: "Survivor"))
+        XCTAssertTrue(model.undo())
+        XCTAssertEqual(store.tabs.compactMap(\.currentURL), [a, b])
+        XCTAssertTrue(store.tabs.last === survivor, "Undo must keep the survivor's live identity")
     }
 
     func testReviewSheetsRenderAtTheirDefaultSizes() async throws {
