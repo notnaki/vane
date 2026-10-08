@@ -107,4 +107,46 @@ enum ReadingQueueFiles {
         }
         return bytes
     }
+    static func validateBackup(files: [String: Data], profileIDs: Set<UUID>) throws -> [UUID: Int] {
+        struct Key: Hashable { var profile: UUID; var article: UUID }
+        var groups: [Key: [String]] = [:], counts: [UUID: Int] = [:], sources: [UUID: Set<String>] = [:]
+        for name in files.keys where name.hasPrefix("ReadingQueue/") {
+            guard let identity = parseOwnedName(name), profileIDs.contains(identity.profileID) else { throw ReadingQueueFailure.invalid("A saved article belongs to an unknown profile.") }
+            groups[Key(profile: identity.profileID, article: identity.articleID), default: []].append(name)
+        }
+        for (key, names) in groups {
+            let prefix = "ReadingQueue/\(key.profile.uuidString.lowercased())/\(key.article.uuidString.lowercased())/"
+            guard let record = files[prefix + "article.json"] else { throw ReadingQueueFailure.invalid("A saved article record is missing.") }
+            let article = try ReadingArticleCodec.decode(record, profileID: key.profile, articleID: key.article)
+            var images: [String: Data] = [:]
+            for name in names where name != prefix + "article.json" { images[URL(fileURLWithPath: name).lastPathComponent] = files[name] }
+            try ReadingArticleCodec.validate(.init(article: article, images: images))
+            guard sources[key.profile, default: []].insert(article.sourceURL).inserted else { throw ReadingQueueFailure.invalid("This profile contains duplicate saved article URLs.") }
+            counts[key.profile, default: 0] += 1
+            guard counts[key.profile, default: 0] <= ReadingArticleCodec.articleLimit else { throw ReadingQueueFailure.tooLarge }
+        }
+        return counts
+    }
+    static func prepareOwnedParents(_ name: String, in directory: URL) throws {
+        guard parseOwnedName(name) != nil else { throw ReadingQueueFailure.invalid("Invalid saved article path.") }
+        try check(directory, directory: true)
+        var parent = directory
+        for component in name.split(separator: "/").dropLast() { parent.appendPathComponent(String(component)); try ensureDirectory(parent) }
+    }
+    static func removeEmptyDirectories(in directory: URL) throws {
+        try checkRoot(directory)
+        let queue = root(in: directory)
+        guard exists(queue) else { return }
+        let fm = FileManager.default
+        for profile in try fm.contentsOfDirectory(at: queue, includingPropertiesForKeys: nil) where canonicalUUID(profile.lastPathComponent) != nil {
+            try check(profile, directory: true)
+            for article in try fm.contentsOfDirectory(at: profile, includingPropertiesForKeys: nil) where canonicalUUID(article.lastPathComponent) != nil {
+                try check(article, directory: true)
+                let images = article.appendingPathComponent("images")
+                if exists(images) { try check(images, directory: true); if try fm.contentsOfDirectory(atPath: images.path).isEmpty { try fm.removeItem(at: images) } }
+                if try fm.contentsOfDirectory(atPath: article.path).isEmpty { try fm.removeItem(at: article) }
+            }
+            if try fm.contentsOfDirectory(atPath: profile.path).isEmpty { try fm.removeItem(at: profile) }
+        }
+    }
 }

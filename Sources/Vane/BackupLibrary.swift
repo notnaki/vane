@@ -9,6 +9,7 @@ struct BackupPreview: Sendable {
         var bookmarks: Int
         var history: Int
         var easels: Int
+        var readingQueue = 0
     }
     var profiles: [ProfileSummary]
     var settings: Int
@@ -18,6 +19,7 @@ struct BackupPreview: Sendable {
     var bookmarks: Int { profiles.reduce(0) { $0 + $1.bookmarks } }
     var history: Int { profiles.reduce(0) { $0 + $1.history } }
     var easels: Int { profiles.reduce(0) { $0 + $1.easels } }
+    var readingQueue: Int { profiles.reduce(0) { $0 + $1.readingQueue } }
 }
 
 /// Synchronous capture is one main-actor boundary: no window/profile mutations can
@@ -63,6 +65,7 @@ struct BackupPreview: Sendable {
             names += try FileManager.default.contentsOfDirectory(atPath: lists.path)
                 .map { "FilterLists/" + $0 }.filter(BackupPaths.isOwned)
         }
+        names += try ReadingQueueFiles.ownedNames(in: directory)
         return names.sorted()
     }
     func capture(reason: BackupReason, allowDamaged: Bool = false) throws -> BackupArchive {
@@ -123,7 +126,7 @@ struct BackupPreview: Sendable {
         guard !disk.profiles.isEmpty, disk.profiles.count <= 1000, ids.count == disk.profiles.count,
               !ids.contains(Profile.incognito.id), ids.contains(disk.activeID) else { throw BackupError.invalid("Invalid profile identities.") }
         let allowed = disk.profiles.reduce(into: Set(["profiles.json"])) { $0.formUnion(BackupPaths.names(for: $1.id)) }
-        guard files.keys.allSatisfy({ allowed.contains($0) || $0.hasPrefix("FilterLists/") }) else {
+        guard files.keys.allSatisfy({ allowed.contains($0) || $0.hasPrefix("FilterLists/") || ReadingQueueFiles.parseOwnedName($0).map { ids.contains($0.profileID) } == true }) else {
             throw BackupError.invalid("A saved file belongs to an unknown profile.")
         }
         guard let preferences = try PropertyListSerialization.propertyList(from: archive.preferences, format: nil) as? [String: Any] else {
@@ -139,6 +142,7 @@ struct BackupPreview: Sendable {
             guard String(data: data, encoding: .utf8) != nil else { throw BackupError.invalid("Invalid blocking list: \(name).") }
         }
         var summaries: [BackupPreview.ProfileSummary] = []
+        let queueCounts = try ReadingQueueFiles.validateBackup(files: files, profileIDs: ids)
         var allSpaces = Set<UUID>(), allBoards = Set<UUID>()
         for profile in disk.profiles {
             let suffix = ProfileManager.suffix(profile.id)
@@ -196,7 +200,7 @@ struct BackupPreview: Sendable {
             let databaseCounts = try files["vane\(suffix).db"].map(BackupSQLite.counts)
             summaries.append(.init(id: profile.id, name: profile.name, spaces: spaces.count,
                                    tabs: tabCount(spaces: spaces, sessions: sessions, windowSpaces: sessionSpaces, favourites: favourites),
-                                   bookmarks: databaseCounts?.bookmarks ?? 0, history: databaseCounts?.history ?? 0, easels: boards.count))
+                                   bookmarks: databaseCounts?.bookmarks ?? 0, history: databaseCounts?.history ?? 0, easels: boards.count, readingQueue: queueCounts[profile.id] ?? 0))
         }
         let external = preferences.keys.contains { $0.hasPrefix("extensionPaths") || $0.hasPrefix("downloadFolder") || $0 == "blockerLists" }
         return BackupPreview(profiles: summaries, settings: preferences.count, hasExternalFolders: external)
