@@ -132,4 +132,37 @@ import XCTest
         let unmatched = try await tab.web.evaluateJavaScript("document.documentElement.dataset.vaneExtension ?? 'missing'")
         XCTAssertEqual(unmatched as? String, "missing")
     }
+    func testMV2BackgroundAndMV3WorkerMessagingStorageAndAction() async throws {
+        let host = ExtensionHost.host(for: profile)
+        for version in [2, 3] {
+            var manifest: [String: Any] = ["manifest_version": version, "name": "Background Fixture", "version": "1.0",
+                "permissions": ["storage", "tabs"], "options_ui": ["page": "options.html"]]
+            manifest[version == 2 ? "browser_action" : "action"] = ["default_popup": "options.html"]
+            manifest["background"] = version == 2 ? ["scripts": ["background.js"], "persistent": true] as [String: Any]
+                : ["service_worker": "background.js"]
+            try JSONSerialization.data(withJSONObject: manifest).write(to: folder.appendingPathComponent("manifest.json"))
+            try Data("""
+                browser.runtime.onMessage.addListener(async message => {
+                    await browser.storage.local.set({background:message.value});
+                    await (browser.action ?? browser.browserAction).setBadgeText({text:'OK'});
+                    return {value:message.value, count:(await browser.tabs.query({})).length};
+                });
+                """.utf8).write(to: folder.appendingPathComponent("background.js"))
+            let context = try await load()
+            let web = try await options(context)
+            let reply = try await web.callAsyncJavaScript("return await browser.runtime.sendMessage({value:'MV fixture'});",
+                arguments: [:], in: nil, contentWorld: .page) as? [String: Any]
+            XCTAssertEqual(reply?["value"] as? String, "MV fixture")
+            XCTAssertEqual(reply?["count"] as? Int, 0)
+            let stored = try await web.callAsyncJavaScript("return (await browser.storage.local.get('background')).background;",
+                arguments: [:], in: nil, contentWorld: .page)
+            XCTAssertEqual(stored as? String, "MV fixture")
+            XCTAssertEqual(context.action(for: nil)?.badgeText, "OK")
+            XCTAssertTrue(context.action(for: nil)?.presentsPopup == true)
+            host.remove(context)
+            XCTAssertFalse(context.isLoaded)
+            XCTAssertTrue(host.controller.extensionContexts.isEmpty)
+        }
+    }
+
 }

@@ -875,6 +875,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         }),
     ]))
     root.addItem(menu("Extensions", [
+        item("Manage Extensions…", "") { ExtensionManagement.show() },
         item(.installExtension) { ExtensionHost.shared.chooseAndInstall(); rebuild() },
         .separator(),
     ] + ExtensionHost.shared.installed.map { ctx in

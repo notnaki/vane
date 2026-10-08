@@ -38,15 +38,18 @@ import WebKit
 
     /// Every folder still reachable under `key`, access already started. Anything that no
     /// longer resolves — folder deleted, volume gone, or a pre-sandbox plain path that the
-    /// sandbox will not grant — is dropped from the stored list rather than retried forever.
+    /// sandbox will not grant — is dropped unless the caller preserves unavailable choices.
     @discardableResult
-    static func urls(_ key: String, in defaults: UserDefaults = .vane) -> [URL] {
+    static func urls(_ key: String, in defaults: UserDefaults = .vane, preservingUnavailable: Bool = false) -> [URL] {
         let stored = raw(key, in: defaults)
         let holder = owner(key, defaults)
         var kept: [Data] = []
         var out: [URL] = []
         for data in stored {
-            guard let url = resolve(data), start(url, for: holder) else { continue }
+            guard let url = resolve(data), start(url, for: holder) else {
+                if preservingUnavailable { kept.append(data) }
+                continue
+            }
             kept.append(data)
             out.append(url)
         }
@@ -676,7 +679,7 @@ struct Space: Identifiable, Codable, Equatable {
             Passwords.deleteAll(profileID: id)
             SitePermissions.resetAll(profileID: id)
             for key in ["pinnedTabs", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,
-                        ExtensionHost.identifiersKey, ExtensionConsent.baseKey,
+                        ExtensionHost.identifiersKey, ExtensionHost.namesKey, ExtensionHost.disabledKey, ExtensionConsent.baseKey,
                         HTTPSOnly.exceptionsKey] {
                 UserDefaults.vane.removeObject(forKey: Self.defaultsKey(key, id))
             }
