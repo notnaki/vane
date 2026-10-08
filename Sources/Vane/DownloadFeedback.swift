@@ -169,7 +169,7 @@ private struct FlightPosition: AnimatableModifier {
         let y = remaining * remaining * source.y + 2 * remaining * progress * control.y
             + progress * progress * destination.y
         content
-            .scaleEffect(1 - 0.55 * progress)
+            .scaleEffect(1 - 0.15 * progress)
             .opacity(Double(min(1, remaining / 0.12)))
             .position(x: x, y: y)
     }
