@@ -299,4 +299,23 @@ import XCTest
                       "Submitting another tab must not strand the keyboard on the old page")
     }
 
+    func testPageFocusWaitsForDismissedFieldToLeaveTheWindow() async throws {
+        let (store, window, web) = fixture()
+        let field = NSTextField(string: "search")
+        let container = NSView(frame: window.contentView!.frame)
+        container.addSubview(web)
+        field.frame = NSRect(x: 0, y: 0, width: 250, height: 30)
+        container.addSubview(field)
+        window.contentView = container
+        window.makeFirstResponder(field)
+        store.focusPage()
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150)) {
+            field.removeFromSuperview()
+            window.makeFirstResponder(nil)
+        }
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertTrue(window.firstResponder === web,
+                      "Dismissal can leave its field editor mounted until the transition finishes")
+    }
+
 }

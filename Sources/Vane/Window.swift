@@ -874,8 +874,9 @@ extension TabStore {
     /// "Nobody has it" is either of AppKit's two spellings — the window is its own first
     /// responder, or the first responder is a view that has already left the window — so the
     /// answer does not depend on which of the two happens first.
-    func focusPage(from previousPage: NSView? = nil, remaining: Int = 6) {
-        DispatchQueue.main.async { [weak self, weak previousPage] in
+    func focusPage(from previousPage: NSView? = nil, remaining: Int = 12,
+                   waitingFor dismissedResponder: NSResponder? = nil) {
+        DispatchQueue.main.async { [weak self, weak previousPage, weak dismissedResponder] in
             guard let self, let window, palette == nil,
                   NSApp.modalWindow == nil, window.attachedSheet == nil else { return }
             let holder = window.firstResponder
@@ -888,12 +889,15 @@ extension TabStore {
             if Windows.handsKeyboardBack(nobodyHasIt: nobody, hasPage: page != nil,
                                          libraryOpen: libraryOpen), let page,
                page.window === window, window.makeFirstResponder(page) { return }
-            guard nobody, !libraryOpen else { return }
-            // Search creates its first tab on the next turn; SwiftUI then mounts its page.
-            // Retry only while nobody has taken focus and no new overlay is open.
+            guard !libraryOpen,
+                  nobody || dismissedResponder == nil || holder === dismissedResponder else { return }
+            // Search creates its tab on the next turn, and its dismissed field can remain
+            // mounted during the exit transition. Wait for that same responder to leave;
+            // another control taking focus or a new overlay cancels the handoff.
             if remaining > 1 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
-                    self?.focusPage(from: previousPage, remaining: remaining - 1)
+                    self?.focusPage(from: previousPage, remaining: remaining - 1,
+                                    waitingFor: dismissedResponder ?? holder)
                 }
             }
         }
