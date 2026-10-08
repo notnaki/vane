@@ -786,7 +786,7 @@ struct PasswordChooser: View {
                     PasswordChooserCard(choice: choice, profileID: tab.profileID,
                         width: PasswordChooser.width(of: choice.anchor, in: geo.size),
                         height: PasswordChooser.height(rows: choice.accounts.count, in: geo.size),
-                        fill: { tab.fillChosen(host: choice.host, account: $0, port: choice.port) },
+                        fill: { tab.fillChosen(host: choice.host, account: $0, port: choice.port, target: choice.target) },
                         manage: {
                             tab.closeChooser(.escape)
                             SettingsWindow.show(tab: "passwords", profileID: tab.profileID)

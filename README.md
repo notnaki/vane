@@ -212,7 +212,12 @@ copy, and delete saved logins. Add/edit forms can generate random passwords of
 password; use the arrow keys and Return to choose, or Escape to dismiss. Save and
 update prompts show labeled credentials with a password reveal control. Credentials
 stay in the local macOS Keychain and are scoped to the
-profile; private browsing does not use saved passwords. The bookmark manager
+profile; private browsing does not use saved passwords. Username-first sign-ins keep the
+selected account through form replacement or the next same-origin password page. Fields
+revealed or mounted by a site are discovered automatically, and same-origin embedded
+login forms use their own fields and chooser anchors. Hidden fields and one-time codes
+are excluded from filling; cross-origin and opaque sandbox frames cannot receive credentials.
+The bookmark manager
 supports folders, search, bulk actions, and HTML import/export.
 
 Some features depend on macOS services, site behavior, or a signed distribution
@@ -503,6 +508,17 @@ python3 scripts/test-default-browser-prompt.py
 ./scripts/test-build-dmg.sh
 bash scripts/test-update-installer.sh Vane.app --unsigned
 ```
+
+For focused password validation on a logged-in macOS desktop:
+
+```sh
+swift test --filter 'PasswordAutofillTests|PasswordOriginTests|PasswordChooserLayoutTests|PasswordPopupPresentationTests|PasswordManagerSearchTests|PasswordGeneratorTests'
+python3 scripts/check-browser-smoke.py
+```
+
+The autofill fixtures exercise real WebKit documents, controlled input events, dynamic
+visibility, account continuity, embedded forms, stale chooser targets, and scoped
+Keychain reads. Keychain-dependent XCTest fixtures report a skip if storage is unavailable.
 
 `swift test` covers search typing and cancellation, link gestures and previews,
 Space switching and deletion, tab ordering, Battery Saver, media permission popups and

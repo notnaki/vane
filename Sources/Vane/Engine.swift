@@ -408,6 +408,9 @@ struct TitleReveal: Equatable, Sendable {
     /// When this tab last filled a password. Filling moves the focus out of the page and
     /// back, which is another focusin — see `PasswordChooser.refillGrace`.
     private var lastFilledAt = Date.distantPast
+    /// Only an account name crosses a submitted username step's next navigation.
+    /// Never shared between tabs, profiles, frames, or origins; never a stored secret.
+    private var passwordStep: (origin: PasswordOrigin, account: String, expires: Date, awaitingNavigation: Bool)?
     @Published var bookmarked = false
     /// Whether this page has an article worth reading — drives the toolbar button.
     @Published var readerAvailable = false
@@ -935,6 +938,7 @@ struct TitleReveal: Equatable, Sendable {
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
     private func release(replacing: Bool = true) {
+        passwordStep = nil
         FileUploads.cancel(tabID: id)
         SitePermissions.endDocument(tabID: id)
         certificateDestinationURL = nil
@@ -1209,16 +1213,35 @@ struct TitleReveal: Equatable, Sendable {
     /// than asking, and it is what Arc does.
     ///
     /// Names only until something is chosen: deciding *whether* to ask decrypts nothing.
-    func fillPassword(announcing: Bool = false, automatic: Bool = false) {
-        guard let origin = secureOrigin else {
+    func fillPassword(announcing: Bool = false, automatic: Bool = false,
+                      target: String? = nil, accountHint: String? = nil, continuation: Bool = false) {
+        guard !isPrivate, let origin = secureOrigin else {
             if announcing { axAnnounce("No saved password for this page.") }
             return
         }
         let host = origin.host
-        let hits = Passwords.matches(origin: origin, profileID: profileID)
+        // Capture a concrete target before reading any secret or opening the chooser.
+        guard let target else {
+            let page = web, pageURL = page.url
+            page.evaluateJavaScript("window.__vaneAnchor && window.__vaneAnchor()",
+                                    in: nil, in: Autofill.world) { [weak self, weak page] result in
+                guard let self, let page, self.existingWeb === page, page.url == pageURL,
+                      case let .success(value) = result, let raw = value as? String,
+                      let data = raw.data(using: .utf8),
+                      let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let target = body["target"] as? String else { return }
+                self.fillPassword(announcing: announcing, automatic: automatic, target: target,
+                                  accountHint: body["accountHint"] as? String)
+            }
+            return
+        }
+        var hits = Passwords.matches(origin: origin, profileID: profileID)
+        if automatic, let hint = accountHint, !hint.isEmpty {
+            hits = hits.filter { $0.account == hint }
+        }
         guard hits.count > 1 else {
             if let one = hits.first {
-                fill(one, automatic: automatic)
+                fill(one, automatic: automatic, target: target, continuation: continuation)
             } else if announcing {
                 axAnnounce("No saved password for \(host).")
             }
@@ -1228,33 +1251,49 @@ struct TitleReveal: Equatable, Sendable {
         // open a popup over a field the user has not interacted with.
         if automatic { return }
         let pageURL = web.url
-        web.evaluateJavaScript("window.__vaneAnchor && window.__vaneAnchor()",
+        web.evaluateJavaScript(Autofill.anchorJS(target: target),
                                in: nil, in: Autofill.world) { [weak self] result in
             guard case let .success(value) = result, let raw = value as? String,
                   let json = raw.data(using: .utf8),
-                  let rect = try? JSONSerialization.jsonObject(with: json) as? [String: Double]
+                  let rect = try? JSONSerialization.jsonObject(with: json) as? [String: Any]
             else { return }
             guard let self, self.existingWeb?.url == pageURL else { return }
-            self.openChooser(host: host, accounts: hits.map(\.account), at: rect)
+            self.openChooser(host: host, accounts: hits.map(\.account), at: rect.compactMapValues { $0 as? Double },
+                             target: target, accountHint: accountHint)
         }
     }
 
     /// Fills both fields and remembers the choice, so this account leads the list next time.
     /// The password is read here and nowhere else, and lives exactly as long as the call.
-    func fill(_ login: Passwords.Login, automatic: Bool = false) {
-        guard secureOrigin == login.origin else { return }
+    func fill(_ login: Passwords.Login, automatic: Bool = false, target: String? = nil,
+              continuation: Bool = false) {
+        guard !isPrivate, secureOrigin == login.origin else { return }
+        guard let target else {
+            let page = web, pageURL = page.url
+            page.evaluateJavaScript("window.__vaneAnchor && window.__vaneAnchor()",
+                                    in: nil, in: Autofill.world) { [weak self, weak page] result in
+                guard let self, let page, self.existingWeb === page, page.url == pageURL,
+                      case let .success(value) = result, let raw = value as? String,
+                      let data = raw.data(using: .utf8),
+                      let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let target = body["target"] as? String else { return }
+                self.fill(login, automatic: automatic, target: target, continuation: continuation)
+            }
+            return
+        }
         closeChooser(.filled)
         guard let password = Passwords.password(origin: login.origin, account: login.account,
                                                 profileID: profileID) else { return }
         let pageURL = web.url
         web.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
-                                             automatic: automatic),
+                                             automatic: automatic, target: target, continuation: continuation),
                                in: nil, in: Autofill.world) { [weak self] result in
             // The script says whether it found a form. Silence on a page with no sign-in
             // form is indistinguishable from a fill that went somewhere invisible.
             guard let self, self.existingWeb?.url == pageURL, case let .success(value) = result else { return }
             if (value as? Bool) == true {
                 self.lastFilledAt = .now
+                if continuation { self.passwordStep = nil }
                 Passwords.recordUse(origin: login.origin, account: login.account, profileID: self.profileID)
             } else if !automatic {
                 axAnnounce("No sign-in form on this page.")
@@ -1266,11 +1305,12 @@ struct TitleReveal: Equatable, Sendable {
     /// `passwordChoice`, because by the time a click completes the list may already be gone:
     /// the mouse-*down* takes first responder off the web view, the page reports that as a
     /// blur, and the blur is a dismiss. Reading the state here lost every click.
-    func fillChosen(host: String, account: String, port: Int = 443) {
+    func fillChosen(host: String, account: String, port: Int = 443, target: String? = nil) {
+        guard !isPrivate else { return }
         guard let hit = Passwords.matches(origin: PasswordOrigin(host: host, port: port), profileID: profileID)
             .first(where: { $0.account == account })
         else { closeChooser(.filled); return }
-        fill(hit)
+        fill(hit, target: target)
     }
 
     /// Whether the pointer is over the list. Set by the view; read by `closeChooser` for the
@@ -1293,7 +1333,9 @@ struct TitleReveal: Equatable, Sendable {
     /// web view's own coordinates; `PasswordChooser.place` then keeps it inside the pane.
     /// ponytail: the anchor is read once, when the list opens — nothing tracks the element
     /// after that, which is why every scroll, blur and click closes the list instead.
-    private func openChooser(host: String, accounts: [String], at r: [String: Double]) {
+    private func openChooser(host: String, accounts: [String], at r: [String: Double],
+                             target: String? = nil, accountHint: String? = nil) {
+        guard !isPrivate else { return }
         guard PasswordChooser.opens(.focus, sinceFill: Date.now.timeIntervalSince(lastFilledAt)),
               let x = r["x"], let y = r["y"], let w = r["w"] else { return }
         let z = web.pageZoom
@@ -1306,7 +1348,8 @@ struct TitleReveal: Equatable, Sendable {
                                     height: PasswordChooser.height(rows: accounts.count, in: web.bounds.size)) != nil
         else { return }
         guard let origin = secureOrigin, origin.host == host else { return }
-        passwordChoice = PasswordChoice(port: origin.port, host: host, accounts: accounts, anchor: anchor)
+        passwordChoice = PasswordChoice(target: target, port: origin.port, host: host, accounts: accounts, anchor: anchor,
+                                        selected: accountHint.flatMap { accounts.firstIndex(of: $0) } ?? 0)
     }
 
     func allowCertificateNavigation(to url: URL?) {
@@ -1428,6 +1471,9 @@ struct TitleReveal: Equatable, Sendable {
         Zoom.apply(to: self)
         DeveloperMode.apply(to: self)   // localhost → deployed site, and back
         closeChooser(.navigate)       // a redirect lands here without a fresh provisional
+        if let step = passwordStep, step.awaitingNavigation, step.origin == secureOrigin, step.expires > .now {
+            passwordStep?.awaitingNavigation = false
+        } else { passwordStep = nil }
         pipFrame = nil                // main-frame navigation: every frame it named has gone
         MediaState.shared.forget(id)   // old documents and their rate limits have gone too
     }
@@ -1650,12 +1696,26 @@ struct TitleReveal: Equatable, Sendable {
             return
         }
         guard let body = m.body as? [String: Any] else { return }
-        guard m.name == "vanepw", m.frameInfo.isMainFrame,
+        guard m.name == "vanepw", m.webView === existingWeb, !isPrivate, m.frameInfo.isMainFrame,
               m.frameInfo.securityOrigin.protocol == "https",
               m.frameInfo.securityOrigin.host == secureHost,
               (m.frameInfo.securityOrigin.port == 0 ? 443 : m.frameInfo.securityOrigin.port) == secureOrigin?.port else { return }
+        if let account = body["usernameStep"] as? String, !account.isEmpty,
+           body["mainDocument"] as? Bool == true, let origin = secureOrigin {
+            passwordStep = (origin, account, .now.addingTimeInterval(120), true)
+            return
+        }
         if body["ready"] as? Bool == true {
-            fillPassword(automatic: true)
+            guard let target = body["target"] as? String else { return }
+            var hint = body["accountHint"] as? String
+            var continuation = false
+            if (hint ?? "").isEmpty, body["mainDocument"] as? Bool == true,
+               body["passwordOnly"] as? Bool == true, let step = passwordStep,
+               !step.awaitingNavigation, step.origin == secureOrigin, step.expires > .now {
+                hint = step.account
+                continuation = true
+            }
+            fillPassword(automatic: true, target: target, accountHint: hint, continuation: continuation)
             return
         }
         // The page saying the list is no longer wanted: a blur, a click elsewhere, a scroll,
@@ -1673,7 +1733,8 @@ struct TitleReveal: Equatable, Sendable {
             let hits = Passwords.matches(origin: origin, profileID: profileID)
             guard !hits.isEmpty else { return }
             openChooser(host: host, accounts: hits.map(\.account),
-                        at: body.compactMapValues { $0 as? Double })
+                        at: body.compactMapValues { $0 as? Double }, target: body["target"] as? String,
+                        accountHint: body["accountHint"] as? String)
             return
         }
         guard let password = body["password"] as? String, !password.isEmpty,
@@ -1726,7 +1787,7 @@ struct TitleReveal: Equatable, Sendable {
     func fillSelected() {
         guard let choice = passwordChoice,
               choice.accounts.indices.contains(choice.selected) else { return }
-        fillChosen(host: choice.host, account: choice.accounts[choice.selected], port: choice.port)
+        fillChosen(host: choice.host, account: choice.accounts[choice.selected], port: choice.port, target: choice.target)
     }
 
     func reload()     { if easelSession == nil { existingWeb?.reload() } }
