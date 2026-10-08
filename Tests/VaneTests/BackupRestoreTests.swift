@@ -70,6 +70,23 @@ import XCTest
         XCTAssertNotNil(point.damage)
         XCTAssertEqual(point.files.first { $0.name == "profiles.json" }?.data, Data("damaged-original".utf8))
     }
+    func testSuccessfulDamagedRestoreRetainsRawDatabaseJournalsInRecoveryPoint() throws {
+        let source = try fixture(), target = try fixture()
+        let originals = ["vane.db": Data("broken db".utf8),
+                         "vane.db-wal": Data("original wal".utf8),
+                         "vane.db-shm": Data("original shm".utf8)]
+        for (name, data) in originals { try data.write(to: target.root.appendingPathComponent(name)) }
+        let restore = BackupRestore(library: target.library)
+        try restore.prepare(source.library.capture(reason: .manual))
+        XCTAssertEqual(try restore.recoverAtLaunch(), .restored)
+        let point = try BackupCodec.read(XCTUnwrap(BackupRecovery(library: target.library).points().first?.url))
+        XCTAssertNotNil(point.damage)
+        for (name, data) in originals { XCTAssertEqual(point.files.first { $0.name == name }?.data, data, name) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.root.appendingPathComponent("Recovery/Pending").path))
+        XCTAssertThrowsError(try target.library.validate(point))
+        var disguised = point; disguised.damage = nil
+        XCTAssertThrowsError(try BackupCodec.validate(disguised))
+    }
     func testDamagedDatabaseAndWALRollBackExactly() throws {
         let source = try fixture(), target = try fixture()
         try Data("broken db".utf8).write(to: target.root.appendingPathComponent("vane.db"))

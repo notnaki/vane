@@ -82,32 +82,38 @@ enum BackupSchedule {
               written.preferences == archive.preferences, written.damage == archive.damage else {
             throw BackupError.storage("The recovery point could not be verified.")
         }
+        try reconcileRetention(keeping: archive.id)
+        return BackupPoint(id: archive.id, date: archive.created, reason: archive.reason,
+                           size: try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0,
+                           url: url, diagnostic: archive.damage)
+    }
+    private nonisolated func reconcileRetention(keeping protectedID: UUID) throws {
         let all = try points()
         var kept = Array(all.prefix(10))
         // A clock adjustment or a UUID tie-break must never prune the point we
         // just promised to create, especially the mandatory before-restore point.
-        if !kept.contains(where: { $0.id == archive.id }), let newest = all.first(where: { $0.id == archive.id }) {
+        if !kept.contains(where: { $0.id == protectedID }), let newest = all.first(where: { $0.id == protectedID }) {
             if kept.count == 10 { kept.removeLast() }
             kept.append(newest)
         }
         // Damaged originals are valuable evidence, but must not evict the only
         // usable recovery point. Keep nine recent points plus that healthy point.
         if !kept.contains(where: { $0.diagnostic == nil }), let good = all.first(where: { $0.diagnostic == nil }) {
-            if kept.count == 10, let index = kept.lastIndex(where: { $0.id != archive.id }) { kept.remove(at: index) }
+            if kept.count == 10, let index = kept.lastIndex(where: { $0.id != protectedID }) { kept.remove(at: index) }
             kept.append(good)
         }
         let retained = Set(kept.map(\.id))
         for stale in all where !retained.contains(stale.id) { try remover(stale.url) }
-        return BackupPoint(id: archive.id, date: archive.created, reason: archive.reason,
-                           size: try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0,
-                           url: url, diagnostic: archive.damage)
     }
     func automaticPointIfChanged(_ archive: BackupArchive) throws -> BackupPoint? {
         _ = try library.validate(archive)
         let digest = try Self.contentDigest(archive)
         // A corrupt latest point does not hide the last healthy one or stop recovery.
         if let latest = try points().first(where: { $0.diagnostic == nil }),
-           digest == (try Self.contentDigest(BackupCodec.read(latest.url))) { return nil }
+           digest == (try Self.contentDigest(BackupCodec.read(latest.url))) {
+            try reconcileRetention(keeping: latest.id)
+            return nil
+        }
         return try save(archive)
     }
     func automaticPointIfChangedAsync(_ archive: BackupArchive) async throws -> BackupPoint? {
@@ -115,7 +121,10 @@ enum BackupSchedule {
         let changed = try await Task.detached(priority: .utility) {
             let digest = try Self.contentDigest(archive)
             if let latest = try self.points().first(where: { $0.diagnostic == nil }) {
-                return digest != (try Self.contentDigest(BackupCodec.read(latest.url)))
+                if digest == (try Self.contentDigest(BackupCodec.read(latest.url))) {
+                    try self.reconcileRetention(keeping: latest.id)
+                    return false
+                }
             }
             return true
         }.value

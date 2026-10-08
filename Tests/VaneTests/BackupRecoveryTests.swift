@@ -82,6 +82,26 @@ import XCTest
         XCTAssertThrowsError(try failing.save(f.library.capture(reason: .automatic)))
         XCTAssertEqual(try recovery.points().count, 11)
     }
+    func testUnchangedRetryReconcilesFailedRetentionAndKeepsReportingFailure() async throws {
+        let f = try fixture(), recovery = BackupRecovery(library: f.library)
+        for _ in 0..<10 { _ = try recovery.save(f.library.capture(reason: .automatic)) }
+        let failing = BackupRecovery(library: f.library, remover: { _ in throw CocoaError(.fileWriteNoPermission) })
+        XCTAssertThrowsError(try failing.save(f.library.capture(reason: .automatic)))
+        let unchanged = try f.library.capture(reason: .automatic)
+        XCTAssertThrowsError(try failing.automaticPointIfChanged(unchanged))
+        do {
+            _ = try await failing.automaticPointIfChangedAsync(unchanged)
+            XCTFail("Async retry must report unresolved retention failure")
+        } catch {}
+        XCTAssertEqual(try recovery.points().count, 11)
+        XCTAssertNil(try recovery.automaticPointIfChanged(unchanged))
+        XCTAssertEqual(try recovery.points().count, 10)
+        // Repeat with the async recovery path, which the Settings Retry button uses.
+        XCTAssertThrowsError(try failing.save(unchanged))
+        let retried = try await recovery.automaticPointIfChangedAsync(unchanged)
+        XCTAssertNil(retried)
+        XCTAssertEqual(try recovery.points().count, 10)
+    }
     func testTiedDatesAlwaysKeepTheNewlyCompletedPreRestorePoint() throws {
         let f = try fixture(), recovery = BackupRecovery(library: f.library)
         let date = Date.now

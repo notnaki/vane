@@ -108,7 +108,8 @@ enum BackupCodec {
         guard archive.version == 1 else { throw BackupError.futureVersion }
         guard archive.created.timeIntervalSince1970.isFinite, archive.files.count <= 100_000,
               Set(archive.files.map(\.name)).count == archive.files.count,
-              archive.files.allSatisfy({ BackupPaths.isOwned($0.name) }),
+              archive.files.allSatisfy({ archive.damage != nil && archive.reason == .beforeRestore
+                  ? BackupPaths.isOriginal($0.name) : BackupPaths.isOwned($0.name) }),
               archive.preferenceDigest == digest(archive.preferences),
               archive.files.allSatisfy({ $0.digest == digest($0.data) }) else {
             throw BackupError.invalid("Invalid filenames, metadata, or damaged contents.")

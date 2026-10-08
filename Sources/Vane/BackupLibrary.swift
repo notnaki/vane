@@ -67,6 +67,18 @@ struct BackupPreview: Sendable {
     }
     func capture(reason: BackupReason, allowDamaged: Bool = false) throws -> BackupArchive {
         let names = try ownedNames()
+        // Even a read-only SQLite connection can rebuild its shared-memory file.
+        // Preserve raw companions before attempting any snapshot of damaged data.
+        var originals: [BackupArchive.File] = []
+        if allowDamaged {
+            var budget = BackupCodec.limit
+            for name in try ownedNames(includeJournals: true) {
+                let data = try BackupIO.read(directory.appendingPathComponent(name))
+                guard data.count <= budget else { throw BackupError.tooLarge }
+                budget -= data.count
+                originals.append(.init(name: name, data: data))
+            }
+        }
         var files: [BackupArchive.File] = [], damage: [String] = []
         var remaining = BackupCodec.limit
         for name in names {
@@ -92,7 +104,13 @@ struct BackupPreview: Sendable {
             guard allowDamaged else { throw error }
             damage.append(error.localizedDescription)
         }
-        if !damage.isEmpty { archive.damage = damage.joined(separator: "\n") }
+        if !damage.isEmpty {
+            // A damaged point is evidence rather than an installable snapshot.
+            // Keep exact database bytes and journals after transaction cleanup.
+            guard BackupCodec.withinLimit([preferences.count] + originals.map { $0.data.count }) else { throw BackupError.tooLarge }
+            archive.files = originals
+            archive.damage = damage.joined(separator: "\n")
+        }
         return archive
     }
     func validate(_ archive: BackupArchive) throws -> BackupPreview {
@@ -169,9 +187,15 @@ struct BackupPreview: Sendable {
                     if let state = entry.state, Data(base64Encoded: state) == nil { throw BackupError.invalid("Invalid session state.") }
                 }
             }
+            let favouriteKey = TabStore.defaultsKey(.favourite, profile.id)
+            guard preferences[favouriteKey] == nil || preferences[favouriteKey] is [String] else {
+                throw BackupError.invalid("Invalid favourite tabs.")
+            }
+            let favourites = preferences[favouriteKey] as? [String] ?? []
+            for url in favourites { try validateURLString(url, boards: boardIDs) }
             let databaseCounts = try files["vane\(suffix).db"].map(BackupSQLite.counts)
             summaries.append(.init(id: profile.id, name: profile.name, spaces: spaces.count,
-                                   tabs: tabCount(spaces: spaces, sessions: sessions, windowSpaces: sessionSpaces),
+                                   tabs: tabCount(spaces: spaces, sessions: sessions, windowSpaces: sessionSpaces, favourites: favourites),
                                    bookmarks: databaseCounts?.bookmarks ?? 0, history: databaseCounts?.history ?? 0, easels: boards.count))
         }
         let external = preferences.keys.contains { $0.hasPrefix("extensionPaths") || $0.hasPrefix("downloadFolder") || $0 == "blockerLists" }
@@ -195,13 +219,15 @@ struct BackupPreview: Sendable {
             }
         }
     }
-    private func tabCount(spaces: [Space], sessions: [[Session.Entry]], windowSpaces: [UUID?]) -> Int {
+    private func tabCount(spaces: [Space], sessions: [[Session.Entry]], windowSpaces: [UUID?], favourites: [String]) -> Int {
         // Multisets preserve deliberate duplicate tabs; max avoids counting both the
         // Space list and its session representation. Shared window IDs count once.
+        var grid = Set(favourites)
         var bySpace: [String: [String: Int]] = [:]
         for space in spaces {
             var rows: [String: Int] = [:]
-            for (kind, urls) in [(TabKind.today, space.tabURLs), (.pinned, space.pinnedTabURLs ?? []), (.favourite, space.pinnedURLs)] {
+            grid.formUnion(space.pinnedURLs.map(\.absoluteString))
+            for (kind, urls) in [(TabKind.today, space.tabURLs), (.pinned, space.pinnedTabURLs ?? [])] {
                 for url in urls { rows["\(kind.rawValue):\(url.absoluteString)", default: 0] += 1 }
             }
             bySpace[space.id.uuidString] = rows
@@ -212,6 +238,10 @@ struct BackupPreview: Sendable {
             let key = space ?? "window-\(index)"
             for entry in entries {
                 if let id = entry.id, !seen.insert(id).inserted { continue }
+                if entry.kind == .favourite {
+                    grid.insert(entry.home ?? entry.url)
+                    continue
+                }
                 let address = entry.kind == .today ? entry.url : (entry.home ?? entry.url)
                 sessionRows[key, default: [:]]["\((entry.kind ?? .today).rawValue):\(address)", default: 0] += 1
             }
@@ -219,6 +249,6 @@ struct BackupPreview: Sendable {
         for (space, rows) in sessionRows {
             for (url, count) in rows { bySpace[space, default: [:]][url] = max(bySpace[space]?[url] ?? 0, count) }
         }
-        return bySpace.values.reduce(0) { $0 + $1.values.reduce(0, +) }
+        return bySpace.values.reduce(grid.count) { $0 + $1.values.reduce(0, +) }
     }
 }

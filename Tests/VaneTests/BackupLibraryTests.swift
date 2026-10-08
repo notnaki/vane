@@ -52,6 +52,21 @@ import SQLite3
         XCTAssertEqual(preview.profiles.first?.tabs, 4)
         XCTAssertEqual(preview.profiles.first?.spaces, 1)
     }
+    func testClosedProfileFavouritesAndSharedGridCountOnce() throws {
+        let f = try fixture(), manager = f.seed(), work = manager.create(name: "Closed")
+        let a = "https://a.example", b = "https://b.example"
+        f.defaults.set([a, b], forKey: TabStore.defaultsKey(.favourite, work.id))
+        XCTAssertEqual(try f.library.validate(f.library.capture(reason: .manual)).profiles.last?.tabs, 2)
+        let spaces = [Space(name: "One", profileID: work.id, pinnedURLs: [URL(string: a)!]),
+                      Space(name: "Two", profileID: work.id, pinnedURLs: [URL(string: a)!])]
+        XCTAssertTrue(manager.saveSpaces(spaces, for: work.id))
+        let entries = [Session.Entry(id: UUID().uuidString, url: a, kind: .favourite)]
+        try XCTUnwrap(Session.encode([entries, entries], spaces: spaces.map { $0.id.uuidString }))
+            .write(to: ProfileManager.sessionURL(for: work.id, in: f.root))
+        XCTAssertEqual(try f.library.validate(f.library.capture(reason: .manual)).profiles.last?.tabs, 2)
+        f.defaults.set(["file:///secret"], forKey: TabStore.defaultsKey(.favourite, work.id))
+        XCTAssertThrowsError(try f.library.capture(reason: .manual))
+    }
     func testEmbeddedImageBytesAndSidecarArePreserved() throws {
         let f = try fixture(), manager = f.seed(), id = manager.active.id
         let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jGZkAAAAASUVORK5CYII=")!
