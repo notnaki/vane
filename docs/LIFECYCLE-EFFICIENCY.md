@@ -84,19 +84,29 @@ work should not be described as a measured CPU reduction or battery-life gain.
 After the palette ownership fix, the signed cycle fixture reported zero closed
 WebViews (0/200), windows (0/100) and stores (0/100); the suspension timer was stopped.
 Its warmed RSS was 136.55 MiB and settled RSS was 149.08 MiB, a 12.53 MiB increase,
-below the 47.68 MiB (50 MB) threshold. Settling took 30.14 seconds. This run preceded
-the separate main-menu target fix; final validation and profiling are recorded below.
+below the 47.68 MiB (50 MB) threshold. Settling took 30.14 seconds; idle parent CPU
+was 0.024% over 61.3 seconds. This run preceded the separate main-menu target fix.
+
+The final code also passed under Instruments Time Profiler: 139.44 MiB warmed RSS,
+168.86 MiB settled RSS (29.42 MiB growth), zero closed views/windows/stores, zero
+WebViews for 200 restored parked entries, and no suspension timer. Settling took
+31.86 seconds; idle parent CPU was 0.010% over 60.9 seconds. Instrumentation adds
+overhead, so this is a separate successful target check rather than a directly
+comparable RSS benchmark.
 
 The full XCTest run passed 502 tests with one opt-in Keychain test skipped, before
 the final palette/menu changes. Subsequent focused runs cover the final changes,
-including real media/PiP, Battery Saver, shared presentation and palette/search behavior.
-Signed WebKit smoke passed 195 assertions, including critical-pressure draft preservation.
+including real media/PiP, Battery Saver, shared presentation and palette/search behavior:
+61 focused tests passed on the final code. The final debug build and pure selfcheck
+passed. Signed WebKit smoke passed 195 assertions on the final code, including
+critical-pressure draft preservation.
 Two stale sidebar expectations from before PR #319 were corrected to its documented
 window-wide visibility behavior; no sidebar implementation was changed.
 
 Instruments Time Profiler captured all 100 tab and 100 Little Vane cycles plus the
-200-row restore and settling/idle intervals on an intermediate revision. That trace
-still showed the palette-store retention subsequently fixed. Allocations launch stalled
+200-row restore and settling/idle intervals on the final code; the app exited with
+a passing result. An earlier trace showed the palette-store retention subsequently
+fixed. Allocations launch stalled
 in `liboainject.dylib` before application startup, verified with `/usr/bin/sample`; the
 tracked launch was terminated (TERM, then KILL after identity checks) and exited.
 This is an Instruments startup limitation, not a successful allocation/leak profile.
@@ -118,3 +128,7 @@ focus notification uses a SwiftUI-managed subscription; the cycle fixture checks
 that its stores and windows disappear. Peek explicitly removes its resize/close
 notifications when dismissed. Existing draft detection covers main-frame inputs and
 contenteditable elements; iframe/shadow-DOM/JavaScript-only drafts remain a limitation.
+
+Asynchronous suspension probes guard WebView and URL identity, but do not yet use
+a document-generation token for a same-URL reload. That pre-existing race needs a
+controlled regression fixture before broader navigation/draft claims.
