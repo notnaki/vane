@@ -1000,6 +1000,40 @@ extension TabStore {
 
     static func decode(_ data: Data) -> [[Entry]] { disk(data).windows }
 
+    /// Restore previews must distinguish an empty session from a damaged file. Keep
+    /// the browsing reader's legacy tolerance, but require a known schema at import.
+    static func validateBackup(_ data: Data) throws -> (windows: [[Entry]], spaces: [UUID?]) {
+        if let legacy = try? JSONDecoder().decode([[String]].self, from: data) {
+            return (legacy.map { $0.map { Entry(url: $0) } }, legacy.map { _ in nil })
+        }
+        let saved: Disk
+        do { saved = try JSONDecoder().decode(Disk.self, from: data) }
+        catch { throw BackupError.invalid("The session file is damaged.") }
+        guard (2...4).contains(saved.version),
+              saved.spaces.map({ $0.count == saved.windows.count }) ?? true,
+              saved.selected.map({ $0.count == saved.windows.count }) ?? true,
+              saved.splits.map({ $0.count == saved.windows.count }) ?? true else {
+            throw BackupError.invalid("Unsupported or inconsistent session metadata.")
+        }
+        for rows in saved.splits ?? [] {
+            for split in rows {
+                guard (2...4).contains(split.urls.count), split.urls.indices.contains(split.active),
+                      split.ids.map({ $0.count == split.urls.count && $0.allSatisfy { UUID(uuidString: $0) != nil } }) ?? true,
+                      split.urls.allSatisfy({ TabAddress.restorable(URL(string: $0)) }) else {
+                    throw BackupError.invalid("Invalid split view metadata.")
+                }
+            }
+        }
+        for id in saved.spaces ?? [] where !id.isEmpty && UUID(uuidString: id) == nil { throw BackupError.invalid("Invalid window Space identity.") }
+        for id in (saved.selected ?? []).compactMap({ $0 }) where UUID(uuidString: id) == nil { throw BackupError.invalid("Invalid selected tab identity.") }
+        for row in saved.windows.flatMap({ $0 }) {
+            if let id = row.id, UUID(uuidString: id) == nil { throw BackupError.invalid("Invalid session tab identity.") }
+        }
+        return (saved.windows, saved.windows.indices.map { index in
+            saved.spaces.flatMap { $0.indices.contains(index) ? UUID(uuidString: $0[index]) : nil }
+        })
+    }
+
     /// Each window's splits, in the same order as `decode`'s windows. Empty for a file that
     /// predates them.
     static func decodeSplits(_ data: Data) -> [[Split.Saved]] { disk(data).splits ?? [] }
