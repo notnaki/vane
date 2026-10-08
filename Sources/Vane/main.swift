@@ -40,6 +40,22 @@ if args.first == "import" {
 // relaunches it. This must happen before any browser window or storage migration begins.
 Updater.recoverAtLaunch()
 
+// Recover before any profile migration, preference application or database opens.
+// A failed rollback must never let normal startup write over a partial library.
+let backupLaunchResult: BackupRestore.Result
+do {
+    try BackupRestore.claimInstance(Store.directory)
+    backupLaunchResult = try BackupRestore(library: BackupLibrary(directory: Store.directory,
+        defaults: .vane, domain: UserDefaults.vaneDomain)).recoverAtLaunch()
+} catch {
+    let alert = NSAlert()
+    alert.messageText = "Vane needs data recovery"
+    alert.informativeText = error.localizedDescription
+    alert.addButton(withTitle: "Quit")
+    alert.runModal()
+    exit(1)
+}
+
 // Before the first browser window writes profile and session files.
 FirstLaunch.prepare()
 
@@ -63,6 +79,8 @@ if let first = args.first, first.hasPrefix("http"), let u = URL(string: first) {
     // Later launches keep the user's ordinary external-link routing preference.
     if FirstLaunch.needed { Windows.open(urls: [u]) }
     else { URLHandling.open([u]) }
+} else if backupLaunchResult == .restored {
+    if !Session.restore() { Windows.open() }
 } else if !Prefs.restoreSession || !Crash.offerRestore() {
     Windows.open()
 }
