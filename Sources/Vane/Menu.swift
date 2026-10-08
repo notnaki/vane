@@ -1,6 +1,19 @@
 import AppKit
 import WebKit
 
+/// Leave website-priority keys in the responder chain while keeping explicit menu
+/// activation available. Validation must not disable an otherwise usable menu command.
+@MainActor final class ShortcutMenu: NSMenu {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let binding = Keybinding(event: event)
+        let window = event.window
+        if MainActor.assumeIsolated({
+            binding.map { Keybindings.keepsKeyForResponder($0, in: window ?? NSApp.keyWindow) } ?? false
+        }) { return false }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 /// Menu items whose action is just a closure. NSMenuItem needs an ObjC target, so this is
 /// the smallest thing that gives one; each item retains its own target.
 @MainActor private final class Act: NSObject, NSMenuItemValidation {
@@ -97,7 +110,7 @@ private extension NSMenuItem {
 }
 
 private func menu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
-    let m = NSMenu(title: title)
+    let m = ShortcutMenu(title: title)
     items.forEach(m.addItem)
     let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
     holder.submenu = m
@@ -250,6 +263,20 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     }
     entry.state = Reader.serif ? .on : .off
     return entry
+}
+
+@MainActor private func readerPreferencesItem() -> NSMenuItem {
+    let spacing = Reader.spacingChoices.map { title, value in
+        let entry = item(title, "") { Reader.setLineSpacing(value, in: Windows.current?.active); rebuild() }
+        entry.state = Reader.lineSpacing == value ? .on : .off
+        return entry
+    }
+    let widths = Reader.widthChoices.map { title, value in
+        let entry = item(title, "") { Reader.setReadingWidth(value, in: Windows.current?.active); rebuild() }
+        entry.state = Reader.readingWidth == value ? .on : .off
+        return entry
+    }
+    return menu("Reading Preferences", [menu("Line Spacing", spacing), menu("Reading Width", widths)])
 }
 
 /// Arc keeps passwords and per-site controls in Settings, not in the menu bar; Vane's live
@@ -464,6 +491,24 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.tabSwitcher) { TabSwitching.shared.step(1) },
         item(.tabSwitcherBackwards) { TabSwitching.shared.step(-1) },
     ]
+    let selection = (1...9).map { n in
+        let command = n == 9 ? Command.selectLastTab : Command(rawValue: "selectTab\(n)")!
+        return item(command) {
+            guard let store = Windows.current else { return }
+            let tabs = store.accessibleTabs
+            let index = n == 9 ? tabs.count - 1 : n - 1
+            guard tabs.indices.contains(index) else { return }
+            let previousPage = store.activePageResponder
+            store.selection.clear()
+            store.current = tabs[index].id
+            store.focusPage(from: previousPage)
+            axAnnounce("\(tabs[index].title), tab \(index + 1) of \(tabs.count)")
+        }
+    }
+    let search = [
+        item(.commandPalette) { Windows.current?.openPalette(.all) },
+        item(.searchTabs) { Windows.current?.openPalette(.tabs) },
+    ]
     // Split View. Arc keeps these in the Tabs menu, and their enabled state is what says
     // whether there is a split to act on at all. `Windows.main` throughout, never
     // `Windows.current`: a Little Arc has no sidebar and no strip to hold a split, and ⌃⇧=
@@ -493,7 +538,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
     }
     undoOrganization.isEnabled = store.map(TabOrganization.hasUndo) ?? false
     return [favourite, pin, .separator(), tidy, undo, clear, organize, undoOrganization, .separator()]
-        + split + [.separator()] + navigation
+        + split + [.separator()] + navigation + [menu("Select Tab", selection), .separator()] + search
 }
 
 // MARK: - File
@@ -645,7 +690,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
 @MainActor func rebuild() { NSApp.mainMenu = buildMenu() }
 
 @MainActor func buildMenu() -> NSMenu {
-    let root = NSMenu()
+    let root = ShortcutMenu()
     let bookmarkProfileID = BookmarkManager.currentActionProfile
     let makeDefaultApp = item(.makeDefaultBrowser) { URLHandling.makeDefaultBrowser() }
     makeDefaultApp.isEnabled = !URLHandling.isDefaultBrowser
@@ -782,6 +827,10 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.reload) { Windows.current?.active?.reload() },
         item(.hardReload) { Windows.current?.active?.hardReload() },
         item(.toggleSidebar) { Windows.current?.sidebarShown.toggle() },
+        item(.nextFocusArea) {
+            guard let store = Windows.current, store.window === NSApp.keyWindow else { return }
+            store.focusNextArea()
+        },
         item(.copyPageURL) { copyPageURL() },
         .separator(),
         item(.actualSize) { Windows.current?.active.map(Zoom.reset) },
@@ -796,6 +845,7 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.biggerReaderText) { Reader.adjustFontSize(1, in: Windows.current?.active) },
         item(.smallerReaderText) { Reader.adjustFontSize(-1, in: Windows.current?.active) },
         readerTypefaceItem(),
+        readerPreferencesItem(),
         .separator(),
         // Arc files its developer tools under View; a top-level Develop menu is Safari's.
         menu("Developer", developItems()),

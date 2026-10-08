@@ -544,7 +544,8 @@ private struct ProfilesPane: View {
     @State private var renaming: UUID?
     /// The Clear Browsing Data dialog, which is a sheet rather than an alert: it has four
     /// controls and a sentence, and an NSAlert accessory view is a worse way to draw those.
-    @State private var clearing = false
+    @State private var clearing: Profile?
+    @State private var managingData: Profile?
     @State private var draft = ""
     /// The right-hand name field. Separate from `draft` on purpose: focusing a TextField
     /// writes through its binding, so sharing one would put the list row into rename mode
@@ -597,8 +598,11 @@ private struct ProfilesPane: View {
             }
         }
         .onAppear { reload() }
-        .sheet(isPresented: $clearing) {
-            ClearDataSheet(profileID: profile.id, profileName: profile.name)
+        .sheet(item: $clearing) { captured in
+            ClearDataSheet(profileID: captured.id, profileName: captured.name)
+        }
+        .sheet(item: $managingData) { captured in
+            WebsiteDataSheet(profileID: captured.id, profileName: captured.name)
         }
         // Not `renaming = nil` here: creating a profile selects it *and* opens its row for
         // renaming, and this fires after both.
@@ -824,8 +828,11 @@ private struct ProfilesPane: View {
                     selection.profileID = profile.id
                     selection.id = "passwords"
                 }
+                DataRow(icon: "externaldrive.fill", tint: .blue, title: "Website Data") {
+                    managingData = profile
+                }
                 DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
-                    clearing = true
+                    clearing = profile
                 }
             }
             .padding(.vertical, Look.inset / 2)
@@ -1291,6 +1298,10 @@ private struct AdvancedPane: View {
                 }
             }
 
+            SettingsSection("Backup and Restore") {
+                BackupSettings(controller: .shared)
+            }
+
             SettingsSection("Reset Vane") {
                 SettingsCard {
                     SettingsRow("Start over") {
@@ -1318,7 +1329,8 @@ private struct PrivacyPane: View {
     /// Read once per appearance: they come out of UserDefaults, not out of a publisher.
     @State private var grants: [SitePermissions.Grant] = []
     @State private var httpExceptions: [String] = []
-    @State private var clearing = false
+    @State private var clearing: Profile?
+    @State private var managingData: Profile?
 
     private var profile: Profile {
         manager.profiles.first { $0.id == selection.profileID } ?? manager.active
@@ -1410,8 +1422,11 @@ private struct PrivacyPane: View {
             SettingsSection("Your Data") {
                 SettingsCard(divided: false) {
                     VStack(spacing: 0) {
+                        DataRow(icon: "externaldrive.fill", tint: .blue, title: "Website Data") {
+                            managingData = profile
+                        }
                         DataRow(icon: "trash.fill", tint: .red, title: "Clear Browsing Data") {
-                            clearing = true
+                            clearing = profile
                         }
                         DataRow(icon: "key.fill", tint: .green, title: "Passwords") {
                             selection.id = "passwords"
@@ -1423,8 +1438,11 @@ private struct PrivacyPane: View {
         }
         .onAppear { reload() }
         .onChange(of: profile.id) { reload() }
-        .sheet(isPresented: $clearing) {
-            ClearDataSheet(profileID: profile.id, profileName: profile.name)
+        .sheet(item: $clearing) { captured in
+            ClearDataSheet(profileID: captured.id, profileName: captured.name)
+        }
+        .sheet(item: $managingData) { captured in
+            WebsiteDataSheet(profileID: captured.id, profileName: captured.name)
         }
     }
 

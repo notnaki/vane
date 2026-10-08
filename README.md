@@ -196,6 +196,25 @@ Click the Space buttons in the sidebar footer for the same sliding change, inclu
 between profiles. Each button shows a rounded highlight on hover. Reduce Motion and
 Battery Saver keep click changes immediate.
 
+Choose the Space menu → **Save Space as Template…** to save a named workspace.
+**Space Templates…**, also available as **New Space from Template…** in the creation
+menu, previews the current profile’s saved setups and creates a new Space. Templates
+preserve pinned and Today tab order, duplicate pages, custom names, nested folders,
+Space appearance, and supported split layouts including divider sizes. Rename a
+template, update it from the current Space after reviewing its contents, or delete it;
+already created Spaces keep their own contents.
+
+Locked-folder contents require macOS authentication before saving, previewing, or
+recreating them. New folders retain their locks and receive fresh identities.
+Templates save addresses and layout without cookies, credentials, website storage,
+or WebKit navigation state; pages can still use their profile’s existing sign-ins.
+Credential-like URL parameters and URL userinfo are removed. Blank tabs, files, and
+local Easel documents are excluded and counted in the preview. Live folders become
+ordinary folder snapshots, and Favourites remain shared by the profile. Private and
+Little Vane windows cannot save templates. A failed save leaves the previous version
+safe, and a failed creation leaves no partial Space. Template files use the same
+atomic persistence and profile filename conventions as Spaces for backup/restore.
+
 Incognito uses a temporary identity of its own, with a glasses icon and a near-black
 theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and
 its browsing data and download records are not restored after quitting.
@@ -324,6 +343,54 @@ swift test --filter 'BlockerTests|BlockerSubscriptionTests|BlockerWebKitTests'
 
 ### Saving profiles
 
+**Settings → Profiles → Website Data** (also in Privacy and Security) lists the
+selected profile’s stored website data. Search for a site, select its available
+categories, and choose **Clear Selected Data…**. **Site Controls → Clear Site Data…**
+opens the same view focused on the current site. WebKit groups sites by registrable
+domain, so an entry can include subdomains. Public WebKit APIs do not expose reliable
+per-site byte counts on macOS 27; the view labels disk usage unavailable.
+
+Clearing cookies or storage can sign you out or remove offline website work. Close
+that site’s tabs first: live pages can retain state and recreate data. The view waits
+for removal, fetches a fresh snapshot, and reports retained data or an unverified
+result instead of announcing success early. A slow operation remains pending.
+History, bookmarks, saved passwords and Vane’s site settings are kept. Private site
+controls inspect only that tab’s temporary store, without opening a saved profile’s
+store. Bulk browsing-data clearing also waits for WebKit completion and keeps shared
+app-opening permissions.
+
+```sh
+swift test --filter 'WebsiteDataTests|WebsiteDataWebKitTests|ProfilePersistenceTests'
+```
+
+Settings → Advanced → **Backup and Restore** exports one `.vanebackup` file with all
+regular profiles, Spaces, saved tabs and sessions, bookmark folders and bookmarks,
+history, Space templates, settings, imported blocking lists, and Easels with embedded images. Backups
+are unencrypted and limited to 512 MB; oversized backups fail without omitting data.
+Passwords and tokens in Keychain, cookies and website sign-ins/storage, downloaded
+files, caches, and external extension folders are excluded. External folder choices
+are remembered, but another Mac may require you to select those folders again.
+
+**Restore Backup…** validates the file and shows its date, profiles, item counts, and
+current saved-library totals before replacing anything. Cancel leaves the library
+alone. **Restore and Restart** preserves a local recovery point, then restores all
+saved profiles and settings during a controlled restart. It replaces the library;
+it does not merge it. An interrupted restore rolls back before normal startup.
+
+Vane creates a recovery point after startup and checks hourly while running, saving
+another only when saved data changes. The latest ten completed points are kept under
+the data folder's `Recovery/Points`, including points made before restores. The last
+healthy point is protected if damaged originals need preserving. Preview and restore
+them from the same Settings section. A write failure keeps previous points and shows
+an error with Retry. These local copies share your disk: export to another disk for
+protection against disk loss. **Erase Everything…** removes local recovery points too.
+
+Focused backup validation:
+
+```sh
+swift test --filter 'Backup.*Tests|ProfilePersistenceTests|EaselTabTests|HistoryPersistenceTests'
+```
+
 Profile save failures appear in browser windows and Settings → Profiles. Unsaved
 profile names, colors, new profiles, and selection changes stay in memory; **Retry
 Save** writes their latest state. Quitting retries them first and asks before
@@ -342,6 +409,22 @@ also use the selected icon and update when the choice changes. A signed helper s
 the containing app bundle outside the browser sandbox; read-only or translocated
 copies retain the live Dock choice and restore it on launch. The bare SwiftPM
 executable has no bundled icon catalogue; build `Vane.app` to use these finishes.
+
+### Reader
+
+Enter Reader from Page Actions or **View → Reader Mode**. **Page Actions → Reading
+Preferences** offers text size (13–32 pt), serif type, compact/standard/relaxed line
+spacing, and narrow/standard/wide reading columns. Spacing and width are also in
+**View → Reading Preferences**. Preferences save locally and apply immediately to
+the current Reader; new Reader views use the saved choices. Changes animate briefly
+unless Reduce Motion or Battery Saver is active. The header links to the source
+article, and article links remain usable.
+
+Extraction retains scored sibling sections, prose in legacy table layouts, technical
+data tables, code indentation, and lazy image captions while omitting hidden content
+and navigation. It remains heuristic: unavailable/paywalled text, embedded frames,
+and articles below the 140-word threshold are not recovered. Exit Reader reloads the
+original page; it does not add a history entry.
 
 ### Easels
 
@@ -369,11 +452,20 @@ edges, solid/dashed/dotted strokes, solid/hachure/crosshatch fills, three sloppi
 levels, and opacity. The hand tool pans the canvas; the lock keeps
 a drawing tool active. Tool shortcuts are shown in the toolbar. Arrow keys nudge a
 selected item (Shift moves ten points), Enter edits its text, and ⌘D duplicates it.
-Notes, links, and clipboard paste are in the **…** menu. Double-click an image to edit
+Notes, links, and clipboard paste are in the **…** menu. New captures are selected when their board opens. Click an image's pencil,
+**Annotate Image** in its context menu, or the selected image's properties to pause
+its live source and activate the existing drawing tool with the tool lock on. Draw
+on the saved capture, or choose arrows, shapes, and text in the same toolbar. Choose
+Select or press Escape to move items afterwards. Double-click an image to edit
 its caption or crop it. Undo/redo and zoom controls sit at the bottom left.
 Choose Select to move items after drawing. Scroll in either direction
 and choose a zoom level. New items appear near the current canvas viewport.
-Standard Undo/Redo work on the board and inside its text editors.
+Standard Undo/Redo work on the board and inside its text editors. Annotations remain
+independent editable objects; moving or cropping an image does not transform its
+annotations with it. Image import preserves the available pixel resolution while
+keeping the canvas card compact; images beyond 8 MiB PNG, 16,000 pixels on either
+side, or 32 million pixels are refused rather than silently downsampled. Board PNG
+export still uses the 4,096-pixel limit below.
 
 A web capture's play button opens its source page as an interactive live view using
 that profile's cookies and content blocker. Pause returns to the saved image. Live
@@ -396,11 +488,26 @@ sharing or collaboration.
 | New tab | `⌘T` |
 | Reopen closed tab | `⇧⌘T` |
 | Find on page | `⌘F` |
+| Move between page and browser controls | `F6` or `⇧F6` |
 | Search tabs | `⇧⌘A` |
 | Search commands | `⇧⌘P` |
 | Open Library | `⇧⌘L` |
 
-Shortcuts can be changed in Settings. The menu bar shows the current bindings.
+Shortcuts can be changed in Settings. The menu bar shows the current bindings,
+including numbered tab selection and search commands. Choose **Prefer Website**
+for a shortcut to leave it with a focused webpage; the command remains available
+from the menu and while browser controls have focus. Option-only shortcuts also
+leave character entry and caret movement with a focused text editor.
+
+Use **F6** (or **Shift-F6**) to move between the page and browser controls, revealing
+the sidebar if needed. Use **Tab** and **Shift-Tab** to move through browser controls. Sidebar tabs,
+favourites, folders, Spaces, split panes, and the address pill show a focus outline;
+**Return** or **Space** activates the focused control. Enable macOS **Keyboard
+navigation** to include native buttons and menus in Tab navigation. Search results
+use **Up/Down** and **Return**; **Tab** keeps its site-search and actions behavior.
+**Escape** dismisses search or Find and returns focus to the page when no other
+control has taken it. **⌘F** refocuses an already-open Find field. VoiceOver can
+activate sidebar items directly and use their Actions menu for secondary commands.
 
 While hovering a webpage link, hold a modifier to see where clicking will open it:
 
@@ -678,9 +785,11 @@ with `check-release-candidate.sh` before treating it as a distribution build.
   and a synthetic upload reached the public demo server in a follow-up check.
   A macOS 27.0.1 follow-up covers exact multiple-file/frame submissions, print CSS
   and page ranges, extension storage restoration, decoded media controls, and disk
-  session restoration. Native directory selection works, but ordinary directory
-  form submission resets the page with a WebKit guard fault before the server
-  receives it. See the matrix for the opt-in failing reproduction and evidence.
+  session restoration. A standalone signed WKWebView probe reproduces an upstream
+  guard fault during directory form submission on macOS 27.0.1, before any POST
+  reaches the receiver. Vane cancels folder selection with an explanation on macOS
+  27.0; ordinary file uploads remain available. See the matrix for the retained
+  failing reproduction, byte-level evidence, and version limits.
   Passkey authentication was unavailable in the original fixture. Provider sign-ins, subscription
   streaming, cross-network calls, broader permission lifecycles, and macOS 26 /
   notarized-release coverage remain unverified. See the matrix for exact scope.

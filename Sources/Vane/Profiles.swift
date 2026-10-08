@@ -421,6 +421,8 @@ struct Space: Identifiable, Codable, Equatable {
     var colors: [String]?
     /// How much static noise the ground wears, 0…1. See `Look.grain`.
     var grain: Double?
+    /// Address-only row identities and layout, atomically committed with template-created Spaces.
+    var layout: SpaceLayout? = nil
 
     init(id: UUID = UUID(), name: String, profileID: UUID,
          tabURLs: [URL] = [], pinnedURLs: [URL] = [], pinnedTabURLs: [URL]? = nil,
@@ -698,6 +700,7 @@ struct Space: Identifiable, Codable, Equatable {
         Zoom.forget(profile: id)
         SiteBoosts.forget(profile: id)
         CertificateTrust.forget(profile: id)
+        try? fm.removeItem(at: WorkspaceTemplates.url(profile: id, directory: directory))
         try? fm.removeItem(at: Self.spacesURL(for: id, in: directory))
         try? fm.removeItem(at: Self.faviconDir(for: id, in: directory))
         return true
@@ -894,7 +897,13 @@ struct Space: Identifiable, Codable, Equatable {
     /// queuing these bytes could later replay a cancelled deletion or profile transfer.
     @discardableResult
     func saveSpaces(_ spaces: [Space], for profileID: UUID) -> Bool {
-        let owned = spaces.filter { $0.profileID == profileID }
+        let owned = spaces.filter { $0.profileID == profileID }.map { space in
+            var space = space
+            if let layout = space.layout, (try? layout.validate()) != nil, !layout.matches(space) {
+                space.layout = layout.reconciled(with: space)
+            }
+            return space
+        }
         let target = SaveFailure.Target.spaces(profileID)
         let message = "The last saved version is safe. Check storage and folder access, then make the change again."
         do {

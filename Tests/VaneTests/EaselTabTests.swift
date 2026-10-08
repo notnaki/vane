@@ -281,6 +281,7 @@ import XCTest
         XCTAssertEqual(item.text, "A useful passage")
         XCTAssertNotNil(item.image)
         XCTAssertEqual(store.active?.easelID, target.id)
+        XCTAssertEqual(store.active?.easelSession?.requestedImage, item.id)
         XCTAssertNil(store.active?.existingWeb)
         let disk = EaselStore(profileID: profile, directory: Store.directory)
         XCTAssertEqual(disk.board(target.id)?.items.first?.source, item.source)

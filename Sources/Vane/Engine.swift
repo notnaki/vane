@@ -376,6 +376,8 @@ struct TitleReveal: Equatable, Sendable {
         attach()
         return fresh
     }
+    /// Frozen per-row name for a workspace copy; empty explicitly restores the page title.
+    @Published var workspaceName: String?
     @Published var title = "New Tab"
     @Published private(set) var easelSession: EaselSession?
     var easelID: UUID? { easelSession?.selected }
@@ -1466,6 +1468,7 @@ struct TitleReveal: Equatable, Sendable {
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
         if w === existingWeb {
+            Reader.navigationCommitted(self)
             FileUploads.cancel(tabID: id)
             endPermissionDocument()
         }
@@ -1993,6 +1996,8 @@ struct Stash {
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
     @Published var sidebarShown = true
+    /// One-shot handoff from the webpage to the sidebar address pill.
+    @Published var chromeFocusRequested = false
     /// Presentation only, per Space and window: hiding pins never changes their contents.
     @Published private(set) var collapsedPinnedSpaces: Set<UUID> = []
     var pinnedSectionCollapsed: Bool {
@@ -2142,6 +2147,7 @@ struct Stash {
         }
         if let session {
             restoreSession(session)
+            if let layout = space?.layout { applyWorkspaceFolders(layout) }
             SharedTabs.mergeRestored(self)
             current = selected.flatMap { wanted in tabs.first { $0.id == wanted }?.id }
                 ?? tabs.first { $0.kind == .today }?.id
@@ -2175,6 +2181,13 @@ struct Stash {
                 .merging(parked) { sidecar, _ in sidecar }
         } ?? parked
         restore(favourites, as: .favourite, parked: parked)
+        if let space, restoreWorkspaceLayout(space, parked: parked) {
+            for url in urls where !space.tabURLs.contains(url) { newTab(url) }
+            if let requestedURL { current = tabs.first { $0.currentURL == requestedURL }?.id ?? current }
+            if current == nil { openPalette(.newTab) }
+            rememberSpace()
+            return
+        }
         // The Pinned section is not a list any more but a shape — folders and the tabs in
         // them — so its tabs come up in the order the folders draw them.
         restorePins(urls: pinned, parked: parked)
@@ -2367,6 +2380,7 @@ struct Stash {
             let tab = newBlankTab(focus: false, as: kind, id: id)
             let parked = Parked(title: entry.title ?? "",
                                 state: entry.state.flatMap { Data(base64Encoded: $0) })
+            tab.workspaceName = entry.customName
             tab.restore(url: url, home: entry.home.flatMap(URL.init(string:)), parked: parked)
             if kind == .today { today.append((url, tab)) }
             if kind == .pinned { pinned.append((entry.home.flatMap(URL.init(string:)) ?? url, tab)) }
@@ -2706,7 +2720,9 @@ struct Stash {
     func cycle(_ delta: Int) {
         let allowed = accessibleTabs
         guard let i = allowed.firstIndex(where: { $0.id == current }), allowed.count > 1 else { return }
+        let previousPage = activePageResponder
         current = allowed[(i + delta + allowed.count) % allowed.count].id
+        focusPage(from: previousPage)
     }
 
     // MARK: Reorder + sections
@@ -3048,6 +3064,10 @@ struct Stash {
         else { return }
         space.pinnedURLs = []          // migrated out; see Spaces.favourites
         space.pinnedTabURLs = pinned.compactMap(URL.init(string:))
+        if space.layout != nil {
+            space.layout = workspaceLayout()
+            space.tabURLs = space.layout!.tabs.filter { $0.kind == .today }.map(\.savedURL)
+        }
         ProfileManager.shared.updateSpace(space)
     }
 
@@ -3110,6 +3130,8 @@ struct Stash {
     /// The space whose inline editor is open in the sidebar's footer, if any. Arc's `+`
     /// makes the Space first and lets you name it in place; this is what says so.
     @Published var editingSpace: UUID?
+
+    @Published var workspaceSheet: WorkspaceSheetRequest?
 
     /// The space whose name is a text field in the header row right now. Double-clicking the
     /// name and "Rename Space…" both set it; Arc renames in place rather than in a dialog.
@@ -3262,6 +3284,7 @@ struct Stash {
         space.pinnedURLs = []              // Favourites are the profile's; see `savePins`
         space.pinnedTabURLs = urls { $0.kind == .pinned }
         saveShape()                        // and the folders those urls are arranged in
+        if space.layout != nil { space.layout = workspaceLayout() }
         let savedSpace = ProfileManager.shared.updateSpace(space)
         UserDefaults.vane.set(urls { $0.kind == .favourite }.map(\.absoluteString),
                                   forKey: TabStore.defaultsKey(.favourite, profileID))
@@ -3341,6 +3364,10 @@ struct Stash {
         }
         space.tabURLs = urls(.today)
         space.pinnedTabURLs = urls(.pinned)
+        if space.layout != nil {
+            space.layout = Self.workspaceLayout(tabs: stash.tabs, pins: stash.pins, today: stash.todayShape,
+                splits: stash.splits, selected: stash.current, profile: profileID)
+        }
         var parked: [String: Parked] = [:]
         for tab in stash.tabs {
             guard let entry = TabStore.sidecarEntry(page: tab.currentURL, home: tab.homeURL,
@@ -3557,16 +3584,18 @@ struct Stash {
         } else {
             drop(stash: space.id)       // somebody else edited the Space; start again from disk
             let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
-            restorePins(urls: space.pinnedTabURLs ?? [], parked: parked)
-            adoptTodayShape(tabs: space.tabURLs.map { url in
-                let t = newBlankTab(focus: false)
-                t.restore(url: url, home: nil, parked: parked[url.absoluteString] ?? Parked())
-                // The folder shape must be in place before selecting or waking a page.
-                return (url: url, tab: t)
-            })
-            // Arc lands on the tab this Space was left on; `Spaces.landing` is the ladder down
-            // to the first Today tab, the first pinned row, and finally an empty pill.
-            current = landing(in: space.id)
+            if !restoreWorkspaceLayout(space, parked: parked) {
+                restorePins(urls: space.pinnedTabURLs ?? [], parked: parked)
+                adoptTodayShape(tabs: space.tabURLs.map { url in
+                    let t = newBlankTab(focus: false)
+                    t.restore(url: url, home: nil, parked: parked[url.absoluteString] ?? Parked())
+                    // The folder shape must be in place before selecting or waking a page.
+                    return (url: url, tab: t)
+                })
+                // Arc lands on the tab this Space was left on; `Spaces.landing` is the ladder down
+                // to the first Today tab, the first pinned row, and finally an empty pill.
+                current = landing(in: space.id)
+            }
         }
         if let loose {
             let existing = Set(tabs.map(\.id))
