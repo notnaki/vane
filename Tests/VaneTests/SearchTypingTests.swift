@@ -49,6 +49,24 @@ import XCTest
         XCTAssertLessThan(delay, 0.05, "A running scan must not block the input thread")
         let results = await scan.value
         XCTAssertEqual(results.count, 8)
+
+        let historyScan = Task { await store.history.historyAsync(matching: "common", limit: 20) }
+        let historyHeartbeat = Date.now
+        try await Task.sleep(for: .milliseconds(1))
+        XCTAssertLessThan(Date.now.timeIntervalSince(historyHeartbeat), 0.05,
+                          "History window scans must leave the input actor available")
+        let historyResults = await historyScan.value
+        XCTAssertEqual(historyResults.count, 20)
+
+        // Interrupt an expensive scan; the next request must not queue behind it.
+        let cancelled = Task { await store.history.historyAsync(matching: "common") }
+        try await Task.sleep(for: .milliseconds(10))
+        cancelled.cancel()
+        let latest = await store.history.historyAsync(matching: "latest")
+        XCTAssertEqual(latest.map(\.title), ["Latest result"])
+        let discarded = await cancelled.value
+        XCTAssertTrue(discarded.isEmpty)
+
     }
 
     func testClosingSearchDiscardsPendingResults() async throws {
