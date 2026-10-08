@@ -87,7 +87,7 @@ Its warmed RSS was 136.55 MiB and settled RSS was 149.08 MiB, a 12.53 MiB increa
 below the 47.68 MiB (50 MB) threshold. Settling took 30.14 seconds; idle parent CPU
 was 0.024% over 61.3 seconds. This run preceded the separate main-menu target fix.
 
-The final code also passed under Instruments Time Profiler: 139.44 MiB warmed RSS,
+The lifecycle implementation at `b6ded7f` also passed under Instruments Time Profiler: 139.44 MiB warmed RSS,
 168.86 MiB settled RSS (29.42 MiB growth), zero closed views/windows/stores, zero
 WebViews for 200 restored parked entries, and no suspension timer. Settling took
 31.86 seconds; idle parent CPU was 0.010% over 60.9 seconds. Instrumentation adds
@@ -97,19 +97,29 @@ comparable RSS benchmark.
 The full XCTest run passed 502 tests with one opt-in Keychain test skipped, before
 the final palette/menu changes. Subsequent focused runs cover the final changes,
 including real media/PiP, Battery Saver, shared presentation and palette/search behavior:
-61 focused tests passed on the final code. The final debug build and pure selfcheck
-passed. Signed WebKit smoke passed 195 assertions on the final code, including
-critical-pressure draft preservation.
+61 focused tests passed before integration. After merging the concurrent search and
+sidebar changes from main (`c652910`), 60 focused lifecycle/search/palette/presentation
+tests, the build, pure selfcheck and 195 signed WebKit smoke assertions passed.
+The signed smoke includes critical-pressure draft preservation.
 Two stale sidebar expectations from before PR #319 were corrected to its documented
 window-wide visibility behavior; no sidebar implementation was changed.
 
 Instruments Time Profiler captured all 100 tab and 100 Little Vane cycles plus the
-200-row restore and settling/idle intervals on the final code; the app exited with
+200-row restore and settling/idle intervals at `b6ded7f`; the app exited with
 a passing result. An earlier trace showed the palette-store retention subsequently
 fixed. Allocations launch stalled
 in `liboainject.dylib` before application startup, verified with `/usr/bin/sample`; the
 tracked launch was terminated (TERM, then KILL after identity checks) and exited.
 This is an Instruments startup limitation, not a successful allocation/leak profile.
+
+After integration at `c652910`, another unprofiled signed run passed all lifecycle
+targets: warmed RSS 148.06 MiB, settled RSS 178.67 MiB (30.61 MiB growth), settling
+30.76 seconds, idle parent CPU 0.014% over 61.5 seconds, zero closed views/windows/
+stores, 200 parked rows with zero views, and no suspension timer. The signed smoke
+fixture ran concurrently during the cycle phase and finished before idle sampling;
+this remains an approximate shared-machine measurement. Both isolated apps and
+their cleanup processes exited successfully. Independent review found no actionable
+issues in the integrated implementation.
 
 ## Scope and limitations
 
