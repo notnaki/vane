@@ -53,7 +53,9 @@ BatterySaver.shared.begin()
 // Before any window: the refresh reattaches the compiled rules to every live web view, and
 // doing that to pages that are already loading is reconfiguring a load underneath itself.
 // Its work is a detached read-and-convert either way — see `Blocker.build`.
+try? BlockerPrivateCache.sweep()
 Blocker.refresh()
+FilterSubscriptions.shared.start()
 
 // `vane <url>` beats a restored session; otherwise pick up where the user left off. The url
 // is routed exactly as a link from any other app is, so `open -a Vane <url>` and a click in

@@ -109,7 +109,10 @@ import Foundation
     /// restore.
     static func candidates(in store: TabStore) -> [Candidate] {
         let filed = store.todayShape.filed
-        return store.tabs.filter { $0.kind == .today && !filed.contains($0.id.uuidString) }.map {
+        return store.tabs.filter {
+            $0.kind == .today && !filed.contains($0.id.uuidString)
+                && !store.isTabLocked($0.id) && store.split(containing: $0.id) == nil
+        }.map {
             Candidate(id: $0.id, title: $0.title, host: $0.currentURL?.host ?? "")
         }
     }
@@ -471,6 +474,7 @@ import Foundation
         var order: [Tab.ID]
         /// The folders this tidy made, in the order it made them.
         var folders: [UUID]
+        var space: UUID?
     }
     // ponytail: no `kinds` any more. A tidy moves nothing between sections, so there is no
     // section to put back — the whole of what it did is the folders and the order.
@@ -480,6 +484,21 @@ import Foundation
     /// without anybody being told. Each record holds the whole strip's order as it was, so
     /// unwinding them newest-first lands exactly where the window started.
     private static var saved: [ObjectIdentifier: [Done]] = [:]
+
+    /// The preview and apply share this gate. A proposal cannot claim a tab twice,
+    /// take a tab filed since planning, or disturb a split or a protected section.
+    static func reviewed(_ groups: [Group], in store: TabStore) -> [Group] {
+        let eligible = Set(candidates(in: store).map(\.id))
+        var claimed = Set<UUID>()
+        return groups.prefix(maxGroups).compactMap { group in
+            guard let name = tidy(group.name) else { return nil }
+            let ids = group.tabIDs.filter { eligible.contains($0) && !claimed.contains($0) }
+            let unique = ids.reduce(into: [UUID]()) { if !$0.contains($1) { $0.append($1) } }
+            guard unique.count >= 2 else { return nil }
+            claimed.formUnion(unique)
+            return Group(name: name, tabIDs: unique)
+        }
+    }
 
     /// Do it: each group of two or more becomes a named folder holding its tabs, and
     /// anything no group claimed is left exactly where it is.
@@ -506,6 +525,7 @@ import Foundation
         // A private window and a Little Vane have no Today shape written down and no tidy
         // offered; neither may be given folders that would vanish on the next relaunch.
         guard !store.isPrivate, !store.isLittle else { return 0 }
+        let groups = reviewed(groups, in: store)
         let before = store.tabs.map(\.id)
         // `filed` is read before a thing has been filed, so it holds only what the *user* put
         // in a folder: those are the rows that keep their places, the new folders under them.
@@ -518,7 +538,7 @@ import Foundation
         let plan = folders(for: named, placement: placement, live: live)
         guard !plan.isEmpty else { return 0 }
 
-        var done = Done(order: before, folders: [])
+        var done = Done(order: before, folders: [], space: store.currentSpaceID)
         store.syncShapes()      // every Today tab has a row before anything is put in a folder
 
         // `Pins.newFolder` rather than `TabStore.newFolder`: the store's one is ⌘⇧N — it
@@ -592,7 +612,11 @@ import Foundation
     }
 
     static func canUndo(_ store: TabStore) -> Bool {
-        saved[ObjectIdentifier(store)]?.isEmpty == false
+        guard let done = saved[ObjectIdentifier(store)]?.last,
+              done.space == store.currentSpaceID else { return false }
+        return done.folders.allSatisfy {
+            store.todayShape.lockedFolders(for: $0.uuidString, unlocked: []).isEmpty
+        }
     }
 
     /// Put the saved order back, allowing for tabs opened or closed in the meantime: what is
@@ -613,7 +637,7 @@ import Foundation
     /// the tidy, or before it, is not the tidy's to delete.
     static func undo(_ store: TabStore) {
         let key = ObjectIdentifier(store)
-        guard let done = saved[key]?.popLast() else { return }
+        guard canUndo(store), let done = saved[key]?.popLast() else { return }
         store.feedback.cancelTidy()
         if saved[key]?.isEmpty == true { saved[key] = nil }
         for folder in done.folders {

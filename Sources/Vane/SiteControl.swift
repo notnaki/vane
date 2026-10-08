@@ -55,6 +55,7 @@ struct SiteControlModel: Equatable, Sendable {
     var pictureInPicture = false
     var zoom = 1.0
     var blocking = true
+    var profileBlocking = true
     var reader = false
     var readerAvailable = false
     var extensions: [Ext] = []
@@ -67,7 +68,7 @@ extension SiteControlModel {
 
     /// Which row, so the view can act on one without matching on its title.
     enum RowID: Hashable, Sendable {
-        case camera, microphone, pictureInPicture, zoom, blocker, reader, capture, clearData, developer
+        case camera, microphone, pictureInPicture, zoom, blocker, blockerSettings, reader, capture, clearData, developer
         /// The index into `extensions`, which is also the index into the host's contexts.
         case ext(Int)
         /// The index into `apps`: one remembered "Always Allow" for another app.
@@ -179,11 +180,12 @@ extension SiteControlModel {
                 control: .toggle(pictureInPicture)),
             Row(id: .zoom, title: "Zoom", glyph: "textformat.size",
                 control: .zoom(PillState.zoomLabel(zoom) ?? "100%")),
-            Row(id: .blocker, title: "Block Ads", glyph: "shield",
+            Row(id: .blocker, title: "Block Ads on This Site", glyph: "shield",
                 control: .toggle(blocking),
-                // Honest rather than flattering: Vane's blocker is one compiled rule list
-                // attached per profile, so there is no per-site answer to give here.
-                note: "Every site in this profile."),
+                note: profileBlocking ? "This exact host in this profile. Changing it reloads the page." : "Blocking is off for this profile. Enable it in Privacy settings.",
+                inert: !profileBlocking),
+            Row(id: .blockerSettings, title: "Filter Lists and Diagnostics", glyph: "list.bullet.rectangle",
+                control: .action),
             Row(id: .reader, title: "Reader Mode", glyph: "doc.plaintext",
                 control: .toggle(reader),
                 note: reader || readerAvailable ? nil : "This page has no article to read.",
@@ -249,7 +251,8 @@ extension SiteControlModel {
         }
         pictureInPicture = tab.pictureInPicture
         zoom = tab.zoom
-        blocking = Blocker.enabled(for: tab.profileID)
+        profileBlocking = Blocker.enabled(for: tab.profileID)
+        blocking = Blocker.enabled(for: tab.profileID, url: url)
         reader = Reader.isOn(tab)
         readerAvailable = tab.readerAvailable
         let host = tab.extensions
@@ -309,7 +312,12 @@ extension SiteControlModel {
         case .microphone: cycle(.microphone, on: tab)
         case .pictureInPicture: PictureInPicture.toggle(tab)
         case .zoom: Zoom.reset(tab)
-        case .blocker: Blocker.setEnabled(!Blocker.enabled(for: tab.profileID), for: tab.profileID)
+        case .blocker:
+            guard Blocker.enabled(for: tab.profileID) else { return }
+            let excepted = Blocker.siteExceptions(for: tab.profileID).contains(host.lowercased())
+            Blocker.setSiteException(host, allowed: !excepted, profileID: tab.profileID, recompile: false)
+            Blocker.refresh(completion: { [weak tab] in tab?.reload() })
+        case .blockerSettings: SettingsWindow.show(tab: "privacy", profileID: tab.profileID)
         case .reader: Reader.toggle(tab)
         case .capture: PageCapture.start(tab)
         case .ext(let i): toggleExtension(i, on: tab)
@@ -526,9 +534,9 @@ extension SiteControlModel {
         out.append(("…and reads as on", control(reading, .reader) == .toggle(true)))
 
         // The blocker row is honest about its reach.
-        out.append(("the ad blocker row admits it is not per site",
+        out.append(("the ad blocker row explains exact-host scope",
                     m.rows.first { $0.id == .blocker }?.note?.lowercased()
-                        .contains("every site in this profile") == true))
+                        .contains("exact host in this profile") == true))
         out.append(("…and is never inert, because it does work",
                     m.rows.first { $0.id == .blocker }?.inert == false))
 
@@ -727,6 +735,7 @@ private struct SiteControlRow: View {
         .background(hovering && !row.inert ? Look.hovered : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
+        .animation(Motion.reduced ? nil : Look.quick, value: row.control)
         .contentShape(.rect)
         .actionAnchor(anchor)
         .onHover { hovering = $0 && !row.inert }
@@ -813,6 +822,8 @@ private struct SiteControlRow: View {
         }
         switch row.control {
         case .zoom:   return "Resets the page to actual size. Zoom In and Zoom Out are also available."
+        case .action where row.id == .blockerSettings:
+            return "Opens filter subscriptions, update status, unsupported rules, and site exceptions."
         case .action where row.id == .capture:
             return "Click an element or drag a region to capture. Escape cancels."
         case .action: return "Signs you out of this site and forgets what it stored. This cannot be undone."

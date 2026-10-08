@@ -109,6 +109,24 @@ while moving between gaps. The held ghost matches the tab row.
 Hold Option while dropping onto the middle of another tab to make a split view.
 Dropping into a closed folder highlights it and opens its icon while you hover.
 
+**Tidy Tabs** first opens a review sheet. Rename its proposed folders and untick
+pages you want to leave loose, then choose **Apply Groups**. A changed page or Space
+requires a fresh proposal. Tidy preserves pinned tabs, favourites, existing folders,
+split panes, and custom tab names; **Undo Tidy Tabs** takes the grouping back.
+
+Choose **Tabs → Organize Tabs…** or the Space menu's **Organize Tabs…** to search
+and select Today tabs across the current profile's Spaces. Copy their links, move
+them to another Space as Today tabs, or archive the selection. **Duplicates only**
+compares complete URLs, including query strings and fragments. **Select Extras**
+offers a selection for review; pinned tabs, favourites, named tabs, and tabs in use
+are preferred as keepers. Untick or tick individual copies, then choose **Archive
+Selected Copies**. Cleanup requires at least one copy to remain. Locked-folder
+contents are hidden; pinned tabs, favourites, and split panes are protected from
+bulk moves and archives. **Undo** in the sheet, the toast, or **Tabs → Undo Tab
+Organization** restores the last action for that profile, including folder order
+and saved page state, while the affected tabs and folders have no later changes.
+Reduce Motion and Battery Saver keep list and selection changes immediate.
+
 After Tidy groups Today tabs into folders, drag a tab or selection into the blank
 space below the last row to move it outside the folders at the bottom of Today.
 That drop area remains available when the last row is a collapsed folder or the
@@ -194,7 +212,12 @@ copy, and delete saved logins. Add/edit forms can generate random passwords of
 password; use the arrow keys and Return to choose, or Escape to dismiss. Save and
 update prompts show labeled credentials with a password reveal control. Credentials
 stay in the local macOS Keychain and are scoped to the
-profile; private browsing does not use saved passwords. The bookmark manager
+profile; private browsing does not use saved passwords. Username-first sign-ins keep the
+selected account through form replacement or the next same-origin password page. Fields
+revealed or mounted by a site are discovered automatically, and same-origin embedded
+login forms use their own fields and chooser anchors. Hidden fields and one-time codes
+are excluded from filling; cross-origin and opaque sandbox frames cannot receive credentials.
+The bookmark manager
 supports folders, search, bulk actions, and HTML import/export.
 
 Some features depend on macOS services, site behavior, or a signed distribution
@@ -219,6 +242,56 @@ and unfinished forms keep their existing suspension protections. State changes s
 a temporary green lightning popup at the page's top right, with an **Edit this setting**
 button. Hovering keeps the popup visible; sleeping tabs reload when selected. The mode respects
 the existing idle-suspension preference and preserves an already shorter timeout.
+
+### Content blocking and filter subscriptions
+
+Settings → Privacy and Security → Content Blocking separates **Import from Disk**
+(local snapshots, never downloaded again) from **Subscribe by URL** (HTTPS lists).
+The built-in starter list stays available offline. Existing imported snapshots and
+legacy file references are preserved. Sources are shared across profiles; the main
+blocking switch and site exceptions belong to each profile.
+
+URL subscriptions update daily while Vane is running. Vane checks overdue lists at
+startup, after wake, and hourly; failed attempts retry after one hour. **Update Now**
+or a list's **Update** button retries immediately. Status shows updating, last/next
+check times, and failures. Conditional HTTP requests use the accepted list's ETag
+and Last-Modified values. Downloads use an ephemeral session, not browsing cookies,
+and are limited to 8 MB of UTF-8 text per list.
+
+Vane compiles the combined candidate using WebKit's public `WKContentRuleListStore`
+before saving a changed subscription. Download, compilation, or storage failures
+retain the accepted source and last working compiled rules, including across
+relaunch. A saved base-rule snapshot also lets new site exceptions take effect when
+a legacy source is missing. URL text and metadata live together in an atomic
+`FilterSubscriptions/subscriptions.json` document; disk imports stay in `FilterLists`.
+The feature does not depend on a managed Apple entitlement.
+
+**Site Controls → Block Ads on This Site** changes an exception for the exact host
+and reloads the page after rules attach. Exceptions also cover that page's embedded
+requests and cosmetic rules; subdomains have their own choices. **Filter Lists and
+Diagnostics** opens update status, unsupported rules, and saved exceptions. Resume
+blocking there to remove an exception, then reload other open pages. Subscription
+updates preserve exceptions; private-window choices are not saved as preferences.
+Private compiled variants use a separate transient WebKit store, removed on normal
+quit; the next launch sweeps crash leftovers while preserving other live Vane instances.
+
+The converter supports a subset of EasyList: host/start/end anchors, wildcards,
+network exceptions, supported resource/party options, positive-only or negative-only
+domain restrictions, and ordinary CSS hiding. Resource types follow WebKit's
+vocabulary: subdocuments use `document`, and XHR/WebSocket/ping use `raw`.
+Regex rules, scriptlets, procedural selectors, cosmetic exception variants, unknown
+options, mixed/invalid domain restrictions, and rules inside conditional branches
+are skipped. Unbalanced conditional directives reject a subscription update, and
+each source has independent preprocessing state. **Unsupported Rules** reports totals by reason and the first 20 samples
+with line numbers; local imports can be inspected separately. Vane does not claim
+full uBlock Origin or AdGuard compatibility or expose request-by-request block counts.
+
+Focused regression checks (including real WebKit network and cosmetic behavior):
+
+```sh
+swift test --filter 'BlockerTests|BlockerSubscriptionTests|BlockerWebKitTests'
+./.build/debug/vane selfcheck --pure
+```
 
 ### Saving profiles
 
@@ -435,6 +508,17 @@ python3 scripts/test-default-browser-prompt.py
 ./scripts/test-build-dmg.sh
 bash scripts/test-update-installer.sh Vane.app --unsigned
 ```
+
+For focused password validation on a logged-in macOS desktop:
+
+```sh
+swift test --filter 'PasswordAutofillTests|PasswordOriginTests|PasswordChooserLayoutTests|PasswordPopupPresentationTests|PasswordManagerSearchTests|PasswordGeneratorTests'
+python3 scripts/check-browser-smoke.py
+```
+
+The autofill fixtures exercise real WebKit documents, controlled input events, dynamic
+visibility, account continuity, embedded forms, stale chooser targets, and scoped
+Keychain reads. Keychain-dependent XCTest fixtures report a skip if storage is unavailable.
 
 `swift test` covers search typing and cancellation, link gestures and previews,
 Space switching and deletion, tab ordering, Battery Saver, media permission popups and
