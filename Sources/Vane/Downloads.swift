@@ -480,8 +480,11 @@ import WebKit
     }
 
     private var saveAsDownloads: [ObjectIdentifier: String] = [:]
+    private var startOrigins: [ObjectIdentifier: DownloadFeedback.Origin] = [:]
 
-    func attach(_ download: WKDownload, alwaysAsk: Bool = false, suggestedFilename: String? = nil) {
+    func attach(_ download: WKDownload, alwaysAsk: Bool = false, suggestedFilename: String? = nil,
+                from window: NSWindow? = nil) {
+        startOrigins[ObjectIdentifier(download)] = DownloadFeedback.Origin(window: window)
         if alwaysAsk { saveAsDownloads[ObjectIdentifier(download)] = suggestedFilename ?? "" }
         download.delegate = self
     }
@@ -519,6 +522,7 @@ import WebKit
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String,
                   completionHandler: @escaping @MainActor (URL?) -> Void) {
+        let origin = startOrigins.removeValue(forKey: ObjectIdentifier(download))
         // A resumed transfer must land back on its own partial file. Uniquifying here would
         // hand WebKit an empty "report 2.pdf" and restart from zero — exactly the silent
         // failure the brief forbids.
@@ -556,6 +560,10 @@ import WebKit
         items.insert(entry, at: 0)
         save()
         completionHandler(target)
+        if let window = origin?.window {
+            NotificationCenter.default.post(name: DownloadFeedback.started,
+                object: DownloadFeedback.Start(name: entry.name, profileID: profileID, window: window))
+        }
     }
 
     /// The save panel, run where WebKit is waiting for an answer. Modal on purpose: the
@@ -592,6 +600,7 @@ import WebKit
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         saveAsDownloads.removeValue(forKey: ObjectIdentifier(download))
+        startOrigins.removeValue(forKey: ObjectIdentifier(download))
         guard let i = item(for: download) else { return }
         i.unwatch()
         finish(i, error: error.localizedDescription, resumeData: resumeData)

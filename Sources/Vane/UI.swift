@@ -368,6 +368,7 @@ struct BrowserWindow: View {
                     Sidebar().frame(width: sidebar.width)
                 }
                 WebCard()
+                    .anchorPreference(key: DownloadFeedbackBounds.self, value: .bounds) { [.page: $0] }
             }
             .disabled(store.palette != nil)
             .accessibilityHidden(store.palette != nil)
@@ -392,6 +393,7 @@ struct BrowserWindow: View {
         // safe area at the top. Without this the sidebar's first row sits *below* the
         // traffic lights instead of beside them, and the card loses its top inset.
         .ignoresSafeArea()
+        .modifier(DownloadFeedbackPresentation(store: store, chrome: chrome))
         // “Open “Zoom”?”, anchored to the window whose page asked. See ExternalApps.swift.
         .externalAppPrompt(store)
         .sheet(isPresented: $store.liveFolderSheet) {
@@ -4857,14 +4859,14 @@ private struct LibraryButton: View {
 
     private var filled: Bool { !archive.entries.isEmpty || !downloads.items.isEmpty || hasPreviewItems }
 
-    var body: some View {
+    private var control: some View {
         // Never disabled any more: the panel has this profile's Spaces and its history in
         // it as well as the two lists, so there is always something behind the glyph.
         Button {
             hover.dismiss()
             Library.toggle(Library.shared.section, in: store)
         } label: {
-            LibraryBucket(filled: filled, hovered: hovered)
+            LibraryDownloadGlyph(filled: filled, hovered: hovered)
                 // The bucket's artwork occupies the bottom of its 24pt canvas.
                 .offset(y: -4)
                 .frame(width: Look.footerControl, height: Look.footerControl)
@@ -4874,7 +4876,12 @@ private struct LibraryButton: View {
             // A ring around the glyph while anything is downloading, so progress is visible
             // without opening the Library to look for it.
             .overlay { DownloadRing(downloads: downloads) }
+            .anchorPreference(key: DownloadFeedbackBounds.self, value: .bounds) { [.bucket: $0] }
             .buttonStyle(TactileButtonStyle())
+    }
+
+    var body: some View {
+        control
             // Always the footer's own ink: the Library stands where this whole row is, so
             // there is no state in which the glyph is on screen *and* the Library is open.
             .foregroundStyle(Look.inkSecondary)
@@ -4883,20 +4890,19 @@ private struct LibraryButton: View {
                 hover.setHovered($0 && preparePreview(), over: .button)
             }
             .animation(reduceMotion ? nil : Look.quick, value: hovered)
-            .onChange(of: downloads.items.map(\.id)) {
-                let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
-                if (category == .downloads || category == .media) && !preparePreview() { hover.dismiss() }
-            }
+            .onChange(of: downloads.items.map(\.id)) { refreshPreview(for: [.downloads, .media]) }
             .onChange(of: downloads.items.filter { $0.status == .done }.map(\.id)) {
-                let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
-                if category == .media && !preparePreview() { hover.dismiss() }
+                refreshPreview(for: [.media])
             }
-            .onChange(of: archive.entries) {
-                let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
-                if category == .archived && !preparePreview() { hover.dismiss() }
-            }
+            .onChange(of: archive.entries) { refreshPreview(for: [.archived]) }
             .accessibilityLabel("Library")
             .accessibilityValue("\(archive.entries.count) archived, \(downloads.items.count) download\(downloads.items.count == 1 ? "" : "s")")
             .accessibilityHint("Click to open Library. Hover to preview up to four items from the section selected in Previews Settings.")
+    }
+
+    private func refreshPreview(for categories: Set<LibraryHoverCategory>) {
+        let category = LibraryHoverCategory.resolve(UserDefaults.vane.string(forKey: LibraryHoverCategory.key) ?? "downloads")
+        guard categories.contains(category) else { return }
+        if !preparePreview() { hover.dismiss() }
     }
 }

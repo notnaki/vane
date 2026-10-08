@@ -177,6 +177,10 @@ A filled bucket lifts its contents without changing their shape; an empty one li
 Reduce Motion and Battery Saver keep these changes immediate. Click the bucket to
 open the full Library.
 
+Starting a download sends a small marker from the page into the Library bucket.
+The bucket briefly shows the file type's icon on arrival. Reduce Motion and Battery
+Saver show the icon immediately without the flight.
+
 Pinned tabs keep their saved name as you navigate within them. When a pinned tab
 leaves its saved page, its sidebar row shows `/` before its title and offers
 **Return to Pinned Tab**; returning

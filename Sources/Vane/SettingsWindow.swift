@@ -1193,7 +1193,7 @@ private struct IconPane: View {
 
 private struct AdvancedPane: View {
     @ObservedObject private var batterySaver = BatterySaver.shared
-    @AppStorage("userAgent") private var userAgent = safariUA
+    @AppStorage("userAgent") private var userAgent = ""
     @AppStorage("inspector") private var inspector = true
     @AppStorage("homepage") private var homepage = ""
     @AppStorage(PictureInPicture.prefKey) private var autoPiP = true
@@ -1275,7 +1275,9 @@ private struct AdvancedPane: View {
             SettingsSection("Developer") {
                 SettingsCard {
                     SettingsRow("User agent") {
-                        Picker("", selection: $userAgent) {
+                        Picker("", selection: Binding(
+                            get: { BrowserIdentity.resolve(userAgent) },
+                            set: { userAgent = $0 == safariUA ? "" : $0 })) {
                             ForEach(Settings.userAgents, id: \.value) { Text($0.name).tag($0.value) }
                         }
                         .labelsHidden().fixedSize()
