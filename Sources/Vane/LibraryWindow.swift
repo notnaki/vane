@@ -674,6 +674,7 @@ struct LibraryPanel: View {
         switch library.section {
         case .media:     MediaPane(downloads: DownloadLibrary.library(for: store.profileID))
         case .downloads: DownloadsPane(downloads: DownloadLibrary.library(for: store.profileID))
+        case .readingQueue where !store.isPrivate: ReadingQueueHost(origin: store)
         case .easels where !store.isPrivate: EaselsPane(repository: EaselStore.shared(profileID: store.profileID, directory: Store.directory))
         case .spaces where !store.isPrivate: SpacesPane()
         // History never becomes the section, and Spaces is not offered in a private
@@ -783,7 +784,7 @@ private struct LibraryTile: View {
 /// sections that have anything to filter, and the "…" that holds what is done to the whole
 /// list. Filter filters and nothing else — Clear under a menu called Filter is a destructive
 /// verb nobody would look for there.
-private struct LibraryHead<Filter: View, Actions: View>: View {
+struct LibraryHead<Filter: View, Actions: View>: View {
     let section: LibrarySection
     let filtering: Bool
     @Binding var query: String
@@ -2050,7 +2051,7 @@ extension Library {
              LibrarySection.allCases.allSatisfy { !$0.icon.isEmpty && !$0.title.isEmpty }),
             ("the rail is in Arc's order, Media first and History last",
              LibrarySection.allCases.map(\.rawValue)
-                == ["media", "downloads", "easels", "spaces", "archived", "history"]),
+                == ["media", "downloads", "readingQueue", "easels", "spaces", "archived", "history"]),
             ("every section's search field names what it is searching",
              LibrarySection.allCases.allSatisfy { $0.searchPrompt.hasPrefix("Search ") }),
             ("…and the archive's says Archive, which is what fits the column",
@@ -2058,9 +2059,9 @@ extension Library {
                 && LibrarySection.media.searchPrompt == "Search Media…"),
             ("only the two lists with a filter offer a Filter chip",
              LibrarySection.allCases.filter(\.filterable).map(\.rawValue)
-                == ["downloads", "archived"]),
+                == ["downloads", "readingQueue", "archived"]),
             ("a private window is offered no saved boards or Spaces",
-             !LibrarySection.spaces.available(private: true) && !LibrarySection.easels.available(private: true)
+             !LibrarySection.spaces.available(private: true) && !LibrarySection.easels.available(private: true) && !LibrarySection.readingQueue.available(private: true)
                 && LibrarySection.allCases.filter { $0.available(private: true) }.count == 4),
             ("an ordinary window is offered every section",
              LibrarySection.allCases.allSatisfy { $0.available(private: false) }),

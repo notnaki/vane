@@ -840,6 +840,10 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         item(.fullScreen) { NSApp.keyWindow?.toggleFullScreen(nil) },
         .separator(),
         item(.showReader) { Windows.current?.active.map(Reader.toggle) },
+        validated(item(.saveForOffline) {
+            if let store = Windows.current, let tab = store.active { Task { await ReadingQueueCapture.shared.save(tab: tab, in: store) } }
+        }) { ReadingQueueCapture.canSave(tab: Windows.current?.active, in: Windows.current) },
+        validated(item(.readingQueue) { Library.open(.readingQueue, in: Windows.current) }) { Windows.current.map { !$0.isPrivate } ?? false },
         item(.pictureInPicture) { PictureInPicture.toggle(Windows.current?.active) },
         item(.muteTab) { Windows.current?.active.map(TabAudio.toggleMute) },
         item(.biggerReaderText) { Reader.adjustFontSize(1, in: Windows.current?.active) },

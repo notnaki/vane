@@ -187,6 +187,25 @@ back button. From the leftmost Space, swipe left to right over the sidebar to
 open Library at its last-used section. Swipes over page content stay with the page,
 including back and forward navigation. Vertical scrolling still scrolls the Library.
 
+Choose **Page Actions → Save for Offline** or **View → Save for Offline** on a readable
+article. **Library → Reading Queue** holds this profile's saved copies, searches their
+article text as well as titles and links, and offers All, Unread, and Read filters.
+Open a saved copy without a connection, explicitly mark it read or unread, or remove
+it to reclaim storage. The queue shows its article count and storage usage. Opening
+does not automatically mark an article read. Saving an already saved URL keeps the
+existing copy; remove it and save again to capture a newer version.
+
+Saved Reader labels the **Saved copy**, capture date, and source, reuses Reader's
+reading preferences, and offers **Open Live Page** separately. Saves publish
+atomically in local profile storage and participate in complete backups and restore.
+Private browsing cannot persist or access the queue. Unsupported pages and failed
+saves explain the problem. Images are captured where practical through anonymous
+requests; authentication, size limits, or failed downloads can leave a text-only
+copy with a missing-image notice. Saved views never fetch missing images from the
+live site. The queue focuses on article text rather than interactive pages or PDFs;
+it supports up to 1,000 articles per profile and 20 MiB per article. Backup exports
+retain their 512 MiB total limit and report a failure without omitting saved content.
+
 Hover the Space card to reveal its chevron and `…` menu. Click the card to collapse
 or expand its pinned tabs; Today stays visible. Double-click its name to rename
 the Space. Each window remembers the collapsed state for each Space while open.
