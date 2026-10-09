@@ -4,7 +4,7 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceSwipeLandingTests: XCTestCase {
-    func testCommittedSwipeFocusesRememberedTabWithinThirdSecond() async throws {
+    func testCommittedSwipeSwitchesPageAndAddressPromptlyAfterRelease() async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.reduced, "Focus timing requires the animated landing path")
         let profile = UUID()
@@ -54,9 +54,11 @@ import XCTest
         print("COMMITTED_SPACE_FOCUS_SECONDS: \(elapsed)")
         XCTAssertEqual(store.currentSpaceID, second.id)
         XCTAssertEqual(store.current, remembered.id)
-        // Leave several frames for scheduling and disk work in the full suite while still
-        // rejecting the previous 350 ms landing spring.
-        XCTAssertLessThan(elapsed, 0.33, "The focused tab must not wait for a long landing spring")
+        // Allow several frames for scheduling and disk work while rejecting the old
+        // 160 ms response, which delayed the page and address by roughly 190 ms.
+        XCTAssertLessThan(elapsed, 1.0 / 6, "The page and address must switch promptly after release")
+        XCTAssertTrue(store.active === remembered)
+        XCTAssertEqual(store.active?.currentURL, URL(string: "https://remembered.example/"))
         XCTAssertEqual(store.spaceDrag, 0)
     }
 }
