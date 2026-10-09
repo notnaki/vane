@@ -134,14 +134,15 @@
         float depth = y * st + p.z * ct;
         float perspective = 1.0 / (1.0 + depth * 0.22);
         vec2 pixel = u_center + vec2(x, y * ct - p.z * st) * u_radius * perspective;
-        float size = max(1.1, a_size * u_radius / 300.0 * perspective);
+        // Match the Canvas fallback's star scale and overall glow energy.
+        float size = clamp(a_size * u_radius / 450.0 * perspective, 0.35, 3.8);
         if (a_kind < 0.5) { pixel = p.xy * u_resolution; size = a_size; }
         gl_Position = vec4(pixel.x / u_resolution.x * 2.0 - 1.0, 1.0 - pixel.y / u_resolution.y * 2.0, 0.0, 1.0);
-        gl_PointSize = size * u_dpr * mix(3.0, 14.0, u_bloom);
+        gl_PointSize = size * u_dpr * mix(2.2, 10.0, u_bloom);
         v_color = a_color;
         float scintillation = 0.96 + 0.04 * sin(u_time * 0.0003 + p.x * 93.0 + p.y * 71.0);
         v_brightness = a_brightness * scintillation;
-        if (u_bloom > 0.5) v_brightness *= smoothstep(0.75, 2.4, a_size) * 0.13;
+        if (u_bloom > 0.5) v_brightness *= step(1.15, a_size) * 0.15;
       }
     `;
     const fragmentSource = `
