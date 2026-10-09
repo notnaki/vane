@@ -24,6 +24,41 @@ import SwiftUI
             eligible.contains(id) && store.tabs.first { $0.id == id }?.currentURL == page
         }
     }
+
+    /// Complete a grouping request using its frozen tab and Space snapshot.
+    func finish(in store: TabStore) {
+        guard isCurrent(in: store) else {
+            Toasts.show("Tabs changed. Run Tidy again to review a fresh proposal.", in: store)
+            return
+        }
+        let reviewed = TidyTabs.reviewed(groups, in: store)
+        guard !reviewed.isEmpty else {
+            Toasts.show("Nothing to tidy", in: store)
+            return
+        }
+        var proposal = self
+        proposal.groups = TidyTabs.deduped(reviewed,
+            existing: store.todayShape.entries.compactMap(\.folder).map(\.name))
+        if TidyTabs.previewEnabled {
+            Motion.list { store.tidyPreview = proposal }
+        } else if applyTidyGroups(proposal.groups, to: store) == 0 {
+            Toasts.show("Nothing to tidy", in: store)
+        }
+    }
+}
+
+/// Both review and direct application keep the same feedback and undo action.
+@MainActor @discardableResult
+private func applyTidyGroups(_ groups: [TidyTabs.Group], to store: TabStore) -> Int {
+    let count = TidyTabs.apply(groups, to: store)
+    guard count > 0 else { return 0 }
+    rebuild()
+    Toasts.show("Tidied into \(count) folders", action: ("Undo", { [weak store] in
+        guard let store else { return }
+        TidyTabs.undo(store)
+        rebuild()
+    }), in: store)
+    return count
 }
 
 struct TidyPreviewSheet: View {
@@ -102,14 +137,8 @@ struct TidyPreviewSheet: View {
             message = "Tabs changed since this proposal. Cancel and run Tidy again."
             return
         }
-        let count = TidyTabs.apply(proposed, to: store)
+        let count = applyTidyGroups(proposed, to: store)
         guard count > 0 else { message = "Nothing to tidy"; return }
         dismiss()
-        rebuild()
-        Toasts.show("Tidied into \(count) folders", action: ("Undo", { [weak store] in
-            guard let store else { return }
-            TidyTabs.undo(store)
-            rebuild()
-        }), in: store)
     }
 }

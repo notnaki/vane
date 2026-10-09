@@ -45,7 +45,8 @@ it and opens its icon while you hover.
 ### Tidy Tabs
 
 **Tidy Tabs** first opens a review sheet. Rename its proposed folders and untick pages
-you want to leave loose, then choose **Apply Groups**. A changed page or Space requires
+you want to leave loose, then choose **Apply Groups**. Turn off **Preview before tidying**
+in **Settings → Max** to apply groups immediately. A changed page or Space requires
 a fresh proposal. Tidy preserves pinned tabs, favourites, existing folders, split panes,
 and custom tab names; **Undo Tidy Tabs** takes the grouping back.
 

@@ -903,6 +903,7 @@ private struct DataRow: View {
 private struct MaxPane: View {
     @AppStorage("appleAI") private var appleAI = true
     @AppStorage("tidyTabs") private var tidyTabs = true
+    @AppStorage("tidyPreview") private var tidyPreview = true
     @AppStorage("tidyDownloads") private var tidyDownloads = false
     @AppStorage("tidyTitles") private var tidyTitles = true
     @AppStorage("instantLinks") private var instant = true
@@ -926,6 +927,10 @@ private struct MaxPane: View {
                 SettingsRow("Group tabs by topic") {
                     Toggle("", isOn: $tidyTabs).labelsHidden().disabled(off)
                 }
+                SettingsRow("Preview before tidying") {
+                    Toggle("Preview before tidying", isOn: $tidyPreview).labelsHidden()
+                }
+                Footnote("Turn off to apply Tidy groups immediately. You can undo the grouping afterward.")
                 SettingsRow("Rename messy downloads") {
                     Toggle("", isOn: $tidyDownloads).labelsHidden().disabled(off)
                 }

@@ -435,18 +435,9 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
         // Cancelled is the one silent exit: the user asked for it, and the spinner going
         // away is the answer.
         guard !Task.isCancelled else { return }
-        guard preview.isCurrent(in: s) else {
-            Toasts.show("Tabs changed. Run Tidy again to review a fresh proposal.", in: s)
-            return
-        }
-        guard let groups, !TidyTabs.reviewed(groups, in: s).isEmpty else {
-            Toasts.show("Nothing to tidy", in: s)
-            return
-        }
         var proposal = preview
-        proposal.groups = TidyTabs.deduped(TidyTabs.reviewed(groups, in: s),
-            existing: s.todayShape.entries.compactMap(\.folder).map(\.name))
-        Motion.list { s.tidyPreview = proposal }
+        proposal.groups = groups ?? []
+        proposal.finish(in: s)
     }
 }
 

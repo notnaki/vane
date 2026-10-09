@@ -125,6 +125,86 @@ import SwiftUI
         XCTAssertFalse(preview.isCurrent(in: store))
     }
 
+    private func setTidyPreview(_ enabled: Bool?) {
+        TestEnvironment.prepare()
+        let previous = UserDefaults.vane.object(forKey: "tidyPreview")
+        addTeardownBlock { @MainActor in
+            UserDefaults.vane.set(previous, forKey: "tidyPreview")
+        }
+        UserDefaults.vane.set(enabled, forKey: "tidyPreview")
+    }
+
+    func testTidyPreviewsByDefaultWithoutMovingTabs() {
+        let (store, _, _) = fixture()
+        setTidyPreview(nil)
+        let a = tab("https://example.com/a", in: store)
+        let b = tab("https://example.com/b", in: store)
+        let before = store.todayShape
+        var preview = TidyPreview(store: store)
+        preview.groups = [.init(name: "Reading", tabIDs: [a.id, b.id])]
+
+        preview.finish(in: store)
+
+        XCTAssertEqual(store.tidyPreview?.groups, preview.groups)
+        XCTAssertEqual(store.todayShape, before)
+        XCTAssertFalse(TidyTabs.canUndo(store))
+    }
+
+    func testDisablingTidyPreviewAppliesGroupsAndCanUndo() {
+        let (store, _, _) = fixture()
+        setTidyPreview(false)
+        let a = tab("https://example.com/a", in: store)
+        let b = tab("https://example.com/b", in: store)
+        let loose = tab("https://other.example/page", in: store)
+        let before = store.todayShape
+        let order = store.tabs.map(\.id)
+        var preview = TidyPreview(store: store)
+        preview.groups = [.init(name: "Reading", tabIDs: [a.id, b.id])]
+
+        preview.finish(in: store)
+
+        XCTAssertNil(store.tidyPreview)
+        let folders = store.todayShape.entries.compactMap(\.folder)
+        XCTAssertEqual(folders.map(\.name), ["Reading"])
+        XCTAssertTrue(store.todayShape.filed.contains(a.id.uuidString))
+        XCTAssertTrue(store.todayShape.filed.contains(b.id.uuidString))
+        XCTAssertFalse(store.todayShape.filed.contains(loose.id.uuidString))
+        XCTAssertTrue(TidyTabs.canUndo(store))
+        XCTAssertEqual(Toasts.shared.current?.owner, ObjectIdentifier(store))
+        XCTAssertNotNil(Toasts.shared.current?.action)
+        Toasts.shared.current?.action?.run()
+        XCTAssertEqual(store.todayShape, before)
+        XCTAssertEqual(store.tabs.map(\.id), order)
+    }
+
+    func testTidyRejectsStaleProposalsWithPreviewOnOrOff() {
+        let (store, _, second) = fixture()
+        setTidyPreview(true)
+        let a = tab("https://example.com/a", in: store)
+        let b = tab("https://example.com/b", in: store)
+        var preview = TidyPreview(store: store)
+        preview.groups = [.init(name: "Reading", tabIDs: [a.id, b.id])]
+        a.park(url: URL(string: "https://example.com/changed")!, Parked(title: "Changed"))
+        let before = store.todayShape
+
+        for enabled in [true, false] {
+            UserDefaults.vane.set(enabled, forKey: "tidyPreview")
+            preview.finish(in: store)
+            XCTAssertNil(store.tidyPreview)
+            XCTAssertEqual(store.todayShape, before)
+            XCTAssertFalse(TidyTabs.canUndo(store))
+        }
+
+        store.switchTo(space: second)
+        let secondShape = store.todayShape
+        for enabled in [true, false] {
+            UserDefaults.vane.set(enabled, forKey: "tidyPreview")
+            preview.finish(in: store)
+            XCTAssertNil(store.tidyPreview)
+            XCTAssertEqual(store.todayShape, secondShape)
+        }
+    }
+
     func testUndoDoesNotOverwriteLaterTabChanges() {
         let (store, _, _) = fixture()
         let a = tab("https://example.com/a", in: store)
