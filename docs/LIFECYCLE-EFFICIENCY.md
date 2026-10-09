@@ -136,9 +136,8 @@ power notifications and MediaState's single app-wide audio hook have app lifetim
 Live Folders stops its timer when its profile has no browser owners. Little Vane's
 focus notification uses a SwiftUI-managed subscription; the cycle fixture checks
 that its stores and windows disappear. Peek explicitly removes its resize/close
-notifications when dismissed. Existing draft detection covers main-frame inputs and
-contenteditable elements; iframe/shadow-DOM/JavaScript-only drafts remain a limitation.
-
-Asynchronous suspension probes guard WebView and URL identity, but do not yet use
-a document-generation token for a same-URL reload. That pre-existing race needs a
-controlled regression fixture before broader navigation/draft claims.
+notifications when dismissed. At the time of this lifecycle pass, draft detection covered main-frame inputs and
+contenteditable elements, and asynchronous suspension lacked same-URL document-generation
+validation. The later merged [draft-protection work](DRAFT-PROTECTION.md) adds frame/open-shadow-root
+checks and document-generation revalidation with controlled regressions. JavaScript-only
+and inaccessible editor state remain limits; that guide records the current boundaries.
