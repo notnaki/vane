@@ -41,6 +41,28 @@ import XCTest
         XCTAssertTrue(tab.loading, "Old cancellation must not stop the current spinner")
     }
 
+    func testFavouriteBlankTargetCrossSiteLinkPeeksInsteadOfCreatingPopupTab() async throws {
+        let saved = UserDefaults.vane.object(forKey: Peek.prefKey)
+        UserDefaults.vane.set(true, forKey: Peek.prefKey)
+        defer { UserDefaults.vane.set(saved, forKey: Peek.prefKey) }
+        let destination = try server.url("/document", host: "localhost")
+        server.pages["/favourite"] = """
+        <title>Favourite</title><a id="document" href="\(destination.absoluteString)" target="_blank">Document</a>
+        """
+        tab.kind = .favourite
+        tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        var peeked: URL?
+        var popupRequested = false
+        tab.onPeek = { peeked = $0 }
+        tab.onPopup = { _, _ in popupRequested = true; return nil }
+        try await load("/favourite")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('document').click()")
+        try await compatibilityWait { peeked != nil || popupRequested }
+        XCTAssertEqual(peeked, destination)
+        XCTAssertFalse(popupRequested, "Automatic Peek must intercept the link before WebKit creates a sidebar tab")
+        XCTAssertEqual(tab.web.url, try server.url("/favourite"))
+    }
+
     func testRetiredViewCallbacksCannotMutateClosedTabOrRecreateWebView() async throws {
         let navigation = try await load("/old")
         let retired = tab.web

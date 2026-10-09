@@ -67,15 +67,17 @@ enum LinkInteraction {
            context.target != .subframe { return .split }
         if web, context.target != .subframe, context.canPeek,
            modifiers.contains(.shift), preferences.shiftPeek { return .peek }
-        if context.target == .newWindow { return .popup(floating: context.floating) }
-        guard web, context.target == .main, context.canPeek else { return .navigate }
+        let fallback: Action = context.target == .newWindow
+            ? .popup(floating: context.floating) : .navigate
+        guard web, context.target != .subframe, context.canPeek else { return fallback }
         // Shift has already been handled, or explicitly disabled. The automatic pinned
-        // link rule still applies independently of that preference.
+        // link rule still applies independently of that preference, including target=_blank.
+        // Links that do not Peek keep WebKit's popup configuration and opener semantics.
         switch Peek.route(sourceKind: context.kind, from: context.source, to: url,
                           modifiers: [], enabled: preferences.automaticPeek) {
-        case .navigate: return .navigate
+        case .navigate: return fallback
         case .peek: return .peek
-        case .newTab(let focus): return .tab(focus: focus)
+        case .newTab(let focus): return context.target == .newWindow ? fallback : .tab(focus: focus)
         }
     }
 
