@@ -4903,6 +4903,7 @@ private struct LibraryButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var filled: Bool { !archive.entries.isEmpty || !downloads.items.isEmpty || hasPreviewItems }
+    private var hoverActive: Bool { hovered || hover.isVisible }
 
     private var control: some View {
         // Never disabled any more: the panel has this profile's Spaces and its history in
@@ -4911,11 +4912,11 @@ private struct LibraryButton: View {
             hover.dismiss()
             Library.toggle(Library.shared.section, in: store)
         } label: {
-            LibraryDownloadGlyph(filled: filled, hovered: hovered)
+            LibraryDownloadGlyph(filled: filled, hovered: hoverActive)
                 // The bucket's artwork occupies the bottom of its 24pt canvas.
                 .offset(y: -4)
                 .frame(width: Look.footerControl, height: Look.footerControl)
-                .background(hovered ? Look.hovered : .clear, in: .rect(cornerRadius: 8))
+                .background(hoverActive ? Look.hovered : .clear, in: .rect(cornerRadius: 8))
                 .contentShape(.rect)
         }
             // A ring around the glyph while anything is downloading, so progress is visible
@@ -4934,7 +4935,7 @@ private struct LibraryButton: View {
                 hovered = $0
                 hover.setHovered($0 && preparePreview(), over: .button)
             }
-            .animation(reduceMotion ? nil : Look.quick, value: hovered)
+            .animation(reduceMotion ? nil : Look.quick, value: hoverActive)
             .onChange(of: downloads.items.map(\.id)) { refreshPreview(for: [.downloads, .media]) }
             .onChange(of: downloads.items.filter { $0.status == .done }.map(\.id)) {
                 refreshPreview(for: [.media])
