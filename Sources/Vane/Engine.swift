@@ -2143,7 +2143,13 @@ struct Stash {
     /// asked, so a background window’s `zoommtg:` link cannot put a sheet over whatever is
     /// being read in front. See ExternalApps.swift.
     @Published var externalApp: ExternalApps.Prompt?
-    @Published var findOpen = false
+    @Published var findOpen = false {
+        didSet {
+            if oldValue && !findOpen {
+                Find.session(for: self).clearHighlight(in: tabs.first { $0.id == current })
+            }
+        }
+    }
     @Published var suggestions: [Suggestion] = []
     /// -1 means "no suggestion highlighted" — Enter then uses what was typed.
     @Published var suggestionIndex = -1

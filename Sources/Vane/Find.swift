@@ -186,10 +186,16 @@ import WebKit
         return (total, at)
     }
 
-    /// Esc leaves no highlight behind: WebKit's find *is* a selection, so dropping the
-    /// selection drops the highlight with it.
+    /// Dismiss WebKit's find markers as well as its DOM selection. On newer WebKit,
+    /// clearing the selection alone leaves the active text-match marker painted.
     func clearHighlight(in tab: Tab?) {
-        tab?.web.evaluateJavaScript(
+        generation += 1
+        count = 0
+        index = 0
+        guard let web = tab?.existingWeb else { return }
+        let hideFindUI = NSSelectorFromString("_hideFindUI")
+        if web.responds(to: hideFindUI) { web.perform(hideFindUI) }
+        web.evaluateJavaScript(
             "if (window.getSelection) { window.getSelection().removeAllRanges(); }")
     }
 
@@ -204,7 +210,10 @@ import WebKit
         }
         let text = session.query
         if !store.findOpen { store.openFind() }
-        Task { await session.run(text, in: tab, forward: forward) }
+        Task {
+            guard store.findOpen else { return }
+            await session.run(text, in: tab, forward: forward)
+        }
     }
 
     // MARK: Offline check
@@ -360,8 +369,9 @@ private struct FindBarBody: View {
     private func search(forward: Bool, fresh: Bool = false) {
         let query = text
         Task {
+            guard store.findOpen else { return }
             await session.run(query, in: tab, forward: forward, fresh: fresh)
-            guard fresh else { return }
+            guard fresh, store.findOpen else { return }
             axAnnounce(Find.spoken(index: session.index, count: session.count, query: query))
         }
     }
@@ -369,7 +379,6 @@ private struct FindBarBody: View {
     /// Esc, and the × button: the bar goes, and so does the highlight it left on the page —
     /// and the keyboard goes back to the page the bar was searching. See `TabStore.focusPage`.
     private func close() {
-        session.clearHighlight(in: tab)
         store.findOpen = false
         store.focusPage()
     }
