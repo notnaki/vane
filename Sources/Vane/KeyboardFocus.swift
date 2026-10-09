@@ -13,6 +13,12 @@ import SwiftUI
         monitor = NSEvent.addLocalMonitorForEvents(
             matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] event in
+            // Shortcuts such as ⌘W must not reveal focus left behind by a click.
+            // Preserve the current visibility; explicit focus requests still show it.
+            if event.type == .keyDown,
+               !event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+                return event
+            }
             MainActor.assumeIsolated {
                 self?.setVisible(event.type == .keyDown)
             }
