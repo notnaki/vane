@@ -83,4 +83,20 @@ import XCTest
         XCTAssertEqual(find.count, 2)
         XCTAssertEqual(find.index, 1)
     }
+
+    func testClosingFindClearsSelectionInsideFrame() async throws {
+        let (store, tab, find) = try await fixture()
+        tab.web.loadHTMLString("<iframe srcdoc='<p>frame-needle</p>'></iframe>", baseURL: nil)
+        let selection = "document.querySelector('iframe').contentWindow.getSelection().toString()"
+        try await compatibilityWait {
+            try await tab.web.evaluateJavaScript(
+                "document.querySelector('iframe')?.contentDocument?.body?.textContent") as? String == "frame-needle"
+        }
+        await find.run("frame-needle", in: tab, fresh: true)
+        let selected = try await tab.web.evaluateJavaScript(selection) as? String
+        XCTAssertEqual(selected, "frame-needle")
+        store.findOpen = false
+        let cleared = try await tab.web.evaluateJavaScript(selection) as? String
+        XCTAssertEqual(cleared, "", "Closing Find must clear the selected match in a child frame")
+    }
 }

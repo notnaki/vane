@@ -195,6 +195,14 @@ import WebKit
         guard let web = tab?.existingWeb else { return }
         let hideFindUI = NSSelectorFromString("_hideFindUI")
         if web.responds(to: hideFindUI) { web.perform(hideFindUI) }
+        // The selected match may belong to a cross-origin child frame. Clear it through
+        // WebKit's editor, since JavaScript in the main frame cannot reach that selection.
+        let edit = NSSelectorFromString("_executeEditCommand:argument:completion:")
+        if web.responds(to: edit) {
+            typealias EditCommand = @convention(c) (AnyObject, Selector, NSString, NSString, AnyObject?) -> Void
+            let execute = unsafeBitCast(web.method(for: edit), to: EditCommand.self)
+            execute(web, edit, "Unselect", "", nil)
+        }
         web.evaluateJavaScript(
             "if (window.getSelection) { window.getSelection().removeAllRanges(); }")
     }
