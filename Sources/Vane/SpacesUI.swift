@@ -339,8 +339,12 @@ private struct SpaceSlide: ViewModifier {
                 removal: .move(edge: forwards ? .leading : .trailing).combined(with: .opacity)))
             // A swipe has already carried the sections to where the new Space's preview was
             // standing; letting this run on top would slide the same content a second time.
-            .animation(reduceMotion || Motion.reduced || gesture.swiping ? nil : Look.spaceSlide,
-                       value: store.currentSpaceID)
+            // Keyboard/menu switches also get the Space exception after the outer policy.
+            .transaction(value: store.currentSpaceID) { transaction in
+                guard !reduceMotion, !Motion.spaceReduced, !gesture.swiping else { return }
+                transaction.disablesAnimations = false
+                transaction.animation = Look.spaceSlide
+            }
             .offset(x: gesture.drag)
     }
 }
@@ -810,14 +814,13 @@ extension TabStore {
 private struct SpaceSwipe: ViewModifier {
     let store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ObservedObject private var batterySaver = BatterySaver.shared
 
     func body(content: Content) -> some View {
         let monitor = store.spaceGesture.monitor
         content
             .onAppear { monitor.install(store) }
             .onDisappear { monitor.remove() }
-            .onChange(of: reduceMotion || batterySaver.isActive) { _, reduced in
+            .onChange(of: reduceMotion) { _, reduced in
                 if reduced { monitor.finishForReducedMotion() }
             }
     }
@@ -884,7 +887,7 @@ private struct SpaceSwipe: ViewModifier {
 
     func select(_ space: Space, in store: TabStore) {
         guard !store.isPrivate, !store.isLittle, !store.isParked else { return }
-        guard !Motion.reduced, store.window != nil else {
+        guard !Motion.spaceReduced, store.window != nil else {
             transition = UUID()
             pendingSelection = nil
             landing = false
@@ -918,7 +921,7 @@ private struct SpaceSwipe: ViewModifier {
             let previousDirection = store.spaceGesture.previewDirection
             // Keep the strip's presentation offset. Fade a changed destination at
             // that offset rather than remounting it offscreen or queuing old input.
-            guard let direction = withAnimation(Look.quick, { store.beginSpaceSelection(space) }),
+            guard let direction = Motion.space(Look.quick, { store.beginSpaceSelection(space) }),
                   let target = store.spaceGesture.neighbour else { return }
             // The endpoint is already assigned while its presentation is travelling.
             // Reassigning that endpoint creates a zero-length animation whose completion
@@ -1085,7 +1088,7 @@ private struct SpaceSwipe: ViewModifier {
         returning = false
         // Finish the preview's travel before swapping hosts, including across profiles.
         // Cached profile interfaces can be attached at rest without tearing down the page.
-        guard !Motion.reduced else {
+        guard !Motion.spaceReduced else {
             landing = false
             landingFrom = nil
             store.spaceDrag = 0
@@ -1099,7 +1102,7 @@ private struct SpaceSwipe: ViewModifier {
         landingFrom = from
         // Logical completion can leave a spring over a point short of its endpoint.
         // Keep the preview mounted through that tail so replacing it at rest cannot snap.
-        withAnimation(animation, completionCriteria: .removed) {
+        Motion.space(animation, completionCriteria: .removed) {
             // The prepared preview is authoritative: a clicked dot can skip a neighbour.
             store.spaceGesture.drag = -CGFloat(direction) * width
         } completion: { [weak store] in
@@ -1128,7 +1131,7 @@ private struct SpaceSwipe: ViewModifier {
     /// The plus is full: the form takes the sidebar, and the strip, which only banded,
     /// goes home underneath it. Nothing is made yet — Create Space is a button.
     private func create(_ store: TabStore) {
-        Motion.animate(Look.spaceSlide) {
+        Motion.space(Look.spaceSlide) {
             store.spacePull = 0
             store.creatingSpace = true
         }
@@ -1145,15 +1148,15 @@ private struct SpaceSwipe: ViewModifier {
         pendingSelection = nil
         landing = false
         landingFrom = nil
-        Motion.animate(Look.spaceSpring) { store.spacePull = 0 }
+        Motion.space(Look.spaceSpring) { store.spacePull = 0 }
         // Even a zero target can be in flight (or waiting for its mount delay).
-        guard !Motion.reduced else {
+        guard !Motion.spaceReduced else {
             store.spaceDrag = 0
             store.spaceSwiping = false
             return
         }
         returning = true
-        withAnimation(Look.spaceReturn) { store.spaceGesture.drag = 0 } completion: { [weak store] in
+        Motion.space(Look.spaceReturn) { store.spaceGesture.drag = 0 } completion: { [weak store] in
             guard self.transition == token else { return }
             self.returning = false
             guard let store else { return }

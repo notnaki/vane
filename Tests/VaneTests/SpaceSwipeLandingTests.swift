@@ -5,8 +5,21 @@ import XCTest
 
 @MainActor final class SpaceSwipeLandingTests: XCTestCase {
     func testCommittedSwipeSwitchesPageAndAddressPromptlyAfterRelease() async throws {
+        try await checkCommittedSwipe(saving: false)
+    }
+
+    func testBatterySaverKeepsCommittedSwipeAnimatedUntilThePreviewReachesRest() async throws {
+        try await checkCommittedSwipe(saving: true)
+    }
+
+    private func checkCommittedSwipe(saving: Bool) async throws {
         TestEnvironment.prepare()
-        try XCTSkipIf(Motion.reduced, "Focus timing requires the animated landing path")
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+                      "Focus timing requires the animated landing path")
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(saving ? .alwaysOn : .off)
+        defer { saver.setMode(previousMode) }
         let profile = UUID()
         let first = Space(name: "First", profileID: profile)
         let second = Space(name: "Second", profileID: profile)
@@ -38,7 +51,7 @@ import XCTest
         store.switchTo(space: first)
         store.palette = nil
         let position = LandingPosition()
-        window.contentView = NSHostingView(rootView: LandingStrip(store: store, position: position))
+        window.contentView = NSHostingView(rootView: LandingStrip(store: store, position: position).vaneMotionPolicy())
         var handoffOffset: CGFloat?
         let observation = store.$currentSpaceID.sink { id in
             if id == second.id { handoffOffset = position.offset }

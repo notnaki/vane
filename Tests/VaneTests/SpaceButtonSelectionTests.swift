@@ -21,6 +21,27 @@ import XCTest
         return (store, spaces)
     }
 
+    func testBatterySaverKeepsClickPreviewMountedBeforeSwitching() throws {
+        let (store, spaces) = fixture()
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+                      "This test exercises an animated click landing")
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(.alwaysOn)
+        let window = NSWindow()
+        store.window = window
+        defer {
+            store.spaceGesture.monitor.finishForReducedMotion()
+            store.window = nil
+            saver.setMode(previousMode)
+        }
+        store.spaceGesture.monitor.select(spaces[1], in: store)
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id,
+                       "Battery Saver must let the preview travel before changing Spaces")
+        XCTAssertTrue(store.spaceSwiping)
+        XCTAssertEqual(store.spaceGesture.neighbour?.id, spaces[1].id)
+    }
+
     func testClickPreviewsTheChosenSpaceWithoutSwitchingEarly() {
         let (store, spaces) = fixture()
         XCTAssertEqual(store.beginSpaceSelection(spaces[2]), 1)
