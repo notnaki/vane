@@ -530,7 +530,8 @@ struct TitleReveal: Equatable, Sendable {
     /// Where a suspended tab is parked, and the state it comes back with.
     private(set) var parkedURL: URL?
     private var parkedState: Data?
-    private var suppressHistoryOnce = false
+    private let navigationState = NavigationState()
+    @Published private(set) var displayingNavigationError = false
     private var tornDown = false
     /// Set when a page is being edited in the URL field, so KVO doesn't fight the user.
     var editing = false
@@ -724,7 +725,7 @@ struct TitleReveal: Equatable, Sendable {
                 MainActor.assumeIsolated {
                     // A suspended tab keeps the title it was parked with — the strip must
                     // not flicker back to "New Tab" the moment the page goes away.
-                    guard let self, !self.suspended else { return }
+                    guard let self, self.existingWeb === w, !self.suspended, !self.tornDown else { return }
                     let update = Files.restoredTitle(cached: self.title,
                                                      placeholderURL: self.titlePlaceholderURL,
                                                      page: w.title,
@@ -747,32 +748,33 @@ struct TitleReveal: Equatable, Sendable {
             },
             web.observe(\.isLoading, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
-                    guard !w.isLoading else { return }
-                    self?.scheduleTitleSettle(for: w)
+                    guard let self, self.existingWeb === w, !w.isLoading else { return }
+                    self.scheduleTitleSettle(for: w)
                 }
             },
             web.observe(\.url, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
-                    guard let self, !self.editing, !self.suspended else { return }
-                    self.address = w.url?.absoluteString ?? ""
+                    guard let self, self.existingWeb === w, !self.suspended, !self.tornDown else { return }
+                    if !self.editing { self.address = w.url?.absoluteString ?? "" }
+                    self.recordSameDocumentVisit(in: w)
                     self.extensions.sync()
                 }
             },
             web.observe(\.estimatedProgress, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
-                    guard let self, self.loading else { return }
+                    guard let self, self.existingWeb === w, !self.tornDown, self.loading else { return }
                     self.progress = max(self.progress, w.estimatedProgress)
                 }
             },
             web.observe(\.canGoBack, options: [.new]) { [weak self] w, _ in
-                MainActor.assumeIsolated { self?.canGoBack = w.canGoBack }
+                MainActor.assumeIsolated { if self?.existingWeb === w { self?.canGoBack = w.canGoBack } }
             },
             web.observe(\.canGoForward, options: [.new]) { [weak self] w, _ in
-                MainActor.assumeIsolated { self?.canGoForward = w.canGoForward }
+                MainActor.assumeIsolated { if self?.existingWeb === w { self?.canGoForward = w.canGoForward } }
             },
             web.observe(\.hasOnlySecureContent, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
-                    guard let self, !self.suspended else { return }
+                    guard let self, self.existingWeb === w, !self.suspended, !self.tornDown else { return }
                     self.secureContent = w.hasOnlySecureContent
                 }
             },
@@ -780,17 +782,18 @@ struct TitleReveal: Equatable, Sendable {
             // WebKit hands the trust back, and the pill says so for as long as it is shown.
             web.observe(\.serverTrust, options: [.new]) { [weak self] w, _ in
                 MainActor.assumeIsolated {
-                    guard let self, !self.suspended else { return }
+                    guard let self, self.existingWeb === w, !self.suspended, !self.tornDown else { return }
                     guard let trust = w.serverTrust else { self.certificateTrusted = true; return }
                     // Off the main actor, and usually straight out of the session's memory
                     // — see `CertificateTrust.evaluate`. `serverTrust` still being this one
                     // on the way back is the ordering guard: if it has moved on, a later
                     // evaluation is in flight for the page the pill is actually showing.
+                    let document = self.readingDocumentGeneration
+                    let host = w.url?.host ?? "", port = w.url?.port ?? 443
                     Task { [weak self, weak w] in
-                        let ok = await CertificateTrust.evaluate(
-                            trust, host: w?.url?.host ?? "", port: w?.url?.port ?? 443).ok
+                        let ok = await CertificateTrust.evaluate(trust, host: host, port: port).ok
                         guard let self, let w, self.existingWeb === w, !self.suspended,
-                              w.serverTrust === trust else { return }
+                              self.readingDocumentGeneration == document, w.serverTrust === trust else { return }
                         self.certificateTrusted = ok
                     }
                 }
@@ -805,7 +808,7 @@ struct TitleReveal: Equatable, Sendable {
     /// title one short turn to arrive; if it remains a host label, it is now authoritative
     /// rather than a provisional value. This also bounds a titleless page's placeholder.
     private func scheduleTitleSettle(for observedWeb: WKWebView) {
-        guard web === observedWeb, titlePlaceholderURL != nil, !observedWeb.isLoading else { return }
+        guard existingWeb === observedWeb, titlePlaceholderURL != nil, !observedWeb.isLoading else { return }
         titleSettleTask?.cancel()
         titleSettleTask = Task { @MainActor [weak self, weak observedWeb] in
             try? await Task.sleep(for: .milliseconds(150))
@@ -837,7 +840,9 @@ struct TitleReveal: Equatable, Sendable {
     /// The write is deliberately not tied to the tab's life: a tab closed inside the window
     /// still leaves the title it earned behind.
     private func scheduleRetitle(_ url: URL, title: String) {
-        guard !isPrivate, TidyTitles.realTitle(title, at: url) else { return }
+        guard !isPrivate, !displayingNavigationError,
+              (navigationState.simulated == nil || navigationState.active !== navigationState.simulated),
+              TidyTitles.realTitle(title, at: url) else { return }
         retitleTask?.cancel()
         let store = history
         retitleTask = Task { @MainActor [weak self] in
@@ -948,6 +953,8 @@ struct TitleReveal: Equatable, Sendable {
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
+        navigationState.invalidate()
+        loading = false
         readingDocumentGeneration = UUID()
         Reader.forget(tab: self)
         passwordStep = nil
@@ -1350,7 +1357,22 @@ struct TitleReveal: Equatable, Sendable {
                                         selected: accountHint.flatMap { accounts.firstIndex(of: $0) } ?? 0)
     }
 
+    private func ownsNavigation(_ navigation: WKNavigation?, in w: WKWebView) -> Bool {
+        w === existingWeb && !tornDown && !suspended && navigationState.accepts(navigation)
+    }
+
+    private func recordSameDocumentVisit(in w: WKWebView) {
+        guard !loading, !w.isLoading, !displayingNavigationError,
+              navigationState.lastHistoryURL != nil, let url = w.url,
+              w.backForwardList.currentItem?.url == url,
+              navigationState.lastHistoryURL != url else { return }
+        navigationState.lastHistoryURL = url
+        bookmarked = history.isBookmarked(url)
+        if !isPrivate { history.record(url, title: w.title ?? "") }
+    }
+
     func allowCertificateNavigation(to url: URL?) {
+        navigationState.cancelPrompt()
         CertificateTrust.navigationStarted(in: self)
         // WebKit may cancel the previous navigation after this policy answer and
         // before starting the new one. That old callback must not clear this target.
@@ -1375,6 +1397,9 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        guard w === existingWeb, !tornDown, !suspended else { return }
+        navigationState.begin(navigation)
+        retitleTask?.cancel()
         if w === existingWeb { readingDocumentGeneration = UUID(); Reader.forget(tab: self) }
         if w === existingWeb { SiteBoosts.beginNavigation(tab: self) }
         if w === existingWeb {
@@ -1397,19 +1422,23 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard ownsNavigation(navigation, in: w) else { return }
+        navigationState.finished = true
         finishCertificateNavigation(navigation, in: w)
         loading = false
         show(error, in: w)
     }
 
     func webView(_ w: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard ownsNavigation(navigation, in: w) else { return }
+        navigationState.finished = true
         finishCertificateNavigation(navigation, in: w)
         loading = false
         show(error, in: w)
     }
 
     func webView(_ w: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
-        guard w === existingWeb else { return }
+        guard ownsNavigation(navigation, in: w) else { return }
         certificateNavigation = navigation
         certificateDestinationURL = w.url
     }
@@ -1417,6 +1446,7 @@ struct TitleReveal: Equatable, Sendable {
     /// loadSimulatedRequest, not loadHTMLString: it leaves the failed url in the address bar
     /// and in `location`, so the page's own Try Again button retries the right thing.
     func show(_ error: Error, in w: WKWebView) {
+        guard w === existingWeb, !tornDown, !suspended else { return }
         guard ErrorPage.shouldShow(error) else {
             // Nothing to draw and nothing coming: the navigation was cancelled — by a
             // download, by a policy decision — and a Peek opened for it would sit there as
@@ -1431,15 +1461,12 @@ struct TitleReveal: Equatable, Sendable {
         // https-only interstitial, which offers a way through; "the secure connection
         // failed" offers none.
         if let http = HTTPSOnly.downgradeOffer(after: error, url: failed, profileID: profileID) {
-            suppressHistoryOnce = true
-            w.loadSimulatedRequest(URLRequest(url: http),
+            navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: http),
                                    responseHTML: HTTPSOnly.interstitial(for: http))
             return
         }
-        // The simulated load reports success, so without this the failed url lands in
-        // history. ponytail: consumed by the next didFinish, which is always this one.
-        suppressHistoryOnce = true
-        w.loadSimulatedRequest(URLRequest(url: failed),
+        // Exclude this exact simulated navigation, even if another load replaces it.
+        navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: failed),
                                responseHTML: ErrorPage.html(for: error, url: failed))
     }
 
@@ -1473,6 +1500,17 @@ struct TitleReveal: Equatable, Sendable {
     /// redirect applies the wrong site's level) and didFinish is too late (the page has
     /// already painted at the old zoom, which reads as a visible reflow bug).
     func webView(_ w: WKWebView, didCommit navigation: WKNavigation!) {
+        guard ownsNavigation(navigation, in: w) else { return }
+        if let item = w.backForwardList.currentItem {
+            if navigationState.simulated === navigation {
+                navigationState.simulatedItems.add(item)
+            } else if !navigationState.restoringHistory || navigationState.receivedResponse {
+                // Reload reuses the list item. A real response replaces its error document.
+                navigationState.simulatedItems.remove(item)
+            }
+        }
+        displayingNavigationError = navigationState.simulated === navigation
+            || w.backForwardList.currentItem.map { navigationState.simulatedItems.contains($0) } == true
         if w === existingWeb {
             Reader.navigationCommitted(self)
             FileUploads.cancel(tabID: id)
@@ -1491,6 +1529,8 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, didFinish navigation: WKNavigation!) {
+        guard ownsNavigation(navigation, in: w) else { return }
+        navigationState.finished = true
         finishCertificateNavigation(navigation, in: w)
         progress = 1
         loading = false
@@ -1499,18 +1539,19 @@ struct TitleReveal: Equatable, Sendable {
         favicons.load(for: self)
         guard let url = w.url else { return }
         bookmarked = history.isBookmarked(url)
+        let document = readingDocumentGeneration
         Task { [weak self, weak w] in
-            guard let self, let w, self.existingWeb === w, w.url == url else { return }
+            guard let self, let w, self.existingWeb === w, w.url == url,
+                  self.readingDocumentGeneration == document else { return }
             Trace.note("reader probe")
             let available = await Reader.isAvailable(in: w)
-            guard self.existingWeb === w, w.url == url else { return }
+            guard self.existingWeb === w, w.url == url, self.readingDocumentGeneration == document else { return }
             self.readerAvailable = available
             Trace.note("reader probe answered")
         }
         TabAudio.reapply(self)         // no-op unless this tab is muted
-        if suppressHistoryOnce {
-            suppressHistoryOnce = false
-        } else if !isPrivate {
+        navigationState.lastHistoryURL = displayingNavigationError ? nil : url
+        if !displayingNavigationError, !isPrivate {
             Trace.note("history")
             history.record(url, title: w.title ?? "")
         }
@@ -1523,6 +1564,22 @@ struct TitleReveal: Equatable, Sendable {
     /// scheme from here — WebKit does not let the delegate rewrite the request.
     func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        guard w === existingWeb, !tornDown, !suspended else { decisionHandler(.cancel); return }
+        if NavigationState.needsResubmissionConsent(navigationAction) {
+            Task { @MainActor [weak self, weak w] in
+                guard let self, let w,
+                      await self.navigationState.confirmResubmission(tab: self, web: w) else {
+                    decisionHandler(.cancel); return
+                }
+                self.decideNavigationPolicy(w, action: navigationAction, decisionHandler: decisionHandler)
+            }
+            return
+        }
+        decideNavigationPolicy(w, action: navigationAction, decisionHandler: decisionHandler)
+    }
+
+    private func decideNavigationPolicy(_ w: WKWebView, action navigationAction: WKNavigationAction,
+                                       decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         // Vane's own scheme, before anything else: `vane://oauth/github` is where GitHub
         // sends the answer to a live folder's sign-in, and this is the only place in the
         // system that ever reads one. Cancelled unconditionally, whatever the rest of the
@@ -1602,6 +1659,7 @@ struct TitleReveal: Equatable, Sendable {
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             if navigationAction.targetFrame?.isMainFrame == true {
+                navigationState.restoringHistory = navigationAction.navigationType == .backForward
                 allowCertificateNavigation(to: navigationAction.request.url)
             }
             decisionHandler(.allow)
@@ -1610,8 +1668,7 @@ struct TitleReveal: Equatable, Sendable {
             w.load(HTTPSOnly.request(to))          // a shorter leash than the 60s default
         case .block(let at):
             decisionHandler(.cancel)
-            suppressHistoryOnce = true
-            w.loadSimulatedRequest(URLRequest(url: at),
+            navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: at),
                                    responseHTML: HTTPSOnly.interstitial(for: at))
         case .confirm(let at):
             decisionHandler(.cancel)
@@ -1626,6 +1683,8 @@ struct TitleReveal: Equatable, Sendable {
     /// Content-Disposition: attachment link simply navigated and rendered nothing.
     func webView(_ w: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
+        guard w === existingWeb, !tornDown, !suspended else { decisionHandler(.cancel); return }
+        if navigationResponse.isForMainFrame { navigationState.receivedResponse = true }
         let http = navigationResponse.response as? HTTPURLResponse
         let disposition = (http?.value(forHTTPHeaderField: "Content-Disposition") ?? "").lowercased()
         // The server asked for a save, or WebKit has no way to display it.
@@ -1634,12 +1693,14 @@ struct TitleReveal: Equatable, Sendable {
     }
 
     func webView(_ w: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        guard w === existingWeb, !tornDown, !suspended else { Task { _ = await download.cancel() }; return }
         TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
         Downloads.manager(for: profileID).attach(download, from: w)
         Peek.dismissIfBlank(self)      // a Peek opened for a download has no page to show
     }
 
     func webView(_ w: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        guard w === existingWeb, !tornDown, !suspended else { Task { _ = await download.cancel() }; return }
         TidyDownloads.remember(download, pageTitle: w.title)   // the page title only exists here
         Downloads.manager(for: profileID).attach(download, from: w)
         Peek.dismissIfBlank(self)
@@ -1804,7 +1865,15 @@ struct TitleReveal: Equatable, Sendable {
 
     func reload()     { if easelSession == nil { existingWeb?.reload() } }
     func hardReload() { if easelSession == nil { existingWeb?.reloadFromOrigin() } }
-    func stop()       { existingWeb?.stopLoading(); loading = false }
+    func stop() {
+        navigationState.invalidate()
+        readingDocumentGeneration = UUID()
+        certificateDestinationURL = nil
+        certificateNavigation = nil
+        CertificateTrust.navigationStarted(in: self)
+        existingWeb?.stopLoading()
+        loading = false
+    }
 
     /// ⌥⌘U. ponytail: WebKit has no view-source: handler, so this is the page's own HTML
     /// in a <pre>. No syntax highlighting — that is what the inspector is for.
@@ -1836,6 +1905,7 @@ struct TitleReveal: Equatable, Sendable {
     /// `window.close()` that did nothing.
     func webView(_ w: WKWebView, createWebViewWith cfg: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        guard w === existingWeb, !tornDown, !suspended else { return nil }
         // `window.open('zoommtg:…')`. Belt and braces around the same test in
         // `decidePolicyFor` — a popup opened with no url and navigated afterwards arrives
         // here first — and a new tab for a scheme no tab can load is worse than no tab.
@@ -1852,7 +1922,10 @@ struct TitleReveal: Equatable, Sendable {
     /// arrives for a popup and for nothing else. Arc dismisses it, and so does this: an
     /// OAuth popup that has handed its credential back and closed itself must not be left
     /// sitting in the sidebar for the user to tidy up.
-    func webViewDidClose(_ w: WKWebView) { onClose?() }
+    func webViewDidClose(_ w: WKWebView) {
+        guard w === existingWeb, !tornDown, !suspended else { return }
+        onClose?()
+    }
 }
 
 /// One Space's tabs, kept alive while the window is showing a different one. Arc does not

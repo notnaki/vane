@@ -739,6 +739,9 @@ For site-permission lifecycle fixtures and a fake display-capture check, see
 For download interruption, resume, destination and process-restart fixtures, see
 [Download reliability on macOS 27](docs/DOWNLOAD-RELIABILITY.md).
 
+For navigation identity, history, cancellation, form resubmission and local WebKit
+fixtures, see [Navigation correctness on macOS 27](docs/NAVIGATION-RELIABILITY.md).
+
 `swift test` covers search typing and cancellation, link gestures and previews,
 Space switching and deletion, tab ordering, Battery Saver, media permission popups and
 grant lifetimes, requesting-frame ownership and synthetic capture revocation, Easels, page capture,
