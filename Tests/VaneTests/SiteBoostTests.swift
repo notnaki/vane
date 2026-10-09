@@ -185,8 +185,15 @@ import XCTest
     func testCancelledProvisionalNavigationKeepsLiveControls() async throws {
         let tab = try await page()
         let original = try XCTUnwrap(SiteBoosts.document(for: tab))
-        tab.webView(tab.web, didStartProvisionalNavigation: nil)
-        tab.webView(tab.web, didFailProvisionalNavigation: nil, withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+        let pending = try NavigationHTTPFixture()
+        defer { pending.stop() }
+        pending.heldPaths.insert("/held")
+        try await compatibilityWait { pending.port != nil }
+        let generation = tab.readingDocumentGeneration
+        tab.go(try pending.url("/held"))
+        try await compatibilityWait { tab.loading && tab.readingDocumentGeneration != generation }
+        tab.stop()
+        try await compatibilityWait { !tab.web.isLoading }
         XCTAssertTrue(SiteBoosts.document(for: tab) === original)
         var boost = SiteBoost(); boost.textColor = "#123456"; boost.scriptEnabled = true; boost.script = "window.afterCancel = 1;"
         SiteBoosts.set(boost, origin: "https://boost.test", tab: tab)
