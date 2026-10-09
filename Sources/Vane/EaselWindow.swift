@@ -912,10 +912,65 @@ private struct EaselItemEditor: View {
 struct EaselsPane: View {
     @EnvironmentObject private var store: TabStore
     @ObservedObject var repository: EaselStore
+    var body: some View {
+        EaselLibraryContent(
+            entries: repository.boards.map {
+                EaselLibraryEntry(profileID: repository.profileID, profileName: "", board: $0)
+            },
+            failures: repository.error.map {
+                [GlobalEaselLibrary.RepositoryFailure(profileID: repository.profileID, profileName: "", message: $0)]
+            } ?? [],
+            creationRepository: repository,
+            showProfiles: false,
+            open: { store.openEasel($0.board.id) },
+            delete: { try repository.delete($0.board.id) },
+            retry: { _ in repository.reload() }
+        )
+    }
+}
+
+/// Every saved profile contributes boards, while new boards belong to this window.
+struct GlobalEaselsPane: View {
+    @EnvironmentObject private var store: TabStore
+    @StateObject private var collection = GlobalEaselLibrary()
+
+    var body: some View {
+        EaselLibraryContent(
+            entries: collection.entries,
+            failures: collection.failures,
+            creationRepository: EaselStore.shared(profileID: store.profileID, directory: Store.directory),
+            showProfiles: true,
+            open: open,
+            delete: { try collection.delete($0) },
+            retry: { collection.retry($0) }
+        )
+    }
+
+    private func open(_ entry: EaselLibraryEntry) {
+        guard let profile = ProfileManager.shared.profiles.first(where: { $0.id == entry.profileID }),
+              (try? collection.board(for: entry)) != nil else { return }
+        let target = store.profileID == profile.id ? store : Windows.switchTo(profile: profile)
+        guard target.openEasel(entry.board.id) != nil else { return }
+        Library.close(store)
+        if target !== store { Library.close(target) }
+    }
+}
+
+private struct EaselLibraryContent: View {
+    @EnvironmentObject private var store: TabStore
+    let entries: [EaselLibraryEntry]
+    let failures: [GlobalEaselLibrary.RepositoryFailure]
+    let creationRepository: EaselStore
+    let showProfiles: Bool
+    let open: (EaselLibraryEntry) -> Void
+    let delete: (EaselLibraryEntry) throws -> Void
+    let retry: (UUID) -> Void
     @ObservedObject private var library = Library.shared
     @FocusState private var searchFocused: Bool
-    @State private var deleting: EaselBoard?
+    @State private var deleting: EaselLibraryEntry?
     @State private var deletionError: String?
+    private var matching: [EaselLibraryEntry] { entries.filter { $0.matches(library.query) } }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
@@ -926,13 +981,14 @@ struct EaselsPane: View {
                 .background(Look.controlFill, in: .rect(cornerRadius: 18))
             ScrollView {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                    ForEach(repository.boards.filter { Library.matches([$0.title], library.query) }) { board in
-                        EaselLibraryCard(board: board, open: { store.openEasel(board.id) },
-                                         delete: { deleting = board })
+                    ForEach(matching) { entry in
+                        EaselLibraryCard(board: entry.board, profileName: showProfiles ? entry.profileName : nil,
+                                         open: { open(entry) }, delete: { deleting = entry })
                     }
                 }.padding(4)
-                if repository.boards.isEmpty || !repository.boards.contains(where: { Library.matches([$0.title], library.query) }) {
-                    Text(repository.boards.isEmpty ? "Your Easels will appear here." : "No Easels match your search.")
+                    .animation(Motion.reduced ? nil : Look.list, value: matching.map(\.id))
+                if matching.isEmpty {
+                    Text(entries.isEmpty ? "Your Easels will appear here." : "No Easels match your search.")
                         .font(.callout).foregroundStyle(.secondary).padding(.top, 32)
                 }
             }
@@ -945,24 +1001,26 @@ struct EaselsPane: View {
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                     .accessibilityLabel("More Easel actions")
             }.buttonStyle(.plain).font(.callout).padding(.horizontal, 4).padding(.bottom, 8)
-            if let error = repository.error {
-                Text(error).font(.caption).foregroundStyle(.secondary)
-                Button("Retry") { repository.reload() }
+            ForEach(failures) { failure in
+                Text(showProfiles ? "\(failure.profileName): \(failure.message)" : failure.message)
+                    .font(.caption).foregroundStyle(.secondary)
+                Button(showProfiles ? "Retry \(failure.profileName)" : "Retry") { retry(failure.profileID) }
             }
         }.padding(.horizontal, 12).padding(.top, Look.libraryHead).frame(width: Look.easelLibraryList)
             .frame(maxHeight: .infinity, alignment: .top)
+            .vaneMotionPolicy()
             .onAppear { DispatchQueue.main.async { searchFocused = true } }
             .onChange(of: library.focusToken) { searchFocused = true }
             .alert("Delete this Easel?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
                 Button("Cancel", role: .cancel) { deleting = nil }
                 Button("Delete", role: .destructive) {
-                    guard let board = deleting else { return }
-                    do { try repository.delete(board.id) }
+                    guard let entry = deleting else { return }
+                    do { try Motion.list { try delete(entry) } }
                     catch { deletionError = error.localizedDescription }
                     deleting = nil
                 }
             } message: {
-                Text("“\(deleting?.title ?? "Untitled Easel")” and all its content will be deleted from this Mac. This cannot be undone.")
+                Text("“\(deleting?.board.title ?? "Untitled Easel")”\(showProfiles ? " in \(deleting?.profileName ?? "this profile")" : "") and all its content will be deleted from this Mac. This cannot be undone.")
             }
             .alert("Easel could not be deleted", isPresented: Binding(get: { deletionError != nil }, set: { if !$0 { deletionError = nil } })) {
                 Button("OK") { deletionError = nil }
@@ -978,13 +1036,14 @@ struct EaselsPane: View {
             guard try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0 <= EaselStore.fileLimit else {
                 throw EaselStore.Failure.tooLarge
             }
-            store.openEasel(try repository.importBoard(Data(contentsOf: url)).id)
+            store.openEasel(try creationRepository.importBoard(Data(contentsOf: url)).id)
         } catch { Toasts.show(error.localizedDescription) }
     }
 }
 
 private struct EaselLibraryCard: View {
     let board: EaselBoard
+    var profileName: String? = nil
     let open: () -> Void
     let delete: () -> Void
     @State private var hovering = false
@@ -997,9 +1056,12 @@ private struct EaselLibraryCard: View {
                 Spacer(minLength: 0)
                 Image(systemName: "scribble.variable").font(.system(size: 22, weight: .bold)).foregroundStyle(.pink)
                 Text(board.title.isEmpty ? "Untitled Easel" : board.title)
-                    .font(.system(size: 19, weight: .bold)).lineLimit(4)
+                    .font(.system(size: 19, weight: .bold)).lineLimit(profileName == nil ? 4 : 3)
                     .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if let profileName {
+                    Text(profileName).font(.caption2).foregroundStyle(Look.inkSecondary).lineLimit(1)
+                }
             }.padding(14).frame(maxWidth: .infinity).frame(height: 158)
                 .background(Look.controlFill, in: .rect(cornerRadius: 15))
                 .overlay(RoundedRectangle(cornerRadius: 15).stroke(Look.inkQuiet.opacity(0.18), lineWidth: 1))

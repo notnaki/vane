@@ -155,6 +155,12 @@ lifts its contents without changing their shape; an empty one lifts its lid. Red
 Motion and Battery Saver keep these changes immediate. Click the bucket to open the full
 Library.
 
+Library's **Archived Tabs** section holds closed tabs you can restore. Browsing
+history remains available through **Archive → View History** or **⌘Y**. Regular
+windows share Library contents across all profiles and Spaces, including Easels,
+Boosts, Archived Tabs, and Reading Queue. Items keep their owning profile for
+opening, restoring, and other actions; profile labels distinguish matching items.
+
 Starting a download sends a small marker from the page into the Library bucket. The
 bucket briefly shows the file type's icon on arrival. Reduce Motion and Battery Saver
 show the icon immediately without the flight.

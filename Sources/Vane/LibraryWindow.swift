@@ -15,11 +15,10 @@ import UniformTypeIdentifiers
 
 // MARK: - Sections
 
-/// The rail's tiles, in Arc's own order, minus the sections Vane has no feature behind —
-/// Boosts remain outside the rail until implemented. `history` raises the existing
-/// searchable history window (⌘Y) and leaves the rail on its previous section.
+/// Library destinations. History remains a hover-preview destination and opens the
+/// searchable history window (⌘Y); it has no tile in the rail.
 enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
-    case media, downloads, readingQueue, easels, spaces, archived, history
+    case media, downloads, readingQueue, easels, boosts, spaces, archived, history
 
     var id: String { rawValue }
 
@@ -27,6 +26,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .readingQueue: "Reading Queue"
         case .easels:    "Easels"
+        case .boosts:    "Boosts"
         case .media:     "Media"
         case .archived:  "Archived Tabs"
         case .downloads: "Downloads"
@@ -40,6 +40,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .readingQueue: "text.book.closed"
         case .easels:    "scribble.variable"
+        case .boosts:    "paintbrush"
         case .media:     "photo.on.rectangle"
         // Not `archivebox`: that is the footer glyph that opens the Library, and a section
         // wearing the same symbol as the button that got you here reads as the same thing.
@@ -65,7 +66,11 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
 
     /// A private window is in no Space and owns no profile furniture, so the Spaces cards
     /// would have nothing to show and nothing they could safely move.
-    func available(private isPrivate: Bool) -> Bool { !(isPrivate && (self == .spaces || self == .easels || self == .readingQueue)) }
+    func available(private isPrivate: Bool) -> Bool { !(isPrivate && (self == .spaces || self == .easels || self == .boosts || self == .readingQueue)) }
+
+    static func railSections(private isPrivate: Bool) -> [Self] {
+        allCases.filter { $0 != .history && $0.available(private: isPrivate) }
+    }
 }
 
 // MARK: - State
@@ -76,7 +81,7 @@ enum LibrarySection: String, CaseIterable, Identifiable, Sendable {
 @MainActor final class Library: ObservableObject {
     static let shared = Library()
 
-    /// Never `.history`: that tile raises a window instead of changing the pane, so ⇧⌘L can
+    /// Never `.history`: that destination raises a window instead of changing the pane, so ⇧⌘L can
     /// never come back to a section that would raise it again.
     @Published private(set) var section: LibrarySection = .archived
     /// The pane's search field, live as it is typed. One field for whichever section is
@@ -675,11 +680,12 @@ struct LibraryPanel: View {
         case .media:     MediaPane(downloads: DownloadLibrary.library(for: store.profileID))
         case .downloads: DownloadsPane(downloads: DownloadLibrary.library(for: store.profileID))
         case .readingQueue where !store.isPrivate: ReadingQueueHost(origin: store)
-        case .easels where !store.isPrivate: EaselsPane(repository: EaselStore.shared(profileID: store.profileID, directory: Store.directory))
+        case .easels where !store.isPrivate: GlobalEaselsPane()
+        case .boosts where !store.isPrivate: BoostsPane()
         case .spaces where !store.isPrivate: SpacesPane()
         // History never becomes the section, and Spaces is not offered in a private
         // window — either way the archive is what a Library with nothing else shows.
-        default: ArchivedTabsPane(archive: Archive.shared(for: store.profileID))
+        default: ArchivedTabsPane(archives: ArchiveLibrary.library(for: store.profileID))
         }
     }
 }
@@ -691,7 +697,7 @@ private struct LibraryRail: View {
     @ObservedObject private var library = Library.shared
 
     private var sections: [LibrarySection] {
-        LibrarySection.allCases.filter { $0.available(private: store.isPrivate) }
+        LibrarySection.railSections(private: store.isPrivate)
     }
 
     var body: some View {
@@ -702,17 +708,19 @@ private struct LibraryRail: View {
             // drifts hundreds of points down a tall window, and the first thing in the
             // Library ends up in the middle of nowhere.
             Spacer().frame(height: Look.sectionGap)
-            VStack(spacing: Look.rowGap) {
-                ForEach(sections) { section in
-                    LibraryTile(section: section, selected: library.section == section) {
-                        Library.open(section, in: store)
-                        // History raises its own window, which announces itself when it
-                        // takes the keyboard; saying "History" here would claim a rail
-                        // selection that never happened.
-                        if section != .history { axAnnounce(section.title) }
+            ScrollView {
+                VStack(spacing: Look.rowGap) {
+                    ForEach(sections) { section in
+                        LibraryTile(section: section, selected: library.section == section) {
+                            Library.open(section, in: store)
+                            axAnnounce(section.title)
+                        }
                     }
                 }
             }
+            .scrollIndicators(.hidden)
+            .frame(maxHeight: CGFloat(sections.count) * Look.libraryTile
+                   + CGFloat(sections.count - 1) * Look.rowGap, alignment: .top)
             Spacer(minLength: 0)
             // Arc's way back out is a plain arrow in the corner the Library button was in —
             // to the point: the sidebar's footer row pads itself by `Look.inset` inside the
@@ -983,53 +991,49 @@ private struct LibraryColumn<Head: View, Body_: View>: View {
 
 private struct ArchivedTabsPane: View {
     @EnvironmentObject var store: TabStore
-    @ObservedObject var archive: Archive
+    @ObservedObject var archives: ArchiveLibrary
     @ObservedObject private var library = Library.shared
-    /// Cut into groups once per change rather than once per render: the grouping sorts the
-    /// whole archive and formats a date per group, and a pointer moving over a row must not
-    /// pay for that.
-    @State private var groups: [(title: String, items: [Archive.Entry])] = []
+
+    private var groups: [(title: String, items: [ArchiveLibrary.Entry])] {
+        Library.grouped(archives.entries.filter {
+            (!library.littleArcOnly || $0.entry.isLittleArc)
+                && Library.matches([$0.entry.title, $0.entry.url, $0.profile.name], library.query)
+        }, by: { $0.entry.at })
+    }
 
     var body: some View {
+        let groups = groups
         LibraryColumn {
             LibraryHead(section: .archived, filtering: library.littleArcOnly,
                         query: $library.query) {
                 Toggle("Little Vane only", isOn: $library.littleArcOnly)
                     .help("Only tabs archived from a Little Vane window")
             } actions: {
-                Button("Clear Archive…") { clear() }.disabled(archive.entries.isEmpty)
+                Button("Clear Archive…") { clear() }.disabled(archives.entries.isEmpty)
             }
         } content: {
             if groups.isEmpty {
-                LibraryEmpty(text: archive.entries.isEmpty
+                LibraryEmpty(text: archives.entries.isEmpty
                     ? "Nothing archived yet — a tab you close with \(Keybindings.binding(for: .closeTab).display) is kept here."
                     : "No archived tab matches this filter.")
             } else {
-                LibraryList(groups: groups, id: \Archive.Entry.id) { entry in
-                    ArchivedRow(entry: entry, archive: archive)
+                LibraryList(groups: groups, id: \ArchiveLibrary.Entry.id) { row in
+                    if let archive = archives.owner(of: row) {
+                        ArchivedRow(entry: row.entry, profile: row.profile, archive: archive)
+                    }
                 }
             }
         }
-        .onAppear { regroup() }
-        .onChange(of: archive.entries) { regroup() }
-        .onChange(of: library.query) { regroup() }
-        .onChange(of: library.littleArcOnly) { regroup() }
-    }
-
-    private func regroup() {
-        groups = Library.grouped(Library.filtered(archive.entries,
-                                                  query: library.query,
-                                                  littleArcOnly: library.littleArcOnly),
-                                 by: \.at)
     }
 
     /// Arc asks before emptying the archive, because there is no undo for it.
     private func clear() {
         guard confirm("Clear the archive?", "Clear",
-                      "\(archive.entries.count) archived tab\(archive.entries.count == 1 ? "" : "s") "
+                      "\(archives.entries.count) archived tab\(archives.entries.count == 1 ? "" : "s") "
+                        + (store.isPrivate ? "" : "across all profiles ")
                         + "will be forgotten. Open tabs and history are not affected.")
         else { return }
-        archive.clear()
+        Motion.list { archives.clear() }
         axAnnounce("Archive cleared.")
     }
 }
@@ -1039,6 +1043,7 @@ private struct ArchivedTabsPane: View {
 private struct ArchivedRow: View {
     @EnvironmentObject var store: TabStore
     let entry: Archive.Entry
+    let profile: Profile
     @ObservedObject var archive: Archive
 
     /// The address, as much of it as a 246pt column shows: host and path, the way Arc's
@@ -1046,7 +1051,8 @@ private struct ArchivedRow: View {
     /// *filtered* by, so they belong to the group header and the Filter chip, not to a
     /// second line that would push the address out.
     private var subtitle: String {
-        URL(string: entry.url).map(Library.label(for:)) ?? entry.url
+        let site = URL(string: entry.url).map(Library.label(for:)) ?? entry.url
+        return store.isPrivate ? site : "\(profile.name) · \(site)"
     }
 
     var body: some View {
@@ -1059,21 +1065,111 @@ private struct ArchivedRow: View {
             Button("Restore") { restore() }
             Button("Copy Link") { copyLink() }
             Divider()
-            Button("Remove from Archive") { archive.remove(entry.id) }
+            Button("Remove from Archive") { Motion.list { archive.remove(entry.id) } }
         } open: {
             restore()
         }
     }
 
     private func restore() {
-        store.restore(entry)
+        let target: TabStore
+        if store.isPrivate || store.profileID == profile.id { target = store }
+        else {
+            guard let saved = ProfileManager.shared.profiles.first(where: { $0.id == profile.id }) else { return }
+            target = Windows.switchTo(profile: saved)
+        }
+        target.restore(entry)
         Library.close(store)
+        if target !== store { Library.close(target) }
     }
 
     private func copyLink() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(entry.url, forType: .string)
         axAnnounce("Link copied.")
+    }
+}
+
+// MARK: - Boosts
+
+private struct BoostsPane: View {
+    @EnvironmentObject private var store: TabStore
+    @ObservedObject private var library = Library.shared
+    @ObservedObject private var changes = SiteChanges.shared
+    @ObservedObject private var profiles = ProfileManager.shared
+    @State private var deleting: BoostsLibrary.Entry?
+
+    private var entries: [BoostsLibrary.Entry] {
+        _ = changes.revision
+        return BoostsLibrary.entries(profiles: profiles.profiles)
+    }
+
+    var body: some View {
+        let entries = entries
+        let filtered = entries.filter { Library.matches([$0.origin, $0.profileName], library.query) }
+        LibraryColumn {
+            LibraryHead(section: .boosts, filtering: false, query: $library.query) {
+                EmptyView()
+            } actions: { EmptyView() }
+        } content: {
+            if filtered.isEmpty {
+                LibraryEmpty(text: entries.isEmpty
+                             ? "Your Boosts will appear here. Choose Boost This Site in Site Controls to create one."
+                             : "No Boosts match your search.")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filtered) { entry in
+                            if let url = URL(string: entry.origin) {
+                                LibraryRow(title: entry.origin,
+                                           subtitle: "\(entry.profileName) · \(entry.boost.enabled ? "Enabled" : "Disabled")",
+                                           spoken: "\(entry.profileName), \(entry.boost.enabled ? "Enabled" : "Disabled"), \(entry.origin)") {
+                                    SiteIcon(icon: store.favicons.icon(for: url), size: Look.libraryThumb)
+                                } actions: {
+                                    Button("Open Site") { open(entry) }
+                                    Button(entry.boost.enabled ? "Disable Boost" : "Enable Boost") { toggle(entry) }
+                                    Divider()
+                                    Button("Delete Boost…", role: .destructive) { deleting = entry }
+                                } open: { open(entry) }
+                                .help("\(entry.origin) · \(entry.profileName)")
+                                .transition(.opacity)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, Look.inset)
+                    .padding(.bottom, Look.cardInset)
+                }
+                .scrollContentBackground(.hidden)
+            }
+        }
+        .vaneMotionPolicy()
+        .alert("Delete this Boost?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Cancel", role: .cancel) { deleting = nil }
+            Button("Delete", role: .destructive) {
+                if let entry = deleting, profiles.profiles.contains(where: { $0.id == entry.profileID }) {
+                    Motion.list { SiteBoosts.set(SiteBoost(), origin: entry.origin, profile: entry.profileID) }
+                }
+                deleting = nil
+            }
+        } message: {
+            Text("The saved customizations for \(deleting?.origin ?? "this site") in \(deleting?.profileName ?? "this profile") will be removed.")
+        }
+    }
+
+    private func open(_ entry: BoostsLibrary.Entry) {
+        guard let url = URL(string: entry.origin),
+              let profile = profiles.profiles.first(where: { $0.id == entry.profileID }) else { return }
+        let target = store.profileID == profile.id ? store : Windows.switchTo(profile: profile)
+        target.newTab(url)
+        Library.close(store)
+        if target !== store { Library.close(target) }
+    }
+
+    private func toggle(_ entry: BoostsLibrary.Entry) {
+        guard profiles.profiles.contains(where: { $0.id == entry.profileID }),
+              var boost = SiteBoosts.records(profile: entry.profileID)[entry.origin] else { return }
+        boost.enabled.toggle()
+        Motion.list { SiteBoosts.set(boost, origin: entry.origin, profile: entry.profileID) }
     }
 }
 
@@ -2052,9 +2148,9 @@ extension Library {
         out += [
             ("every section has a symbol and a title",
              LibrarySection.allCases.allSatisfy { !$0.icon.isEmpty && !$0.title.isEmpty }),
-            ("the rail is in Arc's order, Media first and History last",
-             LibrarySection.allCases.map(\.rawValue)
-                == ["media", "downloads", "readingQueue", "easels", "spaces", "archived", "history"]),
+            ("the rail offers Boosts and Archive without a History shortcut",
+             LibrarySection.railSections(private: false).map(\.rawValue)
+                == ["media", "downloads", "readingQueue", "easels", "boosts", "spaces", "archived"]),
             ("every section's search field names what it is searching",
              LibrarySection.allCases.allSatisfy { $0.searchPrompt.hasPrefix("Search ") }),
             ("…and the archive's says Archive, which is what fits the column",
@@ -2063,11 +2159,11 @@ extension Library {
             ("only the two lists with a filter offer a Filter chip",
              LibrarySection.allCases.filter(\.filterable).map(\.rawValue)
                 == ["downloads", "readingQueue", "archived"]),
-            ("a private window is offered no saved boards or Spaces",
-             !LibrarySection.spaces.available(private: true) && !LibrarySection.easels.available(private: true) && !LibrarySection.readingQueue.available(private: true)
-                && LibrarySection.allCases.filter { $0.available(private: true) }.count == 4),
-            ("an ordinary window is offered every section",
-             LibrarySection.allCases.allSatisfy { $0.available(private: false) }),
+            ("a private window is offered no saved boards, Boosts, or Spaces",
+             !LibrarySection.spaces.available(private: true) && !LibrarySection.easels.available(private: true) && !LibrarySection.boosts.available(private: true) && !LibrarySection.readingQueue.available(private: true)
+                && LibrarySection.railSections(private: true).count == 3),
+            ("an ordinary window is offered every Library pane",
+             LibrarySection.railSections(private: false).count == LibrarySection.allCases.count - 1),
         ]
 
         // Media: which downloads are pictures.

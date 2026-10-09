@@ -26,7 +26,7 @@ original page; it does not add a history entry.
 ## Offline reading queue
 
 Choose **Page Actions → Save for Offline** or **View → Save for Offline** on a readable
-article. **Library → Reading Queue** holds this profile's saved copies, searches their
+article. **Library → Reading Queue** holds all profiles' saved copies, searches their
 article text as well as titles and links, and offers All, Unread, and Read filters. Open
 a saved copy without a connection, explicitly mark it read or unread, or remove it to
 reclaim storage. The queue shows its article count and storage usage. Opening does not
@@ -55,8 +55,9 @@ its board in Library. **File → Capture Page to Easel** (`⇧⌘E`) collects th
 webpage into the most recently used Easel in this Space, or the latest saved board, with
 its source link. Boards belong to the browser window's profile and save locally after
 each edit. Private windows cannot create boards or save captures. To move a Space to
-another profile, remove its Easel tabs first; their boards stay in the original
-profile's Library. Export/import a board to copy it to another profile.
+another profile, remove its Easel tabs first; their boards stay owned by the original
+profile and visible in the shared Library. Export/import a board to copy it to another
+profile.
 
 ### Tools and annotations
 
@@ -127,8 +128,12 @@ to content added later. A site's markup changes can require selecting an element
 iframes can be hidden as a whole, and shadow-root contents are not edited.
 
 Boosts save locally per profile and exact website origin (scheme, host, and port).
-Subdomains have separate Boosts. Private tabs keep their own temporary changes. **Code →
-JavaScript** offers an explicit **Enable JavaScript** switch and **Apply Script**
+Subdomains have separate Boosts. Private tabs keep their own temporary changes.
+**Library → Boosts** lists all profiles' saved Boosts, including disabled ones.
+Search by site address or profile, open a site, or use a row's menu to enable, disable,
+or delete its Boost. The section is hidden in private windows.
+
+**Code → JavaScript** offers an explicit **Enable JavaScript** switch and **Apply Script**
 button. Enabled scripts run once after each new document loads; editing code alone does
 not run it. Script errors appear in the editor. Disabling or resetting prevents future
 runs; reload the page to remove effects already made by a script. **Reset Boost**

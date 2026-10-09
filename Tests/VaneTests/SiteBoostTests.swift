@@ -159,6 +159,41 @@ import XCTest
         XCTAssertEqual(result4, "block")
     }
 
+    func testLibraryChangesUpdateOpenSitesOnlyInTheirRegularProfile() async throws {
+        let profile = UUID(), otherProfile = UUID()
+        defer { SiteBoosts.forget(profile: profile); SiteBoosts.forget(profile: otherProfile) }
+        let tab = try await page(isPrivate: false, profile: profile)
+        let other = try await page(isPrivate: false, profile: otherProfile)
+        let privateTab = try await page(profile: profile)
+        var boost = SiteBoost(); boost.textColor = "#123456"
+        for target in [tab, other, privateTab] { SiteBoosts.set(boost, origin: "https://boost.test", tab: target) }
+        try await compatibilityWait {
+            for target in [tab, other, privateTab] {
+                guard try await self.visual("getComputedStyle(document.getElementById('copy')).color", tab: target) as? String == "rgb(18, 52, 86)" else { return false }
+            }
+            return true
+        }
+
+        boost.enabled = false
+        SiteBoosts.set(boost, origin: "https://boost.test", profile: profile)
+        try await compatibilityWait {
+            try await self.visual("getComputedStyle(document.getElementById('copy')).color", tab: tab) as? String != "rgb(18, 52, 86)"
+        }
+        for target in [other, privateTab] {
+            let color = try await visual("getComputedStyle(document.getElementById('copy')).color", tab: target) as? String
+            XCTAssertEqual(color, "rgb(18, 52, 86)")
+        }
+        boost.enabled = true
+        SiteBoosts.set(boost, origin: "https://boost.test", profile: profile)
+        try await compatibilityWait {
+            try await self.visual("getComputedStyle(document.getElementById('copy')).color", tab: tab) as? String == "rgb(18, 52, 86)"
+        }
+        SiteBoosts.set(SiteBoost(), origin: "https://boost.test", profile: profile)
+        try await compatibilityWait {
+            try await self.visual("getComputedStyle(document.getElementById('copy')).color", tab: tab) as? String != "rgb(18, 52, 86)"
+        }
+    }
+
     func testScriptOptInErrorsAndOriginIsolation() async throws {
         let tab = try await page()
         var boost = SiteBoost(); boost.script = "window.boostCount = (window.boostCount || 0) + 1;"; boost.css = "body { background: red }"

@@ -18,9 +18,9 @@ separately as CSV. Backups exclude cookies, website storage/sign-ins, and extern
 extension code; see the full exclusions under Backup and restore below.
 
 Profiles separate Spaces, history, bookmarks, passwords, WebKit website stores, and
-extensions. Favourites are shared within a profile. Downloads and media intentionally
-appear together across regular profiles in Library; Reader preferences and
-content-filter sources are shared app settings.
+extensions. Favourites are shared within a profile. Downloads, media, Spaces, Easels,
+Boosts, archived tabs, and offline articles appear together across regular profiles
+in Library; Reader preferences and content-filter sources are shared app settings.
 
 Incognito uses a temporary identity of its own, with a glasses icon and a near-black
 theme. It inherits no saved profile's Spaces, history, passwords, or extensions, and its
@@ -180,7 +180,8 @@ when you lock, Vane replaces it with a heavily blurred, frozen backdrop and an u
 message; the page stops running and cannot receive input. Unlocks last until you relock,
 quit Vane, or the Mac locks, sleeps, or switches users. **Remove Lock…** requires fresh
 authentication. Locks protect access inside Vane; they do not encrypt saved tabs,
-history, or browser data, and history remains available in the Library.
+history, or browser data, and history remains available through **Archive → View
+History** or **⌘Y**.
 
 Locking parks pages and can discard volatile form/editor state. Save valuable work
 before locking; see [draft-protection limits](DRAFT-PROTECTION.md#privacy-and-limits).

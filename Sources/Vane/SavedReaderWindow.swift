@@ -31,7 +31,7 @@ enum SavedReaderNavigation {
     private static var sessions: [Key: SavedReaderSession] = [:]
     private static var opening = Set<Key>()
     static func show(articleID: UUID, repository: ReadingQueueStore, origin: TabStore) {
-        guard !origin.isPrivate, origin.profileID == repository.profileID, !repository.invalidated else { return }
+        guard !origin.isPrivate, !repository.invalidated else { return }
         let key = Key(profile: repository.profileID, article: articleID)
         if let session = sessions[key] { session.window.makeKeyAndOrderFront(nil); return }
         guard opening.insert(key).inserted else { return }
@@ -43,7 +43,7 @@ enum SavedReaderNavigation {
                 let directory = try await Task.detached(priority: .userInitiated) {
                     try SavedReaderPresentation.prepare(candidate: candidate, html: html)
                 }.value
-                guard !repository.invalidated, repository.articles.contains(where: { $0.id == articleID }) else {
+                guard !origin.isPrivate, !repository.invalidated, repository.articles.contains(where: { $0.id == articleID }) else {
                     try? FileManager.default.removeItem(at: directory); return
                 }
                 let session = SavedReaderSession(article: candidate.article, directory: directory, repository: repository, origin: origin)

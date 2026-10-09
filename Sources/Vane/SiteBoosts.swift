@@ -96,20 +96,34 @@ struct SiteBoost: Codable, Equatable, Sendable {
     }
 
     static func document(for tab: Tab) -> Document? { documents[tab.id] }
+    static func records(profile: UUID) -> [String: SiteBoost] { store.records(profile: profile) }
     static func value(origin: String, tab: Tab) -> SiteBoost {
         tab.isPrivate ? privateValues[tab.id]?[origin] ?? SiteBoost() : store.get(origin: origin, profile: tab.profileID)
     }
     static func set(_ boost: SiteBoost, origin: String, tab: Tab) {
         guard URL(string: origin).flatMap(Self.origin) == origin else { return }
         let boost = boost.sanitized
-        if tab.isPrivate {
-            if boost == SiteBoost() { privateValues[tab.id]?.removeValue(forKey: origin) }
-            else { privateValues[tab.id, default: [:]][origin] = boost }
-        } else { store.set(boost, origin: origin, profile: tab.profileID) }
+        if !tab.isPrivate {
+            set(boost, origin: origin, profile: tab.profileID)
+            return
+        }
+        if boost == SiteBoost() { privateValues[tab.id]?.removeValue(forKey: origin) }
+        else { privateValues[tab.id, default: [:]][origin] = boost }
         for doc in documents.values {
-            guard let other = doc.tab, doc.origin == origin,
-                  tab.isPrivate ? other === tab : (!other.isPrivate && other.profileID == tab.profileID) else { continue }
+            guard let other = doc.tab, doc.origin == origin, other === tab else { continue }
             apply(to: other, document: doc)
+        }
+        SiteChanges.shared.bump()
+    }
+
+    /// Library actions also work when the boosted site has no open tab.
+    static func set(_ boost: SiteBoost, origin: String, profile: UUID) {
+        guard URL(string: origin).flatMap(Self.origin) == origin else { return }
+        store.set(boost, origin: origin, profile: profile)
+        for doc in documents.values {
+            guard let tab = doc.tab, doc.origin == origin,
+                  !tab.isPrivate, tab.profileID == profile else { continue }
+            apply(to: tab, document: doc)
         }
         SiteChanges.shared.bump()
     }
