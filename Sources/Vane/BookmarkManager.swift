@@ -226,7 +226,7 @@ private struct BookmarkManagerView: View {
         }
         .background(.windowBackground)
         .onAppear { reload(); searchFocused = true }
-        .onChange(of: query) { clearResults() }
+        .onChange(of: query) { selection.removeAll(); clearResults() }
         .onChange(of: location) { selection.removeAll(); clearResults() }
         .task(id: request) {
             let asked = request

@@ -40,6 +40,8 @@ debounce, SQLite progress-handler cancellation, and a request identity check bef
 publishing results. The shared SQL implementation preserves literal LIKE escaping,
 folder rules, unrestricted result counts, and descending date order. Each profile
 has its own reader. In-memory private bookmarks retain their original connection.
+Query changes clear selection, as in History, so a cancelled intermediate search
+cannot restore an old selection and re-enable bulk actions on it.
 
 One hundred repeated notifications of an unchanged page title caused 100 SQLite
 row updates and 100 History refresh notifications. The newest visit is now updated

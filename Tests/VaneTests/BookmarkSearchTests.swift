@@ -70,6 +70,7 @@ import XCTest
     }
 
     func testPrivateSessionBookmarksRemainAvailableWithoutReadingSavedProfiles() async {
+        TestEnvironment.prepare()
         let store = Store(path: ":memory:")
         let folder = store.createBookmarkFolder(named: "Private")!
         XCTAssertEqual(store.addBookmarks([(URL(string: "https://private.invalid")!, "Private bookmark")],
