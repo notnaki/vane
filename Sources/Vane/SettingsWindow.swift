@@ -943,8 +943,9 @@ private struct MaxPane: View {
 
             SettingsCard {
                 SettingsRow("Instant Links") { Toggle("", isOn: $instant).labelsHidden() }
-                Footnote("Shift-Return uses your selected search engine. Google, DuckDuckGo and "
-                         + "Kagi can open a first result; other engines open their results page. "
+                Footnote("Shift-Return sends searches to DuckDuckGo to open the first result, "
+                         + "regardless of your selected search engine. If it cannot find a result, "
+                         + "it opens DuckDuckGo’s results page. Addresses and site searches keep their destinations. "
                          + "Never resolves in a private window or for anything that looks like an address.")
             }
         }
