@@ -2469,12 +2469,14 @@ private struct SpaceRow: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(.rect)
-            .onTapGesture(count: 2) {
-                if let space { store.renamingSpace = space.id }
-            }
             .onTapGesture {
                 if space != nil { store.togglePinnedSection() }
             }
+            // Match folder rows: rename observes the double click without delaying
+            // the single click that folds or unfolds the section.
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                if let space { store.renamingSpace = space.id }
+            })
             .vaneKeyboardAction(enabled: space != nil && store.renamingSpace != space?.id) {
                 store.togglePinnedSection()
             }
