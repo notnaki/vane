@@ -1,9 +1,8 @@
 import Foundation
 
-/// Shift+Return uses the selected search engine to open a first result where supported.
-/// Google and Kagi handle their own first-result navigation in the browsing tab.
-/// DuckDuckGo has a cookie-free HTML resolver; other engines open their normal results.
-/// Resolution never substitutes another provider, runs while typing, or runs privately.
+/// Shift+Return opens DuckDuckGo's first organic result, regardless of the selected engine.
+/// A cookie-free HTML resolver falls back to DuckDuckGo's results page on failure.
+/// Resolution never runs while typing or privately.
 /// Comma-separated input resolves several queries, one tab each.
 @MainActor enum InstantLinks {
 
@@ -22,7 +21,9 @@ import Foundation
     /// Bound background resolution before falling back to the ordinary results page.
     static let timeout: TimeInterval = 6
 
-    /// Only used when the user selected the built-in DuckDuckGo engine.
+    /// Instant Links has a fixed provider; ordinary Return still uses Search.current.
+    static let provider = Search.builtIn.first { $0.id == "duckduckgo" }!
+
     static let endpoint = "https://html.duckduckgo.com/html/?q="
 
     /// The endpoint tailors its markup to the agent and has served nothing at all to some.
@@ -60,35 +61,11 @@ import Foundation
 
     // MARK: - The gate
 
-    /// Gate background requests on the actual selected engine, plus the preference,
-    /// private-window boundary, and ordinary address-bar URL/bang checks.
-    static func shouldResolve(_ query: String, isPrivate: Bool = false,
-                              using engine: SearchEngine? = nil) -> Bool {
-        (engine ?? Search.current) == Search.builtIn.first { $0.id == "duckduckgo" }
-            && canSkipResults(query, isPrivate: isPrivate)
-    }
-
-    private static func canSkipResults(_ query: String, isPrivate: Bool) -> Bool {
+    /// Respect the preference, private-window boundary, and ordinary URL/bang checks.
+    static func shouldResolve(_ query: String, isPrivate: Bool = false) -> Bool {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard enabled, !isPrivate, !q.isEmpty else { return false }
         return Search.url(for: q) == Search.search(q)
-    }
-
-    /// Engine-native navigation preserves the profile's sign-in (needed by Kagi) and
-    /// leaves consent/challenge pages to the engine. Unknown engines keep normal search.
-    static func firstResultNavigation(for query: String, using engine: SearchEngine,
-                                      isPrivate: Bool = false) -> URL? {
-        guard canSkipResults(query, isPrivate: isPrivate),
-              Search.builtIn.contains(engine) else { return nil }
-        if engine.id == "kagi" {
-            // https://help.kagi.com/kagi/features/bangs.html#feeling-lucky
-            return Search.search("! " + query.trimmingCharacters(in: .whitespacesAndNewlines), using: engine)
-        }
-        guard engine.id == "google", let ordinary = Search.search(query, using: engine),
-              var components = URLComponents(url: ordinary, resolvingAgainstBaseURL: false) else { return nil }
-        // Google's own search form's "I'm Feeling Lucky" submit parameter.
-        components.queryItems = (components.queryItems ?? []) + [.init(name: "btnI", value: "1")]
-        return components.url
     }
 
     // MARK: - Extraction
@@ -179,38 +156,40 @@ import Foundation
     /// too-fast caller with `202` and a CAPTCHA page that parses to nothing anyway, and
     /// checking the code turns that into an obvious no rather than a mysterious one.
     static func topResult(for query: String, isPrivate: Bool = false,
-                          using engine: SearchEngine? = nil) async -> URL? {
-        guard shouldResolve(query, isPrivate: isPrivate, using: engine),
+                          using requestSession: URLSession? = nil) async -> URL? {
+        guard shouldResolve(query, isPrivate: isPrivate),
               let url = URL(string: endpoint + encode(query)) else { return nil }
-        guard let (data, response) = try? await session.data(from: url),
+        guard let (data, response) = try? await (requestSession ?? session).data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let html = String(data: data, encoding: .utf8) else { return nil }
         return extract(html)
     }
 
-    /// One url per query, in the order typed. A query that cannot be resolved falls back to
-    /// its own ordinary address-bar destination — the results page for a search, the site
-    /// itself for something that was a url all along — so a tab is never silently dropped.
+    /// One url per query, in the order typed. Eligible searches fall back to DuckDuckGo's
+    /// results page. Addresses and bangs keep their ordinary destinations, as do all
+    /// inputs when Instant Links is disabled or the window is private.
     ///
     /// Sequential, and that is not laziness for its own sake: resolving three queries in a
     /// TaskGroup was measured against the live endpoint and DuckDuckGo answered the burst
     /// with `202` and a CAPTCHA page, so two of the three fell back. One at a time, the same
     /// three all resolved. ponytail: ceiling is that a five-query input takes five round
     /// trips and may still trip the limiter — at which point the extra tabs open on their
-    /// results pages, which is exactly what pressing plain Return would have done.
-    static func targets(for input: String, isPrivate: Bool = false) async -> [URL] {
+    /// DuckDuckGo results pages.
+    static func targets(for input: String, isPrivate: Bool = false,
+                        using requestSession: URLSession? = nil) async -> [URL] {
         // Worked out up front: every query already has an answer before a single request
         // goes out, which is what makes "fall back" a one-liner instead of a code path.
-        let engine = Search.current
-        let planned = split(input).compactMap { q in Search.url(for: q).map { (q, $0) } }
-        guard enabled, !isPrivate else { return planned.map(\.1) }
+        let planned = split(input).compactMap { q -> (String, URL, Bool)? in
+            guard let ordinary = Search.url(for: q) else { return nil }
+            let resolve = shouldResolve(q, isPrivate: isPrivate)
+            let fallback = resolve ? (Search.search(q, using: provider) ?? ordinary) : ordinary
+            return (q, fallback, resolve)
+        }
         var out: [URL] = []
-        for (query, fallback) in planned {
-            if let native = firstResultNavigation(for: query, using: engine) {
-                out.append(native)
-            } else {
-                out.append(await topResult(for: query, using: engine) ?? fallback)
-            }
+        for (query, fallback, resolve) in planned {
+            let result = resolve ? await topResult(for: query, isPrivate: isPrivate,
+                                                  using: requestSession) : nil
+            out.append(result ?? fallback)
         }
         return out
     }

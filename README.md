@@ -78,6 +78,7 @@ It is not a guarantee of general website or extension compatibility.
 ## Start browsing
 
 - **⌘T** opens search for a new tab; **⌘L** opens the address bar.
+- **Shift+Return** uses Instant Links to open a DuckDuckGo first result, regardless of your selected search engine. [Details and exceptions](docs/BROWSING.md#search-and-history).
 - **⇧⌘T** reopens a closed tab; **⌘F** finds text on the page.
 - **⇧⌘L** opens Library; **⌘Y** opens History.
 - Click a Space button or swipe horizontally over the sidebar to switch Spaces.
