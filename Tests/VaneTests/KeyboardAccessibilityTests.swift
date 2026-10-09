@@ -124,8 +124,18 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
                       "Command-F must refocus a find field that is already open")
     }
 
-    func testPointerActivationHidesOutlineAndKeyboardActivationRestoresIt() async throws {
+    func testClosingClickedPinKeepsOutlineHiddenAndKeyboardActivationRestoresIt() async throws {
+        TestEnvironment.prepare()
         _ = NSApplication.shared
+        let store = TabStore(isPrivate: true, profileID: UUID())
+        store.newTab(URL(string: "about:blank"))
+        let tab = try XCTUnwrap(store.active)
+        store.move(tab.id, to: .pinned)
+        defer {
+            store.dropStashes()
+            SharedTabs.release(store.tabs)
+            TabStore.all.removeAll { $0 === store }
+        }
         var presses = 0
         let previousPolicy = NSApp.activationPolicy()
         NSApp.setActivationPolicy(.accessory)
@@ -134,7 +144,10 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = FirstMouseHostingView(rootView: SidebarRow(icon: "globe", title: "Example",
-                                                      selected: false) { presses += 1 }.accentColor(.blue)
+                                                      selected: false) {
+            presses += 1
+            store.current = tab.id
+        }.accentColor(.blue)
             .transaction { $0.disablesAnimations = true })
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 250, height: 150))
         host.frame = NSRect(x: 0, y: 80, width: 250, height: 50)
@@ -179,6 +192,16 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
             return count
         }
         XCTAssertEqual(try outlinePixels(), 0, "Mouse activation must not show the blue focus outline")
+        let close = key("w", code: 13, in: window)
+        NSApp.sendEvent(close)
+        store.closeOrArchive()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(store.current, "Command-W closes the pinned page")
+        XCTAssertTrue(tab.suspended)
+        XCTAssertEqual(tab.kind, .pinned, "Closing the page must keep its pin")
+        XCTAssertTrue(store.tabs.contains { $0 === tab })
+        XCTAssertEqual(try outlinePixels(), 0,
+                       "Closing a clicked pin must not bring back its blue focus outline")
         let space = try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: " ",
@@ -187,6 +210,11 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(presses, 2, "Keyboard activation remains available after a click")
         XCTAssertGreaterThan(try outlinePixels(), 50, "Keyboard input must restore the focus outline")
+        NSApp.sendEvent(close)
+        store.closeOrArchive()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertGreaterThan(try outlinePixels(), 50,
+                             "A shortcut must preserve an outline already shown by keyboard activation")
         try await clickRow()
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(presses, 3)
