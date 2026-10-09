@@ -599,10 +599,15 @@ struct TitleReveal: Equatable, Sendable {
     ///
     /// Everything else a tab has, this tab gets: `attach()` puts the delegates, the user
     /// agent, the developer settings and the KVO on it exactly as for any other page.
-    init(popup cfg: WKWebViewConfiguration, isPrivate: Bool, profileID: UUID) {
+    init(popup configuration: WKWebViewConfiguration, isPrivate: Bool, profileID: UUID) {
         self.id = UUID()
         self.isPrivate = isPrivate
         self.profileID = isPrivate ? Profile.incognito.id : profileID
+        let cfg = configuration.copy() as! WKWebViewConfiguration
+        // Popup preferences can be shared with the opener. Apply the current motion
+        // policy to a copy, preserving WebKit's related-page configuration.
+        cfg.preferences = configuration.preferences.copy() as! WKPreferences
+        PageRendering.configure(cfg.preferences)
         // The one thing that must *not* be shared. WebKit copies the configuration but not
         // its content controller — the popup arrives holding the opener's own object — and
         // two tabs on one controller is two bugs: `attach()` would throw on script message
@@ -1158,6 +1163,7 @@ struct TitleReveal: Equatable, Sendable {
                               blocking: Bool = true) -> WKWebViewConfiguration {
         let profileID = isPrivate ? Profile.incognito.id : profileID
         let cfg = WKWebViewConfiguration()
+        PageRendering.configure(cfg.preferences)
         // Persistent: cookies, logins, media keys — and one persistent store per profile, via
         // WKWebsiteDataStore(forIdentifier:). A private window gets a store that lives only as
         // long as the window does — that is the whole of private browsing.
