@@ -7,6 +7,9 @@ remains a separate visual introduction.
 
 ## User guides
 
+Read the [privacy policy](../PRIVACY.md) for data handling and network disclosures,
+or its [website version](https://notnaki.github.io/vane/privacy.html).
+
 | Guide | Find answers about |
 | --- | --- |
 | [Everyday browsing](BROWSING.md) | Tabs, folders, Spaces, shared windows, search, keyboard navigation, Library, downloads, and Picture in Picture. |
@@ -60,7 +63,7 @@ record decisions at the time of their work. Open checklist items there may be
 superseded by merged fixes and later evidence; use the readiness tracker and audits
 above for current boundaries.
 
-The public site keeps `index.html`, `docs.html`, `features.html`, `download.html`,
+The public site keeps `index.html`, `docs.html`, `features.html`, `download.html`, `privacy.html`,
 styles/scripts, and archived designs under `versions/`. These guides do not
 rearrange that site or replace its assets. Screenshots and evidence stay at their
 existing paths so links remain usable.

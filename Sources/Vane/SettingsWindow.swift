@@ -938,10 +938,9 @@ private struct MaxPane: View {
 
             SettingsCard {
                 SettingsRow("Instant Links") { Toggle("", isOn: $instant).labelsHidden() }
-                Footnote("Shift-Return on a search opens the top result directly instead of the "
-                         + "results page. The query goes to DuckDuckGo whichever engine you use, "
-                         + "because it is the only one that answers without JavaScript. Never in "
-                         + "a private window, and never for anything that looks like an address.")
+                Footnote("Shift-Return uses your selected search engine. Google, DuckDuckGo and "
+                         + "Kagi can open a first result; other engines open their results page. "
+                         + "Never resolves in a private window or for anything that looks like an address.")
             }
         }
     }

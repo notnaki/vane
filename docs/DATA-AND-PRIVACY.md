@@ -5,6 +5,9 @@
 This guide explains what is stored, how to move it, and what recovery can preserve.
 Nothing syncs between Macs.
 
+The [privacy policy](../PRIVACY.md) describes local storage, outgoing requests,
+optional services, retention, and the public contact for privacy questions.
+
 ## Profiles and private browsing
 
 Open **Settings → Profiles** to manage a profile. Use **+** to create one, the

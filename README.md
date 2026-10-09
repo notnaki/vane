@@ -7,6 +7,10 @@ reading tools, and browser controls around it.
 **Requires macOS 26 or later.** Vane is in active development. Read the
 [limitations](#limitations) before relying on it as your only browser.
 
+Read the [privacy policy](PRIVACY.md) for local storage, network requests,
+optional services, and data controls. It is also available on the
+[website](https://notnaki.github.io/vane/privacy.html).
+
 ## Download and install
 
 1. Open the [latest GitHub release](https://github.com/notnaki/vane/releases/latest)

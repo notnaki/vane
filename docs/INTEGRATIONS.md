@@ -165,8 +165,11 @@ use separate credential namespaces. **Remove Key** deletes the selected provider
 credential.
 
 Cloud AI handles pinned tab names, download names, and tab grouping. It sends titles,
-hostnames, and download naming metadata (with URL queries and fragments removed) to your
-chosen provider; it does not upload file contents. Private windows never use cloud AI.
+hostnames, and download naming metadata (including the source URL path, with query
+strings and fragments removed) to your chosen provider; it does not upload file contents.
+Titles, filenames, and paths can contain personal information. Private windows never
+use these cloud API features; assistant websites are separate and receive questions
+you send them, including in private windows. See the [privacy policy](../PRIVACY.md#ai-features).
 Page summaries continue to use Apple's on-device model. Cloud requests are bounded,
 cancellable, and fall back to ordinary title cleanup and grouping on errors or quotas.
 
