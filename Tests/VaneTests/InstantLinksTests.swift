@@ -162,7 +162,8 @@ private final class InstantResultProtocol: URLProtocol, @unchecked Sendable {
                 let disabledTargets = await InstantLinks.targets(for: "swift concurrency", using: session)
                 XCTAssertEqual(disabledTargets, [normal])
                 InstantLinks.enabled = true
-                for input in ["https://example.com/path", "localhost:8080", "!g swift docs", "?swift docs"] {
+                for input in ["https://example.com/path", "localhost:8080", "!g swift docs", "?swift docs",
+                              "!zzq swift docs", "swift docs !zzq"] {
                     XCTAssertFalse(InstantLinks.shouldResolve(input))
                     let targets = await InstantLinks.targets(for: input, using: session)
                     XCTAssertEqual(targets, [Search.url(for: input)!])

@@ -64,7 +64,7 @@ import Foundation
     /// Respect the preference, private-window boundary, and ordinary URL/bang checks.
     static func shouldResolve(_ query: String, isPrivate: Bool = false) -> Bool {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard enabled, !isPrivate, !q.isEmpty else { return false }
+        guard enabled, !isPrivate, !q.isEmpty, Bangs.unknown(q) == nil else { return false }
         return Search.url(for: q) == Search.search(q)
     }
 
