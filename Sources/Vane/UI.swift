@@ -401,21 +401,24 @@ struct BrowserWindow: View {
                 if store.libraryOpen {
                     LibraryPanel().frame(width: libraryWidth)
                 } else if store.sidebarShown {
-                    Sidebar().frame(width: sidebar.width)
+                    // The sidebar itself stays in the overlay, so docking an open
+                    // hover panel changes its geometry without replacing its contents.
+                    Color.clear.frame(width: sidebar.width)
                 }
                 WebCard()
                     .anchorPreference(key: DownloadFeedbackBounds.self, value: .bounds) { [.page: $0] }
             }
             .disabled(store.palette != nil)
             .accessibilityHidden(store.palette != nil)
+            edgeStrip
+            sidebarSurface
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
             // Not while the Library is up: the rail is not the sidebar, and is not dragged.
             if store.sidebarShown && !store.libraryOpen {
                 SidebarHandle().offset(x: sidebar.width - SidebarHandle.hitTestWidth / 2)
+                    .zIndex(1)
             }
-            edgeStrip
-            floatingSidebar
             // Last, so the search bar composites over the sidebar as well as the page.
             if let mode = store.palette {
                 PaletteView(mode: mode) { dismissPalette() }
@@ -453,9 +456,10 @@ struct BrowserWindow: View {
         // The page slides over as the panel takes its width, and back when it gives it up —
         // including when the Spaces section widens the panel to fit another card.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: libraryWidth)
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.sidebarShown)
+        .animation(reduceMotion || batterySaver.isActive ? nil : .easeOut(duration: 0.2),
+                   value: store.sidebarShown)
         .animation(reduceMotion || batterySaver.isActive ? nil
-                   : (peeking ? Look.floatingSidebarAppear : .easeOut(duration: 0.2)), value: peeking)
+                   : Look.floatingSidebarAnimation, value: peeking)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.palette == nil)
         // Arc hides the traffic lights along with the sidebar: a collapsed window is the
@@ -492,26 +496,32 @@ struct BrowserWindow: View {
         }
     }
 
-    @ViewBuilder private var floatingSidebar: some View {
-        // Never over the Library: the panel would cover the rail, and the traffic lights
-        // would follow the peeked panel's inset line off the rail's own row.
-        if !store.sidebarShown && peeking && !store.libraryOpen {
+    @ViewBuilder private var sidebarSurface: some View {
+        // One sidebar for both presentations. ⌘S while peeking keeps this view alive:
+        // only its inset and floating chrome settle away as the page makes room.
+        if (store.sidebarShown || peeking) && !store.libraryOpen {
+            let floating = !store.sidebarShown
             Sidebar()
                 .disabled(store.palette != nil)
                 .accessibilityHidden(store.palette != nil)
                 .frame(width: sidebar.width)
-                // The same near-opaque ground as the command bar: this one floats over
-                // the page, and a bare material over a white page is a white panel.
-                .background(Look.barFill, in: .rect(cornerRadius: Look.floatingSidebarRadius))
-                .background(Look.barMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
-                .hairline(radius: Look.floatingSidebarRadius)
-                .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
-                .padding(Look.cardGap)
+                .background {
+                    RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
+                        .fill(Look.barFill)
+                        .background(Look.barMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
+                        .hairline(radius: Look.floatingSidebarRadius)
+                        .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
+                        .opacity(floating ? 1 : 0)
+                        .allowsHitTesting(false)
+                }
+                .padding(floating ? Look.cardGap : 0)
                 .transition(.move(edge: .leading).combined(with: .opacity))
-                // A removed ZStack child otherwise falls behind the page immediately,
-                // hiding the slide-and-fade while it is still running.
+                // Above the page during edge reveal and dismissal; below the resize handle.
                 .zIndex(1)
-                .onHover { $0 ? peekTask?.cancel() : endPeek() }
+                .onHover { hovering in
+                    guard !store.sidebarShown else { return }
+                    hovering ? peekTask?.cancel() : endPeek()
+                }
         }
     }
 

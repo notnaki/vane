@@ -766,8 +766,8 @@ enum Look {
     /// has to stay alive for exactly as long as its own fade, and `Animation` will not say.
     static let appearDuration: Double = 0.15
     static let appear = Animation.easeOut(duration: appearDuration)
-    /// A quick edge reveal with a little spring as the floating sidebar settles.
-    static let floatingSidebarAppear = Animation.spring(duration: 0.18, bounce: 0.2)
+    /// Matching edge reveal and dismissal, with a little spring as the floating sidebar settles.
+    static let floatingSidebarAnimation = Animation.spring(duration: 0.18, bounce: 0.2)
     static let appearScale: CGFloat = 0.97
     /// The tab list changing shape: a row arriving, leaving, or moving between sections. A
     /// touch of spring, the way Arc's rows settle, but short enough that ⌘W ⌘W ⌘W never
