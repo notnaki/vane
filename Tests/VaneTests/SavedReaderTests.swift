@@ -70,7 +70,7 @@ import XCTest
         XCTAssertEqual(shown.active?.address, url.absoluteString)
         XCTAssertTrue(window.isVisible)
     }
-    func testActualSavedWindowRendersLocalImageAndClosesOnRemoval() async throws {
+    func testSavedWindowOpensFromAnotherProfileRendersLocalImageAndClosesOnRemoval() async throws {
         TestEnvironment.prepare(); NSApplication.shared.setActivationPolicy(.prohibited)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -81,7 +81,8 @@ import XCTest
         article.resources = [raster.resource]
         article.nodes.append(.init(e: "img", a: ["src": "images/" + raster.resource.name, "alt": "Offline image"]))
         try await repository.publish(.init(article: article, images: [raster.resource.name: raster.data]))
-        let origin = TabStore(profileID: article.profileID)
+        let origin = TabStore(profileID: UUID())
+        XCTAssertNotEqual(origin.profileID, repository.profileID)
         defer { origin.tabs.forEach { $0.tearDown() }; TabStore.all.removeAll { $0 === origin }; SavedReaderWindow.forget(profileID: article.profileID) }
         SavedReaderWindow.show(articleID: article.id, repository: repository, origin: origin)
         try await compatibilityWait { NSApp.windows.contains { $0.title == "Saved copy — \(article.title)" } }

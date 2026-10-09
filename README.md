@@ -183,6 +183,12 @@ A filled bucket lifts its contents without changing their shape; an empty one li
 Reduce Motion and Battery Saver keep these changes immediate. Click the bucket to
 open the full Library.
 
+Library's **Archived Tabs** section holds closed tabs you can restore. Browsing
+history remains available through **Archive → View History** or **⌘Y**. Regular
+windows share Library contents across all profiles and Spaces, including Easels,
+Boosts, Archived Tabs, and Reading Queue. Items keep their owning profile for
+opening, restoring, and other actions; profile labels distinguish matching items.
+
 Starting a download sends a small marker from the page into the Library bucket.
 The bucket briefly shows the file type's icon on arrival. Reduce Motion and Battery
 Saver show the icon immediately without the flight.
@@ -198,7 +204,7 @@ open Library at its last-used section. Swipes over page content stay with the pa
 including back and forward navigation. Vertical scrolling still scrolls the Library.
 
 Choose **Page Actions → Save for Offline** or **View → Save for Offline** on a readable
-article. **Library → Reading Queue** holds this profile's saved copies, searches their
+article. **Library → Reading Queue** holds all profiles' saved copies, searches their
 article text as well as titles and links, and offers All, Unread, and Read filters.
 Open a saved copy without a connection, explicitly mark it read or unread, or remove
 it to reclaim storage. The queue shows its article count and storage usage. Opening
@@ -292,6 +298,9 @@ iframes can be hidden as a whole, and shadow-root contents are not edited.
 
 Boosts save locally per profile and exact website origin (scheme, host, and port).
 Subdomains have separate Boosts. Private tabs keep their own temporary changes.
+**Library → Boosts** lists all profiles' saved Boosts, including disabled ones.
+Search by site address or profile, open a site, or use a row's menu to enable, disable, or delete
+its Boost. The section is hidden in private windows.
 **Code → JavaScript** offers an explicit **Enable JavaScript** switch and **Apply
 Script** button. Enabled scripts run once after each new document loads; editing
 code alone does not run it. Script errors appear in the editor. Disabling or
@@ -474,7 +483,7 @@ into the most recently used Easel in this Space, or the latest saved board, with
 source link. Boards belong to the browser window's profile and save locally after
 each edit. Private windows cannot create boards or save captures.
 To move a Space to another profile, remove its Easel tabs first; their boards stay
-in the original profile's Library. Export/import a board to copy it to another profile.
+owned by the original profile and visible in the shared Library. Export/import a board to copy it to another profile.
 
 The centered toolbar follows Excalidraw's tool order: selection, rectangle, diamond,
 ellipse, arrow, line, drawing, text, and image. Click an object once to select it;
