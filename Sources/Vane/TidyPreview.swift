@@ -65,6 +65,7 @@ struct TidyPreviewSheet: View {
         .font(Look.text)
         .foregroundStyle(Look.inkPrimary)
         .background(Look.panelFill)
+        .background(TidyPreviewBackgroundDismissal { dismiss() }.allowsHitTesting(false))
         .vaneMotionPolicy()
     }
 
@@ -185,6 +186,56 @@ struct TidyPreviewSheet: View {
             TidyTabs.undo(store)
             rebuild()
         }), in: store)
+    }
+}
+
+/// Native sheets block their owner's controls. Consume the whole background click before
+/// dismissing on release, so the browser never receives the click that closed the preview.
+private struct TidyPreviewBackgroundDismissal: NSViewRepresentable {
+    let dismiss: () -> Void
+
+    func makeNSView(context: Context) -> BackgroundClickView { BackgroundClickView(dismiss: dismiss) }
+    func updateNSView(_ view: BackgroundClickView, context: Context) { view.dismiss = dismiss }
+    static func dismantleNSView(_ view: BackgroundClickView, coordinator: ()) {
+        MainActor.assumeIsolated { view.stop() }
+    }
+
+    final class BackgroundClickView: NSView {
+        var dismiss: () -> Void
+        private var monitor: Any?
+        private var pressedOutside = false
+
+        init(dismiss: @escaping () -> Void) {
+            self.dismiss = dismiss
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError("not in a nib") }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stop()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+                guard let self, let sheet = window, let parent = sheet.sheetParent,
+                      parent.attachedSheet === sheet, sheet.attachedSheet == nil else { return event }
+                let outside = event.window === parent
+                    && !sheet.frame.contains(parent.convertPoint(toScreen: event.locationInWindow))
+                if event.type == .leftMouseDown {
+                    pressedOutside = outside
+                    return outside ? nil : event
+                }
+                guard pressedOutside else { return event }
+                pressedOutside = false
+                if outside { dismiss() }
+                return nil
+            }
+        }
+
+        func stop() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            pressedOutside = false
+        }
     }
 }
 
