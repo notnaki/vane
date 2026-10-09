@@ -190,6 +190,14 @@ button. Hovering keeps the popup visible; sleeping tabs reload when selected. Th
 respects the existing idle-suspension preference and preserves an already shorter
 timeout.
 
+New tabs and popup pages request the display's refresh rate for web animations,
+including ProMotion displays, when Battery Saver and system Reduce Motion are off.
+When either is active at page creation, they keep WebKit's preference for updates near
+60 fps. This uses a guarded private WebKit feature and falls back to system defaults
+when unavailable; WebKit still controls OS power-saving and background throttling.
+Changing the policy affects newly created web views, including sleeping tabs when
+they resume, rather than rebuilding already-open pages and losing their state.
+
 UI transitions respect system Reduce Motion and Battery Saver. [Responsiveness
 evidence](UI-RESPONSIVENESS.md) records measured improvements and unproven frame/latency
 targets. [Lifecycle evidence](LIFECYCLE-EFFICIENCY.md) records ownership fixes and the
