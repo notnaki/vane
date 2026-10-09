@@ -43,8 +43,10 @@ import WebKit
       const sizes = new Map();
       let sizeObserver = null, sizeFrame = null;
       const post = (kind, extra = {}) => window.webkit.messageHandlers.vaneBoost.postMessage({kind, stamp, origin, token, ...extra});
+      const selectable = el => el && el.parentElement && el.getRootNode() === document &&
+        el !== document.body && document.body?.contains(el) && !el.hasAttribute('data-vane-zap');
       const selector = el => {
-        if (!el || !el.parentElement || el.getRootNode() !== document || el === document.body || el === document.documentElement || el.hasAttribute('data-vane-zap')) return null;
+        if (!selectable(el)) return null;
         if (el.id) {
           const id = '#' + CSS.escape(el.id);
           if (document.querySelectorAll(id).length === 1) return id;
@@ -109,7 +111,9 @@ import WebKit
       };
       const hover = event => {
         const el = elementAt(event);
-        selected = selector(el) ? el : null;
+        // Highlighting needs eligibility and geometry. Build and validate the unique
+        // selector only on pick, against the DOM as it exists at click time.
+        selected = selectable(el) ? el : null;
         if (!selected) { overlay.style.display = 'none'; return; }
         const r = selected.getBoundingClientRect();
         Object.assign(overlay.style, {display:'block', left:r.x+'px', top:r.y+'px', width:r.width+'px', height:r.height+'px'});

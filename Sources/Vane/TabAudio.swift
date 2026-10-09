@@ -45,8 +45,15 @@ import WebKit
     /// is running; the *decision* is made in Swift, where `check()` can drive it.
     static let script = """
     (function () {
-      var muted = false, last = null, pending = false;
-      function all() { return document.querySelectorAll('video,audio'); }
+      var muted = false, last = null, pending = false, observer = null, timer = null;
+      // Live membership covers SPA replacements without searching the whole DOM on
+      // every player event. Preserve document order for equally loud audio/video.
+      var videos = document.getElementsByTagName('video'), audios = document.getElementsByTagName('audio');
+      function all() {
+        return Array.from(videos).concat(Array.from(audios)).sort(function (a, b) {
+          return a === b ? 0 : (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+        });
+      }
       // The element the user would actually hear, if any. A page with a silent looping
       // background video and one real player must report the player.
       function loudest() {
@@ -78,13 +85,18 @@ import WebKit
         var list = all();
         for (var i = 0; i < list.length; i++) { list[i].muted = muted; }
         if (muted) { watch(); }
+        else {
+          if (observer) { observer.disconnect(); observer = null; }
+          if (timer !== null) { clearTimeout(timer); timer = null; }
+          pending = false;
+        }
         report();
         return muted;
       };
       // An SPA that swaps its player mid-session, or an ad break that inserts a fresh
       // <video>, has to inherit the mute — otherwise "mute this tab" lasts until the next
       // one. ponytail: coalesced to 4Hz, because this fires on every DOM write on a busy
-      // page and querySelectorAll is not free. Ceiling: a player inserted and started
+      // page and subtree discovery is not free. Ceiling: a player inserted and started
       // inside that window is audible for up to 250ms before it inherits the mute —
       // measured, and the reason page mute is the primary and this is the fallback.
       //
@@ -92,28 +104,29 @@ import WebKit
       // true. Until then a subtree observer on every frame of every page was watching for
       // an event nothing would have done anything about; the capture listeners above are
       // what does the reporting, and they cover a player built after load already.
-      var watching = false;
       function watch() {
-        if (watching) { return; }
-        watching = true;
+        if (observer) { return; }
         function containsMedia(node) {
           return node.nodeType === 1 &&
             (node.matches('video,audio') || !!node.querySelector('video,audio'));
         }
-        new MutationObserver(function (records) {
+        observer = new MutationObserver(function (records) {
+          // The queued pass reconciles live membership, including later mutations.
+          if (pending) { return; }
           // Ordinary prose/framework updates cannot change the media membership.
           if (!records.some(function (record) {
             return Array.from(record.addedNodes).some(containsMedia) ||
                    Array.from(record.removedNodes).some(containsMedia);
           })) { return; }
-          if (pending) { return; }
           pending = true;
-          setTimeout(function () {
+          timer = setTimeout(function () {
+            timer = null;
             pending = false;
             if (muted) { window.__vaneMute(true); }
             report();
           }, 250);
-        }).observe(document.documentElement, { childList: true, subtree: true });
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
       }
     })();
     """
