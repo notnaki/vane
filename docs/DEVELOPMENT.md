@@ -169,9 +169,14 @@ settings and extension metadata queries keep background rows parked.
 ```sh
 swift build
 python3 scripts/check-browser-smoke.py
-# Opt-in lifecycle measurement: 100 tab/window cycles, 200 parked session rows,
-# at least 30s settling and 60s idle sampling (logged-in desktop required).
+# Opt-in lifecycle measurement: 100 tab/window cycles, 25 suspend/resume cycles,
+# 200 parked rows, 30s settling before/after, and 60s idle sampling.
 python3 scripts/check-browser-smoke.py --lifecycle
+
+# Opt-in Find retention and preview timer diagnostics. Build before reserving a
+# quiet profiling window; the measurements then use the existing test executable.
+swift build --build-tests
+VANE_LIFECYCLE_MEASURE=1 swift test --skip-build --filter 'LifecycleEfficiencyTests|PreviewLoadingPerformanceTests'
 ```
 
 ### Public media and full selfcheck

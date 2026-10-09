@@ -38,15 +38,7 @@ import WebKit
 
     /// One session per window: two windows each searching for something different is the
     /// normal case, and a shared query would fight over the count.
-    private static var sessions: [ObjectIdentifier: Find] = [:]
-
-    static func session(for store: TabStore) -> Find {
-        let key = ObjectIdentifier(store)
-        if let hit = sessions[key] { return hit }
-        let fresh = Find()
-        sessions[key] = fresh
-        return fresh
-    }
+    static func session(for store: TabStore) -> Find { store.findSession }
 
     /// The session of the window the keys are going to.
     static var current: Find? { Windows.current.map(session(for:)) }

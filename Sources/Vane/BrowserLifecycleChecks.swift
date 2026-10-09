@@ -40,6 +40,7 @@ import WebKit
 
     static func run() async -> Never {
         var closedViews: [WeakObject] = [], closedWindows: [WeakObject] = [], closedStores: [WeakObject] = []
+        var closedTabs: [WeakObject] = [], closedFindSessions: [WeakObject] = []
         var pendingWindow: NSWindow?
         var pendingTab: Tab?
         do {
@@ -63,11 +64,12 @@ import WebKit
                 pendingTab = tab
                 try await load(tab)
                 _ = LittleArc.spaceMenu(floating)
+                _ = Find.session(for: floating)
                 floating.window?.close()
                 pendingTab = nil
                 pendingWindow = window
             }
-            try await Task.sleep(for: .seconds(3))
+            try await Task.sleep(for: .seconds(30))
             let baseline = try residentMB()
             print(String(format: "LIFECYCLE baseline RSS: %.2f MiB", baseline))
             fflush(stdout)
@@ -76,7 +78,19 @@ import WebKit
                 pendingTab = tab
                 host.show(tab.web)
                 try await load(tab)
+                closedTabs.append(WeakObject(tab))
                 closedViews.append(WeakObject(tab.existingWeb))
+                if cycle % 4 == 0 {
+                    let url = tab.currentURL
+                    tab.suspend()
+                    guard tab.existingWeb == nil, tab.suspended, tab.currentURL == url else {
+                        throw Failure(message: "suspension lost its parked URL or retained its page")
+                    }
+                    tab.resume()
+                    host.show(tab.web)
+                    try await load(tab)
+                    closedViews.append(WeakObject(tab.existingWeb))
+                }
                 store.close(tab.id)
                 pendingTab = nil
                 if cycle % 25 == 0 { print("LIFECYCLE tab cycles: \(cycle)"); fflush(stdout) }
@@ -89,8 +103,10 @@ import WebKit
                 try await load(tab)
                 _ = LittleArc.spaceMenu(floating)
                 closedViews.append(WeakObject(tab.existingWeb))
+                closedTabs.append(WeakObject(tab))
                 closedWindows.append(WeakObject(floating.window))
                 closedStores.append(WeakObject(floating))
+                closedFindSessions.append(WeakObject(Find.session(for: floating)))
                 floating.window?.close()
                 pendingTab = nil
                 pendingWindow = window
@@ -122,7 +138,10 @@ import WebKit
             let views = closedViews.filter { $0.value != nil }.count
             let windows = closedWindows.filter { $0.value != nil }.count
             let stores = closedStores.filter { $0.value != nil }.count
-            print("LIFECYCLE retained after 30s: views=\(views)/200 windows=\(windows)/100 stores=\(stores)/100")
+            let tabs = closedTabs.filter { $0.value != nil }.count
+            let findSessions = closedFindSessions.filter { $0.value != nil }.count
+            let uniqueFindSessions = Set(closedFindSessions.compactMap { $0.value }.map(ObjectIdentifier.init)).count
+            print("LIFECYCLE retained after 30s: views=\(views)/\(closedViews.count) windows=\(windows)/100 stores=\(stores)/100 tabs=\(tabs)/200 Find references=\(findSessions)/100 (unique=\(uniqueFindSessions))")
             print(String(format: "LIFECYCLE settled RSS: %.2f MiB, growth: %.2f MiB, limit: %.2f MiB", settled, settled - baseline, max(50_000_000 / 1_048_576.0, baseline * 0.1)))
             fflush(stdout)
             let start = ContinuousClock.now
@@ -133,7 +152,7 @@ import WebKit
             let cpu = (try cpuSeconds() - cpuStart) / seconds * 100
             print(String(format: "LIFECYCLE average idle parent CPU over %.1fs: %.3f%%", seconds, cpu))
             print("LIFECYCLE metrics exclude WebKit helper processes; no real-site/media energy claim.")
-            let passed = !Suspension.isRunning && views == 0 && windows == 0 && stores == 0 && settled - baseline <= max(50_000_000 / 1_048_576.0, baseline * 0.1) && cpu < 3
+            let passed = !Suspension.isRunning && views == 0 && windows == 0 && stores == 0 && tabs == 0 && findSessions == 0 && settled - baseline <= max(50_000_000 / 1_048_576.0, baseline * 0.1) && cpu < 3
             print("\(passed ? "PASS" : "FAIL") lifecycle targets")
             fflush(stdout)
             exit(passed ? 0 : 1)

@@ -140,6 +140,7 @@ import WebKit
     /// What `current` is about, so re-entering the same link mid-load is a no-op instead of
     /// a restart.
     private var showing: String?
+    private weak var source: Tab?
 
     private var debounceTask: Task<Void, Never>?
     private var paintTask: Task<Void, Never>?
@@ -162,15 +163,17 @@ import WebKit
         guard Previews.enabled, !BatterySaver.shared.isActive else { return }
         guard Previews.eligible(url, onPage: tab.currentURL) else { cancel(); return }
         let key = Previews.key(for: url)
-        if showing == key { return }
+        if showing == key { source = tab; return }
 
         stop()
+        source = tab
         let id = begin()
         showing = key
 
         // Re-hover: everything, image included, straight back out of memory in this turn of
         // the run loop. This is the whole reason the cache exists.
         if let hit = cache.lookup(key) {
+            unload()
             var p = hit
             p.summarizing = false
             p.loading = false
@@ -203,6 +206,16 @@ import WebKit
     func cancel() {
         stop()
         current = nil
+        unload()
+    }
+
+    /// A page release must not dismiss a preview requested by another tab.
+    func cancel(from tab: Tab) {
+        guard source === tab else { return }
+        cancel()
+    }
+
+    private func unload() {
         // about:blank rather than tearing the view down — a fresh WKWebView costs a
         // WebContent process launch, and this is a thing the user does dozens of times a
         // minute. Blanking is what actually stops a video, an animation and a timer.
@@ -213,6 +226,7 @@ import WebKit
     private func stop() {
         latest += 1
         showing = nil
+        source = nil
         settled = false
         domReady = false
         summaryTries = 0
@@ -359,7 +373,7 @@ import WebKit
     // MARK: - Metadata, straight off the DOM
 
     fileprivate func committed(_ web: WKWebView) {
-        guard web === self.web, showing != nil else { return }
+        guard web === self.web, web.url?.absoluteString != "about:blank", showing != nil else { return }
         committed = latest
     }
 
@@ -369,7 +383,8 @@ import WebKit
     /// kept the bare hostname as its title.
     fileprivate func received(meta html: String, from web: WKWebView) {
         let id = latest
-        guard web === self.web, let url = web.url, showing != nil else { return }
+        guard web === self.web, let url = web.url, url.absoluteString != "about:blank",
+              showing != nil else { return }
         let m = Previews.meta(from: html)
         edit(id) {
             if !m.title.isEmpty { $0.title = m.title }
@@ -383,13 +398,13 @@ import WebKit
     }
 
     fileprivate func finished(_ web: WKWebView) {
-        guard web === self.web else { return }
+        guard web === self.web, web.url?.absoluteString != "about:blank" else { return }
         domReady = true
         startSummary(id: latest)
     }
 
     fileprivate func failed(_ web: WKWebView) {
-        guard web === self.web else { return }
+        guard web === self.web, web.url?.absoluteString != "about:blank" else { return }
         edit(latest) { $0.loading = false }
     }
 
@@ -850,6 +865,8 @@ import WebKit
         /// handing the click to another app, no popup.
         func webView(_ w: WKWebView, decidePolicyFor action: WKNavigationAction)
             async -> WKNavigationActionPolicy {
+            // Internal cancellation unloads the document while keeping the reusable view.
+            if action.request.url?.absoluteString == "about:blank" { return .allow }
             let scheme = action.request.url?.scheme?.lowercased() ?? ""
             return scheme == "http" || scheme == "https" ? .allow : .cancel
         }
