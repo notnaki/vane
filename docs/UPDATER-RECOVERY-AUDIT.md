@@ -76,7 +76,7 @@ registration races; refusal cannot enter recovery. Exact child processes are use
 only by the unsandboxed isolated worker. Ordinary user relaunch uses LaunchServices.
 The previous bundle remains present before health and is cleaned only after the
 existing durable successful-launch criteria. The scripts are
-documented in README and headless transaction/transport/relaunch checks run in CI.
+documented in [release validation](RELEASING.md#updater-and-distribution-validation) and headless transaction/transport/relaunch checks run in CI.
 Final native fixtures use isolated data and disposable app copies. Transaction
 staging runs outside the browser sandbox, as XPC does; the restart driver inherits
 Vane's sandbox entitlements for the shell/helper chain. App Translocation paths are
