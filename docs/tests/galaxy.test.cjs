@@ -1,17 +1,26 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../space.js'),'utf8');
-for(const viewport of [{width:1280,height:800},{width:240,height:718},{width:480,height:600},{width:480,height:390},{width:844,height:390}]) for(const gpu of [false,true]) for(const testShape of ["spiral","fine","soft"]) {
+for(const viewport of [{width:1280,height:800},{width:240,height:718},{width:480,height:600},{width:480,height:390},{width:844,height:390}]) for(const gpu of [false,true]) for(const lateLayout of [false,"observer","load"]) for(const testShape of ["spiral","fine","soft"]) {
  const {width,height}=viewport; const compact=width<=600; const shortWide=!compact && height<=520; const openingZoom=compact && height<=520 ? 55/Math.min(width*.44,height*.42) : shortWide ? .65 : .92;
- const frames=new Map();let nextFrame=0,draws=0,intersect;
+ const frames=new Map();let nextFrame=0,draws=0,intersect,observeLayout; let layoutReady=!lateLayout;
  const ctx={setTransform(){},beginPath(){},arc(){},moveTo(){},lineTo(){},stroke(){},fill(){},fillRect(){},clearRect(){},drawImage(){},createRadialGradient(){return {addColorStop(){}}}};
  const gl=new Proxy({getShaderParameter(){return true;},getProgramParameter(){return true;},getAttribLocation(){return 0;},createShader(){return {};},createProgram(){return {};},createBuffer(){return {};},getUniformLocation(){return {};},drawArrays(){draws++;}},{get(target,key){return key in target?target[key]:key===key.toUpperCase()?1:()=>{};}});
- const element=()=>({width:0,height:0,dataset:{},style:{},classList:{add(){},toggle(){}},handlers:{},attrs:{},parentElement:{prepend(){}},firstElementChild:{textContent:''},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},getContext(type){return type==='webgl'?(gpu?gl:null):ctx;},getBoundingClientRect(){return {width,height:this.journey?height*8:(sceneReady?height:height*3),top:this.journey?-scroll:0};},addEventListener(k,f){this.handlers[k]=f;},setPointerCapture(){}});
+ const element=()=>({width:0,height:0,dataset:{},style:{},classList:{add(){},toggle(){}},handlers:{},attrs:{},parentElement:{prepend(){}},firstElementChild:{textContent:''},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},getContext(type){return type==='webgl'?(gpu?gl:null):ctx;},getBoundingClientRect(){return {width:!layoutReady && !this.journey?600:width,height:!layoutReady && !this.journey?300:this.journey?height*8:(sceneReady?height:height*3),top:this.journey?-scroll:0};},addEventListener(k,f){this.handlers[k]=f;},setPointerCapture(){}});
  const hero=element(),toggle=element(),reset=element(),journey=element(),logo=element(),panels=Array.from({length:4},element),links=Array.from({length:4},element); journey.journey=true; const shapeButtons=['spiral','fine','soft'].map(shape=>{const e=element();e.dataset.shape=shape;return e;}); const productStage=element(),productShell=element(),productAddress=element(),heroMessage=element(),introSupport=element(),productPages=[1,2,3].map(n=>{const e=element();e.dataset.product=String(n);return e;}); let scroll=0; let sceneReady=false; journey.classList.add=()=>{sceneReady=true;}; const windowHandlers={};
  heroMessage.offsetWidth=compact?width-40:480; heroMessage.offsetHeight=50; productStage.offsetWidth=compact?width-40:552; productShell.offsetHeight=369; const navigation=element(); navigation.getBoundingClientRect=()=>({bottom:70}); panels.slice(1).forEach(panel=>{panel.querySelector=()=>({offsetHeight:120});});
  const motion={matches:true,addEventListener(k,f){this.change=f;}};
  const document={hidden:false,handlers:{},body:{prepend(){}},createElement:element,querySelectorAll(s){return s==='[data-chapter]'?panels:s==='.journey-nav a'?links:s==='[data-shape]'?shapeButtons:s==='[data-product]'?productPages:[];},querySelector(s){return {'[data-galaxy="hero"]':hero,'.galaxy-toggle':toggle,'.galaxy-reset':reset,'.galaxy-journey':journey,'.galaxy-v':logo,'.product-stage':productStage,'.product-shell':productShell,'.product-address':productAddress,'.hero-message':heroMessage,'.intro-support':introSupport,'.site-nav':navigation}[s];},addEventListener(k,f){this.handlers[k]=f;}};
- const sandbox={document,URL,URLSearchParams,window:{location:{search:'?shape='+testShape,href:'http://localhost/?shape='+testShape},history:{replaceState(){}},innerWidth:width,devicePixelRatio:2,addEventListener(k,f){windowHandlers[k]=f;},IntersectionObserver:true},matchMedia(){return motion;},requestAnimationFrame(f){const id=++nextFrame;frames.set(id,f);return id;},cancelAnimationFrame(id){frames.delete(id);},IntersectionObserver:class{constructor(f){intersect=f;}observe(){}}};
+ const sandbox={document,URL,URLSearchParams,window:{location:{search:'?shape='+testShape,href:'http://localhost/?shape='+testShape},history:{replaceState(){}},innerWidth:width,devicePixelRatio:2,addEventListener(k,f){windowHandlers[k]=f;},IntersectionObserver:true},matchMedia(){return motion;},requestAnimationFrame(f){const id=++nextFrame;frames.set(id,f);return id;},cancelAnimationFrame(id){frames.delete(id);},ResizeObserver:class{constructor(f){observeLayout=f;}observe(){}},IntersectionObserver:class{constructor(f){intersect=f;}observe(){}}};
  vm.runInNewContext(source,sandbox);
+ // WebKit can initially return the canvas's intrinsic size before CSS layout settles.
+ // The scene must recover when layout changes, without any window resize or user action.
+ if(lateLayout) {
+   layoutReady=true;
+   if(lateLayout==="observer") observeLayout?.();
+   else windowHandlers.load?.();
+   for(const [id,f] of [...frames]){frames.delete(id);f(0);}
+ }
+ assert.equal(logo.style.left,width*(shortWide?.73:.5)+'px','Logo must use the settled scene width');
  assert.equal(logo.style.top,height*(shortWide?.48:compact?(height<=520?.33:.36):.40)+'px','Opening V must be centered using the final viewport height'); assert.equal(hero.dataset.renderer,gpu?'webgl':'canvas');
  assert.equal(frames.size,0,'Reduced motion must start paused');
  assert.equal(toggle.attrs['aria-pressed'],'true');
@@ -70,5 +79,5 @@ for(const viewport of [{width:1280,height:800},{width:240,height:718},{width:480
  assert.equal(panels[1].style.opacity,'1');
  assert.equal(hero.dataset.shape,testShape);
  motion.matches=true; motion.change(); assert.equal(hero.dataset.zoom,openingZoom.toFixed(2)); assert.equal(frames.size,0);
- console.log('PASS '+width+'×'+height+': spiral variants, chapter hold zones, persistent headline, microscopic invisible opening, held previews, '+(gpu?'WebGL orchestration':'Canvas fallback')+' — motion preference, pause/resume, keyboard, reset, tab visibility, offscreen lifecycle'+(gpu?', context restoration':''));
+ console.log('PASS '+width+'×'+height+(lateLayout?' (late layout via '+lateLayout+')':'')+': spiral variants, chapter hold zones, persistent headline, microscopic invisible opening, held previews, '+(gpu?'WebGL orchestration':'Canvas fallback')+' — motion preference, pause/resume, keyboard, reset, tab visibility, offscreen lifecycle'+(gpu?', context restoration':''));
 }

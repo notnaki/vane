@@ -509,8 +509,15 @@
     updateGalaxyLabel(); updateToggle(); sync();
   }
   let resizeFrame = 0;
-  window.addEventListener('resize', () => {
+  function scheduleResize() {
     cancelAnimationFrame(resizeFrame);
     resizeFrame = requestAnimationFrame(() => { drawBackground(); orbitCanvases.forEach(drawOrbit); resizeHero(); });
-  });
+  }
+  window.addEventListener('resize', scheduleResize);
+  // A newly inserted canvas can report its intrinsic size during WebKit startup.
+  // Remeasure after layout settles, including changes that do not resize the window.
+  window.addEventListener('load', scheduleResize, {once:true});
+  if (canvas && typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(scheduleResize).observe(canvas.parentElement);
+  }
 })();
