@@ -9,8 +9,8 @@ browser UI is Vane itself. Developer Mode is disabled for the local demo host.
 All screenshots are encoded as actual PNG files. The three native captures retain
 the transparent rounded corners provided by macOS. They include the traffic lights
 and toolbar controls, with no top crop, capture indicator, cursor, or white corner
-matte. The traffic lights are captured in their native hover state. App pixels are
-not redrawn or retouched. Historical audit screenshots were re-encoded from their
+matte. Traffic lights retain their native active or inactive appearance. App pixels
+are not redrawn or retouched. Historical audit screenshots were re-encoded from their
 previous JPEG data as PNG, with their decoded pixels and dimensions unchanged;
 this cannot recover detail already lost to JPEG compression.
 
