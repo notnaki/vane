@@ -87,6 +87,12 @@ import Foundation
         set { UserDefaults.vane.set(newValue, forKey: "tidyTabs") }
     }
 
+    /// Keep review as the default; users can opt into applying a Tidy proposal directly.
+    static var previewEnabled: Bool {
+        get { UserDefaults.vane.object(forKey: "tidyPreview") as? Bool ?? true }
+        set { UserDefaults.vane.set(newValue, forKey: "tidyPreview") }
+    }
+
     /// A name longer than this is not a group name, it is a sentence. Deliberately tighter
     /// than `AppleAI.titleLimit` (28) because this lands on a strip header, not in a tab.
     static let nameLimit = 24
