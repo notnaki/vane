@@ -215,15 +215,18 @@ extension Prefs {
     /// is exactly where an idle page hides, and one the sweep could not see would never be
     /// unloaded at all. See `Stash`.
     static var allTabs: [Tab] {
-        var seen = Set<UUID>()
-        return TabStore.all.flatMap(\.everyTab).filter { seen.insert($0.id).inserted }
+        var seen = Set<ObjectIdentifier>()
+        return TabStore.all.flatMap(\.everyTab).filter { seen.insert(ObjectIdentifier($0)).inserted }
     }
 
     /// On screen in some window — which for a split view is every one of its panes, not just
     /// the one the keyboard is in. Tearing down the pane beside the one being read is exactly
     /// the blank half of a split nobody would file a bug about twice.
     private static func isActive(_ tab: Tab) -> Bool {
-        TabStore.all.contains { $0.current == tab.id || $0.activeSplit?.contains(tab.id) == true }
+        TabStore.all.contains { store in
+            store.tabs.contains { $0 === tab }
+                && (store.current == tab.id || store.activeSplit?.contains(tab.id) == true)
+        }
     }
 
     /// The cheap facts: everything that can be read without talking to the web content
@@ -239,53 +242,82 @@ extension Prefs {
     /// is treated the same either way — so this runs over the handful of stashes a window
     /// has rather than being carried on the tab.
     private static func isStashed(_ tab: Tab) -> Bool {
-        TabStore.all.contains { $0.space(stashing: tab.id) != nil }
+        // A shared pin can be stashed in one window and still have a live row in
+        // another. Only pages absent from every strip lose the pinned exemption.
+        guard !TabStore.all.contains(where: { $0.tabs.contains { $0 === tab } }) else { return false }
+        return TabStore.all.contains { $0.stashes.values.contains { $0.tabs.contains { $0 === tab } } }
     }
 
-    /// The periodic pass. Two phases: reject on the cheap facts, then ask WebKit about the
-    /// expensive ones for the handful of tabs still standing.
+    private final class PlaybackProbe {
+        var continuation: CheckedContinuation<Bool, Never>?
+        var timeout: Task<Void, Never>?
+        func finish(_ protected: Bool) {
+            guard let continuation else { return }
+            self.continuation = nil
+            timeout?.cancel(); timeout = nil
+            continuation.resume(returning: protected)
+        }
+    }
+
+    /// Failure to hear from the media process is uncertain too. Bound the wait so a
+    /// stalled request cannot retain the tab's in-flight slot forever.
+    private static func protectedPlayback(in web: WKWebView) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let probe = PlaybackProbe()
+            probe.continuation = continuation
+            probe.timeout = Task { @MainActor in
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                probe.finish(true)
+            }
+            web.requestMediaPlaybackState { probe.finish($0 == .playing) }
+        }
+    }
+
+    private static var checking = Set<ObjectIdentifier>()
+
+    /// Both pressure and the timer use the same protection checks. The draft probe is
+    /// injectable so lifecycle races can be exercised without blocking a content process.
+    static func suspendIfEligible(_ tab: Tab, underPressure: Bool,
+                                  draftCheck: @MainActor (Tab) async -> Bool = { await $0.hasUnsubmittedInput() }) async {
+        let limit = underPressure ? 0 : BatterySaver.idleLimit(normal: Prefs.suspendAfter,
+                                                             saving: BatterySaver.shared.isActive)
+        let identity = ObjectIdentifier(tab)
+        guard !checking.contains(identity), allTabs.contains(where: { $0 === tab }),
+              Prefs.suspendTabs, shouldSuspend(facts(tab, now: .now), after: limit),
+              let web = tab.existingWeb else { return }
+        checking.insert(identity)
+        defer { checking.remove(identity) }
+        let pageURL = web.url
+        let document = tab.readingDocumentGeneration
+        let lastActive = tab.lastActive
+        let owner = tab.presentationOwner
+        let playing: Bool
+        if tab.pictureInPicture { playing = true }
+        else { playing = await protectedPlayback(in: web) && !TabAudio.isMuted(tab) }
+        let hasInput = await draftCheck(tab)
+        guard tab.existingWeb === web, web.url == pageURL,
+              tab.readingDocumentGeneration == document, tab.lastActive == lastActive,
+              tab.presentationOwner == owner, allTabs.contains(where: { $0 === tab }) else { return }
+        var fresh = facts(tab, now: .now)
+        fresh.playing = playing || tab.pictureInPicture
+            || (MediaState.shared.isPlaying(tab) && !TabAudio.isMuted(tab))
+        fresh.hasInput = hasInput
+        let currentLimit = underPressure ? 0 : BatterySaver.idleLimit(normal: Prefs.suspendAfter,
+                                                                    saving: BatterySaver.shared.isActive)
+        if Prefs.suspendTabs, shouldSuspend(fresh, after: currentLimit) { tab.suspend() }
+    }
+
     static func sweep(now: Date = .now) {
         guard Prefs.suspendTabs else { return }
-        let limit = BatterySaver.idleLimit(normal: Prefs.suspendAfter,
-                                          saving: BatterySaver.shared.isActive)
-        for tab in allTabs {
-            var f = facts(tab, now: now)
-            guard shouldSuspend(f, after: limit) else { continue }
+        let limit = BatterySaver.idleLimit(normal: Prefs.suspendAfter, saving: BatterySaver.shared.isActive)
+        for tab in allTabs where shouldSuspend(facts(tab, now: now), after: limit) {
             Task { @MainActor [weak tab] in
-                guard let tab, let web = tab.existingWeb else { return }
-                let pageURL = web.url
-                if tab.pictureInPicture {
-                    f.playing = true          // detached and being watched; do not ask further
-                } else {
-                    // requestMediaPlaybackState reports .playing for a page-muted tab, so
-                    // without the mute check, muting a tab would make it permanently
-                    // unsuspendable — backwards. Everything that could still want a muted
-                    // tab is excluded earlier: selected in any window, pinned on a strip,
-                    // or detached into PiP. What is left is a muted video in a background
-                    // tab of a background window, untouched for the idle limit.
-                    // ponytail: interactionState restores scroll and history, not playback
-                    // position, so a resumed tab restarts its player.
-                    f.playing = await tab.isPlayingMedia() && !TabAudio.isMuted(tab)
-                }
-                f.hasInput = await tab.hasUnsubmittedInput()
-                guard tab.existingWeb === web, web.url == pageURL else { return }
-                // Re-read the cheap facts too: the awaits above gave the user time to click.
-                let fresh = facts(tab, now: .now)
-                let playing = f.playing, hasInput = f.hasInput
-                f = fresh
-                f.playing = playing || tab.pictureInPicture
-                    || (MediaState.shared.isPlaying(tab) && !TabAudio.isMuted(tab))
-                f.hasInput = hasInput
-                // Re-read the policy too: saving may have stopped during the WebKit awaits.
-                let currentLimit = BatterySaver.idleLimit(normal: Prefs.suspendAfter,
-                                                         saving: BatterySaver.shared.isActive)
-                if Prefs.suspendTabs, shouldSuspend(f, after: currentLimit) { tab.suspend() }
+                if let tab { await suspendIfEligible(tab, underPressure: false) }
             }
         }
     }
 
-    /// Real memory pressure. Ignores the idle clock — the system is asking now — but keeps
-    /// every other exclusion, so the tab in front of the user never vanishes.
+    /// Pressure changes the idle threshold, never the media or draft protections.
     static func relieve(critical: Bool) {
         guard Prefs.suspendTabs else { return }
         let now = Date.now
@@ -294,21 +326,7 @@ extension Prefs {
         let doomed = Set(victims(ordered, critical: critical))
         for tab in eligible where doomed.contains(tab.id) {
             Task { @MainActor [weak tab] in
-                guard let tab, let web = tab.existingWeb,
-                      shouldSuspend(facts(tab, now: .now), after: 0) else { return }
-                let pageURL = web.url
-                // Pressure changes the idle threshold, not media or draft protections.
-                let playing: Bool
-                if tab.pictureInPicture { playing = true }
-                else { playing = await tab.isPlayingMedia() && !TabAudio.isMuted(tab) }
-                let hasInput = await tab.hasUnsubmittedInput()
-                guard tab.existingWeb === web, web.url == pageURL else { return }
-                // Selection, loading and the preference may have changed during either await.
-                var fresh = facts(tab, now: .now)
-                fresh.playing = playing || tab.pictureInPicture
-                    || (MediaState.shared.isPlaying(tab) && !TabAudio.isMuted(tab))
-                fresh.hasInput = hasInput
-                if Prefs.suspendTabs, shouldSuspend(fresh, after: 0) { tab.suspend() }
+                if let tab { await suspendIfEligible(tab, underPressure: true) }
             }
         }
     }

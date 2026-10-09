@@ -339,6 +339,7 @@ struct TitleReveal: Equatable, Sendable {
     @Published var windowSnapshot: NSImage?
     var presentationGeneration = 0
     var permissionGeneration: UInt = 0
+    let draftProtection = DraftProtection()
     var readingDocumentGeneration = UUID()
     var sharedSpaceID: UUID?
     /// Parked rows need only metadata. Reading `web` is an explicit demand for a page;
@@ -631,6 +632,7 @@ struct TitleReveal: Equatable, Sendable {
     /// configuration whose controller belongs to somebody else — see `init(popup:)`.
     private static func contentController(profileID: UUID) -> WKUserContentController {
         let c = WKUserContentController()
+        DraftProtection.install(on: c)
         SiteBoostScripts.install(on: c)
         c.addUserScript(WKUserScript(source: SitePermissionDocument.script, injectionTime: .atDocumentStart,
                                     forMainFrameOnly: true, in: SitePermissionDocument.world))
@@ -675,6 +677,8 @@ struct TitleReveal: Equatable, Sendable {
     /// and the KVO that republishes WebKit's state. Runs at init and again on every resume,
     /// because suspension swaps the web view out from under all of it.
     private func attach() {
+        draftProtection.bind(to: web)
+        web.configuration.userContentController.add(draftProtection, contentWorld: DraftProtection.world, name: DraftProtection.messageName)
         web.configuration.userContentController.add(WeakHandler(self), contentWorld: SiteBoostScripts.world, name: SiteBoostScripts.messageName)
         NativePiPHostBridge.register(tab: self, web: web)
         if let linkView = web as? LinkContextWebView {
@@ -957,6 +961,7 @@ struct TitleReveal: Equatable, Sendable {
     private func release() {
         navigationState.invalidate()
         loading = false
+        draftProtection.reset()
         readingDocumentGeneration = UUID()
         Reader.forget(tab: self)
         passwordStep = nil
@@ -984,6 +989,8 @@ struct TitleReveal: Equatable, Sendable {
         old.configuration.userContentController.removeScriptMessageHandler(
             forName: LinkContextWebView.messageName, contentWorld: LinkContextWebView.world)
         old.configuration.userContentController.removeScriptMessageHandler(forName: SiteBoostScripts.messageName, contentWorld: SiteBoostScripts.world)
+        old.configuration.userContentController.removeScriptMessageHandler(
+            forName: DraftProtection.messageName, contentWorld: DraftProtection.world)
         old.uiDelegate = nil
         old.navigationDelegate = nil
         old.configuration.userContentController.removeScriptMessageHandler(
@@ -1132,20 +1139,13 @@ struct TitleReveal: Equatable, Sendable {
         return await web.requestMediaPlaybackState() == .playing
     }
 
-    /// ponytail: one evaluateJavaScript, main frame only, `value != defaultValue` so a page
-    /// that ships prefilled inputs does not pin itself open forever. Ceiling: nothing inside
-    /// an iframe or a shadow root counts, and a page that stores its draft in JS state
-    /// rather than in the DOM looks empty.
+    /// Query every registered frame without exposing field contents to the app.
+    /// Detection failure defers this attempt and is retried on the next sweep.
     func hasUnsubmittedInput() async -> Bool {
         guard let web = existingWeb else { return false }
-        let js = """
-        (function(){for(const e of document.querySelectorAll('input,textarea')){\
-        const t=(e.type||'').toLowerCase();\
-        if(t==='hidden'||t==='submit'||t==='button'||t==='checkbox'||t==='radio')continue;\
-        if(e.value&&e.value!==e.defaultValue)return true}\
-        return !!document.querySelector('[contenteditable=true],[contenteditable=""]')})()
-        """
-        return (try? await web.evaluateJavaScript(js)) as? Bool ?? true
+        let generation = readingDocumentGeneration
+        let hasDraft = await draftProtection.hasDraft(in: web)
+        return hasDraft || existingWeb !== web || readingDocumentGeneration != generation
     }
 
     /// `blocking: false` is for the one caller that is about to throw this configuration's
