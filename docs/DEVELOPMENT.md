@@ -146,6 +146,19 @@ routine test suite.
 VANE_UI_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter HistoryResponsivenessTests
 ```
 
+Store, bookmark presentation/filtering, Library filtering, cancellation drain, and
+repeated session-write measurements also have an opt-in release fixture. It uses
+isolated synthetic profiles (10,000/240,000 visits and 1,000/10,000 displayed
+bookmarks) and prints measurements without machine-sensitive timing assertions:
+
+```sh
+VANE_STORE_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter StoreLatencyBenchmarks
+```
+
+Run comparisons on the same quiet logged-in Mac, with the same fixtures and build
+configuration. Coordinate with other profiling/build tasks before collecting
+timings; use `--skip-build` only after building the exact revision to measure.
+
 ## Release and graphical smoke checks
 
 Before shipping, also check the release configuration:

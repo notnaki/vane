@@ -35,6 +35,13 @@ actor LocalSuggestionReader {
         return Self.readHistory(db, query: query, limit: limit, interval: interval)
     }
 
+    func bookmarks(_ query: String, folderID: String?, unfiledOnly: Bool, limit: Int) -> [Bookmark] {
+        guard connect() else { return [] }
+        defer { sqlite3_progress_handler(db, 0, nil, nil) }
+        return Self.readBookmarks(db, query: query, folderID: folderID,
+                                  unfiledOnly: unfiledOnly, limit: limit)
+    }
+
     private final class Context {
         let match: SearchMatch
         let engine: SearchEngine?
@@ -78,6 +85,7 @@ actor LocalSuggestionReader {
 
     private nonisolated static func rows(_ db: OpaquePointer, sql: String, pattern: String,
                                         limit: Int, interval: DateInterval? = nil,
+                                        folderID: String? = nil,
                                         _ row: (OpaquePointer) -> Void) {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return }
@@ -88,6 +96,8 @@ actor LocalSuggestionReader {
         if let interval {
             sqlite3_bind_double(statement, 3, interval.start.timeIntervalSince1970)
             sqlite3_bind_double(statement, 4, interval.end.timeIntervalSince1970)
+        } else if let folderID {
+            sqlite3_bind_text(statement, 3, folderID, -1, transient)
         }
         while sqlite3_step(statement) == SQLITE_ROW {
             guard !Task.isCancelled else { return }
@@ -99,6 +109,29 @@ actor LocalSuggestionReader {
         (url LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\'
          OR url GLOB '*[^ -~]*' OR title GLOB '*[^ -~]*')
         """
+
+    nonisolated static func readBookmarks(_ db: OpaquePointer?, query: String, folderID: String?,
+                                         unfiledOnly: Bool, limit: Int) -> [Bookmark] {
+        guard let db, !Task.isCancelled else { return [] }
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let like = "%" + q.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_") + "%"
+        var clauses: [String] = []
+        if !q.isEmpty { clauses.append("(url LIKE ?1 ESCAPE '\\' OR title LIKE ?1 ESCAPE '\\')") }
+        if folderID != nil { clauses.append("folder_id = ?3") }
+        else if unfiledOnly { clauses.append("folder_id IS NULL") }
+        let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
+        var out: [Bookmark] = []
+        rows(db, sql: "SELECT id, url, title, at, folder_id FROM bookmarks\(whereSQL) ORDER BY at DESC LIMIT ?2",
+             pattern: like, limit: limit, folderID: folderID) {
+            let folder = sqlite3_column_type($0, 4) == SQLITE_NULL ? nil : text($0, 4)
+            out.append(Bookmark(id: sqlite3_column_int64($0, 0), url: text($0, 1), title: text($0, 2),
+                                at: Date(timeIntervalSince1970: sqlite3_column_double($0, 3)),
+                                folderID: folder))
+        }
+        return Task.isCancelled ? [] : out
+    }
 
     nonisolated static func read(_ db: OpaquePointer?, query: String, limit: Int,
                                 scopedTo engine: SearchEngine? = nil) -> [Suggestion] {

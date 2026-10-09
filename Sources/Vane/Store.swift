@@ -119,11 +119,13 @@ struct BookmarkImportResult: Equatable, Sendable {
 
     private let suggestionReader: LocalSuggestionReader
     private let historyReader: LocalSuggestionReader
+    private let bookmarkReader: LocalSuggestionReader?
 
     init(path: String? = nil) {
         let path = path ?? Store.directory.appendingPathComponent("vane.db").path
         suggestionReader = LocalSuggestionReader(path: path)
         historyReader = LocalSuggestionReader(path: path)
+        bookmarkReader = path == ":memory:" ? nil : LocalSuggestionReader(path: path)
         sqlite3_open(path, &db)
         exec("""
         PRAGMA journal_mode=WAL;
@@ -266,8 +268,8 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// Titles arrive after the visit row is written, so backfill the newest row for that url.
     @discardableResult func retitle(_ url: URL, title: String) -> Bool {
         guard !title.isEmpty else { return true }
-        return historyWritten { run("UPDATE visits SET title = ? WHERE id = (SELECT id FROM visits WHERE url = ? ORDER BY at DESC LIMIT 1)",
-            [title, url.absoluteString]) }
+        return historyWritten { run("UPDATE visits SET title = ? WHERE id = (SELECT id FROM visits WHERE url = ? ORDER BY at DESC LIMIT 1) AND title <> ?",
+            [title, url.absoluteString, title]) }
     }
 
     /// The last title this profile saw for a page. For a row that has to be redrawn as a
@@ -486,28 +488,21 @@ struct BookmarkImportResult: Equatable, Sendable {
     /// libraries do not have to be loaded before they can be narrowed.
     func managedBookmarks(matching query: String = "", folderID: String? = nil,
                           unfiledOnly: Bool = false, limit: Int = .max) -> [Bookmark] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        let like = "%" + q.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "%", with: "\\%")
-            .replacingOccurrences(of: "_", with: "\\_") + "%"
-        var clauses: [String] = [], binds: [Any] = []
-        if !q.isEmpty {
-            clauses.append("(url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\')")
-            binds += [like, like]
+        LocalSuggestionReader.readBookmarks(db, query: query, folderID: folderID,
+                                           unfiledOnly: unfiledOnly, limit: limit)
+    }
+
+    /// Independent from History and palette scans; superseded searches interrupt SQLite.
+    func managedBookmarksAsync(matching query: String = "", folderID: String? = nil,
+                               unfiledOnly: Bool = false, limit: Int = .max) async -> [Bookmark] {
+        guard !Task.isCancelled else { return [] }
+        // Private-session bookmarks live only on this connection. A second :memory:
+        // connection would be a different database; retain the existing in-memory read.
+        guard let bookmarkReader else {
+            return managedBookmarks(matching: query, folderID: folderID,
+                                    unfiledOnly: unfiledOnly, limit: limit)
         }
-        if let folderID { clauses.append("folder_id = ?"); binds.append(folderID) }
-        else if unfiledOnly { clauses.append("folder_id IS NULL") }
-        let whereSQL = clauses.isEmpty ? "" : " WHERE " + clauses.joined(separator: " AND ")
-        binds.append(limit)
-        var out: [Bookmark] = []
-        run("SELECT id, url, title, at, folder_id FROM bookmarks\(whereSQL) ORDER BY at DESC LIMIT ?", binds) {
-            let folder = sqlite3_column_type($0, 4) == SQLITE_NULL ? nil : self.text($0, 4)
-            out.append(Bookmark(id: sqlite3_column_int64($0, 0), url: self.text($0, 1),
-                                title: self.text($0, 2),
-                                at: Date(timeIntervalSince1970: sqlite3_column_double($0, 3)),
-                                folderID: folder))
-        }
-        return out
+        return await bookmarkReader.bookmarks(query, folderID: folderID, unfiledOnly: unfiledOnly, limit: limit)
     }
 
     func bookmarkFolders() -> [BookmarkFolder] {
