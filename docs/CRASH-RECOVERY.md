@@ -47,7 +47,11 @@ browsing URLs and potentially opaque WebKit state. Treat them like the browser
 library. Quit Vane before examining or replacing files, preserve a copy of the
 whole directory first, and keep session/Space files from the same recovery
 directory together. The backup restore UI is the supported way to restore a
-complete library backup. Local copies cannot protect against loss of the disk.
+complete library backup. A successful backup restore invalidates pre-restore operational
+fallbacks; an interrupted restore rolls them back with the primary files. Explicit
+profile deletion removes that profile's local previous/damaged generations and
+launch-archive session/Space files. Exported and library recovery-point backups
+remain separate. Local copies cannot protect against loss of the disk.
 
 ## Recovery boundaries
 

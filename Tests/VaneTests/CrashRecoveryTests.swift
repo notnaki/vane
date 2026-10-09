@@ -99,6 +99,64 @@ import XCTest
         XCTAssertEqual(try Data(contentsOf: sidecar), corrupt)
     }
 
+    func testLegacySessionFallbackKeepsPauseWhenHealthySidecarWinsMetadata() throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let manager = ProfileManager.shared
+        let profile = manager.create(name: "Legacy recovery")
+        let before = Set(TabStore.all.map(ObjectIdentifier.init))
+        defer {
+            for store in TabStore.all where !before.contains(ObjectIdentifier(store)) {
+                store.window?.close()
+                store.dropStashes()
+                TabStore.all.removeAll { $0 === store }
+                SharedTabs.release(store.tabs)
+            }
+            _ = manager.delete(profile.id)
+        }
+        let url = URL(string: "https://recovery.invalid/legacy-post")!
+        var space = Space(name: "Legacy", profileID: profile.id)
+        space.tabURLs = [url]
+        XCTAssertTrue(manager.saveSpaces([space], for: profile.id))
+        XCTAssertTrue(Suspension.SpaceState.save([url.absoluteString: Parked(title: "Sidecar metadata")],
+                                                space: space.id, profileID: profile.id, in: Store.directory))
+        let file = ProfileManager.sessionURL(for: profile.id, in: Store.directory)
+        try JSONEncoder().encode([[url.absoluteString]]).write(to: file.appendingPathExtension("previous"))
+        try Data("{broken".utf8).write(to: file)
+        XCTAssertTrue(Session.restore(profile: profile))
+        let store = try XCTUnwrap(TabStore.all.first { !before.contains(ObjectIdentifier($0)) && $0.profileID == profile.id })
+        let tab = try XCTUnwrap(store.tabs.first { $0.currentURL == url })
+        XCTAssertEqual(tab.title, "Sidecar metadata")
+        XCTAssertTrue(tab.needsRecovery, "Healthy metadata cannot clear a fallback session's recovery policy")
+        XCTAssertNil(tab.existingWeb)
+    }
+
+    func testSidecarFallbackPauseSurvivesSavingOrRemovingAnotherSpace() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let profile = UUID(), first = UUID(), second = UUID()
+        let url = "https://recovery.invalid/other-space-post"
+        let file = Suspension.SpaceState.url(for: profile, in: dir)
+        for remove in [false, true] {
+            try? FileManager.default.removeItem(at: file)
+            try? FileManager.default.removeItem(at: file.appendingPathExtension("previous"))
+            XCTAssertTrue(Suspension.SpaceState.save([url: Parked(title: "First")], space: first, profileID: profile, in: dir))
+            XCTAssertTrue(Suspension.SpaceState.save([url: Parked(title: "Second", state: Data([1, 2, 3]))], space: second, profileID: profile, in: dir))
+            try Data(contentsOf: file).write(to: file.appendingPathExtension("previous"))
+            try Data("{broken".utf8).write(to: file)
+            if remove {
+                XCTAssertTrue(Suspension.SpaceState.remove(space: first, profileID: profile, in: dir))
+            } else {
+                let rows = Suspension.SpaceState.load(space: first, profileID: profile, in: dir)
+                XCTAssertTrue(Suspension.SpaceState.save(rows, space: first, profileID: profile, in: dir))
+            }
+            let recovered = try XCTUnwrap(Suspension.SpaceState.load(space: second, profileID: profile, in: dir)[url])
+            XCTAssertEqual(recovered.state, Data([1, 2, 3]))
+            XCTAssertTrue(recovered.needsRecovery, "Republishing another Space must retain fallback protection")
+        }
+    }
+
     func testAllRegularProfilesRestoreTheirWindows() throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared

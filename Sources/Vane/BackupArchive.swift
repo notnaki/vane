@@ -84,6 +84,12 @@ enum BackupPaths {
     }
     static func isOriginal(_ name: String) -> Bool {
         if isOwned(name) { return true }
+        // Operational fallback generations participate in exact restore rollback,
+        // but are never accepted as extra files in a healthy exported backup.
+        if name.hasSuffix(".previous") {
+            let base = String(name.dropLast(".previous".count))
+            if (base.hasPrefix("session") || base.hasPrefix("spacestate")), isOwned(base) { return true }
+        }
         for suffix in ["-wal", "-shm"] where name.hasSuffix(suffix) {
             let base = String(name.dropLast(suffix.count))
             if base.hasSuffix(".db"), isOwned(base) { return true }

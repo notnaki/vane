@@ -30,6 +30,31 @@ import XCTest
         XCTAssertEqual(try restore.recoverAtLaunch(), .none)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: target.root.appendingPathComponent("Recovery/Points").path).filter { $0.hasSuffix(".vanebackup") }.count, 1)
     }
+    func testRestoreInvalidatesOldFallbacksAndInterruptedRestoreRollsThemBack() throws {
+        for interrupted in [false, true] {
+            let source = try fixture(), target = try fixture()
+            let session = target.root.appendingPathComponent("session.json")
+            let sidecar = target.root.appendingPathComponent("spacestate.json")
+            let bytes = try XCTUnwrap(Session.encode([[.init(url: "https://recovery.invalid/pre-restore")]]))
+            try bytes.write(to: session.appendingPathExtension("previous"))
+            try Data("{}".utf8).write(to: sidecar.appendingPathExtension("previous"))
+            let restore = BackupRestore(library: target.library, checkpoint: { name in
+                if interrupted && name == "preferences" { throw Interrupted.now }
+            })
+            try restore.prepare(source.library.capture(reason: .manual))
+            if interrupted {
+                XCTAssertThrowsError(try restore.recoverAtLaunch())
+                XCTAssertEqual(try BackupRestore(library: target.library).recoverAtLaunch(), .rolledBack)
+                XCTAssertEqual(try Data(contentsOf: session.appendingPathExtension("previous")), bytes)
+                XCTAssertEqual(try Data(contentsOf: sidecar.appendingPathExtension("previous")), Data("{}".utf8))
+            } else {
+                XCTAssertEqual(try restore.recoverAtLaunch(), .restored)
+                XCTAssertNil(RecoverySnapshots.read(session, valid: Session.readable))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.appendingPathExtension("previous").path))
+            }
+        }
+    }
+
     func testEveryInterruptedMutationRollsBackOnNextLaunch() throws {
         let source = try fixture()
         source.defaults.set("new", forKey: "homepage")

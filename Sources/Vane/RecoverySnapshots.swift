@@ -33,6 +33,30 @@ enum RecoverySnapshots {
         }
     }
 
+    /// Explicit profile deletion also removes its local recovery generations. Other
+    /// profiles and user-created/exported library backups remain independent.
+    static func forget(profileID: UUID, in directory: URL) {
+        let fm = FileManager.default
+        let names = [ProfileManager.sessionURL(for: profileID, in: directory).lastPathComponent,
+                     ProfileManager.spacesURL(for: profileID, in: directory).lastPathComponent,
+                     Suspension.SpaceState.url(for: profileID, in: directory).lastPathComponent]
+        func removeCopies(in folder: URL) {
+            guard let files = try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) else { return }
+            for file in files where names.contains(where: { name in
+                file.lastPathComponent == name || file.lastPathComponent == name + ".previous"
+                    || file.lastPathComponent.hasPrefix(name + ".damaged-")
+            }) { try? fm.removeItem(at: file) }
+        }
+        removeCopies(in: directory)
+        let root = directory.appendingPathComponent("Session Recovery", isDirectory: true)
+        for folder in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])) ?? [] {
+            // Never traverse an unexpected symlink while erasing local copies.
+            guard let values = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { continue }
+            removeCopies(in: folder)
+        }
+    }
+
     /// Runs before profile/session restoration can mutate any saved state. Each unclean
     /// launch gets an independent directory, including the launch after another failed
     /// restore. Failure aborts startup rather than risking the originals.

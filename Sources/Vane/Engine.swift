@@ -2301,7 +2301,11 @@ struct Stash {
         // and scroll offsets are all there is.
         let parked = space.map {
             Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory)
-                .merging(parked) { sidecar, _ in sidecar }
+                .merging(parked) { sidecar, session in
+                    var merged = sidecar
+                    merged.needsRecovery = sidecar.needsRecovery || session.needsRecovery
+                    return merged
+                }
         } ?? parked
         restore(favourites, as: .favourite, parked: parked)
         if let space, restoreWorkspaceLayout(space, parked: parked) {

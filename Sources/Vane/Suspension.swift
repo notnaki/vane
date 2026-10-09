@@ -341,9 +341,19 @@ extension Prefs {
         }
 
         private nonisolated static func read(_ profileID: UUID, in dir: URL) -> [String: [String: Row]] {
-            guard let data = RecoverySnapshots.read(url(for: profileID, in: dir), valid: readable),
-                  let all = try? JSONDecoder().decode([String: [String: Row]].self, from: data)
+            let file = url(for: profileID, in: dir)
+            guard let data = RecoverySnapshots.read(file, valid: readable),
+                  var all = try? JSONDecoder().decode([String: [String: Row]].self, from: data)
             else { return [:] }
+            // Recovery policy belongs to the entire fallback generation. A save or
+            // removal in one Space must not silently wake another Space's opaque state.
+            if (try? Data(contentsOf: file)).map(readable) != true {
+                all = all.mapValues { rows in rows.mapValues { row in
+                    var row = row
+                    row.needsRecovery = true
+                    return row
+                } }
+            }
             return all
         }
 
@@ -355,10 +365,9 @@ extension Prefs {
         /// argument because reading it is main-actor work and default values are evaluated
         /// in a nonisolated context.
         static func load(space: UUID, profileID: UUID, in dir: URL) -> [String: Parked] {
-            let recoveringFile = (try? Data(contentsOf: url(for: profileID, in: dir))).map(readable) != true
             return (read(profileID, in: dir)[space.uuidString] ?? [:]).mapValues {
                 Parked(title: $0.t ?? "", state: $0.s.flatMap { Data(base64Encoded: $0) },
-                       page: $0.u.flatMap(URL.init(string:)), needsRecovery: recoveringFile || $0.needsRecovery == true)
+                       page: $0.u.flatMap(URL.init(string:)), needsRecovery: $0.needsRecovery == true)
             }
         }
 
