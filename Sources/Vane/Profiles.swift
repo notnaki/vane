@@ -704,8 +704,7 @@ struct Space: Identifiable, Codable, Equatable {
         let fm = FileManager.default
         let db = Self.dbURL(for: id, in: directory).path
         for path in [db, db + "-wal", db + "-shm"] { try? fm.removeItem(atPath: path) }
-        try? fm.removeItem(at: Self.sessionURL(for: id, in: directory))
-        try? fm.removeItem(at: Suspension.SpaceState.url(for: id, in: directory))
+        RecoverySnapshots.forget(profileID: id, in: directory)
         Downloads.forget(id, in: directory)
         EaselStore.forget(id, directory: directory)
         do { try ReadingQueueStore.forget(profileID: id, directory: directory) }

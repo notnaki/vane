@@ -1,19 +1,9 @@
 import AppKit
 
-/// Surviving a crash. `Session` only writes on a clean quit and on window close, so a
-/// WebKit content-process take-down or a kill takes the whole session with it.
-///
-/// Two halves, both deliberately dumb:
-///  - a marker file that exists while Vane is running. Present at launch ⇒ the last run
-///    never got to clean it up ⇒ it crashed.
-///  - a timer that re-saves the session periodically, so the file on disk is never more
-///    than one interval stale.
-///
-/// ponytail: a zero-byte file and a Timer. No crash reporter, no signal handlers, no
-/// atexit — a signal handler can't safely touch UserDefaults or WebKit anyway, which is
-/// the whole reason the marker is written *up front* instead of on the way down.
-/// Ceiling: a force-quit or a logout that kills the app looks identical to a crash, so the
-/// user gets an unnecessary "reopen tabs?" prompt. Cheap price for never losing a session.
+/// A dirty marker detects unclean exits, including force quit. Saved originals are
+/// preserved before restoration; pages from an unclean launch require an explicit open.
+/// No unsafe signal handlers: the periodic snapshot bounds unsaved changes to 30 seconds
+/// when storage is working. A missing/unwritable marker cannot safely begin a session.
 @MainActor enum Crash {
 
     /// Pointed at a temp directory under `check()`; nil means the real Store directory.
@@ -41,14 +31,23 @@ import AppKit
     static var write: () -> Bool = { Session.save() }
 
     /// Call before restoring anything — the marker has to be read before it is rewritten.
-    static func begin(now: Date = .now) {
-        crashed = FileManager.default.fileExists(atPath: marker.path)
-        SnapshotPersistence.write(Data(), to: marker)
-        lastSave = now
+    @discardableResult
+    static func begin(now: Date = .now) -> Bool {
         timer?.invalidate()
+        timer = nil
+        crashed = FileManager.default.fileExists(atPath: marker.path)
+        do {
+            if crashed { try RecoverySnapshots.preserveLaunch(in: marker.deletingLastPathComponent()) }
+        } catch {
+            NSLog("Vane: cannot preserve session recovery originals: %@", error.localizedDescription)
+            return false
+        }
+        guard SnapshotPersistence.write(Data(), to: marker) else { return false }
+        lastSave = now
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
             MainActor.assumeIsolated { _ = autosave() }
         }
+        return true
     }
 
     /// Normal termination. Save once more, then clear the marker so the next launch knows
@@ -86,7 +85,7 @@ import AppKit
         }
         let alert = NSAlert()
         alert.messageText = "Vane quit unexpectedly the last time it was open."
-        alert.informativeText = "Reopen the windows and tabs from that session?"
+        alert.informativeText = "Reopen the saved windows and tabs? Pages stay paused until you choose Open Page. Unsaved form input may be lost."
         alert.addButton(withTitle: "Reopen Tabs")   // default: the user's work is the safe choice here
         alert.addButton(withTitle: "Start Fresh")
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
@@ -177,6 +176,28 @@ import AppKit
                     autosave(now: t0.addingTimeInterval(interval))))
         markClean()
         out.append(("a successful retry can mark the session clean", !markerExists()))
+
+        let session = temp.appendingPathComponent("session.json")
+        let original = Data("saved launch original".utf8)
+        try? original.write(to: session)
+        let privateName = "session-00000000-0000-0000-0000-000000000001.json"
+        try? Data("private sentinel".utf8).write(to: temp.appendingPathComponent(privateName))
+        _ = begin(now: t0)
+        let preserved = begin(now: t0) && begin(now: t0)
+        let recovery = temp.appendingPathComponent("Session Recovery")
+        let launches = (try? FileManager.default.contentsOfDirectory(at: recovery, includingPropertiesForKeys: nil)) ?? []
+        out.append(("repeated unclean launches preserve independent originals", preserved && launches.count == 2
+                    && launches.allSatisfy { (try? Data(contentsOf: $0.appendingPathComponent("session.json"))) == original }))
+        out.append(("crash originals exclude private session files", launches.allSatisfy {
+            !FileManager.default.fileExists(atPath: $0.appendingPathComponent(privateName).path)
+        }))
+        try? FileManager.default.removeItem(at: recovery)
+        try? Data().write(to: recovery) // An unavailable archive destination.
+        out.append(("startup stops when originals cannot be preserved", !begin(now: t0)
+                    && (try? Data(contentsOf: session)) == original && markerExists()))
+        directory = temp.appendingPathComponent("missing")
+        out.append(("startup stops when the dirty marker cannot be written", !begin(now: t0)))
+        directory = temp
         return out
     }
 }

@@ -58,13 +58,20 @@ do {
 }
 
 // Before the first browser window writes profile and session files.
+guard Crash.begin() else {
+    let alert = NSAlert()
+    alert.messageText = "Vane could not protect your saved session"
+    alert.informativeText = "Your saved files have been kept. Check available storage and folder access, then reopen Vane."
+    alert.addButton(withTitle: "Quit")
+    alert.runModal()
+    exit(1)
+}
 FirstLaunch.prepare()
 
 // Before the first window, and so before the Dock tile is first drawn: the tile belongs to
 // the running process, so a chosen icon has to be put back on every launch. See AppIcon.
 AppIcon.restoreAtLaunch()
 
-Crash.begin()
 BatterySaver.shared.begin()
 
 // Before any window: the refresh reattaches the compiled rules to every live web view, and

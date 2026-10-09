@@ -59,16 +59,18 @@ struct Parked {
     /// nil means "the key is the page", which is every Today tab, every row that never
     /// wandered, and every row written down before this field existed.
     var page: URL?
+    var needsRecovery: Bool
 
-    init(title: String = "", state: Data? = nil, page: URL? = nil) {
+    init(title: String = "", state: Data? = nil, page: URL? = nil, needsRecovery: Bool = false) {
         self.title = title
         self.state = state
         self.page = page
+        self.needsRecovery = needsRecovery
     }
 
     /// The same state, filed under a key that is not the page it came from. See
     /// `TabStore.saveCurrentSpace`, the one caller.
-    func on(_ page: URL) -> Parked { Parked(title: title, state: state, page: page) }
+    func on(_ page: URL) -> Parked { Parked(title: title, state: state, page: page, needsRecovery: needsRecovery) }
 }
 
 extension Prefs {
@@ -331,6 +333,7 @@ extension Prefs {
             /// file's versions are: an older build ignores `u` and parks such a row at its
             /// home while the state it assigns wakes on the wander.
             var u: String?
+            var needsRecovery: Bool?
         }
 
         nonisolated static func url(for profileID: UUID, in dir: URL) -> URL {
@@ -338,19 +341,33 @@ extension Prefs {
         }
 
         private nonisolated static func read(_ profileID: UUID, in dir: URL) -> [String: [String: Row]] {
-            guard let data = try? Data(contentsOf: url(for: profileID, in: dir)),
-                  let all = try? JSONDecoder().decode([String: [String: Row]].self, from: data)
+            let file = url(for: profileID, in: dir)
+            guard let data = RecoverySnapshots.read(file, valid: readable),
+                  var all = try? JSONDecoder().decode([String: [String: Row]].self, from: data)
             else { return [:] }
+            // Recovery policy belongs to the entire fallback generation. A save or
+            // removal in one Space must not silently wake another Space's opaque state.
+            if (try? Data(contentsOf: file)).map(readable) != true {
+                all = all.mapValues { rows in rows.mapValues { row in
+                    var row = row
+                    row.needsRecovery = true
+                    return row
+                } }
+            }
             return all
+        }
+
+        private nonisolated static func readable(_ data: Data) -> Bool {
+            (try? JSONDecoder().decode([String: [String: Row]].self, from: data)) != nil
         }
 
         /// `dir` is always `Store.directory` outside `check()`; it cannot be a default
         /// argument because reading it is main-actor work and default values are evaluated
         /// in a nonisolated context.
         static func load(space: UUID, profileID: UUID, in dir: URL) -> [String: Parked] {
-            (read(profileID, in: dir)[space.uuidString] ?? [:]).mapValues {
+            return (read(profileID, in: dir)[space.uuidString] ?? [:]).mapValues {
                 Parked(title: $0.t ?? "", state: $0.s.flatMap { Data(base64Encoded: $0) },
-                       page: $0.u.flatMap(URL.init(string:)))
+                       page: $0.u.flatMap(URL.init(string:)), needsRecovery: $0.needsRecovery == true)
             }
         }
 
@@ -359,10 +376,11 @@ extension Prefs {
                          profileID: UUID, in dir: URL) -> Bool {
             var all = read(profileID, in: dir)
             all[space.uuidString] = parked.mapValues {
-                Row(t: $0.title, s: $0.state?.base64EncodedString(), u: $0.page?.absoluteString)
+                Row(t: $0.title, s: $0.state?.base64EncodedString(), u: $0.page?.absoluteString,
+                    needsRecovery: $0.needsRecovery ? true : nil)
             }
             guard let data = try? JSONEncoder().encode(all) else { return false }
-            return SnapshotPersistence.write(data, to: url(for: profileID, in: dir))
+            return RecoverySnapshots.write(data, to: url(for: profileID, in: dir), valid: readable)
         }
 
         /// Remove one Space without disturbing the other Spaces in the profile's sidecar.
@@ -371,7 +389,7 @@ extension Prefs {
             var all = read(profileID, in: dir)
             all.removeValue(forKey: space.uuidString)
             guard let data = try? JSONEncoder().encode(all) else { return false }
-            return SnapshotPersistence.write(data, to: url(for: profileID, in: dir))
+            return RecoverySnapshots.write(data, to: url(for: profileID, in: dir), valid: readable)
         }
     }
 

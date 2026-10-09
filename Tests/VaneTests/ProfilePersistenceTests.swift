@@ -70,6 +70,33 @@ import XCTest
         XCTAssertFalse(FileManager.default.fileExists(atPath: database.path))
     }
 
+    func testExplicitDeletionRemovesOnlyThatProfilesRecoveryCopies() throws {
+        let manager = try manager()
+        let victim = manager.create(name: "Delete recovered data")
+        let survivor = manager.active.id
+        let archive = manager.directory.appendingPathComponent("Session Recovery/launch")
+        try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+        var removed: [URL] = []
+        for id in [victim.id, survivor] {
+            for primary in [ProfileManager.sessionURL(for: id, in: manager.directory),
+                            ProfileManager.spacesURL(for: id, in: manager.directory),
+                            Suspension.SpaceState.url(for: id, in: manager.directory)] {
+                for file in [primary, primary.appendingPathExtension("previous"),
+                             primary.appendingPathExtension("damaged-" + UUID().uuidString),
+                             archive.appendingPathComponent(primary.lastPathComponent),
+                             archive.appendingPathComponent(primary.lastPathComponent + ".previous")] {
+                    try Data("private profile history".utf8).write(to: file)
+                    if id == victim.id { removed.append(file) }
+                }
+            }
+        }
+        XCTAssertTrue(manager.delete(victim.id))
+        for file in removed { XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), file.path) }
+        let kept = ProfileManager.sessionURL(for: survivor, in: manager.directory).appendingPathExtension("previous")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: archive.appendingPathComponent(kept.lastPathComponent).path))
+    }
+
     func testUnreadableProfileListIsVisibleAndRetryCannotOverwriteIt() throws {
         let manager = try manager()
         let file = manager.directory.appendingPathComponent("profiles.json")
