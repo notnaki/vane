@@ -63,6 +63,40 @@ import XCTest
         XCTAssertEqual(tab.web.url, try server.url("/favourite"))
     }
 
+    func testFavouritePeriodSelectorHashLinkStaysInDocument() async throws {
+        server.pages["/periods"] = """
+        <title>Periods</title><a id="period" href="#" onclick="document.body.dataset.period='2'">2. dönem</a>
+        """
+        tab.kind = .favourite
+        var peeked: URL?
+        tab.onPeek = { peeked = $0 }
+        try await load("/periods")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('period').click()")
+        try await compatibilityWait { peeked != nil || self.tab.web.url?.absoluteString.hasSuffix("#") == true }
+        XCTAssertNil(peeked, "A same-document period selector must not open a duplicate Peek")
+        let period = try await tab.web.evaluateJavaScript("document.body.dataset.period") as? String
+        XCTAssertEqual(period, "2")
+    }
+
+    func testFavouriteSameSiteBlankTargetKeepsWebKitPopupRouting() async throws {
+        server.pages["/favourite"] = """
+        <title>Favourite</title><a id="document" href="/document" target="_blank">Document</a>
+        """
+        tab.kind = .favourite
+        tab.web.configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
+        var peeked: URL?
+        var popupRequested = false
+        tab.onPeek = { peeked = $0 }
+        tab.onPopup = { _, _ in popupRequested = true; return nil }
+        try await load("/favourite")
+        _ = try await tab.web.evaluateJavaScript("document.getElementById('document').click()")
+        try await compatibilityWait { peeked != nil || popupRequested }
+        XCTAssertNil(peeked, "A same-site link must not be mistaken for a link out of about:blank")
+        XCTAssertTrue(popupRequested, "Same-site new-window links retain WebKit's opener configuration")
+        XCTAssertEqual(tab.web.url, try server.url("/favourite"))
+        XCTAssertFalse(server.requests.contains { $0.hasPrefix("GET /document ") })
+    }
+
     func testRetiredViewCallbacksCannotMutateClosedTabOrRecreateWebView() async throws {
         let navigation = try await load("/old")
         let retired = tab.web
