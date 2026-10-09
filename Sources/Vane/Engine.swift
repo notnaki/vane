@@ -2533,18 +2533,29 @@ struct Stash {
     /// the Space's URL lists: those describe shared Space furniture, while this snapshot
     /// describes the distinct tabs and navigation state this particular window owned.
     private func restoreSession(_ entries: [Session.Entry]) {
+        // No window is mounted yet. Build the rows locally; interactive insertion would
+        // rescan and publish the growing folder shapes once for every saved tab.
+        var restored: [Tab] = []
+        restored.reserveCapacity(entries.count)
         var today: [(url: URL, tab: Tab)] = []
         var pinned: [(url: URL, tab: Tab)] = []
         for entry in entries {
             guard let id = entry.id.flatMap(UUID.init(uuidString:)),
                   let url = URL(string: entry.url), let kind = entry.kind else { continue }
             if sharesTabs, let shared = SharedTabs.existing(id, for: self) {
-                tabs.append(shared)
+                restored.append(shared)
                 if kind == .today { today.append((url, shared)) }
                 if kind == .pinned { pinned.append((entry.home.flatMap(URL.init(string:)) ?? url, shared)) }
                 continue
             }
-            let tab = newBlankTab(focus: false, as: kind, id: id)
+            let tab = Tab(id: id, isPrivate: isPrivate, profileID: profileID)
+            tab.sharedSpaceID = currentSpaceID
+            wire(tab)
+            tab.kind = kind
+            // Use the same insertion rule as newBlankTab, including mixed legacy rows
+            // and reused shared identities. Only folder/publication work is deferred.
+            restored.insert(tab, at: TabStore.clampedDestination(others: restored.map(\.kind),
+                                                                 moving: kind, to: restored.count))
             let parked = Parked(title: entry.title ?? "",
                                 state: entry.state.flatMap { Data(base64Encoded: $0) },
                                 needsRecovery: entry.needsRecovery == true)
@@ -2553,6 +2564,7 @@ struct Stash {
             if kind == .today { today.append((url, tab)) }
             if kind == .pinned { pinned.append((entry.home.flatMap(URL.init(string:)) ?? url, tab)) }
         }
+        tabs = restored
         if !isPrivate && !isLittle {
             adopt(\.pins, saved: TabStore.savedShape(space: currentSpaceID, profileID: profileID),
                   tabs: pinned)

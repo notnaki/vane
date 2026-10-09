@@ -1016,6 +1016,32 @@ extension TabStore {
         var selected: [String?]?
     }
 
+    /// One validated generation supplies every restoration field. Keep the file choice
+    /// with its metadata so a recovery fallback never needs a second primary-file read.
+    struct RestorationSnapshot {
+        let windows: [[Entry]]
+        let splits: [[Split.Saved]]
+        let spaces: [UUID?]
+        let selected: [UUID?]
+        let hasIdentityFormat: Bool
+
+        var urls: [URL] {
+            var seen = Set<String>()
+            return windows.flatMap { $0 }.compactMap { URL(string: $0.url) }
+                .filter { seen.insert($0.absoluteString).inserted }
+        }
+    }
+
+    static func load(_ file: URL, read: (URL) -> Data? = { try? Data(contentsOf: $0) })
+        -> (snapshot: RestorationSnapshot, recoveringFile: Bool)? {
+        for (index, candidate) in [file, file.appendingPathExtension("previous")].enumerated() {
+            if let data = read(candidate), let snapshot = restorationSnapshot(data) {
+                return (snapshot, index != 0)
+            }
+        }
+        return nil
+    }
+
     /// Recover damaged optional identity metadata one row at a time. Healthy rows keep
     /// their state and identity; duplicate identifiers keep their first unambiguous use.
     static func normalizedEntries(_ entries: [Entry]) -> [Entry] {
@@ -1052,13 +1078,25 @@ extension TabStore {
 
     /// Keep optional row-metadata tolerance, but never mistake corruption or a future
     /// schema for a successfully saved empty session.
-    static func readable(_ data: Data) -> Bool {
+    static func readable(_ data: Data) -> Bool { restorationSnapshot(data) != nil }
+
+    private static func restorationSnapshot(_ data: Data) -> RestorationSnapshot? {
         if let saved = try? JSONDecoder().decode(Disk.self, from: data) {
-            return (2...4).contains(saved.version)
-                && saved.windows.flatMap { $0 }.allSatisfy { TabAddress.restorable(URL(string: $0.url)) }
+            guard (2...4).contains(saved.version),
+                  saved.windows.flatMap({ $0 }).allSatisfy({ TabAddress.restorable(URL(string: $0.url)) })
+            else { return nil }
+            return RestorationSnapshot(windows: saved.windows, splits: saved.splits ?? [],
+                spaces: saved.windows.indices.map { index in
+                    saved.spaces.flatMap { $0.indices.contains(index) ? UUID(uuidString: $0[index]) : nil }
+                }, selected: saved.windows.indices.map { index in
+                    saved.selected.flatMap { $0.indices.contains(index) ? $0[index].flatMap(UUID.init(uuidString:)) : nil }
+                }, hasIdentityFormat: saved.version == 4)
         }
-        guard let legacy = try? JSONDecoder().decode([[String]].self, from: data) else { return false }
-        return legacy.flatMap { $0 }.allSatisfy { TabAddress.restorable(URL(string: $0)) }
+        guard let legacy = try? JSONDecoder().decode([[String]].self, from: data),
+              legacy.flatMap({ $0 }).allSatisfy({ TabAddress.restorable(URL(string: $0)) }) else { return nil }
+        return RestorationSnapshot(windows: legacy.map { $0.map { Entry(url: $0) } }, splits: [],
+                                   spaces: legacy.map { _ in nil }, selected: legacy.map { _ in nil },
+                                   hasIdentityFormat: false)
     }
 
     /// Restore previews must distinguish an empty session from a damaged file. Keep
@@ -1131,12 +1169,7 @@ extension TabStore {
     /// the one-off migration folds into the profile's first Space: before the Space existed
     /// these tabs were the whole of "the window's tabs", written nowhere else.
     static func urls(for profileID: UUID, in dir: URL = Store.directory) -> [URL] {
-        guard let data = RecoverySnapshots.read(ProfileManager.sessionURL(for: profileID, in: dir), valid: readable)
-        else { return [] }
-        var seen = Set<String>()
-        return decode(data).flatMap { $0 }
-            .compactMap { URL(string: $0.url) }
-            .filter { seen.insert($0.absoluteString).inserted }
+        load(ProfileManager.sessionURL(for: profileID, in: dir))?.snapshot.urls ?? []
     }
 
     /// url → what we knew about it, for `TabStore.init`. Entries with neither a title nor a
@@ -1256,12 +1289,13 @@ extension TabStore {
             for profile in profiles { if restore(profile: profile) { restored = true } }
             return restored
         }
-        guard let data = RecoverySnapshots.read(file(profile.id), valid: readable) else { return false }
-        let recoveringFile = (try? Data(contentsOf: file(profile.id))).map(readable) != true
+        guard let loaded = load(file(profile.id)) else { return false }
+        let snapshot = loaded.snapshot
+        let recoveringFile = loaded.recoveringFile
         let wasRestoring = restoring
         restoring = true
         defer { restoring = wasRestoring }
-        let saved = decodeSplits(data)
+        let saved = snapshot.splits
         // Each window comes back into the Space it was in. A session row for a deleted or
         // moved Space is skipped: its pages must not reappear in the source profile.
         // Sessions predating per-window Spaces still use the profile's last-used Space.
@@ -1270,12 +1304,12 @@ extension TabStore {
         // other way a window opens — passes none, or "Start Fresh" would put back exactly the
         // pages it was told not to.
         let spaces = ProfileManager.shared.ensureSpaces(
-            for: profile, sessionTabs: urls(for: profile.id, in: Store.directory))
-        let inSpace = decodeSpaces(data)
-        let selected = decodeSelected(data)
-        let hasIdentityFormat = (try? JSONDecoder().decode(Disk.self, from: data).version) == 4
+            for: profile, sessionTabs: snapshot.urls)
+        let inSpace = snapshot.spaces
+        let selected = snapshot.selected
+        let hasIdentityFormat = snapshot.hasIdentityFormat
         let knownSpaces = Set(spaces.map(\.id))
-        let windows = decode(data).enumerated().filter {
+        let windows = snapshot.windows.enumerated().filter {
             !$0.element.isEmpty && (inSpace[$0.offset].map { knownSpaces.contains($0) } ?? true)
         }
         guard !windows.isEmpty else { return false }

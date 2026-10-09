@@ -119,6 +119,10 @@ unavailable.
 
 ### Specialist reliability fixtures
 
+For opt-in cold/warm startup, large-session restoration and parked/sleeping tab
+measurements, see [Startup performance](STARTUP-PERFORMANCE.md). Build first and
+reserve a quiet profiling window before collecting timings.
+
 For site-permission lifecycle fixtures and a fake display-capture check, see
 [Site permissions on macOS 27](SITE-PERMISSIONS.md#validation-and-remaining-platform-coverage).
 
