@@ -92,6 +92,12 @@ because visits do not store which Space they belonged to. Private windows show
 neither saved history nor other windows' tabs. Searches run off the input thread
 and discard superseded results.
 
+Unfinished form work stays in the live page across tab, Space and shared-window
+switches. Automatic suspension, Battery Saver and memory pressure defer unloading
+pages with detected drafts or uncertain detection. Draft contents are not saved to
+disk and cannot be recovered reliably after a process crash. See
+[unfinished work and suspension](docs/DRAFT-PROTECTION.md) for coverage and limits.
+
 Windows in the same Space share tabs. When both show the same tab, the focused
 window holds its live page and the other shows a gray snapshot. Switching windows
 preserves input, scroll position, and history; closing a tab removes it from every
