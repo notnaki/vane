@@ -368,6 +368,73 @@ import SwiftUI
         XCTAssertTrue(store.tabs.last === survivor, "Undo must keep the survivor's live identity")
     }
 
+    func testTidyBackgroundClickDismissesWithoutActivatingTheBrowser() async throws {
+        let (store, _, _) = fixture()
+        for number in 0..<3 { _ = tab("https://example.com/\(number)", in: store) }
+        let ids = store.tabs.map(\.id)
+        let shape = store.todayShape
+        var preview = TidyPreview(store: store)
+        preview.groups = [.init(name: "Research", tabIDs: ids)]
+        store.tidyPreview = preview
+        var backgroundPresses = 0
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 700),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = TidyModalHostingView(rootView: TidyModalFixture(store: store) {
+            backgroundPresses += 1
+        })
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            store.tidyPreview = nil
+            if let sheet = window.attachedSheet { window.endSheet(sheet) }
+            window.contentView = nil
+            window.close()
+        }
+        @MainActor func wait(_ condition: () -> Bool) async throws {
+            for _ in 0..<100 {
+                if condition() { return }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        @MainActor func click(_ target: NSWindow, at point: NSPoint) async throws {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point,
+                    modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: target.windowNumber, context: nil, eventNumber: 0,
+                    clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+                NSApp.sendEvent(event)
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        try await wait { window.attachedSheet != nil }
+        let sheet = try XCTUnwrap(window.attachedSheet)
+        XCTAssertEqual(sheet.contentLayoutRect.height, sheet.frame.height, accuracy: 1,
+                       "The native modal must not reserve a titlebar strip")
+        try await click(sheet, at: NSPoint(x: 10, y: 10))
+        XCTAssertNotNil(store.tidyPreview, "Clicks inside the modal must keep it open")
+
+        let other = NSWindow(contentRect: NSRect(x: 850, y: 0, width: 200, height: 200),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        other.isReleasedWhenClosed = false
+        other.contentView = NSView()
+        other.orderFront(nil)
+        try await click(other, at: NSPoint(x: 20, y: 20))
+        other.close()
+        XCTAssertNotNil(store.tidyPreview, "Another browser window must not dismiss this modal")
+
+        try await click(window, at: NSPoint(x: 20, y: 20))
+        try await wait { store.tidyPreview == nil && window.attachedSheet == nil }
+        XCTAssertNil(store.tidyPreview, "Clicking the modal’s background must cancel the preview")
+        XCTAssertNil(window.attachedSheet)
+        XCTAssertEqual(backgroundPresses, 0, "The dismissing click must not activate the browser")
+        XCTAssertEqual(store.tabs.map(\.id), ids)
+        XCTAssertEqual(store.todayShape, shape, "Dismissing must not apply the proposed folders")
+        guard store.tidyPreview == nil else { return }
+        window.makeKeyAndOrderFront(nil)
+        try await click(window, at: NSPoint(x: 20, y: 20))
+        XCTAssertEqual(backgroundPresses, 1, "Normal browser clicks must resume after dismissal")
+    }
+
     func testReviewSheetsRenderAtTheirDefaultSizes() async throws {
         let (store, _, _) = fixture()
         for number in 0..<6 { _ = tab("https://example.com/\(number)", in: store) }
@@ -402,4 +469,23 @@ import SwiftUI
         try await render(TabOrganizationSheet(store: store), name: "organize", size: NSSize(width: 760, height: 580))
     }
 
+}
+
+private struct TidyModalFixture: View {
+    @ObservedObject var store: TabStore
+    let background: () -> Void
+
+    var body: some View {
+        Button(action: background) {
+            Color.gray.frame(width: 800, height: 700).contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .sheet(item: $store.tidyPreview) { preview in
+            TidyPreviewSheet(store: store, preview: preview)
+        }
+    }
+}
+
+private final class TidyModalHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
