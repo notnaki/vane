@@ -455,7 +455,7 @@ struct BrowserWindow: View {
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: libraryWidth)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: store.sidebarShown)
         .animation(reduceMotion || batterySaver.isActive ? nil
-                   : (peeking ? Look.floatingSidebarAppear : .easeOut(duration: 0.2)), value: peeking)
+                   : Look.floatingSidebarAnimation, value: peeking)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.palette == nil)
         // Arc hides the traffic lights along with the sidebar: a collapsed window is the
