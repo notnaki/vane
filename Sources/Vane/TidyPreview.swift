@@ -82,8 +82,9 @@ struct TidyPreviewSheet: View {
                     .font(Look.footnote).foregroundStyle(Look.inkSecondary)
             }
         }
-        .padding(Look.paneMargin)
-        .padding(.bottom, -Look.inset)
+        .padding(.horizontal, Look.paneMargin)
+        .padding(.top, Look.paneMargin)
+        .padding(.bottom, Look.paneMargin - Look.inset)
     }
 
     private func folder(_ index: Int) -> some View {
@@ -105,7 +106,8 @@ struct TidyPreviewSheet: View {
                     .foregroundStyle(Look.inkSecondary)
                     .fixedSize()
             }
-            .padding(Look.cardInset)
+            .padding(.horizontal, Look.cardInset)
+            .padding(.vertical, Look.rowInset)
             .background(Look.controlFill)
 
             VStack(alignment: .leading, spacing: Look.listRowGap) {
@@ -125,7 +127,8 @@ struct TidyPreviewSheet: View {
                         .transition(.opacity)
                 }
             }
-            .padding(Look.inset)
+            .padding(.horizontal, Look.inset)
+            .padding(.vertical, Look.listRowGap)
         }
         .background(Look.cardFill)
         .clipShape(.rect(cornerRadius: Look.pillRadius))
@@ -188,27 +191,35 @@ struct TidyPreviewSheet: View {
 private struct TidyPreviewTabRow: View {
     @ObservedObject var tab: Tab
     @Binding var included: Bool
-    @State private var hovered = false
 
     var body: some View {
-        Toggle(isOn: $included) {
+        SidebarRow(selected: false, dimmed: !included, action: { included.toggle() }) {
+            TabIcon(tab: tab, size: Look.rowIcon)
+        } label: {
+            Text(TidyTitles.title(for: tab))
+                .layoutPriority(1)
+        } trailing: {
             HStack(spacing: Look.rowSpacing) {
-                TabIcon(tab: tab, size: Look.rowIcon)
-                VStack(alignment: .leading, spacing: Look.captionGap) {
-                    Text(TidyTitles.title(for: tab)).font(Look.text)
-                        .foregroundStyle(included ? Look.inkPrimary : Look.inkSecondary)
-                        .lineLimit(1)
-                    Text(tab.currentURL?.host ?? tab.currentURL?.absoluteString ?? "New Tab")
-                        .font(Look.caption).foregroundStyle(Look.inkSecondary).lineLimit(1)
+                Text(tab.currentURL?.host ?? "")
+                    .font(Look.caption).foregroundStyle(Look.inkTertiary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: 110, alignment: .trailing)
+                ZStack {
+                    Circle().fill(included ? Look.inkSecondary : .clear)
+                    Circle().strokeBorder(Look.inkQuiet, lineWidth: 1)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Look.panelFill)
+                        .opacity(included ? 1 : 0)
+                        .scaleEffect(included ? 1 : 0.5)
                 }
-                Spacer(minLength: 0)
+                .frame(width: Look.rowIcon, height: Look.rowIcon)
+                .accessibilityHidden(true)
             }
         }
-        .toggleStyle(.checkbox)
-        .padding(Look.rowInset)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(hovered ? Look.hovered : .clear, in: .rect(cornerRadius: Look.cardRadius))
-        .onHover { value in Motion.animate(Look.quick) { hovered = value } }
+        .accessibilityRepresentation {
+            Toggle(TidyTitles.title(for: tab), isOn: $included).toggleStyle(.checkbox)
+        }
         .help(tab.currentURL?.absoluteString ?? "New Tab")
     }
 }
