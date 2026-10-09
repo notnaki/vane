@@ -48,6 +48,9 @@ jobs:
       - name: Source timestamp cache fixture
         run: python3 scripts/test-ci-source-state.py
 
+      - name: Website scene regressions
+        run: node docs/tests/galaxy.test.cjs
+
       # Debug avoids whole-module release optimization on every PR. Always ask SwiftPM
       # to build, even on an exact cache hit, so it validates the restored outputs.
       # The release workflow still builds and smoke-tests the optimized, signed app.
