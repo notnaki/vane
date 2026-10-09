@@ -1661,10 +1661,10 @@ struct TitleReveal: Equatable, Sendable {
             let target: LinkInteraction.Target = navigationAction.targetFrame.map {
                 $0.isMainFrame ? .main : .subframe
             } ?? .newWindow
-            let source = navigationAction.sourceFrame
-            let from = (source.isMainFrame ? source.request.url : nil) ?? w.url ?? url
+            // WebKit can retain about:blank in sourceFrame.request after a real page
+            // loads. Compare with the tab's live URL so in-page controls stay in place.
             let action = LinkInteraction.route(to: url,
-                context: linkContext(target: target, source: from),
+                context: linkContext(target: target),
                 modifiers: navigationAction.modifierFlags,
                 button: navigationAction.buttonNumber,
                 preferences: .current)
