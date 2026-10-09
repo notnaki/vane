@@ -153,6 +153,8 @@ bookmarks) and prints measurements without machine-sensitive timing assertions:
 
 ```sh
 VANE_STORE_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter StoreLatencyBenchmarks
+# Native accessibility actions, selection invalidation and search-field focus:
+VANE_STORE_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter BookmarkPresentationTests
 ```
 
 Run comparisons on the same quiet logged-in Mac, with the same fixtures and build

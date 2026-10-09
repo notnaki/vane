@@ -1,5 +1,8 @@
 # Store and search latency investigation
 
+Matched before/after results and final validation are recorded in
+[PR #377](https://github.com/notnaki/vane/pull/377).
+
 ## Method
 
 Measured release XCTest fixtures on a MacBookPro18,4 (10 logical CPUs, 32 GB),
