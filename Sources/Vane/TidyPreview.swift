@@ -203,7 +203,7 @@ private struct TidyPreviewTabRow: View {
                 Text(tab.currentURL?.host ?? "")
                     .font(Look.caption).foregroundStyle(Look.inkTertiary)
                     .lineLimit(1).truncationMode(.middle)
-                    .frame(maxWidth: 110, alignment: .trailing)
+                    .frame(width: 110, alignment: .trailing)
                 ZStack {
                     Circle().fill(included ? Look.inkSecondary : .clear)
                     Circle().strokeBorder(Look.inkQuiet, lineWidth: 1)
