@@ -1,27 +1,10 @@
 import Foundation
 
-/// Instant Links — Shift+Return on a search skips the results page and opens the top
-/// organic result directly. A comma-separated input resolves several at once, one tab each.
-///
-/// PRIVACY — read this before wiring it to a key.
-/// Pressing Return on a search sends the query to the engine anyway, so this feature does
-/// not leak a query the user was not about to send. What it *does* do is send it from the
-/// app rather than from the WebView, and — because only one engine's results are parseable
-/// without an API key — send it to DuckDuckGo even when the user's chosen engine is Google.
-/// That is the honest cost, and the reasons it is still on by default:
-///
-///   * It only ever fires on an explicit Shift+Return. Unlike `SearchSuggestions`, nothing
-///     goes out while the user is still typing, so there is no half-formed-thought leak.
-///   * A private window never resolves. `isPrivate` is threaded in from the window, same
-///     as the suggestion path, because only the window knows.
-///   * Input that is already a url is never sent anywhere. `shouldResolve` reuses the
-///     address bar's own decision table, so `example.com`, `localhost:3000`, a bare IP, a
-///     file path and a `!bang` all skip resolution and just navigate.
-///   * Ephemeral session: no cookies sent, none stored, no cache.
-///
-/// ponytail: string scanning, no HTML parser. Ceiling is that a markup change breaks
-/// extraction — which is why every extracted href is validated before it is returned, and
-/// why a failure falls back to the ordinary results page instead of guessing.
+/// Shift+Return uses the selected search engine to open a first result where supported.
+/// Google and Kagi handle their own first-result navigation in the browsing tab.
+/// DuckDuckGo has a cookie-free HTML resolver; other engines open their normal results.
+/// Resolution never substitutes another provider, runs while typing, or runs privately.
+/// Comma-separated input resolves several queries, one tab each.
 @MainActor enum InstantLinks {
 
     /// Swapped out by `check()` so the assertions never touch the user's real preferences.
@@ -36,21 +19,10 @@ import Foundation
         set { defaults.set(newValue, forKey: "instantLinks") }
     }
 
-    /// A page load is what this replaces, so it may take a page load's worth of time — but
-    /// not more, because the fallback (open the results page) is instant and always right.
+    /// Bound background resolution before falling back to the ordinary results page.
     static let timeout: TimeInterval = 6
 
-    /// DuckDuckGo's no-JavaScript endpoint. Verified with curl: it returns server-rendered
-    /// markup with the organic results as plain `<a class="result__a">` anchors carrying
-    /// absolute hrefs, and no "people also ask" / video carousel / knowledge panel blocks
-    /// at all — those simply do not exist in this template.
-    ///
-    /// ponytail: this is the *only* engine used, whatever the user picked. Google and Bing
-    /// serve a JavaScript wall to a plain GET (verified: zero organic links in the body),
-    /// Ecosia answers 403, and Brave's markup is a different extractor's worth of work for
-    /// one more engine. Respecting the user's engine here would mean shipping four
-    /// scrapers that each rot separately. Ceiling: if Brave ever matters, it is a second
-    /// entry in a dictionary of (endpoint, anchor class), not a rewrite.
+    /// Only used when the user selected the built-in DuckDuckGo engine.
     static let endpoint = "https://html.duckduckgo.com/html/?q="
 
     /// The endpoint tailors its markup to the agent and has served nothing at all to some.
@@ -88,16 +60,35 @@ import Foundation
 
     // MARK: - The gate
 
-    /// Everything that must be true before a query is allowed to leave the machine.
-    ///
-    /// The last line is the "already a url" guard, and it is the address bar's own answer
-    /// rather than a second copy of that logic: if `Search.url(for:)` would do anything
-    /// other than search for this string verbatim — navigate to a host, open a file, route
-    /// a bang — then there is no search to skip and nothing to resolve.
-    static func shouldResolve(_ query: String, isPrivate: Bool = false) -> Bool {
+    /// Gate background requests on the actual selected engine, plus the preference,
+    /// private-window boundary, and ordinary address-bar URL/bang checks.
+    static func shouldResolve(_ query: String, isPrivate: Bool = false,
+                              using engine: SearchEngine? = nil) -> Bool {
+        (engine ?? Search.current) == Search.builtIn.first { $0.id == "duckduckgo" }
+            && canSkipResults(query, isPrivate: isPrivate)
+    }
+
+    private static func canSkipResults(_ query: String, isPrivate: Bool) -> Bool {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard enabled, !isPrivate, !q.isEmpty else { return false }
         return Search.url(for: q) == Search.search(q)
+    }
+
+    /// Engine-native navigation preserves the profile's sign-in (needed by Kagi) and
+    /// leaves consent/challenge pages to the engine. Unknown engines keep normal search.
+    static func firstResultNavigation(for query: String, using engine: SearchEngine,
+                                      isPrivate: Bool = false) -> URL? {
+        guard canSkipResults(query, isPrivate: isPrivate),
+              Search.builtIn.contains(engine) else { return nil }
+        if engine.id == "kagi" {
+            // https://help.kagi.com/kagi/features/bangs.html#feeling-lucky
+            return Search.search("! " + query.trimmingCharacters(in: .whitespacesAndNewlines), using: engine)
+        }
+        guard engine.id == "google", let ordinary = Search.search(query, using: engine),
+              var components = URLComponents(url: ordinary, resolvingAgainstBaseURL: false) else { return nil }
+        // Google's own search form's "I'm Feeling Lucky" submit parameter.
+        components.queryItems = (components.queryItems ?? []) + [.init(name: "btnI", value: "1")]
+        return components.url
     }
 
     // MARK: - Extraction
@@ -187,8 +178,9 @@ import Foundation
     /// The `statusCode == 200` line is load-bearing, not ceremony: the endpoint answers a
     /// too-fast caller with `202` and a CAPTCHA page that parses to nothing anyway, and
     /// checking the code turns that into an obvious no rather than a mysterious one.
-    static func topResult(for query: String, isPrivate: Bool = false) async -> URL? {
-        guard shouldResolve(query, isPrivate: isPrivate),
+    static func topResult(for query: String, isPrivate: Bool = false,
+                          using engine: SearchEngine? = nil) async -> URL? {
+        guard shouldResolve(query, isPrivate: isPrivate, using: engine),
               let url = URL(string: endpoint + encode(query)) else { return nil }
         guard let (data, response) = try? await session.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200,
@@ -209,10 +201,17 @@ import Foundation
     static func targets(for input: String, isPrivate: Bool = false) async -> [URL] {
         // Worked out up front: every query already has an answer before a single request
         // goes out, which is what makes "fall back" a one-liner instead of a code path.
+        let engine = Search.current
         let planned = split(input).compactMap { q in Search.url(for: q).map { (q, $0) } }
         guard enabled, !isPrivate else { return planned.map(\.1) }
         var out: [URL] = []
-        for (query, fallback) in planned { out.append(await topResult(for: query) ?? fallback) }
+        for (query, fallback) in planned {
+            if let native = firstResultNavigation(for: query, using: engine) {
+                out.append(native)
+            } else {
+                out.append(await topResult(for: query, using: engine) ?? fallback)
+            }
+        }
         return out
     }
 
@@ -373,7 +372,7 @@ import Foundation
         ]
 
         // The "is this already a url" guard. Nothing here is allowed to hit the network.
-        Search.current = Search.defaultEngine
+        Search.current = Search.builtIn.first { $0.id == "duckduckgo" }!
         enabled = true
         results += [
             ("an ordinary phrase resolves", shouldResolve("swift concurrency")),

@@ -116,6 +116,15 @@ window.
 
 ## Search and history
 
+**Instant Links** uses **Shift+Return** in the address or new-tab bar to request a
+first result from your selected search engine. Google uses its Feeling Lucky mode,
+Kagi uses its [first-result bang](https://help.kagi.com/kagi/features/bangs.html#feeling-lucky),
+and DuckDuckGo uses its HTML search endpoint. Bing, Brave, Ecosia, and custom engines
+open their normal results page. Consent, redirect confirmation, sign-in, or challenges can interrupt direct
+navigation. Private windows and disabled Instant Links use ordinary navigation.
+Change the toggle in **Settings → Max → Instant Links**. Builds made before the
+9 October 2026 policy update use DuckDuckGo for resolution regardless of your engine.
+
 Type a site word such as `youtube`, `github`, or `twitter` in the search bar and press
 **Tab** (or click **Search …**) to turn it into a site search chip. Shortcut keywords
 such as `yt` and your custom bangs work too. Typing `!yt ` activates the chip directly.
