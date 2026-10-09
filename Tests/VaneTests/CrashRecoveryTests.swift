@@ -116,19 +116,26 @@ import XCTest
         }
         let url = URL(string: "https://recovery.invalid/legacy-post")!
         var space = Space(name: "Legacy", profileID: profile.id)
-        space.tabURLs = [url]
+        let home = URL(string: "https://recovery.invalid/home")!
+        let pinnedID = UUID()
+        space.tabURLs = []
+        space.pinnedTabURLs = [home]
+        space.layout = SpaceLayout(tabs: [.init(id: pinnedID, url: url, kind: .pinned, title: "Pinned", home: home)],
+                                   pins: Pins(entries: [.init(row: .tab(pinnedID.uuidString))]),
+                                   today: Pins(), splits: [], selected: pinnedID)
         XCTAssertTrue(manager.saveSpaces([space], for: profile.id))
-        XCTAssertTrue(Suspension.SpaceState.save([url.absoluteString: Parked(title: "Sidecar metadata")],
+        XCTAssertTrue(Suspension.SpaceState.save([home.absoluteString: Parked(title: "Sidecar metadata", page: url)],
                                                 space: space.id, profileID: profile.id, in: Store.directory))
         let file = ProfileManager.sessionURL(for: profile.id, in: Store.directory)
         try JSONEncoder().encode([[url.absoluteString]]).write(to: file.appendingPathExtension("previous"))
         try Data("{broken".utf8).write(to: file)
         XCTAssertTrue(Session.restore(profile: profile))
         let store = try XCTUnwrap(TabStore.all.first { !before.contains(ObjectIdentifier($0)) && $0.profileID == profile.id })
-        let tab = try XCTUnwrap(store.tabs.first { $0.currentURL == url })
+        let tab = try XCTUnwrap(store.tabs.first { $0.id == pinnedID })
         XCTAssertEqual(tab.title, "Sidecar metadata")
         XCTAssertTrue(tab.needsRecovery, "Healthy metadata cannot clear a fallback session's recovery policy")
         XCTAssertNil(tab.existingWeb)
+        XCTAssertTrue(store.tabs.allSatisfy { $0.needsRecovery && $0.existingWeb == nil })
     }
 
     func testSidecarFallbackPauseSurvivesSavingOrRemovingAnotherSpace() throws {

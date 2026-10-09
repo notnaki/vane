@@ -286,9 +286,13 @@ struct TabPage: View {
                 EaselTabPage(session: session, store: store).id(tab.id)
             } else {
                 DeveloperFrame(tab: tab) {
-                    WebView(web: tab.web,
-                        live: keepPages ? store.everyTab.filter { !store.isTabLocked($0.id) && store.ownsPage($0) }.compactMap(\.existingWeb) : [],
-                        offscreen: offscreen, tab: tab, store: store)
+                    // SwiftUI may evaluate an already-mounted child's content closure
+                    // once more while removing it after a termination publication.
+                    if !tab.needsRecovery {
+                        WebView(web: tab.web,
+                            live: keepPages ? store.everyTab.filter { !store.isTabLocked($0.id) && store.ownsPage($0) }.compactMap(\.existingWeb) : [],
+                            offscreen: offscreen, tab: tab, store: store)
+                    }
                 }
                 .overlay(alignment: .topLeading) { PasswordChooser(tab: tab) }
             }

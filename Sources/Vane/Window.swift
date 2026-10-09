@@ -483,7 +483,7 @@ extension VaneWindow {
                      profile: Profile? = nil, space: Space? = nil,
                      parked: [String: Parked] = [:], focus: Bool = true,
                      session: [Session.Entry]? = nil, selected: UUID? = nil,
-                     restoringLegacySession: Bool = false) -> TabStore {
+                     restoringLegacySession: Bool = false, recoveringSession: Bool = false) -> TabStore {
         let profile = isPrivate ? .incognito : profile ?? space.flatMap { s in
             ProfileManager.shared.profiles.first { $0.id == s.profileID }
         } ?? ProfileManager.shared.active
@@ -494,7 +494,7 @@ extension VaneWindow {
         let space = isPrivate ? nil : Spaces.resolve(space, for: profile)
         let store = TabStore(isPrivate: isPrivate, urls: urls, profileID: profile.id, space: space,
                              parked: parked, session: session, selected: selected,
-                             restoringLegacySession: restoringLegacySession)
+                             restoringLegacySession: restoringLegacySession, recoveringSession: recoveringSession)
         // Live folders keep themselves filled for as long as a window is open. A private
         // window holds none — it has no Pinned section — so it does not start the clock.
         if !isPrivate { LiveFolders.shared(for: profile.id).begin() }
@@ -1292,7 +1292,7 @@ extension TabStore {
                                      parked: identified ? [:] : parked(entries),
                                      session: identified ? normalizedEntries(entries) : nil,
                                      selected: selected.indices.contains(i) ? selected[i] : nil,
-                                     restoringLegacySession: !identified)
+                                     restoringLegacySession: !identified, recoveringSession: recoveringFile)
             // After the window exists, because a split is named by its panes' urls and the
             // tabs that carry them are made by `TabStore.init`.
             store.applySplits(saved.indices.contains(i) ? saved[i] : [])

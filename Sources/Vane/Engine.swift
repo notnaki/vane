@@ -2226,7 +2226,7 @@ struct Stash {
          profileID: UUID = ProfileManager.shared.active.id, space: Space? = nil,
          parked: [String: Parked] = [:], isLittle: Bool = false,
          session: [Session.Entry]? = nil, selected: UUID? = nil,
-         restoringLegacySession: Bool = false) {
+         restoringLegacySession: Bool = false, recoveringSession: Bool = false) {
         self.isPrivate = isPrivate
         self.isLittle = isLittle
         let profileID = isPrivate ? Profile.incognito.id : profileID
@@ -2243,6 +2243,15 @@ struct Stash {
         if session == nil, sharesTabs,
            let shared = SharedTabs.state(for: self, space: currentSpaceID) {
             tabs = SharedTabs.favourites(for: self) + shared.tabs
+            if recoveringSession {
+                for tab in tabs {
+                    if let url = tab.currentURL {
+                        var snapshot = tab.snapshot
+                        snapshot.needsRecovery = true
+                        tab.park(url: url, snapshot)
+                    }
+                }
+            }
             pins = shared.pins
             todayShape = shared.todayShape
             splits = shared.splits
@@ -2299,7 +2308,7 @@ struct Stash {
         // Merged rather than swapped, the sidecar winning: on the launch that migrates a
         // profile into its first Space there is no sidecar yet, and the session's own titles
         // and scroll offsets are all there is.
-        let parked = space.map {
+        var parked = space.map {
             Suspension.SpaceState.load(space: $0.id, profileID: profileID, in: Store.directory)
                 .merging(parked) { sidecar, session in
                     var merged = sidecar
@@ -2307,9 +2316,28 @@ struct Stash {
                     return merged
                 }
         } ?? parked
+        if recoveringSession {
+            // A fallback window can obtain metadata under pinned-home keys, layout
+            // identities, or shared rows, independent of the session's current-URL keys.
+            for url in favourites + pinned + urls {
+                var snapshot = parked[url.absoluteString] ?? Parked()
+                snapshot.needsRecovery = true
+                parked[url.absoluteString] = snapshot
+            }
+            parked = parked.mapValues { snapshot in
+                var snapshot = snapshot
+                snapshot.needsRecovery = true
+                return snapshot
+            }
+        }
         restore(favourites, as: .favourite, parked: parked)
         if let space, restoreWorkspaceLayout(space, parked: parked) {
-            for url in urls where !space.tabURLs.contains(url) { newTab(url) }
+            for url in urls where !space.tabURLs.contains(url) {
+                if recoveringSession {
+                    let tab = newBlankTab(focus: false)
+                    tab.open(url, parked: parked[url.absoluteString])
+                } else { newTab(url) }
+            }
             if let requestedURL { current = tabs.first { $0.currentURL == requestedURL }?.id ?? current }
             if current == nil { openPalette(.newTab) }
             rememberSpace()
