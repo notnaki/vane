@@ -34,7 +34,9 @@ extension Look {
     static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
     /// A committed swipe should hand focus to the destination promptly. Keep its final
     /// travel short; canceled gestures still use the more forgiving return spring.
-    static let spaceLanding = Animation.spring(response: 0.16, dampingFraction: 0.9)
+    static let spaceLanding = Animation.spring(response: 0.08, dampingFraction: 0.9)
+    /// Returning from a canceled drag keeps its gentler timing.
+    static let spaceReturn = Animation.spring(response: 0.16, dampingFraction: 0.9)
     /// A footer-height target leaves room for a rounded hover fill around the glyph.
     static let spaceDotHit: CGFloat = Look.footer
 }
@@ -1149,7 +1151,7 @@ private struct SpaceSwipe: ViewModifier {
             return
         }
         returning = true
-        withAnimation(Look.spaceLanding) { store.spaceGesture.drag = 0 } completion: { [weak store] in
+        withAnimation(Look.spaceReturn) { store.spaceGesture.drag = 0 } completion: { [weak store] in
             guard self.transition == token else { return }
             self.returning = false
             guard let store else { return }
