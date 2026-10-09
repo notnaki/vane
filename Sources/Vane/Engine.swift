@@ -1357,6 +1357,11 @@ struct TitleReveal: Equatable, Sendable {
                                         selected: accountHint.flatMap { accounts.firstIndex(of: $0) } ?? 0)
     }
 
+    func expectNavigation(_ navigation: WKNavigation?) {
+        guard !tornDown, !suspended else { return }
+        if navigationState.expect(navigation) { CertificateTrust.navigationStarted(in: self) }
+    }
+
     private func ownsNavigation(_ navigation: WKNavigation?, in w: WKWebView) -> Bool {
         w === existingWeb && !tornDown && !suspended && navigationState.accepts(navigation)
     }
@@ -1398,7 +1403,7 @@ struct TitleReveal: Equatable, Sendable {
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard w === existingWeb, !tornDown, !suspended else { return }
-        navigationState.begin(navigation)
+        guard navigationState.begin(navigation) else { return }
         retitleTask?.cancel()
         if w === existingWeb { readingDocumentGeneration = UUID(); Reader.forget(tab: self) }
         if w === existingWeb { SiteBoosts.beginNavigation(tab: self) }
@@ -1463,11 +1468,13 @@ struct TitleReveal: Equatable, Sendable {
         if let http = HTTPSOnly.downgradeOffer(after: error, url: failed, profileID: profileID) {
             navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: http),
                                    responseHTML: HTTPSOnly.interstitial(for: http))
+            expectNavigation(navigationState.simulated)
             return
         }
         // Exclude this exact simulated navigation, even if another load replaces it.
         navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: failed),
                                responseHTML: ErrorPage.html(for: error, url: failed))
+        expectNavigation(navigationState.simulated)
     }
 
     // Camera/microphone and, on macOS 27, location use supported permission delegates.
@@ -1565,10 +1572,15 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         guard w === existingWeb, !tornDown, !suspended else { decisionHandler(.cancel); return }
+        #if compiler(>=6.4)
+        if #available(macOS 27.0, *), let navigation = navigationAction.mainFrameNavigation,
+           navigationState.isRetired(navigation) { decisionHandler(.cancel); return }
+        #endif
         if NavigationState.needsResubmissionConsent(navigationAction) {
+            let requestGeneration = navigationState.policyGeneration
             Task { @MainActor [weak self, weak w] in
                 guard let self, let w,
-                      await self.navigationState.confirmResubmission(tab: self, web: w) else {
+                      await self.navigationState.confirmResubmission(tab: self, web: w, requestGeneration: requestGeneration) else {
                     decisionHandler(.cancel); return
                 }
                 self.decideNavigationPolicy(w, action: navigationAction, decisionHandler: decisionHandler)
@@ -1659,21 +1671,25 @@ struct TitleReveal: Equatable, Sendable {
         switch HTTPSOnly.decide(navigationAction, profileID: profileID) {
         case .allow:
             if navigationAction.targetFrame?.isMainFrame == true {
+                #if compiler(>=6.4)
+                if #available(macOS 27.0, *) { expectNavigation(navigationAction.mainFrameNavigation) }
+                #endif
                 navigationState.restoringHistory = navigationAction.navigationType == .backForward
                 allowCertificateNavigation(to: navigationAction.request.url)
             }
             decisionHandler(.allow)
         case .upgrade(let to):
             decisionHandler(.cancel)
-            w.load(HTTPSOnly.request(to))          // a shorter leash than the 60s default
+            expectNavigation(w.load(HTTPSOnly.request(to)))          // a shorter leash than the 60s default
         case .block(let at):
             decisionHandler(.cancel)
             navigationState.simulated = w.loadSimulatedRequest(URLRequest(url: at),
                                    responseHTML: HTTPSOnly.interstitial(for: at))
+            expectNavigation(navigationState.simulated)
         case .confirm(let at):
             decisionHandler(.cancel)
             if HTTPSOnly.confirmAndRemember(at, profileID: profileID) {
-                w.load(URLRequest(url: at))
+                expectNavigation(w.load(URLRequest(url: at)))
             }
         }
     }
@@ -1684,6 +1700,11 @@ struct TitleReveal: Equatable, Sendable {
     func webView(_ w: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
                  decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
         guard w === existingWeb, !tornDown, !suspended else { decisionHandler(.cancel); return }
+        #if compiler(>=6.4)
+        if #available(macOS 27.0, *), navigationResponse.isForMainFrame,
+           let navigation = navigationResponse.mainFrameNavigation,
+           !ownsNavigation(navigation, in: w) { decisionHandler(.cancel); return }
+        #endif
         if navigationResponse.isForMainFrame { navigationState.receivedResponse = true }
         let http = navigationResponse.response as? HTTPURLResponse
         let disposition = (http?.value(forHTTPHeaderField: "Content-Disposition") ?? "").lowercased()
@@ -1863,8 +1884,8 @@ struct TitleReveal: Equatable, Sendable {
         fillChosen(host: choice.host, account: choice.accounts[choice.selected], port: choice.port, target: choice.target)
     }
 
-    func reload()     { if easelSession == nil { existingWeb?.reload() } }
-    func hardReload() { if easelSession == nil { existingWeb?.reloadFromOrigin() } }
+    func reload()     { if easelSession == nil { expectNavigation(existingWeb?.reload()) } }
+    func hardReload() { if easelSession == nil { expectNavigation(existingWeb?.reloadFromOrigin()) } }
     func stop() {
         navigationState.invalidate()
         readingDocumentGeneration = UUID()
@@ -1891,8 +1912,8 @@ struct TitleReveal: Equatable, Sendable {
                 + "white-space:pre-wrap;word-break:break-word'>\(escaped)</pre>", baseURL: nil)
         }
     }
-    func back()    { existingWeb?.goBack() }
-    func forward() { existingWeb?.goForward() }
+    func back()    { expectNavigation(existingWeb?.goBack()) }
+    func forward() { expectNavigation(existingWeb?.goForward()) }
 
     /// `target="_blank"` and `window.open` — a tab beside this one, or a Little Vane for a
     /// popup that asked to be one. See Popups.swift for which, and why.

@@ -244,7 +244,7 @@ extension Tab {
         // away and `WKWebView.url` is further still, and the width of that gap is the whole
         // point of the flag. See `Tab.hasEverLoaded`.
         hasEverLoaded = true
-        guard url.isFileURL else { web.load(URLRequest(url: url)); return }
+        guard url.isFileURL else { expectNavigation(web.load(URLRequest(url: url))); return }
         // Set before the load, not on didFinish: a PDF never reports a title, and the row
         // must not sit there as "New Tab" for as long as the file takes to render.
         title = url.lastPathComponent
@@ -252,7 +252,10 @@ extension Tab {
         // A nil navigation is WebKit refusing before there is anything to fail — a file the
         // sandbox never extended to us. Nothing would call `didFail`, so the tab would sit
         // there blank under a name and an icon that say it loaded.
-        guard web.loadFileURL(url, allowingReadAccessTo: url) == nil else { return }
+        if let navigation = web.loadFileURL(url, allowingReadAccessTo: url) {
+            expectNavigation(navigation)
+            return
+        }
         show(URLError(.noPermissionsToReadFile,
                       userInfo: [NSURLErrorFailingURLErrorKey: url]), in: web)
     }

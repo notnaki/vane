@@ -9,8 +9,11 @@ No regular Vane instance or user profile is used.
 
 - Replaying an older navigation's cancellation while a newer request is pending
   stopped the newer spinner. Replaying callbacks after teardown changed tab state.
-  Delegate updates now require the owning live view and active WKNavigation;
-  stop/release invalidate that ownership. Late popup close and download callbacks
+  Delegate updates now require the owning live view and active WKNavigation.
+  Commands claim the identity returned by WebKit before start callbacks arrive;
+  macOS 27 main-frame action/response policies also use `mainFrameNavigation`. Subframe
+  responses remain independent of main-document ownership. Retired
+  identities cannot restart themselves. Stop/release invalidate that ownership. Late popup close and download callbacks
   also reject retired views.
 - A simulated failure replaced before finishing consumed a shared “skip next
   history write” flag on the next successful page. Exclusion now belongs to the
@@ -26,7 +29,9 @@ No regular Vane instance or user profile is used.
   `.reload` plus `POST`, rather than `.formResubmitted`. Unsafe reload/history
   requests and explicit form resubmissions now require a native confirmation,
   defaulting to Cancel. Initial submissions retain WebKit's request/body. A closed,
-  moved, hidden or superseded requester cannot use an old confirmation.
+  moved, hidden or superseded requester cannot use an old confirmation. Consent
+  captures its request token before queuing work, so Stop also prevents a queued
+  task from opening a stale sheet.
 - Reader and certificate evaluation completions also require the document generation,
   so equality of URLs cannot authorize a result from an earlier same-URL document.
 
@@ -39,7 +44,7 @@ swift test --filter 'NavigationWebKitTests|CertificateChallengeTests|Certificate
 ./.build/debug/vane selfcheck --pure
 ```
 
-The navigation fixture covers redirects, fragment and SPA back/forward, reload,
+The navigation fixture covers redirects, iframe responses, fragment and SPA back/forward, reload,
 stop, held requests, replacement requests, switching the mounted tab while a
 request is pending, interrupted Content-Length responses, connection refusal and
 recovery, simulated offline failure, native POST consent/cancellation and moving

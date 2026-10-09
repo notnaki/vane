@@ -86,6 +86,15 @@ import XCTest
         try await Task.sleep(for: .milliseconds(500))
         print("NAVIGATION POST reload actions: \(probe.actions)")
         XCTAssertEqual(server.submissions.count, 1, "An invisible tab cannot consent to resubmitting a POST")
+        tab.hardReload()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(server.submissions.count, 1, "Reload from origin also needs consent")
+        try await load("/after-form")
+        tab.back()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(server.submissions.count, 1, "History may restore a cached form result but cannot silently send it again")
+        let location = try await tab.web.evaluateJavaScript("location.href") as? String
+        XCTAssertEqual(tab.address, location)
     }
 
     func testSupersededErrorPageCannotSuppressSuccessfulHistory() async throws {
@@ -301,6 +310,112 @@ import XCTest
         XCTAssertFalse(server.requests.contains { $0.lowercased().contains("authorization:") })
     }
 
+    func testRequestedReplacementOwnsCallbacksBeforeItsProvisionalStart() async throws {
+        try await load("/first")
+        server.heldPaths.insert("/old-pending")
+        let old = try XCTUnwrap(tab.web.load(URLRequest(url: try server.url("/old-pending"))))
+        try await compatibilityWait { self.server.requests.contains { $0.hasPrefix("GET /old-pending ") } && self.tab.loading }
+        tab.go(try server.url("/replacement"))
+        // WKWebView.load has returned B, but B's start callback has not run yet.
+        tab.webView(tab.web, didFailProvisionalNavigation: old,
+            withError: URLError(.cannotConnectToHost, userInfo: [NSURLErrorFailingURLErrorKey: try server.url("/old-pending")]))
+        server.heldPaths.remove("/old-pending")
+        try await compatibilityWait { !self.tab.web.isLoading && !self.tab.loading }
+        XCTAssertEqual(tab.title, "Page /replacement")
+        XCTAssertEqual(tab.address, try server.url("/replacement").absoluteString)
+    }
+
+    func testMacOS27PolicyProvidesUpcomingNavigationIdentity() async throws {
+        #if compiler(>=6.4)
+        guard #available(macOS 27.0, *) else { throw XCTSkip("macOS 27 navigation action identity") }
+        let probe = NavigationActionProbe(tab: tab)
+        tab.web.navigationDelegate = probe
+        server.redirects["/identity"] = try server.url("/identity-middle")
+        server.redirects["/identity-middle"] = try server.url("/identity-final")
+        let navigation = try XCTUnwrap(tab.web.load(URLRequest(url: try server.url("/identity"))))
+        try await compatibilityWait { self.tab.title == "Page /identity-final" && !self.tab.loading }
+        XCTAssertFalse(probe.mainNavigations.isEmpty)
+        XCTAssertTrue(probe.mainNavigations.allSatisfy { $0 === navigation })
+        XCTAssertTrue(probe.responseNavigations.contains { $0 === navigation })
+        #else
+        throw XCTSkip("Requires the macOS 27 SDK")
+        #endif
+    }
+
+    func testRestoringSimulatedHTTPSFailureDoesNotRegainSecureClaim() async throws {
+        let failed = URL(string: "https://unreachable.invalid/restore")!
+        tab.show(URLError(.cannotConnectToHost, userInfo: [NSURLErrorFailingURLErrorKey: failed]), in: tab.web)
+        try await compatibilityWait { self.tab.title == "Connection refused" && !self.tab.loading }
+        let restored = Tab(isPrivate: true, profileID: UUID())
+        defer { restored.tearDown() }
+        restored.park(url: failed, tab.snapshot)
+        restored.resume()
+        try await compatibilityWait { !restored.web.isLoading && !restored.loading && restored.title != "New Tab" }
+        print("NAVIGATION restored failure: title=\(restored.title), connection=\(SiteControlModel(restored).connection)")
+        XCTAssertNotEqual(SiteControlModel(restored).glyph, "lock")
+        XCTAssertNotEqual(SiteControlModel(restored).connection, "Connection is secure")
+    }
+
+    func testStopRejectsLateStartForRetiredNavigation() async throws {
+        let navigation = try await load("/first")
+        tab.stop()
+        tab.webView(tab.web, didStartProvisionalNavigation: navigation)
+        XCTAssertFalse(tab.loading)
+    }
+
+    func testStopBeforeQueuedConsentCannotPresentStaleSheet() async throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = tab.web
+        window.orderFront(nil)
+        defer { window.close() }
+        server.pages["/form"] = "<title>Form</title><form method='post' action='/submit'><input name='value' value='once'></form>"
+        try await load("/form")
+        _ = try await tab.web.evaluateJavaScript("document.forms[0].submit()")
+        try await compatibilityWait { self.server.submissions.count == 1 && !self.tab.web.isLoading && !self.tab.loading }
+        let probe = NavigationActionProbe(tab: tab)
+        probe.afterAction = { self.tab.stop() }
+        tab.web.navigationDelegate = probe
+        tab.reload()
+        try await compatibilityWait { !probe.actions.isEmpty }
+        try await Task.sleep(for: .milliseconds(250))
+        let staleSheet = window.attachedSheet
+        if let staleSheet { window.endSheet(staleSheet, returnCode: .abort) }
+        XCTAssertNil(staleSheet, "Stop must retire the action before its queued consent task presents")
+        XCTAssertEqual(server.submissions.count, 1)
+    }
+
+    func testSupersededPolicyActionCannotRestartRetiredRequest() async throws {
+        #if compiler(>=6.4)
+        guard #available(macOS 27.0, *) else { throw XCTSkip("macOS 27 navigation action identity") }
+        #else
+        throw XCTSkip("Requires the macOS 27 SDK")
+        #endif
+        let probe = NavigationActionProbe(tab: tab)
+        tab.web.navigationDelegate = probe
+        try await load("/first")
+        let oldAction = try XCTUnwrap(probe.lastAction)
+        tab.go(try server.url("/replacement"))
+        var answer: WKNavigationActionPolicy?
+        tab.webView(tab.web, decidePolicyFor: oldAction) { answer = $0 }
+        XCTAssertEqual(answer, .cancel)
+        try await compatibilityWait { self.tab.title == "Page /replacement" && !self.tab.loading }
+    }
+
+    func testSubframeResponseLoadsWithoutReplacingMainDocumentOwnership() async throws {
+        try await load("/main")
+        let generation = tab.readingDocumentGeneration
+        _ = try await tab.web.evaluateJavaScript("const frame=document.createElement('iframe'); frame.src='/frame'; document.body.append(frame)")
+        try await compatibilityWait {
+            (try? await self.tab.web.evaluateJavaScript("document.querySelector('iframe').contentDocument.title") as? String) == "Page /frame"
+        }
+        XCTAssertEqual(tab.address, try server.url("/main").absoluteString)
+        XCTAssertEqual(tab.readingDocumentGeneration, generation)
+        XCTAssertFalse(tab.loading)
+        XCTAssertFalse(tab.history.recent().contains { $0.url == (try? server.url("/frame").absoluteString) })
+    }
+
     func testRedirectFragmentAndReloadKeepChromeAligned() async throws {
         server.redirects["/redirect"] = try server.url("/final")
         tab.go(try server.url("/redirect"))
@@ -322,12 +437,29 @@ import XCTest
 @MainActor private final class NavigationActionProbe: NSObject, WKNavigationDelegate {
     let tab: Tab
     var actions: [String] = []
+    var mainNavigations: [WKNavigation] = []
+    var responseNavigations: [WKNavigation] = []
+    var lastAction: WKNavigationAction?
+    var afterAction: (() -> Void)?
     init(tab: Tab) { self.tab = tab }
     func webView(_ web: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
+        #if compiler(>=6.4)
+        if #available(macOS 27.0, *), let navigation = action.mainFrameNavigation { mainNavigations.append(navigation) }
+        #endif
+        lastAction = action
         actions.append("type=\(action.navigationType.rawValue) method=\(action.request.httpMethod ?? "nil")")
         tab.webView(web, decidePolicyFor: action, decisionHandler: decisionHandler)
+        afterAction?()
     }
+    func webView(_ web: WKWebView, decidePolicyFor response: WKNavigationResponse,
+                 decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
+        #if compiler(>=6.4)
+        if #available(macOS 27.0, *), let navigation = response.mainFrameNavigation { responseNavigations.append(navigation) }
+        #endif
+        tab.webView(web, decidePolicyFor: response, decisionHandler: decisionHandler)
+    }
+    func webView(_ web: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) { tab.webView(web, didReceiveServerRedirectForProvisionalNavigation: navigation) }
     func webView(_ web: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) { tab.webView(web, didStartProvisionalNavigation: navigation) }
     func webView(_ web: WKWebView, didCommit navigation: WKNavigation!) { tab.webView(web, didCommit: navigation) }
     func webView(_ web: WKWebView, didFinish navigation: WKNavigation!) { tab.webView(web, didFinish: navigation) }

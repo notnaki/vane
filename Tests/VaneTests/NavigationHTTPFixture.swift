@@ -88,4 +88,3 @@ import XCTest
 
     func stop() { listener.cancel(); connections.forEach { $0.cancel() }; connections = []; heldPaths = [] }
 }
-
