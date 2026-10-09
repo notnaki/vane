@@ -535,7 +535,7 @@ private struct Pane: View {
             // back from the session parked has to wake up rather than sit there blank.
             .onAppear { tab.resume() }
             .background {
-                if tab.easelID == nil { PaneFocus(web: tab.web, focus: focus) }
+                if tab.easelID == nil && !tab.needsRecovery { PaneFocus(web: tab.web, focus: focus) }
             }
             .simultaneousGesture(TapGesture().onEnded { if tab.easelID != nil { focus() } })
             .clipShape(.rect(cornerRadius: Look.paneRadius))

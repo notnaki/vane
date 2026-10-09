@@ -279,6 +279,8 @@ struct TabPage: View {
     var body: some View {
         if store.isTabLocked(tab.id) {
             Color.clear.accessibilityHidden(true)
+        } else if tab.needsRecovery {
+            if !offscreen { PageRecoveryView(tab: tab) }
         } else if store.ownsPage(tab) {
             if let session = tab.easelSession {
                 EaselTabPage(session: session, store: store).id(tab.id)
@@ -309,6 +311,36 @@ struct TabPage: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(tab.title), active in another window")
         }
+    }
+}
+
+/// Native chrome remains available even when the content process cannot render HTML.
+private struct PageRecoveryView: View {
+    @ObservedObject var tab: Tab
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "arrow.clockwise.circle").font(.system(size: 32))
+                .accessibilityHidden(true)
+            Text("This page is paused").font(.title2.weight(.semibold))
+            Text("Vane or this page stopped unexpectedly. Open the page when you’re ready. Unsaved form input may be lost.")
+                .multilineTextAlignment(.center).foregroundStyle(.secondary)
+            Text(tab.currentURL?.absoluteString ?? tab.address)
+                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                .textSelection(.enabled)
+            Button("Open Page") {
+                guard let url = tab.currentURL else { return }
+                Motion.list { tab.navigate(to: url) }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(tab.currentURL == nil)
+            Text("Opens a fresh page without resubmitting a saved form.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(32).frame(maxWidth: 460)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -1751,7 +1783,7 @@ private struct FavoriteTile: View {
         }
     }
     if TabAudio.isMuted(tab) { bits.append("muted") } else if tab.audible { bits.append("playing audio") }
-    bits.append(tab.loading ? "loading" : "loaded")
+    bits.append(tab.needsRecovery ? "paused after an unexpected stop, select to recover" : (tab.loading ? "loading" : "loaded"))
     return bits.joined(separator: ", ")
 }
 
@@ -4795,6 +4827,15 @@ struct TabIcon: View {
     var body: some View {
         SidebarPageIcon(icon: tab.favicon, easel: tab.easelID != nil, pr: pr,
                         rounded: tab.currentURL?.isFileURL != true, size: size)
+        .overlay(alignment: .bottomTrailing) {
+            if tab.needsRecovery {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: max(9, size * 0.6)))
+                    .symbolRenderingMode(.palette).foregroundStyle(.white, .orange)
+                    .transition(.opacity)
+            }
+        }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.needsRecovery)
         // The swap, when it comes, is a fade rather than a cut — the same 0.15s the rest of
         // the sidebar's hovers use.
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: tab.favicon)

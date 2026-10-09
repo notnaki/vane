@@ -100,6 +100,12 @@ their own pages. Split View shows two to four pages side by side or stacked, wit
 resizable dividers. Peek opens a link over the current page; Little Vane opens it
 in a separate compact window.
 
+After an unclean exit or a webpage-process termination, affected pages stay paused
+with an **Open Page** action. Recovery opens a fresh URL without replaying a saved
+form submission. Session files retain a validated previous generation and preserve
+damaged originals before replacement. See [crash and session recovery](docs/CRASH-RECOVERY.md)
+for saved-state boundaries, storage failures, and the isolated macOS checks.
+
 Showing or hiding the sidebar applies across all Spaces in that window, including
 Spaces in other profiles. Each window keeps its own sidebar visibility.
 

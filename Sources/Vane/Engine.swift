@@ -512,6 +512,8 @@ struct TitleReveal: Equatable, Sendable {
     /// True while this tab has no live page — see `suspend()`. Published so anything that
     /// wants to badge the strip can, but nothing does: suspension is meant to be invisible.
     @Published private(set) var suspended = false
+    /// A crashed/restored page may only be opened by an explicit user action.
+    @Published private(set) var needsRecovery = false
     /// Whether this tab has ever been given a page — one it loaded, or one it came up from
     /// disk parked on. Deliberately *not* `web.url != nil`, which those two states share
     /// with a third: the gap between `resume` handing the view a load and `WKWebView.url`
@@ -913,7 +915,7 @@ struct TitleReveal: Equatable, Sendable {
         // A host label is a placeholder, not a name: written down it comes back as the
         // name, and the row is called "github.com" for good. See `TabStore.parkedTitle`.
         Parked(title: TidyTitles.realTitle(title, at: currentURL) ? title : "",
-               state: parkedState ?? existingWeb?.interactionState as? Data)
+               state: parkedState ?? existingWeb?.interactionState as? Data, needsRecovery: needsRecovery)
     }
 
     /// Drop the WKWebView, and with it the WebContent process, keeping only the
@@ -1013,7 +1015,7 @@ struct TitleReveal: Equatable, Sendable {
     /// Rebuild the page. `interactionState` sets url and the back/forward list
     /// synchronously, so the url check below is a genuine "that state was no good".
     func resume() {
-        guard suspended else { return }
+        guard suspended, !needsRecovery else { return }
         if easelSession != nil { suspended = false; return }
         Trace.span("resume") {
             suspended = false
@@ -1060,8 +1062,10 @@ struct TitleReveal: Equatable, Sendable {
         leaveEasel()
         parkedURL = url
         parkedState = p.state
+        needsRecovery = p.needsRecovery || Crash.didCrashLastLaunch
         titlePlaceholderURL = Files.restorationPlaceholder(for: url)
         suspended = true
+        if needsRecovery { release() }
         // A tab that comes up from disk parked has a page — that is what parked means — and
         // it has one before it has ever run a navigation. Without this the very first × on a
         // restored pinned row, pressed in the gap after it was clicked awake, unpinned it.
@@ -1109,11 +1113,14 @@ struct TitleReveal: Equatable, Sendable {
 
     /// Load it now, or park it if we know enough about it to draw it without loading.
     func open(_ url: URL, parked p: Parked?) {
-        if let p, Prefs.suspendTabs { park(url: url, p) } else { go(url) }
+        if Crash.didCrashLastLaunch || p?.needsRecovery == true {
+            park(url: url, p ?? Parked())
+        } else if let p, Prefs.suspendTabs { park(url: url, p) } else { go(url) }
     }
 
     /// An explicit navigation replaces parked state instead of loading its old page first.
     func navigate(to url: URL) {
+        needsRecovery = false
         suspended = false
         parkedState = nil
         parkedURL = nil
@@ -1393,12 +1400,25 @@ struct TitleReveal: Equatable, Sendable {
 
     func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
         guard w === existingWeb else { return }
+        // Retain URL/title, but never feed the dead page's opaque POST history back into
+        // WebKit. Selection, split mounting and autosave must not cause another load.
+        parkedURL = currentURL ?? URL(string: address)
+        parkedState = nil
+        needsRecovery = true
+        suspended = true
+        loading = false
+        progress = 0
+        canGoBack = false; canGoForward = false
+        windowSnapshot = nil
+        passwordChoice = nil; pendingSave = nil
+        editableFrames.removeAll()
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
         endPermissionDocument()
         pictureInPicture = false
         pipFrame = nil
         MediaState.shared.forget(id)
+        release()
     }
 
     func webView(_ w: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -1884,7 +1904,10 @@ struct TitleReveal: Equatable, Sendable {
         fillChosen(host: choice.host, account: choice.accounts[choice.selected], port: choice.port, target: choice.target)
     }
 
-    func reload()     { if easelSession == nil { expectNavigation(existingWeb?.reload()) } }
+    func reload() {
+        if needsRecovery, let url = currentURL { navigate(to: url) }
+        else if easelSession == nil { expectNavigation(existingWeb?.reload()) }
+    }
     func hardReload() { if easelSession == nil { expectNavigation(existingWeb?.reloadFromOrigin()) } }
     func stop() {
         navigationState.invalidate()
@@ -2479,7 +2502,8 @@ struct Stash {
             }
             let tab = newBlankTab(focus: false, as: kind, id: id)
             let parked = Parked(title: entry.title ?? "",
-                                state: entry.state.flatMap { Data(base64Encoded: $0) })
+                                state: entry.state.flatMap { Data(base64Encoded: $0) },
+                                needsRecovery: entry.needsRecovery == true)
             tab.workspaceName = entry.customName
             tab.restore(url: url, home: entry.home.flatMap(URL.init(string:)), parked: parked)
             if kind == .today { today.append((url, tab)) }

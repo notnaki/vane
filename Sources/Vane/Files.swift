@@ -237,6 +237,9 @@ extension Tab {
     /// that root and do not load. Upgrade path is `NSOpenPanel` on the folder, which is the
     /// only way the sandbox hands one over.
     func go(_ url: URL) {
+        // Address-bar and home actions are explicit navigation too. Clear crash state
+        // without assigning the old interactionState (which may contain a POST).
+        if needsRecovery { navigate(to: url); return }
         if routeEasel(url) { return }
         if url.scheme?.lowercased() == "vane", url.host?.lowercased() == "easel" { return }
         leaveEasel()

@@ -58,7 +58,7 @@ extension TabStore {
 
     /// Local canvases use AppKit's native responder chain, not a dummy WKWebView.
     var activePageResponder: NSView? {
-        guard let tab = active, ownsPage(tab) else { return nil }
+        guard let tab = active, ownsPage(tab), !tab.needsRecovery else { return nil }
         if let session = tab.easelSession {
             return EaselHostingView.find(session, in: window?.contentView)
         }

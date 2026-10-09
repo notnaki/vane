@@ -152,6 +152,11 @@ import WebKit
                 // HTTPS upgrades are tested by SelfCheck; this fixture has no TLS server.
                 HTTPSOnly.enabled = false
                 let profile = ProfileManager.shared.active.id
+                if CommandLine.arguments.contains("--crash-recovery") {
+                    try await crashRecoveryChecks(base: base, profile: profile)
+                    print("PASS browsercheck crash recovery: \(assertions) assertions")
+                    exit(0)
+                }
                 let prepareStart = ContinuousClock.now
                 Tab.prepareFirstPage(profileID: profile)
                 print("PERF first-page preparation at launch: \(prepareStart.duration(to: .now))")
@@ -710,6 +715,43 @@ import WebKit
             let tab = Tab(isPrivate: isPrivate, profileID: profile)
             host(tab)
             return tab
+        }
+
+        private func crashRecoveryChecks(base: String, profile: UUID) async throws {
+            for background in [false, true] {
+                let store = Windows.open(urls: [], profile: ProfileManager.shared.active)
+                if let window = store.window { windows.append(window) }
+                let tab = store.newBlankTab()
+                try await load(tab, "\(base)/form", title: "Fixture Form")
+                _ = try await js(tab, "document.querySelector('form').method='post'; HTMLFormElement.prototype.submit.call(document.querySelector('form'))")
+                try await loaded(tab, path: "/submitted", title: "Fixture Submitted")
+                if background { store.newTab(URL(string: "\(base)/a")!) }
+                let dead = tab.web
+                try require(dead.navigationDelegate === tab, "the live tab owns its termination delegate")
+                let processID = NSSelectorFromString("_webProcessIdentifier")
+                try require(dead.responds(to: processID), "WebKit termination fixture is available")
+                guard let pid = dead.value(forKey: "_webProcessIdentifier") as? NSNumber, pid.intValue > 0 else {
+                    throw Failure("WebKit fixture has no live content process")
+                }
+                // The sandbox cannot signal its WebKit service. The external smoke
+                // runner targets only this reported test-page PID after validating it.
+                let request = try JSONSerialization.data(withJSONObject: ["pid": pid.intValue, "token": UUID().uuidString])
+                try request.write(to: Store.directory.appendingPathComponent("terminate-webcontent.json"), options: .atomic)
+                try await wait("terminated page becomes parked") { tab.suspended }
+                try require(tab.existingWeb == nil && !tab.loading,
+                            "\(background ? "background" : "active") termination retires the dead page")
+                let requests = server?.requests["/submitted", default: 0] ?? 0
+                store.current = tab.id
+                tab.resume()
+                try await Task.sleep(for: .milliseconds(350))
+                try require(tab.needsRecovery && tab.suspended && server?.requests["/submitted", default: 0] == requests,
+                            "selection does not automatically reload or resubmit a terminated page")
+                try require(tab.existingWeb == nil, "chrome checks do not create a blank replacement page")
+                tab.navigate(to: URL(string: "\(base)/submitted")!)
+                try await loaded(tab, path: "/submitted", title: "Fixture Submitted")
+                try require(server?.lastMethod["/submitted"] == "GET", "explicit recovery makes a fresh GET")
+                store.window?.close()
+            }
         }
 
         private func parkedStartupChecks(base: String) async throws {
@@ -1735,6 +1777,7 @@ import WebKit
         var port: UInt16?
         var error: String?
         var requests: [String: Int] = [:]
+        var lastMethod: [String: String] = [:]
         var connections: [NWConnection] = []
         var faviconAvailable = false
         var holdFavicons = false
@@ -1797,6 +1840,7 @@ import WebKit
                     let target = request.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
                     let path = String(target.split(separator: "?", maxSplits: 1)[0])
                     self.requests[path, default: 0] += 1
+                    self.lastMethod[path] = request.split(separator: " ").first.map(String.init)
                     let attachment = path == "/download"
                     let sharp = path == "/brand.png" || path == "/apple-touch-icon.png"
                     let image = sharp || ["/site-icon.png", "/small-icon.png"].contains(path)

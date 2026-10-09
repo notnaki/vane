@@ -958,6 +958,7 @@ extension TabStore {
 /// Reopen what was open last time. Private windows are deliberately never written down.
 /// One file per profile — the default profile's is still `session.json`.
 @MainActor enum Session {
+    private static var restoring = false
     private static func file(_ profileID: UUID) -> URL {
         ProfileManager.sessionURL(for: profileID, in: Store.directory)
     }
@@ -972,8 +973,9 @@ extension TabStore {
         var kind: TabKind?
         var home: String?
         var customName: String?
+        var needsRecovery: Bool?
 
-        private enum CodingKeys: String, CodingKey { case id, url, title, state, kind, home, customName }
+        private enum CodingKeys: String, CodingKey { case id, url, title, state, kind, home, customName, needsRecovery }
 
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -984,10 +986,11 @@ extension TabStore {
             kind = try? values.decode(TabKind.self, forKey: .kind)
             customName = try? values.decode(String.self, forKey: .customName)
             home = try? values.decode(String.self, forKey: .home)
+            needsRecovery = try? values.decode(Bool.self, forKey: .needsRecovery)
         }
 
         init(id: String? = nil, url: String, title: String? = nil, state: String? = nil,
-             kind: TabKind? = nil, home: String? = nil, customName: String? = nil) {
+             kind: TabKind? = nil, home: String? = nil, customName: String? = nil, needsRecovery: Bool? = nil) {
             self.id = id
             self.url = url
             self.title = title
@@ -995,6 +998,7 @@ extension TabStore {
             self.kind = kind
             self.home = home
             self.customName = customName
+            self.needsRecovery = needsRecovery
         }
     }
 
@@ -1045,6 +1049,17 @@ extension TabStore {
     }
 
     static func decode(_ data: Data) -> [[Entry]] { disk(data).windows }
+
+    /// Keep optional row-metadata tolerance, but never mistake corruption or a future
+    /// schema for a successfully saved empty session.
+    static func readable(_ data: Data) -> Bool {
+        if let saved = try? JSONDecoder().decode(Disk.self, from: data) {
+            return (2...4).contains(saved.version)
+                && saved.windows.flatMap { $0 }.allSatisfy { TabAddress.restorable(URL(string: $0.url)) }
+        }
+        guard let legacy = try? JSONDecoder().decode([[String]].self, from: data) else { return false }
+        return legacy.flatMap { $0 }.allSatisfy { TabAddress.restorable(URL(string: $0)) }
+    }
 
     /// Restore previews must distinguish an empty session from a damaged file. Keep
     /// the browsing reader's legacy tolerance, but require a known schema at import.
@@ -1116,7 +1131,7 @@ extension TabStore {
     /// the one-off migration folds into the profile's first Space: before the Space existed
     /// these tabs were the whole of "the window's tabs", written nowhere else.
     static func urls(for profileID: UUID, in dir: URL = Store.directory) -> [URL] {
-        guard let data = try? Data(contentsOf: ProfileManager.sessionURL(for: profileID, in: dir))
+        guard let data = RecoverySnapshots.read(ProfileManager.sessionURL(for: profileID, in: dir), valid: readable)
         else { return [] }
         var seen = Set<String>()
         return decode(data).flatMap { $0 }
@@ -1131,9 +1146,9 @@ extension TabStore {
     /// twice on the same scroll position. Nobody has ever noticed.
     static func parked(_ entries: [Entry]) -> [String: Parked] {
         var out: [String: Parked] = [:]
-        for e in entries where e.title != nil || e.state != nil {
+        for e in entries where e.title != nil || e.state != nil || e.needsRecovery == true {
             out[e.url] = Parked(title: e.title ?? "",
-                                state: e.state.flatMap { Data(base64Encoded: $0) })
+                                state: e.state.flatMap { Data(base64Encoded: $0) }, needsRecovery: e.needsRecovery == true)
         }
         return out
     }
@@ -1143,8 +1158,13 @@ extension TabStore {
     /// profile's prior crash snapshot. Keep every other window and its aligned metadata.
     @discardableResult
     static func forget(space id: UUID, in profileID: UUID) -> Bool {
-        guard let data = try? Data(contentsOf: file(profileID)) else { return true }
-        guard var snapshot = try? JSONDecoder().decode(Disk.self, from: data) else { return false }
+        // A stale fallback is safe to preview/restore, but cannot authorize deleting or
+        // moving a Space out of an unreadable current session.
+        let data: Data
+        do { data = try Data(contentsOf: file(profileID)) }
+        catch CocoaError.fileReadNoSuchFile { return true }
+        catch { return false }
+        guard readable(data), var snapshot = try? JSONDecoder().decode(Disk.self, from: data) else { return false }
         guard let spaces = snapshot.spaces else { return snapshot.windows.isEmpty }
         guard spaces.count >= snapshot.windows.count else { return false }
         let kept = snapshot.windows.indices.filter {
@@ -1156,7 +1176,7 @@ extension TabStore {
         snapshot.spaces = kept.map { spaces.indices.contains($0) ? spaces[$0] : "" }
         snapshot.selected = snapshot.selected.map { list in kept.map { list.indices.contains($0) ? list[$0] : nil } }
         guard let updated = try? JSONEncoder().encode(snapshot) else { return false }
-        return SnapshotPersistence.write(updated, to: file(profileID))
+        return RecoverySnapshots.write(updated, to: file(profileID), valid: readable)
     }
 
     /// Every profile's open windows, each into its own file. A profile whose windows are all
@@ -1164,6 +1184,7 @@ extension TabStore {
     /// rewritten, so quitting from profile B does not erase profile A's session.
     @discardableResult
     static func save() -> Bool {
+        guard !restoring else { return false }
         var succeeded = true
         var byProfile: [UUID: [(entries: [Entry], splits: [Split.Saved], space: String,
                                        selected: String?)]] = [:]
@@ -1205,7 +1226,8 @@ extension TabStore {
                 let snap = tab.snapshot
                 return Entry(id: tab.id.uuidString, url: u.absoluteString, title: snap.title,
                              state: snap.state?.base64EncodedString(), kind: tab.kind,
-                             home: tab.homeURL?.absoluteString, customName: tab.workspaceName)
+                             home: tab.homeURL?.absoluteString, customName: tab.workspaceName,
+                             needsRecovery: tab.needsRecovery ? true : nil)
             }
             byProfile[store.profileID, default: []]
                 .append((entries, store.savedSplits, store.currentSpaceID?.uuidString ?? "",
@@ -1218,7 +1240,7 @@ extension TabStore {
             guard let data = encode(kept.map(\.entries), splits: kept.map(\.splits),
                                     spaces: kept.map(\.space), selected: kept.map(\.selected))
             else { succeeded = false; continue }
-            if !SnapshotPersistence.write(data, to: file(profileID)) { succeeded = false }
+            if !RecoverySnapshots.write(data, to: file(profileID), valid: readable) { succeeded = false }
         }
         return succeeded
     }
@@ -1226,8 +1248,19 @@ extension TabStore {
     /// Returns false when there was nothing to restore, so the caller opens a fresh window.
     @discardableResult
     static func restore(profile: Profile? = nil) -> Bool {
-        let profile = profile ?? ProfileManager.shared.active
-        guard let data = try? Data(contentsOf: file(profile.id)) else { return false }
+        guard let profile else {
+            let manager = ProfileManager.shared
+            // Open the active profile last, so its last-used window finishes in front.
+            let profiles = manager.profiles.filter { $0.id != manager.active.id } + [manager.active]
+            var restored = false
+            for profile in profiles { if restore(profile: profile) { restored = true } }
+            return restored
+        }
+        guard let data = RecoverySnapshots.read(file(profile.id), valid: readable) else { return false }
+        let recoveringFile = (try? Data(contentsOf: file(profile.id))).map(readable) != true
+        let wasRestoring = restoring
+        restoring = true
+        defer { restoring = wasRestoring }
         let saved = decodeSplits(data)
         // Each window comes back into the Space it was in. A session row for a deleted or
         // moved Space is skipped: its pages must not reappear in the source profile.
@@ -1247,6 +1280,11 @@ extension TabStore {
         }
         guard !windows.isEmpty else { return false }
         for (i, entries) in windows {
+            let entries = entries.map { entry in
+                var entry = entry
+                if recoveringFile { entry.needsRecovery = true }
+                return entry
+            }
             let identified = hasIdentityFormat || entries.allSatisfy { $0.id.flatMap(UUID.init(uuidString:)) != nil
                                                   && $0.kind != nil }
             let store = Windows.open(urls: identified ? [] : entries.compactMap { URL(string: $0.url) },

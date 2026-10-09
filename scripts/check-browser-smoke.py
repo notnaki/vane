@@ -9,6 +9,7 @@ Developer ID, notarization, and Gatekeeper checks used for a release candidate.
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -16,6 +17,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import signal
 from datetime import datetime
 import uuid
 
@@ -71,20 +74,64 @@ def run_fixture(command, environment, app, timeout):
         started = subprocess.check_output(
             ["ps", "-p", str(process.pid), "-o", "lstart="], text=True).strip()
         print(f"TEST PROCESS bundle={app} pid={process.pid} start={started} launched={datetime.now().isoformat()}", flush=True)
+        stopped = threading.Event()
+        injection_errors = []
+
+        def terminate_content():
+            request = Path(environment["VANE_DATA_DIR"]) / "terminate-webcontent.json"
+            seen = set()
+            while not stopped.wait(0.05) and process.poll() is None:
+                if not request.exists():
+                    continue
+                try:
+                    event = json.loads(request.read_text())
+                    if event["token"] in seen:
+                        continue
+                    seen.add(event["token"])
+                    pid = int(event["pid"])
+                    identity = subprocess.check_output(["ps", "-p", str(pid), "-o", "lstart=,comm="], text=True).strip()
+                    if pid <= 0 or "com.apple.WebKit.WebContent" not in identity:
+                        raise RuntimeError("reported process is not a live WebKit content service")
+                    print(f"TEST WEBKIT pid={pid} identity={identity}", flush=True)
+                    current = subprocess.check_output(["ps", "-p", str(pid), "-o", "lstart=,comm="], text=True).strip()
+                    if current != identity:
+                        raise RuntimeError("WebKit process identity changed before signal")
+                    os.kill(pid, signal.SIGKILL)
+                except Exception as error:
+                    injection_errors.append(str(error))
+                    print(f"FAIL WebKit termination injection: {error}", flush=True)
+                    return
+
+        injector = None
+        if "--crash-recovery" in command:
+            injector = threading.Thread(target=terminate_content, daemon=True)
+            injector.start()
+
+        def stop_owned(sig):
+            if process.poll() is not None:
+                return
+            identity = subprocess.check_output(["ps", "-p", str(process.pid), "-o", "lstart=,comm="], text=True).strip()
+            if started not in identity or str(Path(command[0]).resolve()) not in identity:
+                raise RuntimeError("owned app process identity changed before cleanup")
+            process.send_signal(sig)
         try:
             code = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             # The unreaped child PID cannot be reused; target only this owned process.
-            process.terminate()
+            stop_owned(signal.SIGTERM)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
+                stop_owned(signal.SIGKILL)
                 process.wait()
             print(f"TEST PROCESS terminated pid={process.pid}", flush=True)
             raise
+        finally:
+            stopped.set()
+            if injector:
+                injector.join(timeout=5)
         print(f"TEST PROCESS exited pid={process.pid} code={code}", flush=True)
-        return code
+        return code or bool(injection_errors)
 
 
 def main():
@@ -99,6 +146,7 @@ def main():
                         help="require Developer ID, notarization, and Gatekeeper checks")
     parser.add_argument("--lifecycle", action="store_true", help="100 tab/window cycles, 200 parked rows, settling and idle CPU")
     parser.add_argument("--public-media", action="store_true", help="opt-in sustained Shaka public-demo playback (network required, no accounts)")
+    parser.add_argument("--crash-recovery", action="store_true", help="synthetic active/background WebKit process kills and POST recovery")
     options = parser.parse_args()
     if options.lifecycle and options.public_media:
         parser.error("--lifecycle and --public-media are separate passes")
@@ -158,6 +206,8 @@ def main():
                 command = [str(executable), "browsercheck"] + (["--lifecycle"] if options.lifecycle else [])
                 if options.public_media:
                     command.append("--public-media")
+                if options.crash_recovery:
+                    command.append("--crash-recovery")
                 browser_code = run_fixture(command, environment, app, 620 if options.lifecycle or options.public_media else 75)
             except subprocess.TimeoutExpired:
                 print("FAIL: browser smoke process exceeded its deadline", file=sys.stderr)

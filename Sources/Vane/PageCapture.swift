@@ -10,9 +10,10 @@ import WebKit
     private static var session: CaptureSession?
 
     static func available(_ tab: Tab?) -> Bool {
-        guard let tab, tab.easelID == nil else { return false }
-        return tab.web.window != nil && !tab.web.isHiddenOrHasHiddenAncestor
-            && !tab.web.isLoading && tab.web.url != nil && !tab.web.bounds.isEmpty
+        guard let tab, tab.easelID == nil, !tab.needsRecovery,
+              let web = tab.existingWeb else { return false }
+        return web.window != nil && !web.isHiddenOrHasHiddenAncestor
+            && !web.isLoading && web.url != nil && !web.bounds.isEmpty
     }
 
     static func start(_ tab: Tab?) {
