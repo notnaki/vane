@@ -13,7 +13,9 @@ Use **Spaces → Profiles** to switch the browsing profile. Each Space belongs t
 one profile; choosing one of its Spaces also switches that window to its profile.
 The **−** control deletes the selected profile after confirmation, including its
 history, bookmarks, passwords, cookies, and extensions. The last profile cannot
-be deleted. Export a backup before deleting data you want to keep.
+be deleted. Back up supported library data before deletion and export passwords
+separately as CSV. Backups exclude cookies, website storage/sign-ins, and external
+extension code; see the full exclusions under Backup and restore below.
 
 Profiles separate Spaces, history, bookmarks, passwords, WebKit website stores, and
 extensions. Favourites are shared within a profile. Downloads and media intentionally
