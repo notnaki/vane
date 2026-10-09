@@ -102,6 +102,10 @@ restrict access to a folder, see [folder locks](DATA-AND-PRIVACY.md#folder-locks
 
 ## Windows, Split View, Peek, and Little Vane
 
+Use **File → New Window** (`⌘N`) for a regular window, **New Private Window**
+(`⇧⌘N`) for private browsing, or **New Little Vane Window** (`⌥⌘N`) for a compact
+single-page window. These are the default bindings; Settings can change them.
+
 Windows in the same Space share tabs. When both show the same tab, the focused window
 holds its live page and the other shows a gray snapshot. Switching windows preserves
 input, scroll position, and history; closing a tab removes it from every window. Each

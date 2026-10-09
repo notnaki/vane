@@ -7,6 +7,14 @@ Nothing syncs between Macs.
 
 ## Profiles and private browsing
 
+Open **Settings → Profiles** to manage a profile. Use **+** to create one, the
+pencil to rename it, and **Manage Profile and Spaces** for its identity and Spaces.
+Use **Spaces → Profiles** to switch the browsing profile. Each Space belongs to
+one profile; choosing one of its Spaces also switches that window to its profile.
+The **−** control deletes the selected profile after confirmation, including its
+history, bookmarks, passwords, cookies, and extensions. The last profile cannot
+be deleted. Export a backup before deleting data you want to keep.
+
 Profiles separate Spaces, history, bookmarks, passwords, WebKit website stores, and
 extensions. Favourites are shared within a profile. Downloads and media intentionally
 appear together across regular profiles in Library; Reader preferences and
@@ -43,9 +51,9 @@ prerequisites](REAL-SITE-COMPATIBILITY.md#known-pending-authentication-and-compa
 
 ## Imports and exports
 
-Use **File → Import History & Bookmarks…** for supported Chromium-family browsers,
+Use **Vane → Import History & Bookmarks…** for supported Chromium-family browsers,
 Firefox, or Safari, and **Import Passwords…** in the Passwords UI for CSV. The dedicated
-**Import from Arc…** flow can also migrate supported local Arc data, including sessions;
+**Vane → Import from Arc…** flow can also migrate supported local Arc data, including sessions;
 it is separate from the general bookmark/history importer. Review its selections and
 confirmation before importing.
 
@@ -57,8 +65,24 @@ Session imports preserve HttpOnly, SameSite, Secure, domain, path, and lifetime.
 Expired, partitioned, or unsupported cookies are skipped and reported; those sessions
 may need a fresh sign-in. No decrypted value is logged or written to an import file.
 
+### Export files
+
+Switch to the intended browsing profile before exporting and check the profile
+named in the save panel:
+
+| Data | Menu command | Format |
+| --- | --- | --- |
+| Bookmarks | **Archive → Bookmarks → Export Bookmarks…** | Netscape bookmark HTML. |
+| History | **Archive → Export History (CSV)…** or **Export History (JSON)…** | One row per stored visit. |
+| Passwords | **Vane → Passwords → Export Passwords…** | Plaintext CSV; type **EXPORT** to confirm. |
+
+For editable Easel exports, see [Easel export](FEATURES.md#library-export-and-limits).
+For all regular profiles and saved-library data, use [Backup and restore](#backup-and-restore).
+
+### Import and export behavior
+
 Password exports contain plain text credentials. Delete a CSV export when you no longer
-need it. The same importer is available from Vane's Passwords UI. CSV imports preserve
+need it. CSV imports also have a [CLI command](DEVELOPMENT.md#command-line). CSV imports preserve
 existing passwords, keep the first successfully saved duplicate, and report
 invalid/skipped rows and Keychain write failures. Malformed CSV quoting fails before any
 saves. A password export fails if any owned credential cannot be read.

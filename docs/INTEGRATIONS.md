@@ -222,7 +222,8 @@ survive relaunch with disposable fixture credentials.
 Sign-ins saved by older builds need one reconnect because those builds discarded the
 refresh token. A revoked or expired refresh token also needs reconnection. Source builds
 without the OAuth client secret can still use personal access tokens; they cannot renew
-a web-flow OAuth grant. A signed release includes the secret required for renewal. For a
-live check, reconnect using that release, quit/relaunch, and refresh after eight hours:
+a web-flow OAuth grant. Renewal requires a release built with that optional secret.
+For a live check, reconnect using such a release, quit/relaunch, and refresh after eight
+hours:
 the folder should renew automatically, and Console should record `[vane] GitHub OAuth
 credential renewed` without requiring another sign-in.
