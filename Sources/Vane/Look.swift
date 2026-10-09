@@ -776,6 +776,8 @@ enum Look {
     /// when you let go, and the real row can only come back once it has arrived.
     static let listSeconds: Double = 0.28
     static let list = Animation.spring(duration: listSeconds, bounce: 0.12)
+    /// Today rows fade away before their neighbours finish sliding into the gap.
+    static let tabRemovalFade = Animation.easeOut(duration: 0.08)
     /// Clear sweeps Today's rows out one after another: each row leaves this much after the
     /// one above it, and a long list stops staggering past `sweepCap` so forty tabs do not
     /// take two seconds to go.

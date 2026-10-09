@@ -3692,7 +3692,7 @@ private struct OpenTabs: View {
         VStack(spacing: Look.rowGap) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 ShapeRow(row: row.visible, tab: row.tab, index: index, rows: rows.count, shape: \.todayShape)
-                    .transition(.rowCollapse)
+                    .transition(.todayRow)
             }
         }
         // A container of rows, so VoiceOver reads this as a tab list and steps through the
@@ -3736,10 +3736,12 @@ private struct StripRow: View {
                 // The transition stays on the row, not on the Group: a pane that is not the
                 // lead draws nothing, and a height pinned around nothing is a phantom row.
                 if store.leadPane(split) == tab.id {
-                    SplitRow(split: split, lead: tab, spot: spot).transition(.rowCollapse)
+                    SplitRow(split: split, lead: tab, spot: spot)
+                        .transition(tab.kind == .today ? .todayRow : .rowCollapse)
                 }
             } else {
-                TabRow(tab: tab, spot: spot).transition(.rowCollapse)
+                TabRow(tab: tab, spot: spot)
+                    .transition(tab.kind == .today ? .todayRow : .rowCollapse)
             }
         }
         .lifted(tab.id)

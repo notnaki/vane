@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// How the tab list moves. Arc's sidebar never cuts: a row that leaves collapses and its
-/// neighbours slide up into the gap, a new one grows in under New Tab, a pin lifts a row out
+/// How the tab list moves. A Today row fades out while its neighbours slide up into the
+/// gap, a new one grows in under New Tab, a pin lifts a row out
 /// of Today and settles it under the space's name, and Clear sweeps Today away a row at a
 /// time. All of that is one animation (`Look.list`) around every change to `TabStore.tabs`,
 /// plus the transitions below on the rows themselves.
@@ -90,6 +90,13 @@ extension AnyTransition {
     /// behind at the very end.
     static var rowCollapse: AnyTransition {
         .modifier(active: RowCollapse(collapsed: true), identity: RowCollapse(collapsed: false))
+    }
+
+    /// Keep departing Today content at full size during its brief fade. The list's
+    /// transaction still slides the surviving rows up with `Look.list`.
+    static var todayRow: AnyTransition {
+        .asymmetric(insertion: .rowCollapse,
+                    removal: .opacity.animation(Look.tabRemovalFade))
     }
 
     /// A favourite tile: the grid re-flows its columns as one comes or goes, so the tile
