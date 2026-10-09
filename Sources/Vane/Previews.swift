@@ -534,7 +534,7 @@ import WebKit
     static let script = """
     (function () {
       var DWELL = 190;
-      var timer = null, at = null;
+      var timer = null, at = null, announced = false;
 
       function link(node) {
         while (node && node.nodeType !== 1) { node = node.parentNode; }
@@ -548,6 +548,7 @@ import WebKit
       }
       function send(a) {
         var r = a.getBoundingClientRect();
+        announced = true;
         webkit.messageHandlers.\(messageName).postMessage({
           url: a.href, shift: !!shifted,
           x: r.left, y: r.top, w: r.width, h: r.height
@@ -557,6 +558,9 @@ import WebKit
         if (timer) { clearTimeout(timer); timer = null; }
         if (!at) { return; }
         at = null;
+        // A canceled dwell never requested native work and has nothing to retract.
+        if (!announced) { return; }
+        announced = false;
         webkit.messageHandlers.\(messageName).postMessage({ gone: true });
       }
       function enter(a) {
