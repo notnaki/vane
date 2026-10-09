@@ -100,9 +100,34 @@ import XCTest
     }
 
     func testLegacySessionFallbackKeepsPauseWhenHealthySidecarWinsMetadata() throws {
+        try checkLegacySessionRecovery(unclean: false)
+    }
+
+    func testUncleanReadableLegacySessionKeepsLayoutAndExtraURLsPaused() throws {
+        try checkLegacySessionRecovery(unclean: true)
+    }
+
+    private func checkLegacySessionRecovery(unclean: Bool) throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let manager = ProfileManager.shared
+        let marker = Store.directory.appendingPathComponent("running")
+        let realWrite = Crash.write
+        if unclean {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+            Crash.write = { true }
+            try Data().write(to: marker)
+            XCTAssertTrue(Crash.begin())
+            XCTAssertTrue(Crash.didCrashLastLaunch)
+        }
+        defer {
+            if unclean {
+                Crash.markClean()
+                _ = Crash.begin()
+                Crash.markClean()
+                Crash.write = realWrite
+            }
+        }
         let profile = manager.create(name: "Legacy recovery")
         let before = Set(TabStore.all.map(ObjectIdentifier.init))
         defer {
@@ -127,8 +152,12 @@ import XCTest
         XCTAssertTrue(Suspension.SpaceState.save([home.absoluteString: Parked(title: "Sidecar metadata", page: url)],
                                                 space: space.id, profileID: profile.id, in: Store.directory))
         let file = ProfileManager.sessionURL(for: profile.id, in: Store.directory)
-        try JSONEncoder().encode([[url.absoluteString]]).write(to: file.appendingPathExtension("previous"))
-        try Data("{broken".utf8).write(to: file)
+        let legacy = try JSONEncoder().encode([[url.absoluteString]])
+        if unclean { try legacy.write(to: file) }
+        else {
+            try legacy.write(to: file.appendingPathExtension("previous"))
+            try Data("{broken".utf8).write(to: file)
+        }
         XCTAssertTrue(Session.restore(profile: profile))
         let store = try XCTUnwrap(TabStore.all.first { !before.contains(ObjectIdentifier($0)) && $0.profileID == profile.id })
         let tab = try XCTUnwrap(store.tabs.first { $0.id == pinnedID })

@@ -1292,7 +1292,7 @@ extension TabStore {
                                      parked: identified ? [:] : parked(entries),
                                      session: identified ? normalizedEntries(entries) : nil,
                                      selected: selected.indices.contains(i) ? selected[i] : nil,
-                                     restoringLegacySession: !identified, recoveringSession: recoveringFile)
+                                     restoringLegacySession: !identified, recoveringSession: recoveringFile || Crash.didCrashLastLaunch)
             // After the window exists, because a split is named by its panes' urls and the
             // tabs that carry them are made by `TabStore.init`.
             store.applySplits(saved.indices.contains(i) ? saved[i] : [])
