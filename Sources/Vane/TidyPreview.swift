@@ -150,7 +150,7 @@ struct TidyPreviewSheet: View {
             }
             HStack(alignment: .center, spacing: Look.cardInset) {
                 VStack(alignment: .leading, spacing: Look.captionGap) {
-                    Text("\(proposed.count) folders · \(proposed.flatMap(\.tabIDs).count) tabs")
+                    Text("\(proposed.count) \(proposed.count == 1 ? "folder" : "folders") · \(proposed.flatMap(\.tabIDs).count) tabs")
                         .font(Look.heading).monospacedDigit()
                     Text("Other tabs stay in place.")
                         .font(Look.footnote).foregroundStyle(Look.inkSecondary)
