@@ -32,9 +32,9 @@ extension Look {
     /// gesture handed it a velocity and an ease throws that away — the strip has to leave the
     /// fingers at the speed they left it at.
     static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
-    /// A committed swipe should hand focus to the destination promptly. Keep its final
-    /// travel short; canceled gestures still use the more forgiving return spring.
-    static let spaceLanding = Animation.spring(response: 0.08, dampingFraction: 0.9)
+    /// A committed swipe reaches rest before handing the preview to the live sidebar.
+    /// A finite ease keeps focus prompt without cutting off a spring's visible tail.
+    static let spaceLanding = Animation.easeOut(duration: 0.10)
     /// Returning from a canceled drag keeps its gentler timing.
     static let spaceReturn = Animation.spring(response: 0.16, dampingFraction: 0.9)
     /// A footer-height target leaves room for a rounded hover fill around the glyph.
@@ -1097,7 +1097,9 @@ private struct SpaceSwipe: ViewModifier {
         let from = store.currentSpaceID
         landing = true
         landingFrom = from
-        withAnimation(animation) {
+        // Logical completion can leave a spring over a point short of its endpoint.
+        // Keep the preview mounted through that tail so replacing it at rest cannot snap.
+        withAnimation(animation, completionCriteria: .removed) {
             // The prepared preview is authoritative: a clicked dot can skip a neighbour.
             store.spaceGesture.drag = -CGFloat(direction) * width
         } completion: { [weak store] in
