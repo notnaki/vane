@@ -58,6 +58,19 @@ final class LinkInteractionTests: XCTestCase {
                           "Ordinary popups need WebKit's configuration, opener and scripted close")
     }
 
+    func testCrossSiteNewWindowLinksFromKeptTabsHonorAutomaticPeek() {
+        for kind in [TabKind.pinned, .favourite] {
+            XCTAssertEqual(route([], kind: kind, target: .newWindow), .peek)
+            XCTAssertEqual(route(.command, kind: kind, target: .newWindow), .tab(focus: false))
+            XCTAssertEqual(route([.command, .shift], kind: kind, target: .newWindow), .tab(focus: true))
+            XCTAssertEqual(route([], kind: kind, target: .newWindow,
+                                 preferences: .init(automaticPeek: false)), .popup(floating: false))
+            XCTAssertEqual(LinkInteraction.route(to: URL(string: "https://example.com/next")!,
+                context: .init(kind: kind, source: page, target: .newWindow),
+                modifiers: []), .popup(floating: false))
+        }
+    }
+
     func testTargetsAndFloatingWindowsKeepTheirOwnNavigation() {
         XCTAssertEqual(route([], target: .newWindow), .popup(floating: false))
         XCTAssertEqual(route(.shift, target: .newWindow), .peek)
