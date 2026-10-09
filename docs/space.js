@@ -116,7 +116,8 @@
       uniform float u_tilt;
       uniform float u_dpr;
       uniform float u_time;
-      uniform float u_bloom;
+      // Match precision across stages so WebKit can link the GPU renderer.
+      uniform mediump float u_bloom;
       uniform float u_flow;
       varying vec3 v_color;
       varying float v_brightness;
@@ -147,7 +148,7 @@
       precision mediump float;
       varying vec3 v_color;
       varying float v_brightness;
-      uniform float u_bloom;
+      uniform mediump float u_bloom;
       void main() {
         vec2 uv = gl_PointCoord * 2.0 - 1.0;
         float radius = dot(uv, uv);
@@ -461,7 +462,8 @@
       frame = 0;
       if (paused || !inView || contextLost || document.hidden) return;
       const elapsed = lastTime ? Math.min(time - lastTime, 64) : 0;
-      if (elapsed < (renderer ? 15 : 32) && elapsed > 0) { frame = requestAnimationFrame(animate); return; }
+      // WebGL follows every display callback; only the CPU fallback is capped.
+      if (!renderer && elapsed < 32 && elapsed > 0) { frame = requestAnimationFrame(animate); return; }
       if (!dragging) angle += elapsed * .000006;
       flow += elapsed * .00012;
       lastTime = time; render(time);

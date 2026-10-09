@@ -230,6 +230,19 @@ screenshots](media/README.md), [audit evidence](README.md#reliability-and-valida
 and historical [plans](superpowers/plans/) / [specifications](superpowers/specs/) stay
 in their existing locations.
 
+### Website rendering checks
+
+Run the galaxy scene regressions with Node. On a logged-in Mac, also run the real
+WebKit probe: it verifies GPU shader linking and animation, then reports an eight-second
+sample of callback and draw rates. Rates depend on the display and current system load;
+they are diagnostics rather than a fixed performance budget. The probe uses a temporary
+nonpersistent web view and closes its window when it exits.
+
+```sh
+node docs/tests/galaxy.test.cjs
+swift scripts/check-site-rendering.swift
+```
+
 ## Contributing and review
 
 Follow [AGENTS.md](../AGENTS.md): work on an isolated `codex/` branch, preserve

@@ -16,6 +16,16 @@ for(const viewport of [{width:1280,height:800},{width:240,height:718},{width:480
  assert.equal(frames.size,0,'Reduced motion must start paused');
  assert.equal(toggle.attrs['aria-pressed'],'true');
  toggle.handlers.click();assert.equal(frames.size,1);
+ // A fast display must produce a galaxy frame on every animation callback.
+ // Counting draw passes catches a site-side cap even when rAF itself runs at 120 Hz.
+ if(gpu) for(const hz of [60,90,120,144]) {
+   const before=draws;
+   for(let i=0;i<24;i++) {
+     for(const [id,f] of [...frames]){frames.delete(id);f(1000+i*1000/hz);}
+   }
+   assert.equal(draws-before,48,`WebGL must draw all 24 display frames at ${hz} Hz`);
+   toggle.handlers.click(); toggle.handlers.click(); // Reset the animation clock.
+ }
  document.hidden=true;document.handlers.visibilitychange();assert.equal(frames.size,0);
  document.hidden=false;document.handlers.visibilitychange();assert.equal(frames.size,1);
  intersect([{isIntersecting:false}]);assert.equal(frames.size,0);
