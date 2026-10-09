@@ -309,10 +309,19 @@ import XCTest
         let result = await decision!.value
         XCTAssertEqual(result, .grant)
         let previous = tab.permissionGeneration
-        // Simulate the supported provisional-start callback for a navigation that is
-        // cancelled without replacing the document. No location coordinates requested.
-        tab.webView(tab.web, didStartProvisionalNavigation: nil)
+        // A real provisional navigation is cancelled before headers replace this
+        // document. Keep the owning WKNavigation identity instead of replaying nil.
+        let pending = try NavigationHTTPFixture()
+        defer { pending.stop() }
+        pending.heldPaths.insert("/held")
+        try await compatibilityWait { pending.port != nil }
+        tab.go(try pending.url("/held"))
+        try await compatibilityWait { self.tab.permissionGeneration > previous && self.tab.loading }
         XCTAssertGreaterThan(tab.permissionGeneration, previous)
+        tab.stop()
+        try await compatibilityWait { !self.tab.web.isLoading }
+        let retained = try await tab.web.evaluateJavaScript("window.oldDocument") as? String
+        XCTAssertEqual(retained, "still here")
         try await evaluate("window.oldDocument = 'must disappear'")
         SiteControl.set(.location, to: nil, on: tab)
         try await compatibilityWait { try await self.tab.web.evaluateJavaScript("window.oldDocument") as? String == "still here" }

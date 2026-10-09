@@ -47,6 +47,7 @@ struct SiteControlModel: Equatable, Sendable {
     var scheme: String?
     var secureContent = true
     var certificateTrusted = true
+    var navigationFailed = false
     /// nil is not "off": it means this site has never been answered, so it will be asked.
     var camera: Bool?
     var microphone: Bool?
@@ -125,7 +126,7 @@ extension SiteControlModel {
     /// something: a button that comes and goes as pages load makes the pill jump, and the
     /// sidebar's chrome does not move.
     var glyph: String {
-        if siteless { return "globe" }
+        if siteless || navigationFailed { return "globe" }
         if insecure { return PillState.glyph(scheme: scheme) }
         // Only https has earned a closed lock. A host on some other scheme — a custom one,
         // a `vane:` page — is not encrypted and is not "not secure" either; it gets the
@@ -138,6 +139,7 @@ extension SiteControlModel {
     /// problems with different fixes.
     var connection: String {
         guard !siteless else { return "No page loaded" }
+        if navigationFailed { return "This page did not load" }
         switch scheme?.lowercased() {
         case "https":
             if !certificateTrusted { return "Not secure — a certificate problem was accepted here" }
@@ -254,6 +256,7 @@ extension SiteControlModel {
         scheme = url.scheme
         secureContent = tab.secureContent
         certificateTrusted = tab.certificateTrusted
+        navigationFailed = tab.displayingNavigationError
         if let permissionScope = SitePermissions.scope(for: tab) {
             camera = SitePermissions.effective(scope: permissionScope, type: .camera, tabID: tab.id)
             microphone = SitePermissions.effective(scope: permissionScope, type: .microphone, tabID: tab.id)
