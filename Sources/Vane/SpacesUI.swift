@@ -473,7 +473,7 @@ struct SpacePreviewList: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: Look.rowGap) {
             if includingFavorites { favoriteGrid }
-            SpaceSectionsLayout(initialOffset: scrollOffset) {
+            SpaceSectionsLayout(initialOffset: scrollOffset, animatesCutoffs: false) {
                 HStack(spacing: 0) {
                     HStack(spacing: Look.rowSpacing) {
                         Image(systemName: (space.icon ?? "cloud") == "cloud" ? "cloud.fill" : (space.icon ?? "cloud"))

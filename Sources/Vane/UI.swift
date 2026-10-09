@@ -2892,14 +2892,31 @@ enum SpaceDotBlend {
 
 // MARK: - Pinned
 
+/// Only hidden content earns an edge line; elastic scrolling past an end does not.
+struct SidebarScrollCutoffs: Equatable {
+    var top = false
+    var bottom = false
+
+    init() {}
+
+    init(visibleRect: CGRect, contentHeight: CGFloat) {
+        top = visibleRect.minY > 0.5
+        bottom = visibleRect.maxY < contentHeight - 0.5
+    }
+}
+
 /// The settled sidebar and its swipe preview share the fixed heading and scroll viewport.
 struct SpaceSectionsLayout<Header: View, Rows: View>: View {
     var initialOffset: CGFloat = 0
+    var animatesCutoffs = true
     var reportOffset: (CGFloat) -> Void = { _ in }
     @ViewBuilder let header: () -> Header
     @ViewBuilder let rows: () -> Rows
     @State private var scrollHeight: CGFloat = 0
     @State private var scrollPosition = ScrollPosition(edge: .top)
+    @State private var cutoffs = SidebarScrollCutoffs()
+    @State private var measuredCutoffs = false
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         VStack(spacing: Look.rowGap) {
@@ -2914,11 +2931,34 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, offset in
                 reportOffset(offset)
             }
+            .onScrollGeometryChange(for: SidebarScrollCutoffs.self) {
+                SidebarScrollCutoffs(visibleRect: $0.visibleRect, contentHeight: $0.contentSize.height)
+            } action: { _, value in
+                // A newly mounted swipe ghost must already match the settled viewport.
+                var transaction = Transaction()
+                transaction.disablesAnimations = !measuredCutoffs
+                withTransaction(transaction) {
+                    cutoffs = value
+                    measuredCutoffs = true
+                }
+            }
+            .overlay(alignment: .top) { cutoffLine(visible: cutoffs.top) }
+            .overlay(alignment: .bottom) { cutoffLine(visible: cutoffs.bottom) }
             .onAppear {
                 if initialOffset != 0 { scrollPosition.scrollTo(y: initialOffset) }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
         }
+    }
+
+    private func cutoffLine(visible: Bool) -> some View {
+        Rectangle().fill(Look.hairline)
+            .frame(height: 1 / max(1, displayScale))
+            .opacity(visible ? 1 : 0)
+            .animation(animatesCutoffs ? Look.quick : nil, value: visible)
+            .vaneMotionPolicy()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
