@@ -268,9 +268,10 @@ pages with detected drafts or uncertain detection. Draft contents are not saved 
 disk and cannot be recovered reliably after a process crash. See
 [unfinished work and suspension](DRAFT-PROTECTION.md) for coverage and limits.
 
-After an unclean exit or a webpage-process termination, affected pages stay paused with
-an **Open Page** action. Recovery opens a fresh URL without replaying a saved form
-submission. Session files retain a validated previous generation and preserve damaged
+After a restart, restored pages load when shown; background tabs stay unloaded until
+selected. Recovery opens a fresh URL without replaying a saved form submission. A
+webpage-process termination during browsing still pauses that page with an
+**Open Page** action until you retry it or restart Vane. Session files retain a validated previous generation and preserve damaged
 originals before replacement. See [crash and session recovery](CRASH-RECOVERY.md) for
 saved-state boundaries, storage failures, and the isolated macOS checks.
 

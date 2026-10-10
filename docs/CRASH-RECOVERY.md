@@ -5,18 +5,19 @@ while running. A successful write publishes a complete file atomically. Force Qu
 SIGKILL, SIGTERM, logout termination, and a native crash leave the same dirty
 marker; Vane cannot distinguish their causes.
 
-After an unclean exit, **Continue where I left off** restores saved windows with
-their pages paused. **Ask me** offers the same recovery. **Start fresh** skips the
-window snapshot. Pages restored from Spaces during that unclean launch also stay
-paused. Select a badged tab and choose **Open Page**, or use Reload, to open its
-saved URL explicitly. No timer or tab selection retries the page. Another failure
-returns it to the paused state.
+After an unclean exit, **Continue where I left off** restores saved windows and
+loads the selected pages. **Ask me** offers the same recovery. **Start fresh** skips
+the window snapshot. Background tabs remain unloaded until selected, including
+pages restored from Spaces. Recovery opens each saved URL with a fresh GET and
+discards opaque interaction state, so it never replays a saved POST submission.
+Tabs saved with an old recovery pause follow the same behavior on restart.
 
-WebKit content-process termination uses the same native paused view for active
-tabs, background tabs, and split panes. It retires the dead view and clears its
-media, permission-document, upload, and password chooser state. Other tabs remain
-usable. The recovery pause survives session and Space-sidecar saves, including a
-subsequent clean quit.
+WebKit content-process termination during browsing still shows the native paused
+view for active tabs, background tabs, and split panes. It retires the dead view
+and clears its media, permission-document, upload, and password chooser state.
+Other tabs remain usable. Choose **Open Page** or Reload to retry that page during
+the current run. A restart restores it as a fresh URL, without an extra recovery
+click. Unsaved form input may be lost.
 
 ## Saved files and originals
 
@@ -33,7 +34,8 @@ preferences/WebKit identities.
   `.json.damaged-<UUID>` sibling before replacement; failure to preserve it stops
   the write. Unreadable originals are never replaced.
 - Space interaction-state sidecars use the same previous-generation and damaged
-  original protection. Pages recovered from a sidecar fallback stay paused.
+  original protection. Pages recovered from a sidecar fallback discard opaque state
+  and load when shown.
 - Before an unclean launch can restore or save anything, `Session Recovery/<UUID>/`
   receives independent copies of existing session generations, Space definitions,
   Space sidecars, and the profile list. Every repeated unclean launch creates a
@@ -88,7 +90,8 @@ their isolated WebKit stores. They never open the regular browser library.
 
 The macOS 27.0.1 investigation reproduced missing previous-generation fallback,
 omitted windows from other regular profiles, dead views retained after termination,
-and automatic page loading after repeated app interruption. Coverage includes
+and automatic page loading after repeated app interruption. Recovery now discards
+unsafe state and loads selected URLs on restart. Coverage includes
 staged-write/out-of-space failure injection, inaccessible storage, corrupt/future
 JSON, multiwindow/profile/Space/pin/duplicate/split round trips, private exclusions,
 SIGKILL/SIGTERM, and repeated restoration interruptions. Physical power loss and

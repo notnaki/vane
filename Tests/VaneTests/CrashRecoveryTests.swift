@@ -3,6 +3,73 @@ import XCTest
 @testable import vane
 
 @MainActor final class CrashRecoveryTests: XCTestCase {
+    func testSavedRecoveryTabLoadsOnSelectionWithoutReplayingPOST() async throws {
+        try await checkRestoredRecovery(unclean: false)
+    }
+
+    func testUncleanRestartLoadsSelectedTabWithoutReplayingPOST() async throws {
+        try await checkRestoredRecovery(unclean: true)
+    }
+
+    private func checkRestoredRecovery(unclean: Bool) async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let oldHTTPS = HTTPSOnly.enabled; HTTPSOnly.enabled = false
+        defer { HTTPSOnly.enabled = oldHTTPS }
+        let server = try CompatibilityServer()
+        defer { server.stop() }
+        try await compatibilityWait { server.port != nil }
+        server.pages["/form"] = "<title>Form</title><form method=post action='/submitted'><input name=draft value=kept></form>"
+        let source = Tab(isPrivate: true)
+        defer { source.tearDown() }
+        source.navigate(to: try server.url("/form"))
+        try await compatibilityWait { source.existingWeb?.title == "Form" && !source.loading }
+        _ = try await source.web.evaluateJavaScript("document.querySelector('form').submit()")
+        try await compatibilityWait { source.existingWeb?.title == "Upload received" && !source.loading }
+        XCTAssertEqual(server.submissions.count, 1)
+        var saved = source.snapshot
+        XCTAssertNotNil(saved.state)
+        saved.needsRecovery = !unclean
+        source.tearDown()
+
+        let realWrite = Crash.write
+        if unclean {
+            Crash.write = { true }
+            try Data().write(to: Store.directory.appendingPathComponent("running"))
+            XCTAssertTrue(Crash.begin())
+            XCTAssertTrue(Crash.didCrashLastLaunch)
+        }
+        defer {
+            if unclean {
+                Crash.markClean()
+                _ = Crash.begin()
+                Crash.markClean()
+                Crash.write = realWrite
+            }
+        }
+        let store = TabStore(isPrivate: true, session: [])
+        defer {
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(store.tabs)
+        }
+        let tab = store.newBlankTab(focus: false)
+        let background = store.newBlankTab(focus: false)
+        let url = try server.url("/submitted")
+        tab.restore(url: url, home: nil, parked: saved)
+        background.restore(url: try server.url("/background"), home: nil, parked: saved)
+        XCTAssertNil(tab.existingWeb, "Restoring a background tab must stay lazy")
+        XCTAssertNil(tab.snapshot.state, "Unsafe saved POST history must be discarded before the next save")
+        store.current = tab.id
+        XCTAssertFalse(tab.needsRecovery, "Selecting a restored tab must not require Open Page")
+        XCTAssertNotNil(tab.existingWeb, "Selection must start loading the restored URL")
+        try await compatibilityWait { tab.existingWeb?.title == "Page /submitted" && !tab.loading }
+        XCTAssertEqual(tab.currentURL, url)
+        XCTAssertEqual(server.submissions.count, 1, "Recovery must make a fresh GET instead of resubmitting POST")
+        XCTAssertFalse(tab.web.canGoBack, "Recovery must not replay opaque navigation history")
+        XCTAssertNil(background.existingWeb, "Unselected tabs must remain unloaded")
+    }
+
     func testTerminationBeforeFirstCommitKeepsTheRequestedURL() {
         TestEnvironment.prepare()
         _ = NSApplication.shared
@@ -99,11 +166,11 @@ import XCTest
         XCTAssertEqual(try Data(contentsOf: sidecar), corrupt)
     }
 
-    func testLegacySessionFallbackKeepsPauseWhenHealthySidecarWinsMetadata() throws {
+    func testLegacySessionFallbackLoadsFreshWhenHealthySidecarWinsMetadata() throws {
         try checkLegacySessionRecovery(unclean: false)
     }
 
-    func testUncleanReadableLegacySessionKeepsLayoutAndExtraURLsPaused() throws {
+    func testUncleanReadableLegacySessionKeepsLayoutAndLoadsSelectedURL() throws {
         try checkLegacySessionRecovery(unclean: true)
     }
 
@@ -149,7 +216,7 @@ import XCTest
                                    pins: Pins(entries: [.init(row: .tab(pinnedID.uuidString))]),
                                    today: Pins(), splits: [], selected: pinnedID)
         XCTAssertTrue(manager.saveSpaces([space], for: profile.id))
-        XCTAssertTrue(Suspension.SpaceState.save([home.absoluteString: Parked(title: "Sidecar metadata", page: url)],
+        XCTAssertTrue(Suspension.SpaceState.save([home.absoluteString: Parked(title: "Sidecar metadata", state: Data([9, 8, 7]), page: url)],
                                                 space: space.id, profileID: profile.id, in: Store.directory))
         let file = ProfileManager.sessionURL(for: profile.id, in: Store.directory)
         let legacy = try JSONEncoder().encode([[url.absoluteString]])
@@ -162,9 +229,11 @@ import XCTest
         let store = try XCTUnwrap(TabStore.all.first { !before.contains(ObjectIdentifier($0)) && $0.profileID == profile.id })
         let tab = try XCTUnwrap(store.tabs.first { $0.id == pinnedID })
         XCTAssertEqual(tab.title, "Sidecar metadata")
-        XCTAssertTrue(tab.needsRecovery, "Healthy metadata cannot clear a fallback session's recovery policy")
-        XCTAssertNil(tab.existingWeb)
-        XCTAssertTrue(store.tabs.allSatisfy { $0.needsRecovery && $0.existingWeb == nil })
+        XCTAssertFalse(tab.needsRecovery)
+        XCTAssertNotNil(tab.existingWeb, "The selected fallback page should load immediately")
+        XCTAssertFalse(tab.web.canGoBack, "Healthy sidecar metadata must not replay fallback interaction state")
+        XCTAssertTrue(store.tabs.allSatisfy { !$0.needsRecovery })
+        XCTAssertTrue(store.tabs.filter { $0.id != store.current }.allSatisfy { $0.existingWeb == nil && $0.snapshot.state == nil })
     }
 
     func testSidecarFallbackPauseSurvivesSavingOrRemovingAnotherSpace() throws {
@@ -246,7 +315,8 @@ import XCTest
                 XCTAssertEqual(store.tabs[0].homeURL?.absoluteString, "https://recovery.invalid/home")
                 XCTAssertEqual(store.splits.first?.weights, [0.3, 0.7])
                 XCTAssertEqual(store.splits.first?.vertical, true)
-                XCTAssertTrue(store.tabs.allSatisfy { $0.needsRecovery && $0.existingWeb == nil })
+                XCTAssertTrue(store.tabs.allSatisfy { !$0.needsRecovery })
+                XCTAssertNotNil(store.active?.existingWeb, "The selected restored page should load without Open Page")
             }
         }
     }

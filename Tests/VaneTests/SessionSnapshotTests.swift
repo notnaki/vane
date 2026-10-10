@@ -67,7 +67,7 @@ import XCTest
         let empty = try XCTUnwrap(Session.encode([]))
         XCTAssertTrue(try XCTUnwrap(Session.load(file, read: { _ in empty })).snapshot.windows.isEmpty)
     }
-    func testBatchRestorationPreservesMixedSectionsDuplicateURLsAndAllParkedState() throws {
+    func testBatchRestorationPreservesMixedSectionsDuplicateURLsAndHealthyParkedState() throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let profile = UUID()
@@ -79,7 +79,7 @@ import XCTest
             Session.Entry(id: UUID().uuidString, url: "https://batch.invalid/duplicate",
                           title: "Saved \(index)", state: state.base64EncodedString(), kind: kind,
                           home: kind == .today ? nil : "https://batch.invalid/home-\(index)",
-                          customName: "Custom \(index)", needsRecovery: true)
+                          customName: "Custom \(index)", needsRecovery: index == 3)
         }
         let selected = try XCTUnwrap(entries[3].id.flatMap(UUID.init(uuidString:)))
         let store = TabStore(profileID: profile, space: space, session: entries, selected: selected)
@@ -95,10 +95,16 @@ import XCTest
         XCTAssertEqual(store.todayShape.tabs, [0, 3].compactMap { entries[$0].id })
         for entry in entries {
             let tab = try XCTUnwrap(store.tabs.first { $0.id.uuidString == entry.id })
-            XCTAssertNil(tab.existingWeb)
-            XCTAssertTrue(tab.suspended)
-            XCTAssertTrue(tab.needsRecovery)
-            XCTAssertEqual(tab.snapshot.state, state)
+            if tab.id == selected {
+                XCTAssertNotNil(tab.existingWeb)
+                XCTAssertFalse(tab.suspended)
+                XCTAssertFalse(tab.web.canGoBack)
+            } else {
+                XCTAssertNil(tab.existingWeb)
+                XCTAssertTrue(tab.suspended)
+                XCTAssertEqual(tab.snapshot.state, state)
+            }
+            XCTAssertFalse(tab.needsRecovery)
             XCTAssertEqual(tab.snapshot.title, entry.title)
             XCTAssertEqual(tab.workspaceName, entry.customName)
             XCTAssertEqual(tab.currentURL?.absoluteString, entry.url)

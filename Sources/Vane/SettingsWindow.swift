@@ -31,7 +31,7 @@ import SwiftUI
     }
 
     /// Settings › Advanced: what a launch after an unclean exit does. "continue" reopens the
-    /// saved windows without asking, keeping their pages paused; "fresh" opens
+    /// saved windows without asking, loading fresh pages when shown; "fresh" opens
     /// one empty window; "ask" is the old alert, for whoever wants to be asked.
     static let afterCrashChoices: [(name: String, key: String)] = [
         ("Continue where I left off", "continue"), ("Start fresh", "fresh"), ("Ask me", "ask"),

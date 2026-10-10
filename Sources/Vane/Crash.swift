@@ -1,7 +1,7 @@
 import AppKit
 
 /// A dirty marker detects unclean exits, including force quit. Saved originals are
-/// preserved before restoration; pages from an unclean launch require an explicit open.
+/// preserved before restoration; pages from an unclean launch load fresh URLs when shown.
 /// No unsafe signal handlers: the periodic snapshot bounds unsaved changes to 30 seconds
 /// when storage is working. A missing/unwritable marker cannot safely begin a session.
 @MainActor enum Crash {
@@ -85,7 +85,7 @@ import AppKit
         }
         let alert = NSAlert()
         alert.messageText = "Vane quit unexpectedly the last time it was open."
-        alert.informativeText = "Reopen the saved windows and tabs? Pages stay paused until you choose Open Page. Unsaved form input may be lost."
+        alert.informativeText = "Reopen the saved windows and tabs? Pages load when shown, without resubmitting saved forms. Unsaved form input may be lost."
         alert.addButton(withTitle: "Reopen Tabs")   // default: the user's work is the safe choice here
         alert.addButton(withTitle: "Start Fresh")
         guard alert.runModal() == .alertFirstButtonReturn else { return false }

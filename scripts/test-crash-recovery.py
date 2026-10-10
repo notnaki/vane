@@ -104,7 +104,7 @@ def main():
                 process = launch()
                 time.sleep(1.5)
                 assert process.poll() is None, "recovery app exited during startup"
-                assert "/saved" not in requests[before:], "unclean restoration automatically loaded a page"
+                wait_for(lambda: "/saved" in requests[before:])
                 originals = list((directory / "Session Recovery").glob("*/session.json"))
                 assert len(originals) == len(preserved) + 1, "unclean launch did not preserve its originals"
                 assert all(p.read_bytes() == data for p, data in preserved.items()), "a recoverable original was overwritten"
@@ -112,7 +112,7 @@ def main():
                 stop(process, owned[-1][1], sig)
             originals = list((directory / "Session Recovery").glob("*/session.json"))
             assert len(originals) == 3 and any(p.read_bytes() == completed for p in originals)
-            print("PASS SIGKILL, SIGTERM, three repeated restoration interruptions; originals retained; no page reloads", flush=True)
+            print("PASS SIGKILL, SIGTERM, three repeated restoration interruptions; originals retained; selected page restored on every restart", flush=True)
         finally:
             for process, start in owned:
                 stop(process, start, signal.SIGTERM)
