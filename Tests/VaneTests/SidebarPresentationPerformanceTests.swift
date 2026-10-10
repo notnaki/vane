@@ -46,9 +46,16 @@ import XCTest
             XCTAssertEqual(store.tabs.count, count)
             XCTAssertEqual(store.todayShape.entries.count, expectedToday)
             let bounds = NSRect(x: 0, y: 0, width: 900, height: 700)
-            let window = VaneWindow(contentRect: bounds, styleMask: .borderless, backing: .buffered, defer: false)
+            let window = VaneWindow(contentRect: bounds,
+                styleMask: interactiveCount == nil ? .borderless
+                    : [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             window.acceptsMouseMovedEvents = true
+            if interactiveCount != nil {
+                window.titleVisibility = .hidden
+                window.titlebarAppearsTransparent = true
+                XCTAssertTrue(window.canBecomeKey, "Interactive checks require keyboard focus")
+            }
             // Occluded SwiftUI windows can defer work. Keep both timing versions
             // visible while other desktop apps are used; interactive checks stay normal.
             if interactiveCount == nil { window.level = .floating }

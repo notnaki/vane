@@ -30,7 +30,9 @@ builds, tests or task-owned apps. Runs detect competing workloads and must be
 discarded if contaminated. No peer messages are needed.
 Timing windows use the same floating window level in both versions to stay
 visible while other desktop apps are used. Interactive fixtures use the normal
-window level. Two earlier occluded comparisons were discarded.
+window level and a titled, key-capable window for keyboard and rename checks;
+timing windows are borderless and do not measure keyboard-focus latency.
+Two earlier occluded comparisons were discarded.
 
 Each operation has five repetitions and 400 ms settling intervals, except ten
 scroll/swipe repetitions and three preview mounts. Append and remove reset to
