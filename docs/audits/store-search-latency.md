@@ -77,11 +77,38 @@ write measurements, not a claim that Vane schedules 100 writes per typing burst.
 The existing 30-second recovery throttle, 150 ms History title debounce, atomic writes and
 durability rules remain unchanged.
 
+## Final paired comparison
+
+The baseline and fixed release bundles ran back-to-back on October 10 under the
+same shared profiling lock, with no competing builds. Each passed all five opt-in
+benchmark tests, including the unchanged History budget. These measurements describe
+input-actor stalls, not query-to-result latency (nonempty bookmark searches retain
+the 75 ms debounce).
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| 1,000 bookmarks, largest opening input delay | 1,856.2 ms | 41.9 ms |
+| 1,000 bookmarks, filter input delay | 327.8 ms | 31.2 ms |
+| 10,000 bookmarks, largest opening input delay | 20,986.7 ms | 23.4 ms |
+| 10,000 bookmarks, filter input delay | 5,631.4 ms | 25.7 ms |
+| 10,000 History, warm open | 16.2 ms | 16.6 ms |
+| 10,000 History, largest heartbeat overshoot | 20.2 ms | 22.6 ms |
+
+Broad History queries at 240,000 visits took 981–993 ms before and 976–985 ms after;
+address suggestions took 1,487–1,499 ms before and 1,477–1,493 ms after. Cancellation
+drained the stress History scan in 0.305 ms before and 0.290 ms after, returning no
+rows. These paths were not optimized. One hundred changing 1,000-tab snapshots took
+3,791.5 ms before and 3,792.1 ms after; this did not justify persistence scheduling
+changes. Whole mixed-benchmark peak RSS was 6.08 GB before and 3.65 GB after; these
+are process peaks during the fixture suite, not steady browser memory measurements.
+
 ## Validation
 
 Focused release validation covers bookmark SQL parity, folders, literal wildcard
 characters, limits, live edits, cancellation, saved-profile isolation, populated
 private-session stores, History persistence/search and address search ranking/typing.
+The final focused release run passed 37 tests with no skips or failures, including
+the opt-in native field-editor fixture. The isolated pure selfcheck also passed.
 The redundant-title regression failed on the baseline with 100 updates and 100
 notifications, then passed with the conditional update.
 
@@ -93,3 +120,10 @@ measurements depend on macOS, hardware and current regular applications; they ar
 comparisons on this machine, not universal latency guarantees. Accessibility and
 field-focus smoke checks complement existing keyboard checks; a complete VoiceOver
 session is outside these automated fixtures.
+
+SwiftUI's virtual accessibility nodes require an external accessibility client in
+this test host. A signed, isolated app was checked through that interface: the
+bookmark exposed its title, URL and Select/Edit/Delete actions; selection enabled
+bulk controls; filtering removed them; restoring the query returned an unselected
+row while the search field retained focus. The automated native fixture checks
+field-editor continuity without relying on the in-process AX tree.
