@@ -156,6 +156,9 @@ import WebKit
     /// existed: every preview after the first "painted" in 160ms because it was a picture of
     /// the one before it.
     private var committed = 0
+    private var navigation: WKNavigation?
+    // Remember unload identities without keeping retired navigations/pages alive.
+    private let unloads = NSHashTable<WKNavigation>.weakObjects()
 
     /// Start (or instantly re-show) a preview of `url`. Safe to call on every hover event —
     /// the same link twice in a row costs nothing.
@@ -195,7 +198,7 @@ import WebKit
             // Keep speculative WebKit setup, network traffic, rendering and snapshots
             // behind the same settle gate as the summary. The shell/cache stays instant.
             let web = self.webView(for: tab)
-            web.load(URLRequest(url: url))
+            self.navigation = web.load(URLRequest(url: url))
             self.settled = true
             self.startSummary(id: id)
             self.paintTask = Task { [weak self] in await self?.paint(id: id, web: web) }
@@ -219,7 +222,10 @@ import WebKit
         // about:blank rather than tearing the view down — a fresh WKWebView costs a
         // WebContent process launch, and this is a thing the user does dozens of times a
         // minute. Blanking is what actually stops a video, an animation and a timer.
-        if let web, web.url != nil { web.load(URLRequest(url: URL(string: "about:blank")!)) }
+        if let web, web.url != nil,
+           let navigation = web.load(URLRequest(url: URL(string: "about:blank")!)) {
+            unloads.add(navigation)
+        }
     }
 
     /// Everything cancel() does except clearing the screen, so `request` can reuse it.
@@ -230,6 +236,7 @@ import WebKit
         settled = false
         domReady = false
         summaryTries = 0
+        navigation = nil
         debounceTask?.cancel(); debounceTask = nil
         paintTask?.cancel(); paintTask = nil
         // Cancelling the consumer is what cancels the inference: AppleAI's stream cancels
@@ -372,8 +379,22 @@ import WebKit
 
     // MARK: - Metadata, straight off the DOM
 
-    fileprivate func committed(_ web: WKWebView) {
-        guard web === self.web, web.url?.absoluteString != "about:blank", showing != nil else { return }
+    private func owns(_ web: WKWebView, navigation: WKNavigation?) -> Bool {
+        web === self.web && navigation != nil && navigation === self.navigation
+    }
+
+    fileprivate func started(_ web: WKWebView, navigation: WKNavigation?) {
+        // Client-side redirects create a new navigation, unlike HTTP redirects.
+        // Adopt those while rejecting queued starts from internal unloads.
+        guard web === self.web, showing != nil, let navigation,
+              !unloads.contains(navigation) else { return }
+        self.navigation = navigation
+        committed = 0
+        domReady = false
+    }
+
+    fileprivate func committed(_ web: WKWebView, navigation: WKNavigation?) {
+        guard owns(web, navigation: navigation), showing != nil else { return }
         committed = latest
     }
 
@@ -381,10 +402,11 @@ import WebKit
     /// was asked for: github.com/apple/swift is a 301 to github.com/swiftlang/swift, and
     /// comparing urls threw away the metadata of every redirecting link — measured, the card
     /// kept the bare hostname as its title.
-    fileprivate func received(meta html: String, from web: WKWebView) {
+    fileprivate func received(meta html: String, from web: WKWebView, documentURL: URL?) {
         let id = latest
-        guard web === self.web, let url = web.url, url.absoluteString != "about:blank",
-              showing != nil else { return }
+        guard web === self.web, committed == id, let url = web.url,
+              let documentURL, documentURL.absoluteString != "about:blank",
+              documentURL == url, showing != nil else { return }
         let m = Previews.meta(from: html)
         edit(id) {
             if !m.title.isEmpty { $0.title = m.title }
@@ -397,14 +419,14 @@ import WebKit
         startSummary(id: id)
     }
 
-    fileprivate func finished(_ web: WKWebView) {
-        guard web === self.web, web.url?.absoluteString != "about:blank" else { return }
+    fileprivate func finished(_ web: WKWebView, navigation: WKNavigation?) {
+        guard owns(web, navigation: navigation) else { return }
         domReady = true
         startSummary(id: latest)
     }
 
-    fileprivate func failed(_ web: WKWebView) {
-        guard web === self.web, web.url?.absoluteString != "about:blank" else { return }
+    fileprivate func failed(_ web: WKWebView, navigation: WKNavigation?) {
+        guard owns(web, navigation: navigation) else { return }
         edit(latest) { $0.loading = false }
     }
 
@@ -851,15 +873,17 @@ import WebKit
         init(_ owner: Previews) { self.owner = owner }
 
         func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
-            guard let html = m.body as? String, let web = m.webView else { return }
-            owner?.received(meta: html, from: web)
+            guard m.frameInfo.isMainFrame, let html = m.body as? String,
+                  let web = m.webView else { return }
+            owner?.received(meta: html, from: web, documentURL: m.frameInfo.request.url)
         }
 
-        func webView(_ w: WKWebView, didCommit n: WKNavigation!) { owner?.committed(w) }
-        func webView(_ w: WKWebView, didFinish n: WKNavigation!) { owner?.finished(w) }
-        func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) { owner?.failed(w) }
+        func webView(_ w: WKWebView, didStartProvisionalNavigation n: WKNavigation!) { owner?.started(w, navigation: n) }
+        func webView(_ w: WKWebView, didCommit n: WKNavigation!) { owner?.committed(w, navigation: n) }
+        func webView(_ w: WKWebView, didFinish n: WKNavigation!) { owner?.finished(w, navigation: n) }
+        func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) { owner?.failed(w, navigation: n) }
         func webView(_ w: WKWebView, didFailProvisionalNavigation n: WKNavigation!,
-                     withError e: Error) { owner?.failed(w) }
+                     withError e: Error) { owner?.failed(w, navigation: n) }
 
         /// A preview follows redirects and nothing else. No mailto:, no custom scheme
         /// handing the click to another app, no popup.

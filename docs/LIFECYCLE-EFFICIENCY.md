@@ -158,7 +158,12 @@ about:blank unload was rejected by the preview navigation policy; the cache-hit
 and source-release paths also left the previous document loaded. The policy now
 admits the internal blank document, cache hits unload the previous document, and
 source release cancels only its own preview. The reusable view and cached image
-remain available. Blank-document callbacks cannot open paint/summary gates.
+remain available. Navigation identity rejects retired unload callbacks; metadata
+uses the originating main frame's URL, and client-side redirects can adopt their
+new navigation. A regression reproduced both stale blank-frame metadata and a
+retired unload failure mutating a newer preview, then passed with those guards.
+The document-unload fixture waits for the JavaScript context to be replaced,
+because URL KVO can advance before about:blank has finished committing.
 
 The profile replacement fixture alternates private and isolated regular profiles.
 Private tabs normalize to one incognito profile, so unique UUIDs passed to private

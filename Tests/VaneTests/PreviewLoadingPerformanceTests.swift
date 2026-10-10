@@ -108,8 +108,15 @@ private final class PreviewServer: @unchecked Sendable {
             let after = (try await web.evaluateJavaScript("window.ticks || 0")) as? Int ?? 0
             print("LIFECYCLE preview cachedReplacement=\(cachedReplacement) ownerTeardown=\(ownerTeardown) timer callbacks after 30s settle, 3s sample: \(after - before)")
         }
-        let settle = ContinuousClock.now + .seconds(3)
-        while web.url?.absoluteString != "about:blank", ContinuousClock.now < settle {
+        // URL changes before the old JavaScript context has necessarily gone away.
+        // Wait for the replacement document, rather than treating URL KVO as completion.
+        let settle = ContinuousClock.now + .seconds(8)
+        var timerType: String?
+        while ContinuousClock.now < settle {
+            if web.url?.absoluteString == "about:blank", !web.isLoading {
+                timerType = try await web.evaluateJavaScript("typeof window.ticks") as? String
+                if timerType == "undefined" { break }
+            }
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertEqual(web.url?.absoluteString, "about:blank", "Dismissal must unload timers/media, not only stop an in-flight load")
@@ -120,8 +127,52 @@ private final class PreviewServer: @unchecked Sendable {
             XCTAssertEqual(server.requests, requestsBeforeReplacement, "The cached card must not reload its destination")
         }
         else { XCTAssertNil(previews.current) }
-        let timerType = try await web.evaluateJavaScript("typeof window.ticks") as? String
         XCTAssertEqual(timerType, "undefined")
+    }
+
+    func testRetiredBlankNavigationAndFrameCannotMutateNewPreview() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let server = try PreviewServer(body: "<title>Current preview</title><body>Fixture<script>if(location.pathname==='/next')location.replace('/final')</script></body>")
+        let base = try await server.start(), previews = Previews(), tab = Tab(isPrivate: true)
+        let enabled = Previews.enabled
+        Previews.enabled = true
+        var host: NSWindow?
+        defer {
+            previews.cancel(); tab.tearDown(); server.stop(); Previews.enabled = enabled
+            host?.isReleasedWhenClosed = false
+            host?.contentView = nil; host?.close()
+        }
+        previews.request(base.appendingPathComponent("first"), from: tab)
+        let deadline = ContinuousClock.now + .seconds(8)
+        while ContinuousClock.now < deadline {
+            host = NSApp.windows.first { ($0.contentView as? WKWebView)?.url?.port == base.port }
+            if (host?.contentView as? WKWebView)?.isLoading == false { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let web = try XCTUnwrap(host?.contentView as? WKWebView)
+        let blank = try XCTUnwrap(web.load(URLRequest(url: URL(string: "about:blank")!)))
+        let next = base.appendingPathComponent("next")
+        previews.request(next, from: tab)
+        let nextDeadline = ContinuousClock.now + .seconds(8)
+        while web.url != base.appendingPathComponent("final") || web.isLoading
+                || previews.current?.title != "Current preview" {
+            guard ContinuousClock.now < nextDeadline else { return XCTFail("Replacement preview did not load") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        // An about:blank child provides an actual WKScriptMessage with a blank
+        // originating frame while the containing WebView already has a new URL.
+        _ = try await web.evaluateJavaScript("""
+        var f = document.createElement('iframe'); document.body.appendChild(f);
+        f.contentWindow.webkit.messageHandlers.vanepreviewmeta.postMessage('<title>Stale blank</title>'); true;
+        """)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNotEqual(previews.current?.title, "Stale blank")
+        var pending = Previews.Preview(url: next)
+        pending.title = "Current preview"
+        previews.publish(pending, for: previews.begin())
+        web.navigationDelegate?.webView?(web, didFail: blank, withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+        XCTAssertEqual(previews.current?.loading, true, "A retired unload must not finish the new request")
     }
 
     func testProfileReplacementReleasesPreviousPreviewViews() async throws {
