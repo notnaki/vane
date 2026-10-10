@@ -1075,7 +1075,7 @@ struct TitleReveal: Equatable, Sendable {
         leaveEasel()
         parkedURL = url
         parkedState = p.state
-        needsRecovery = p.needsRecovery || Crash.didCrashLastLaunch
+        needsRecovery = p.needsRecovery
         titlePlaceholderURL = Files.restorationPlaceholder(for: url)
         suspended = true
         if needsRecovery { release() }
@@ -1104,6 +1104,15 @@ struct TitleReveal: Equatable, Sendable {
     /// `park` deliberately treats its url as home, which is right for a row that never
     /// wandered; the session and the Space sidecar are the two sources that know both values.
     func restore(url: URL, home: URL?, parked: Parked) {
+        var parked = parked
+        if Crash.didCrashLastLaunch || parked.needsRecovery {
+            // Restart/fallback recovery opens the saved URL when shown. Discard opaque
+            // history before clearing the pause so neither selection nor the next save
+            // can replay a POST from the interrupted page.
+            parked.state = nil
+            parked.needsRecovery = false
+            release()
+        }
         park(url: url, parked)
         if stays { homeURL = home ?? url }
         // A row pinned before this profile began writing pin names down — or one imported
@@ -1127,7 +1136,7 @@ struct TitleReveal: Equatable, Sendable {
     /// Load it now, or park it if we know enough about it to draw it without loading.
     func open(_ url: URL, parked p: Parked?) {
         if Crash.didCrashLastLaunch || p?.needsRecovery == true {
-            park(url: url, p ?? Parked())
+            restore(url: url, home: homeURL, parked: p ?? Parked())
         } else if let p, Prefs.suspendTabs { park(url: url, p) } else { go(url) }
     }
 
@@ -2263,7 +2272,7 @@ struct Stash {
                     if let url = tab.currentURL {
                         var snapshot = tab.snapshot
                         snapshot.needsRecovery = true
-                        tab.park(url: url, snapshot)
+                        tab.restore(url: url, home: tab.homeURL, parked: snapshot)
                     }
                 }
             }
