@@ -266,6 +266,8 @@ import XCTest
         window.appearance = NSAppearance(named: .darkAqua)
         let host = NSHostingView(rootView: SidebarSpaceContent().environmentObject(owner)
             .environmentObject(SidebarDragPreview()).frame(width: 250, height: 400)
+            // Compare settled geometry with the static ghost, not a cutoff's fade frame.
+            .transaction { $0.disablesAnimations = true }
             .environment(\.colorScheme, .dark).background(Color(white: 0.25)))
         host.frame = bounds
         window.contentView = host

@@ -424,8 +424,13 @@ struct SpacePreviewList: View, Equatable {
         let landing = newProfile ? diskTabs.firstIndex { $0.kind == .today }
             : Spaces.landing(on: diskTabs.map { ($0.url.absoluteString, $0.kind) }, last: last)
         self.selectedSavedRow = landing.map { "\(diskTabs[$0].kind)-\(diskTabs[$0].index)" }
-        let capturedSaved = Suspension.SpaceState.load(space: space.id, profileID: space.profileID,
-                                            in: Store.directory)
+        // Live row surfaces already own their page metadata. Loading the sidecar here
+        // also decodes opaque interaction states that these previews never use.
+        // Saved rows and the favourite grid still need their saved-page fallback.
+        let needsSaved = tabs == nil || renderStore == nil || includingFavorites
+        let capturedSaved = needsSaved
+            ? Suspension.SpaceState.load(space: space.id, profileID: space.profileID, in: Store.directory)
+            : [:]
         saved = capturedSaved
         savedNames = Dictionary((self.liveTabs == nil ? diskTabs : []).map { item in
             let name = Self.savedName(url: item.url, kind: item.kind, profile: space.profileID, saved: capturedSaved)
