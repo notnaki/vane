@@ -35,6 +35,27 @@ import SQLite3
         return notifications
     }
 
+    func testIdenticalRetitlesDoNotWriteOrRefreshHistory() throws {
+        let (store, db) = try fixture()
+        let url = URL(string: "https://example.com/title")!
+        XCTAssertTrue(store.record([(url, "Old", Date(timeIntervalSince1970: 1)),
+                                    (url, "Current", Date(timeIntervalSince1970: 2))]) == 2)
+        execute("CREATE TABLE updates (n INTEGER); CREATE TRIGGER count_titles AFTER UPDATE ON visits BEGIN INSERT INTO updates VALUES (1); END", on: db)
+        let notifications = observe(store)
+        for _ in 0..<100 { XCTAssertTrue(store.retitle(url, title: "Current")) }
+        XCTAssertEqual(notifications.total, 0)
+        var updates = -1
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM updates", -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
+        updates = Int(sqlite3_column_int(statement, 0))
+        XCTAssertEqual(updates, 0)
+        XCTAssertTrue(store.retitle(url, title: "Changed"))
+        XCTAssertEqual(notifications.total, 1)
+        XCTAssertEqual(store.history().map(\.title), ["Changed", "Old"])
+    }
+
     func testRejectedSingleWritesDoNotPublishHistoryChanges() throws {
         let (store, db) = try fixture()
         let url = URL(string: "https://example.com/keep")!

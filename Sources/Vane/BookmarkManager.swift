@@ -179,7 +179,7 @@ import SwiftUI
     }
 }
 
-private enum BookmarkLocation: Hashable {
+private enum BookmarkLocation: Hashable, Sendable {
     case all, unfiled, folder(String)
 }
 
@@ -191,17 +191,34 @@ private struct BookmarkManagerView: View {
     @State private var marks: [Bookmark] = []
     @State private var selection: Set<Int64> = []
     @State private var editing: Bookmark?
+    @State private var revision = 0
+    @State private var keyboardRevision = 0
+    @State private var searching = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @FocusState private var searchFocused: Bool
     @FocusState private var listFocused: Bool
 
     private var store: Store { Store.store(for: profileID) }
+
+    private struct Request: Equatable {
+        let profileID: UUID
+        let query: String
+        let location: BookmarkLocation
+        let revision: Int
+    }
+    private var request: Request {
+        Request(profileID: profileID, query: query, location: location, revision: revision)
+    }
 
     var body: some View {
         HSplitView {
             sidebar.frame(minWidth: 170, idealWidth: 190, maxWidth: 230)
             VStack(alignment: .leading, spacing: Look.inset * 1.5) {
                 header
-                if marks.isEmpty { empty } else { list }
+                list.overlay(alignment: .topLeading) {
+                    if marks.isEmpty { empty }
+                }
             }
             .padding(.top, Look.inset * 2)
             .padding(.horizontal, Look.paneMargin)
@@ -209,8 +226,21 @@ private struct BookmarkManagerView: View {
         }
         .background(.windowBackground)
         .onAppear { reload(); searchFocused = true }
-        .onChange(of: query) { reloadMarks() }
-        .onChange(of: location) { selection.removeAll(); reloadMarks() }
+        .onChange(of: query) { selection.removeAll(); clearResults() }
+        .onChange(of: location) { selection.removeAll(); clearResults() }
+        .task(id: request) {
+            let asked = request
+            if !asked.query.isEmpty { try? await Task.sleep(for: LocalSuggestionReader.debounce) }
+            guard !Task.isCancelled else { return }
+            let folderID: String?
+            if case .folder(let id) = asked.location { folderID = id } else { folderID = nil }
+            let results = await store.managedBookmarksAsync(matching: asked.query, folderID: folderID,
+                                                            unfiledOnly: asked.location == .unfiled)
+            guard !Task.isCancelled, asked == request else { return }
+            marks = results
+            selection.formIntersection(Set(results.map(\.id)))
+            searching = false
+        }
         .sheet(item: $editing) { mark in
             BookmarkEditor(mark: mark, folders: folders) { title, url, folder in
                 guard store.updateBookmark(mark.id, url: url, title: title,
@@ -219,6 +249,7 @@ private struct BookmarkManagerView: View {
                 return true
             }
         }
+        .vaneMotionPolicy()
     }
 
     private var sidebar: some View {
@@ -272,7 +303,7 @@ private struct BookmarkManagerView: View {
             }
             .padding(.horizontal, Look.inset).frame(height: Look.control)
             .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
-            if !selection.isEmpty {
+            if !selection.isEmpty && !searching {
                 Menu("Move \(selection.count)") {
                     Button("Unfiled") { moveSelected(to: nil) }
                     ForEach(folders) { folder in Button(folder.name) { moveSelected(to: folder.id) } }
@@ -286,24 +317,42 @@ private struct BookmarkManagerView: View {
     }
 
     private var empty: some View {
-        Text(query.isEmpty ? "No bookmarks in this folder." : "No bookmark matches “\(query)”.")
+        Text(searching ? "Searching bookmarks…" : query.isEmpty
+             ? "No bookmarks in this folder." : "No bookmark matches “\(query)”.")
             .font(Look.text).foregroundStyle(.secondary)
             .padding(.horizontal, Look.cardInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var list: some View {
-        ScrollView {
-            SettingsCard {
-                ForEach(marks) { mark in row(mark) }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(marks) { mark in
+                        // One lazy child per bookmark, including its optional divider.
+                        VStack(spacing: 0) {
+                            row(mark)
+                            if mark.id != marks.last?.id { Hairline().padding(.horizontal, Look.cardInset) }
+                        }
+                        .id(mark.id)
+                    }
+                }
+                .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
+                .hairline(radius: Look.cardRadius, Look.cardStroke)
             }
+            .focusable().focusEffectDisabled().focused($listFocused)
+            .onDeleteCommand { deleteSelected() }
+            .onKeyPress(keys: [.upArrow, .downArrow, .return], phases: .down) { press in
+                handle(BookmarkManager.keyCommand(for: press.key, press.modifiers))
+            }
+            .onChange(of: keyboardRevision) {
+                guard selection.count == 1, let id = selection.first else { return }
+                withAnimation(reduceMotion || batterySaver.isActive ? nil : Look.quick) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+            .accessibilityLabel("Bookmarks")
         }
-        .focusable().focusEffectDisabled().focused($listFocused)
-        .onDeleteCommand { deleteSelected() }
-        .onKeyPress(keys: [.upArrow, .downArrow, .return], phases: .down) { press in
-            handle(BookmarkManager.keyCommand(for: press.key, press.modifiers))
-        }
-        .accessibilityLabel("Bookmarks")
     }
 
     private func row(_ mark: Bookmark) -> some View {
@@ -347,14 +396,8 @@ private struct BookmarkManagerView: View {
     }
 
     private func reload() { folders = store.bookmarkFolders(); reloadMarks() }
-    private func reloadMarks() {
-        switch location {
-        case .all: marks = store.managedBookmarks(matching: query)
-        case .unfiled: marks = store.managedBookmarks(matching: query, unfiledOnly: true)
-        case .folder(let id): marks = store.managedBookmarks(matching: query, folderID: id)
-        }
-        selection.formIntersection(Set(marks.map(\.id)))
-    }
+    private func reloadMarks() { clearResults(); revision += 1 }
+    private func clearResults() { marks = []; searching = true }
 
     private func select(_ mark: Bookmark) {
         if NSEvent.modifierFlags.contains(.command) {
@@ -365,10 +408,10 @@ private struct BookmarkManagerView: View {
     private func handle(_ command: BookmarkManager.KeyCommand?) -> KeyPress.Result {
         guard let command else { return .ignored }
         switch command {
-        case .previous:
-            selection = BookmarkManager.keyboardSelection(ids: marks.map(\.id), selected: selection, step: -1)
-        case .next:
-            selection = BookmarkManager.keyboardSelection(ids: marks.map(\.id), selected: selection, step: 1)
+        case .previous, .next:
+            selection = BookmarkManager.keyboardSelection(ids: marks.map(\.id), selected: selection,
+                                                           step: command == .previous ? -1 : 1)
+            keyboardRevision += 1
         case .open:
             guard let mark = marks.first(where: { selection.contains($0.id) }) else { return .ignored }
             open(mark)
@@ -390,7 +433,7 @@ private struct BookmarkManagerView: View {
     }
 
     private func deleteSelected() {
-        guard !selection.isEmpty else { return }
+        guard !searching, !selection.isEmpty else { return }
         if selection.count > 1 {
             let alert = NSAlert(); alert.messageText = "Delete \(selection.count) bookmarks?"
             alert.informativeText = "This cannot be undone."
