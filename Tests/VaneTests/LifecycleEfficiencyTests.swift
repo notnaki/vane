@@ -4,6 +4,36 @@ import XCTest
 @testable import vane
 
 @MainActor final class LifecycleEfficiencyTests: XCTestCase {
+    func testFindSessionsLiveWithTheirStores() async throws {
+        TestEnvironment.prepare()
+        final class WeakSession {
+            weak var value: Find?
+            init(_ value: Find) { self.value = value }
+        }
+        let measure = ProcessInfo.processInfo.environment["VANE_LIFECYCLE_MEASURE"] == "1"
+        let count = measure ? 100 : 10
+        var sessions: [WeakSession] = []
+        autoreleasepool {
+            var stores: [TabStore] = []
+            for index in 0..<count {
+                let store = TabStore(isLittle: true, session: [])
+                let session = Find.session(for: store)
+                session.query = "Window \(index)"
+                XCTAssertTrue(Find.session(for: store) === session)
+                sessions.append(WeakSession(session))
+                stores.append(store)
+            }
+            for (index, store) in stores.enumerated() {
+                XCTAssertEqual(Find.session(for: store).query, "Window \(index)", "Live windows keep independent queries")
+                TabStore.all.removeAll { $0 === store }
+            }
+        }
+        if measure { try await Task.sleep(for: .seconds(30)) }
+        let retained = sessions.filter { $0.value != nil }.count
+        print("LIFECYCLE Find sessions retained: \(retained)/\(count), settling: \(measure ? 30 : 0)s")
+        XCTAssertEqual(retained, 0, "Closed stores must release their Find queries and sessions")
+    }
+
     func testClosedTabDropsItsWebViewEvenIfRowIsRetained() {
         TestEnvironment.prepare()
         let tab = Tab(isPrivate: true)

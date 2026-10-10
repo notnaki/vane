@@ -964,6 +964,7 @@ struct TitleReveal: Equatable, Sendable {
     /// the tab: `suspend()` parks a page and so bails when there is no page to park, and
     /// "nothing was parked" must never mean "nothing was released".
     private func release() {
+        Previews.shared.cancel(from: self)
         navigationState.invalidate()
         loading = false
         draftProtection.reset()
@@ -2046,6 +2047,8 @@ struct Stash {
 @MainActor final class TabStore: ObservableObject {
     weak var sidebarDragPreview: SidebarDragPreview?
     let windowID = UUID()
+    // Outlive the Find bar and profile parking, but never the owning store.
+    lazy var findSession = Find()
     let feedback = InteractionFeedback()
     var sharingReady = false
     var sharedUpdateQueued = false
