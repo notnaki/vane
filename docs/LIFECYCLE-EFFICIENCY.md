@@ -141,3 +141,52 @@ contenteditable elements, and asynchronous suspension lacked same-URL document-g
 validation. The later merged [draft-protection work](DRAFT-PROTECTION.md) adds frame/open-shadow-root
 checks and document-generation revalidation with controlled regressions. JavaScript-only
 and inaccessible editor state remain limits; that guide records the current boundaries.
+
+
+## 2026-10-09 Find and preview follow-up
+
+At baseline `f24aa5f`, an isolated XCTest fixture kept 100 stores alive during
+construction to prevent address reuse, then released all stores and waited 30
+seconds. All 100 distinct Find sessions survived because the static dictionary
+owned them indefinitely. Find sessions now belong to their TabStore; live stores
+retain their independent query and session identity while closed stores release it.
+
+A localhost preview document incremented a timer. After a 30-second settling period,
+a 3-second sample observed 3 callbacks after cancellation, 3 after replacing the
+card with a cache hit, and 2 after tearing down the source tab. The existing
+about:blank unload was rejected by the preview navigation policy; the cache-hit
+and source-release paths also left the previous document loaded. The policy now
+admits the internal blank document, cache hits unload the previous document, and
+source release cancels only its own preview. The reusable view and cached image
+remain available. Navigation identity rejects retired unload callbacks; metadata
+uses the originating main frame's URL, and client-side redirects can adopt their
+new navigation. A regression reproduced both stale blank-frame metadata and a
+retired unload failure mutating a newer preview, then passed with those guards.
+The document-unload fixture waits for the JavaScript context to be replaced,
+because URL KVO can advance before about:blank has finished committing.
+
+The profile replacement fixture alternates private and isolated regular profiles.
+Private tabs normalize to one incognito profile, so unique UUIDs passed to private
+tab construction do not trigger replacement: an earlier draft of this fixture
+counted the same reusable view nine times. That result is invalid as retention
+evidence. The corrected fixture verifies replacement identity and found 0/9 old
+preview views alive after 30 seconds, without a production profile-teardown change.
+Heap inspection identified the remaining reusable views under WebKit ownership;
+WebKit process/data-store caching is separate from a retained Vane Tab or TabStore.
+
+Measurements use macOS 27.0.1 (26A434), arm64, 32 GB RAM, Xcode 27.0 (27A266a),
+Swift 6.4.0 and debug builds. Builds and signed measurements reserve a shared local
+profiling lock; test data and defaults are isolated. Heap inspection is diagnostic
+and is excluded from the final performance comparison. The extended signed fixture
+uses 100 tab cycles, 25 suspend/resume cycles, 100 Little Vane windows and 200 parked
+rows, with 30-second settling before and after cycling and at least 60 seconds of
+idle parent CPU sampling. Routine CI checks ownership and document-unload semantics;
+long settling/callback measurements remain opt-in through VANE_LIFECYCLE_MEASURE.
+
+The first post-fix run released all 100 Find sessions and observed zero preview
+timer callbacks in each of the three cases. The corrected profile-switch fixture
+released all nine previous views. A signed cycle run also released all 225 closed
+WebViews, 100 windows, 100 stores and 200 tabs, and stopped suspension work when no
+stores remained. Further focused validation and controlled measurements are
+recorded in the PR. No WebKit helper-process memory or battery-life reduction is
+claimed.

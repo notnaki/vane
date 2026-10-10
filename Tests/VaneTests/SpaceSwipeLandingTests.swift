@@ -5,8 +5,21 @@ import XCTest
 
 @MainActor final class SpaceSwipeLandingTests: XCTestCase {
     func testCommittedSwipeSwitchesPageAndAddressPromptlyAfterRelease() async throws {
+        try await checkCommittedSwipe(saving: false)
+    }
+
+    func testBatterySaverKeepsCommittedSwipeAnimatedUntilThePreviewReachesRest() async throws {
+        try await checkCommittedSwipe(saving: true)
+    }
+
+    private func checkCommittedSwipe(saving: Bool) async throws {
         TestEnvironment.prepare()
-        try XCTSkipIf(Motion.reduced, "Focus timing requires the animated landing path")
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+                      "Focus timing requires the animated landing path")
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(saving ? .alwaysOn : .off)
+        defer { saver.setMode(previousMode) }
         let profile = UUID()
         let first = Space(name: "First", profileID: profile)
         let second = Space(name: "Second", profileID: profile)
@@ -37,7 +50,13 @@ import XCTest
         store.current = remembered.id
         store.switchTo(space: first)
         store.palette = nil
-        window.contentView = NSHostingView(rootView: LandingStrip(store: store))
+        let position = LandingPosition()
+        window.contentView = NSHostingView(rootView: LandingStrip(store: store, position: position).vaneMotionPolicy())
+        var handoffOffset: CGFloat?
+        let observation = store.$currentSpaceID.sink { id in
+            if id == second.id { handoffOffset = position.offset }
+        }
+        defer { observation.cancel() }
         window.orderFront(nil)
         store.spaceSwiping = true
         store.spaceDrag = -90
@@ -60,15 +79,48 @@ import XCTest
         XCTAssertTrue(store.active === remembered)
         XCTAssertEqual(store.active?.currentURL, URL(string: "https://remembered.example/"))
         XCTAssertEqual(store.spaceDrag, 0)
+        print("HANDOFF_PRESENTATION_OFFSET: \(handoffOffset ?? 0)")
+        XCTAssertEqual(try XCTUnwrap(handoffOffset), -250, accuracy: 0.125,
+                       "The ghost must reach its endpoint before the live sidebar replaces it")
     }
 }
 
 private struct LandingStrip: View {
     @ObservedObject var store: TabStore
+    @ObservedObject private var gesture: SpaceGesture
+    let position: LandingPosition
+
+    init(store: TabStore, position: LandingPosition) {
+        self.store = store
+        gesture = store.spaceGesture
+        self.position = position
+    }
 
     var body: some View {
         SpaceSidebarStrip(store: store, favorites: EmptyView(),
                           sections: Text(store.currentSpaceID?.uuidString ?? "Empty"))
             .frame(width: 250, height: 300)
+            // Sample the landing's presentation value, rather than its model endpoint.
+            .background {
+                Color.clear.frame(width: 1, height: 1)
+                    .modifier(LandingPositionProbe(offset: gesture.drag, position: position))
+            }
+    }
+}
+
+@MainActor private final class LandingPosition {
+    var offset: CGFloat = 0
+}
+
+private struct LandingPositionProbe: AnimatableModifier {
+    var offset: CGFloat
+    let position: LandingPosition
+    nonisolated var animatableData: CGFloat {
+        get { offset }
+        set { offset = newValue }
+    }
+    func body(content: Content) -> some View {
+        position.offset = offset
+        return content.offset(x: offset)
     }
 }

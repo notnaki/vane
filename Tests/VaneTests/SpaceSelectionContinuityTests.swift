@@ -6,7 +6,7 @@ import XCTest
 @MainActor final class SpaceSelectionContinuityTests: XCTestCase {
     private func fixture() throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
         TestEnvironment.prepare()
-        try XCTSkipIf(Motion.reduced, "Animated interruption requires motion")
+        try XCTSkipIf(Motion.spaceReduced, "Animated interruption requires motion")
         let profile = ProfileManager.shared.create(name: "Continuity fixture").id
         let spaces = ["First", "Second", "Third", "Fourth"].map { Space(name: $0, profileID: profile) }
         XCTAssertTrue(ProfileManager.shared.saveSpaces(spaces, for: profile))
@@ -15,7 +15,7 @@ import XCTest
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         store.window = window
-        window.contentView = NSHostingView(rootView: ContinuityStrip(store: store))
+        window.contentView = NSHostingView(rootView: ContinuityStrip(store: store).vaneMotionPolicy())
         window.orderFront(nil)
         let monitor = store.spaceGesture.monitor
         monitor.install(store)
@@ -69,7 +69,7 @@ import XCTest
         XCTAssertFalse(store.spaceSwiping)
     }
 
-    func testBatterySaverFinishesASelectionImmediately() throws {
+    func testBatterySaverKeepsTheLatestSelectionAnimated() async throws {
         TestEnvironment.prepare()
         let previous = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.off)
@@ -78,11 +78,15 @@ import XCTest
         monitor.select(spaces[1], in: store)
         BatterySaver.shared.setMode(.alwaysOn)
         monitor.select(spaces[2], in: store)
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        XCTAssertTrue(store.spaceSwiping)
+        try await Task.sleep(for: .milliseconds(450))
         XCTAssertEqual(store.currentSpaceID, spaces[2].id)
         XCTAssertFalse(store.spaceSwiping)
     }
 
-    func testBatterySaverFinishesTheVisibleLandingWithoutMoreInput() async throws {
+    func testBatterySaverKeepsTheVisibleLandingAnimatedWithoutMoreInput() async throws {
+        TestEnvironment.prepare()
         let previous = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.off)
         defer { BatterySaver.shared.setMode(previous) }
@@ -91,13 +95,15 @@ import XCTest
         try await Task.sleep(for: .milliseconds(60))
         BatterySaver.shared.setMode(.alwaysOn)
         try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
-        XCTAssertFalse(store.spaceSwiping)
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        XCTAssertTrue(store.spaceSwiping)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        XCTAssertFalse(store.spaceSwiping)
     }
 
     func testPolicyChangePreservesNewerNavigation() async throws {
+        TestEnvironment.prepare()
         let previous = BatterySaver.shared.mode
         BatterySaver.shared.setMode(.off)
         defer { BatterySaver.shared.setMode(previous) }
@@ -108,9 +114,34 @@ import XCTest
         BatterySaver.shared.setMode(.alwaysOn)
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(store.currentSpaceID, spaces[2].id)
-        XCTAssertFalse(store.spaceSwiping)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(store.currentSpaceID, spaces[2].id)
+        XCTAssertFalse(store.spaceSwiping)
+    }
+
+    func testReduceMotionFinishesAnOwnedSelectionImmediately() throws {
+        let (store, spaces, _, monitor) = try fixture()
+        monitor.select(spaces[1], in: store)
+        monitor.finishForReducedMotion()
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        XCTAssertFalse(store.spaceSwiping)
+        XCTAssertEqual(store.spaceDrag, 0)
+    }
+
+    func testBatterySaverKeepsTheReturnToOriginMounted() async throws {
+        TestEnvironment.prepare()
+        let previous = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.alwaysOn)
+        defer { BatterySaver.shared.setMode(previous) }
+        let (store, spaces, _, monitor) = try fixture()
+        monitor.select(spaces[1], in: store)
+        try await Task.sleep(for: .milliseconds(60))
+        monitor.select(spaces[0], in: store)
+        XCTAssertTrue(store.spaceSwiping, "The returning preview must remain mounted")
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        XCTAssertFalse(store.spaceSwiping)
+        XCTAssertEqual(store.spaceDrag, 0)
     }
 
     func testClickAfterNewerNavigationOwnsItsCompletion() async throws {

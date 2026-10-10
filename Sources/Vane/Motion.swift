@@ -28,7 +28,24 @@ import SwiftUI
     /// System-wide Reduce Motion. Read from AppKit rather than the SwiftUI environment
     /// because the writes this guards happen in the model, where there is no environment.
     static var reduced: Bool {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion || BatterySaver.shared.isActive
+        spaceReduced || BatterySaver.shared.isActive
+    }
+
+    /// Space navigation stays continuous in Battery Saver, including its landing tail.
+    static var spaceReduced: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+
+    fileprivate struct SpaceTransition: TransactionKey {
+        static let defaultValue = false
+    }
+
+    static func space<T>(_ animation: Animation,
+                         completionCriteria: AnimationCompletionCriteria = .logicallyComplete,
+                         _ body: () throws -> T, completion: @escaping () -> Void = {}) rethrows -> T {
+        var transaction = Transaction(animation: spaceReduced ? nil : animation)
+        transaction.disablesAnimations = spaceReduced
+        transaction[SpaceTransition.self] = true
+        transaction.addAnimationCompletion(criteria: completionCriteria, completion)
+        return try withTransaction(transaction, body)
     }
 
     // MARK: Sweeping
@@ -75,7 +92,7 @@ private struct VaneMotionPolicy: ViewModifier {
 
     func body(content: Content) -> some View {
         content.transaction {
-            if reduceMotion || batterySaver.isActive {
+            if reduceMotion || (batterySaver.isActive && !$0[Motion.SpaceTransition.self]) {
                 $0.animation = nil
                 $0.disablesAnimations = true
             }

@@ -183,7 +183,8 @@ Icon asset maintenance is documented in [AppIcons](../AppIcons/README.md).
 Battery Saver lives in **Settings → Advanced → Performance**. Choose **Off**,
 **Automatic** (below 20% battery while unplugged), or **Always On**. While active,
 eligible idle tabs sleep after five minutes, hover link previews pause, and sidebar
-motion is reduced. Active pages, pinned tabs, media/Picture in Picture, private tabs,
+motion is reduced. Space switching stays smoothly animated in Battery Saver and still
+respects system Reduce Motion. Active pages, pinned tabs, media/Picture in Picture, private tabs,
 and unfinished forms keep their existing suspension protections. State changes show a
 temporary green lightning popup at the page's top right, with an **Edit this setting**
 button. Hovering keeps the popup visible; sleeping tabs reload when selected. The mode

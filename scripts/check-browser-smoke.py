@@ -144,7 +144,7 @@ def main():
                         help="existing signed app bundle to execute without changing it")
     parser.add_argument("--distribution", action="store_true",
                         help="require Developer ID, notarization, and Gatekeeper checks")
-    parser.add_argument("--lifecycle", action="store_true", help="100 tab/window cycles, 200 parked rows, settling and idle CPU")
+    parser.add_argument("--lifecycle", action="store_true", help="100 tab/window cycles, 25 suspend/resume cycles, 200 parked rows, settling and idle CPU")
     parser.add_argument("--public-media", action="store_true", help="opt-in sustained Shaka public-demo playback (network required, no accounts)")
     parser.add_argument("--crash-recovery", action="store_true", help="synthetic active/background WebKit process kills and POST recovery")
     options = parser.parse_args()
