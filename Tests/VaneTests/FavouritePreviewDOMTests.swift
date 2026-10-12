@@ -9,10 +9,8 @@ import XCTest
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700), configuration: config)
-        let window = NSWindow(contentRect: web.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.contentView = web
-        window.setFrameOrigin(NSPoint(x: -12000, y: -12000)); window.orderFront(nil)
-        defer { web.stopLoading(); window.orderOut(nil); window.contentView = nil }
+        let window = PreviewHostWindow(content: web)
+        defer { web.stopLoading(); window.contentView = nil; window.close() }
         web.loadHTMLString(html, baseURL: URL(string: url)!)
         for _ in 0..<100 {
             if !web.isLoading, (try? await web.evaluateJavaScript("document.readyState")) as? String == "complete" { break }

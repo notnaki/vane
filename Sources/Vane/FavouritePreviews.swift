@@ -186,7 +186,7 @@ import WebKit
 
 @MainActor final class FavouriteWebLoader: NSObject, FavouritePreviewLoading, WKNavigationDelegate, WKUIDelegate {
     private var web: WKWebView?
-    private var host: NSWindow?
+    private var host: PreviewHostWindow?
     private var context: FavouritePreviewContext?
     private var continuation: CheckedContinuation<FavouritePreviewResult, Never>?
     private var deadline: Task<Void, Never>?
@@ -204,10 +204,7 @@ import WebKit
         let web = WKWebView(frame: NSRect(origin: .zero, size: Previews.viewport), configuration: cfg)
         web.customUserAgent = Settings.userAgent
         web.navigationDelegate = self; web.uiDelegate = self
-        let window = NSWindow(contentRect: web.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isExcludedFromWindowsMenu = true; window.contentView = web
-        window.setFrameOrigin(NSPoint(x: -12000, y: -12000)); window.orderFront(nil)
-        self.web = web; host = window
+        self.web = web; host = PreviewHostWindow(content: web)
         let ticket = generation
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in

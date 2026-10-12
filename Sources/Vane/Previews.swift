@@ -268,7 +268,7 @@ import WebKit
     // MARK: - The mini render
 
     private var web: WKWebView?
-    private var host: NSWindow?
+    private var host: PreviewHostWindow?
     private var bridge: Bridge?
     /// The web view is built against one profile's data store; a hover from another window
     /// rebuilds it. Reused otherwise, which is what keeps the warm numbers warm.
@@ -305,18 +305,8 @@ import WebKit
         w.navigationDelegate = b
         w.uiDelegate = b
 
-        // WebKit will not run a page for a view that was never hosted — same trick
-        // DRMCheck uses. Borderless so it never shows up in Mission Control, parked far
-        // enough off-screen to miss any plausible display arrangement.
-        let win = host ?? NSWindow(contentRect: w.frame, styleMask: [.borderless],
-                                   backing: .buffered, defer: false)
-        win.contentView = w
-        if host == nil {
-            win.isExcludedFromWindowsMenu = true
-            win.setFrameOrigin(NSPoint(x: -12_000, y: -12_000))
-            win.orderFront(nil)
-            host = win
-        }
+        if let host { host.contentView = w }
+        else { host = PreviewHostWindow(content: w) }
 
         web = w
         builtFor = (tab.profileID, tab.isPrivate)

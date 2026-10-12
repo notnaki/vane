@@ -47,6 +47,57 @@ private final class PreviewServer: @unchecked Sendable {
 }
 
 @MainActor final class PreviewLoadingPerformanceTests: XCTestCase {
+    func testPreviewHostCannotAppearOrInterceptClicksWhenMovedOntoScreen() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let server = try PreviewServer(body: """
+        <title>Hidden preview</title><body style='margin:0'>
+        <div style='height:240px;background:#1976d2'>Preview content</div>
+        <div style='height:240px;background:#e53935'></div>
+        <div style='height:240px;background:#43a047'></div></body>
+        """)
+        let base = try await server.start(), previews = Previews(), tab = Tab(isPrivate: true)
+        let enabled = Previews.enabled
+        Previews.enabled = true
+        var host: NSWindow?
+        defer {
+            previews.cancel(); tab.tearDown(); server.stop(); Previews.enabled = enabled
+            host?.isReleasedWhenClosed = false
+            host?.contentView = nil; host?.close()
+        }
+        previews.request(base, from: tab)
+        let deadline = ContinuousClock.now + .seconds(12)
+        while ContinuousClock.now < deadline {
+            host = NSApp.windows.first { ($0.contentView as? WKWebView)?.url?.port == base.port }
+            if previews.current?.image != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let window = try XCTUnwrap(host)
+        XCTAssertNotNil(previews.current?.image, "An invisible host must still produce page snapshots")
+        let screen = try XCTUnwrap(NSScreen.main)
+        // Model macOS relocating an offscreen window after a display/Space change.
+        window.setFrameOrigin(screen.visibleFrame.origin)
+        window.orderFront(nil)
+        XCTAssertTrue(window.isVisible, "WebKit retains an ordered host")
+        XCTAssertEqual(window.alphaValue, 0, "Relocation must never reveal a white window")
+        XCTAssertTrue(window.ignoresMouseEvents, "The renderer must never intercept desktop clicks")
+        XCTAssertFalse(window.canBecomeKey)
+        XCTAssertFalse(window.canBecomeMain)
+        XCTAssertTrue(window.isExcludedFromWindowsMenu)
+        XCTAssertTrue(window.collectionBehavior.contains(.ignoresCycle))
+        XCTAssertFalse(window.isRestorable)
+
+        previews.cancel()
+        let blankDeadline = ContinuousClock.now + .seconds(5)
+        let web = try XCTUnwrap(window.contentView as? WKWebView)
+        while (web.url?.absoluteString != "about:blank" || web.isLoading), ContinuousClock.now < blankDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(web.url?.absoluteString, "about:blank")
+        XCTAssertEqual(window.alphaValue, 0, "The reusable blank host must also remain invisible")
+        XCTAssertTrue(window.ignoresMouseEvents)
+    }
+
     func testCancellationUnloadsThePreviewDocument() async throws {
         try await checkUnloadsDocument(cachedReplacement: false)
     }
