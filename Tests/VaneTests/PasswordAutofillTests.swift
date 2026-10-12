@@ -474,4 +474,22 @@ import XCTest
         expectTrue(try await fill(web))
     }
 
+    func testEmbeddedUsernameHandlerCannotMoveFocusBeforePasswordWrite() async throws {
+        let (web, _) = try await fixture("<button id=outside>Outside</button><iframe id=embedded srcdoc='<form><input id=user autocomplete=username><input id=password type=password autocomplete=current-password></form>'></iframe>")
+        try await wait { try await self.js(web, "!!embedded.contentDocument.getElementById('password')") as? Bool == true }
+        _ = try await js(web, "embedded.contentDocument.getElementById('user').addEventListener('input',()=>outside.focus()); embedded.contentDocument.getElementById('password').focus()")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "embedded.contentDocument.getElementById('password').value") as? String, "")
+    }
+
+    func testEmbeddedGeneratorRechecksFrameFocusBetweenFields() async throws {
+        let (web, capture) = try await fixture("<button id=outside>Outside</button><iframe id=embedded srcdoc='<form><input id=newPassword type=password autocomplete=new-password><input id=confirmation type=password autocomplete=new-password></form>'></iframe>")
+        try await wait { try await self.js(web, "!!embedded.contentDocument.getElementById('newPassword')") as? Bool == true }
+        _ = try await js(web, "embedded.contentDocument.getElementById('newPassword').addEventListener('input',()=>outside.focus()); embedded.contentDocument.getElementById('newPassword').focus()")
+        try await wait { capture.messages.contains { $0["generate"] as? Bool == true } }
+        let target = try XCTUnwrap(capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String)
+        expectFalse(try await js(web, Autofill.generateJS(password: "generated-fixture", target: target), world: Autofill.world) as? Bool == true)
+        expectEqual(try await js(web, "embedded.contentDocument.getElementById('confirmation').value") as? String, "")
+    }
+
 }

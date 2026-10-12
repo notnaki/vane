@@ -43,6 +43,13 @@ import WebKit
           }
           return true;
         }
+        function focusedFrame() {
+          try {
+            for (var child = window; child !== topWindow; child = child.parent)
+              if (child.parent.document.activeElement !== child.frameElement) return false;
+            return true;
+          } catch (_) { return false; }
+        }
         function fieldID(field) {
           if (!field) return '-';
           if (!fields.has(field)) fields.set(field, String(++fieldSerial));
@@ -203,13 +210,10 @@ import WebKit
           var g = generationFor(document.activeElement) || (lastGeneration && generationFor(lastGeneration.field));
           if (!g || !target || generationToken(g) !== target || !liveDocument() ||
               g.fields.some(function (f) { return f.maxLength >= 0 && password.length > f.maxLength; })) return false;
-          if (window !== topWindow) {
-            for (var child = window; child !== topWindow; child = child.parent)
-              if (child.parent.document.activeElement !== child.frameElement) return false;
-          }
+          if (!focusedFrame()) return false;
           for (var i = 0; i < g.fields.length; i++) {
             var current = generationFor(g.field), field = g.fields[i];
-            if (!liveDocument() || !current || generationToken(current) !== target ||
+            if (!liveDocument() || !focusedFrame() || !current || generationToken(current) !== target ||
                 !usableInput(field) || !safeRoot(g.root) || rootFor(field) !== g.root || !current.fields.includes(field)) return false;
             setValue(field, password);
           }
@@ -398,10 +402,7 @@ import WebKit
         function fill(account, password, automatic, target, continuation) {
           var p = targetPair();
           if (!visible(p) || (target && token(p) !== target)) { return false; }
-          if (window !== topWindow) {
-            for (var child = window; child !== topWindow; child = child.parent)
-              if (child.parent.document.activeElement !== child.frameElement) return false;
-          }
+          if (!focusedFrame()) return false;
           // Read-only/hidden account hints are useful for validation, never for writing.
           var identity = pair(rootFor(p.pass || p.user), true);
           if (identity && identity.user && identity.user !== p.user) {
@@ -425,7 +426,7 @@ import WebKit
           // Site input handlers can replace, hide, or reclassify fields synchronously.
           // Revalidate after the username events before handing over the secret.
           if (p.pass) {
-            if (!liveDocument() || !safeRoot(root) || !usableInput(p.pass) || passwordPurpose(p.pass) === 'new' ||
+            if (!liveDocument() || !focusedFrame() || !safeRoot(root) || !usableInput(p.pass) || passwordPurpose(p.pass) === 'new' ||
                 rootFor(p.pass) !== root || token(targetPair()) !== expectedTarget ||
                 (p.user && p.user.value !== account)) return false;
             var current = pairFor(p.pass), currentIdentity = pair(root, true);
