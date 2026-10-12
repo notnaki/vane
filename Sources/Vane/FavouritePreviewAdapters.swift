@@ -56,7 +56,8 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
         case .gmail, .calendar:
             return #"""
             // Only the account-switcher affordance. Do not search message/event content for emails.
-            const accountButton = document.querySelector('a[href*="accounts.google.com/SignOutOptions"], button[aria-label^="Google Account:"], a[aria-label^="Google Account:"]');
+            const accountHeader = document.querySelector('header, [role="banner"], #gb');
+            const accountButton = accountHeader?.querySelector('a[href*="accounts.google.com/SignOutOptions"], button[aria-label^="Google Account:"], a[aria-label^="Google Account:"]');
             const accountLabel = accountButton?.getAttribute('aria-label') || '';
             const account = accountLabel.match(/[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}/i)?.[0]?.toLowerCase() || '';
             """#
@@ -76,6 +77,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
         }
         const text = el => (el?.textContent || '').trim().replace(/\\s+/g,' ');
         const result = (state, items=[]) => ({state,account,items});
+        const visible = el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
         \(extractionBody)
         })()
         """
@@ -88,7 +90,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
             // /pulls with an explicit open/involves query; no private API calls or application state.
             const query = new URL(location.href).searchParams.get('q') || '';
             if (location.pathname !== '/pulls' || !query.includes('involves:@me') || !query.includes('is:open')) return unknown();
-            const rows = Array.from(document.querySelectorAll('.js-issue-row')).slice(0,5);
+            const rows = Array.from(document.querySelectorAll('.js-issue-row')).filter(visible).slice(0,5);
             if (!rows.length) {
               const empty = Array.from(document.querySelectorAll('.blankslate, [data-testid="results-empty-state"]'))
                 .some(el => /no (results|pull requests)|nothing matched/i.test(text(el)));
@@ -110,7 +112,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
             if (!location.pathname.startsWith('/mail/') || !location.hash.startsWith('#inbox')) return unknown();
             const main = document.querySelector('[role="main"]');
             if (!main) return unknown();
-            const rows = Array.from(main.querySelectorAll('tr.zA')).slice(0,5);
+            const rows = Array.from(main.querySelectorAll('tr.zA')).filter(visible).slice(0,5);
             if (!rows.length) {
               const empty = Array.from(main.querySelectorAll('td, [role="status"]'))
                 .some(el => /^(Your inbox is empty\.?|No new mail!?|No conversations in Inbox\.?)$/i.test(text(el)));

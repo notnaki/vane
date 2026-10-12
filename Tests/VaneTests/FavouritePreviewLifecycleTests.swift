@@ -123,4 +123,19 @@ import XCTest
         coordinator.dismiss(owner: owner)
     }
 
+    func testCookieChangesClearContentAndOnlyRestartInflightWorkOnce() async throws {
+        let loader = FavouriteFixtureLoader()
+        let coordinator = FavouritePreviews(loader: loader), a = context(), owner = UUID()
+        coordinator.request(a, owner: owner, account: "fixture")
+        await Task.yield()
+        coordinator.sessionChanged(profileID: a.profileID)
+        await Task.yield()
+        XCTAssertEqual(coordinator.owner, owner)
+        coordinator.sessionChanged(profileID: a.profileID)
+        try await Task.sleep(for: .milliseconds(90))
+        XCTAssertEqual(coordinator.state, .unavailable)
+        XCTAssertLessThanOrEqual(loader.calls, 2)
+        coordinator.dismiss(owner: owner)
+    }
+
 }

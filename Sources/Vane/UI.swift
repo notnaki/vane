@@ -1671,6 +1671,8 @@ private struct FavoriteTile: View {
     @EnvironmentObject var dragPreview: SidebarDragPreview
     @ObservedObject var tab: Tab
     @State private var hovering = false
+    @State private var previewFocusRequested = false
+    @StateObject private var favouriteHover = FavouritePreviewHover()
     @State private var side: Landing.Band?
     @State private var width: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1693,9 +1695,15 @@ private struct FavoriteTile: View {
             .contentShape(.rect)
             .onHover { hovering = $0 }
             .onTapGesture { InteractionSounds.play(.press); store.current = tab.id }
-            .vaneKeyboardAction(enabled: store.renamingTab != tab.id) { store.current = tab.id }
+            .vaneKeyboardAction(enabled: store.renamingTab != tab.id, requestFocus: $previewFocusRequested,
+                previewAction: {
+                    guard let url = tab.homeURL ?? tab.currentURL, let service = FavouritePreviewService.resolve(url),
+                          FavouritePreviews.enabled(service), store.renamingTab != tab.id, !Dragging.shared.active else { return }
+                    favouriteHover.openForKeyboard()
+                }) { store.current = tab.id }
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-            .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil)
+            .tabTooltip(TidyTitles.title(for: tab), enabled: store.renamingTab == nil &&
+                !((tab.homeURL ?? tab.currentURL).flatMap(FavouritePreviewService.resolve).map(FavouritePreviews.enabled) ?? false))
             .onDrag {
                 dragPayload(tab, in: store, ghost: AnyView(SidebarTabSurface(store: store, tab: tab,
                     held: true, returnHovering: .constant(false), pr: nil, action: {})
@@ -1712,7 +1720,6 @@ private struct FavoriteTile: View {
                                       favouritePreview: dragPreview))
 
             .simultaneousGesture(TapGesture(count: 2).onEnded { store.renamingTab = tab.id })
-            .contextMenu { TabMenu(store: store, tab: tab) }
             // One element per favourite, the way a tab reads: the title is the label, the
             // state is the value, and unpin/close are actions rather than hidden gestures.
             .accessibilityElement(children: .ignore)
@@ -1732,6 +1739,7 @@ private struct FavoriteTile: View {
             .accessibilityAction(named: "Unfavourite Tab") { store.toggleFavourite(tab.id) }
             .accessibilityAction(named: "Pin Tab") { store.move(tab.id, to: .pinned) }
             .accessibilityAction(named: "Close Tab") { store.close(tab.id) }
+            .favouritePreview(tab: tab, store: store, hover: favouriteHover) { previewFocusRequested = true }
     }
 
     private func surface(held: Bool = false) -> some View {

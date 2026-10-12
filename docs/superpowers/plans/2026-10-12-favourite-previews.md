@@ -18,10 +18,10 @@ No backend, cloud AI, new keys/OAuth, private endpoints or exported session cred
 
 ### Task 1: Models, adapters and cache
 Files: create Sources/Vane/FavouritePreviewModels.swift, Sources/Vane/FavouritePreviewAdapters.swift, Tests/VaneTests/FavouritePreviewTests.swift.
-- [ ] Write tests for `FavouritePreviewService.resolve(_:)`, `FavouritePreviewAdapter.parse(_:at:)` and `FavouritePreviewCache` profile/account isolation, stale expiry and clear.
-- [ ] Run `swift test --filter FavouritePreviewTests`; confirm missing-type failure.
-- [ ] Implement service recognition, canonical account routes, common item/snapshot/state models, strict URL validation, bounded parsers and memory cache.
-- [ ] Add WebKit DOM fixture tests for signed-in GitHub/Gmail/Calendar, empty and changed markup. Execute adapter scripts against fixture HTML rather than mocked JSON alone.
+- [x] Write tests for `FavouritePreviewService.resolve(_:)`, `FavouritePreviewAdapter.parse(_:at:)` and `FavouritePreviewCache` profile/account isolation, stale expiry and clear.
+- [x] Run `swift test --filter FavouritePreviewTests`; confirm missing-type failure.
+- [x] Implement service recognition, canonical account routes, common item/snapshot/state models, strict URL validation, bounded parsers and memory cache.
+- [x] Add WebKit DOM fixture tests for signed-in GitHub/Gmail/Calendar, empty and changed markup. Execute adapter scripts against fixture HTML rather than mocked JSON alone.
 - [ ] Run focused tests and commit adapter/cache deliverable.
 
 ### Task 2: Bounded WebKit coordination and invalidation
@@ -54,3 +54,9 @@ Files: create Sources/Vane/FavouritePreviewCard.swift; modify UI.swift and Setti
 - Initial checkout is another task's branch; native isolated worktree created from remote default branch to preserve it.
 - Integration ruling: website session is the sole authority; Live Folders OAuth is intentionally excluded.
 - Calendar ruling: only explicit event times/links permit rich data; unknown layout uses useful fallback.
+
+- Adapter/model RED: missing-type compilation failures observed; GREEN: 8 parsing/cache/DOM tests passed.
+- Coordinator RED: missing loader/coordinator types and clock injection; GREEN: cancellation, replacement, blocked clears, cache reuse, cooldown, stale failures and signed-out purge passed.
+- Hover RED: missing hover controller; GREEN: dwell, pointer-region transfer, keyboard latch and dismissal tests passed.
+- Ruling: live account proof is required for a cache hit; parked favourites may pay a fresh bounded page load. This sacrifices some cache hits to avoid guessing account identity.
+- Ruling: cookie changes conservatively invalidate the whole profile, without reading cookie values; unrelated cookie changes can also dismiss a preview.

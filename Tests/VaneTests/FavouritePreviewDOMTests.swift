@@ -38,7 +38,7 @@ import XCTest
 
     func testGmailExtractsOnlySubjectSenderUnreadAndThreadRoute() async throws {
         let result = try await extract("""
-        <a aria-label="Google Account: Fixture (fixture@example.test)" href="https://accounts.google.com/SignOutOptions"></a>
+        <header><a aria-label="Google Account: Fixture (fixture@example.test)" href="https://accounts.google.com/SignOutOptions"></a></header>
         <main role="main"><table><tr class="zA zE"><td class="yW"><span email="sender@example.test" name="Fixture Sender">Sender</span></td>
         <td><span class="bog" data-legacy-thread-id="abc123">Fixture subject</span><span>Body must not be extracted</span></td></tr></table></main>
         """, service: .gmail, url: "https://mail.google.com/mail/u/2/#inbox")
@@ -50,7 +50,7 @@ import XCTest
     }
 
     func testVerifiedEmptyAndChangedMarkupDiffer() async throws {
-        let identity = "<a aria-label='Google Account: Fixture (fixture@example.test)' href='https://accounts.google.com/SignOutOptions'></a>"
+        let identity = "<header><a aria-label='Google Account: Fixture (fixture@example.test)' href='https://accounts.google.com/SignOutOptions'></a></header>"
         let empty = try await extract(identity + "<main role='main'><table><tr><td>Your inbox is empty.</td></tr></table></main>", service: .gmail, url: "https://mail.google.com/mail/u/0/#inbox")
         guard case .ready(let snapshot) = empty else { return XCTFail("Expected verified empty") }
         XCTAssertTrue(snapshot.items.isEmpty)
@@ -61,7 +61,7 @@ import XCTest
     }
 
     func testCalendarRequiresStructuredTimeAndActualLinks() async throws {
-        let identity = "<a aria-label='Google Account: Fixture (fixture@example.test)' href='https://accounts.google.com/SignOutOptions'></a>"
+        let identity = "<header><a aria-label='Google Account: Fixture (fixture@example.test)' href='https://accounts.google.com/SignOutOptions'></a></header>"
         let html = identity + """
         <main role="main"><article data-eventid="fixture"><a href="https://calendar.google.com/calendar/event?eid=fixture">Fixture event</a>
         <time datetime="2099-12-01T10:00:00Z">10am</time><a href="https://meet.google.com/abc-defg-hij">Join</a></article></main>

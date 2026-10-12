@@ -30,14 +30,17 @@ import WebKit
     private var observers: [UUID: FavouriteSessionObserver] = [:]
     private var task: Task<Void, Never>?
     private var generation = 0
+    private var sessionRetries = 0
+    private var loading = false
 
     init(loader: any FavouritePreviewLoading, observeSessions: Bool = false, now: @escaping @MainActor () -> Date = { .now }) {
         self.loader = loader; self.observeSessions = observeSessions; self.now = now
     }
 
     func request(_ context: FavouritePreviewContext, owner: UUID, account: String? = nil,
-                 source: WKWebView? = nil, privateSession: Bool = false) {
+                 source: WKWebView? = nil, privateSession: Bool = false, sessionRetries: Int = 0) {
         stop()
+        self.sessionRetries = sessionRetries
         self.owner = owner; self.context = context; state = .loading
         guard Self.enabled(context.service), !privateSession, blocked[context.profileID] == nil else {
             state = .unavailable; return
@@ -71,9 +74,11 @@ import WebKit
             if self.attempts.count > 48, let oldest = self.attempts.min(by: { $0.value < $1.value })?.key {
                 self.attempts[oldest] = nil
             }
+            self.loading = true
             let result = await self.loader.load(context)
             guard !Task.isCancelled, self.generation == ticket, self.owner == owner,
                   Self.enabled(context.service), self.blocked[context.profileID] == nil else { return }
+            self.loading = false
             switch result {
             case .ready(let snapshot):
                 guard identity == nil || identity == snapshot.account else {
@@ -102,6 +107,19 @@ import WebKit
             stop(); owner = nil; context = nil; state = .loading
         }
     }
+    /// Session cookies may be set during the first normal page visit. Retire all old
+    /// content and allow one bounded restart; repeated changes never become polling.
+    func sessionChanged(profileID: UUID) {
+        cache.invalidate(profileID: profileID)
+        attempts = attempts.filter { $0.key.profileID != profileID }
+        guard let context, context.profileID == profileID, let owner else { return }
+        if loading && sessionRetries < 1 {
+            request(context, owner: owner, sessionRetries: sessionRetries + 1)
+        } else {
+            stop()
+            setState(.unavailable)
+        }
+    }
     func beginClearing(profileID: UUID) {
         blocked[profileID, default: 0] += 1
         invalidate(profileID: profileID)
@@ -120,7 +138,7 @@ import WebKit
         cache.removeAll(); attempts.removeAll()
     }
     private func stop() {
-        generation += 1; task?.cancel(); task = nil; loader.cancel()
+        generation += 1; task?.cancel(); task = nil; loading = false; loader.cancel()
     }
     private func setState(_ state: FavouritePreviewState) { Motion.animate(Look.quick) { self.state = state } }
 }
@@ -137,7 +155,7 @@ import WebKit
     nonisolated func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            previews?.invalidate(profileID: profileID)
+            previews?.sessionChanged(profileID: profileID)
         }
     }
     func detach() { store.remove(self) }
