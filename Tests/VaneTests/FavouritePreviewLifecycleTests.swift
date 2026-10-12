@@ -6,16 +6,25 @@ import XCTest
     var cancellations = 0
     var replies = 0
     var wait: Duration = .milliseconds(50)
+    var holdReplies = false
+    private var pendingReplies: [CheckedContinuation<Void, Never>] = []
     var result: FavouritePreviewResult = .ready(.init(account: "fixture", items: []))
     func load(_ context: FavouritePreviewContext) async -> FavouritePreviewResult {
         calls += 1
         let reply = result
         // Deliberately ignores cancellation: a late WebKit callback must still be refused.
-        try? await Task.sleep(for: wait)
+        if holdReplies { await withCheckedContinuation { pendingReplies.append($0) } }
+        else { try? await Task.sleep(for: wait) }
         replies += 1
         return reply
     }
     func cancel() { cancellations += 1 }
+    func releaseReplies() {
+        holdReplies = false
+        let replies = pendingReplies
+        pendingReplies = []
+        replies.forEach { $0.resume() }
+    }
 }
 
 @MainActor final class FavouritePreviewLifecycleTests: XCTestCase {
@@ -131,6 +140,10 @@ import XCTest
 
     func testCookieChangesClearContentAndOnlyRestartInflightWorkOnce() async throws {
         let loader = FavouriteFixtureLoader()
+        // Session changes must happen while both replies are still in flight,
+        // even when a busy runner delays this test beyond the usual 50 ms reply.
+        loader.holdReplies = true
+        defer { loader.releaseReplies() }
         let coordinator = FavouritePreviews(loader: loader), a = context(), owner = UUID()
         coordinator.request(a, owner: owner, account: "fixture")
         try await settle { loader.calls == 1 }
@@ -138,6 +151,7 @@ import XCTest
         try await settle { loader.calls == 2 }
         XCTAssertEqual(coordinator.owner, owner)
         coordinator.sessionChanged(profileID: a.profileID)
+        loader.releaseReplies()
         try await settle { loader.replies == 2 }
         XCTAssertEqual(coordinator.state, .unavailable)
         XCTAssertLessThanOrEqual(loader.calls, 2)
