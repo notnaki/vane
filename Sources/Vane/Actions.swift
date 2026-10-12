@@ -232,6 +232,9 @@ extension PaletteCommand {
             PaletteCommand(.viewHistory, icon: "clock.arrow.circlepath"),
             PaletteCommand(.showDownloads, icon: "arrow.down.circle"),
             PaletteCommand(.settings, icon: "gearshape"),
+            PaletteCommand("Manage Extensions", icon: "puzzlepiece.extension", id: "manageExtensions") {
+                ExtensionManagement.show(for: store.extensions)
+            },
             PaletteCommand(.keyboardShortcutsHelp, icon: "keyboard", title: "Shortcuts Settings"),
             PaletteCommand("Link Preferences", icon: "link.circle") {
                 SettingsWindow.show(tab: "links")

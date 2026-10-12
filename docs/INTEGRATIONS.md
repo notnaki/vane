@@ -8,69 +8,129 @@ extension.
 
 ## Extensions
 
-Choose **Extensions → Install Extension…** and select an unpacked MV2/MV3 folder. Before
-loading, Vane checks its manifest and referenced scripts, popups, options pages, and
-rulesets, then lists the capabilities and website access for consent. Cancel saves
-nothing. Approvals and extension data belong to that installation in that profile;
-private profiles cannot install extensions.
+Open **Extensions → Manage Extensions…**, **Settings → Advanced → Manage Extensions…**,
+or **Manage Extensions** in the command palette. Each resizable manager window belongs
+to the profile shown in its header; switching the browser's active profile does not
+change that window's installation set. Private profiles cannot install or run extensions.
 
-**Extensions → Manage Extensions…** (also in Settings → Advanced) lists enabled,
-disabled, and failed installations in the current profile. **Access & Diagnostics…**
-shows the folder, WebKit error details, compatibility limitations, and currently granted
-access. Missing or unreadable resources name the manifest entry and file to repair.
-Unsupported capabilities are disclosed before installation as well as in diagnostics.
+Search by name, description, or version, and filter **All**, **Enabled**, **Disabled**,
+or **Needs Attention**. Counts describe the whole profile, independently of search.
+Needs Attention can include an enabled extension whose update failed; Disabled includes
+inactive installations. The list shows icons, versions, summaries, state, and enable/pin
+controls. Select a row for details; narrow windows use **All Extensions** to return to
+the list. **⌘F** focuses search; native list selection supports the keyboard. Motion
+follows Reduce Motion and Vane's Battery Saver policy.
 
-### Updates and recovery
+### Install and inspect
 
-**Update from Folder** validates current files and reviews added capabilities or website
-patterns before replacing the context. **Retry** does the same for an inactive
-installation. A failed or declined update stops the extension, closes its options/popup
-windows, and removes its active toolbar controls while retaining its bookmark, consent,
-installation identity, settings, and saved pin for recovery. Repair the folder and
-retry. Vane does not keep a backup of unpacked code, roll back folder edits, or monitor
-folders automatically; folder changes are otherwise checked on the next launch. Only
-install code you trust.
+Choose **Install from Folder…** in the manager or **Extensions → Install Extension…**,
+or drop one local unpacked MV2/MV3 folder into the manager. Select the folder containing
+`manifest.json`, rather than its parent. Extract ZIP downloads in Finder first: the
+manager does not import ZIP or CRX files or install from the Chrome Web Store.
 
-### Disable or remove
+Vane copies regular files into profile-owned staging, rejects internal symbolic links
+and special files, and limits imports to 20,000 files/folders, 64 MB per file, 256 MB total,
+and 64 nested folder levels. It validates the manifest and referenced scripts, popups,
+options pages, and rulesets before presenting installation consent. Review capabilities,
+website access, and compatibility limitations before installing. Cancel leaves the
+extension uninstalled. Optional permissions are not silently granted.
 
-**Disable** stops the context and its extension pages, and persists across restart.
-**Enable** checks the folder and reuses unchanged consent and `storage.local` identity.
-**Remove** clears the bookmark, consent, identity, disabled state, and pin, including
-for failed installations; reinstalling uses a new identity and cannot inherit old
-settings. Unavailable saved folders remain recoverable when their disk or access
-returns, and can be removed while unavailable. Bookmarks that follow a moved folder
-carry its consent, identity, disabled state, and pins to the new location on restart.
-Disabled installations keep their saved pin; Manage Extensions lets you unpin them to
-free one of three slots. Existing installations without a saved approval require review
-before loading.
+Details show source, version, required installation access, declared optional
+capabilities/sites, current additional grants, keyboard commands, and compatibility
+limitations. **Open Options…** appears when an enabled extension declares an options page.
+**Reveal Source Folder** opens its external source in Finder when available. Missing or
+unreadable files have recovery guidance; a source warning does not mean accepted managed
+code has stopped working.
 
-### Runtime access
+### Accepted code, updates, and recovery
 
-Runtime requests ask separately. Optional capabilities and sites are not granted by
-installation consent. Runtime grants last for the current context session: update,
-disable, or quitting ends them. **Revoke Additional Access** clears additional runtime
-grants and denials; required manifest access stays approved. Disable the extension to
-stop all access. Requests pending when an extension is removed or disabled fail closed.
-WebKit enforces permission expiration dates; manifest consent is separate from runtime
-grants.
+Vane runs an accepted managed copy from local profile storage. Changes in the external
+source folder do **not** apply automatically, including after restart. Use **Update from
+Folder…** to select its replacement. Every explicit candidate update is validated and
+reviewed before activation, including updates requesting no additional access. Expanded
+capabilities or website patterns are called out separately. A valid update keeps the
+installation's UUID, extension origin, approved access, settings/storage identity,
+disabled state, and saved pin.
+
+Failed validation, declined review, activation failure, or saving failure retains the
+previously accepted code and approval. Declining leaves the accepted version running.
+If a candidate fails after replacing a context, Vane attempts to restart the accepted
+copy. **Retry** restarts accepted code when inactive; **Update from Folder…** can locate
+a moved source or select a repaired replacement without creating a new installation.
+A successful update replaces the prior accepted revision; there is no manual version
+history. Code recovery cannot undo storage or website changes made by a candidate that
+already ran.
+
+Existing folder installations migrate when next loaded or updated: Vane validates a
+separate copy and preserves their UUID, approval, disabled state, pins, and storage
+identity. The migration always asks for review before adopting and loading the copy,
+including when its required access is unchanged. Newly available page-menu support is
+called out explicitly. Disabled legacy installations wait until enabled or
+explicitly updated. Unavailable legacy folders remain listed and recoverable; reconnect
+their disk or choose their current location. Once adopted, source edits require explicit
+updates. Managed installations can keep running after their source disappears. If saved metadata
+cannot be read, Vane stops restoration. Choose Update from Folder to validate and review
+a replacement while retaining the known installation UUID; unreadable metadata is kept
+as a local recovery file, and existing code files are retained.
+
+### Disable, pin, or remove
+
+**Disable** stops the context and closes its options/popup windows; it survives restart.
+**Enable** validates accepted code and reuses its identity and approval, requesting review
+if approval is missing or newly supported access is pending. Each profile has up to three
+saved toolbar pins. Disabled or inactive installations retain their saved pin but show no
+active toolbar control; unpin them to free a slot.
+
+**Remove…** asks for confirmation, then clears installation metadata, approval, identity,
+disabled state, pin, and Vane-owned code. It keeps the original source folder. Reinstalling
+creates a new identity and cannot inherit old settings. Removal is not a promise of
+forensic erasure of WebKit-managed storage.
+
+### Runtime access and diagnostics
+
+Required installation access, optional declared access, and temporary/runtime grants
+are separate sections. Optional capabilities/sites need a separate runtime request.
+Additional grants expire at the displayed time or when the context reloads, is disabled,
+or Vane quits; they are not permanent approval. `activeTab` can also grant temporary
+active-page access after a user gesture, ending when that page navigates.
+
+**Revoke Additional Access…** clears supported additional grants and denied requests,
+including active-page user gestures. The extension may ask again. Required manifest
+access stays approved: disable or remove the extension to stop all its access. Revocation
+cannot undo past website changes. Pending requests fail closed on disable or removal.
+
+**Copy Diagnostics** exports structured state, validated version fields, an installation
+UUID, recognized capability names, and allowlisted error-domain/code information. It
+excludes source paths, website targets, raw error messages, browsing content, credentials,
+and extension storage. The detail view itself can show local paths and access patterns;
+review anything shared separately from the copied diagnostic report.
 
 ### Compatibility and validation
 
-Vane uses Apple's WebKit WebExtension APIs, not Chromium. On macOS 27, isolated
-synthetic fixtures exercise MV2 background scripts and MV3 service workers, runtime
-messaging, `storage.local`, action badges/popup declarations, content-script
-origin/profile isolation, and runtime permission grant, rejection, revocation,
-expiration, and restoration. This does **not** establish general Chrome-extension or
-Chrome Web Store compatibility, nor certify arbitrary extensions, real-site behavior,
-every API, or full popup interaction. Vane does not provide native messaging hosts,
-extension page-menu items, extension keyboard shortcuts, replacement browser pages, side
-panels, developer-tools panels, omnibox keywords, or Chrome OAuth integration. Other API
-availability depends on the installed WebKit.
+Vane uses system WebKit WebExtension APIs. MV2/MV3 parsing does not guarantee that an
+extension's APIs or real-site workflows work. The manager distinguishes capabilities
+omitted by the installed WebKit parser from features without Vane host integration.
+
+Declared keyboard commands run in eligible browser windows in their owning profile.
+Browser and native editing shortcuts take precedence; details disclose conflicts.
+Command/Control extension shortcuts can work in login fields. Character-insertion
+shortcuts (including Option-only combinations) stay with native and detected website
+editors. Commands do not run from sheets, private/locked tabs, or manager windows. WebKit supplies webpage extension context-menu items; Vane preserves them
+alongside its link actions. Extension tab-menu items also appear in the tab menu.
+Popup/options behavior still depends on the extension and WebKit.
+
+Vane does not provide native messaging hosts, replacement browser pages, extension side
+panels, developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native
+messaging has public WebKit hooks, but Vane has no approved host-execution mechanism.
+ZIP/native-host feasibility, exact upstream package provenance, regression scope, and
+assembled-app results are in [Extension validation](EXTENSION-VALIDATION.md). No Vane
+backend or account is required.
 
 Focused regression checks:
 
 ```sh
-swift test --filter 'ExtensionConsentTests|ExtensionAccessLifecycleTests|ExtensionCompatibilityTests|ExtensionManagementTests|ExtensionRuntimePermissionTests|SitePermissionTests'
+swift test --filter 'Extension.*Tests'
+./.build/debug/vane selfcheck --pure
 ```
 
 ## Content blocking and filter subscriptions

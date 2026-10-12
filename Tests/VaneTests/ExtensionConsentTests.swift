@@ -160,9 +160,10 @@ import XCTest
         let host = host(), folder = try folder(permissions: [], sites: [])
         try ExtensionConsent.save(ExtensionAccess(permissions: ["tabs"], sites: ["<all_urls>"]),
                                   for: folder, profileID: host.profileID)
-        let accepted = try await host.load(folder, installing: false) { _ in
-            XCTFail("Shrinking access does not require review")
-            return false
+        let accepted = try await host.load(folder, installing: false) { review in
+            XCTAssertTrue(review.updating, "Legacy code is reviewed before adopting a managed copy")
+            XCTAssertTrue(review.requested.isEmpty)
+            return true
         }
         XCTAssertTrue(accepted)
         let context = try XCTUnwrap(host.installed.first)
@@ -343,7 +344,7 @@ import XCTest
         let timer = Timer(timeInterval: 0.01, repeats: true) { _ in
             MainActor.assumeIsolated {
                 if NSApplication.shared.modalWindow != nil {
-                    NSApplication.shared.stopModal(withCode: .alertSecondButtonReturn)
+                    NSApplication.shared.stopModal(withCode: .alertFirstButtonReturn)
                 }
             }
         }

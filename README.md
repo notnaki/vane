@@ -102,7 +102,7 @@ troubleshooting, specialist audits, and recorded validation.
 | [Everyday browsing](docs/BROWSING.md) | Tabs, Spaces, windows, search, shortcuts, Library, downloads, and media. |
 | [Reading and customization](docs/FEATURES.md) | Reader, offline articles, Easels, capture, Boosts, templates, appearance, and Battery Saver. |
 | [Profiles, data, and privacy](docs/DATA-AND-PRIVACY.md) | Passwords, imports/exports, website data, backups, folder locks, and recovery boundaries. |
-| [Extensions and integrations](docs/INTEGRATIONS.md) | Extension consent/diagnostics, content blocking, permissions, AI keys, and GitHub Live Folders. |
+| [Extensions and integrations](docs/INTEGRATIONS.md) | Profile extension manager, reviewed updates, access/diagnostics, content blocking, AI keys, and GitHub Live Folders. |
 | [Development](docs/DEVELOPMENT.md) | Setup, CLI, focused tests, graphical smoke checks, project structure, and contribution workflow. |
 | [Releases and distribution](docs/RELEASING.md) | Publishing, signing/notarization, updater checks, and candidate validation. |
 
@@ -130,7 +130,7 @@ WebKit version, the website, and sometimes signing or Apple-managed capabilities
 - **Blocking supports part of EasyList.** Unsupported rules are reported; local
   disk lists do not update automatically. URL subscriptions do.
 - **Data does not sync between Macs.** Backups are unencrypted and exclude Keychain
-  secrets, cookies/site storage, downloaded files, and external extension code.
+  secrets, cookies/site storage, downloaded files, and extension code/data.
   General browser imports exclude sessions; the dedicated Arc flow supports some.
 - **Live drafts are not recoverable backups.** Suspension protects detected or
   uncertain drafts, but crashes, page closure, or locking can lose volatile work.

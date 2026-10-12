@@ -919,15 +919,13 @@ private func standard(_ title: String, _ action: Selector) -> NSMenuItem {
             }
         }),
     ]))
+    let extensionHost = Windows.main?.extensions ?? ExtensionHost.shared
     root.addItem(menu("Extensions", [
-        item("Manage Extensions…", "") { ExtensionManagement.show() },
-        item(.installExtension) { ExtensionHost.shared.chooseAndInstall(); rebuild() },
-        .separator(),
-    ] + ExtensionHost.shared.installed.map { ctx in
-        item("Remove " + (ctx.webExtension.displayName ?? "Extension"), "") {
-            ExtensionHost.shared.remove(ctx); rebuild()
-        }
-    }))
+        item("Manage Extensions…", "") { ExtensionManagement.show(for: extensionHost) },
+        validated(item(.installExtension) { extensionHost.chooseAndInstall(); rebuild() }) {
+            extensionHost.profileID != Profile.incognito.id
+        },
+    ]))
     // Standard, and standard is the point: ⌘M was dead until this menu existed, and the
     // window list is AppKit's to fill in once it knows which menu is the Window menu.
     let window = menu("Window", [

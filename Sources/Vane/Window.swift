@@ -698,9 +698,12 @@ extension VaneWindow {
         func windowDidEndLiveResize(_ n: Notification) { recentre() }
         func windowDidBecomeKey(_ n: Notification) {
             recentre()
-            MainActor.assumeIsolated { rebuild(); SharedTabs.refreshPresentation() }
+            MainActor.assumeIsolated { rebuild(); SharedTabs.refreshPresentation(); store.extensions.sync() }
         }
-        func windowDidResignKey(_ n: Notification) { recentre() }
+        func windowDidResignKey(_ n: Notification) {
+            recentre()
+            MainActor.assumeIsolated { store.extensions.sync() }
+        }
         func windowDidEnterFullScreen(_ n: Notification) { recentre() }
         func windowDidExitFullScreen(_ n: Notification) { recentre() }
         /// Arc's auto picture-in-picture, the other way out of a page: minimising the window

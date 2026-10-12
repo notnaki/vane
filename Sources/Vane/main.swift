@@ -16,6 +16,7 @@ if args.first == "drmcheck"  { DRMCheck.run(url: args.dropFirst().first) }
 if args.first == "selfcheck" { SelfCheck.run() }
 if args.first == "browsercheck" { BrowserChecks.run() }
 if args.first == "browsercheck-cleanup" { BrowserChecks.cleanupStore() }
+if args.first == "extensioncheck" { ExtensionAppChecks.run() }
 if args.first == "import" {
     guard let file = args.dropFirst().first else {
         FileHandle.standardError.write(Data("Usage: vane import <password-export.csv>\n".utf8))
@@ -133,7 +134,8 @@ app.mainMenu = buildMenu()
 NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
     if FirstLaunch.isPresenting { return $0 }
     return PasswordChooser.handleKey($0) || Peek.handleKey($0) || LittleArc.handleKey($0)
-        || Keybindings.handle($0) ? nil : $0
+        || ExtensionManagement.handleKey($0)
+        || Keybindings.handle($0) || ExtensionCommands.handle($0) ? nil : $0
 }
 app.activate(ignoringOtherApps: true)
 if !FirstLaunch.presentIfNeeded() { URLHandling.promptIfNotDefaultOnce() }

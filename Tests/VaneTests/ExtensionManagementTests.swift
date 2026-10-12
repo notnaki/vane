@@ -69,7 +69,7 @@ import XCTest
         return (host, try XCTUnwrap(host.installed.first))
     }
 
-    func testBrokenUpdateStopsCodeAndPreservesRecoverableConfiguration() async throws {
+    func testBrokenUpdateKeepsAcceptedCodeAndRecoverableConfiguration() async throws {
         let (host, old) = try await install()
         let identity = old.uniqueIdentifier
         host.togglePin(old)
@@ -79,16 +79,20 @@ import XCTest
             _ = try await host.refresh(folder.path) { _ in XCTFail("Broken update must not request consent"); return true }
             XCTFail("Broken update must fail")
         } catch { XCTAssertTrue(error.localizedDescription.contains("missing.js")) }
-        XCTAssertFalse(old.isLoaded)
-        XCTAssertTrue(host.installed.isEmpty)
-        XCTAssertTrue(host.controller.extensionContexts.isEmpty)
-        XCTAssertTrue(host.pinned(private: false).isEmpty)
+        XCTAssertTrue(old.isLoaded)
+        XCTAssertTrue(host.installed.first === old)
+        XCTAssertEqual(host.controller.extensionContexts.count, 1)
+        XCTAssertEqual(host.pinned(private: false).count, 1)
         XCTAssertEqual(host.pins, [folder.path], "A recoverable failure must preserve the pin")
         XCTAssertEqual(ExtensionConsent.saved(for: folder, profileID: profile), consent)
         XCTAssertEqual(ScopedPaths.urls(ExtensionHost.key(for: profile)).map { $0.resolvingSymlinksInPath().path }, [folder.path])
-        XCTAssertTrue(try XCTUnwrap(host.entries.first).status.contains("Failed"))
+        XCTAssertTrue(try XCTUnwrap(host.entries.first).status.contains("attention"))
         try writeManifest()
-        _ = try await host.refresh(folder.path) { _ in XCTFail("Unchanged approval must remain valid"); return false }
+        _ = try await host.refresh(folder.path) { review in
+            XCTAssertTrue(review.updating)
+            XCTAssertTrue(review.requested.additions(over: review.previous!).isEmpty)
+            return true
+        }
         XCTAssertEqual(host.installed.first?.uniqueIdentifier, identity)
         XCTAssertEqual(host.pinned(private: false).count, 1)
         XCTAssertNil(host.entries.first?.failure)
@@ -105,11 +109,11 @@ import XCTest
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(restored.installed.isEmpty)
         XCTAssertEqual(restored.entries.first?.status, "Disabled")
-        _ = try await restored.refresh(folder.path) { _ in XCTFail("Enabling unchanged code needs no new consent"); return false }
+        try await restored.setEnabled(true, for: folder.path) { _ in XCTFail("Accepted code needs no new consent"); return false }
         XCTAssertEqual(restored.installed.first?.uniqueIdentifier, identity)
     }
 
-    func testDeclinedUpdateDropsActiveContextButKeepsOldApproval() async throws {
+    func testDeclinedUpdateKeepsActiveContextAndOldApproval() async throws {
         let (host, context) = try await install()
         try writeManifest(extra: ["permissions": ["storage", "cookies"]])
         let accepted = try await host.refresh(folder.path) { review in
@@ -117,8 +121,8 @@ import XCTest
             return false
         }
         XCTAssertFalse(accepted)
-        XCTAssertFalse(context.isLoaded)
-        XCTAssertTrue(host.installed.isEmpty)
+        XCTAssertTrue(context.isLoaded)
+        XCTAssertTrue(host.installed.first === context)
         XCTAssertEqual(ExtensionConsent.saved(for: folder, profileID: profile)?.permissions, ["storage"])
         XCTAssertNotNil(host.entries.first?.failure)
     }
@@ -181,7 +185,10 @@ import XCTest
         XCTAssertNil(window.contentView)
         XCTAssertFalse(context.isLoaded)
         host.run(context, for: nil, from: nil)
-        try await host.webExtensionController(host.controller, openOptionsPageFor: context)
+        do {
+            try await host.webExtensionController(host.controller, openOptionsPageFor: context)
+            XCTFail("Disabled contexts must reject options requests")
+        } catch { }
         XCTAssertFalse(NSApp.windows.contains { $0.title == "Management Fixture" && $0.isVisible })
     }
 
@@ -195,7 +202,7 @@ import XCTest
         do {
             _ = try await host.load(folder, installing: true) { _ in XCTFail("Escaping resources must not prompt"); return true }
             XCTFail("Resources must stay inside the selected folder")
-        } catch { XCTAssertTrue(error.localizedDescription.contains("escape.js")) }
+        } catch { XCTAssertTrue(error.localizedDescription.contains("symbolic link")) }
         XCTAssertTrue(host.installed.isEmpty)
     }
 
@@ -283,7 +290,9 @@ import XCTest
         XCTAssertEqual(restored.entries.count, 1)
         XCTAssertEqual(restored.entries.first?.status, "Disabled")
         XCTAssertTrue(restored.installed.isEmpty)
-        _ = try await restored.refresh(folder.path) { _ in XCTFail("Moved folder must retain consent"); return true }
+        let savedPath = try XCTUnwrap(restored.entries.first?.path)
+        XCTAssertEqual(restored.entries.first?.sourcePath, folder.path)
+        try await restored.setEnabled(true, for: savedPath) { _ in XCTFail("Moved source must retain consent"); return false }
         XCTAssertEqual(restored.installed.first?.uniqueIdentifier, identity)
     }
 

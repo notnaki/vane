@@ -15,7 +15,7 @@ or its [website version](https://notnaki.github.io/vane/privacy.html).
 | [Everyday browsing](BROWSING.md) | Tabs, folders, Spaces, shared windows, search, keyboard navigation, Library, downloads, and Picture in Picture. |
 | [Reading and customization](FEATURES.md) | Reader, saved articles, Easels, capture, Boosts, Space templates, themes/icons, and Battery Saver. |
 | [Profiles, data, and privacy](DATA-AND-PRIVACY.md) | Passwords, browser imports, exports, website data, backup/restore, save failures, private browsing, and folder locks. |
-| [Extensions and integrations](INTEGRATIONS.md) | Unpacked extensions, access/diagnostics, filter subscriptions, permissions, AI providers/keys, and GitHub Live Folders. |
+| [Extensions and integrations](INTEGRATIONS.md) | Profile extension manager, managed updates, access/diagnostics, filter subscriptions, permissions, AI providers/keys, and GitHub Live Folders. |
 
 For a paused page after an interruption, read [crash recovery](CRASH-RECOVERY.md).
 For work that must stay live, read [draft-protection limits](DRAFT-PROTECTION.md).
@@ -50,6 +50,7 @@ Historical test counts are not a fresh validation of the current checkout.
 | [Data integration](DATA-INTEGRATION.md) | Populated cross-feature backup/restore, rollback, profile/private isolation, and storage failures. |
 | [Browser data fidelity](audits/browser-data-fidelity.md) | Import/export fields, normalization, duplicates, partial failures, and credential protections. |
 | [Site permissions](SITE-PERMISSIONS.md) | Document lifetimes, origin/profile scope, revocation, synthetic devices, and platform limits. |
+| [Extension validation](EXTENSION-VALIDATION.md) | Managed-code/identity regressions, exact third-party package provenance, runtime observations, ZIP and native-host boundaries. |
 | [Real-site compatibility](REAL-SITE-COMPATIBILITY.md) | Public demos, local fixtures, known directory-upload failure, and pending accounts/devices/provisioning. |
 | [Updater recovery](UPDATER-RECOVERY-AUDIT.md) | Transaction interruption, signed recovery, notarized release acceptance, and distribution gaps. |
 | [Lifecycle efficiency](LIFECYCLE-EFFICIENCY.md) | Ownership fixes, local cycle/RSS/CPU evidence, and remaining profiling work. |

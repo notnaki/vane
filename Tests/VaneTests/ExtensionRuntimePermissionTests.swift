@@ -158,15 +158,15 @@ import XCTest
         _ = try await host.load(folder, installing: true) { review in
             XCTAssertTrue(review.limitations.contains { $0.contains("downloads") })
             XCTAssertTrue(review.limitations.contains { $0.contains("nativeMessaging") })
-            XCTAssertTrue(review.limitations.contains { $0.contains("contextMenus") })
-            XCTAssertTrue(review.limitations.contains { $0.contains("commands") })
+            XCTAssertFalse(review.limitations.contains { $0.contains("contextMenus") })
+            XCTAssertFalse(review.limitations.contains { $0.contains("commands") })
             return true
         }
         let context = try XCTUnwrap(host.installed.first)
         XCTAssertFalse(context.hasPermission(WKWebExtension.Permission(rawValue: "nativeMessaging")))
         let web = try await options(context)
         let hidden = try await web.evaluateJavaScript("typeof browser.runtime.sendNativeMessage + ':' + typeof browser.contextMenus")
-        XCTAssertEqual(hidden as? String, "undefined:undefined")
+        XCTAssertEqual(hidden as? String, "undefined:object")
         let (granted, _) = await host.webExtensionController(host.controller,
             promptForPermissions: [WKWebExtension.Permission(rawValue: "nativeMessaging")], in: nil, for: context)
         XCTAssertTrue(granted.isEmpty)

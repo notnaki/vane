@@ -688,6 +688,8 @@ struct Space: Identifiable, Codable, Equatable {
             Store.forget(id)
             Favicons.forget(id)
             ExtensionHost.forget(id)
+            do { try ExtensionCodeStore.removeProfile(id, directory: directory) }
+            catch { NSLog("[vane] Could not remove deleted profile extension code: %@", error.localizedDescription) }
             Passwords.deleteAll(profileID: id)
             SitePermissions.resetAll(profileID: id)
             for key in ["pinnedTabs", "blockerEnabled", "blockerSiteExceptions", ExtensionHost.baseKey,

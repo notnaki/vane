@@ -4,7 +4,7 @@ import WebKit
 /// The reviewed manifest access, independently of WebKit's session/runtime grants.
 /// Exact pattern comparisons deliberately err toward another review rather than silently
 /// treating a wider host or path wildcard as already approved.
-struct ExtensionAccess: Codable, Equatable {
+struct ExtensionAccess: Codable, Equatable, Sendable {
     let permissions: Set<String>
     let sites: Set<String>
 
@@ -34,7 +34,7 @@ struct ExtensionAccess: Codable, Equatable {
             + "\n\nWebsite access\n" + (websites.isEmpty ? "None requested" : websites)
     }
 
-    private static func phrase(_ permission: String) -> String {
+    static func phrase(_ permission: String) -> String {
         switch permission {
         case "activeTab": "Access the active page when you use the extension"
         case "alarms": "Schedule extension tasks"
@@ -64,9 +64,13 @@ struct ExtensionAccess: Codable, Equatable {
         let previous: ExtensionAccess?
         let installing: Bool
         var limitations: [String] = []
+        var newlySupportedCapabilities: Set<String> = []
+        var updating = false
+        var currentVersion: String? = nil
+        var candidateVersion: String? = nil
 
         var needsApproval: Bool {
-            installing || previous.map { !requested.additions(over: $0).isEmpty } ?? true
+            installing || updating || !newlySupportedCapabilities.isEmpty || previous.map { !requested.additions(over: $0).isEmpty } ?? true
         }
     }
 
@@ -97,12 +101,14 @@ struct ExtensionAccess: Codable, Equatable {
     static func makePrompt(_ review: Review) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = review.installing ? "Install “\(review.name)”?"
+            : !review.newlySupportedCapabilities.isEmpty ? "Review new support for “\(review.name)”"
+            : review.updating ? "Update “\(review.name)”?"
             : review.previous == nil ? "Review access for “\(review.name)”"
             : "“\(review.name)” wants more access"
         alert.informativeText = "Review the extension’s capabilities and the websites it can access. "
             + "Allowing website access can let it read and change data on those pages. "
             + (review.installing ? "Cancel leaves it uninstalled."
-               : "Don’t Allow leaves it inactive; use Manage Extensions to review it later.")
+               : "Don’t Allow keeps the previously accepted version, if available. No new access is granted.")
         let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 440, height: 240))
         text.isEditable = false
         text.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -114,6 +120,15 @@ struct ExtensionAccess: Codable, Equatable {
             text.string = "New access\n\n" + review.requested.additions(over: previous).description
                 + "\n\nAll requested access\n\n" + review.requested.description
         } else { text.string = review.requested.description }
+        if review.updating {
+            text.string = "Version: " + (review.currentVersion ?? "Unknown") + " → " + (review.candidateVersion ?? "Unknown")
+                + "\n\nVane will replace its accepted copy. Source-folder edits apply only after a reviewed update. A disabled extension stays disabled.\n\n" + text.string
+        }
+        if !review.newlySupportedCapabilities.isEmpty {
+            text.string = "Newly available capabilities\n\nVane previously marked these capabilities unavailable. Approving lets this version use them:\n"
+                + review.newlySupportedCapabilities.sorted().map { "• " + ExtensionAccess.phrase($0) + " (" + $0 + ")" }.joined(separator: "\n")
+                + "\n\n" + text.string
+        }
         if !review.limitations.isEmpty {
             text.string += "\n\nCompatibility limitations\n\n" + review.limitations.joined(separator: "\n")
         }
@@ -121,7 +136,7 @@ struct ExtensionAccess: Codable, Equatable {
         scroll.hasVerticalScroller = true
         scroll.documentView = text
         alert.accessoryView = scroll
-        alert.addButton(withTitle: review.installing ? "Install Extension" : "Allow and Enable")
+        alert.addButton(withTitle: review.installing ? "Install Extension" : review.updating ? "Update Extension" : "Allow and Enable")
         alert.addButton(withTitle: review.installing ? "Cancel" : "Don’t Allow").keyEquivalent = "\u{1b}"
         return alert
     }

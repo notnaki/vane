@@ -17,8 +17,9 @@ one profile; choosing one of its Spaces also switches that window to its profile
 The **−** control deletes the selected profile after confirmation, including its
 history, bookmarks, passwords, cookies, and extensions. The last profile cannot
 be deleted. Back up supported library data before deletion and export passwords
-separately as CSV. Backups exclude cookies, website storage/sign-ins, and external
-extension code; see the full exclusions under Backup and restore below.
+separately as CSV. Backups exclude cookies, website storage/sign-ins, and
+extension code/data, including Vane's managed code copies; see the full exclusions
+under Backup and restore below.
 
 Profiles separate Spaces, history, bookmarks, passwords, WebKit website stores, and
 extensions. Favourites are shared within a profile. Downloads, media, Spaces, Easels,
@@ -131,9 +132,11 @@ history, Space templates, offline articles with captured images and read state, 
 (including Reader preferences and profile-scoped site Boosts), imported blocking lists,
 and Easels with embedded images. Backups are unencrypted and limited to 512 MB;
 oversized backups fail without omitting data. Passwords and tokens in Keychain, cookies
-and website sign-ins/storage, downloaded files, caches, and external extension folders
-are excluded. External folder choices are remembered, but another Mac may require you to
-select those folders again.
+and website sign-ins/storage, downloaded files, caches, and extension code/data are
+excluded, including external source folders and Vane's managed extension copies and
+installation index. External folder choices are remembered, but another Mac may require
+you to select and review those folders again. These backups do not restore an extension's
+working code or `storage.local` settings.
 
 **Restore Backup…** validates the file and shows its date, profiles, item counts, and
 current saved-library totals before replacing anything. Cancel leaves the library alone.

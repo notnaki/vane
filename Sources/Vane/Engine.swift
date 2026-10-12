@@ -2070,7 +2070,7 @@ struct Stash {
     }
     /// Arc's multi-select: which rows are ticked, and which section they are in. Per window,
     /// like the sidebar itself. See Selection.swift — everything done with it is there.
-    @Published var selection = Selection()
+    @Published var selection = Selection() { didSet { if oldValue != selection { extensions.sync() } } }
     /// Arc's Folders: the shape of the Pinned section — which tabs sit in which folder, and
     /// the order the rows are drawn in. `tabs` still holds the tabs themselves; this only
     /// says how they are arranged. See `Pins` in Folders.swift.

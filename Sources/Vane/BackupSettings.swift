@@ -11,7 +11,7 @@ struct BackupSettings: View {
                 }
                 .disabled(controller.busy)
             }
-            Footnote("Includes all profiles, Spaces, tabs, bookmarks, history, settings, Easels, and the offline Reading Queue with saved images. Exported backups are not encrypted. Passwords, cookies, sign-ins, downloaded files, and external extension folders are excluded.")
+            Footnote("Includes all profiles, Spaces, tabs, bookmarks, history, settings, Easels, and the offline Reading Queue with saved images. Exported backups are not encrypted. Passwords, cookies, sign-ins, downloaded files, and extension code (including managed copies) and extension data are excluded.")
             if controller.busy {
                 HStack { ProgressView().controlSize(.small); Text(controller.progress.isEmpty ? "Saving a recovery point…" : controller.progress) }
                     .font(Look.footnote).padding(Look.cardInset)
@@ -91,7 +91,7 @@ struct BackupPreviewView: View {
                         Text("Current data could not be previewed. Its original files will still be preserved before restoring.")
                             .foregroundStyle(.orange).help(message)
                     }
-                    Text("Passwords, cookies, website sign-ins, downloaded files, and external extension folders are excluded.")
+                    Text("Passwords, cookies, website sign-ins, downloaded files, and extension code (including managed copies) and extension data are excluded.")
                     if candidate.incoming.hasExternalFolders {
                         Text("On another Mac, you may need to select your external folders again.")
                     }
