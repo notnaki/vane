@@ -367,4 +367,111 @@ import XCTest
         expectTrue(try await fill(web, account: "bob", automatic: true))
     }
 
+    func testAmbiguousUnmarkedPasswordFieldsDoNotAutofill() async throws {
+        let (web, _) = try await fixture("<form><input autocomplete=username><input id=first type=password><input id=second type=password></form>")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "first.value + second.value") as? String, "")
+    }
+
+    func testSemanticNonUsernameFieldIsNeverUsedAsAccount() async throws {
+        let (web, _) = try await fixture("<form><input id=name autocomplete=given-name><input id=password type=password></form>")
+        expectTrue(try await fill(web))
+        expectEqual(try await js(web, "document.getElementById('name').value") as? String, "")
+    }
+
+    func testCurrentPasswordAutocompleteOnTextFieldDoesNotReceiveSecret() async throws {
+        let (web, _) = try await fixture("<form><input id=field autocomplete=current-password></form>")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "field.value") as? String, "")
+    }
+
+    func testAbandoningFilledFormDoesNotOfferToSave() async throws {
+        let (web, capture) = try await fixture("<form><input autocomplete=username value=ada><input type=password value=typed-secret></form>")
+        _ = try await js(web, "window.dispatchEvent(new Event('pagehide'))")
+        try await Task.sleep(for: .milliseconds(150))
+        expectFalse(capture.messages.contains { $0["password"] != nil })
+    }
+
+    func testMismatchedNewPasswordConfirmationDoesNotOffer() async throws {
+        let (web, capture) = try await fixture("<form><input autocomplete=username value=ada><input type=password autocomplete=new-password value=first><input type=password autocomplete=new-password value=second></form>")
+        _ = try await js(web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true}))")
+        try await Task.sleep(for: .milliseconds(100))
+        expectFalse(capture.messages.contains { $0["password"] != nil })
+    }
+
+    func testChooserTargetIncludesItsUsernameNode() async throws {
+        let (web, _) = try await fixture("<form><input id=user autocomplete=username><input id=password type=password></form>")
+        let raw = try await js(web, "window.__vaneAnchor()", world: Autofill.world) as? String
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(raw?.data(using: .utf8))) as? [String: Any])
+        let target = try XCTUnwrap(body["target"] as? String)
+        _ = try await js(web, "user.outerHTML='<input id=user autocomplete=username>'")
+        expectFalse(try await js(web, Autofill.fillJS(account: "ada", password: "fixture-secret", target: target), world: Autofill.world) as? Bool == true)
+        expectEqual(try await js(web, "password.value") as? String, "")
+    }
+
+    func testGeneratorFillsOnlyNewPasswordsAndTheirConfirmation() async throws {
+        let (web, capture) = try await fixture("<form><input id=old type=password autocomplete=current-password value=keep><input id=newPassword type=password autocomplete=new-password><input id=confirmation type=password autocomplete=new-password></form>")
+        _ = try await js(web, "newPassword.focus()")
+        try await Task.sleep(for: .milliseconds(100))
+        let target = capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String ?? "missing"
+        let args = String(decoding: try JSONSerialization.data(withJSONObject: ["generated-fixture", target]), as: UTF8.self)
+        expectTrue(try await js(web, "!!window.__vaneGenerate && window.__vaneGenerate.apply(null," + args + ")", world: Autofill.world) as? Bool == true)
+        expectEqual(try await js(web, "[old.value,newPassword.value,confirmation.value].join('|')") as? String, "keep|generated-fixture|generated-fixture")
+    }
+
+    func testGeneratedPasswordRevalidatesConfirmationAfterSiteEvents() async throws {
+        let (web, capture) = try await fixture("<form><input id=newPassword type=password autocomplete=new-password><input id=confirmation type=password autocomplete=new-password></form><script>newPassword.addEventListener('input',()=>{confirmation.autocomplete='current-password'});</script>")
+        _ = try await js(web, "newPassword.focus()")
+        try await Task.sleep(for: .milliseconds(100))
+        let target = capture.messages.last { $0["generate"] as? Bool == true }?["target"] as? String ?? "missing"
+        let args = String(decoding: try JSONSerialization.data(withJSONObject: ["generated-fixture", target]), as: UTF8.self)
+        expectFalse(try await js(web, "!!window.__vaneGenerate && window.__vaneGenerate.apply(null," + args + ")", world: Autofill.world) as? Bool == true)
+        expectEqual(try await js(web, "confirmation.value") as? String, "")
+    }
+
+    func testOffscreenPasswordIsNotAVisibleLogin() async throws {
+        let (web, _) = try await fixture("<form style='position:absolute;left:-9999px'><input autocomplete=username><input id=password type=password></form>")
+        expectFalse(try await fill(web))
+        expectEqual(try await js(web, "password.value") as? String, "")
+    }
+
+    func testCrossOriginAndDowngradedFormActionsDoNotReceiveCredentials() async throws {
+        for action in ["https://other.example.test/login", "http://login.example.test/login"] {
+            let (web, _) = try await fixture("<form action='\(action)'><input autocomplete=username><input id=password type=password></form>")
+            expectFalse(try await fill(web))
+            expectEqual(try await js(web, "password.value") as? String, "")
+        }
+    }
+
+    func testUnmarkedOldAndNewPasswordsDoNotOfferAmbiguousGeneration() async throws {
+        let (web, capture) = try await fixture("<form><input id=first type=password><input id=second type=password></form>")
+        _ = try await js(web, "second.focus()")
+        try await Task.sleep(for: .milliseconds(100))
+        expectFalse(capture.messages.contains { $0["generate"] as? Bool == true })
+    }
+
+    func testRepeatedSubmissionOffersOnlyOneAttempt() async throws {
+        let (web, capture) = try await fixture("<form><input autocomplete=username value=ada><input type=password value=fixture></form>")
+        _ = try await js(web, "for(let i=0;i<3;i++) document.forms[0].dispatchEvent(new Event('submit',{bubbles:true}))")
+        try await Task.sleep(for: .milliseconds(150))
+        expectEqual(capture.messages.filter { $0["password"] != nil }.count, 1)
+    }
+
+    func testVisibleLoginErrorRetractsItsUnverifiedAttempt() async throws {
+        let (web, capture) = try await fixture("<form><input autocomplete=username value=ada><input id=password type=password value=fixture></form>")
+        _ = try await js(web, "document.forms[0].dispatchEvent(new Event('submit',{bubbles:true}))")
+        try await wait { capture.messages.contains { $0["attempt"] != nil } }
+        let attempt = capture.messages.last { $0["attempt"] != nil }?["attempt"] as? String
+        _ = try await js(web, "password.setAttribute('aria-invalid','true')")
+        try await wait { capture.messages.contains { $0["rejectedAttempt"] != nil } }
+        expectEqual(capture.messages.last { $0["rejectedAttempt"] != nil }?["rejectedAttempt"] as? String, attempt)
+    }
+
+    func testAutomaticFillRespectsAutocompleteOffButExplicitChoiceIsAllowed() async throws {
+        let (web, _) = try await fixture("<form autocomplete=off><input id=user autocomplete=username><input id=password type=password autocomplete=current-password></form>")
+        expectFalse(try await fill(web, automatic: true))
+        expectEqual(try await js(web, "password.value") as? String, "")
+        expectTrue(try await fill(web))
+    }
+
 }

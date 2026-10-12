@@ -43,11 +43,15 @@ import WebKit
           }
           return true;
         }
+        function fieldID(field) {
+          if (!field) return '-';
+          if (!fields.has(field)) fields.set(field, String(++fieldSerial));
+          return fields.get(field);
+        }
         function token(p) {
           var field = p && (p.pass || p.user);
           if (!field) return null;
-          if (!fields.has(field)) fields.set(field, String(++fieldSerial));
-          return documentID + ':' + fields.get(field) + (p.pass ? ':password' : ':username');
+          return documentID + ':' + fieldID(field) + (p.pass ? ':password:' : ':username:') + fieldID(p.user);
         }
         // React and friends install their own value setter; assigning .value directly updates
         // the DOM but not the component state, and the site then submits an empty field.
@@ -61,32 +65,78 @@ import WebKit
           var r = el.getBoundingClientRect(), style = el.ownerDocument.defaultView.getComputedStyle(el);
           for (var parent = el; parent; parent = parent.parentElement) {
             var ps = parent.ownerDocument.defaultView.getComputedStyle(parent);
-            if (Number(ps.opacity) === 0 || ps.contentVisibility === 'hidden') return false;
+            if (Number(ps.opacity) === 0 || ps.contentVisibility === 'hidden' || ps.clipPath !== 'none') return false;
+            if (parent !== el && /(hidden|clip|scroll|auto)/.test(ps.overflow + ps.overflowX + ps.overflowY)) {
+              var pr = parent.getBoundingClientRect();
+              if (r.right <= pr.left || r.left >= pr.right || r.bottom <= pr.top || r.top >= pr.bottom) return false;
+            }
           }
+          if (r.right <= 0 || r.bottom <= 0 || r.left >= window.innerWidth || r.top >= window.innerHeight) return false;
           return el.isConnected && r.width > 0 && r.height > 0 && el.getClientRects().length > 0 &&
-            style.visibility === 'visible' && !el.closest('[inert]');
+            style.visibility === 'visible' && !el.closest('[inert],[aria-hidden="true"]');
         }
         function usableInput(el) {
           return !el.disabled && !el.readOnly && el.type !== 'hidden' && !hasRole(el, 'one-time-code') && shown(el);
         }
-        function hasRole(el, role) { return el.autocomplete.toLowerCase().split(/\\s+/).includes(role); }
+        function hasRole(el, role) { return (el.autocomplete || '').toLowerCase().split(/\\s+/).includes(role); }
         function usernameInput(el) {
-          return ['text', 'email', 'tel'].includes(el.type) && !hasRole(el, 'one-time-code') &&
-            !/captcha|verification|confirm|search/i.test(el.name + ' ' + el.id);
+          var roles = el.autocomplete.toLowerCase().split(/\\s+/).filter(Boolean);
+          return ['text', 'email', 'tel'].includes(el.type) &&
+            (!roles.length || roles.every(function (r) { return r === 'on' || r === 'off' || r === 'username' || r === 'email' || r.startsWith('section-'); })) &&
+            !hasRole(el, 'one-time-code') &&
+            !/captcha|verification|confirm|search/i.test(el.name + ' ' + el.id) &&
+            (el.type === 'email' || hasRole(el, 'username') || /user|login|email|account|identifier/i.test(el.name + ' ' + el.id));
         }
         function rootFor(el) { return el.form || el.closest('[role="form"], fieldset') || document; }
+        function safeRoot(root) {
+          if (root.tagName !== 'FORM') return true;
+          try {
+            var action = new URL(root.getAttribute('action') || document.baseURI, document.baseURI);
+            if (action.origin !== topWindow.origin || action.protocol !== 'https:') return false;
+            return Array.from(root.elements).filter(function (el) { return el.hasAttribute('formaction'); }).every(function (button) {
+              var override = new URL(button.getAttribute('formaction') || document.baseURI, document.baseURI);
+              return override.origin === topWindow.origin && override.protocol === 'https:';
+            });
+          } catch (_) { return false; }
+        }
+        function passwordPurpose(el) {
+          if (hasRole(el, 'current-password')) return 'current';
+          if (hasRole(el, 'new-password')) return 'new';
+          var name = el.name + ' ' + el.id + ' ' + (el.getAttribute('aria-label') || '');
+          if (/current|old|existing/i.test(name)) return 'current';
+          if (/new.?pass|confirm|repeat|create.?pass/i.test(name)) return 'new';
+          return '';
+        }
         // Prefer semantic autocomplete attributes, then the nearest preceding username.
         // Never use a registration/reset password as an existing sign-in password.
         function pair(root, capture) {
-          var inputs = Array.from(root.querySelectorAll('input'));
+          if (!safeRoot(root)) return null;
+          var inputs = Array.from(root.tagName === 'FORM' ? root.elements : root.querySelectorAll('input'))
+            .filter(function (el) { return el.tagName === 'INPUT'; });
           if (!capture) inputs = inputs.filter(usableInput);
           var passwords = inputs.filter(function (el) {
-            return (el.type === 'password' || hasRole(el, 'current-password')) && !el.disabled && !hasRole(el, 'one-time-code') && shown(el) &&
-              (capture || !hasRole(el, 'new-password'));
+            return el.type === 'password' && !el.disabled && !hasRole(el, 'one-time-code') && shown(el) &&
+              (capture || passwordPurpose(el) !== 'new');
           });
-          var pw = passwords.find(function (el) {
-            return hasRole(el, capture ? 'new-password' : 'current-password');
-          }) || passwords[0];
+          var explicit = passwords.filter(function (el) { return passwordPurpose(el) === (capture ? 'new' : 'current'); });
+          if (!capture && !explicit.length && inputs.some(function (el) { return el.type === 'password' && passwordPurpose(el) === 'new'; })) return null;
+          var pw = explicit[0];
+          if (capture) {
+            // A submitted password change saves the new value, never the old one.
+            // Multiple new-password fields are confirmations and must agree.
+            if (explicit.length && explicit.some(function (el) { return el.value !== pw.value; })) return null;
+            if (!pw && passwords.length === 1) pw = passwords[0];
+            if (!pw && passwords.length > 1) {
+              var news = passwords.length === 3 ? passwords.slice(1) : passwords;
+              if (passwords.length > 3 || news.some(function (el) { return !el.value || el.value !== news[0].value; })) return null;
+              pw = news[0];
+            }
+          } else {
+            // Several unlabelled passwords may be signup/change fields. Never guess.
+            if (explicit.length > 1) return null;
+            if (!pw && passwords.length === 1) pw = passwords[0];
+            if (!pw && passwords.length > 1) return null;
+          }
           if (!capture && !pw && inputs.some(function (el) { return hasRole(el, 'new-password'); })) return null;
           if (pw && root === document) {
             var scope = rootFor(pw);
@@ -133,6 +183,38 @@ import WebKit
           var p = pair(rootFor(el), capture);
           return p && (el === p.user || el === p.pass) ? p : null;
         }
+        var lastGeneration = null;
+        function generationFor(el) {
+          if (!el || el.tagName !== 'INPUT' || el.type !== 'password' || !usableInput(el)) return null;
+          var root = rootFor(el);
+          if (!safeRoot(root)) return null;
+          var all = Array.from(root.tagName === 'FORM' ? root.elements : root.querySelectorAll('input'))
+            .filter(function (f) { return f.tagName === 'INPUT' && f.type === 'password' && usableInput(f); });
+          // Require autocomplete or an explicit new/confirmation name. Two unlabelled
+          // passwords could be current + new; generation must never overwrite both.
+          var news = all.filter(function (f) { return passwordPurpose(f) === 'new'; });
+          if (!news.includes(el) || news.length > 2) return null;
+          return { root: root, fields: news, field: el };
+        }
+        function generationToken(g) {
+          return g && documentID + ':new:' + g.fields.map(fieldID).join(':');
+        }
+        function generate(password, target) {
+          var g = generationFor(document.activeElement) || (lastGeneration && generationFor(lastGeneration.field));
+          if (!g || !target || generationToken(g) !== target || !liveDocument() ||
+              g.fields.some(function (f) { return f.maxLength >= 0 && password.length > f.maxLength; })) return false;
+          if (window !== topWindow) {
+            for (var child = window; child !== topWindow; child = child.parent)
+              if (child.parent.document.activeElement !== child.frameElement) return false;
+          }
+          for (var i = 0; i < g.fields.length; i++) {
+            var current = generationFor(g.field), field = g.fields[i];
+            if (!liveDocument() || !current || generationToken(current) !== target ||
+                !usableInput(field) || !safeRoot(g.root) || rootFor(field) !== g.root || !current.fields.includes(field)) return false;
+            setValue(field, password);
+          }
+          return true;
+        }
         function visible(p) {
           var field = p && (p.pass || p.user);
           return field && liveDocument() && shown(field);
@@ -161,8 +243,8 @@ import WebKit
         }
         // Where a chooser should hang: under the username field, its width, in CSS pixels
         // relative to the viewport — which is exactly what the web view is showing.
-        function anchor() {
-          var p = targetPair();
+        function anchor(proposed) {
+          var p = proposed || targetPair();
           if (!p) { return null; }
           var field = document.activeElement;
           if (field !== p.user && field !== p.pass) field = p.user || p.pass;
@@ -189,6 +271,8 @@ import WebKit
         var listOpen = false;
         function send(m) {
           if (!liveDocument()) return;
+          // An embedded form needs explicit focus; discovery alone cannot choose a frame.
+          if (m.ready && window !== topWindow && !document.hasFocus()) return;
           if (m.focus || m.ready) {
             m.target = token(targetPair());
             var p = targetPair(true);
@@ -197,11 +281,11 @@ import WebKit
             m.passwordOnly = !!p && !!p.pass && !p.user;
           }
           if (m.focus) recentContext = context;
-          if (m.focus) listOpen = true;
+          if (m.focus || m.generate) listOpen = true;
           if (m.dismiss) listOpen = false;
           topWindow.webkit.messageHandlers.vanepw.postMessage(m);
         }
-        function ours(el) { return !!pairFor(el); }
+        function ours(el) { return !!pairFor(el) || !!generationFor(el); }
         // Chromium drops its list of saved accounts under the username field the moment you
         // focus it, and Arc inherits that. Capture phase throughout: a site that stops these
         // events from bubbling must not also stop the browser's own chrome from appearing —
@@ -209,6 +293,13 @@ import WebKit
         function focused(el) {
           var captured = pairFor(el, true);
           if (captured) lastCapturePair = captured;
+          var g = generationFor(el);
+          if (g) {
+            lastGeneration = g;
+            var ga = anchor({ pass: el });
+            if (ga) send({ generate: true, target: generationToken(g), x: ga.x, y: ga.y, w: ga.w });
+            return;
+          }
           var p = pairFor(el);
           if (!p) { return; }
           lastPair = p;
@@ -239,6 +330,7 @@ import WebKit
             && form.parentNode === a.parent && form.previousSibling === a.before
             && form.nextSibling === a.after;
         }
+        var attemptSerial = 0, lastOffered = null, lastOfferID = null;
         function offer(p) {
           if (!p) return;
           if (!p.pass) {
@@ -250,10 +342,17 @@ import WebKit
             return;
           }
           if (!p.pass.value) return;
-          send({ account: p.user ? p.user.value : carriedAccount(p), password: p.pass.value });
+          var account = p.user ? p.user.value : carriedAccount(p);
+          var signature = token(p) + '\\n' + account + '\\n' + p.pass.value;
+          if (lastOffered === signature) return;
+          lastOffered = signature;
+          lastOfferID = documentID + ':' + (++attemptSerial);
+          send({ account: account, password: p.pass.value, attempt: lastOfferID,
+            mainDocument: window === topWindow });
         }
         document.addEventListener('submit', function (e) {
           var form = e.target;
+          if (!form || form.tagName !== 'FORM' || !safeRoot(form)) return;
           submittedAttempt = {
             form: form, parent: form.parentNode,
             before: form.previousSibling, after: form.nextSibling,
@@ -269,6 +368,7 @@ import WebKit
             if (p.pass && e.target === p.user) selectedAccounts.delete(p.pass);
             rememberStep(p);
           }
+          if (pairFor(e.target, true)) lastOffered = null;
           if (!submittedAttempt || !pairFor(e.target, true)) { return; }
           var form = e.target.form;
           if (form === submittedAttempt.form) { submittedAttempt = null; return; }
@@ -276,18 +376,32 @@ import WebKit
           // Editing any other login form leaves the submitted offer in charge.
           submittedAttempt.retry = replacesSubmitted(form) ? form : null;
         }, true);
-        // Plenty of logins never fire submit — a button posts via fetch and then navigates.
-        // pagehide catches those. ponytail: best effort; a site that logs in without any
-        // navigation at all still slips through.
+        // Leaving a page is not a login attempt. For fetch-based forms, capture only
+        // after a trusted submit-control activation or Enter in a credential field.
+        var activated = null;
+        document.addEventListener('click', function (e) {
+          if (!e.isTrusted) return;
+          var button = e.target.closest && e.target.closest('button,input[type="submit"]');
+          if (!button || !button.form || button.type !== 'submit') return;
+          activated = { form: button.form, at: Date.now() };
+        }, true);
+        document.addEventListener('keydown', function (e) {
+          if (e.isTrusted && e.key === 'Enter' && pairFor(e.target, true))
+            activated = { form: e.target.form, at: Date.now() };
+        }, true);
         window.addEventListener('pagehide', function () {
-          if (!submittedAttempt) { offer(targetPair(true)); }
-          else if (replacesSubmitted(submittedAttempt.retry)) {
+          if (!submittedAttempt && activated && activated.form && Date.now() - activated.at < 10000)
+            offer(pair(activated.form, true));
+          else if (submittedAttempt && replacesSubmitted(submittedAttempt.retry))
             offer(pair(submittedAttempt.retry, true));
-          }
         });
         function fill(account, password, automatic, target, continuation) {
           var p = targetPair();
           if (!visible(p) || (target && token(p) !== target)) { return false; }
+          if (window !== topWindow) {
+            for (var child = window; child !== topWindow; child = child.parent)
+              if (child.parent.document.activeElement !== child.frameElement) return false;
+          }
           // Read-only/hidden account hints are useful for validation, never for writing.
           var identity = pair(rootFor(p.pass || p.user), true);
           if (identity && identity.user && identity.user !== p.user) {
@@ -295,6 +409,9 @@ import WebKit
             if (!usableInput(identity.user)) p.user = null;
           }
           if (!p.pass && !p.user) return false;
+          if (automatic && [p.user, p.pass, rootFor(p.pass || p.user)].some(function (el) {
+              return el && hasRole(el, 'off');
+          })) return false;
           var carried = p.pass && !p.user && !(identity && identity.user && identity.user.value) ? carriedAccount(p) : '';
           if (carried && carried !== account) return false;
           if (continuation && (!p.pass || p.user || carried)) return false;
@@ -302,17 +419,17 @@ import WebKit
               !/user|login|account/i.test(p.user.name + ' ' + p.user.id)) return false;
           if (automatic && ((p.user && p.user.value && p.user.value !== account) ||
                             (p.pass && p.pass.value))) return false;
-          var root = rootFor(p.pass || p.user);
+          var root = rootFor(p.pass || p.user), expectedTarget = token(p);
           if (p.user && account) setValue(p.user, account);
           rememberStep(p);
           // Site input handlers can replace, hide, or reclassify fields synchronously.
           // Revalidate after the username events before handing over the secret.
           if (p.pass) {
-            if (!liveDocument() || !usableInput(p.pass) || hasRole(p.pass, 'new-password') ||
-                rootFor(p.pass) !== root || token(targetPair()) !== token(p) ||
+            if (!liveDocument() || !safeRoot(root) || !usableInput(p.pass) || passwordPurpose(p.pass) === 'new' ||
+                rootFor(p.pass) !== root || token(targetPair()) !== expectedTarget ||
                 (p.user && p.user.value !== account)) return false;
             var current = pairFor(p.pass), currentIdentity = pair(root, true);
-            if (!current || token(current) !== token(p)) return false;
+            if (!current || token(current) !== expectedTarget) return false;
             var hint = currentIdentity && currentIdentity.user;
             if (hint && hint.value && hint.value !== account) return false;
             if (current.user && (!hint || usableInput(hint)) && current.user.value !== account) return false;
@@ -325,6 +442,14 @@ import WebKit
         // same notification. Mutation callbacks only schedule work: searching each added
         // subtree here competes with the framework's page construction in its microtasks.
         // One discovery pass after a burst also avoids searching nested additions twice.
+        function rejectFailedAttempt() {
+          if (!lastOfferID || !submittedAttempt || !submittedAttempt.form.isConnected) return;
+          var form = submittedAttempt.form;
+          var invalid = Array.from(form.querySelectorAll('input[aria-invalid="true"],[role="alert"]')).some(function (el) {
+            return shown(el) && (el.tagName === 'INPUT' ? (el.type === 'password' || usernameInput(el)) : el.textContent.trim());
+          });
+          if (invalid) { send({ rejectedAttempt: lastOfferID }); lastOfferID = null; }
+        }
         var seen = new WeakMap(), pending = false;
         function ready() {
           var p = targetPair(), field = p && (p.pass || p.user);
@@ -333,7 +458,8 @@ import WebKit
           send({ ready: true });
           if (ours(document.activeElement)) focused(document.activeElement);
         }
-        var context = { window: window, fill: fill, anchor: anchor, pair: targetPair, token: token, live: liveDocument, attached: attachedDocument, ready: ready };
+        var context = { window: window, fill: fill, anchor: anchor, pair: targetPair, token: token, live: liveDocument, attached: attachedDocument, ready: ready,
+          generate: generate, generation: function () { return generationToken(lastGeneration && generationFor(lastGeneration.field)); } };
         contexts.set(document, context);
         function discoverFrames() {
           // Access itself enforces the origin boundary, including opaque sandbox origins.
@@ -350,7 +476,7 @@ import WebKit
         ready();
         new MutationObserver(function (records) {
           if (pending || !records.some(function (r) {
-            return r.type === 'attributes' || r.removedNodes.length || Array.from(r.addedNodes).some(function (n) {
+            return r.type === 'attributes' || (lastOfferID && (r.type === 'characterData' || r.addedNodes.length)) || r.removedNodes.length || Array.from(r.addedNodes).some(function (n) {
               return n.nodeType === 1;
             });
           })) return;
@@ -358,17 +484,19 @@ import WebKit
           setTimeout(function () {
             pending = false;
             discoverFrames();
+            rejectFailedAttempt();
             var cached = lastPair;
-            if (listOpen && (!visible(cached) || token(targetPair()) !== token(cached))) send({ dismiss: 'navigate' });
+            if (listOpen && !(lastGeneration && generationFor(lastGeneration.field)) &&
+                (!visible(cached) || token(targetPair()) !== token(cached))) send({ dismiss: 'navigate' });
             ready();
           }, 80);
-        }).observe(document.documentElement, { childList: true, subtree: true, attributes: true,
-          attributeFilter: ['type', 'autocomplete', 'name', 'id', 'disabled', 'readonly', 'hidden', 'style', 'class', 'inert'] });
+        }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true,
+          attributeFilter: ['type', 'autocomplete', 'name', 'id', 'disabled', 'readonly', 'hidden', 'style', 'class', 'inert', 'aria-invalid', 'role'] });
       }
       function currentContext(target) {
         if (target) {
           return Array.from(contexts.values()).find(function (ctx) {
-            return ctx.live() && ctx.token(ctx.pair()) === target;
+            return ctx.live() && (ctx.token(ctx.pair()) === target || ctx.generation() === target);
           });
         }
         var doc = topWindow.document, active = doc.activeElement;
@@ -390,6 +518,10 @@ import WebKit
         var ctx = currentContext(target);
         return !!ctx && ctx.fill(account, password, automatic, target, continuation);
       };
+      topWindow.__vaneGenerate = function (password, target) {
+        var ctx = currentContext(target);
+        return !!ctx && ctx.generate(password, target);
+      };
       install(topWindow);
     })();
     """
@@ -397,6 +529,11 @@ import WebKit
     static func anchorJS(target: String) -> String {
         let args = try! JSONSerialization.data(withJSONObject: [target])
         return "window.__vaneAnchor && window.__vaneAnchor.apply(null, \(String(decoding: args, as: UTF8.self)))"
+    }
+
+    static func generateJS(password: String, target: String) -> String {
+        let args = try! JSONSerialization.data(withJSONObject: [password, target])
+        return "window.__vaneGenerate && window.__vaneGenerate.apply(null, \(String(decoding: args, as: UTF8.self)))"
     }
 
     static func fillJS(account: String, password: String, automatic: Bool = false,

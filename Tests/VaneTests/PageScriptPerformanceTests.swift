@@ -38,7 +38,11 @@ import XCTest
         config.websiteDataStore = .nonPersistent()
         config.userContentController = controller
         let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 500), configuration: config)
-        web.loadHTMLString(html, baseURL: URL(string: "https://fixture.example.test/"))
+        if name == "vanepw" {
+            web.loadSimulatedRequest(URLRequest(url: URL(string: "https://fixture.example.test/")!), responseHTML: html)
+        } else {
+            web.loadHTMLString(html, baseURL: URL(string: "https://fixture.example.test/"))
+        }
         addTeardownBlock { @MainActor in
             web.stopLoading()
             controller.removeAllScriptMessageHandlers()
@@ -389,7 +393,8 @@ import XCTest
         _ = try await js(web, """
         const form = document.createElement('form');
         form.innerHTML = '<input autocomplete="username"><input type="password" autocomplete="current-password">';
-        document.body.appendChild(form);
+        // Discovery still coalesces a busy page, but offscreen credentials are never targets.
+        document.body.prepend(form);
         return true;
         """, world: Autofill.world)
         let deadline = Date.now.addingTimeInterval(3)

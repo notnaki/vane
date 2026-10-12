@@ -20,6 +20,7 @@ import SwiftUI
     var settingsProfileID: UUID? = nil
     @ObservedObject private var manager = ProfileManager.shared
     @State private var query = ""
+    @State private var sort = PasswordSort.website
     /// The keychain is not a publisher, so the pane holds its own copy of the *names* and
     /// reloads after every write it makes.
     @State private var logins: [Passwords.Login] = []
@@ -47,13 +48,11 @@ import SwiftUI
     /// And how long a copied one stays on the clipboard.
     static let copyFor: Duration = .seconds(60)
 
-    private static let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
-
     private var profileID: UUID {
         manager.profiles.first { $0.id == settingsProfileID }?.id ?? manager.active.id
     }
     private var groups: [(host: String, logins: [Passwords.Login])] {
-        PasswordsPane.groups(logins, query: query)
+        PasswordsPane.groups(logins, query: query, sort: sort, used: Passwords.lastUsed(profileID: profileID))
     }
     private var neverShown: [String] { PasswordsPane.matching(never, query: query) }
     private var searching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -88,16 +87,22 @@ import SwiftUI
                     Button { beginAdding() } label: { Label("Add password", systemImage: "plus") }
                         .buttonStyle(.borderedProminent)
                 }
-                SettingsCard {
-                    SettingsRow("Folder unlock method") {
+                Footnote("Passkeys are pending Apple’s browser capability approval and provisioning. Saved passwords remain available here.")
+                DisclosureGroup("Folder unlock method") {
+                    SettingsRow("Unlock folders using") {
                         Picker("Folder unlock method", selection: $folderUnlockMethod) {
                             Text("Touch ID").tag(FolderUnlockMethod.touchID)
                             Text("System").tag(FolderUnlockMethod.system)
                         }.labelsHidden()
                     }
-                    Footnote("Touch ID unlocks inside Vane. System opens macOS authentication. Macs without Touch ID use System automatically.")
-                }
+                    Footnote("Macs without Touch ID use system authentication automatically.")
+                }.font(Look.caption)
                 search
+                Picker("Sort passwords", selection: $sort) {
+                    Text("Website").tag(PasswordSort.website)
+                    Text("Username").tag(PasswordSort.username)
+                    Text("Recently used").tag(PasswordSort.recent)
+                }.pickerStyle(.segmented)
                 HStack {
                     Text(searching
                          ? "\(resultCount) matching \(resultCount == 1 ? "password" : "passwords")"
@@ -127,6 +132,7 @@ import SwiftUI
             if let problem {
                 Text(problem).font(Look.text).foregroundStyle(Look.warning)
                     .fixedSize(horizontal: false, vertical: true)
+                Button("Refresh passwords") { reload() }
             }
             if let feedback {
                 Text(feedback).font(Look.caption).foregroundStyle(Look.inkSecondary)
@@ -140,6 +146,7 @@ import SwiftUI
         .onChange(of: profileID) { selectedHost = nil; secrets.adding = false; forgetSecrets(); reload() }
         .onChange(of: query) { selected = nil }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selectedHost)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: sort)
     }
 
     private func quiet(_ text: String) -> some View {
@@ -213,8 +220,13 @@ import SwiftUI
         let shown = secrets.revealed[login.id]
         return SettingsCard {
             VStack(alignment: .leading, spacing: Look.cardInset) {
-                if login.origin.scheme != "https" || !login.origin.isDefaultPort {
-                    Text(login.origin.url.absoluteString).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                VStack(alignment: .leading, spacing: Look.inset) {
+                    Text("Website").font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    if isEditing {
+                        TextField("Website", text: $draftSite).textFieldStyle(.roundedBorder)
+                    } else {
+                        Text(login.origin.url.absoluteString).textSelection(.enabled)
+                    }
                 }
                 VStack(alignment: .leading, spacing: Look.inset) {
                     Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
@@ -237,7 +249,6 @@ import SwiftUI
                         Text("Password").font(Look.caption).foregroundStyle(Look.inkSecondary)
                         HStack {
                             PasswordValue(value: shown)
-                                .textSelection(.enabled)
                             Spacer()
                             PasswordEyeButton(revealed: shown != nil) {
                                 toggleReveal(login)
@@ -245,6 +256,10 @@ import SwiftUI
                             glyph("doc.on.doc", "Copy password") { copyPassword(login) }
                         }
                     }
+                }
+                if logins.filter({ $0.host == login.host && $0.account == login.account }).count > 1 {
+                    Text("This username is saved for multiple website origins. Check the website and port above.")
+                        .font(Look.caption).foregroundStyle(Look.inkSecondary)
                 }
                 HStack(spacing: Look.inset * 1.5) {
                     if isEditing {
@@ -294,14 +309,15 @@ import SwiftUI
     private func addPassword() {
         guard let origin = Self.siteOrigin(draftSite), !secrets.draftPassword.isEmpty else { return }
         let host = origin.host
-        let account = secrets.draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = secrets.draftAccount
         guard !logins.contains(where: { $0.origin == origin && $0.account == account }) else {
             addProblem = "This login already exists. Open it and choose Edit to change it."
             return
         }
-        guard Passwords.save(origin: origin, account: account, password: secrets.draftPassword, profileID: profileID) else {
-            addProblem = Self.saveFailed(host: host); return
-        }
+        do {
+            try Passwords.saveChecked(origin: origin, account: account, password: secrets.draftPassword,
+                                      profileID: profileID, replacingExisting: false)
+        } catch { addProblem = error.localizedDescription; return }
         Passwords.allowSaving(host: host, profileID: profileID)
         secrets.adding = false; forgetSecrets(); reload()
         navigate(to: host)
@@ -319,7 +335,8 @@ import SwiftUI
     // MARK: Actions
 
     private func reload() {
-        logins = Passwords.all(profileID: profileID)
+        do { logins = try Passwords.allChecked(profileID: profileID); problem = nil }
+        catch { problem = error.localizedDescription }
         never = Passwords.neverSaved(profileID: profileID)
         if let selected, !logins.contains(where: { $0.id == selected }) { self.selected = nil }
     }
@@ -341,8 +358,9 @@ import SwiftUI
         }
         let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("show the password for \(login.host)") { ok in
-            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(origin: login.origin, account: login.account,
-                                                     profileID: scope) else { return }
+            guard profileID == scope, secrets.secretContext == context else { return }
+            guard ok else { problem = "Authentication was not completed. Try again and use your Mac login password if Touch ID is unavailable."; return }
+            guard let plain = readPassword(login, profileID: scope) else { return }
             secrets.revealed[login.id] = plain
             axAnnounce("Password for \(login.host) shown.")
             secrets.forgetting.removeValue(forKey: login.id)?.cancel()
@@ -359,19 +377,16 @@ import SwiftUI
         guard !text.isEmpty else { return }
         feedback = secret ? "Password copied" : "Username copied"
         let board = NSPasteboard.general
-        board.clearContents()
-        // Clipboard managers and history utilities honour this type by not recording the
-        // item. Costs two lines and keeps a password out of a dozen third-party databases.
-        board.declareTypes(secret ? [.string, PasswordsPane.concealed] : [.string], owner: nil)
-        board.setString(text, forType: .string)
-        guard secret else { return }
-        board.setString("", forType: PasswordsPane.concealed)
-        let stamp = board.changeCount
+        guard secret else {
+            board.clearContents()
+            board.setString(text, forType: .string)
+            return
+        }
+        let stamp = PasswordClipboard.write(text, to: board)
         Task {
             try? await Task.sleep(for: PasswordsPane.copyFor)
-            // Only if nobody has copied anything since. Wiping somebody else's clipboard is
-            // worse than leaving a password on it for a minute.
-            if NSPasteboard.general.changeCount == stamp { NSPasteboard.general.clearContents() }
+            guard !Task.isCancelled else { return }
+            PasswordClipboard.clearIfUnchanged(.general, changeCount: stamp)
         }
     }
 
@@ -384,8 +399,9 @@ import SwiftUI
         }
         let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("copy the password for \(login.host)") { ok in
-            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(origin: login.origin, account: login.account,
-                                                     profileID: scope) else { return }
+            guard profileID == scope, secrets.secretContext == context else { return }
+            guard ok else { problem = "Authentication was not completed. Try again and use your Mac login password if Touch ID is unavailable."; return }
+            guard let plain = readPassword(login, profileID: scope) else { return }
             copy(plain, secret: true)
             axAnnounce("Password copied.")
         }
@@ -398,13 +414,23 @@ import SwiftUI
         problem = nil; feedback = nil
         let scope = profileID, context = secrets.secretContext
         Passwords.authenticate("edit the saved login for \(login.host)") { ok in
-            guard ok, profileID == scope, secrets.secretContext == context, let plain = Passwords.password(origin: login.origin, account: login.account,
-                                                     profileID: scope) else { return }
+            guard profileID == scope, secrets.secretContext == context else { return }
+            guard ok else { problem = "Authentication was not completed. Try again and use your Mac login password if Touch ID is unavailable."; return }
+            guard let plain = readPassword(login, profileID: scope) else { return }
             selected = login.id
             secrets.editing = login.id
+            draftSite = login.origin.url.absoluteString
             secrets.draftAccount = login.account
             secrets.draftPassword = plain
         }
+    }
+
+    private func readPassword(_ login: Passwords.Login, profileID: UUID) -> String? {
+        do {
+            guard let password = try Passwords.passwordChecked(origin: login.origin, account: login.account, profileID: profileID)
+            else { problem = "This login is no longer in Keychain. Refresh passwords to update the list."; return nil }
+            return password
+        } catch { problem = error.localizedDescription; axAnnounce(problem ?? ""); return nil }
     }
 
     private func cancelEditing() {
@@ -417,51 +443,36 @@ import SwiftUI
     /// A changed username is a different keychain item, so the old one goes — but only after
     /// the new one is safely stored, and only after its last-used stamp has moved across.
     private func commit(_ login: Passwords.Login) {
-        let account = secrets.draftAccount.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = secrets.draftAccount
         // Checked before anything is closed or written. An empty password is not a password,
         // and quietly keeping the old one while the field says otherwise is worse than
         // refusing.
         guard !secrets.draftPassword.isEmpty else { return }
-        // Renaming onto an account this site already has would silently fold the two logins
-        // into one and take the other one's password with it. That is a delete wearing a
-        // rename's clothes, so it is refused rather than guessed at.
-        if let clash = PasswordsPane.renameClash(logins, host: login.host,
-                                                 from: login.account, to: account, origin: login.origin) {
-            problem = clash
-            axAnnounce(clash)
+        let unchangedLegacy = URL(string: draftSite).flatMap(PasswordOrigin.init(url:)) == login.origin ? login.origin : nil
+        guard let origin = Self.siteOrigin(draftSite) ?? unchangedLegacy else {
+            problem = "Enter a valid HTTPS website without a username or password in its URL."
             return
         }
-        guard Passwords.save(origin: login.origin, account: account, password: secrets.draftPassword,
-                             profileID: profileID) else {
-            problem = PasswordsPane.saveFailed(host: login.host)
+        do {
+            try Passwords.editChecked(login, origin: origin, account: account,
+                                      password: secrets.draftPassword, profileID: profileID)
+        } catch {
+            problem = error.localizedDescription
             axAnnounce(problem ?? "")
             return
         }
-        problem = nil
-        if account != login.account {
-            Passwords.renameUse(origin: login.origin, from: login.account, to: account,
-                                profileID: profileID)
-            guard Passwords.delete(origin: login.origin, account: login.account, profileID: profileID) else {
-                problem = "The new login was saved, but the original login could not be removed. Both are listed below."
-                forgetSecrets(); reload()
-                axAnnounce(problem ?? "")
-                return
-            }
-        }
+        selectedHost = origin.host
         forgetSecrets()
         feedback = "Password updated"
-        selected = login.origin.key(account: account)
+        selected = origin.key(account: account)
         reload()
     }
 
     private func remove(_ login: Passwords.Login) {
         guard confirm("Delete the saved login for \(login.host)?", "Delete",
                       PasswordsPane.deleteDetail(login)) else { return }
-        guard Passwords.delete(origin: login.origin, account: login.account, profileID: profileID) else {
-            problem = "Vane could not delete this login. Check Keychain access and try again."
-            axAnnounce(problem ?? "")
-            return
-        }
+        do { try Passwords.deleteChecked(origin: login.origin, account: login.account, profileID: profileID) }
+        catch { problem = error.localizedDescription; axAnnounce(problem ?? ""); return }
         problem = nil
         secrets.secretContext = UUID()
         secrets.forgetting.removeValue(forKey: login.id)?.cancel()
@@ -548,7 +559,8 @@ import SwiftUI
                 }
             }
         }
-        .focusable().focused($listFocused).focusEffectDisabled()
+        .focusable().focused($listFocused)
+        .overlay { RoundedRectangle(cornerRadius: Look.cardRadius).stroke(listFocused ? Color.accentColor : .clear, lineWidth: 2).allowsHitTesting(false) }
         .onKeyPress(.upArrow) { moveSite(-1) }
         .onKeyPress(.downArrow) { moveSite(1) }
         .onKeyPress(.return) {
@@ -573,6 +585,7 @@ import SwiftUI
 /// What a keystroke on the list means. An enum rather than four branches inside the view so
 /// the mapping can be asserted without a window server.
 enum RowCommand: Equatable { case up, down, delete, copy }
+enum PasswordSort: Hashable { case website, username, recent }
 
 extension PasswordsPane {
     static func siteOrigin(_ raw: String) -> PasswordOrigin? {
@@ -617,14 +630,28 @@ extension PasswordsPane {
     /// or a username; there is nothing else to match, because the list never holds a
     /// password in the first place.
     static func groups(_ logins: [Passwords.Login],
-                       query: String) -> [(host: String, logins: [Passwords.Login])] {
+                       query: String, sort: PasswordSort = .website,
+                       used: [String: Date] = [:]) -> [(host: String, logins: [Passwords.Login])] {
         let terms = query.lowercased().split(whereSeparator: \.isWhitespace)
         let hits = terms.isEmpty ? logins : logins.filter { login in
             terms.allSatisfy { login.host.lowercased().contains($0) || login.account.lowercased().contains($0) }
         }
         return Dictionary(grouping: hits, by: \.host)
-            .map { (host: $0.key, logins: $0.value.sorted { $0.account < $1.account }) }
-            .sorted { $0.host < $1.host }
+            .map { (host: $0.key, logins: $0.value.sorted { a, b in
+                if sort == .recent, used[a.id] != used[b.id] { return (used[a.id] ?? .distantPast) > (used[b.id] ?? .distantPast) }
+                return (a.account, a.origin.url.absoluteString) < (b.account, b.origin.url.absoluteString)
+            }) }
+            .sorted { a, b in
+                if sort == .recent {
+                    let first = a.logins.compactMap { used[$0.id] }.max() ?? .distantPast
+                    let second = b.logins.compactMap { used[$0.id] }.max() ?? .distantPast
+                    if first != second { return first > second }
+                }
+                if sort == .username, a.logins.first?.account != b.logins.first?.account {
+                    return (a.logins.first?.account ?? "") < (b.logins.first?.account ?? "")
+                }
+                return a.host < b.host
+            }
     }
 
     /// Why a rename is refused, or nil when it is fine. Named so the wording can be
@@ -779,6 +806,16 @@ struct PasswordChooser: View {
 
     var body: some View {
         GeometryReader { geo in
+            if let generation = tab.passwordGeneration,
+               let at = PasswordChooser.place(anchor: generation.anchor, in: geo.size, height: 280) {
+                PasswordGenerationCard(website: generation.origin.url.absoluteString,
+                    problem: tab.passwordGenerationProblem, use: { tab.useGeneratedPassword($0) },
+                    dismiss: { tab.closeChooser(.escape) })
+                    .frame(width: min(320, geo.size.width), height: 280, alignment: .top)
+                    .offset(x: min(at.x, max(0, geo.size.width - 320)), y: at.y)
+                    .onHover { tab.chooserHovered = $0 }
+                    .transition(reduced ? .identity : .opacity)
+            }
             if let choice = tab.passwordChoice {
                 if let at = PasswordChooser.place(
                     anchor: choice.anchor, in: geo.size,
@@ -804,6 +841,7 @@ struct PasswordChooser: View {
             }
         }
         .animation(reduced ? nil : Look.appear, value: tab.passwordChoice == nil)
+        .animation(reduced ? nil : Look.appear, value: tab.passwordGeneration == nil)
         // A click on the page, a blur and a scroll all come back from the page itself
         // (see Autofill.script). These two do not, because they never reach it.
         .onReceive(NotificationCenter.default.publisher(
@@ -830,7 +868,7 @@ struct PasswordChooserCard: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(choice.accounts.count == 1 ? "Saved password" : "Saved passwords")
                     .font(Look.text.weight(.medium)).foregroundStyle(Look.inkPrimary)
-                Text(choice.host).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                Text(PasswordOrigin(host: choice.host, port: choice.port).url.absoluteString).font(Look.caption).foregroundStyle(Look.inkSecondary)
                     .lineLimit(1).truncationMode(.middle)
             }
             .padding(.horizontal, Look.rowInset + Look.passwordChooserInset)
@@ -842,6 +880,7 @@ struct PasswordChooserCard: View {
                     VStack(spacing: 0) {
                         ForEach(Array(choice.accounts.enumerated()), id: \.offset) { i, account in
                             ChooserRow(account: account, host: choice.host,
+                                website: PasswordOrigin(host: choice.host, port: choice.port).url.absoluteString,
                                 profileID: profileID, selected: i == choice.selected) { fill(account) }
                                 .id(i)
                         }
@@ -972,7 +1011,18 @@ extension PasswordChooser {
         guard [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) else { return }
         for store in TabStore.all where store.window === event.window {
             for tab in store.everyTab where tab.existingWeb?.window === event.window {
-                guard let choice = tab.passwordChoice, let web = tab.existingWeb else { continue }
+                guard let web = tab.existingWeb else { continue }
+                if let generation = tab.passwordGeneration {
+                    let size = web.bounds.size
+                    let point = web.convert(event.locationInWindow, from: nil)
+                    let topPoint = CGPoint(x: point.x, y: web.isFlipped ? point.y : size.height - point.y)
+                    let at = place(anchor: generation.anchor, in: size, height: 280)
+                    let inside = at.map {
+                        CGRect(x: min($0.x, max(0, size.width - 320)), y: $0.y, width: min(320, size.width), height: 280).contains(topPoint)
+                    } ?? false
+                    if !inside { tab.closeChooser(.click) }
+                }
+                guard let choice = tab.passwordChoice else { continue }
                 let size = web.bounds.size
                 let point = web.convert(event.locationInWindow, from: nil)
                 let topPoint = CGPoint(x: point.x, y: web.isFlipped ? point.y : size.height - point.y)
@@ -992,7 +1042,7 @@ extension PasswordChooser {
     /// swallows the key — see `VaneWindow.sendEvent`.
     @MainActor static func dismiss(in window: NSWindow?) -> Bool {
         guard let store = TabStore.all.first(where: { $0.window === window }),
-              let tab = store.active, tab.passwordChoice != nil else { return false }
+              let tab = store.active, tab.passwordChoice != nil || tab.passwordGeneration != nil else { return false }
         tab.closeChooser(.escape)
         return true
     }
@@ -1073,6 +1123,7 @@ extension PasswordChooser {
 private struct ChooserRow: View {
     let account: String
     let host: String
+    let website: String
     let profileID: UUID
     let selected: Bool
     let fill: () -> Void
@@ -1088,7 +1139,8 @@ private struct ChooserRow: View {
                     Text(account.isEmpty ? "No username" : account)
                         .font(Look.text.weight(.medium)).foregroundStyle(Look.inkPrimary)
                         .lineLimit(1).truncationMode(.middle)
-                    PasswordValue(value: nil).fixedSize(horizontal: true, vertical: false)
+                    Text(website).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                        .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 0)
                 Image(systemName: "return").font(Look.caption)
@@ -1136,7 +1188,8 @@ struct PasswordOffer: View {
                 PasswordOfferCard(offer: offer, profileID: tab.profileID,
                     problem: tab.passwordSaveProblem,
                     dismiss: { tab.pendingSave = nil }, save: { tab.confirmSave() },
-                    never: { tab.neverSaveHere() })
+                    never: { tab.neverSaveHere() },
+                    saveReviewed: { tab.confirmSave(origin: $0, account: $1, password: $2) })
                     .id(offer.id)
                     .transition(reduceMotion || batterySaver.isActive ? .identity
                         : .opacity.combined(with: .scale(scale: Look.appearScale, anchor: .topTrailing)))
@@ -1153,6 +1206,15 @@ struct PasswordOfferCard: View {
     let dismiss: () -> Void
     let save: () -> Void
     let never: () -> Void
+    var saveReviewed: ((PasswordOrigin, String, String) -> Void)? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @State private var reviewing = false
+    @State private var draftSite = ""
+    @State private var draftAccount = ""
+    @State private var draftPassword = ""
+    @State private var revealRequest = UUID()
+    @State private var revealProblem: String?
     /// Revealing what is about to be saved is a check on Vane, not a secret being handed
     /// out — it is the user's own password, which they just typed into the page.
     @State private var revealed = false
@@ -1160,7 +1222,18 @@ struct PasswordOfferCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Look.cardInset) {
             header
-            credential
+            if reviewing {
+                VStack(alignment: .leading, spacing: Look.inset) {
+                    Text("Website").font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    TextField("HTTPS website", text: $draftSite).textFieldStyle(.roundedBorder)
+                    Text("Username").font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    TextField("Username (optional)", text: $draftAccount).textFieldStyle(.roundedBorder)
+                    PasswordDraftField(text: $draftPassword)
+                }
+            } else { credential }
+            if let revealProblem { Text(revealProblem).font(Look.caption).foregroundStyle(Look.warning) }
+            Text("Submitted password · Sign-in success is unverified")
+                .font(Look.caption).foregroundStyle(Look.inkSecondary)
             if let problem {
                 Text(problem).font(Look.caption).foregroundStyle(Look.warning)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1180,11 +1253,18 @@ struct PasswordOfferCard: View {
                     y: Look.floatShadowY)
             .accessibilityElement(children: .contain)
             .accessibilityLabel(offer.title)
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: reviewing)
             // A credential decision is the first thing in the window worth reaching, not the
             // last. Not .isModal, though: the page underneath stays usable.
             .accessibilitySortPriority(2)
             // It appears on its own, with no focus change and no sound — say so.
             .onAppear { axAnnounce(offer.title) }
+            .onDisappear { revealRequest = UUID(); revealed = false; draftPassword = "" }
+            .task(id: revealed) {
+                guard revealed else { return }
+                try? await Task.sleep(for: PasswordsPane.revealFor)
+                if !Task.isCancelled { revealed = false }
+            }
     }
 
     private var header: some View {
@@ -1193,7 +1273,7 @@ struct PasswordOfferCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(offer.update ? "Update password?" : "Save password?")
                     .font(Look.heading).foregroundStyle(Look.inkPrimary)
-                Text(offer.host).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                Text(offer.origin.url.absoluteString).font(Look.caption).foregroundStyle(Look.inkSecondary)
                     .lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 0)
@@ -1203,7 +1283,6 @@ struct PasswordOfferCard: View {
                     .contentShape(.rect)
             }
             .buttonStyle(.plain).foregroundStyle(Look.inkTertiary)
-            .keyboardShortcut(.cancelAction)
             .help("Not now")
             .accessibilityLabel("Not now")
         }
@@ -1227,7 +1306,16 @@ struct PasswordOfferCard: View {
                     PasswordValue(value: revealed ? offer.password : nil)
                 }
                 Spacer(minLength: 0)
-                PasswordEyeButton(revealed: revealed) { revealed.toggle() }
+                PasswordEyeButton(revealed: revealed) {
+                    if revealed { revealed = false; return }
+                    revealRequest = UUID()
+                    let request = revealRequest
+                    Passwords.authenticate("show the submitted password for \(offer.host)") { ok in
+                        guard revealRequest == request else { return }
+                        if ok { revealed = true; revealProblem = nil }
+                        else { revealProblem = "Authentication was not completed. Try again with your Mac login password." }
+                    }
+                }
             }
             .padding(Look.rowInset)
         }
@@ -1241,17 +1329,22 @@ struct PasswordOfferCard: View {
     private var buttons: some View {
         HStack(spacing: Look.inset) {
             Spacer(minLength: 0)
-            if offer.update {
-                Button("Not now", action: dismiss)
-                    .buttonStyle(.bordered)
-            } else {
-                Button("Never", action: never).buttonStyle(.bordered)
-                    .help("Never save passwords for \(offer.host)")
-                    .accessibilityLabel("Never save passwords for \(offer.host)")
+            Button("Never", action: never).buttonStyle(.bordered)
+                .help("Never save passwords for \(offer.host)")
+                .accessibilityLabel("Never save passwords for \(offer.host)")
+            Button(reviewing ? (offer.update ? "Update" : "Save") : "Review…") {
+                if !reviewing {
+                    draftSite = offer.origin.url.absoluteString
+                    draftAccount = offer.account
+                    draftPassword = offer.password
+                    reviewing = true
+                } else if let origin = PasswordsPane.siteOrigin(draftSite) {
+                    if let saveReviewed { saveReviewed(origin, draftAccount, draftPassword) }
+                    else { save() }
+                }
             }
-            Button(offer.update ? "Update" : "Save", action: save)
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+            .disabled(reviewing && (PasswordsPane.siteOrigin(draftSite) == nil || draftPassword.isEmpty))
         }
         .controlSize(.large)
     }
@@ -1283,6 +1376,10 @@ struct PasswordEyeButton: View {
 struct PasswordDraftField: View {
     @Binding var text: String
     @State private var revealed = false
+    @State private var options = PasswordGenerator.Options()
+    @State private var configuring = false
+    @State private var revealRequest = UUID()
+    @State private var revealProblem: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset) {
@@ -1294,18 +1391,36 @@ struct PasswordDraftField: View {
                 }
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 13, design: .monospaced))
-                PasswordEyeButton(revealed: revealed) { revealed.toggle() }
-            }
-            Menu {
-                ForEach([20, 16, 24, 32], id: \.self) { length in
-                    Button("\(length) characters") { text = PasswordGenerator.generate(length: length) }
+                PasswordEyeButton(revealed: revealed) {
+                    if revealed { revealed = false; return }
+                    revealRequest = UUID()
+                    let request = revealRequest
+                    Passwords.authenticate("show this password") { ok in
+                        guard revealRequest == request else { return }
+                        if ok { revealed = true; revealProblem = nil }
+                        else { revealProblem = "Authentication was not completed. Try again with your Mac login password." }
+                    }
                 }
-            } label: {
-                Label("Generate password", systemImage: "sparkles")
             }
-            .menuStyle(.borderlessButton).fixedSize()
-            .font(Look.caption).foregroundStyle(Color.accentColor)
-            .help("Replace this draft with a randomly generated password")
+            if let revealProblem { Text(revealProblem).font(Look.caption).foregroundStyle(Look.warning) }
+            Button { configuring.toggle() } label: {
+                Label("Generate password…", systemImage: "sparkles")
+            }.buttonStyle(.plain).font(Look.caption).foregroundStyle(Color.accentColor)
+                .popover(isPresented: $configuring) {
+                    VStack(alignment: .leading, spacing: Look.cardInset) {
+                        PasswordGeneratorOptions(options: $options)
+                        Button("Use generated password") {
+                            text = PasswordGenerator.generate(options: options)
+                            configuring = false
+                        }.disabled(!options.hasCharacters)
+                    }.padding(Look.cardInset).frame(width: 280)
+                }
+        }
+        .onDisappear { revealRequest = UUID(); revealed = false }
+        .task(id: revealed) {
+            guard revealed else { return }
+            try? await Task.sleep(for: PasswordsPane.revealFor)
+            if !Task.isCancelled { revealed = false }
         }
     }
 }
