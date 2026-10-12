@@ -18,6 +18,8 @@ import WebKit
         XCTAssertEqual(adapter.parse(.init(state: "unknown", account: "a@test.com", items: [])), .unavailable)
         let bad = FavouritePreviewExtraction.Row(title: "Subject", subtitle: "Sender", url: "https://evil.test/a")
         XCTAssertEqual(adapter.parse(.init(state: "ready", account: "a@test.com", items: [bad])), .unavailable)
+        let missingSender = FavouritePreviewExtraction.Row(title: "Subject", subtitle: "", url: "https://mail.google.com/mail/u/0/#inbox/abc123")
+        XCTAssertEqual(adapter.parse(.init(state: "ready", account: "a@test.com", items: [missingSender])), .unavailable)
         XCTAssertEqual(adapter.parse(.init(state: "signedOut", account: "", items: [])), .signedOut)
         XCTAssertEqual(adapter.parse(.init(state: "ready", account: "a@test.com", items: [])), .unavailable)
         guard case .ready(let snapshot) = adapter.parse(.init(state: "empty", account: "a@test.com", items: [])) else { return XCTFail("Verified empty expected") }

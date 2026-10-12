@@ -26,6 +26,7 @@ struct FavouritePreviewPanel: NSViewRepresentable {
         private var host: NSHostingView<AnyView>?
         private var visible = false
         private var keyboard = false
+        private var focusPending = false
         private var content = AnyView(EmptyView())
         private var dismiss: (@MainActor () -> Void)?
         private var outsideMonitor: Any?
@@ -36,6 +37,7 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             if window == nil { hide() } else { updatePanel() }
         }
         func configure(visible: Bool, keyboard: Bool, content: AnyView, dismiss: @escaping @MainActor () -> Void) {
+            if keyboard && !self.keyboard { focusPending = true }
             self.visible = visible; self.keyboard = keyboard; self.content = content; self.dismiss = dismiss
             updatePanel()
         }
@@ -87,14 +89,21 @@ struct FavouritePreviewPanel: NSViewRepresentable {
                     panel.animator().alphaValue = 1
                 }
             }
-            if isNew && keyboard { panel.makeKey() }
+            if keyboard && (isNew || focusPending) {
+                panel.makeKey()
+                panel.makeFirstResponder(host)
+                focusPending = false
+            }
         }
         func hide() {
             if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }; outsideMonitor = nil
             if let deactivation { NotificationCenter.default.removeObserver(deactivation) }; deactivation = nil
             if let panel {
-                panel.parent?.removeChildWindow(panel)
+                let owner = panel.parent
+                let restoreKey = panel.isKeyWindow
+                owner?.removeChildWindow(panel)
                 panel.orderOut(nil); panel.contentView = nil
+                if restoreKey { owner?.makeKey() }
             }
             panel = nil; host = nil
         }

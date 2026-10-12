@@ -4,6 +4,7 @@ import XCTest
 @MainActor private final class FavouriteFixtureLoader: FavouritePreviewLoading {
     var calls = 0
     var cancellations = 0
+    var replies = 0
     var wait: Duration = .milliseconds(50)
     var result: FavouritePreviewResult = .ready(.init(account: "fixture", items: []))
     func load(_ context: FavouritePreviewContext) async -> FavouritePreviewResult {
@@ -11,12 +12,18 @@ import XCTest
         let reply = result
         // Deliberately ignores cancellation: a late WebKit callback must still be refused.
         try? await Task.sleep(for: wait)
+        replies += 1
         return reply
     }
     func cancel() { cancellations += 1 }
 }
 
 @MainActor final class FavouritePreviewLifecycleTests: XCTestCase {
+    private func settle(_ condition: @escaping @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let clock = ContinuousClock(), deadline = ContinuousClock.now + .seconds(3)
+        while !condition(), clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(condition(), "Fixture did not reach its expected state", file: file, line: line)
+    }
     private func context(_ profile: UUID = UUID()) -> FavouritePreviewContext {
         FavouritePreviewContext(profileID: profile, url: URL(string: "https://github.com/")!)!
     }
@@ -25,9 +32,9 @@ import XCTest
         let coordinator = FavouritePreviews(loader: loader)
         let owner = UUID()
         coordinator.request(context(), owner: owner, account: "fixture")
-        await Task.yield()
+        try await settle { loader.calls == 1 }
         coordinator.dismiss(owner: owner)
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { loader.replies == 1 }
         XCTAssertNil(coordinator.owner)
         XCTAssertEqual(coordinator.state, .loading)
         XCTAssertGreaterThan(loader.cancellations, 0)
@@ -37,11 +44,11 @@ import XCTest
         let previews = FavouritePreviews(loader: loader)
         let a = context(), b = context(), owner = UUID()
         previews.request(a, owner: owner, account: "fixture")
-        await Task.yield()
+        try await settle { loader.calls == 1 }
         previews.invalidate(profileID: b.profileID)
         XCTAssertEqual(previews.owner, owner)
         previews.invalidate(profileID: a.profileID)
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { loader.replies == 1 }
         XCTAssertNil(previews.owner)
         XCTAssertEqual(previews.state, .loading)
     }
@@ -50,9 +57,9 @@ import XCTest
         let coordinator = FavouritePreviews(loader: loader)
         let a = context(), b = context(), first = UUID(), second = UUID()
         coordinator.request(a, owner: first, account: "fixture")
-        await Task.yield()
+        try await settle { loader.calls == 1 }
         coordinator.request(b, owner: second, account: "other")
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { loader.replies == 2 && coordinator.state == .unavailable }
         XCTAssertEqual(coordinator.owner, second)
         // The page came back as a different account than the live favourite: fail closed.
         XCTAssertEqual(coordinator.state, .unavailable)
@@ -62,15 +69,15 @@ import XCTest
         let loader = FavouriteFixtureLoader()
         let previews = FavouritePreviews(loader: loader), a = context(), owner = UUID()
         previews.request(a, owner: owner, account: "fixture")
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
         previews.dismiss(owner: owner)
         previews.request(a, owner: owner, account: "fixture")
-        try await Task.sleep(for: .milliseconds(20))
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
         XCTAssertEqual(loader.calls, 1)
         previews.dismiss(owner: owner)
         // An unverified identity must not reuse the previous account's cached data.
         previews.request(a, owner: owner, account: "other")
-        try await Task.sleep(for: .milliseconds(20))
+        try await settle { previews.state == .unavailable }
         XCTAssertEqual(previews.state, .unavailable)
         XCTAssertEqual(loader.calls, 1)
         previews.dismiss(owner: owner)
@@ -81,24 +88,24 @@ import XCTest
         let previews = FavouritePreviews(loader: loader, now: { clock })
         let a = context(), owner = UUID()
         previews.request(a, owner: owner, account: "fixture")
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { loader.replies == 1 && previews.state == .ready(.init(account: "fixture", items: [])) }
         previews.dismiss(owner: owner)
         clock = clock.addingTimeInterval(121)
         loader.result = .unavailable
         previews.request(a, owner: owner, account: "fixture")
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { loader.replies == 2 && previews.state == .stale(.init(account: "fixture", items: [])) }
         XCTAssertEqual(previews.state, .stale(.init(account: "fixture", items: [])))
         previews.dismiss(owner: owner)
         clock = clock.addingTimeInterval(31)
         loader.result = .signedOut
         previews.request(a, owner: owner, account: "fixture")
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { previews.state == .signedOut }
         XCTAssertEqual(previews.state, .signedOut)
         previews.dismiss(owner: owner)
         clock = clock.addingTimeInterval(31)
         loader.result = .unavailable
         previews.request(a, owner: owner, account: "fixture")
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { loader.replies == 4 && previews.state == .unavailable }
         XCTAssertEqual(previews.state, .unavailable, "Signing out must purge the old account cache")
         previews.dismiss(owner: owner)
     }
@@ -108,17 +115,16 @@ import XCTest
         let coordinator = FavouritePreviews(loader: loader), a = context(), owner = UUID()
         coordinator.beginClearing(profileID: a.profileID)
         coordinator.request(a, owner: owner, account: "fixture")
-        try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(loader.calls, 0)
         XCTAssertEqual(coordinator.state, .unavailable)
         coordinator.endClearing(profileID: a.profileID)
         coordinator.request(a, owner: owner, account: "fixture")
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { coordinator.state == .ready(.init(account: "fixture", items: [])) }
         XCTAssertEqual(loader.calls, 1)
         coordinator.preferencesChanged()
         XCTAssertNil(coordinator.owner)
         coordinator.request(a, owner: owner, account: "fixture")
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { loader.replies == 2 && coordinator.state == .ready(.init(account: "fixture", items: [])) }
         XCTAssertEqual(loader.calls, 2)
         coordinator.dismiss(owner: owner)
     }
@@ -127,12 +133,12 @@ import XCTest
         let loader = FavouriteFixtureLoader()
         let coordinator = FavouritePreviews(loader: loader), a = context(), owner = UUID()
         coordinator.request(a, owner: owner, account: "fixture")
-        await Task.yield()
+        try await settle { loader.calls == 1 }
         coordinator.sessionChanged(profileID: a.profileID)
-        await Task.yield()
+        try await settle { loader.calls == 2 }
         XCTAssertEqual(coordinator.owner, owner)
         coordinator.sessionChanged(profileID: a.profileID)
-        try await Task.sleep(for: .milliseconds(90))
+        try await settle { loader.replies == 2 }
         XCTAssertEqual(coordinator.state, .unavailable)
         XCTAssertLessThanOrEqual(loader.calls, 2)
         coordinator.dismiss(owner: owner)

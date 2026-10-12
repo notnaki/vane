@@ -36,17 +36,30 @@ import XCTest
         XCTAssertEqual(snapshot.account, "fixture-user")
     }
 
+
+    func testCurrentGitHubSearchRowsAndChecksBadge() async throws {
+        let result = try await extract("""
+        <meta name="user-login" content="fixture-user">
+        <main><ul role="list"><li><h3><a data-testid="listitem-title-link" href="/fixture/repo/pull/43">Current fixture PR</a></h3>
+        <button data-testid="checks-status-badge-button" aria-label="0 of 1 successful checks">0/1</button></li></ul></main>
+        """, service: .github, url: "https://github.com/pulls/search?q=is:open%20is:pr%20involves:@me")
+        guard case .ready(let snapshot) = result else { return XCTFail("Expected current GitHub list") }
+        XCTAssertEqual(snapshot.items.first?.title, "Current fixture PR")
+        XCTAssertEqual(snapshot.items.first?.status, "0 of 1 successful checks")
+    }
+
     func testGmailExtractsOnlySubjectSenderUnreadAndThreadRoute() async throws {
         let result = try await extract("""
         <header><a aria-label="Google Account: Fixture (fixture@example.test)" href="https://accounts.google.com/SignOutOptions"></a></header>
         <main role="main"><table><tr class="zA zE"><td class="yW"><span email="sender@example.test" name="Fixture Sender">Sender</span></td>
-        <td><span class="bog" data-legacy-thread-id="abc123">Fixture subject</span><span>Body must not be extracted</span></td></tr></table></main>
+        <td><span class="bog" data-legacy-thread-id="abc123">Fixture subject</span><span>Body must not be extracted</span></td><td class="xW"><span title="Fixture date">7m</span></td></tr></table></main>
         """, service: .gmail, url: "https://mail.google.com/mail/u/2/#inbox")
         guard case .ready(let snapshot) = result else { return XCTFail("Expected extracted message") }
         XCTAssertEqual(snapshot.items.first?.url.absoluteString, "https://mail.google.com/mail/u/2/#inbox/abc123")
         XCTAssertEqual(snapshot.items.first?.title, "Fixture subject")
         XCTAssertEqual(snapshot.items.first?.subtitle, "Fixture Sender")
         XCTAssertTrue(snapshot.items.first?.unread == true)
+        XCTAssertEqual(snapshot.items.first?.timeLabel, "7m")
     }
 
     func testVerifiedEmptyAndChangedMarkupDiffer() async throws {

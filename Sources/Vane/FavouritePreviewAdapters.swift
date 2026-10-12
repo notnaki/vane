@@ -7,6 +7,7 @@ struct FavouritePreviewExtraction: Codable, Sendable {
         var url: String
         var unread: Bool = false
         var status: String? = nil
+        var timeLabel: String? = nil
         var start: String? = nil
         var meeting: String? = nil
     }
@@ -37,7 +38,9 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
             guard !row.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   row.title.count <= 500, row.subtitle.count <= 300,
                   let url = FavouritePreviewURL.item(row.url, service: service) else { return .unavailable }
+            guard service != .gmail || !row.subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .unavailable }
             var item = FavouritePreviewItem(title: row.title, subtitle: row.subtitle, url: url, unread: row.unread)
+            if service == .gmail { item.timeLabel = row.timeLabel.map { String($0.prefix(40)) } }
             if service == .github { item.status = row.status.map { String($0.prefix(160)) } }
             if service == .calendar {
                 guard let start = row.start, let date = ISO8601DateFormatter().date(from: start) else { return .unavailable }
@@ -89,19 +92,23 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
             return #"""
             // /pulls with an explicit open/involves query; no private API calls or application state.
             const query = new URL(location.href).searchParams.get('q') || '';
-            if (location.pathname !== '/pulls' || !query.includes('involves:@me') || !query.includes('is:open')) return unknown();
-            const rows = Array.from(document.querySelectorAll('.js-issue-row')).filter(visible).slice(0,5);
+            if (!['/pulls','/pulls/search'].includes(location.pathname) || !query.includes('involves:@me') || !query.includes('is:open')) return unknown();
+            const modern = Array.from(document.querySelectorAll('a[data-testid="listitem-title-link"][href*="/pull/"]')).map(a => a.closest('li')).filter(Boolean);
+            const rows = Array.from(new Set([...document.querySelectorAll('.js-issue-row'), ...modern])).filter(visible).slice(0,5);
             if (!rows.length) {
               const empty = Array.from(document.querySelectorAll('.blankslate, [data-testid="results-empty-state"]'))
                 .some(el => /no (results|pull requests)|nothing matched/i.test(text(el)));
               return empty ? result('empty') : unknown();
             }
             const items = rows.map(row => {
-              const link = row.querySelector('a.Link--primary[href*="/pull/"], a[data-hovercard-type="pull_request"][href*="/pull/"]');
+              const link = row.querySelector('a[data-testid="listitem-title-link"][href*="/pull/"], a.Link--primary[href*="/pull/"], a[data-hovercard-type="pull_request"][href*="/pull/"]');
               const url = link ? new URL(link.getAttribute('href'), location.href) : null;
               const labels = Array.from(row.querySelectorAll('[aria-label], [title]'))
                 .map(el => el.getAttribute('aria-label') || el.getAttribute('title') || '')
-                .filter(label => /review|checks? (passed|failed|pending)|\d+\/\d+ checks|approved|changes requested/i.test(label));
+                .filter(label => /review|checks?.{0,30}(passed|successful|pending|failed|failing)|\d+\/\d+ checks|approved|changes requested/i.test(label));
+              const badge = row.querySelector('[data-testid="checks-status-badge-button"]');
+              const badgeLabel = badge?.getAttribute('aria-label') || text(badge);
+              if (badgeLabel && !labels.includes(badgeLabel)) labels.push(badgeLabel);
               return {title:text(link), subtitle:url ? url.pathname.split('/').slice(1,3).join('/') : '',
                 url:url?.href || '', unread:false, status:labels.slice(0,2).join(' · ') || null};
             });
@@ -128,7 +135,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
                 const target = new URL(location.href); target.hash = 'inbox/' + id; url = target.href;
               }
               return {title:text(subject), subtitle:sender?.getAttribute('name') || text(sender) || sender?.getAttribute('email') || '',
-                url, unread:row.classList.contains('zE')};
+                url, unread:row.classList.contains('zE'), timeLabel:text(row.querySelector('.xW [title], .xW')) || null};
             });
             return result('ready',items);
             """#

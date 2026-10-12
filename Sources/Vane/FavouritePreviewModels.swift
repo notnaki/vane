@@ -77,6 +77,7 @@ struct FavouritePreviewItem: Identifiable, Equatable, Sendable {
     let url: URL
     var unread = false
     var status: String?
+    var timeLabel: String?
     var startsAt: Date?
     var meetingURL: URL?
 }

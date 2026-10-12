@@ -36,21 +36,25 @@ struct FavouritePreviewCard: View {
     let state: FavouritePreviewState
     let open: (URL) -> Void
     let dismiss: () -> Void
-    @FocusState private var siteFocused: Bool
-    @FocusState private var focusedAction: String?
+    @State private var siteFocusRequested = false
     var keyboardOpened: Bool = false
+
+    private var populatedInbox: Bool {
+        guard context.service == .gmail else { return false }
+        switch state { case .ready(let snapshot), .stale(let snapshot): return !snapshot.items.isEmpty; default: return false }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(context.service.title).font(.headline)
-                    Text(context.service.heading).font(.caption).foregroundStyle(.secondary)
+                    Text(populatedInbox ? "Inbox" : context.service.title).font(populatedInbox ? .subheadline : .headline)
+                    if !populatedInbox { Text(context.service.heading).font(.caption).foregroundStyle(.secondary) }
                 }
                 Spacer()
                 Button(action: dismiss) { Image(systemName: "xmark") }
-                    .buttonStyle(.plain).focused($focusedAction, equals: "close")
-                    .favouritePreviewFocus(focusedAction == "close").accessibilityLabel("Close favourite preview")
+                    .buttonStyle(.plain).focusable(false)
+                    .vaneKeyboardAction(radius: 6, action: dismiss).accessibilityLabel("Close favourite preview")
                     .help("Close preview (Escape)")
             }
             Group {
@@ -73,25 +77,39 @@ struct FavouritePreviewCard: View {
             Divider()
             HStack(spacing: 8) {
                 Button("Open Site") { open(context.siteURL) }
-                    .focused($siteFocused)
+                    .focusable(false)
+                    .vaneKeyboardAction(radius: 6, requestFocus: $siteFocusRequested) { open(context.siteURL) }
                     .accessibilityHint("Opens \(context.service.title) in a new tab in this favourite’s profile")
                 if let compose = context.composeURL {
-                    Button("Compose") { open(compose) }
+                    if populatedInbox {
+                        Spacer(minLength: 0)
+                        Button { open(compose) } label: {
+                            Image(systemName: "plus").font(.title3).frame(width: 32, height: 32)
+                                .background(.quaternary, in: Circle())
+                        }
+                        .buttonStyle(.plain).focusable(false)
+                        .vaneKeyboardAction(radius: 16) { open(compose) }
+                        .accessibilityLabel("Compose").help("Compose a new message")
                         .accessibilityHint("Opens Gmail’s compose page. Does not send a message.")
+                    } else {
+                        Button("Compose") { open(compose) }.focusable(false)
+                            .vaneKeyboardAction(radius: 6) { open(compose) }
+                            .accessibilityHint("Opens Gmail’s compose page. Does not send a message.")
+                    }
                 }
-                Spacer(minLength: 0)
+                if !populatedInbox { Spacer(minLength: 0) }
             }
         }
         .padding(16).frame(width: 370, alignment: .leading)
         .background(Look.panelFill)
         .vaneMotionPolicy()
         .onExitCommand(perform: dismiss)
-        .task {
+        .task(id: keyboardOpened) {
             // The hosting window must be attached before SwiftUI can move native focus.
             if keyboardOpened {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled else { return }
-                siteFocused = true
+                siteFocusRequested = true
             }
         }
         .accessibilityElement(children: .contain)
@@ -110,6 +128,33 @@ struct FavouritePreviewCard: View {
             if snapshot.items.isEmpty {
                 Text(context.service == .github ? "No open pull requests involving you." : context.service == .gmail ? "Your inbox is empty." : "No upcoming events.")
                     .font(.subheadline).foregroundStyle(.secondary)
+            } else if context.service == .gmail {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(snapshot.items) { item in
+                            Button { open(item.url) } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        HStack(spacing: 6) {
+                                            if item.unread { Circle().fill(Color.accentColor).frame(width: 5, height: 5).accessibilityHidden(true) }
+                                            Text(item.subtitle).font(.subheadline).fontWeight(item.unread ? .bold : .semibold).lineLimit(1)
+                                        }
+                                        Spacer(minLength: 8)
+                                        if let time = item.timeLabel { Text(time).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                                    }
+                                    Text(item.title).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }.padding(.vertical, 10).padding(.horizontal, 4).contentShape(.rect)
+                            }
+                            .buttonStyle(.plain).focusable(false)
+                            .vaneKeyboardAction(radius: 6) { open(item.url) }
+                            .accessibilityValue(item.unread ? "Unread" : "Read")
+                            .accessibilityHint("Opens this message in a new tab in this favourite’s profile")
+                            if item.id != snapshot.items.last?.id { Divider() }
+                        }
+                    }
+                }
+                .frame(height: min(CGFloat(snapshot.items.count) * 56, 300))
             } else {
                 ForEach(snapshot.items) { item in
                     VStack(alignment: .leading, spacing: 4) {
@@ -134,12 +179,13 @@ struct FavouritePreviewCard: View {
                             }.padding(7).contentShape(.rect)
                         }
                         .buttonStyle(.plain)
-                        .focused($focusedAction, equals: item.id)
-                        .favouritePreviewFocus(focusedAction == item.id)
+                        .focusable(false)
+                        .vaneKeyboardAction(radius: 6) { open(item.url) }
                         .accessibilityValue(item.unread ? "Unread" : "")
                         .accessibilityHint("Opens in a new tab in this favourite’s profile")
                         if let meeting = item.meetingURL {
-                            Button("Join Meeting") { open(meeting) }.font(.caption).padding(.leading, 7)
+                            Button("Join Meeting") { open(meeting) }.focusable(false)
+                                .vaneKeyboardAction(radius: 6) { open(meeting) }.font(.caption).padding(.leading, 7)
                         }
                     }
                 }
@@ -234,17 +280,15 @@ private struct FavouritePreviewModifier: ViewModifier {
         escape.detach()
         let restore = returnFocus && keyboardOpened
         hover.dismiss(); previews.dismiss(owner: owner)
-        if restore { restoreFocus() }
+        if restore {
+            let focus = restoreFocus
+            let window = store.window
+            DispatchQueue.main.async { window?.makeKey(); focus() }
+        }
     }
 }
 
 extension View {
-    fileprivate func favouritePreviewFocus(_ focused: Bool) -> some View {
-        overlay {
-            RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 2)
-                .opacity(focused ? 1 : 0).allowsHitTesting(false).accessibilityHidden(true)
-        }
-    }
     func favouritePreview(tab: Tab, store: TabStore, hover: FavouritePreviewHover, restoreFocus: @escaping () -> Void) -> some View {
         modifier(FavouritePreviewModifier(tab: tab, store: store, restoreFocus: restoreFocus, hover: hover))
     }
