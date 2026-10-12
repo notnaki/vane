@@ -288,6 +288,15 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
             sections.spaceSlide(store)
         }
         .overlay(alignment: .topLeading) { preview }
+        .transaction(value: store.currentSpaceID) { transaction in
+            // The preview has already arrived. A simultaneous window animation (such
+            // as Cmd+T opening in an empty Space) must not animate the live replacement
+            // or the strip's offset reset, including the favourites and preview overlay.
+            if gesture.swiping {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        }
     }
 
     @ViewBuilder private var preview: some View {
