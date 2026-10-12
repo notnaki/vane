@@ -3,6 +3,38 @@ import XCTest
 @testable import vane
 
 @MainActor final class BookmarkPresentationTests: XCTestCase {
+    func testWindowKeepsItsMinimumSizeAfterResultsArrive() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_STORE_PERFORMANCE"] == "1",
+                          "Requires a logged-in desktop")
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let previousPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.accessory)
+        defer { NSApp.setActivationPolicy(previousPolicy) }
+        let profile = UUID()
+        let store = Store.store(for: profile)
+        defer { Store.forget(profile) }
+        _ = store.addBookmarks((0..<6).map {
+            (URL(string: "https://fixture.invalid/\($0)")!, "Saved page \($0)")
+        })
+        BookmarkManager.show(profileID: profile)
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Bookmarks" })
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertGreaterThanOrEqual(window.minSize.width, 620)
+        XCTAssertGreaterThanOrEqual(window.minSize.height, 400)
+        window.setFrame(NSRect(origin: window.frame.origin, size: window.minSize), display: true)
+        try await Task.sleep(for: .milliseconds(100))
+        let host = try XCTUnwrap(window.contentView)
+        func splitView(in view: NSView) -> NSSplitView? {
+            if let split = view as? NSSplitView { return split }
+            return view.subviews.lazy.compactMap { splitView(in: $0) }.first
+        }
+        let split = try XCTUnwrap(splitView(in: host))
+        XCTAssertLessThanOrEqual(split.frame.height, host.bounds.height + 1,
+                                 "Split panes must fit the available height without clipping their headers")
+    }
+
     /// Native field-editor smoke remains opt-in alongside presentation measurements.
     func testFilteringKeepsTheFieldEditor() async throws {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_STORE_PERFORMANCE"] == "1",

@@ -25,8 +25,8 @@ import SwiftUI
 
     static func show(profileID: UUID = Windows.current?.profileID ?? ProfileManager.activeProfileID) {
         if let w = window {
-            w.contentView = NSHostingView(rootView: HistoryView(profileID: profileID)
-                .font(Look.text))
+            w.contentView = SecondaryWindowStyle.host(HistoryView(profileID: profileID)
+                .font(Look.text), minimumSize: NSSize(width: 520, height: 360))
             w.title = profileID == Profile.incognito.id ? "History — Incognito" : "History"
             w.appearance = profileID == Profile.incognito.id ? NSAppearance(named: .darkAqua) : nil
             w.makeKeyAndOrderFront(nil)
@@ -39,11 +39,10 @@ import SwiftUI
         w.title = profileID == Profile.incognito.id ? "History — Incognito" : "History"
         w.appearance = profileID == Profile.incognito.id ? NSAppearance(named: .darkAqua) : nil
         SecondaryWindowStyle.apply(to: w)
-        w.minSize = NSSize(width: 520, height: 360)
         w.isReleasedWhenClosed = false        // closing must not free the instance we keep
         window = w
-        w.contentView = NSHostingView(rootView: HistoryView(profileID: profileID)
-            .font(Look.text))
+        w.contentView = SecondaryWindowStyle.host(HistoryView(profileID: profileID)
+            .font(Look.text), minimumSize: NSSize(width: 520, height: 360))
         // Position first, autosave second: setFrameUsingName reports whether there was one.
         if !w.setFrameUsingName("VaneHistory") { w.center() }
         w.setFrameAutosaveName("VaneHistory")

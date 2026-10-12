@@ -166,7 +166,7 @@ struct WebsiteDataSheet: View {
         SecondaryWindowStyle.apply(to: window)
         window.isReleasedWhenClosed = false
         window.delegate = shared
-        window.contentView = NSHostingView(rootView: WebsiteDataSheet(
+        window.contentView = SecondaryWindowStyle.host(WebsiteDataSheet(
             profileID: profileID, profileName: profileName, store: store, initialHost: host,
             isValid: { [weak tab] in
                 if profileID == Profile.incognito.id {

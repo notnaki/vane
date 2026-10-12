@@ -46,7 +46,8 @@ import SwiftUI
     static func show(profileID requested: UUID = ProfileManager.activeProfileID) {
         profileID = requested
         if let window {
-            window.contentView = NSHostingView(rootView: BookmarkManagerView(profileID: requested))
+            window.contentView = SecondaryWindowStyle.host(BookmarkManagerView(profileID: requested),
+                minimumSize: NSSize(width: 620, height: 400))
             window.title = title(for: requested)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
@@ -57,9 +58,9 @@ import SwiftUI
                             backing: .buffered, defer: false)
         made.title = title(for: requested)
         SecondaryWindowStyle.apply(to: made)
-        made.minSize = NSSize(width: 620, height: 400)
         made.isReleasedWhenClosed = false
-        made.contentView = NSHostingView(rootView: BookmarkManagerView(profileID: requested))
+        made.contentView = SecondaryWindowStyle.host(BookmarkManagerView(profileID: requested),
+                minimumSize: NSSize(width: 620, height: 400))
         if !made.setFrameUsingName("VaneBookmarks") { made.center() }
         made.setFrameAutosaveName("VaneBookmarks")
         window = made
@@ -69,7 +70,8 @@ import SwiftUI
 
     static func refresh(profileID requested: UUID) {
         guard let window, window.isVisible, profileID == requested else { return }
-        window.contentView = NSHostingView(rootView: BookmarkManagerView(profileID: requested))
+        window.contentView = SecondaryWindowStyle.host(BookmarkManagerView(profileID: requested),
+                minimumSize: NSSize(width: 620, height: 400))
     }
 
     private static func title(for id: UUID) -> String {
@@ -214,7 +216,8 @@ private struct BookmarkManagerView: View {
 
     var body: some View {
         HSplitView {
-            sidebar.frame(minWidth: 170, idealWidth: 190, maxWidth: 230)
+            sidebar.frame(minWidth: 170, idealWidth: 190, maxWidth: 230,
+                          minHeight: 0, maxHeight: .infinity)
             VStack(alignment: .leading, spacing: Look.cardInset) {
                 SecondaryWindowHeader(title: "Bookmarks",
                     subtitle: "Keep your favourite pages close at hand.", icon: "bookmark")
@@ -226,6 +229,8 @@ private struct BookmarkManagerView: View {
             .padding(.top, Look.cardInset)
             .padding(.horizontal, Look.paneMargin)
             .padding(.bottom, Look.paneMargin)
+            // Native split panes must be allowed to shrink below their ideal content height.
+            .frame(minHeight: 0, maxHeight: .infinity)
         }
         .font(Look.text)
         .foregroundStyle(Look.inkPrimary)

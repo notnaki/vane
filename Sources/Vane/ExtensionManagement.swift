@@ -15,9 +15,9 @@ import SwiftUI
         let profile = ProfileManager.shared.profiles.first { $0.id == host.profileID }?.name ?? "Profile"
         window.title = "Extensions — " + profile
         SecondaryWindowStyle.apply(to: window)
-        window.minSize = NSSize(width: 620, height: 400)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ExtensionManagementView(host: host))
+        window.contentView = SecondaryWindowStyle.host(ExtensionManagementView(host: host),
+            minimumSize: NSSize(width: 620, height: 400))
         window.center()
         windows[host.profileID] = window
         window.makeKeyAndOrderFront(nil)

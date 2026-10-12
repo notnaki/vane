@@ -3,6 +3,13 @@ import SwiftUI
 
 /// Secondary windows use the same quiet chrome and content hierarchy as Tidy preview.
 @MainActor enum SecondaryWindowStyle {
+    /// Keep resize limits in the hosted layout, so async content cannot replace them
+    /// with an inferred zero minimum. Heights are content heights, independent of chrome.
+    static func host<Content: View>(_ content: Content,
+                                   minimumSize: NSSize = .zero) -> NSHostingView<some View> {
+        NSHostingView(rootView: content.frame(minWidth: minimumSize.width, minHeight: minimumSize.height))
+    }
+
     static func apply(to window: NSWindow) {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
