@@ -682,6 +682,7 @@ struct Space: Identifiable, Codable, Equatable {
         profiles = remaining
         activeID = nextActiveID
         Tab.discardPreparedFirstPage(for: id)
+        FavouritePreviews.shared.forget(profileID: id)
 
         if !sandboxed {
             // Close the sqlite connection and drop the cached objects before the files go.

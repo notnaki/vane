@@ -120,7 +120,13 @@ import WebKit
         let types = dataTypes(cookies: options.cookies, cache: options.cache)
         guard !types.isEmpty else { completion(true); return }
         let store = ProfileManager.dataStore(for: profileID)
-        store.removeData(ofTypes: types, modifiedSince: since) { completion(true) }
+        FavouritePreviews.shared.beginClearing(profileID: profileID)
+        store.removeData(ofTypes: types, modifiedSince: since) {
+            Task { @MainActor in
+                FavouritePreviews.shared.endClearing(profileID: profileID)
+                completion(true)
+            }
+        }
     }
 
     // MARK: Offline check

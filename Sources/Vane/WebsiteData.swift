@@ -101,7 +101,9 @@ enum WebsiteDataCategory {
         }
         // Retain the store and its lock even if the user closes the view mid-operation.
         // WebKit provides no error argument here. The controller verifies a new snapshot.
+        FavouritePreviews.shared.beginClearing(profileID: owner)
         store.removeData(ofTypes: types, for: entry.records) { [self] in
+            FavouritePreviews.shared.endClearing(profileID: owner)
             Self.clearing.remove(key)
             completion(.success(()))
         }
