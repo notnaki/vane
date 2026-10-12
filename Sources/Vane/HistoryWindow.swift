@@ -38,6 +38,7 @@ import SwiftUI
                          backing: .buffered, defer: false)
         w.title = profileID == Profile.incognito.id ? "History — Incognito" : "History"
         w.appearance = profileID == Profile.incognito.id ? NSAppearance(named: .darkAqua) : nil
+        SecondaryWindowStyle.apply(to: w)
         w.minSize = NSSize(width: 520, height: 360)
         w.isReleasedWhenClosed = false        // closing must not free the instance we keep
         window = w
@@ -95,7 +96,11 @@ private struct HistoryView: View {
     private static let limit = 500
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Look.inset * 1.5) {
+        VStack(alignment: .leading, spacing: Look.cardInset) {
+            SecondaryWindowHeader(title: "History",
+                subtitle: profileID == Profile.incognito.id
+                    ? "Private browsing does not save history."
+                    : "Find a page and pick up where you left off.", icon: "clock.arrow.circlepath")
             header
             filters
             // Keep the scroll/focus host mounted through debounce, empty results and
@@ -104,10 +109,12 @@ private struct HistoryView: View {
                 if visits.isEmpty { empty }
             }
         }
-        .padding(.top, Look.inset * 2)
+        .padding(.top, Look.cardInset)
         .padding(.horizontal, Look.paneMargin)
         .padding(.bottom, Look.paneMargin)
-        .background(.windowBackground)
+        .font(Look.text)
+        .foregroundStyle(Look.inkPrimary)
+        .background(Look.panelFill)
         .onAppear { focus = .search }
         .onChange(of: query) { clearResults() }
         .onChange(of: selectedProfileID) { clearResults() }
@@ -157,7 +164,7 @@ private struct HistoryView: View {
             }
             Spacer()
             Text("\(visits.count)\(visits.count == Self.limit ? "+" : "") visits")
-                .font(Look.caption).foregroundStyle(.secondary)
+                .font(Look.caption).monospacedDigit().foregroundStyle(Look.inkSecondary)
                 .accessibilityLabel("Showing \(visits.count) visits")
         }
     }
@@ -173,9 +180,7 @@ private struct HistoryView: View {
                     .font(Look.text)
                     .focused($focus, equals: .search)
             }
-            .padding(.horizontal, Look.inset)
-            .frame(height: Look.control)
-            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+            .secondaryWindowSearchField()
             .accessibilityLabel("Search History")
             .accessibilityHint("Matches titles and addresses, including partial letters in order.")
 
@@ -186,21 +191,18 @@ private struct HistoryView: View {
                 reload()
                 axAnnounce("History cleared.")
             }
-            .buttonStyle(.plain)
-            .font(Look.text)
-            .padding(.horizontal, Look.inset + 2)
-            .frame(height: Look.control)
-            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+            .buttonStyle(.bordered)
+            .controlSize(.large)
         }
     }
 
     private var empty: some View {
-        Text(searching ? "Searching history…" : query.isEmpty
-             ? "Nothing here yet — pages you visit are listed by the day you saw them."
-             : "No page matches \u{201C}\(query)\u{201D}")
-            .font(Look.text).foregroundStyle(.secondary)
-            .padding(.horizontal, Look.cardInset)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        SecondaryWindowEmptyState(
+            title: searching ? "Searching history…" : query.isEmpty ? "No history yet" : "No matching pages",
+            subtitle: profileID == Profile.incognito.id ? "Pages visited in private browsing are not saved."
+                : query.isEmpty ? "Pages you visit will appear here, grouped by day."
+                : "Try a different title or address.",
+            icon: "clock.arrow.circlepath")
     }
 
     // MARK: List
@@ -221,8 +223,7 @@ private struct HistoryView: View {
                                     }
                                 }
                             }
-                            .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
-                            .hairline(radius: Look.cardRadius, Look.cardStroke)
+                            .secondaryWindowCard()
                         }
                     }
                 }
@@ -268,19 +269,22 @@ private struct HistoryView: View {
             Spacer(minLength: Look.inset)
             // The forget button only shows under the pointer, the way Arc's restore icon
             // does — every row carrying an ✕ makes a history list look like a to-do list.
-            if hovered == visit.id {
-                Button { delete(visit) } label: { Image(systemName: "xmark") }
-                    .buttonStyle(.plain)
-                    .font(Look.caption)
-                    .foregroundStyle(.secondary)
-                    .help("Forget this visit")
-                    .accessibilityLabel("Forget \(visit.display)")
-            }
+            Button { delete(visit) } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+                .font(Look.caption)
+                .foregroundStyle(Look.inkSecondary)
+                .help("Forget this visit")
+                .accessibilityLabel("Forget \(visit.display)")
+                .opacity(hovered == visit.id ? 1 : 0)
+                .allowsHitTesting(hovered == visit.id)
+                .accessibilityHidden(hovered != visit.id)
         }
         .padding(.horizontal, Look.cardInset)
-        .frame(minHeight: Look.linkRow)
+        .padding(.vertical, Look.rowInset)
+        .frame(minHeight: Look.rowHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(isSelected ? Look.selected : (hovered == visit.id ? Look.hovered : .clear))
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovered == visit.id)
         .contentShape(.rect)
         .onHover { hovered = $0 ? visit.id : (hovered == visit.id ? nil : hovered) }
         .onTapGesture { open(visit) }

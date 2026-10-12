@@ -14,6 +14,7 @@ import SwiftUI
                               styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         let profile = ProfileManager.shared.profiles.first { $0.id == host.profileID }?.name ?? "Profile"
         window.title = "Extensions — " + profile
+        SecondaryWindowStyle.apply(to: window)
         window.minSize = NSSize(width: 620, height: 400)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: ExtensionManagementView(host: host))
@@ -51,49 +52,93 @@ private struct ExtensionManagementView: View {
     @ObservedObject var host: ExtensionHost
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Look.cardInset) {
+            SecondaryWindowHeader(title: "Extensions",
+                subtitle: "Add tools that make Vane your own.", icon: "puzzlepiece.extension")
             HStack {
-                Text("Extensions").font(.title2.weight(.semibold))
+                Text("\(host.entries.count) \(host.entries.count == 1 ? "extension" : "extensions")")
+                    .font(Look.caption).monospacedDigit().foregroundStyle(Look.inkSecondary)
                 Spacer()
                 Button("Install Extension…") { host.chooseAndInstall() }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
                     .disabled(host.profileID == Profile.incognito.id)
             }
             Text("Unpacked MV2/MV3 WebExtensions run through macOS WebKit. Compatibility depends on the extension’s APIs and Vane’s integration.")
-                .font(.callout).foregroundStyle(.secondary)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if host.entries.isEmpty {
-                        Text("No extensions installed in this profile.").foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, minHeight: 160)
+                .font(Look.footnote).foregroundStyle(Look.inkSecondary)
+            if host.entries.isEmpty {
+                SecondaryWindowEmptyState(title: "Make room for your tools",
+                    subtitle: "Install an unpacked extension folder to get started.", icon: "puzzlepiece.extension")
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: Look.cardInset) {
+                        ForEach(host.entries) { entry in row(entry) }
                     }
-                    ForEach(host.entries) { entry in
-                        row(entry)
-                        Divider()
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            Hairline()
             Text("Update from Folder checks the current files and reviews added access before enabling them. Failed updates stop the extension and keep its settings for a retry. Disabled extensions stay disabled after quitting.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(Look.footnote).foregroundStyle(Look.inkSecondary)
         }
-        .padding(22)
+        .padding(.horizontal, Look.paneMargin)
+        .padding(.top, Look.cardInset)
+        .padding(.bottom, Look.paneMargin)
+        .font(Look.text).foregroundStyle(Look.inkPrimary)
+        .background(Look.panelFill)
         .animation(Motion.reduced ? nil : Look.list,
                    value: host.entries.map { $0.path + $0.status })
+        .vaneMotionPolicy()
     }
 
     private func row(_ entry: ExtensionHost.Entry) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Look.cardInset) {
             HStack {
-                Text(entry.name).font(.headline)
+                Image(systemName: "puzzlepiece.extension")
+                    .font(Look.icon).foregroundStyle(Look.inkSecondary).accessibilityHidden(true)
+                Text(entry.name).font(Look.heading).lineLimit(2)
                 Spacer()
                 if entry.busy { ProgressView().controlSize(.small) }
-                Text(entry.status).font(.callout).foregroundStyle(.secondary)
+                Text(entry.status).font(Look.caption).foregroundStyle(Look.inkSecondary)
+                    .padding(.horizontal, Look.inset).padding(.vertical, Look.captionGap)
+                    .background(Look.controlFill, in: .capsule)
             }
-            Text(entry.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(entry.path).font(Look.footnote).foregroundStyle(Look.inkTertiary)
+                .lineLimit(2).truncationMode(.middle).textSelection(.enabled)
             if let failure = entry.failure {
-                Text(failure).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                Text(failure).font(Look.footnote).foregroundStyle(Look.warning).textSelection(.enabled)
             }
-            HStack(spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                actions(entry, stacked: false)
+                actions(entry, stacked: true)
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+            if let context = entry.context {
+                VStack(alignment: .leading, spacing: Look.inset) {
+                    if context.optionsPageURL != nil {
+                        Button("Options…") {
+                            Task {
+                                do { try await host.webExtensionController(host.controller, openOptionsPageFor: context) }
+                                catch { ExtensionManagement.showDetails(error.localizedDescription, title: "Could not open options") }
+                            }
+                        }
+                    }
+                    HStack {
+                        Button("Revoke Additional Access") { host.revokeRuntimeAccess(context) }
+                            .help("Clears additional runtime grants and denials. Required manifest access remains approved; disable the extension to stop all access.")
+                        Button("Show Folder") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: entry.path) }
+                    }
+                }.buttonStyle(.bordered).controlSize(.small)
+            }
+        }
+        .padding(Look.cardInset)
+        .secondaryWindowCard()
+    }
+
+    private func actions(_ entry: ExtensionHost.Entry, stacked: Bool) -> some View {
+        let layout = stacked ? AnyLayout(VStackLayout(alignment: .leading, spacing: Look.inset))
+            : AnyLayout(HStackLayout(spacing: Look.inset))
+        return layout {
+            HStack(spacing: Look.inset) {
                 Button(entry.context != nil ? "Update from Folder" : entry.failure != nil ? "Retry" : "Enable") {
                     Task {
                         do { _ = try await host.refresh(entry.path) }
@@ -108,27 +153,12 @@ private struct ExtensionManagementView: View {
                 Button(host.pins.contains(entry.path) ? "Unpin" : "Pin") { host.togglePin(entry.path) }
                     .disabled(!host.pins.contains(entry.path) && !host.canPin)
                     .help("Up to three saved pins. Disabled extensions keep their pin until you unpin or remove them.")
-                Spacer()
-                Button("Access & Diagnostics…") {
-                    ExtensionManagement.showDetails(host.diagnostic(for: entry), title: entry.name)
-                }
-            }.controlSize(.small)
-            if let context = entry.context {
-                HStack(spacing: 10) {
-                    if context.optionsPageURL != nil {
-                        Button("Options…") {
-                            Task {
-                                do { try await host.webExtensionController(host.controller, openOptionsPageFor: context) }
-                                catch { ExtensionManagement.showDetails(error.localizedDescription, title: "Could not open options") }
-                            }
-                        }
-                    }
-                    Button("Revoke Additional Access") { host.revokeRuntimeAccess(context) }
-                        .help("Clears additional runtime grants and denials. Required manifest access remains approved; disable the extension to stop all access.")
-                    Button("Show Folder") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: entry.path) }
-                }.controlSize(.small)
+            }
+            Button("Access & Diagnostics…") {
+                ExtensionManagement.showDetails(host.diagnostic(for: entry), title: entry.name)
             }
         }
+        .fixedSize(horizontal: !stacked, vertical: false)
     }
 
     private func perform(_ action: () throws -> Void) {

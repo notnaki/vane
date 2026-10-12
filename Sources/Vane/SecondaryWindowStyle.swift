@@ -1,0 +1,70 @@
+import AppKit
+import SwiftUI
+
+/// Secondary windows use the same quiet chrome and content hierarchy as Tidy preview.
+@MainActor enum SecondaryWindowStyle {
+    static func apply(to window: NSWindow) {
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.backgroundColor = .windowBackgroundColor
+    }
+}
+
+struct SecondaryWindowHeader: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Look.cardInset) {
+            Image(systemName: icon)
+                .font(Look.icon)
+                .foregroundStyle(Look.inkSecondary)
+                .frame(width: Look.pillHeight, height: Look.pillHeight)
+                .background(Look.controlFill, in: .rect(cornerRadius: Look.pillRadius))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: Look.rowGap) {
+                Text(title).font(Look.dialogTitle).accessibilityAddTraits(.isHeader)
+                Text(subtitle).font(Look.footnote).foregroundStyle(Look.inkSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+struct SecondaryWindowEmptyState: View {
+    let title: String
+    let subtitle: String
+    let icon: String
+
+    var body: some View {
+        VStack(spacing: Look.cardInset) {
+            Image(systemName: icon).font(Look.icon).foregroundStyle(Look.inkTertiary)
+                .frame(width: Look.tileHeight, height: Look.tileHeight)
+                .background(Look.controlFill, in: .rect(cornerRadius: Look.pillRadius))
+                .accessibilityHidden(true)
+            VStack(spacing: Look.rowGap) {
+                Text(title).font(Look.heading)
+                Text(subtitle).font(Look.footnote).foregroundStyle(Look.inkSecondary)
+            }
+            .multilineTextAlignment(.center)
+        }
+        .padding(Look.cardInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+extension View {
+    func secondaryWindowCard() -> some View {
+        background(Look.cardFill)
+            .clipShape(.rect(cornerRadius: Look.pillRadius))
+            .hairline(radius: Look.pillRadius)
+    }
+
+    func secondaryWindowSearchField() -> some View {
+        padding(.horizontal, Look.pillInset)
+            .frame(height: Look.pillHeight)
+            .background(Look.controlFill, in: .rect(cornerRadius: Look.pillRadius))
+    }
+}

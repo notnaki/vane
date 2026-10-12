@@ -56,6 +56,7 @@ import SwiftUI
                             styleMask: [.titled, .closable, .miniaturizable, .resizable],
                             backing: .buffered, defer: false)
         made.title = title(for: requested)
+        SecondaryWindowStyle.apply(to: made)
         made.minSize = NSSize(width: 620, height: 400)
         made.isReleasedWhenClosed = false
         made.contentView = NSHostingView(rootView: BookmarkManagerView(profileID: requested))
@@ -214,17 +215,23 @@ private struct BookmarkManagerView: View {
     var body: some View {
         HSplitView {
             sidebar.frame(minWidth: 170, idealWidth: 190, maxWidth: 230)
-            VStack(alignment: .leading, spacing: Look.inset * 1.5) {
+            VStack(alignment: .leading, spacing: Look.cardInset) {
+                SecondaryWindowHeader(title: "Bookmarks",
+                    subtitle: "Keep your favourite pages close at hand.", icon: "bookmark")
                 header
                 list.overlay(alignment: .topLeading) {
                     if marks.isEmpty { empty }
                 }
             }
-            .padding(.top, Look.inset * 2)
+            .padding(.top, Look.cardInset)
             .padding(.horizontal, Look.paneMargin)
             .padding(.bottom, Look.paneMargin)
         }
-        .background(.windowBackground)
+        .font(Look.text)
+        .foregroundStyle(Look.inkPrimary)
+        .background(Look.panelFill)
+        .animation(Motion.reduced ? nil : Look.quick, value: location)
+        .animation(Motion.reduced ? nil : Look.quick, value: selection.isEmpty)
         .onAppear { reload(); searchFocused = true }
         .onChange(of: query) { selection.removeAll(); clearResults() }
         .onChange(of: location) { selection.removeAll(); clearResults() }
@@ -263,16 +270,20 @@ private struct BookmarkManagerView: View {
                 Text("FOLDERS").font(Look.caption).foregroundStyle(Look.inkQuiet)
                 Spacer()
                 Button { createFolder() } label: { Image(systemName: "plus") }
-                    .buttonStyle(.plain).help("New Folder")
+                    .buttonStyle(.plain).help("New Folder").accessibilityLabel("New Folder")
             }.padding(.horizontal, Look.cardInset)
-            ForEach(folders) { folder in
-                locationRow(folder.name, icon: "folder", value: .folder(folder.id))
-                    .contextMenu {
-                        Button("Rename…") { rename(folder) }
-                        Button("Delete Folder…", role: .destructive) { delete(folder) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: Look.rowGap) {
+                    ForEach(folders) { folder in
+                        locationRow(folder.name, icon: "folder", value: .folder(folder.id))
+                            .contextMenu {
+                                Button("Rename…") { rename(folder) }
+                                Button("Delete Folder…", role: .destructive) { delete(folder) }
+                            }
                     }
+                }
             }
-            Spacer()
+            Spacer(minLength: 0)
         }
         .background(Look.controlFill)
     }
@@ -295,33 +306,37 @@ private struct BookmarkManagerView: View {
     }
 
     private var header: some View {
-        HStack(spacing: Look.inset) {
-            HStack(spacing: Look.inset - 2) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+        VStack(spacing: Look.cardInset) {
+            HStack(spacing: Look.inset) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Look.inkSecondary)
                 TextField("Search bookmarks", text: $query).textFieldStyle(.plain)
-                    .font(Look.text).focused($searchFocused)
+                    .focused($searchFocused)
+                    .accessibilityLabel("Search bookmarks")
             }
-            .padding(.horizontal, Look.inset).frame(height: Look.control)
-            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
-            if !selection.isEmpty && !searching {
-                Menu("Move \(selection.count)") {
-                    Button("Unfiled") { moveSelected(to: nil) }
-                    ForEach(folders) { folder in Button(folder.name) { moveSelected(to: folder.id) } }
+            .secondaryWindowSearchField()
+            HStack(spacing: Look.inset) {
+                Text(selection.isEmpty ? "\(marks.count) \(marks.count == 1 ? "bookmark" : "bookmarks")" : "\(selection.count) selected")
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .font(Look.caption).monospacedDigit().foregroundStyle(Look.inkSecondary)
+                Spacer(minLength: 0)
+                if !selection.isEmpty && !searching {
+                    Menu("Move \(selection.count)") {
+                        Button("Unfiled") { moveSelected(to: nil) }
+                        ForEach(folders) { folder in Button(folder.name) { moveSelected(to: folder.id) } }
+                    }
+                    Button("Delete \(selection.count)", role: .destructive) { deleteSelected() }
                 }
-                Button("Delete \(selection.count)") { deleteSelected() }
-                    .foregroundStyle(.red)
+                Button { createFolder() } label: { Image(systemName: "folder.badge.plus") }
+                    .accessibilityLabel("New Folder").help("New Folder")
             }
-            Button { createFolder() } label: { Label("New Folder", systemImage: "folder.badge.plus") }
+            .buttonStyle(.bordered)
         }
-        .buttonStyle(.plain).font(Look.text)
     }
 
     private var empty: some View {
-        Text(searching ? "Searching bookmarks…" : query.isEmpty
-             ? "No bookmarks in this folder." : "No bookmark matches “\(query)”.")
-            .font(Look.text).foregroundStyle(.secondary)
-            .padding(.horizontal, Look.cardInset)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        SecondaryWindowEmptyState(title: searching ? "Searching bookmarks…" : query.isEmpty ? "No bookmarks here yet" : "No matching bookmarks",
+            subtitle: query.isEmpty ? "Save a page to find it here later." : "Try a different title or address.",
+            icon: "bookmark")
     }
 
     private var list: some View {
@@ -337,8 +352,7 @@ private struct BookmarkManagerView: View {
                         .id(mark.id)
                     }
                 }
-                .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
-                .hairline(radius: Look.cardRadius, Look.cardStroke)
+                .secondaryWindowCard()
             }
             .focusable().focusEffectDisabled().focused($listFocused)
             .onDeleteCommand { deleteSelected() }
@@ -358,8 +372,12 @@ private struct BookmarkManagerView: View {
     private func row(_ mark: Bookmark) -> some View {
         let picked = selection.contains(mark.id)
         return HStack(spacing: Look.inset) {
-            Image(systemName: picked ? "checkmark.circle.fill" : "bookmark")
-                .foregroundStyle(picked ? Color.accentColor : Look.inkQuiet).frame(width: 18)
+            ZStack {
+                Image(systemName: "bookmark").opacity(picked ? 0 : 1)
+                Image(systemName: "checkmark.circle.fill").opacity(picked ? 1 : 0)
+                    .scaleEffect(picked ? 1 : 0.8)
+            }
+            .foregroundStyle(picked ? Color.accentColor : Look.inkQuiet).frame(width: Look.rowIcon)
             VStack(alignment: .leading, spacing: 1) {
                 Text(mark.display).font(Look.text).foregroundStyle(Look.inkPrimary).lineLimit(1)
                 Text(mark.url).font(Look.caption).foregroundStyle(Look.inkQuiet).lineLimit(1)
@@ -367,9 +385,12 @@ private struct BookmarkManagerView: View {
             Spacer()
             Button("Edit") { editing = mark }.buttonStyle(.plain).foregroundStyle(.secondary)
         }
-        .padding(.horizontal, Look.cardInset).frame(minHeight: Look.linkRow)
+        .padding(.horizontal, Look.cardInset).padding(.vertical, Look.rowInset)
+        .frame(minHeight: Look.rowHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(picked ? Look.selected : .clear).contentShape(.rect)
+        .background(picked ? Look.selected : .clear)
+        .animation(Motion.reduced ? nil : Look.quick, value: picked)
+        .contentShape(.rect)
         .onTapGesture(count: 2) { open(mark) }
         .onTapGesture { select(mark); listFocused = true }
         .accessibilityElement(children: .ignore)
@@ -499,7 +520,7 @@ private struct BookmarkEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 1.5) {
-            Text("Edit Bookmark").font(Look.heading)
+            SecondaryWindowHeader(title: "Edit Bookmark", subtitle: "Update this saved page.", icon: "bookmark")
             TextField("Title", text: $title)
             TextField("Address", text: $address)
             Picker("Folder", selection: $folderID) {
@@ -507,9 +528,14 @@ private struct BookmarkEditor: View {
                 ForEach(folders) { Text($0.name).tag($0.id) }
             }
             if !error.isEmpty { Text(error).font(Look.caption).foregroundStyle(.red) }
-            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { commit() }.keyboardShortcut(.defaultAction) }
+            HStack { Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction); Button("Save") { commit() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction) }
         }
+        .textFieldStyle(.roundedBorder)
+        .controlSize(.large)
         .padding(Look.paneMargin).frame(width: 420)
+        .font(Look.text).foregroundStyle(Look.inkPrimary)
+        .background(Look.panelFill)
+        .vaneMotionPolicy()
     }
 
     private func commit() {

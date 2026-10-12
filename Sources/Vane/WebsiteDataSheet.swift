@@ -26,22 +26,31 @@ struct WebsiteDataSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Website Data").font(Look.heading)
-            Text(isPrivate ? "Temporary data from this private tab. Saved profiles are not touched."
-                 : "Stored by websites in “\(profileName)”. Other profiles are not touched.")
-                .font(Look.footnote).foregroundStyle(Look.inkSecondary)
-            HStack {
-                TextField("Search sites", text: $model.query)
-                    .textFieldStyle(.roundedBorder).accessibilityLabel("Search stored website data")
-                    .disabled(model.isBusy)
+        VStack(alignment: .leading, spacing: Look.cardInset) {
+            SecondaryWindowHeader(title: "Website Data", subtitle: isPrivate
+                ? "Temporary data from this private tab. Saved profiles are not touched."
+                : "Stored by websites in “\(profileName)”. Other profiles are not touched.",
+                icon: "externaldrive")
+            HStack(spacing: Look.cardInset) {
+                HStack(spacing: Look.inset) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(Look.inkSecondary)
+                    TextField("Search sites", text: $model.query)
+                        .textFieldStyle(.plain).accessibilityLabel("Search stored website data")
+                        .disabled(model.isBusy)
+                }
+                .secondaryWindowSearchField()
                 Button("Refresh") { model.refresh() }.disabled(model.isBusy)
+                    .buttonStyle(.bordered).controlSize(.large)
             }
-            HStack(alignment: .top, spacing: 16) {
+            HStack(alignment: .top, spacing: Look.cardInset) {
                 siteList.frame(width: 235)
-                details.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                details
+                    .padding(Look.cardInset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .secondaryWindowCard()
             }
             .frame(maxHeight: .infinity)
+            Hairline()
             Text("Disk usage unavailable: WebKit’s public API does not report per-site sizes. Site entries may include subdomains.")
                 .font(Look.footnote).foregroundStyle(Look.inkSecondary)
             if model.isBusy {
@@ -56,11 +65,16 @@ struct WebsiteDataSheet: View {
                 Button("Clear Selected Data…", role: .destructive) { confirming = true }
                     .disabled(!model.canClear)
             }
+            .buttonStyle(.bordered).controlSize(.large)
         }
         .padding(Look.paneMargin)
-        .frame(width: 720, height: 590)
+        .frame(width: 760, height: 640)
         .font(Look.text)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle(Look.inkPrimary)
+        .background(Look.panelFill)
+        .animation(Motion.reduced ? nil : Look.quick, value: model.selectedName)
+        .animation(Motion.reduced ? nil : Look.quick, value: model.isBusy)
+        .vaneMotionPolicy()
         .onAppear { if !model.hasLoaded { model.refresh() } }
         .onChange(of: model.error) { if let error = model.error { axAnnounce(error) } }
         .onChange(of: model.message) { if let message = model.message { axAnnounce(message) } }
@@ -75,24 +89,24 @@ struct WebsiteDataSheet: View {
     }
 
     private var siteList: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Look.inset) {
             Text("\(model.filteredEntries.count) \(model.filteredEntries.count == 1 ? "site" : "sites")").font(Look.caption).foregroundStyle(Look.inkSecondary)
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 3) {
+                LazyVStack(alignment: .leading, spacing: Look.rowGap) {
                     if model.hasLoaded && model.filteredEntries.isEmpty {
                         Text(model.entries.isEmpty ? "No stored website data." : "No matching sites.")
-                            .font(Look.footnote).foregroundStyle(Look.inkSecondary).padding(10)
+                            .font(Look.footnote).foregroundStyle(Look.inkSecondary).padding(Look.rowInset)
                     }
                     ForEach(model.filteredEntries) { entry in
                         Button {
                             Motion.list { model.select(entry.name) }
                         } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(entry.name).lineLimit(2).foregroundStyle(.primary)
+                            VStack(alignment: .leading, spacing: Look.rowGap) {
+                                Text(entry.name).lineLimit(2).foregroundStyle(Look.inkPrimary)
                                 Text("\(entry.types.count) data categories · Usage unavailable")
                                     .font(Look.footnote).foregroundStyle(Look.inkSecondary)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(Look.rowInset)
                             .background(model.selectedName == entry.name ? Look.accentSelected : .clear,
                                         in: .rect(cornerRadius: Look.chipRadius))
                         }
@@ -102,18 +116,21 @@ struct WebsiteDataSheet: View {
                 }
             }
         }
+        .padding(Look.inset)
+        .frame(maxHeight: .infinity)
+        .secondaryWindowCard()
     }
 
     @ViewBuilder private var details: some View {
         if let entry = model.selectedEntry {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: Look.cardInset) {
                     Text(entry.name).font(Look.heading).textSelection(.enabled)
                     Text("Available stored data").font(Look.caption).foregroundStyle(Look.inkSecondary)
                     HStack {
                         Button("Select All") { model.selectedTypes = entry.types }
                         Button("Select None") { model.selectedTypes = [] }
-                    }.disabled(model.isBusy)
+                    }.buttonStyle(.bordered).controlSize(.small).disabled(model.isBusy)
                     ForEach(entry.types.sorted { WebsiteDataCategory.title($0) < WebsiteDataCategory.title($1) }, id: \.self) { type in
                         Toggle(WebsiteDataCategory.title(type), isOn: Binding(
                             get: { model.selectedTypes.contains(type) },
@@ -127,8 +144,8 @@ struct WebsiteDataSheet: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
-            Text("Select a site to inspect its stored data and choose what to clear.")
-                .font(Look.text).foregroundStyle(Look.inkSecondary).padding(.top, 30)
+            SecondaryWindowEmptyState(title: "Choose a site",
+                subtitle: "Inspect its stored data and choose what to clear.", icon: "externaldrive")
         }
     }
 }
@@ -143,9 +160,10 @@ struct WebsiteDataSheet: View {
         let store = tab.web.configuration.websiteDataStore
         let profileID = tab.profileID
         let profileName = tab.isPrivate ? "Private tab" : ProfileManager.shared.profiles.first { $0.id == profileID }?.name ?? "Profile"
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 590),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 640),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Website Data — \(profileName)"
+        SecondaryWindowStyle.apply(to: window)
         window.isReleasedWhenClosed = false
         window.delegate = shared
         window.contentView = NSHostingView(rootView: WebsiteDataSheet(
