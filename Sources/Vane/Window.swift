@@ -100,6 +100,19 @@ final class VaneWindow: NSWindow {
         centreTrafficLights()
     }
 
+    /// WebKit offers unhandled DOM keys back to AppKit asynchronously. A page can
+    /// act on a key (for example YouTube's L) without preventing its default, so
+    /// reaching the window is not evidence that the user's shortcut was invalid.
+    /// This is only the fallback: the page and Vane's shortcut monitor run first.
+    override func keyDown(with event: NSEvent) {
+        var view = firstResponder as? NSView
+        while let current = view {
+            if current is WKWebView { return }
+            view = current.superview
+        }
+        super.keyDown(with: event)
+    }
+
     /// Arc's sidebar *is* the window's title bar: dragging its bare ground moves the window,
     /// and dragging anything on it does that thing instead. `WindowDragGround` is SwiftUI's
     /// own answer to "is the pointer on bare ground", so this is the whole of it — and it
