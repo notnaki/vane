@@ -7,7 +7,10 @@ import SwiftUI
     /// with an inferred zero minimum. Heights are content heights, independent of chrome.
     static func host<Content: View>(_ content: Content,
                                    minimumSize: NSSize = .zero) -> NSHostingView<some View> {
-        NSHostingView(rootView: content.frame(minWidth: minimumSize.width, minHeight: minimumSize.height))
+        let host = NSHostingView(rootView: content.frame(minWidth: minimumSize.width, minHeight: minimumSize.height))
+        // Preserve the window’s chosen/autosaved frame while tracking only its minimum.
+        host.sizingOptions = [.minSize]
+        return host
     }
 
     static func apply(to window: NSWindow) {
