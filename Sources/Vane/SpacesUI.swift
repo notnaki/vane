@@ -1121,24 +1121,28 @@ private struct SpaceSwipe: ViewModifier {
             store.spaceGesture.drag = -CGFloat(direction) * width
         } completion: { [weak store] in
             guard self.transition == token else { return }
-            self.landing = false
-            self.landingFrom = nil
-            guard let store, store.window != nil, store.currentSpaceID == from else {
-                // Somebody else got there first, or the window is gone: drop the offset and
-                // leave the Space alone.
-                store?.spaceDrag = 0
-                store?.spaceSwiping = false
-                return
-            }
-            // Keep the old Space in place until the preview has finished sliding in.
-            // The incoming rows replace it at rest, without a second slide transition.
-            store.switchTo(space: store.spaceGesture.neighbour ?? target)
-            store.spaceDrag = 0
-            rebuild()
-            DispatchQueue.main.async { [weak store] in
+            let finish = { [weak store] in
                 guard self.transition == token else { return }
-                store?.spaceSwiping = false
+                self.landing = false
+                self.landingFrom = nil
+                guard let store, store.window != nil, store.currentSpaceID == from else {
+                    // Somebody else got there first, or the window is gone.
+                    store?.spaceDrag = 0
+                    store?.spaceSwiping = false
+                    return
+                }
+                store.switchTo(space: store.spaceGesture.neighbour ?? target)
+                store.spaceDrag = 0
+                rebuild()
+                DispatchQueue.main.async { [weak store] in
+                    guard self.transition == token else { return }
+                    store?.spaceSwiping = false
+                }
             }
+            // SwiftUI can remove its animation before AppKit's scroll layer has
+            // presented the endpoint. Keep the ghost through that final display frame.
+            if let window = store?.window { _ = SpaceLandingFrame(window: window, completion: finish) }
+            else { finish() }
         }
     }
 
@@ -1233,6 +1237,41 @@ private struct SpaceSwipe: ViewModifier {
     /// …and points *down* after which it can never be a Space swipe, however far it then
     /// wanders sideways.
     private static let verticalVeto: CGFloat = 6
+}
+
+@MainActor private final class SpaceLandingFrame: NSObject {
+    private var link: CADisplayLink?
+    private var completion: (() -> Void)?
+    private var timeout: DispatchWorkItem?
+
+    init(window: NSWindow, completion: @escaping () -> Void) {
+        self.completion = completion
+        super.init()
+        guard let screen = window.screen ?? NSScreen.main else {
+            DispatchQueue.main.async { self.finish() }
+            return
+        }
+        // A screen link keeps ticking if the window is hidden or detached meanwhile.
+        let link = screen.displayLink(target: self, selector: #selector(frame(_:)))
+        self.link = link
+        link.add(to: .main, forMode: .common)
+        let timeout = DispatchWorkItem { [weak self] in self?.finish() }
+        self.timeout = timeout
+        // A disconnected display must not leave a committed Space selection owned forever.
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100), execute: timeout)
+    }
+
+    @objc private func frame(_ link: CADisplayLink) { finish() }
+
+    private func finish() {
+        link?.invalidate()
+        link = nil
+        timeout?.cancel()
+        timeout = nil
+        let completion = completion
+        self.completion = nil
+        completion?()
+    }
 }
 
 // MARK: - Pull to create
