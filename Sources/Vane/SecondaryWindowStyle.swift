@@ -7,13 +7,19 @@ import SwiftUI
     /// with an inferred zero minimum. Heights are content heights, independent of chrome.
     static func host<Content: View>(_ content: Content,
                                    minimumSize: NSSize = .zero) -> NSHostingView<some View> {
-        let host = NSHostingView(rootView: content.frame(minWidth: minimumSize.width, minHeight: minimumSize.height))
+        let host = NSHostingView(rootView: content
+            .frame(minWidth: minimumSize.width, minHeight: minimumSize.height)
+            .background(Look.panelFill.ignoresSafeArea()))
         // Preserve the window’s chosen/autosaved frame while tracking only its minimum.
         host.sizingOptions = [.minSize]
         return host
     }
 
     static func apply(to window: NSWindow) {
+        // Draw one surface behind both content and transparent native titlebar chrome.
+        let frame = window.frame
+        window.styleMask.insert(.fullSizeContentView)
+        window.setFrame(frame, display: false)
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.backgroundColor = .windowBackgroundColor
