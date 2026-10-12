@@ -359,7 +359,10 @@ struct BrowserWindow: View {
     @EnvironmentObject var profiles: ProfileManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The sidebar sliding in over the page because the pointer went to the window's edge.
-    @State private var peeking = false
+    private var peeking: Bool {
+        get { store.sidebarPeeking }
+        nonmutating set { store.sidebarPeeking = newValue }
+    }
     @State private var peekTask: Task<Void, Never>?
     /// App-wide, so every window's sidebar is the width the user last dragged one to.
     @ObservedObject private var sidebar = SidebarWidth.shared
