@@ -1702,6 +1702,9 @@ extension View {
         guard accessible, let tab, let store else { throw ExtensionHost.Failure("This tab is locked or closed.") }
         let alreadySelected = isSelected(for: context)
         guard selected != alreadySelected else { return }
+        guard store.section(of: tab.id).ids.contains(tab.id) else {
+            throw ExtensionHost.Failure("This tab has no visible sidebar row. Expand its folder or Pinned section, select its Split View’s leading tab, or activate it instead.")
+        }
         if !selected, store.current == tab.id, store.selection.ids.count <= 1 {
             throw ExtensionHost.Failure("The active tab must stay selected. Select another tab before deselecting it.")
         }

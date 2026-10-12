@@ -270,6 +270,25 @@ import XCTest
         XCTAssertTrue(host.adapter(for: first, in: store).isSelected(for: context))
     }
 
+    func testExtensionSelectionRejectsCollapsedPinnedRows() async throws {
+        let (host, context, _) = try await fixture()
+        let store = browser()
+        let active = store.newBlankTab(), hidden = store.newBlankTab()
+        store.togglePinned(hidden.id)
+        store.current = active.id
+        store.togglePinnedSection()
+        let adapter = host.adapter(for: hidden, in: store)
+        XCTAssertTrue(adapter.shouldGrantPermissionsOnUserGesture(for: context), "A collapsed row remains a live, unlocked extension tab")
+        do {
+            try await adapter.setSelected(true, for: context)
+            XCTFail("A selection the sidebar cannot represent must not report success")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("visible sidebar row"))
+        }
+        XCTAssertFalse(adapter.isSelected(for: context))
+        XCTAssertEqual(store.current, active.id)
+    }
+
     func testMovingTabPreservesAdapterIdentityAndRebindsItsWindow() async throws {
         let (host, context, _) = try await fixture()
         let source = browser(), destination = browser()

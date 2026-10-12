@@ -119,6 +119,8 @@ editors. Commands do not run from sheets, private/locked tabs, or manager window
 alongside its link actions. Extension items in Vane’s sidebar tab menus are not yet
 integrated, although WebKit exposes a public API for them.
 Popup/options behavior still depends on the extension and WebKit.
+Tab selection returns a clear error for rows hidden by folded folders, a collapsed
+Pinned section, or a non-leading Split View pane. Activating those tabs remains supported.
 
 Vane does not provide native messaging hosts, replacement browser pages, extension side
 panels, developer-tools panels, omnibox keywords, or Chrome OAuth integration. Native
