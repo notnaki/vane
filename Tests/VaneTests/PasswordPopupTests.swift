@@ -50,6 +50,14 @@ import XCTest
         XCTAssertEqual(PasswordsPane.groups(logins, query: "\n\t ").flatMap(\.logins).count, 3)
     }
 
+    func testSortingUsesAccountNamesAndLastUseWithStableWebsiteTies() {
+        let a = Passwords.Login(host: "a.example", account: "zoe")
+        let b = Passwords.Login(host: "b.example", account: "ada")
+        XCTAssertEqual(PasswordsPane.groups([a, b], query: "", sort: .username).map(\.host), ["b.example", "a.example"])
+        XCTAssertEqual(PasswordsPane.groups([a, b], query: "", sort: .recent, used: [b.id: .now]).map(\.host), ["b.example", "a.example"])
+        XCTAssertEqual(PasswordsPane.groups([b, a], query: "", sort: .recent).map(\.host), ["a.example", "b.example"])
+    }
+
     func testNeverSavedSearchUsesTheSameWhitespaceRules() {
         XCTAssertEqual(PasswordsPane.matching(["mail.example", "bank.example"], query: " mail\nexample "),
                        ["mail.example"])
@@ -113,6 +121,12 @@ import XCTest
             account: "a-long-email-address-with-a-long-name@example.com"), width: 260, name: "update-password")
         XCTAssertLessThanOrEqual(bitmap.pixelsWide, 260)
         XCTAssertLessThanOrEqual(bitmap.pixelsHigh, 320)
+    }
+
+    func testGeneratorRendersAtItsNativePopupSize() throws {
+        let card = PasswordGenerationCard(website: "https://accounts.example.com:8443", use: { _ in }, dismiss: {})
+        let bitmap = try render(card, width: 320, name: "generator")
+        XCTAssertLessThanOrEqual(bitmap.pixelsHigh, 280)
     }
 
     func testChooserRendersWithinItsCalculatedHitArea() throws {

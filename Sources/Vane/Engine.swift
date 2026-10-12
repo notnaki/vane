@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import WebKit
+import Security
 
 /// Safari's UA string. WKWebView's own UA gets Netflix/Disney+ bounced on sight, and
 /// FairPlay is only offered to clients that look like Safari. Keep its version current
@@ -405,11 +406,25 @@ struct TitleReveal: Equatable, Sendable {
     @Published var canGoBack = false
     @Published var canGoForward = false
     /// A password the page just submitted, waiting on the user to approve saving it.
-    @Published var pendingSave: PendingSave?
+    @Published var pendingSave: PendingSave? {
+        didSet {
+            passwordOfferExpiry?.cancel()
+            guard let id = pendingSave?.id else { return }
+            passwordOfferExpiry = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(300))
+                guard !Task.isCancelled, self?.pendingSave?.id == id else { return }
+                self?.pendingSave = nil
+            }
+        }
+    }
+    private var passwordOfferExpiry: Task<Void, Never>?
+    private var lastPasswordAttempt: String?
     @Published var passwordSaveProblem: String?
     /// The account list hanging under this page's login form, when the site has more than
     /// one saved login. Nil the rest of the time, which is most of the time.
     @Published var passwordChoice: PasswordChoice?
+    @Published var passwordGeneration: PasswordGeneration?
+    @Published var passwordGenerationProblem: String?
     /// When this tab last filled a password. Filling moves the focus out of the page and
     /// back, which is another focusin — see `PasswordChooser.refillGrace`.
     private var lastFilledAt = Date.distantPast
@@ -806,6 +821,7 @@ struct TitleReveal: Equatable, Sendable {
                         guard let self, let w, self.existingWeb === w, !self.suspended,
                               self.readingDocumentGeneration == document, w.serverTrust === trust else { return }
                         self.certificateTrusted = ok
+                        if ok { self.fillPassword(automatic: true) }
                     }
                 }
             },
@@ -899,7 +915,7 @@ struct TitleReveal: Equatable, Sendable {
         canGoBack = false; canGoForward = false
         favicon = nil
         developer = false; readerAvailable = false
-        pendingSave = nil; passwordChoice = nil
+        pendingSave = nil; passwordChoice = nil; passwordGeneration = nil
         editableFrames.removeAll()
         titlePlaceholderURL = nil
         if stays, homeURL == nil { homeURL = url }
@@ -971,6 +987,9 @@ struct TitleReveal: Equatable, Sendable {
         readingDocumentGeneration = UUID()
         Reader.forget(tab: self)
         passwordStep = nil
+        passwordGeneration = nil
+        pendingSave = nil
+        passwordOfferExpiry?.cancel()
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
         endPermissionDocument()
@@ -1231,7 +1250,14 @@ struct TitleReveal: Equatable, Sendable {
     /// Only ever over https — filling a saved password into a plaintext page hands it to
     /// anyone on the path, and saving one from there means it was already exposed.
     private var secureOrigin: PasswordOrigin? {
-        guard let url = existingWeb?.url, url.scheme == "https" else { return nil }
+        guard certificateTrusted, let page = existingWeb, let url = page.url, url.scheme == "https" else { return nil }
+        if let trust = page.serverTrust {
+            var result = SecTrustResultType.invalid
+            // Inspect the result already evaluated by WebKit/the challenge handler. Never
+            // wait for a network trust evaluation on the UI actor or allow an exception.
+            guard SecTrustGetTrustResult(trust, &result) == errSecSuccess,
+                  result == .unspecified || result == .proceed else { return nil }
+        }
         return PasswordOrigin(url: url)
     }
     private var secureHost: String? { secureOrigin?.host }
@@ -1250,10 +1276,11 @@ struct TitleReveal: Equatable, Sendable {
         let host = origin.host
         // Capture a concrete target before reading any secret or opening the chooser.
         guard let target else {
-            let page = web, pageURL = page.url
+            let page = web, pageURL = page.url, document = readingDocumentGeneration
             page.evaluateJavaScript("window.__vaneAnchor && window.__vaneAnchor()",
                                     in: nil, in: Autofill.world) { [weak self, weak page] result in
                 guard let self, let page, self.existingWeb === page, page.url == pageURL,
+                      self.readingDocumentGeneration == document,
                       case let .success(value) = result, let raw = value as? String,
                       let data = raw.data(using: .utf8),
                       let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1263,7 +1290,13 @@ struct TitleReveal: Equatable, Sendable {
             }
             return
         }
-        var hits = Passwords.matches(origin: origin, profileID: profileID)
+        var hits: [Passwords.Login]
+        do { hits = try Passwords.matchesChecked(origin: origin, profileID: profileID) }
+        catch {
+            passwordSaveProblem = error.localizedDescription
+            if announcing { Toasts.show(error.localizedDescription); axAnnounce(error.localizedDescription) }
+            return
+        }
         if automatic, let hint = accountHint, !hint.isEmpty {
             hits = hits.filter { $0.account == hint }
         }
@@ -1278,14 +1311,15 @@ struct TitleReveal: Equatable, Sendable {
         // Multiple saved accounts are offered on focus; loading a page alone should not
         // open a popup over a field the user has not interacted with.
         if automatic { return }
-        let pageURL = web.url
-        web.evaluateJavaScript(Autofill.anchorJS(target: target),
+        let page = web, pageURL = page.url, document = readingDocumentGeneration
+        page.evaluateJavaScript(Autofill.anchorJS(target: target),
                                in: nil, in: Autofill.world) { [weak self] result in
             guard case let .success(value) = result, let raw = value as? String,
                   let json = raw.data(using: .utf8),
                   let rect = try? JSONSerialization.jsonObject(with: json) as? [String: Any]
             else { return }
-            guard let self, self.existingWeb?.url == pageURL else { return }
+            guard let self, self.existingWeb === page, page.url == pageURL,
+                  self.readingDocumentGeneration == document, self.secureOrigin == origin else { return }
             self.openChooser(host: host, accounts: hits.map(\.account), at: rect.compactMapValues { $0 as? Double },
                              target: target, accountHint: accountHint)
         }
@@ -1297,10 +1331,11 @@ struct TitleReveal: Equatable, Sendable {
               continuation: Bool = false) {
         guard !isPrivate, secureOrigin == login.origin else { return }
         guard let target else {
-            let page = web, pageURL = page.url
+            let page = web, pageURL = page.url, document = readingDocumentGeneration
             page.evaluateJavaScript("window.__vaneAnchor && window.__vaneAnchor()",
                                     in: nil, in: Autofill.world) { [weak self, weak page] result in
                 guard let self, let page, self.existingWeb === page, page.url == pageURL,
+                      self.readingDocumentGeneration == document,
                       case let .success(value) = result, let raw = value as? String,
                       let data = raw.data(using: .utf8),
                       let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -1310,18 +1345,27 @@ struct TitleReveal: Equatable, Sendable {
             return
         }
         closeChooser(.filled)
-        guard let password = Passwords.password(origin: login.origin, account: login.account,
-                                                profileID: profileID) else { return }
-        let pageURL = web.url
-        web.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
+        let password: String
+        do {
+            guard let plain = try Passwords.passwordChecked(origin: login.origin, account: login.account, profileID: profileID)
+            else { throw Passwords.Failure(status: errSecItemNotFound) }
+            password = plain
+        } catch {
+            passwordSaveProblem = error.localizedDescription
+            if !automatic { Toasts.show(error.localizedDescription); axAnnounce(error.localizedDescription) }
+            return
+        }
+        let page = web, pageURL = page.url, document = readingDocumentGeneration
+        page.evaluateJavaScript(Autofill.fillJS(account: login.account, password: password,
                                              automatic: automatic, target: target, continuation: continuation),
                                in: nil, in: Autofill.world) { [weak self] result in
             // The script says whether it found a form. Silence on a page with no sign-in
             // form is indistinguishable from a fill that went somewhere invisible.
-            guard let self, self.existingWeb?.url == pageURL, case let .success(value) = result else { return }
+            guard let self, self.existingWeb === page, page.url == pageURL,
+                  self.readingDocumentGeneration == document, self.secureOrigin == login.origin,
+                  case let .success(value) = result else { return }
             if (value as? Bool) == true {
                 self.lastFilledAt = .now
-                if continuation { self.passwordStep = nil }
                 Passwords.recordUse(origin: login.origin, account: login.account, profileID: self.profileID)
             } else if !automatic {
                 axAnnounce("No sign-in form on this page.")
@@ -1335,10 +1379,16 @@ struct TitleReveal: Equatable, Sendable {
     /// blur, and the blur is a dismiss. Reading the state here lost every click.
     func fillChosen(host: String, account: String, port: Int = 443, target: String? = nil) {
         guard !isPrivate else { return }
-        guard let hit = Passwords.matches(origin: PasswordOrigin(host: host, port: port), profileID: profileID)
-            .first(where: { $0.account == account })
-        else { closeChooser(.filled); return }
-        fill(hit, target: target)
+        do {
+            guard let hit = try Passwords.matchesChecked(origin: PasswordOrigin(host: host, port: port), profileID: profileID)
+                .first(where: { $0.account == account }) else { throw Passwords.Failure(status: errSecItemNotFound) }
+            fill(hit, target: target)
+        } catch {
+            closeChooser(.filled)
+            passwordSaveProblem = error.localizedDescription
+            Toasts.show(error.localizedDescription)
+            axAnnounce(error.localizedDescription)
+        }
     }
 
     /// Whether the pointer is over the list. Set by the view; read by `closeChooser` for the
@@ -1349,12 +1399,34 @@ struct TitleReveal: Equatable, Sendable {
     /// place — `PasswordChooser.opens` — and cannot drift between the page's events, the
     /// window's, and the keyboard's.
     func closeChooser(_ event: ChooserEvent) {
-        guard passwordChoice != nil,
+        guard passwordChoice != nil || passwordGeneration != nil,
               !PasswordChooser.opens(event,
                                      sinceFill: Date.now.timeIntervalSince(lastFilledAt),
                                      pointerInside: chooserHovered)
         else { return }
         passwordChoice = nil
+        passwordGeneration = nil
+        passwordGenerationProblem = nil
+    }
+
+    func useGeneratedPassword(_ options: PasswordGenerator.Options) {
+        guard !isPrivate, options.hasCharacters, let generation = passwordGeneration,
+              secureOrigin == generation.origin else { return }
+        let page = web, pageURL = page.url, document = readingDocumentGeneration
+        page.evaluateJavaScript(Autofill.generateJS(password: PasswordGenerator.generate(options: options), target: generation.target),
+                                in: nil, in: Autofill.world) { [weak self, weak page] result in
+            guard let self, let page, self.existingWeb === page, page.url == pageURL,
+                  self.readingDocumentGeneration == document,
+                  self.secureOrigin == generation.origin, self.passwordGeneration == generation else { return }
+            if case .success(let value) = result, value as? Bool == true {
+                self.lastFilledAt = .now
+                self.closeChooser(.filled)
+                axAnnounce("Generated password filled. Review the form before submitting.")
+            } else {
+                self.passwordGenerationProblem = "The fields changed or reject this length. Focus the new password and try again."
+                axAnnounce(self.passwordGenerationProblem ?? "")
+            }
+        }
     }
 
     /// `{x, y, w}` in CSS pixels under the username field, scaled by the page zoom into the
@@ -1376,6 +1448,7 @@ struct TitleReveal: Equatable, Sendable {
                                     height: PasswordChooser.height(rows: accounts.count, in: web.bounds.size)) != nil
         else { return }
         guard let origin = secureOrigin, origin.host == host else { return }
+        passwordGeneration = nil
         passwordChoice = PasswordChoice(target: target, port: origin.port, host: host, accounts: accounts, anchor: anchor,
                                         selected: accountHint.flatMap { accounts.firstIndex(of: $0) } ?? 0)
     }
@@ -1426,7 +1499,7 @@ struct TitleReveal: Equatable, Sendable {
         progress = 0
         canGoBack = false; canGoForward = false
         windowSnapshot = nil
-        passwordChoice = nil; pendingSave = nil
+        passwordChoice = nil; passwordGeneration = nil; pendingSave = nil
         editableFrames.removeAll()
         SiteBoosts.navigation(tab: self)
         FileUploads.cancel(tabID: id)
@@ -1564,6 +1637,7 @@ struct TitleReveal: Equatable, Sendable {
         Zoom.apply(to: self)
         DeveloperMode.apply(to: self)   // localhost → deployed site, and back
         closeChooser(.navigate)       // a redirect lands here without a fresh provisional
+        if let offer = pendingSave, offer.origin != secureOrigin { pendingSave = nil; passwordSaveProblem = nil }
         if let step = passwordStep, step.awaitingNavigation, step.origin == secureOrigin, step.expires > .now {
             passwordStep?.awaitingNavigation = false
         } else { passwordStep = nil }
@@ -1830,6 +1904,23 @@ struct TitleReveal: Equatable, Sendable {
               m.frameInfo.securityOrigin.protocol == "https",
               m.frameInfo.securityOrigin.host == secureHost,
               (m.frameInfo.securityOrigin.port == 0 ? 443 : m.frameInfo.securityOrigin.port) == secureOrigin?.port else { return }
+        if let rejected = body["rejectedAttempt"] as? String {
+            if pendingSave?.attempt == rejected { pendingSave = nil; passwordSaveProblem = nil }
+            return
+        }
+        if body["generate"] as? Bool == true {
+            guard let origin = secureOrigin, let target = body["target"] as? String,
+                  PasswordChooser.opens(.focus, sinceFill: Date.now.timeIntervalSince(lastFilledAt)),
+                  let x = body["x"] as? Double, let y = body["y"] as? Double,
+                  let width = body["w"] as? Double else { return }
+            let z = web.pageZoom
+            let anchor = CGRect(x: x * z, y: y * z, width: width * z, height: 0)
+            guard PasswordChooser.place(anchor: anchor, in: web.bounds.size, height: 280) != nil else { return }
+            passwordChoice = nil
+            passwordGenerationProblem = nil
+            passwordGeneration = PasswordGeneration(origin: origin, target: target, anchor: anchor)
+            return
+        }
         if let account = body["usernameStep"] as? String, !account.isEmpty,
            body["mainDocument"] as? Bool == true, let origin = secureOrigin {
             passwordStep = (origin, account, .now.addingTimeInterval(120), true)
@@ -1860,7 +1951,9 @@ struct TitleReveal: Equatable, Sendable {
         if body["focus"] as? Bool == true {
             guard let origin = secureOrigin else { return }
             let host = origin.host
-            let hits = Passwords.matches(origin: origin, profileID: profileID)
+            let hits: [Passwords.Login]
+            do { hits = try Passwords.matchesChecked(origin: origin, profileID: profileID) }
+            catch { passwordSaveProblem = error.localizedDescription; Toasts.show(error.localizedDescription); return }
             guard !hits.isEmpty else { return }
             openChooser(host: host, accounts: hits.map(\.account),
                         at: body.compactMapValues { $0 as? Double }, target: body["target"] as? String,
@@ -1872,23 +1965,57 @@ struct TitleReveal: Equatable, Sendable {
         // A private window is a window that leaves nothing behind, and an offer the user
         // says yes to on autopilot leaves the most personal thing there is.
         guard !isPrivate, !Passwords.isNeverSaved(host: host, profileID: profileID) else { return }
-        let account = (body["account"] as? String) ?? ""
+        var account = (body["account"] as? String) ?? ""
+        if account.isEmpty, body["mainDocument"] as? Bool == true, let step = passwordStep,
+           !step.awaitingNavigation, step.origin == secureOrigin, step.expires > .now {
+            account = step.account
+        }
         // Already stored and unchanged — nothing to ask about. Only the account being
         // submitted is decrypted, and only to answer that one question.
         guard let origin = secureOrigin else { return }
-        let stored = Passwords.password(origin: origin, account: account, profileID: profileID)
-        if stored == password { return }
-        passwordSaveProblem = nil
-        pendingSave = PendingSave(port: origin.port, host: host, account: account, password: password,
-                                  update: stored != nil)
+        let attempt = body["attempt"] as? String
+        if let attempt, lastPasswordAttempt == attempt { return }
+        lastPasswordAttempt = attempt
+        do {
+            let stored = try Passwords.passwordChecked(origin: origin, account: account, profileID: profileID)
+            if stored == password { return }
+            let revision = try Passwords.revision(origin: origin, account: account, profileID: profileID)
+            passwordSaveProblem = nil
+            pendingSave = PendingSave(attempt: attempt, revision: revision, port: origin.port,
+                                      host: host, account: account, password: password, update: stored != nil)
+        } catch {
+            // Retain the submitted draft, but never interpret failed access as absence.
+            passwordSaveProblem = error.localizedDescription
+            pendingSave = PendingSave(attempt: attempt, port: origin.port, host: host, account: account, password: password)
+        }
     }
 
-    func confirmSave() {
-        guard let p = pendingSave else { return }
-        let stored = Passwords.save(origin: p.origin, account: p.account, password: p.password,
-                                    profileID: profileID)
-        guard stored else {
-            passwordSaveProblem = PasswordsPane.saveFailed(host: p.host)
+    func confirmSave(origin reviewedOrigin: PasswordOrigin? = nil, account reviewedAccount: String? = nil,
+                     password reviewedPassword: String? = nil) {
+        guard !isPrivate, let p = pendingSave else { return }
+        let origin = reviewedOrigin ?? p.origin, account = reviewedAccount ?? p.account
+        let password = reviewedPassword ?? p.password
+        guard origin.scheme == "https", !password.isEmpty else { return }
+        do {
+            let existing = try Passwords.passwordChecked(origin: origin, account: account, profileID: profileID)
+            let revision = try Passwords.revision(origin: origin, account: account, profileID: profileID)
+            let sameIdentity = origin == p.origin && account == p.account
+            if existing != nil && (!p.update || !sameIdentity || (p.revision != nil && p.revision != revision)) {
+                pendingSave = PendingSave(attempt: p.attempt, revision: revision, port: origin.port, host: origin.host,
+                                          account: account, password: password, update: true)
+                passwordSaveProblem = "A saved login exists or changed since this offer. Review it before choosing Update."
+                return
+            }
+            if p.update && sameIdentity {
+                guard existing != nil else { throw Passwords.Failure(status: errSecItemNotFound) }
+                try Passwords.editChecked(.init(origin: origin, account: account), origin: origin, account: account,
+                                          password: password, profileID: profileID)
+            } else {
+                try Passwords.saveChecked(origin: origin, account: account, password: password,
+                                          profileID: profileID, replacingExisting: false)
+            }
+        } catch {
+            passwordSaveProblem = error.localizedDescription
             axAnnounce(passwordSaveProblem ?? "")
             return
         }
@@ -1900,7 +2027,7 @@ struct TitleReveal: Equatable, Sendable {
     /// "Never for this site". Saying no once is a decision about this password; saying never
     /// is a decision about the site, so it is the only one of the two that is remembered.
     func neverSaveHere() {
-        guard let p = pendingSave else { return }
+        guard !isPrivate, let p = pendingSave else { return }
         Passwords.neverSave(host: p.host, profileID: profileID)
         axAnnounce("Vane will not offer to save passwords for \(p.host).")
         pendingSave = nil
@@ -2137,6 +2264,8 @@ struct Stash {
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
     @Published var sidebarShown = true
+    /// Transient hover reveal; cleared when this window leaves its Space or profile.
+    @Published var sidebarPeeking = false
     /// One-shot handoff from the webpage to the sidebar address pill.
     @Published var chromeFocusRequested = false
     /// Presentation only, per Space and window: hiding pins never changes their contents.
@@ -3677,6 +3806,7 @@ struct Stash {
         // put a Space's tabs in a window that writes nothing back, and claim in the footer
         // to be showing a Space it can never save.
         guard !isLittle, !isPrivate, space.id != currentSpaceID else { return }
+        sidebarPeeking = false
         // A Space's profileID is the only link to its profile, and a store still never shows
         // another profile's tabs — everything it is built out of is that profile's. But the
         // strip runs across profiles, so a Space over the boundary is somewhere this *window*

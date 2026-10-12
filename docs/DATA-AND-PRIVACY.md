@@ -37,23 +37,27 @@ browsing does not make network activity anonymous.
 
 ## Passwords and bookmarks
 
-Settings → Passwords lets you search by website and username, add, edit, reveal, copy,
-and delete saved logins. Add/edit forms can generate random passwords of 16, 20, 24, or
-32 characters. The autofill chooser shows each account with a masked password; use the
-arrow keys and Return to choose, or Escape to dismiss. Save and update prompts show
-labeled credentials with a password reveal control. Credentials stay in the local macOS
-Keychain and are scoped to the profile; private browsing does not use saved passwords.
-Username-first sign-ins keep the selected account through form replacement or the next
-same-origin password page. Fields revealed or mounted by a site are discovered
-automatically, and same-origin embedded login forms use their own fields and chooser
-anchors. Hidden fields and one-time codes are excluded from filling; cross-origin and
-opaque sandbox frames cannot receive credentials. The bookmark manager supports folders,
-search, bulk actions, and HTML import/export.
+Settings → Passwords searches website/account names, sorts by website, username or recent
+use, and offers account details for adding, editing, revealing, copying and deleting.
+The generator supports 12–64 characters with lowercase, uppercase, number and symbol
+options, including beside recognized signup/password-change fields. Saved credentials
+stay in the profile’s local macOS Keychain. System authentication protects reveal/copy/edit
+and existing exports; custom data directories do not bypass it. Reveals hide automatically,
+and password clipboard clearing preserves anything copied subsequently.
 
-Autofill uses HTTPS and the full origin, never submits the form for you, and remains
-heuristic. Unusual or unsupported forms can require manual entry. Passkeys remain
-pending approval and provisioning; see [compatibility
-prerequisites](REAL-SITE-COMPATIBILITY.md#known-pending-authentication-and-compatibility).
+The account chooser names the matching HTTPS origin and username. Autofill rechecks document,
+origin and field identities, supports dynamic and username-first forms, and never submits.
+Hidden/offscreen fields, ambiguous passwords and cross-origin frames are refused; same-origin
+embedded forms need focus. Private windows do not use or save credentials.
+
+Submission offers are explicitly unverified: Review lets you correct the website, username
+and password before saving. New-account collisions require a separate update review. Visible
+form rejection markers retract the attempt; submission is not proof of a successful sign-in.
+Never Saved is reversible in Settings. Existing imports/exports remain available.
+
+See [Password manager](PASSWORD-MANAGER.md) for controls, security boundaries, fixture evidence
+and remaining real-site limitations. Passkeys remain pending Apple approval and provisioning.
+The bookmark manager supports folders, search, bulk actions and HTML import/export.
 
 ## Imports and exports
 

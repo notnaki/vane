@@ -501,8 +501,22 @@ private struct PreviewsPane: View {
     @AppStorage(Peek.prefKey) private var peekLinks = true
     @AppStorage(LibraryHoverCategory.key) private var libraryPreview = "downloads"
 
+    @AppStorage("favouritePreviews") private var favourites = true
+    @AppStorage("favouritePreviews.github") private var favouriteGitHub = true
+    @AppStorage("favouritePreviews.gmail") private var favouriteGmail = true
+    @AppStorage("favouritePreviews.calendar") private var favouriteCalendar = true
+
     var body: some View {
         Pane {
+            SettingsCard {
+                SettingsRow("Preview favourites on hover") {
+                    Toggle("Preview favourites on hover", isOn: $favourites).labelsHidden()
+                }
+                SettingsRow("GitHub pull requests") { Toggle("GitHub favourite previews", isOn: $favouriteGitHub).labelsHidden().disabled(!favourites) }
+                SettingsRow("Gmail inbox") { Toggle("Gmail favourite previews", isOn: $favouriteGmail).labelsHidden().disabled(!favourites) }
+                SettingsRow("Google Calendar events") { Toggle("Google Calendar favourite previews", isOn: $favouriteCalendar).labelsHidden().disabled(!favourites) }
+                Footnote("Uses each favourite’s profile and signed-in website session. Loading a preview visits the site. Data stays in memory; unsupported page layouts show Open Site. Focus a favourite and press ⌥↓ to preview it. Private windows show a fallback.")
+            }
             SettingsCard {
                 SettingsRow("Library hover preview") {
                     Picker("Library hover preview", selection: $libraryPreview) {
@@ -526,6 +540,10 @@ private struct PreviewsPane: View {
                 Footnote("Links to other sites open over your window, keeping your pinned tab in place. Escape closes the preview; ⌘O keeps it as a tab. Shift-click reverses this preference for one link.")
             }
         }
+        .onChange(of: favourites) { FavouritePreviews.shared.preferencesChanged() }
+        .onChange(of: favouriteGitHub) { FavouritePreviews.shared.preferencesChanged() }
+        .onChange(of: favouriteGmail) { FavouritePreviews.shared.preferencesChanged() }
+        .onChange(of: favouriteCalendar) { FavouritePreviews.shared.preferencesChanged() }
     }
 }
 

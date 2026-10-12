@@ -108,14 +108,17 @@ scripts/test-updater-relaunch.sh
 For focused password validation on a logged-in macOS desktop:
 
 ```sh
-swift test --filter 'PasswordAutofillTests|PasswordOriginTests|PasswordChooserLayoutTests|PasswordPopupPresentationTests|PasswordManagerSearchTests|PasswordGeneratorTests'
+VANE_TEST_KEYCHAIN=1 swift test --filter Password
 python3 scripts/check-browser-smoke.py
 ```
 
 The autofill fixtures exercise real WebKit documents, controlled input events, dynamic
 visibility, account continuity, embedded forms, stale chooser targets, and scoped
-Keychain reads. Keychain-dependent XCTest fixtures report a skip if storage is
-unavailable.
+Keychain reads. Additional fixtures cover save review, rejected submissions, generator
+options, Keychain failures and identity collisions, and clipboard ownership. The signed
+smoke also verifies fresh-process Keychain persistence and deletion. Keychain-dependent
+XCTest fixtures report a skip if storage is unavailable. See [Password manager](PASSWORD-MANAGER.md)
+for the precise boundaries and remaining real-site/device validation.
 
 ### Specialist reliability fixtures
 

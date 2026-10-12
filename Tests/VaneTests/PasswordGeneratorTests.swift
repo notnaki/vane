@@ -20,4 +20,18 @@ final class PasswordGeneratorTests: XCTestCase {
         XCTAssertEqual(PasswordGenerator.generate(length: -1).count, 12)
         XCTAssertEqual(PasswordGenerator.generate(length: Int.max).count, 64)
     }
+    func testCharacterOptionsExcludeUnselectedGroups() {
+        for _ in 0..<20 {
+            let password = PasswordGenerator.generate(options: .init(length: 30, lowercase: false, uppercase: false, digits: true, symbols: false))
+            XCTAssertEqual(password.count, 30)
+            XCTAssertTrue(password.allSatisfy(\.isNumber))
+        }
+    }
+
+    func testNoCharacterGroupsHasUsableDefault() {
+        let password = PasswordGenerator.generate(options: .init(length: 20, lowercase: false, uppercase: false, digits: false, symbols: false))
+        XCTAssertEqual(password.count, 20)
+        XCTAssertTrue(password.allSatisfy(\.isLowercase))
+    }
+
 }

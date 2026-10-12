@@ -28,10 +28,11 @@ import WebKit
         let profile = ProfileManager.shared.profiles.first { $0.id == host.profileID }?.name
             ?? (host.profileID == Profile.incognito.id ? "Private" : "Profile")
         window.title = "Extensions — " + profile
+        SecondaryWindowStyle.apply(to: window)
         window.minSize = NSSize(width: 460, height: 480)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ExtensionManagementView(host: host)
-            .font(Look.text).defaultAppStorage(.vane))
+        window.contentView = SecondaryWindowStyle.host(ExtensionManagementView(host: host)
+            .font(Look.text).defaultAppStorage(.vane), minimumSize: NSSize(width: 460, height: 450))
         let frameName = "ExtensionManager." + host.profileID.uuidString
         if !window.setFrameUsingName(frameName) { window.center() }
         window.setFrameAutosaveName(frameName)

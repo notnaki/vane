@@ -50,6 +50,7 @@ private struct KeyboardAction: ViewModifier {
     let enabled: Bool
     let radius: CGFloat
     let action: () -> Void
+    var previewAction: (() -> Void)?
     var requestFocus: Binding<Bool>?
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -76,6 +77,12 @@ private struct KeyboardAction: ViewModifier {
                 action()
                 return .handled
             }
+            .onKeyPress(keys: [.downArrow], phases: .down) { press in
+                guard focused, enabled, isEnabled, press.modifiers.intersection([.command, .control, .option, .shift]) == .option, let previewAction else { return .ignored }
+                focusVisibility.showForKeyboard()
+                previewAction()
+                return .handled
+            }
             .overlay {
                 RoundedRectangle(cornerRadius: radius)
                     .strokeBorder(Color.accentColor, lineWidth: 2)
@@ -91,8 +98,9 @@ private struct KeyboardAction: ViewModifier {
 extension View {
     func vaneKeyboardAction(enabled: Bool = true, radius: CGFloat = Look.pillRadius,
                             requestFocus: Binding<Bool>? = nil,
+                            previewAction: (() -> Void)? = nil,
                             action: @escaping () -> Void) -> some View {
-        modifier(KeyboardAction(enabled: enabled, radius: radius, action: action,
+        modifier(KeyboardAction(enabled: enabled, radius: radius, action: action, previewAction: previewAction,
                                 requestFocus: requestFocus))
     }
 }

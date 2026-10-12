@@ -116,7 +116,8 @@ Browser and native editing shortcuts take precedence; details disclose conflicts
 Command/Control extension shortcuts can work in login fields. Character-insertion
 shortcuts (including Option-only combinations) stay with native and detected website
 editors. Commands do not run from sheets, private/locked tabs, or manager windows. WebKit supplies webpage extension context-menu items; Vane preserves them
-alongside its link actions. Extension tab-menu items also appear in the tab menu.
+alongside its link actions. Extension items in Vane’s sidebar tab menus are not yet
+integrated, although WebKit exposes a public API for them.
 Popup/options behavior still depends on the extension and WebKit.
 
 Vane does not provide native messaging hosts, replacement browser pages, extension side
@@ -290,3 +291,13 @@ For a live check, reconnect using such a release, quit/relaunch, and refresh aft
 hours:
 the folder should renew automatically, and Console should record `[vane] GitHub OAuth
 credential renewed` without requiring another sign-in.
+
+## Favourite previews
+
+GitHub, Gmail and Google Calendar favourites offer a hover card after a short pause. Move into the card to use its actions; move away or press Escape to dismiss. With keyboard focus on a favourite, press **⌥↓**, or choose **Show Favourite Preview** from its context menu or VoiceOver Actions. Items open in a new tab in the favourite’s profile. Gmail’s **Compose** opens its website compose flow and does not send a message.
+
+Settings → Previews has a global favourite-preview switch and separate GitHub, Gmail and Calendar switches. These are independent of generic webpage link previews. A preview visits the normal website using the favourite’s profile session. It does not use Live Folders’ GitHub token, a Google API grant, cloud AI or a Vane server. No separate sign-in or API key is requested.
+
+Content stays in a bounded memory cache, keyed by profile, account route and verified account identity. Repeat hovers can reuse fresh data when the live favourite still confirms that identity. Cached content is invalidated on cookie changes, clearing site data, deleting a profile and changing preview preferences. No inbox or event content is logged or persisted by the preview subsystem. Private favourites show a fallback with website navigation actions.
+
+Extraction depends on the website’s rendered markup. GitHub shows open PRs involving the signed-in user and review/check labels when available in the list. Gmail shows inbox subjects, senders and unread state. Calendar accepts only event links paired with explicit machine-readable times and supported meeting links; unrecognized schedules show **Preview unavailable** and **Open Site**. Unsupported layouts, partial results, missing account identity and failed loads are never reported as an empty inbox or calendar. Preview requests stop when the card closes, have an eight-second load deadline with at most one restart if session cookies change during loading, and do not poll in the background. A failed request has a 30-second retry cooldown. A saved result whose refresh failed is labeled as stale.

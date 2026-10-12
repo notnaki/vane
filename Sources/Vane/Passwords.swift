@@ -100,19 +100,46 @@ enum Passwords {
     /// host+account query is exactly the one that fails open for the default profile.
     /// A persistent ref names *that* item and nothing else, so the read or the delete that
     /// follows cannot land on a neighbour.
+    struct Failure: LocalizedError {
+        let status: OSStatus
+        var errorDescription: String? {
+            switch status {
+            case errSecInteractionNotAllowed, errSecNotAvailable:
+                "Keychain is unavailable. Open Keychain Access, unlock your login keychain, and try again."
+            case errSecAuthFailed, errSecUserCanceled:
+                "Keychain access was not authorized. Allow access when macOS asks, then try again."
+            case errSecDuplicateItem:
+                "A login already exists for this website and username. Review the existing account before updating it."
+            case errSecItemNotFound:
+                "This login is no longer in Keychain. Refresh saved passwords and try again."
+            default:
+                "Keychain could not complete this action (error \(status)). Open Keychain Access and check your login keychain, then try again."
+            }
+        }
+    }
+
     private static func ref(origin: PasswordOrigin, account: String, profileID: UUID) -> Data? {
+        try? referenceChecked(origin: origin, account: account, profileID: profileID)
+    }
+
+    static func referenceChecked(origin: PasswordOrigin, account: String, profileID: UUID,
+        copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching) throws -> Data? {
         var q = query(origin: origin, account: account, profileID: profileID)
         q[kSecReturnAttributes as String] = true
         q[kSecReturnPersistentRef as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitAll
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-              let items = out as? [[String: Any]] else { return nil }
+        let status = copyMatching(q as CFDictionary, &out)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else { throw Failure(status: status) }
+        guard let items = out as? [[String: Any]] else { throw Failure(status: errSecDecode) }
         let scope = domain(profileID)
-        return items.first {
+        guard let item = items.first(where: {
             owns(scope: scope, itemDomain: $0[kSecAttrSecurityDomain as String] as? String)
                 && PasswordOrigin(attributes: $0) == origin
-        }?[kSecValuePersistentRef as String] as? Data
+        }) else { return nil }
+        guard let ref = item[kSecValuePersistentRef as String] as? Data else { throw Failure(status: errSecDecode) }
+        return ref
     }
 
     // MARK: Reading and writing
@@ -131,22 +158,48 @@ enum Passwords {
     @discardableResult
     static func save(origin: PasswordOrigin, account: String, password: String,
                      profileID: UUID = ProfileManager.activeProfileID, replacingExisting: Bool = true) -> Bool {
+        do {
+            try saveChecked(origin: origin, account: account, password: password, profileID: profileID,
+                            replacingExisting: replacingExisting)
+            return true
+        } catch { return false }
+    }
+
+    static func saveChecked(origin: PasswordOrigin, account: String, password: String,
+                            profileID: UUID, replacingExisting: Bool = true) throws {
         defer { invalidate() }
-        // Add first, then update: a failed add must not leave the login gone. The add comes
-        // back errSecDuplicateItem when one is already there, which is the signal to replace
-        // its data in place — but only if that item is *ours*, which `ref` is what decides.
         var add = query(origin: origin, account: account, profileID: profileID)
         if !origin.isDefaultPort { add[kSecAttrPort as String] = origin.port }
         add[kSecValueData as String] = Data(password.utf8)
         add[kSecAttrLabel as String] = "\(origin.url.absoluteString) (Vane)"
         let status = SecItemAdd(add as CFDictionary, nil)
-        if status == errSecSuccess { return true }
-        guard replacingExisting, status == errSecDuplicateItem,
-              let existing = ref(origin: origin, account: account, profileID: profileID)
-        else { return false }
-        return SecItemUpdate([kSecValuePersistentRef as String: existing] as CFDictionary,
-                             [kSecValueData as String: Data(password.utf8)] as CFDictionary)
-            == errSecSuccess
+        if status == errSecSuccess { return }
+        guard status == errSecDuplicateItem, replacingExisting else { throw Failure(status: status) }
+        guard let existing = try referenceChecked(origin: origin, account: account, profileID: profileID)
+        else { throw Failure(status: status) }
+        let updated = SecItemUpdate([kSecValuePersistentRef as String: existing] as CFDictionary,
+                                    [kSecValueData as String: Data(password.utf8)] as CFDictionary)
+        guard updated == errSecSuccess else { throw Failure(status: updated) }
+    }
+
+    /// Keychain changes the identity in place and refuses primary-key collisions. No
+    /// add/delete window or replacement of the owned item's ACL. macOS may refresh
+    /// its opaque reference when primary-key attributes change.
+    static func editChecked(_ login: Login, origin: PasswordOrigin, account: String,
+                            password: String, profileID: UUID) throws {
+        defer { invalidate() }
+        guard let ref = try referenceChecked(origin: login.origin, account: login.account, profileID: profileID)
+        else { throw Failure(status: errSecItemNotFound) }
+        let status = SecItemUpdate([kSecValuePersistentRef as String: ref] as CFDictionary, [
+            kSecAttrServer as String: origin.host, kSecAttrProtocol as String: origin.keychainProtocol,
+            kSecAttrPort as String: origin.isDefaultPort ? 0 : origin.port,
+            kSecAttrAccount as String: account, kSecValueData as String: Data(password.utf8),
+            kSecAttrLabel as String: "\(origin.url.absoluteString) (Vane)",
+        ] as CFDictionary)
+        guard status == errSecSuccess else { throw Failure(status: status) }
+        if origin == login.origin {
+            renameUse(origin: origin, from: login.account, to: account, profileID: profileID)
+        } else { forgetUse(origin: login.origin, account: login.account, profileID: profileID) }
     }
 
     /// Persist an integration credential and make it the deterministic fresh-read choice.
@@ -283,6 +336,10 @@ enum Passwords {
              used: lastUsed(profileID: profileID))
     }
 
+    static func matchesChecked(origin: PasswordOrigin, profileID: UUID) throws -> [Login] {
+        rank(try allChecked(profileID: profileID).filter { $0.origin == origin }, used: lastUsed(profileID: profileID))
+    }
+
     /// One password, decrypted here and now. The only door to plaintext in the app; nothing
     /// caches what comes back out of it.
     static func password(host: String, account: String,
@@ -292,14 +349,21 @@ enum Passwords {
 
     static func password(origin: PasswordOrigin, account: String,
                          profileID: UUID = ProfileManager.activeProfileID) -> String? {
-        guard let ref = ref(origin: origin, account: account, profileID: profileID) else { return nil }
+        try? passwordChecked(origin: origin, account: account, profileID: profileID)
+    }
+
+    static func passwordChecked(origin: PasswordOrigin, account: String, profileID: UUID,
+        copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching) throws -> String? {
+        guard let ref = try referenceChecked(origin: origin, account: account, profileID: profileID, copyMatching: copyMatching)
+        else { return nil }
         var out: CFTypeRef?
-        guard SecItemCopyMatching([
+        let status = copyMatching([
             kSecClass as String: kSecClassInternetPassword,
-            kSecValuePersistentRef as String: ref,
-            kSecReturnData as String: true,
-        ] as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
-        return String(decoding: data, as: UTF8.self)
+            kSecValuePersistentRef as String: ref, kSecReturnData as String: true,
+        ] as CFDictionary, &out)
+        guard status == errSecSuccess else { throw Failure(status: status) }
+        guard let data = out as? Data, let text = String(data: data, encoding: .utf8) else { throw Failure(status: errSecDecode) }
+        return text
     }
 
     /// The order rule itself, taking its inputs rather than reading them, so it is provable
@@ -331,7 +395,7 @@ enum Passwords {
         let hit = cached[profileID]
         cacheLock.unlock()
         if let hit { return hit }
-        let fresh = fetch(profileID: profileID)
+        guard let fresh = try? allChecked(profileID: profileID) else { return [] }
         cacheLock.lock()
         cached[profileID] = fresh
         cacheLock.unlock()
@@ -391,7 +455,8 @@ enum Passwords {
         cacheLock.unlock()
     }
 
-    private static func fetch(profileID: UUID) -> [Login] {
+    static func allChecked(profileID: UUID,
+        copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching) throws -> [Login] {
         var q: [String: Any] = [
             kSecClass as String: kSecClassInternetPassword,
             kSecAttrCreator as String: creator,
@@ -402,8 +467,10 @@ enum Passwords {
         if let scope { q[kSecAttrSecurityDomain as String] = scope }
 
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-              let items = out as? [[String: Any]] else { return [] }
+        let status = copyMatching(q as CFDictionary, &out)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess else { throw Failure(status: status) }
+        guard let items = out as? [[String: Any]] else { throw Failure(status: errSecDecode) }
 
         return items.compactMap { item -> Login? in
             guard let origin = PasswordOrigin(attributes: item),
@@ -422,15 +489,33 @@ enum Passwords {
     @discardableResult
     static func delete(origin: PasswordOrigin, account: String,
                        profileID: UUID = ProfileManager.activeProfileID) -> Bool {
-        defer { invalidate(); forgetUse(origin: origin, account: account, profileID: profileID) }
-        // By reference, not by host+account: the default profile's query also matches every
-        // other profile's item for the same site, and a delete that hits one of those is a
-        // login silently gone from a profile the user was not even looking at.
-        guard let ref = ref(origin: origin, account: account, profileID: profileID) else { return false }
-        return SecItemDelete([
-            kSecClass as String: kSecClassInternetPassword,
-            kSecValuePersistentRef as String: ref,
-        ] as CFDictionary) == errSecSuccess
+        do { try deleteChecked(origin: origin, account: account, profileID: profileID); return true }
+        catch { return false }
+    }
+
+    static func deleteChecked(origin: PasswordOrigin, account: String, profileID: UUID) throws {
+        defer { invalidate() }
+        guard let ref = try referenceChecked(origin: origin, account: account, profileID: profileID)
+        else { throw Failure(status: errSecItemNotFound) }
+        let status = SecItemDelete([kSecClass as String: kSecClassInternetPassword,
+                                   kSecValuePersistentRef as String: ref] as CFDictionary)
+        guard status == errSecSuccess else { throw Failure(status: status) }
+        forgetUse(origin: origin, account: account, profileID: profileID)
+    }
+
+    struct Revision: Equatable {
+        let reference: Data
+        let modified: Date?
+    }
+
+    static func revision(origin: PasswordOrigin, account: String, profileID: UUID) throws -> Revision? {
+        guard let ref = try referenceChecked(origin: origin, account: account, profileID: profileID) else { return nil }
+        var out: CFTypeRef?
+        let status = SecItemCopyMatching([kSecValuePersistentRef as String: ref,
+                                         kSecReturnAttributes as String: true] as CFDictionary, &out)
+        guard status == errSecSuccess else { throw Failure(status: status) }
+        guard let attrs = out as? [String: Any] else { throw Failure(status: errSecDecode) }
+        return Revision(reference: ref, modified: attrs[kSecAttrModificationDate as String] as? Date)
     }
 
     // MARK: Last used
@@ -528,11 +613,6 @@ enum Passwords {
     /// The callback runs on the main actor, because everything that acts on it is a view.
     @MainActor static func authenticate(_ reason: String,
                                         _ done: @escaping @MainActor (Bool) -> Void) {
-        // A `VANE_DATA_DIR` instance already points at a throwaway keychain namespace and has
-        // no way to answer a Touch ID sheet under automation. Deliberately keyed off the
-        // developer switch and nothing else: the real app has no bypass, not even a
-        // preference, because a preference that turns this off is the same as not having it.
-        if Store.overrideDirectory != nil { done(true); return }
         let ctx = LAContext()
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: nil) else {
             done(false)
@@ -651,6 +731,8 @@ enum Passwords {
 
 /// A save offer waiting on the user. Held only until they answer.
 struct PendingSave: Equatable, Identifiable {
+    var attempt: String? = nil
+    var revision: Passwords.Revision? = nil
     var port: Int = 443
     var origin: PasswordOrigin { PasswordOrigin(host: host, port: port) }
     let id = UUID()

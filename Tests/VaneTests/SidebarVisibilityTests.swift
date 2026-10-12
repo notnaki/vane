@@ -24,12 +24,18 @@ import XCTest
         }
 
         source.sidebarShown = false
+        source.sidebarPeeking = true
         let destination = try XCTUnwrap(Windows.hop(source, to: second))
+        XCTAssertFalse(source.sidebarPeeking, "Leaving a profile must dismiss its cached hover sidebar")
+        XCTAssertFalse(destination.sidebarPeeking)
         XCTAssertFalse(destination.sidebarShown, "A new profile must keep the window's hidden sidebar")
         XCTAssertTrue(unrelated.sidebarShown, "Another window keeps its own visibility")
 
         destination.sidebarShown = true
+        destination.sidebarPeeking = true
         let returning = try XCTUnwrap(Windows.hop(destination, to: first))
+        XCTAssertFalse(destination.sidebarPeeking)
+        XCTAssertFalse(returning.sidebarPeeking, "Returning to a cached profile must not reopen its hover sidebar")
         XCTAssertTrue(returning === source)
         XCTAssertTrue(returning.sidebarShown, "A parked profile must adopt the window's latest visibility")
 
@@ -57,8 +63,10 @@ import XCTest
         }
 
         store.sidebarShown = false
+        store.sidebarPeeking = true
         store.switchTo(space: second)
         XCTAssertEqual(store.currentSpaceID, second.id)
+        XCTAssertFalse(store.sidebarPeeking)
         XCTAssertFalse(store.sidebarShown)
         store.sidebarShown = true
         store.switchTo(space: first)

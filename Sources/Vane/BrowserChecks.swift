@@ -84,6 +84,8 @@ import WebKit
                          code: 1)
                 }
             }
+            do { try PasswordPersistenceFixture.verifyAndClean() }
+            catch { fail("signed password persistence or cleanup failed: \(error.localizedDescription)", code: 1) }
             print("PASS browsercheck cleanup: \(ids.count) temporary WebKit stores unregistered")
             exit(0)
         }
@@ -434,6 +436,7 @@ import WebKit
                 try swipeRenderCheck()
                 try await profileHopCheck(base: base)
 
+                try PasswordPersistenceFixture.stage()
                 await clean()
                 print("PASS browsercheck: \(assertions) real-WebKit assertions")
                 print("Coverage excludes live permissions/devices, upload dialogs, printing, DRM and TLS trust.")
@@ -856,6 +859,12 @@ import WebKit
             print("PERF audio scans for 20 unrelated DOM updates: \(scans)")
             try require(scans == 0, "ordinary DOM updates do not rescan the page for media")
 
+            // Password form fixtures need a real serialized HTTPS origin, even though
+            // the surrounding navigation smoke uses a loopback HTTP server.
+            tab.web.loadSimulatedRequest(URLRequest(url: URL(string: "https://password-fixture.invalid/")!),
+                                         responseHTML: "<body></body>")
+            try await wait("secure password fixture loads") { !tab.web.isLoading && tab.web.url?.host == "password-fixture.invalid" }
+
             _ = try await js(tab, """
                 document.body.innerHTML = '<form><input autocomplete="username" id="stepUser"></form>';
                 document.getElementById('stepUser').focus();
@@ -944,9 +953,9 @@ import WebKit
                 newPassword.dispatchEvent(new Event('input', {bubbles:true}));
                 window.dispatchEvent(new Event('pagehide'));
                 """)
-            try await wait("fetch reset capture") { capture.offers.count > resetCount }
-            try require(capture.offers.last?.0 == "reset@example.test" && capture.offers.last?.1 == "new-secret",
-                        "fetch password resets are captured on pagehide")
+            try await Task.sleep(for: .milliseconds(100))
+            try require(capture.offers.count == resetCount,
+                        "pagehide without a submission gesture cannot create a password offer")
             _ = try await js(tab, """
                 document.body.innerHTML = '<form><input autocomplete=username id=unrelated value=unrelated@example.test></form>' +
                   '<form id=secretForm><input type=password value=independent-secret></form>';

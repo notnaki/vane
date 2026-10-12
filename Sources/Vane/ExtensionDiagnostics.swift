@@ -20,6 +20,9 @@ import WebKit
             issues.append("\(permission): Vane does not provide " + (permission == "nativeMessaging"
                 ? "connections to native messaging hosts." : "extension items in page menus."))
         }
+        if !declared.intersection(["contextMenus", "menus"]).isEmpty {
+            issues.append("Page menus are supported; Vane does not yet add extension items to sidebar tab menus.")
+        }
         for (key, detail) in [
             ("chrome_url_overrides", "replacement browser pages"),
             ("side_panel", "extension side panels"),

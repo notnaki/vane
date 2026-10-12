@@ -47,8 +47,10 @@ import WebKit
     /// Web data first — its removal is asynchronous and has to finish before the process
     /// goes — then the keychain, then the files and the preferences.
     static func wipe() async {
+        FavouritePreviews.shared.preferencesChanged()
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         for id in ProfileManager.shared.profiles.map(\.id) {
+            FavouritePreviews.shared.beginClearing(profileID: id)
             await ProfileManager.dataStore(for: id).removeData(ofTypes: types, modifiedSince: .distantPast)
             if let sid = ProfileManager.dataStoreIdentifier(for: id, dataDirectory: Store.overrideDirectory) {
                 try? await WKWebsiteDataStore.remove(forIdentifier: sid)
