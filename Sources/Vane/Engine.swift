@@ -1114,7 +1114,10 @@ struct TitleReveal: Equatable, Sendable {
         // for it is its home while the sidecar was keyed only by the page it was left on; it
         // is now filed under both, so this is the fallback it was meant to be rather than the
         // ordinary way a pinned row comes back named after its host. See `saveCurrentSpace`.
-        title = TabStore.parkedTitle(saved: p.title, remembered: history.title(for: url), url: url)
+        // A usable saved title already wins. Avoid a synchronous history query per
+        // restored row (and opening its database) just to discard the result.
+        let remembered = TidyTitles.realTitle(p.title, at: url) ? nil : history.title(for: url)
+        title = TabStore.parkedTitle(saved: p.title, remembered: remembered, url: url)
         address = url.absoluteString
         favicons.load(for: self)              // cached or fetched, no page needed
     }
@@ -2236,12 +2239,14 @@ struct Stash {
             if let id = current, isTabLocked(id) {
                 return
             }
-            if lockedPageFolder == nil { lockedFolderBackdrop = nil }
+            if lockedFolderBackdrop != nil, lockedPageFolder == nil { lockedFolderBackdrop = nil }
+            let selectedTab = tabs.first { $0.id == current }
+            let previousTab = tabs.first { $0.id == oldValue }
             // Selecting a tab is what wakes it, and it has to happen here rather than in a
             // Task: SwiftUI reads `tab.web` on this same turn of the run loop.
-            if let t = tabs.first(where: { $0.id == current }) { t.lastActive = .now; t.resume() }
+            if let t = selectedTab { t.lastActive = .now; t.resume() }
             // The tab being left behind starts its idle clock now, not when it was opened.
-            if let old = tabs.first(where: { $0.id == oldValue }) {
+            if let old = previousTab {
                 old.lastActive = .now
                 if oldValue != current { old.easelSession?.liveItems.removeAll() }
                 old.closeChooser(.tabSwitch)   // a list anchored to a page nobody is looking at
@@ -2250,16 +2255,23 @@ struct Stash {
             // command bar — is what the split means by "the active pane". Keeping it here
             // rather than in each of those callers is the only way the two cannot drift.
             if let id = current, let i = splits.firstIndex(where: { $0.contains(id) }) {
-                splits[i] = splits[i].focusing(id)
+                let focused = splits[i].focusing(id)
+                if splits[i] != focused { splits[i] = focused }
             }
             // Arc's auto picture-in-picture: the video in the tab you left follows you out,
             // and goes back into the page when you come back to it.
             if oldValue != current {
-                PictureInPicture.enterIfPlaying(tabs.first { $0.id == oldValue && !isTabLocked($0.id) })
-                PictureInPicture.exitIfAuto(tabs.first { $0.id == current })
+                // PiP's script runner demands `tab.web`. Blank rows have no media;
+                // selecting or leaving one must not create an otherwise unused page.
+                if let old = previousTab, old.existingWeb != nil, !isTabLocked(old.id) {
+                    PictureInPicture.enterIfPlaying(old)
+                }
+                if let selectedTab, selectedTab.existingWeb != nil {
+                    PictureInPicture.exitIfAuto(selectedTab)
+                }
             }
             extensions.sync()
-            if sharingReady { SharedTabs.refreshPresentation() }
+            if sharingReady { SharedTabs.refreshPresentation(changingSelectionIn: self, previous: oldValue) }
         }
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
@@ -2680,10 +2692,18 @@ struct Stash {
         restored.reserveCapacity(entries.count)
         var today: [(url: URL, tab: Tab)] = []
         var pinned: [(url: URL, tab: Tab)] = []
+        // Preserve the first live object for an identity, within this profile only.
+        // Looking it up separately for each row repeatedly scanned the whole session.
+        var sharedByID: [UUID: Tab] = [:]
+        if sharesTabs {
+            for peer in TabStore.all where peer !== self && peer.sharesTabs && peer.profileID == profileID {
+                for tab in peer.everyTab where sharedByID[tab.id] == nil { sharedByID[tab.id] = tab }
+            }
+        }
         for entry in entries {
             guard let id = entry.id.flatMap(UUID.init(uuidString:)),
                   let url = URL(string: entry.url), let kind = entry.kind else { continue }
-            if sharesTabs, let shared = SharedTabs.existing(id, for: self) {
+            if let shared = sharedByID[id] {
                 restored.append(shared)
                 if kind == .today { today.append((url, shared)) }
                 if kind == .pinned { pinned.append((entry.home.flatMap(URL.init(string:)) ?? url, shared)) }
@@ -2693,10 +2713,7 @@ struct Stash {
             tab.sharedSpaceID = currentSpaceID
             wire(tab)
             tab.kind = kind
-            // Use the same insertion rule as newBlankTab, including mixed legacy rows
-            // and reused shared identities. Only folder/publication work is deferred.
-            restored.insert(tab, at: TabStore.clampedDestination(others: restored.map(\.kind),
-                                                                 moving: kind, to: restored.count))
+            restored.append(tab)
             let parked = Parked(title: entry.title ?? "",
                                 state: entry.state.flatMap { Data(base64Encoded: $0) },
                                 needsRecovery: entry.needsRecovery == true)
@@ -2705,7 +2722,9 @@ struct Stash {
             if kind == .today { today.append((url, tab)) }
             if kind == .pinned { pinned.append((entry.home.flatMap(URL.init(string:)) ?? url, tab)) }
         }
-        tabs = restored
+        // Stable section grouping matches interactive end-of-section insertion without
+        // rebuilding a growing kind array and shifting rows once per entry.
+        tabs = TabKind.allCases.flatMap { kind in restored.filter { $0.kind == kind } }
         if !isPrivate && !isLittle {
             adopt(\.pins, saved: TabStore.savedShape(space: currentSpaceID, profileID: profileID),
                   tabs: pinned)

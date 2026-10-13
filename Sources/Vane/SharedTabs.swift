@@ -6,13 +6,23 @@ import WebKit
 /// page stay separate. Private and Little Vane windows keep their own pages.
 @MainActor enum SharedTabs {
     private static var updating = false
-    private static var pending: [TabStore] = []
+    private final class PendingStore {
+        weak var value: TabStore?
+        init(_ store: TabStore) { value = store }
+    }
+    private static var pending: [PendingStore] = []
+    private static var flushQueued = false
 
     static func schedule(from store: TabStore) {
         guard store.sharingReady, store.sharesTabs, !updating, !store.sharedUpdateQueued else { return }
         store.sharedUpdateQueued = true
-        pending.append(store)
-        DispatchQueue.main.async { flush() }
+        pending.append(PendingStore(store))
+        guard !flushQueued else { return }
+        flushQueued = true
+        DispatchQueue.main.async {
+            flushQueued = false
+            flush()
+        }
     }
 
     /// Finish pending row/folder mutations before saving or leaving a Space. Coalescing
@@ -21,7 +31,8 @@ import WebKit
         guard !updating else { return }
         let changes = pending
         pending.removeAll()
-        for store in changes {
+        for change in changes {
+            guard let store = change.value else { continue }
             store.sharedUpdateQueued = false
             guard TabStore.all.contains(where: { $0 === store }) else { continue }
             synchronize(from: store)
@@ -216,6 +227,20 @@ import WebKit
     /// Elect one host per page. Different pages in background windows stay live; only
     /// another presentation of the same tab needs a snapshot.
     static func refreshPresentation() {
+        refreshPresentation(only: nil)
+    }
+
+    /// Selection only changes visibility for its old/new pages and their split panes.
+    /// Structural/window changes still use the full refresh above.
+    static func refreshPresentation(changingSelectionIn store: TabStore, previous: UUID?) {
+        var affected = Set([previous, store.current].compactMap { $0 })
+        for split in store.splits where split.tabs.contains(where: affected.contains) {
+            affected.formUnion(split.tabs)
+        }
+        refreshPresentation(only: affected)
+    }
+
+    private static func refreshPresentation(only affected: Set<UUID>?) {
         let stores = TabStore.all.filter { $0.window != nil }
         // Build membership once per window, including stashed Spaces. Focus changes used
         // to rebuild everyTab and search the whole session once for each individual tab.
@@ -230,7 +255,7 @@ import WebKit
         let keyWindows = stores.map { $0.window?.isKeyWindow == true }
         for (index, store) in stores.enumerated() {
             var held = Set<ObjectIdentifier>()
-            for tab in store.everyTab {
+            for tab in store.everyTab where affected?.contains(tab.id) ?? true {
                 if held.insert(ObjectIdentifier(tab)).inserted {
                     holdersByTab[ObjectIdentifier(tab), default: []].append(index)
                 }

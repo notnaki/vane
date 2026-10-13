@@ -239,13 +239,11 @@ enum QuitAsk {
     /// exported type.
     private func dockItem(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
         let action = DockAction(run)
-        actions.append(action)          // NSMenuItem does not retain its target
         let item = NSMenuItem(title: title, action: #selector(DockAction.fire), keyEquivalent: "")
         item.target = action
+        item.representedObject = action // retain the target for this menu's lifetime
         return item
     }
-
-    private var actions: [DockAction] = []
 }
 
 @MainActor private final class DockAction: NSObject {
