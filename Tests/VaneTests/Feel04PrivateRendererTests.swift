@@ -147,11 +147,25 @@ private final class Feel04WaitingServer: @unchecked Sendable {
 
 @MainActor final class Feel04CookieRendererTests: XCTestCase {
     func testDestinationCookieDoesNotCancelPreviewButProfileCookieChangeDoes() async throws {
+        try await checkSession(observerEnabled: true)
+    }
+
+    func testSourceSessionCheckRetiresPreviewWhenCookieCallbacksAreUnavailable() async throws {
+        try await checkSession(observerEnabled: false)
+    }
+
+    func testCachedPixelsRevalidateAfterAnUnobservedInactiveSessionChange() async throws {
+        try await checkSession(observerEnabled: false, inactiveChange: true)
+    }
+
+    private func checkSession(observerEnabled: Bool, inactiveChange: Bool = false) async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
         let server = try Feel04WaitingServer(body: "<title>Cookie preview</title><body style='margin:0'><div style='height:240px;background:#1976d2'>Preview</div><div style='height:240px;background:#e53935'></div><div style='height:240px;background:#43a047'></div></body>", cookie: true)
         let url = try await server.start(), clock = Feel04DebounceFixture()
-        let previews = Previews(debounceSleep: clock.sleep), tab = Tab(profileID: UUID())
+        let previews = Previews(sessionObserverFactory: { profile, changed in
+            observerEnabled ? Feel04PreviewSessionObserver(profileID: profile, changed: changed) : nil
+        }, debounceSleep: clock.sleep), tab = Tab(profileID: UUID())
         let enabled = Previews.enabled, mode = BatterySaver.shared.mode
         Previews.enabled = true; BatterySaver.shared.setMode(.off)
         // A page-originated preview always has a live persistent source WebView.
@@ -204,15 +218,35 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         XCTAssertTrue(pageCookies?.contains("feel04=preview") == true)
         let persisted = await cookies.allCookies()
         XCTAssertFalse(persisted.contains { $0.name == "feel04" }, "Speculative destination writes must stay in the renderer")
+        if inactiveChange { previews.cancel() }
         _ = try await source.evaluateJavaScript("document.cookie = 'source=; Max-Age=0; Path=/'")
         let sourceCookies = await cookies.allCookies()
         XCTAssertFalse(sourceCookies.contains { $0.name == "source" }, "Verify the source mutation before awaiting its observation")
+        if inactiveChange {
+            previews.request(url, from: tab)
+            XCTAssertNil(previews.current?.image, "Unvalidated cached pixels must never be promoted")
+            try await clock.waitUntil { clock.count == 2 }; clock.release(1)
+            let reloadDeadline = ContinuousClock.now + .seconds(8)
+            while ContinuousClock.now < reloadDeadline {
+                if let replacement = host?.contentView as? WKWebView,
+                   replacement.title == "Cookie preview", !replacement.isLoading,
+                   previews.current?.image != nil {
+                    let copied = try await replacement.evaluateJavaScript("document.cookie") as? String
+                    XCTAssertFalse(copied?.contains("source=signed-in") == true)
+                    XCTAssertFalse(replacement === web, "A changed source session must discard the old renderer")
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            return XCTFail("The revalidated preview did not reload")
+        }
         let invalidationDeadline = ContinuousClock.now + .seconds(5)
         while previews.current != nil, ContinuousClock.now < invalidationDeadline {
             try await Task.sleep(for: .milliseconds(20))
         }
         print("FEEL04_COOKIE_OBSERVATION profile=\(tab.profileID) sourceStoreMatches=\(source.configuration.websiteDataStore === ProfileManager.dataStore(for: tab.profileID)) setup=\(beforeRequest) afterLogout=\(setupObserver.changes) private=\(tab.isPrivate)")
-        XCTAssertGreaterThan(setupObserver.changes, beforeRequest, "The source store must observe the actual logout")
+        // Observer delivery is diagnostic; the application must retire pixels even
+        // when WebKit omits that event. The final assertion is the consumer contract.
         XCTAssertNil(previews.current, "A real source-session change must retire authenticated pixels")
     }
 }

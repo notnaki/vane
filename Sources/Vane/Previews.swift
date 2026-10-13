@@ -139,6 +139,19 @@ import WebKit
     private var cache = Cache()
     private var cacheScope: (profile: UUID, privateTab: UUID?)?
     private var sessionObserver: Feel04PreviewSessionObserver?
+    private struct SessionCookie: Hashable {
+        let domain, path, name, value: String
+        let expires: Date?
+        let secure, httpOnly, sessionOnly: Bool
+        init(_ cookie: HTTPCookie) {
+            domain = cookie.domain; path = cookie.path; name = cookie.name; value = cookie.value
+            expires = cookie.expiresDate; secure = cookie.isSecure
+            httpOnly = cookie.isHTTPOnly; sessionOnly = cookie.isSessionOnly
+        }
+    }
+    private var sessionCookies: Set<SessionCookie>?
+    private var sessionTask: Task<Void, Never>?
+    private let sessionObserverFactory: (UUID, @escaping @MainActor () -> Void) -> Feel04PreviewSessionObserver?
     /// Monotonic. Every publish carries the id of the request that produced it, so a reply
     /// arriving after the pointer moved is dropped rather than flashed on screen.
     private var latest = 0
@@ -149,8 +162,49 @@ import WebKit
 
     private let debounceSleep: @MainActor (Duration) async throws -> Void
 
-    init(debounceSleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+    init(sessionObserverFactory: @escaping (UUID, @escaping @MainActor () -> Void) -> Feel04PreviewSessionObserver? = {
+        Feel04PreviewSessionObserver(profileID: $0, changed: $1)
+    }, debounceSleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.sessionObserverFactory = sessionObserverFactory
         self.debounceSleep = debounceSleep
+    }
+
+    isolated deinit { sessionTask?.cancel() }
+
+    private func retireSession() {
+        cache = Cache(); sessionCookies = nil
+        cancel()
+        web?.removeFromSuperview(); host?.contentView = nil
+        web = nil; builtFor = nil; bridge = nil
+    }
+
+    /// Cookie-store notifications can omit page-originated deletions on WebKit 26.
+    /// Check only while one ordinary preview is active; no page polling, speculative
+    /// loads, private-session reads or work after pointer exit is introduced.
+    private func monitorSession(_ id: Int) {
+        sessionTask?.cancel()
+        sessionTask = Task(priority: .background) { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let self, !Task.isCancelled, self.latest == id else { return }
+                guard self.showing != nil, self.source != nil, self.current != nil,
+                      Previews.enabled, !BatterySaver.shared.isActive else { self.cancel(); return }
+                guard let unchanged = await self.sessionUnchanged(id) else { return }
+                if !unchanged { self.retireSession(); return }
+            }
+        }
+    }
+
+    /// Nil means this read was superseded; its completion must not affect a successor.
+    private func sessionUnchanged(_ id: Int) async -> Bool? {
+        guard latest == id, Previews.enabled, !BatterySaver.shared.isActive,
+              let scope = cacheScope, scope.privateTab == nil else { return nil }
+        let expected = sessionCookies
+        let cookies = await ProfileManager.dataStore(for: scope.profile).httpCookieStore.allCookies()
+        guard !Task.isCancelled, latest == id, Previews.enabled, !BatterySaver.shared.isActive,
+              cacheScope?.profile == scope.profile,
+              cacheScope?.privateTab == nil else { return nil }
+        return expected == Set(cookies.map(SessionCookie.init))
     }
 
     private var debounceTask: Task<Void, Never>?
@@ -178,22 +232,13 @@ import WebKit
         guard Previews.eligible(url, onPage: tab.currentURL) else { cancel(); return }
         let scope = (profile: tab.profileID, privateTab: tab.isPrivate ? tab.id : nil)
         if let previous = cacheScope, previous != scope {
-            cache = Cache()
+            cache = Cache(); sessionCookies = nil
             stop()
             sessionObserver?.detach(); sessionObserver = nil
         }
         cacheScope = scope
         if !tab.isPrivate, sessionObserver == nil {
-            sessionObserver = Feel04PreviewSessionObserver(profileID: tab.profileID) { [weak self] in
-                guard let self else { return }
-                self.cache = Cache()
-                self.cancel()
-                // Retire the cookie snapshot as well as its pixels. An old asynchronous
-                // preparation can only finish writing into its discarded renderer.
-                self.web?.removeFromSuperview()
-                self.host?.contentView = nil
-                self.web = nil; self.builtFor = nil; self.bridge = nil
-            }
+            sessionObserver = sessionObserverFactory(tab.profileID) { [weak self] in self?.retireSession() }
         }
         let key = Previews.key(for: url)
         if showing == key { source = tab; return }
@@ -208,9 +253,21 @@ import WebKit
         if let hit = cache.lookup(key) {
             unload()
             var p = hit
-            p.summarizing = false
-            p.loading = false
-            publish(p, for: id)
+            p.summarizing = false; p.loading = false
+            if tab.isPrivate { publish(p, for: id); return }
+            // Validate the source session before promoting stored pixels, including
+            // changes missed while no preview was active. Reuse the existing renderer.
+            current = nil
+            debounceTask = Task(priority: .background) { [weak self, weak tab] in
+                guard let self, let tab, let unchanged = await self.sessionUnchanged(id) else { return }
+                if !unchanged {
+                    self.retireSession()
+                    self.request(url, from: tab)
+                    return
+                }
+                self.publish(p, for: id)
+                self.monitorSession(id)
+            }
             return
         }
 
@@ -238,6 +295,10 @@ import WebKit
                 // our source-session observer. Refresh this ephemeral cookie snapshot
                 // before each destination; real profile changes still cancel the request.
                 let cookies = await ProfileManager.dataStore(for: tab.profileID).httpCookieStore.allCookies()
+                guard !Task.isCancelled, self.latest == id else { return }
+                let state = Set(cookies.map(SessionCookie.init))
+                if let previous = self.sessionCookies, previous != state { self.cache = Cache() }
+                self.sessionCookies = state
                 let destination = web.configuration.websiteDataStore.httpCookieStore
                 for cookie in await destination.allCookies() {
                     guard !Task.isCancelled, self.latest == id else { return }
@@ -251,6 +312,7 @@ import WebKit
             guard !Task.isCancelled, self.latest == id, Previews.enabled,
                   !BatterySaver.shared.isActive else { return }
             self.navigation = web.load(URLRequest(url: url))
+            if !tab.isPrivate { self.monitorSession(id) }
             self.paintTask = Task(priority: .background) { [weak self] in await self?.paint(id: id, web: web) }
             // Preparing pixels never speculatively starts inference. Keep its original
             // intent budget, independently of when the page begins painting.
@@ -295,6 +357,7 @@ import WebKit
         summaryTries = 0
         navigation = nil
         debounceTask?.cancel(); debounceTask = nil
+        sessionTask?.cancel(); sessionTask = nil
         paintTask?.cancel(); paintTask = nil
         // Cancelling the consumer is what cancels the inference: AppleAI's stream cancels
         // its work and retires its session from `onTermination`.
@@ -382,6 +445,10 @@ import WebKit
             // Not until this request's own page is on screen — see `committed`.
             guard committed == id, let img = await snapshot(of: web),
                   Previews.meaningful(img) else { continue }   // still a white box
+            if current?.image == nil, source?.isPrivate != true {
+                guard let unchanged = await sessionUnchanged(id) else { return }
+                if !unchanged { retireSession(); return }
+            }
             edit(id) { $0.image = img }
             // One more once the page says it is done, to catch web fonts and hero images
             // that land right after the first paint. Then stop — this is a preview.
@@ -392,6 +459,10 @@ import WebKit
               Previews.meaningful(img) else {
             edit(id) { $0.loading = false }
             return
+        }
+        if source?.isPrivate != true {
+            guard let unchanged = await sessionUnchanged(id) else { return }
+            if !unchanged { retireSession(); return }
         }
         edit(id) { $0.image = img; $0.loading = false }
     }
