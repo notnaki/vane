@@ -1274,7 +1274,7 @@ private struct DownloadListRow: View {
 
     var body: some View {
         LibraryRow(title: item.name, subtitle: item.subtitle, spoken: item.spoken) {
-            DownloadIcon(item: item)
+            Feel05DownloadThumbnail(item: item)
         } actions: {
             DownloadVerbs(item: item, downloads: downloads)
         } open: {
