@@ -14,7 +14,7 @@ import XCTest
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 280, height: 100),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: Feel09NativeButton(state: state))
+        let host = Feel09NativeHostingView(rootView: Feel09NativeButton(state: state))
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
@@ -171,7 +171,7 @@ import XCTest
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let geometry = Feel09ToastGeometry()
-        let host = NSHostingView(rootView: Feel09NativeToastPill(geometry: geometry)
+        let host = Feel09NativeHostingView(rootView: Feel09NativeToastPill(geometry: geometry)
             .padding(.horizontal, Look.inset)
             // Keep the enclosing layout wider than the pill, as it can be on CI.
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -368,4 +368,10 @@ private struct Feel09NativeToastPill: View {
                 } action: { geometry.frame = $0 }
         }
     }
+}
+
+/// XCTest can remain inactive. Deliver the fixture's native click instead of consuming
+/// it as window activation, matching the other native input fixtures in this suite.
+@MainActor private final class Feel09NativeHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
