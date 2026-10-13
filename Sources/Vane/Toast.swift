@@ -208,6 +208,8 @@ struct ToastPill: View {
     let toast: Toasts.Toast
     let tint: Color
     @ObservedObject private var toasts = Toasts.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var hovered = false
 
     /// Short toasts hug their content. Longer messages give up width to the controls,
@@ -246,8 +248,11 @@ struct ToastPill: View {
             if hovered { toasts.hover(toast, true) }
         }
         .onDisappear { toasts.hover(toast, false) }
-        .transition(.modifier(active: Feel09ToastTransition(progress: 0, id: toast.id),
-                              identity: Feel09ToastTransition(progress: 1, id: toast.id)))
+        // Reduced insertion must be an identity transition, including its hit testing.
+        // The modifier still observes policy changes inside a transition already running.
+        .transition(reduceMotion || batterySaver.isActive ? .identity :
+            .modifier(active: Feel09ToastTransition(progress: 0, id: toast.id),
+                      identity: Feel09ToastTransition(progress: 1, id: toast.id)))
         .vaneMotionPolicy()
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Toasts.spoken(toast.text))

@@ -159,6 +159,10 @@ import XCTest
 
     func testToastReplacementCannotRetargetAnInFlightNativePress() async throws {
         TestEnvironment.prepare()
+        let saver = BatterySaver.shared
+        let originalMode = saver.mode
+        saver.setMode(.alwaysOn)
+        defer { saver.setMode(originalMode) }
         let toasts = Toasts.shared
         toasts.showing.forEach { toasts.dismiss($0) }
         let store = TabStore(isPrivate: true)
@@ -255,7 +259,8 @@ import XCTest
         print("FEEL09 native toast: pill=\(geometry.frame), target=\(freshUndoPoint), flipped=\(host.isFlipped), key=\(window.isKeyWindow), active=\(NSApp.isActive), pressDifference=\(pressDifference)")
         if pressDifference == 0 {
             let localPoint = host.convert(freshUndoPoint, from: nil)
-            print("FEEL09 hit: local=\(localPoint), recipient=\(String(describing: host.hitTest(localPoint))), bounds=\(host.bounds), frame=\(host.frame)")
+            let hitPoint = host.superview?.convert(freshUndoPoint, from: nil) ?? freshUndoPoint
+            print("FEEL09 hit: local=\(localPoint), recipient=\(String(describing: host.hitTest(hitPoint))), bounds=\(host.bounds), frame=\(host.frame)")
             let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
             host.cacheDisplay(in: host.bounds, to: rep)
             let png = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
