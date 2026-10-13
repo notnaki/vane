@@ -3470,6 +3470,8 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     var body: some View {
         HStack(spacing: Look.rowSpacing) {
             leading().opacity(morph == nil ? 1 : 0)
+                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
+                .vaneMotionPolicy()
             // Every tab title in the same ink, selected or not — Arc's list is one grey on
             // dark all the way down, and the selection is the fill, not a change of ink.
             label().font(Look.rowTitle).lineLimit(1)
@@ -3477,6 +3479,8 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
                 .opacity(1 - (morph?.progress ?? 0))
             Spacer(minLength: 0)
             trailing().opacity(1 - (morph?.progress ?? 0))
+                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
+                .vaneMotionPolicy()
         }
         .padding(.leading, Look.rowInset)
         .padding(.trailing, Look.rowTrailingInset)
