@@ -293,3 +293,40 @@ import XCTest
         try await settle { previews.state == .unavailable }
     }
 }
+
+@MainActor final class Feel04RetryProofTests: XCTestCase {
+    private func settle(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(condition(), file: file, line: line)
+    }
+    func testSessionRetryPreservesLiveSourceAccountProof() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let loader = Feel04Loader(), previews = FavouritePreviews(loader: loader), source = WKWebView()
+        let target = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!, owner = UUID()
+        defer { previews.dismiss(owner: owner); loader.finish(); source.stopLoading() }
+        source.loadHTMLString("<meta name='user-login' content='fixture'><body>Fixture</body>", baseURL: target.siteURL)
+        try await settle { source.url == target.siteURL && !source.isLoading }
+        previews.request(target, owner: owner, source: source)
+        try await settle { loader.contexts.count == 1 }
+        previews.sessionChanged(profileID: target.profileID)
+        try await settle { loader.contexts.count == 2 }
+        loader.finish(.ready(.init(account: "other", items: [])))
+        try await settle { loader.completed == 2 && previews.state != .loading }
+        XCTAssertEqual(previews.state, .unavailable, "The retry must not publish another account over the live favourite")
+    }
+    func testSessionRetryPreservesExplicitAccountProof() async throws {
+        TestEnvironment.prepare()
+        let loader = Feel04Loader(), previews = FavouritePreviews(loader: loader)
+        let target = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!, owner = UUID()
+        defer { previews.dismiss(owner: owner); loader.finish() }
+        previews.request(target, owner: owner, account: "fixture")
+        try await settle { loader.contexts.count == 1 }
+        previews.sessionChanged(profileID: target.profileID)
+        try await settle { loader.contexts.count == 2 }
+        loader.finish(.ready(.init(account: "other", items: [])))
+        try await settle { loader.completed == 2 && previews.state != .loading }
+        XCTAssertEqual(previews.state, .unavailable)
+    }
+}

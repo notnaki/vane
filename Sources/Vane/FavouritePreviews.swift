@@ -159,7 +159,8 @@ import WebKit
         attempts = attempts.filter { $0.key.profileID != profileID }
         guard let context, context.profileID == profileID, let owner else { return }
         if loading && !preparing && sessionRetries < 1 {
-            request(context, owner: owner, sessionRetries: sessionRetries + 1)
+            request(context, owner: owner, account: accountHint, source: requestSource,
+                    sessionRetries: sessionRetries + 1)
         } else {
             stop()
             setState(.unavailable)

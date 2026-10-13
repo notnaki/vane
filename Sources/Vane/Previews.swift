@@ -223,6 +223,7 @@ import WebKit
                   Previews.enabled, !BatterySaver.shared.isActive else { return }
             // Give the page being browsed priority over this optional destination.
             guard tab.existingWeb?.isLoading != true else {
+                self.unload()
                 self.edit(id) { $0.loading = false }; return
             }
             let web = self.webView(for: tab)
