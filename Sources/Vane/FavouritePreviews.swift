@@ -109,14 +109,17 @@ import WebKit
             let result = await self.loader.load(context)
             guard !Task.isCancelled, self.generation == ticket, self.owner == owner,
                   Self.enabled(context.service), self.blocked[context.profileID] == nil else { return }
-            self.loading = false
+            // Verification is still in-flight work: cancellation here must permit a retry.
+            defer { if self.generation == ticket { self.loading = false } }
             switch result {
             case .ready(let snapshot):
                 // Account proof can change while WebKit is loading. Recheck a source
                 // that supplied it before either caching or displaying authenticated data.
-                if liveProof, let source {
+                if liveProof {
+                    guard let source else { self.setState(.unavailable); return }
                     let live = await FavouriteIdentityProbe.read(source, script: DOMFavouritePreviewAdapter(service: context.service).identityScript)
-                    guard !Task.isCancelled, self.generation == ticket else { return }
+                    guard !Task.isCancelled, self.generation == ticket,
+                          Self.enabled(context.service), self.blocked[context.profileID] == nil else { return }
                     guard source.url.flatMap({ FavouritePreviewContext(profileID: context.profileID, url: $0) }) == context,
                           live == snapshot.account else {
                         self.cache.invalidate(profileID: context.profileID)
@@ -199,7 +202,8 @@ import WebKit
         guard let source else { setState(prepared); return }
         let ticket = generation
         promotionTask = Task { [weak self, weak source] in
-            guard let self, let source else { return }
+            guard !Task.isCancelled, let self, self.generation == ticket else { return }
+            guard let source else { self.setState(.unavailable); return }
             let identity = await FavouriteIdentityProbe.read(source, script: DOMFavouritePreviewAdapter(service: context.service).identityScript)
             guard !Task.isCancelled, self.generation == ticket else { return }
             guard source.url.flatMap({ FavouritePreviewContext(profileID: context.profileID, url: $0) }) == context,

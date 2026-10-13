@@ -305,10 +305,11 @@ import WebKit
     private var bridge: Bridge?
     /// The web view is built against one profile's data store; a hover from another window
     /// rebuilds it. Reused otherwise, which is what keeps the warm numbers warm.
-    private var builtFor: (profile: UUID, isPrivate: Bool)?
+    private var builtFor: (profile: UUID, isPrivate: Bool, privateTab: UUID?)?
 
     private func webView(for tab: Tab) -> WKWebView {
-        if let web, builtFor?.profile == tab.profileID, builtFor?.isPrivate == tab.isPrivate {
+        if let web, builtFor?.profile == tab.profileID, builtFor?.isPrivate == tab.isPrivate,
+           builtFor?.privateTab == (tab.isPrivate ? tab.id : nil) {
             return web
         }
         web?.removeFromSuperview()
@@ -342,7 +343,7 @@ import WebKit
         else { host = PreviewHostWindow(content: w) }
 
         web = w
-        builtFor = (tab.profileID, tab.isPrivate)
+        builtFor = (tab.profileID, tab.isPrivate, tab.isPrivate ? tab.id : nil)
         return w
     }
 

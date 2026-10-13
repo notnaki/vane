@@ -76,21 +76,21 @@ struct FavouritePreviewCard: View {
             }
             ScrollView {
                 Group {
-                switch state {
-                case .loading:
-                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Loading preview…").foregroundStyle(.secondary) }
-                        .accessibilityElement(children: .combine)
-                case .signedOut:
-                    notice("Sign in to \(context.service.title)", detail: "Open the site to sign in with this profile.")
-                case .unavailable:
-                    notice("Preview unavailable", detail: "Vane couldn’t reliably read this page. Open the site to view the latest items.")
-                case .ready(let snapshot): content(snapshot)
-                case .stale(let snapshot):
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Saved preview · couldn’t refresh", systemImage: "clock").font(.caption).foregroundStyle(.secondary)
-                        content(snapshot)
+                    switch state {
+                    case .loading:
+                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Loading preview…").foregroundStyle(.secondary) }
+                            .accessibilityElement(children: .combine)
+                    case .signedOut:
+                        notice("Sign in to \(context.service.title)", detail: "Open the site to sign in with this profile.")
+                    case .unavailable:
+                        notice("Preview unavailable", detail: "Vane couldn’t reliably read this page. Open the site to view the latest items.")
+                    case .ready(let snapshot): content(snapshot)
+                    case .stale(let snapshot):
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Saved preview · couldn’t refresh", systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+                            content(snapshot)
+                        }
                     }
-                }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -150,29 +150,29 @@ struct FavouritePreviewCard: View {
                 Text(context.service == .github ? "No open pull requests involving you." : context.service == .gmail ? "Your inbox is empty." : "No upcoming events.")
                     .font(.subheadline).foregroundStyle(.secondary)
             } else if context.service == .gmail {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(snapshot.items) { item in
-                            Button { open(item.url) } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack(alignment: .firstTextBaseline) {
-                                        HStack(spacing: 6) {
-                                            if item.unread { Circle().fill(Color.accentColor).frame(width: 5, height: 5).accessibilityHidden(true) }
-                                            Text(item.subtitle).font(.subheadline).fontWeight(item.unread ? .bold : .semibold).lineLimit(1)
-                                        }
-                                        Spacer(minLength: 8)
-                                        if let time = item.timeLabel { Text(time).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(snapshot.items) { item in
+                        Button { open(item.url) } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    HStack(spacing: 6) {
+                                        if item.unread { Circle().fill(Color.accentColor).frame(width: 5, height: 5).accessibilityHidden(true) }
+                                        Text(item.subtitle).font(.subheadline).fontWeight(item.unread ? .bold : .semibold).lineLimit(1)
                                     }
-                                    Text(item.title).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }.padding(.vertical, 10).padding(.horizontal, 4).contentShape(.rect)
-                            }
-                            .buttonStyle(.plain).focusable(false)
-                            .vaneKeyboardAction(radius: 6) { open(item.url) }
-                            .accessibilityValue(item.unread ? "Unread" : "Read")
-                            .accessibilityHint("Opens this message in a new tab in this favourite’s profile")
-                            if item.id != snapshot.items.last?.id { Divider() }
+                                    Spacer(minLength: 8)
+                                    if let time = item.timeLabel { Text(time).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                                }
+                                Text(item.title).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }.padding(.vertical, 10).padding(.horizontal, 4).contentShape(.rect)
                         }
+                        .buttonStyle(.plain).focusable(false)
+                        .vaneKeyboardAction(radius: 6) { open(item.url) }
+                        .accessibilityValue(item.unread ? "Unread" : "Read")
+                        .accessibilityHint("Opens this message in a new tab in this favourite’s profile")
+                        if item.id != snapshot.items.last?.id { Divider() }
                     }
+                }
             } else {
                 ForEach(snapshot.items) { item in
                     VStack(alignment: .leading, spacing: 4) {

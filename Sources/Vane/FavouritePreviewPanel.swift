@@ -34,6 +34,7 @@ struct FavouritePreviewPanel: NSViewRepresentable {
         private var outsideMonitor: Any?
         private var deactivation: NSObjectProtocol?
         private var dismissal: Task<Void, Never>?
+        private var targetFrame: NSRect?
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -89,7 +90,10 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             let x = min(max(preferredX, ground.minX), ground.maxX - size.width)
             let y = min(max(tile.maxY - size.height, ground.minY), ground.maxY - size.height)
             let frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
-            panel.setFrame(frame, display: true)
+            // Metadata updates must not snap an in-progress anchored arrival to its end.
+            if targetFrame != frame || Motion.reduced { panel.setFrame(frame, display: true) }
+            targetFrame = frame
+            if Motion.reduced { panel.alphaValue = 1 }
             if isNew && !Motion.reduced {
                 panel.alphaValue = 0
                 panel.setFrameOrigin(NSPoint(x: x - 4, y: y))
@@ -141,7 +145,7 @@ struct FavouritePreviewPanel: NSViewRepresentable {
                 panel.orderOut(nil); panel.contentView = nil; panel.close()
                 if restoreKey { owner?.makeKey() }
             }
-            panel = nil; host = nil
+            panel = nil; host = nil; targetFrame = nil
         }
     }
 }
