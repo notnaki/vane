@@ -148,9 +148,12 @@ import WebKit
 
     static let script = #"""
     (() => {
+      if (globalThis.__vaneDraft) return;
       const token = Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16)).join('-');
       const originals = new Map();
-      const observed = new WeakSet();
+      const observed = new Set();
+      const pendingRoots = new Set();
+      let pendingFrame = null;
       let last = null;
       let alive = true;
       const ignored = new Set(['hidden','submit','button','reset','image']);
@@ -172,8 +175,11 @@ import WebKit
         originals.set(e, {kind:k, initial, edited:false});
       }
       function discover(root) {
-        if (root instanceof Element) remember(root);
-        for (const e of root.querySelectorAll?.('*') || []) {
+        if (root instanceof Element) {
+          remember(root);
+          if (root.shadowRoot) scan(root.shadowRoot);
+        }
+        for (const e of root.childElementCount ? root.querySelectorAll('*') : []) {
           remember(e);
           if (e.shadowRoot) scan(e.shadowRoot);
         }
@@ -181,7 +187,7 @@ import WebKit
       function scan(root) {
         if (!observed.has(root)) {
           observed.add(root);
-          observer.observe(root, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['contenteditable']});
+          observe(root);
           root.addEventListener('beforeinput', before, true);
           root.addEventListener('input', send, true);
           root.addEventListener('change', send, true);
@@ -200,7 +206,10 @@ import WebKit
           }
         }
       }
-      function before(event) { markRich(event, true); }
+      function before(event) {
+        if (!alive) return;
+        flushDiscovery(); markRich(event, true);
+      }
       function dirty() {
         let result = false;
         for (const [e, original] of originals) {
@@ -214,18 +223,57 @@ import WebKit
         return result;
       }
       function send(event) {
+        if (!alive) return;
+        flushDiscovery();
         if (event?.type === 'input' || event?.type === 'change') markRich(event, false);
         const current = dirty();
         if (current === last) return;
         last = current;
         webkit.messageHandlers.vanedraft.postMessage({token, dirty:current});
       }
-      const observer = new MutationObserver(records => {
+      function collect(records) {
         for (const record of records) {
           if (record.type === 'attributes') remember(record.target);
-          for (const node of record.addedNodes) discover(node);
+          // Keep only added subtrees; an existing parent can contain thousands of
+          // unrelated nodes. Retain detached additions too: script-edited controls
+          // removed before delivery still represent unsubmitted work.
+          for (const node of record.addedNodes) if (node.nodeType === Node.ELEMENT_NODE) pendingRoots.add(node);
         }
-        send();
+      }
+      function flushDiscovery() {
+        if (pendingFrame !== null) cancelAnimationFrame(pendingFrame);
+        pendingFrame = null;
+        collect(observer.takeRecords());
+        for (const root of pendingRoots) {
+          let covered = false;
+          for (let parent = root.parentNode; parent; parent = parent.parentNode) {
+            if (pendingRoots.has(parent)) { covered = true; break; }
+          }
+          if (!covered) discover(root);
+        }
+        pendingRoots.clear();
+        // A detached shadow host no longer needs observer or event subscriptions.
+        let detached = false;
+        for (const root of observed) if (root !== document && !root.host?.isConnected) {
+          unlisten(root); observed.delete(root); detached = true;
+        }
+        if (detached) {
+          observer.disconnect();
+          for (const root of observed) observe(root);
+        }
+      }
+      function observe(root) {
+        observer.observe(root, {subtree:true, childList:true, characterData:true, attributes:true, attributeFilter:['contenteditable']});
+      }
+      function unlisten(root) {
+        root.removeEventListener('beforeinput', before, true);
+        root.removeEventListener('input', send, true);
+        root.removeEventListener('change', send, true);
+      }
+      const observer = new MutationObserver(records => {
+        collect(records);
+        if (!alive || pendingFrame !== null) return;
+        pendingFrame = requestAnimationFrame(() => { pendingFrame = null; send(); });
       });
       // Reset is explicit abandonment. A submit event alone does not establish
       // remote save success; completed navigation gets a fresh document/baseline.
@@ -241,12 +289,17 @@ import WebKit
       }, true);
       addEventListener('pagehide', () => {
         alive = false;
+        observer.disconnect();
+        if (pendingFrame !== null) cancelAnimationFrame(pendingFrame);
+        pendingFrame = null; pendingRoots.clear();
+        for (const root of observed) unlisten(root);
+        observed.clear();
         webkit.messageHandlers.vanedraft.postMessage({token, gone:true});
       });
-      addEventListener('pageshow', () => { alive = true; last = null; send(); });
+      addEventListener('pageshow', () => { alive = true; last = null; scan(document); send(); });
       globalThis.__vaneDraft = {check:() => {
         if (!alive) throw new Error('retired document');
-        scan(document);
+        flushDiscovery(); scan(document);
         // Hydration advances baselines only at a query boundary, not during
         // mutation delivery before an input-only editor emits its editing event.
         for (const [e, original] of originals) {

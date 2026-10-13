@@ -17,7 +17,7 @@ import WebKit
 
     static let pageIdentity = #"""
     (() => {
-      if (!/^https?:$/.test(location.protocol)) return;
+      if (!/^https?:$/.test(location.protocol) || document.__vaneBoostPageToken) return;
       const token = [...crypto.getRandomValues(new Uint32Array(4))].map(n => n.toString(16).padStart(8, '0')).join('');
       Object.defineProperty(document, '__vaneBoostPageToken', {value: token});
     })();
@@ -41,7 +41,7 @@ import WebKit
       let overlay = null, cover = null, selected = null;
       const sizeSelector = 'p,h1,h2,h3,h4,h5,h6,a,span,li,td,th,button,input,textarea,label,blockquote';
       const sizes = new Map();
-      let sizeObserver = null, sizeFrame = null;
+      let sizeObserver = null, sizeFrame = null, textScale = 1, alive = true, applyQueued = false;
       const post = (kind, extra = {}) => window.webkit.messageHandlers.vaneBoost.postMessage({kind, stamp, origin, token, ...extra});
       const selectable = el => el && el.parentElement && el.getRootNode() === document &&
         el !== document.body && document.body?.contains(el) && !el.hasAttribute('data-vane-zap');
@@ -81,25 +81,37 @@ import WebKit
         const measured = [...sizes.keys()].map(el => [el, parseFloat(getComputedStyle(el).fontSize)]);
         for (const [el, size] of measured) if (Number.isFinite(size)) el.style.setProperty('font-size', (size * scale) + 'px', 'important');
       };
+      // CSS can depend on descendants (:has), siblings, and inherited em sizes.
+      // Coalesce invalidations, but always restore and measure the full current set.
+      const queueSizes = () => {
+        if (!alive || textScale === 1 || sizeFrame !== null) return;
+        sizeFrame = requestAnimationFrame(() => {
+          sizeFrame = null;
+          scaleText(document.querySelectorAll(sizeSelector), textScale);
+        });
+      };
+      const watchSizes = () => {
+        if (!alive || textScale === 1 || sizeObserver) return;
+        sizeObserver = new MutationObserver(queueSizes);
+        sizeObserver.observe(document, {childList:true, subtree:true});
+      };
       const apply = (css, scale = 1) => {
         clearSizes();
+        textScale = scale;
         // Constructed stylesheets work under style-src restrictions and leave site sheets intact.
         style.replaceSync(css);
         const others = document.adoptedStyleSheets.filter(sheet => sheet !== style);
         document.adoptedStyleSheets = css.trim() ? [...others, style] : others;
-        if (scale === 1) return;
-        scaleText(document.querySelectorAll(sizeSelector), scale);
-        const pending = new Set();
-        sizeObserver = new MutationObserver(records => {
-          for (const record of records) for (const node of record.addedNodes) {
-            if (node.nodeType !== Node.ELEMENT_NODE || node.hasAttribute('data-vane-zap')) continue;
-            if (node.matches(sizeSelector)) pending.add(node);
-            for (const child of node.querySelectorAll(sizeSelector)) pending.add(child);
-          }
-          if (!pending.size || sizeFrame !== null) return;
-          sizeFrame = requestAnimationFrame(() => { sizeFrame = null; scaleText(pending, scale); pending.clear(); });
-        });
-        sizeObserver.observe(document, {childList: true, subtree: true});
+        watchSizes();
+        // Native updates must also take effect in an occluded/background page.
+        // A microtask keeps only the latest same-turn update without waiting for paint.
+        if (!applyQueued) {
+          applyQueued = true;
+          queueMicrotask(() => {
+            applyQueued = false;
+            if (alive && textScale !== 1) scaleText(document.querySelectorAll(sizeSelector), textScale);
+          });
+        }
       };
       const elementAt = event => {
         if (event.target !== cover) return event.target;
@@ -154,8 +166,15 @@ import WebKit
       };
       const api = window.__vaneBoost = {apply, selector, zap, post, zapping:false};
       Object.defineProperty(api, 'documentToken', {value:token});
-      window.addEventListener('pagehide', zapOff);
-      window.addEventListener('pageshow', event => { if (event.persisted) post('restored'); });
+      window.addEventListener('pagehide', () => {
+        alive = false; zapOff();
+        sizeObserver?.disconnect(); sizeObserver = null;
+        if (sizeFrame !== null) cancelAnimationFrame(sizeFrame); sizeFrame = null;
+      });
+      window.addEventListener('pageshow', event => {
+        alive = true; watchSizes(); queueSizes();
+        if (event.persisted) post('restored');
+      });
       post('ready');
     })();
     """#

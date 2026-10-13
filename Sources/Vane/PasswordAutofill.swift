@@ -11,6 +11,7 @@ import WebKit
     /// Cross-origin and opaque sandbox frames cannot enter this registry.
     static let script = """
     (function () {
+      if (window.__vaneFill) return;
       var topWindow = window, contexts = new Map(), recentContext = null;
       function install(window) {
         var document;
@@ -23,7 +24,24 @@ import WebKit
         if (!document) return;
         if (contexts.has(document)) { contexts.get(document).ready(); return; }
         var documentID = Array.from(topWindow.crypto.getRandomValues(new Uint32Array(4))).join('-'), fields = new WeakMap(), fieldSerial = 0;
+        var retired = false, observer = null, discoveryTimer = null;
+        var listeners = [];
+        function listen(target, name, fn, capture) {
+          target.addEventListener(name, fn, capture);
+          listeners.push([target, name, fn, capture]);
+        }
+        function pauseDiscovery() {
+          if (observer) observer.disconnect();
+          if (discoveryTimer !== null) clearTimeout(discoveryTimer);
+          discoveryTimer = null; pending = false;
+        }
+        function dispose() {
+          retired = true; pauseDiscovery();
+          listeners.forEach(function (l) { l[0].removeEventListener(l[1], l[2], l[3]); });
+          listeners = [];
+        }
         function attachedDocument() {
+          if (retired) return false;
           try {
             if (window.document !== document || window.origin !== topWindow.origin) return false;
             var child = window;
@@ -310,23 +328,23 @@ import WebKit
           var a = anchor();
           if (a) { send({ focus: true, x: a.x, y: a.y, w: a.w }); }
         }
-        document.addEventListener('focusin', function (e) { focused(e.target); }, true);
-        document.addEventListener('click', function (e) { focused(e.target); }, true);
+        listen(document, 'focusin', function (e) { focused(e.target); }, true);
+        listen(document, 'click', function (e) { focused(e.target); }, true);
         // Everything that means "not interested any more". The list is anchored to a point
         // that stops being true the moment any of these happens, so each one closes it.
-        document.addEventListener('focusout', function (e) {
+        listen(document, 'focusout', function (e) {
           if (ours(e.target)) { send({ dismiss: 'blur' }); }
         }, true);
-        document.addEventListener('pointerdown', function (e) {
+        listen(document, 'pointerdown', function (e) {
           if (!ours(e.target)) { send({ dismiss: 'click' }); }
         }, true);
         // Only while the list is actually up. A scroll handler that posts on every wheel
         // event of every page, forever, is a message per frame for a list that is not there.
-        window.addEventListener('scroll', function () {
+        listen(window, 'scroll', function () {
           if (listOpen) { send({ dismiss: 'scroll' }); }
         }, true);
         // A single-page app changes the form under us without a navigation.
-        window.addEventListener('popstate', function () { send({ dismiss: 'navigate' }); });
+        listen(window, 'popstate', function () { send({ dismiss: 'navigate' }); });
         var submittedAttempt = null;
         function replacesSubmitted(form) {
           var a = submittedAttempt;
@@ -354,7 +372,7 @@ import WebKit
           send({ account: account, password: p.pass.value, attempt: lastOfferID,
             mainDocument: window === topWindow });
         }
-        document.addEventListener('submit', function (e) {
+        listen(document, 'submit', function (e) {
           var form = e.target;
           if (!form || form.tagName !== 'FORM' || !safeRoot(form)) return;
           submittedAttempt = {
@@ -365,7 +383,7 @@ import WebKit
           offer(pair(e.target, true));
         }, true);
         // A failed sign-in can leave the page in place. An edited field starts a new attempt.
-        document.addEventListener('input', function (e) {
+        listen(document, 'input', function (e) {
           var p = pairFor(e.target);
           if (p) {
             if (e.isTrusted) send({ dismiss: 'input' });
@@ -383,21 +401,26 @@ import WebKit
         // Leaving a page is not a login attempt. For fetch-based forms, capture only
         // after a trusted submit-control activation or Enter in a credential field.
         var activated = null;
-        document.addEventListener('click', function (e) {
+        listen(document, 'click', function (e) {
           if (!e.isTrusted) return;
           var button = e.target.closest && e.target.closest('button,input[type="submit"]');
           if (!button || !button.form || button.type !== 'submit') return;
           activated = { form: button.form, at: Date.now() };
         }, true);
-        document.addEventListener('keydown', function (e) {
+        listen(document, 'keydown', function (e) {
           if (e.isTrusted && e.key === 'Enter' && pairFor(e.target, true))
             activated = { form: e.target.form, at: Date.now() };
         }, true);
-        window.addEventListener('pagehide', function () {
+        listen(window, 'pagehide', function () {
           if (!submittedAttempt && activated && activated.form && Date.now() - activated.at < 10000)
             offer(pair(activated.form, true));
           else if (submittedAttempt && replacesSubmitted(submittedAttempt.retry))
             offer(pair(submittedAttempt.retry, true));
+          pauseDiscovery();
+        });
+        listen(window, 'pageshow', function () {
+          if (retired || !attachedDocument()) return;
+          observe(); discoverFrames(); ready();
         });
         function fill(account, password, automatic, target, continuation) {
           var p = targetPair();
@@ -459,31 +482,32 @@ import WebKit
           send({ ready: true });
           if (ours(document.activeElement)) focused(document.activeElement);
         }
-        var context = { window: window, fill: fill, anchor: anchor, pair: targetPair, token: token, live: liveDocument, attached: attachedDocument, ready: ready,
+        var context = { window: window, fill: fill, anchor: anchor, pair: targetPair, token: token, live: liveDocument, attached: attachedDocument, ready: ready, dispose: dispose,
           generate: generate, generation: function () { return generationToken(lastGeneration && generationFor(lastGeneration.field)); } };
         contexts.set(document, context);
         function discoverFrames() {
           // Access itself enforces the origin boundary, including opaque sandbox origins.
-          Array.from(document.querySelectorAll('iframe,frame')).forEach(function (frame) {
+          Array.from(document.getElementsByTagName('iframe')).concat(Array.from(document.getElementsByTagName('frame'))).forEach(function (frame) {
             try { if (frame.contentDocument) install(frame.contentWindow); } catch (_) {}
           });
           // Remove navigated/detached documents rather than retaining their DOM and accounts.
-          contexts.forEach(function (ctx, doc) { if (!ctx.attached()) { contexts.delete(doc); if (recentContext === ctx) recentContext = null; } });
+          contexts.forEach(function (ctx, doc) { if (!ctx.attached()) { ctx.dispose(); contexts.delete(doc); if (recentContext === ctx) recentContext = null; } });
         }
-        document.addEventListener('load', function (e) {
+        listen(document, 'load', function (e) {
           if (e.target.tagName === 'IFRAME' || e.target.tagName === 'FRAME') discoverFrames();
         }, true);
         discoverFrames();
         ready();
-        new MutationObserver(function (records) {
+        observer = new MutationObserver(function (records) {
           if (pending || !records.some(function (r) {
             return r.type === 'attributes' || (lastOfferID && (r.type === 'characterData' || r.addedNodes.length)) || r.removedNodes.length || Array.from(r.addedNodes).some(function (n) {
               return n.nodeType === 1;
             });
           })) return;
           pending = true;
-          setTimeout(function () {
-            pending = false;
+          discoveryTimer = setTimeout(function () {
+            discoveryTimer = null; pending = false;
+            if (!attachedDocument()) { dispose(); return; }
             discoverFrames();
             rejectFailedAttempt();
             var cached = lastPair;
@@ -491,8 +515,12 @@ import WebKit
                 (!visible(cached) || token(targetPair()) !== token(cached))) send({ dismiss: 'navigate' });
             ready();
           }, 80);
-        }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true,
-          attributeFilter: ['type', 'autocomplete', 'name', 'id', 'disabled', 'readonly', 'hidden', 'style', 'class', 'inert', 'aria-invalid', 'role'] });
+        });
+        function observe() {
+          observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true,
+            attributeFilter: ['type', 'autocomplete', 'name', 'id', 'disabled', 'readonly', 'hidden', 'style', 'class', 'inert', 'aria-invalid', 'role'] });
+        }
+        observe();
       }
       function currentContext(target) {
         if (target) {

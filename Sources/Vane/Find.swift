@@ -113,12 +113,12 @@ import WebKit
             }
           });
           var node, total = 0, upTo = 0;
+          var here = mark ? document.createRange() : null;
           while ((node = walk.nextNode())) {
             var hay = node.nodeValue.toLowerCase(), at = 0;
             while ((at = hay.indexOf(needle, at)) !== -1) {
               total++;
               if (mark) {
-                var here = document.createRange();
                 here.setStart(node, at);
                 here.setEnd(node, at);
                 // Every match that starts at or before the selection, the current one
@@ -138,6 +138,7 @@ import WebKit
     /// A fresh search: the query changed, so recount and land on the first match after the
     /// caret. Anything else is a step through what was already counted.
     func run(_ text: String, in tab: Tab, forward: Bool = true, fresh: Bool = false) async {
+        guard !Task.isCancelled else { return }
         generation += 1
         let ticket = generation
         query = text
@@ -147,16 +148,25 @@ import WebKit
             clearHighlight(in: tab)
             return
         }
+        let web = tab.web, document = tab.readingDocumentGeneration
+        // Let a burst of typing supersede obsolete searches before entering WebKit.
+        // Stepping remains immediate, with no debounce timer or retained page task.
+        if fresh { await Task.yield() }
+        func current() -> Bool {
+            !Task.isCancelled && ticket == generation && tab.existingWeb === web
+                && tab.readingDocumentGeneration == document
+        }
+        guard current() else { return }
         let hit = await tab.find(text, forward: forward)
-        guard ticket == generation else { return }
+        guard current() else { return }
         guard hit else {
             // WebKit found nothing, so whatever the counter said, there is nothing to be on.
             count = 0
             index = 0
             return
         }
-        let answer = await measure(text, in: tab)
-        guard ticket == generation else { return }
+        let answer = await measure(text, in: web)
+        guard current() else { return }
         guard let measured = answer, measured.count > 0 else {
             // A page the walker cannot read the way WebKit does — a PDF, a shadow root, an
             // iframe — still has a highlighted match, so say so rather than "0 matches",
@@ -170,8 +180,8 @@ import WebKit
     }
 
     /// `[total, position]` off the page, or nil when the page cannot answer.
-    private func measure(_ text: String, in tab: Tab) async -> (count: Int, index: Int)? {
-        let value = try? await tab.web.evaluateJavaScript(Self.measureScript(text))
+    private func measure(_ text: String, in web: WKWebView) async -> (count: Int, index: Int)? {
+        let value = try? await web.evaluateJavaScript(Self.measureScript(text))
         guard let pair = value as? [Any], pair.count == 2 else { return nil }
         func number(_ any: Any) -> Int? { (any as? Int) ?? (any as? NSNumber)?.intValue }
         guard let total = number(pair[0]), let at = number(pair[1]) else { return nil }

@@ -155,6 +155,8 @@ enum MediaTray {
     /// the cache and already says which site this is. Ceiling: real album art.
     static let script = """
     (function () {
+      if (window.__vaneMedia) { return; }
+      var alive = true, queued = false, pending = null;
       var handlers = {}, last = null, lastMedia = null, pipMedia = null;
       var source = Array.from(crypto.getRandomValues(new Uint8Array(16)), function (b) {
         return b.toString(16).padStart(2, '0');
@@ -165,8 +167,18 @@ enum MediaTray {
       var videos = document.getElementsByTagName('video');
       var audios = document.getElementsByTagName('audio');
       function post(msg) {
+        pending = msg;
+        if (queued) { return; }
+        queued = true;
+        queueMicrotask(function () {
+          queued = false;
+          var latest = pending; pending = null;
+          if (alive && latest) { postNow(latest); }
+        });
+      }
+      function postNow(msg) {
         var key = JSON.stringify(msg);
-        if (key === last) { return; }     // one message per real change, not per event
+        if (key === last) { return; }
         last = key;
         webkit.messageHandlers.vanemedia.postMessage(msg);
       }
@@ -189,6 +201,7 @@ enum MediaTray {
         return first;
       }
       function report() {
+        if (!alive) { return; }
         var m = ms && ms.metadata, e = media();
         if (e && e.getAttribute('data-vane-media-source') !== source) {
           e.setAttribute('data-vane-media-source', source);
@@ -214,8 +227,8 @@ enum MediaTray {
         // Remembered, not intercepted: there is no way to read back a registered handler,
         // and the tray's skip buttons have to press the page's own, not fake a click.
         ms.setActionHandler = function (action, fn) {
-          if (fn) { handlers[action] = fn; } else { delete handlers[action]; }
           orig(action, fn);
+          if (fn) { handlers[action] = fn; } else { delete handlers[action]; }
           report();
         };
       }
@@ -267,8 +280,11 @@ enum MediaTray {
       ['play', 'pause', 'ended', 'emptied', 'loadedmetadata'].forEach(function (e) {
         document.addEventListener(e, report, true);
       });
-      window.addEventListener('pagehide', function () { post({source: source, playing: false, gone: true}); });
-      window.addEventListener('pageshow', function () { last = null; report(); });
+      window.addEventListener('pagehide', function () {
+        alive = false; pending = null;
+        postNow({source: source, playing: false, gone: true});
+      });
+      window.addEventListener('pageshow', function () { alive = true; last = null; report(); });
     })();
     """
 }
