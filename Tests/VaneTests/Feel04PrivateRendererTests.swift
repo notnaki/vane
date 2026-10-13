@@ -138,6 +138,13 @@ private final class Feel04WaitingServer: @unchecked Sendable {
     }
 }
 
+@MainActor private final class Feel04CookieSetupObserver: NSObject, WKHTTPCookieStoreObserver {
+    private(set) var changes = 0
+    nonisolated func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+        Task { @MainActor [weak self] in self?.changes += 1 }
+    }
+}
+
 @MainActor final class Feel04CookieRendererTests: XCTestCase {
     func testDestinationCookieDoesNotCancelPreviewButProfileCookieChangeDoes() async throws {
         TestEnvironment.prepare()
@@ -166,7 +173,19 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         }
         let cookies = source.configuration.websiteDataStore.httpCookieStore
         let cookie = try XCTUnwrap(HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "source", .value: "signed-in"]))
+        let setupObserver = Feel04CookieSetupObserver()
+        cookies.add(setupObserver)
+        defer { cookies.remove(setupObserver) }
         await cookies.setCookie(cookie)
+        // setCookie's completion and its observer delivery are separate WebKit events.
+        // Drain this deliberate setup mutation before attaching the production observer;
+        // a late setup notification is not the logout under test.
+        let setupDeadline = ContinuousClock.now + .seconds(8)
+        while setupObserver.changes == 0 {
+            guard ContinuousClock.now < setupDeadline else { return XCTFail("Initial source cookie change was not observed") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        cookies.remove(setupObserver)
         previews.request(url, from: tab)
         try await clock.waitUntil { clock.count == 1 }; clock.release(0)
         let deadline = ContinuousClock.now + .seconds(8)
