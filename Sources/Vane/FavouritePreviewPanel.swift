@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import QuartzCore
 
 /// An owned child panel keeps a hover passive and allows a keyboard-opened card to
 /// become key. SwiftUI's transient popover otherwise dismisses on focus traversal.
@@ -16,7 +17,8 @@ struct FavouritePreviewPanel: NSViewRepresentable {
     static func dismantleNSView(_ view: Anchor, coordinator: ()) { view.hide() }
 
     final class Panel: NSPanel {
-        override var canBecomeKey: Bool { true }
+        var interactive = true
+        override var canBecomeKey: Bool { interactive }
         override var canBecomeMain: Bool { false }
         override func animationResizeTime(_ newFrame: NSRect) -> TimeInterval { 0.12 }
     }
@@ -31,6 +33,7 @@ struct FavouritePreviewPanel: NSViewRepresentable {
         private var dismiss: (@MainActor () -> Void)?
         private var outsideMonitor: Any?
         private var deactivation: NSObjectProtocol?
+        private var dismissal: Task<Void, Never>?
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -42,11 +45,17 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             updatePanel()
         }
         private func updatePanel() {
-            guard visible, let owner = window, let screen = owner.screen else { hide(); return }
+            guard visible else { dismissPanel(); return }
+            guard let owner = window, let screen = owner.screen else { hide(); return }
+            // Retire a departing panel before reopening. Its completion cannot touch the new one.
+            if dismissal != nil { hide() }
             let isNew = panel == nil
             let panel = panel ?? Panel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
             if isNew {
                 panel.title = "Favourite Preview"
+                panel.animationBehavior = .none
+                panel.isRestorable = false
+                panel.collectionBehavior = [.transient, .ignoresCycle]
                 panel.isReleasedWhenClosed = false
                 panel.isFloatingPanel = false
                 panel.hidesOnDeactivate = true
@@ -79,14 +88,19 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             let preferredX = tile.maxX + 8
             let x = min(max(preferredX, ground.minX), ground.maxX - size.width)
             let y = min(max(tile.maxY - size.height, ground.minY), ground.maxY - size.height)
-            panel.setFrame(NSRect(origin: NSPoint(x: x, y: y), size: size), display: true,
-                           animate: !isNew && !Motion.reduced)
-            if isNew && !Motion.reduced { panel.alphaValue = 0 }
+            let frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
+            panel.setFrame(frame, display: true)
+            if isNew && !Motion.reduced {
+                panel.alphaValue = 0
+                panel.setFrameOrigin(NSPoint(x: x - 4, y: y))
+            }
             panel.orderFront(nil)
             if isNew && !Motion.reduced {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0.12
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                     panel.animator().alphaValue = 1
+                    panel.animator().setFrame(frame, display: true)
                 }
             }
             if keyboard && (isNew || focusPending) {
@@ -95,14 +109,36 @@ struct FavouritePreviewPanel: NSViewRepresentable {
                 focusPending = false
             }
         }
+        private func dismissPanel() {
+            guard let panel else { return }
+            guard !Motion.reduced, window != nil else { hide(); return }
+            guard dismissal == nil else { return }
+            // The fading surface is visual only. Return key ownership immediately, before
+            // Open Site can focus its destination, and remove all interactive affordances.
+            panel.interactive = false
+            panel.ignoresMouseEvents = true
+            host?.setAccessibilityHidden(true)
+            if panel.isKeyWindow { panel.parent?.makeKey() }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                panel.animator().alphaValue = 0
+                panel.animator().setFrameOrigin(NSPoint(x: panel.frame.minX - 4, y: panel.frame.minY))
+            }
+            dismissal = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .milliseconds(140)) } catch { return }
+                self?.hide()
+            }
+        }
         func hide() {
+            dismissal?.cancel(); dismissal = nil
             if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }; outsideMonitor = nil
             if let deactivation { NotificationCenter.default.removeObserver(deactivation) }; deactivation = nil
             if let panel {
                 let owner = panel.parent
                 let restoreKey = panel.isKeyWindow
                 owner?.removeChildWindow(panel)
-                panel.orderOut(nil); panel.contentView = nil
+                panel.orderOut(nil); panel.contentView = nil; panel.close()
                 if restoreKey { owner?.makeKey() }
             }
             panel = nil; host = nil

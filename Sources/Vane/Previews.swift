@@ -89,6 +89,9 @@ import WebKit
     /// page load and model request for each one; short enough to still feel like a hover.
     /// 220ms is roughly one deliberate pause.
     static let summaryDebounce = Duration.milliseconds(220)
+    /// The page script already required 190ms of intent. Prepare the image before the
+    /// model's longer gate, while direct/native callers still get a cancellable pause.
+    static let loadDebounce = Duration.milliseconds(140)
     /// Stop asking for snapshots after this. A page that has painted nothing by now is
     /// broken, blocked, or a login wall, and none of those improve with more polling.
     static let paintDeadline = Duration.seconds(4)
@@ -134,6 +137,8 @@ import WebKit
     // MARK: - Requesting
 
     private var cache = Cache()
+    private var cacheScope: (profile: UUID, privateTab: UUID?)?
+    private var sessionObserver: Feel04PreviewSessionObserver?
     /// Monotonic. Every publish carries the id of the request that produced it, so a reply
     /// arriving after the pointer moved is dropped rather than flashed on screen.
     private var latest = 0
@@ -169,8 +174,21 @@ import WebKit
     /// Start (or instantly re-show) a preview of `url`. Safe to call on every hover event —
     /// the same link twice in a row costs nothing.
     func request(_ url: URL, from tab: Tab) {
-        guard Previews.enabled, !BatterySaver.shared.isActive else { return }
+        guard Previews.enabled, !BatterySaver.shared.isActive else { cancel(); return }
         guard Previews.eligible(url, onPage: tab.currentURL) else { cancel(); return }
+        let scope = (profile: tab.profileID, privateTab: tab.isPrivate ? tab.id : nil)
+        if let previous = cacheScope, previous != scope {
+            cache = Cache()
+            stop()
+            sessionObserver?.detach(); sessionObserver = nil
+        }
+        cacheScope = scope
+        if !tab.isPrivate, sessionObserver == nil {
+            sessionObserver = Feel04PreviewSessionObserver(profileID: tab.profileID) { [weak self] in
+                self?.cache = Cache()
+                self?.cancel()
+            }
+        }
         let key = Previews.key(for: url)
         if showing == key { source = tab; return }
 
@@ -199,16 +217,24 @@ import WebKit
         publish(p, for: id)
 
         let sleep = debounceSleep
-        debounceTask = Task { [weak self, weak tab] in
-            try? await sleep(Previews.summaryDebounce)
-            guard !Task.isCancelled, let self, let tab, self.latest == id else { return }
-            // Keep speculative WebKit setup, network traffic, rendering and snapshots
-            // behind the same settle gate as the summary. The shell/cache stays instant.
+        debounceTask = Task(priority: .background) { [weak self, weak tab] in
+            try? await sleep(Previews.loadDebounce)
+            guard !Task.isCancelled, let self, let tab, self.latest == id,
+                  Previews.enabled, !BatterySaver.shared.isActive else { return }
+            // Give the page being browsed priority over this optional destination.
+            guard tab.existingWeb?.isLoading != true else {
+                self.edit(id) { $0.loading = false }; return
+            }
             let web = self.webView(for: tab)
             self.navigation = web.load(URLRequest(url: url))
+            self.paintTask = Task(priority: .background) { [weak self] in await self?.paint(id: id, web: web) }
+            // Preparing pixels never speculatively starts inference. Keep its original
+            // intent budget, independently of when the page begins painting.
+            try? await Task.sleep(for: Previews.summaryDebounce - Previews.loadDebounce)
+            guard !Task.isCancelled, self.latest == id, Previews.enabled,
+                  !BatterySaver.shared.isActive else { return }
             self.settled = true
             self.startSummary(id: id)
-            self.paintTask = Task { [weak self] in await self?.paint(id: id, web: web) }
         }
     }
 

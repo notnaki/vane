@@ -5,18 +5,34 @@ import AppKit
 @MainActor final class FavouritePreviewHover: ObservableObject {
     enum Region: Hashable { case tile, card }
     @Published private(set) var visible = false
+    @Published private(set) var preparing = false
     private var regions: Set<Region> = []
     private var pending: Task<Void, Never>?
+    private let sleep: @MainActor (Duration) async throws -> Void
     private(set) var keyboardOpened = false
+
+    init(sleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.sleep = sleep
+    }
     func setHovered(_ hovered: Bool, over region: Region) {
         if hovered { regions.insert(region) } else { regions.remove(region) }
         pending?.cancel(); pending = nil
         guard !keyboardOpened else { return }
         let opening = !regions.isEmpty
+        if !opening && !visible { preparing = false }
         guard opening != visible else { return }
+        let sleep = sleep
         pending = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .milliseconds(opening ? 250 : 180)) } catch { return }
-            guard let self else { return }
+            do {
+                if opening {
+                    try await sleep(.milliseconds(100))
+                    guard !Task.isCancelled, let self else { return }
+                    self.preparing = true
+                    try await sleep(.milliseconds(80))
+                } else { try await sleep(.milliseconds(180)) }
+            } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            if !opening { self.preparing = false }
             Motion.animate(Look.quick) { self.visible = opening }
             self.pending = nil
         }
@@ -27,6 +43,7 @@ import AppKit
     }
     func dismiss() {
         pending?.cancel(); pending = nil; regions.removeAll(); keyboardOpened = false
+        preparing = false
         Motion.animate(Look.quick) { visible = false }
     }
 }
@@ -48,8 +65,8 @@ struct FavouritePreviewCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(populatedInbox ? "Inbox" : context.service.title).font(populatedInbox ? .subheadline : .headline)
-                    if !populatedInbox { Text(context.service.heading).font(.caption).foregroundStyle(.secondary) }
+                    Text(context.service.title).font(.headline)
+                    Text(context.service.heading).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button(action: dismiss) { Image(systemName: "xmark") }
@@ -57,7 +74,8 @@ struct FavouritePreviewCard: View {
                     .vaneKeyboardAction(radius: 6, action: dismiss).accessibilityLabel("Close favourite preview")
                     .help("Close preview (Escape)")
             }
-            Group {
+            ScrollView {
+                Group {
                 switch state {
                 case .loading:
                     HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Loading preview…").foregroundStyle(.secondary) }
@@ -73,7 +91,10 @@ struct FavouritePreviewCard: View {
                         content(snapshot)
                     }
                 }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(height: 300)
             Divider()
             HStack(spacing: 8) {
                 Button("Open Site") { open(context.siteURL) }
@@ -98,7 +119,7 @@ struct FavouritePreviewCard: View {
                     }
                 }
                 if !populatedInbox { Spacer(minLength: 0) }
-            }
+            }.frame(height: 32)
         }
         .padding(16).frame(width: 370, alignment: .leading)
         .background(Look.panelFill)
@@ -129,7 +150,6 @@ struct FavouritePreviewCard: View {
                 Text(context.service == .github ? "No open pull requests involving you." : context.service == .gmail ? "Your inbox is empty." : "No upcoming events.")
                     .font(.subheadline).foregroundStyle(.secondary)
             } else if context.service == .gmail {
-                ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(snapshot.items) { item in
                             Button { open(item.url) } label: {
@@ -153,8 +173,6 @@ struct FavouritePreviewCard: View {
                             if item.id != snapshot.items.last?.id { Divider() }
                         }
                     }
-                }
-                .frame(height: min(CGFloat(snapshot.items.count) * 56, 300))
             } else {
                 ForEach(snapshot.items) { item in
                     VStack(alignment: .leading, spacing: 4) {
@@ -263,6 +281,11 @@ private struct FavouritePreviewModifier: ViewModifier {
                             .onHover { hover.setHovered($0, over: .card) }
                             .environment(\.colorScheme, colorScheme)), dismiss: { close(returnFocus: false) })
                 }
+            }
+            .onChange(of: hover.preparing) { _, preparing in
+                if preparing, allowed, let context {
+                    previews.prepare(context, owner: owner, source: tab.existingWeb, privateSession: store.isPrivate)
+                } else if !hover.visible { previews.dismiss(owner: owner) }
             }
             .onChange(of: hover.visible) { _, visible in
                 if visible, allowed, let context {
