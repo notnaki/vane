@@ -19,6 +19,8 @@ import SwiftUI
         /// keeps one identity and rewrites the pill in place instead of sliding a new one
         /// up from the sidebar's edge on every tick.
         var id = UUID()
+        /// Rewriting a stable slot still replaces its action, even when its title is unchanged.
+        var actionGeneration = UUID()
         let text: String
         let action: (title: String, run: @MainActor () -> Void)?
         /// A sticky toast is up because something is still true, not because something just
@@ -135,7 +137,7 @@ import SwiftUI
     /// under it a line later.
     func act(_ toast: Toast) {
         guard let current = queue.showing.first(where: { $0.id == toast.id }),
-              current.action?.title == toast.action?.title else { return }
+              current.actionGeneration == toast.actionGeneration else { return }
         dismiss(current)
         current.action?.run()
     }
@@ -280,7 +282,7 @@ struct ToastPill: View {
             Button(action.title) { toasts.act(toast) }
                 .buttonStyle(TactileButtonStyle(scales: false))
                 // Keep the surface stable, but cancel a press begun on a different action.
-                .id(Feel09ToastControlID(toast: toast.id, action: action.title))
+                .id(Feel09ToastControlID(toast: toast.id, action: toast.actionGeneration))
                 .font(Look.Typography.shortcut.font)
                 .lineLimit(2)
                 .fixedSize(horizontal: fixed, vertical: true)
@@ -320,7 +322,7 @@ struct ToastPill: View {
 
 private struct Feel09ToastControlID: Hashable {
     let toast: UUID
-    let action: String
+    let action: UUID
 }
 
 /// The policy lives inside the running transition. Replacing `.transition` or removing

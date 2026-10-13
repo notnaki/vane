@@ -289,6 +289,23 @@ import XCTest
         try await send(.leftMouseUp, at: restartPoint)
         XCTAssertEqual(newActions, beforeSticky + 1)
 
+        // A new release may keep both the sticky ID and the visible action title.
+        let beforeSameTitle = newActions
+        Toasts.stick("Version one", id: id, action: ("Update", { oldActions += 1 }))
+        let updatePoint = center(try await controlFrame("Update"))
+        try await send(.leftMouseDown, at: updatePoint)
+        Toasts.stick("Version two", id: id, action: ("Update", { newActions += 1 }))
+        try await Task.sleep(for: .milliseconds(30))
+        _ = try await controlFrame("Update")
+        try await send(.leftMouseUp, at: updatePoint)
+        XCTAssertEqual(oldActions, 0)
+        XCTAssertEqual(newActions, beforeSameTitle)
+        XCTAssertEqual(toasts.current?.text, "Version two")
+        let freshUpdatePoint = center(try await controlFrame("Update"))
+        try await send(.leftMouseDown, at: freshUpdatePoint)
+        try await send(.leftMouseUp, at: freshUpdatePoint)
+        XCTAssertEqual(newActions, beforeSameTitle + 1)
+
         // The same replacement rule applies to the dismiss target.
         Toasts.show("First", action: ("Undo", {}), in: store)
         let dismissPoint = center(try await controlFrame("Dismiss First"))

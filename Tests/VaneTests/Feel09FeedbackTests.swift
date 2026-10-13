@@ -73,6 +73,20 @@ import XCTest
         XCTAssertNil(toasts.current)
     }
 
+    func testSameTitleStickyReplacementRejectsPredecessorAction() throws {
+        let toasts = toasts(), id = UUID()
+        var oldRuns = 0, newRuns = 0
+        Toasts.stick("Version one", id: id, action: ("Update", { oldRuns += 1 }))
+        let old = try XCTUnwrap(toasts.current)
+        Toasts.stick("Version two", id: id, action: ("Update", { newRuns += 1 }))
+        toasts.act(old)
+        XCTAssertEqual(oldRuns, 0)
+        XCTAssertEqual(newRuns, 0)
+        XCTAssertEqual(toasts.current?.text, "Version two")
+        toasts.act(try XCTUnwrap(toasts.current))
+        XCTAssertEqual(newRuns, 1)
+    }
+
     func testRapidArrivalRetargetsAndSuppressedDragClearsHighlight() async throws {
         TestEnvironment.prepare()
         let feedback = InteractionFeedback()
