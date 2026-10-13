@@ -10,15 +10,16 @@ private final class Feel04WaitingServer: @unchecked Sendable {
     let listener: NWListener
     private let body: String?
     private let hold: Bool
+    private let cookie: Bool
     private let lock = NSLock()
     private var connections: [NWConnection] = []
-    init(body: String? = nil, hold: Bool = false) throws {
-        self.body = body; self.hold = hold
+    init(body: String? = nil, hold: Bool = false, cookie: Bool = false) throws {
+        self.body = body; self.hold = hold; self.cookie = cookie
         listener = try NWListener(using: .tcp, on: .any)
     }
     func start() async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            let body = body
+            let body = body, cookie = cookie
             listener.newConnectionHandler = { [weak self] connection in
                 guard let self else { connection.cancel(); return }
                 if hold {
@@ -30,7 +31,7 @@ private final class Feel04WaitingServer: @unchecked Sendable {
                 connection.start(queue: DispatchQueue(label: "feel04-loopback-response"))
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
                     guard data?.isEmpty == false else { connection.cancel(); return }
-                    let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: feel04=preview; Path=/\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+                    let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\(cookie ? "Set-Cookie: feel04=preview; Path=/\r\n" : "")Content-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
                     connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
                 }
             }
@@ -141,20 +142,31 @@ private final class Feel04WaitingServer: @unchecked Sendable {
     func testDestinationCookieDoesNotCancelPreviewButProfileCookieChangeDoes() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
-        let server = try Feel04WaitingServer(body: "<title>Cookie preview</title><body style='margin:0'><div style='height:240px;background:#1976d2'>Preview</div><div style='height:240px;background:#e53935'></div><div style='height:240px;background:#43a047'></div></body>")
+        let server = try Feel04WaitingServer(body: "<title>Cookie preview</title><body style='margin:0'><div style='height:240px;background:#1976d2'>Preview</div><div style='height:240px;background:#e53935'></div><div style='height:240px;background:#43a047'></div></body>", cookie: true)
         let url = try await server.start(), clock = Feel04DebounceFixture()
         let previews = Previews(debounceSleep: clock.sleep), tab = Tab()
         let enabled = Previews.enabled, mode = BatterySaver.shared.mode
         Previews.enabled = true; BatterySaver.shared.setMode(.off)
-        let cookies = ProfileManager.dataStore(for: tab.profileID).httpCookieStore
-        let cookie = try XCTUnwrap(HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "source", .value: "signed-in"]))
-        await cookies.setCookie(cookie)
+        // A page-originated preview always has a live persistent source WebView.
+        // Keep that persistent context alive, and exercise a page-originated logout
+        // rather than relying on observation of native edits to an otherwise unused store.
+        let sourceServer = try Feel04WaitingServer(body: "<title>Source page</title>")
         var host: NSWindow?
         defer {
-            previews.cancel(); clock.finish(); tab.tearDown(); server.stop()
+            previews.cancel(); clock.finish(); tab.tearDown(); server.stop(); sourceServer.stop()
             host?.contentView = nil; host?.close()
             Previews.enabled = enabled; BatterySaver.shared.setMode(mode)
         }
+        let sourceURL = try await sourceServer.start(), source = tab.web
+        source.load(URLRequest(url: sourceURL))
+        let sourceDeadline = ContinuousClock.now + .seconds(8)
+        while source.isLoading || source.title != "Source page" {
+            guard ContinuousClock.now < sourceDeadline else { return XCTFail("Source page did not load") }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let cookies = source.configuration.websiteDataStore.httpCookieStore
+        let cookie = try XCTUnwrap(HTTPCookie(properties: [.domain: "127.0.0.1", .path: "/", .name: "source", .value: "signed-in"]))
+        await cookies.setCookie(cookie)
         previews.request(url, from: tab)
         try await clock.waitUntil { clock.count == 1 }; clock.release(0)
         let deadline = ContinuousClock.now + .seconds(8)
@@ -171,7 +183,9 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         XCTAssertTrue(pageCookies?.contains("feel04=preview") == true)
         let persisted = await cookies.allCookies()
         XCTAssertFalse(persisted.contains { $0.name == "feel04" }, "Speculative destination writes must stay in the renderer")
-        await cookies.deleteCookie(cookie)
+        _ = try await source.evaluateJavaScript("document.cookie = 'source=; Max-Age=0; Path=/'")
+        let sourceCookies = await cookies.allCookies()
+        XCTAssertFalse(sourceCookies.contains { $0.name == "source" }, "Verify the source mutation before awaiting its observation")
         let invalidationDeadline = ContinuousClock.now + .seconds(5)
         while previews.current != nil, ContinuousClock.now < invalidationDeadline {
             try await Task.sleep(for: .milliseconds(20))
