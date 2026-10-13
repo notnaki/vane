@@ -144,6 +144,7 @@ import XCTest
         let anchor = Feel02PressAnchorView(frame: CGRect(x: 0, y: 0, width: 100, height: 30))
         window.contentView = NSView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         window.contentView?.addSubview(anchor)
+        window.orderFront(nil)
         let monitor = Feel02PressMonitor()
         var pressed = false
         anchor.changed = { pressed = $0 }
@@ -156,6 +157,7 @@ import XCTest
                 clickCount: 1, pressure: 1))
         }
         let down = try event(.leftMouseDown)
+        XCTAssertTrue(down.window === window, "Synthetic input must belong to the registered fixture window")
         XCTAssertTrue(monitor.handle(down) === down, "Feedback must never consume activation")
         XCTAssertTrue(pressed, "Feedback starts before a click action")
         _ = monitor.handle(try event(.leftMouseDragged, x: 40))
@@ -197,6 +199,7 @@ import XCTest
         window.isReleasedWhenClosed = false
         let anchor = Feel02PressAnchorView(frame: CGRect(x: 0, y: 0, width: 100, height: 30))
         window.contentView = anchor
+        window.orderFront(nil)
         let monitor = Feel02PressMonitor()
         var pressed = false
         anchor.changed = { pressed = $0 }
@@ -207,12 +210,14 @@ import XCTest
                 modifierFlags: [], timestamp: 0, windowNumber: windowNumber, context: nil,
                 eventNumber: 0, clickCount: 1, pressure: 1))
         }
+        let ownedDown = try down(windowNumber: window.windowNumber)
+        XCTAssertTrue(ownedDown.window === window, "The disabled/hidden checks require an associated event")
         anchor.enabled = false
-        _ = monitor.handle(try down(windowNumber: window.windowNumber))
+        _ = monitor.handle(ownedDown)
         XCTAssertFalse(pressed)
         anchor.enabled = true
         anchor.isHidden = true
-        _ = monitor.handle(try down(windowNumber: window.windowNumber))
+        _ = monitor.handle(ownedDown)
         XCTAssertFalse(pressed)
         anchor.isHidden = false
         _ = monitor.handle(try down(windowNumber: 0))
