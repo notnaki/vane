@@ -1018,6 +1018,8 @@ private struct ArchivedTabsPane: View {
 
     @State private var groups: Feel05ArchiveSearch.Groups = []
     @State private var searching = true
+    @State private var resultGate = Feel05ResultGate<Request>()
+    private var rowsAreCurrent: Bool { resultGate.isCurrent(request, refreshing: searching) }
     private struct Request: Equatable {
         let revision: Int
         let query: String
@@ -1039,7 +1041,9 @@ private struct ArchivedTabsPane: View {
         } content: {
             LibraryList(groups: groups, id: \ArchiveLibrary.Entry.id) { row in
                 if let archive = archives.owner(of: row) {
-                    ArchivedRow(entry: row.entry, profile: row.profile, archive: archive)
+                    ArchivedRow(entry: row.entry, profile: row.profile, archive: archive,
+                                canAct: { rowsAreCurrent })
+                        .disabled(!rowsAreCurrent)
                 }
             }
             .overlay {
@@ -1067,6 +1071,7 @@ private struct ArchivedTabsPane: View {
                 query: asked.query, littleOnly: asked.littleOnly)
             guard !Task.isCancelled, asked == request else { return }
             groups = found
+            resultGate.present(asked)
             searching = false
         }
     }
@@ -1090,6 +1095,7 @@ private struct ArchivedRow: View {
     let entry: Archive.Entry
     let profile: Profile
     @ObservedObject var archive: Archive
+    let canAct: () -> Bool
 
     /// The address, as much of it as a 246pt column shows: host and path, the way Arc's
     /// archive rows read. The time and the Little Vane flag are what the row is *sorted* and
@@ -1110,13 +1116,17 @@ private struct ArchivedRow: View {
             Button("Restore") { restore() }
             Button("Copy Link") { copyLink() }
             Divider()
-            Button("Remove from Archive") { Motion.list { archive.remove(entry.id) } }
+            Button("Remove from Archive") {
+                guard canAct() else { return }
+                Motion.list { archive.remove(entry.id) }
+            }
         } open: {
             restore()
         }
     }
 
     private func restore() {
+        guard canAct() else { return }
         let target: TabStore
         if store.isPrivate || store.profileID == profile.id { target = store }
         else {
@@ -1129,6 +1139,7 @@ private struct ArchivedRow: View {
     }
 
     private func copyLink() {
+        guard canAct() else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(entry.url, forType: .string)
         axAnnounce("Link copied.")

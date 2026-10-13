@@ -52,4 +52,34 @@ import XCTest
         XCTAssertTrue(store.managedBookmarks().isEmpty)
         XCTAssertTrue(store.history().isEmpty)
     }
+    func testRetainedArchiveRowsWaitForCurrentQueryFilterAndRevision() async throws {
+        TestEnvironment.prepare()
+        let profile = Profile(name: "Archive gate fixture")
+        let archive = Archive.shared(for: profile.id)
+        defer { archive.clear() }
+        let url = URL(string: "https://fixture.invalid/archived")!
+        archive.add(url: url, title: "Archived row", littleArc: true)
+        let library = ArchiveLibrary(sources: [.init(profile: profile, archive: archive)])
+        let oldRequest = Request(profile: profile.id, revision: library.revision)
+        var gate = Feel05ResultGate<Request>()
+        let results = await library.search.groups(library.entries, revision: library.revision,
+                                                 query: "", littleOnly: false)
+        let row = try XCTUnwrap(results.flatMap(\.items).first)
+        gate.present(oldRequest)
+        var query = oldRequest; query.query = "another query"
+        var filter = oldRequest; filter.scope = "littleOnly"
+        archive.add(url: URL(string: "https://fixture.invalid/new")!, title: "New row")
+        var mutation = oldRequest; mutation.revision = library.revision
+        for current in [query, filter, mutation] {
+            gate.performIfCurrent(current, refreshing: false) { archive.remove(row.entry.id) }
+        }
+        gate.performIfCurrent(oldRequest, refreshing: true) { archive.remove(row.entry.id) }
+        XCTAssertTrue(archive.entries.contains { $0.id == row.entry.id })
+        _ = await library.search.groups(library.entries, revision: mutation.revision,
+                                        query: "", littleOnly: false)
+        gate.present(mutation)
+        gate.performIfCurrent(mutation, refreshing: false) { archive.remove(row.entry.id) }
+        XCTAssertFalse(archive.entries.contains { $0.id == row.entry.id })
+    }
+
 }
