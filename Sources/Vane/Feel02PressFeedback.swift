@@ -129,10 +129,16 @@ struct Feel02PressFeedback: ViewModifier {
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
-            .background(Feel02PressAnchor(enabled: interactive) { next in
-                var transaction = Transaction(animation: nil)
-                transaction.disablesAnimations = true
-                withTransaction(transaction) { pressed = next }
-            })
+            .background {
+                // Preview/held surfaces are inert. Mounting one native view per row
+                // still adds layout work even when its monitor target is disabled.
+                if interactive {
+                    Feel02PressAnchor(enabled: true) { next in
+                        var transaction = Transaction(animation: nil)
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) { pressed = next }
+                    }
+                }
+            }
     }
 }

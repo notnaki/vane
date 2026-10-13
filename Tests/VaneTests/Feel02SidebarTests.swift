@@ -187,9 +187,8 @@ import XCTest
             (view as? Feel02PressAnchorView).map { [$0] } ?? view.subviews.flatMap { targets(in: $0) }
         }
         let anchors = targets(in: host)
-        XCTAssertFalse(anchors.isEmpty, "The preview must contain real row feedback anchors")
-        XCTAssertTrue(anchors.allSatisfy { !$0.enabled },
-                      "A passive monitor must honor noninteractive preview surfaces")
+        XCTAssertTrue(anchors.isEmpty,
+                      "Inert Space previews must not allocate native press targets or register them with the monitor")
     }
 
     func testDisabledHiddenAndOtherWindowAnchorsDoNotPress() throws {
