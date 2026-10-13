@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 /// finished row still talking in bytes would be a progress display for something that stopped.
 extension Downloads.Item {
     var subtitle: String {
+        if retryPending { return "Starting retry…" }
         switch status {
         case .running:
             let size = Downloads.sizeText(received: received, total: total)
@@ -35,7 +36,7 @@ extension Downloads.Item {
     /// on a finished row, wants the size the sighted row trades for the file's kind.
     var spoken: String {
         switch status {
-        case .running: "Downloading, \(Int(fraction * 100)) percent, \(subtitle)"
+        case .running: total > 0 ? "Downloading, \(Int(fraction * 100)) percent, \(subtitle)" : "Downloading, \(subtitle)"
         case .done:    "\(subtitle), \(Downloads.sizeText(received: received, total: total, done: true))"
         case .paused, .missing, .failed: subtitle
         }
@@ -51,8 +52,8 @@ struct DownloadIcon: View {
     @ObservedObject private var thumbnails = Thumbnails.shared
 
     var body: some View {
-        if item.status.isLive {
-            ProgressRing(fraction: item.fraction, track: true)
+        if item.status.isLive || item.retryPending {
+            ProgressRing(fraction: item.fraction, track: true).vaneMotionPolicy()
         } else if let picture {
             // A picture fills its square and is cropped to it: a photo letterboxed into a
             // 20pt box is four grey bars and a stamp.

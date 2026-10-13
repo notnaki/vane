@@ -23,6 +23,18 @@ import SwiftUI
     /// Keybindings is a plain store, not an ObservableObject, so a write has to say so:
     /// bumping this is what redraws the rows after a set, a reset or a reset-all.
     @State private var revision = 0
+    @State private var presentation = Feel06PresentationCache<PresentationKey, Presentation>()
+
+    private struct PresentationKey: Equatable {
+        let query: String
+        let revision: Int
+    }
+    private struct Presentation {
+        let customized: Set<Command>
+        let cards: [(String, [Command])]
+        let bindings: [Command: Keybinding]
+        let priorities: [Command: Keybindings.Priority]
+    }
     /// Keybindings' own actions, held while recording — see `startRecording`.
     @State private var parked: [Command: @MainActor () -> Void] = [:]
 
@@ -40,20 +52,25 @@ import SwiftUI
             }
         }
         .padding(.top, Look.inset * 3)
+        .onAppear { revision += 1 }
         .onDisappear { stopRecording() }
+        .vaneMotionPolicy()
     }
 
-    private var customized: Set<Command> {
-        _ = revision
-        return Set(Command.allCases.filter {
-            Keybindings.binding(for: $0) != $0.defaultBinding
-                || Keybindings.priority(for: $0) != .browser
-        })
+    private var prepared: Presentation {
+        presentation.value(for: PresentationKey(query: query, revision: revision)) {
+            let bindings = Dictionary(uniqueKeysWithValues: Command.allCases.map { ($0, Keybindings.binding(for: $0)) })
+            let priorities = Dictionary(uniqueKeysWithValues: Command.allCases.map { ($0, Keybindings.priority(for: $0)) })
+            let customized = Set(Command.allCases.filter {
+                bindings[$0] != $0.defaultBinding || priorities[$0] != .browser
+            })
+            return Presentation(customized: customized,
+                cards: Self.groups(query, Keybindings.search(query), customized: customized),
+                bindings: bindings, priorities: priorities)
+        }
     }
-
-    private var cards: [(String, [Command])] {
-        Self.groups(query, Keybindings.search(query), customized: customized)
-    }
+    private var customized: Set<Command> { prepared.customized }
+    private var cards: [(String, [Command])] { prepared.cards }
 
     // MARK: - Searchable list
 
@@ -220,11 +237,11 @@ import SwiftUI
     // MARK: - Row
 
     private func row(_ command: Command) -> some View {
-        let binding = Keybindings.binding(for: command)
+        let binding = prepared.bindings[command] ?? command.defaultBinding
         let note = notes[command]
         let isHovered = hovered == command
         let live = recording == command
-        let priority = Keybindings.priority(for: command)
+        let priority = prepared.priorities[command] ?? .browser
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Look.inset) {
                 Text(command.title)
@@ -248,7 +265,7 @@ import SwiftUI
         }
         .contentShape(.rect)
         .background(live ? Look.accentSelected : isHovered ? Look.hovered : .clear)
-        .animation(reduceMotion ? nil : Look.quick, value: isHovered)
+        .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: isHovered)
         .onHover { inside in
             if inside { hovered = command } else if hovered == command { hovered = nil }
         }
@@ -300,7 +317,7 @@ import SwiftUI
                             in: .rect(cornerRadius: Look.chipRadius))
                 .hairline(radius: Look.chipRadius, live ? Color.accentColor : Look.hairline)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle(scales: false))
         .help(live ? "Press the keys, or Escape to cancel" : "Click to change; right-click for options")
     }
 

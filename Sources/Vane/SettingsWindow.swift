@@ -148,11 +148,13 @@ enum LinkTarget {
     /// Open straight at one pane — Help ▸ Keyboard Shortcuts, and anything else that means
     /// "the setting you are after is over there".
     static func show(tab: String, profileID: UUID? = nil) {
-        show()
+        // Select before installing or revealing the hosting view. A direct link should
+        // not briefly construct the previous pane (notably the Keychain-backed list).
         if ["passwords", "privacy"].contains(tab) {
             selection.profileID = profileID ?? ProfileManager.shared.active.id
         }
         selection.id = tab
+        show()
     }
 
     /// The title bar names the pane you are looking at, the way Arc's and System Settings'

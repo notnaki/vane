@@ -120,7 +120,7 @@ import CryptoKit
         @Published var url: URL?
         @Published var source: URL?
         fileprivate var sourceMethod: String?
-        @Published fileprivate var retryPending = false
+        @Published fileprivate(set) var retryPending = false
         fileprivate weak var sourceWeb: WKWebView?
         fileprivate var privateStore: WKWebsiteDataStore?
         fileprivate var privateResumer: WKWebView?
@@ -228,10 +228,13 @@ import CryptoKit
             ]
         }
 
-        private func updateProgress(_ progress: Progress) {
-            fraction = progress.fractionCompleted
-            received = progress.completedUnitCount
-            if progress.totalUnitCount > 0 { total = progress.totalUnitCount }
+        func updateProgress(_ progress: Progress) {
+            // WebKit can notify both observed keys for the same sample. @Published
+            // emits even for equal assignments, which also invalidates the combined
+            // Library. Keep exact byte values and skip only redundant publications.
+            if fraction != progress.fractionCompleted { fraction = progress.fractionCompleted }
+            if received != progress.completedUnitCount { received = progress.completedUnitCount }
+            if progress.totalUnitCount > 0, total != progress.totalUnitCount { total = progress.totalUnitCount }
             sample()
             onProgress?()
         }
@@ -247,8 +250,9 @@ import CryptoKit
             }
             let elapsed = now.timeIntervalSince(then)
             guard elapsed >= 0.5 else { return }
-            bytesPerSecond = Downloads.smoothed(previous: bytesPerSecond,
-                                                bytes: received - sampledBytes, over: elapsed)
+            let rate = Downloads.smoothed(previous: bytesPerSecond,
+                                          bytes: received - sampledBytes, over: elapsed)
+            if bytesPerSecond != rate { bytesPerSecond = rate }
             sampledAt = now
             sampledBytes = received
         }

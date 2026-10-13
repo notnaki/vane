@@ -91,7 +91,7 @@ struct SpaceTemplatesSheet: View {
                 .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: model.selection)
                 .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: model.saving)
             }.frame(minHeight: 350)
-            if model.busy { ProgressView("Authenticating…").controlSize(.small) }
+            Feel06ActivityLine(busy: model.busy, text: "Authenticating…")
             if !model.message.isEmpty {
                 Text(model.message).foregroundStyle(.red).font(.callout)
                     .accessibilityLabel("Template error: \(model.message)")
@@ -101,6 +101,7 @@ struct SpaceTemplatesSheet: View {
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(22).frame(width: 780)
+        .vaneMotionPolicy()
         .onAppear { name = store.currentSpace?.name ?? ""; rename = model.selected?.name ?? "" }
         .onChange(of: model.selection) { rename = model.selected?.name ?? ""; name = model.selected?.name ?? "" }
         .onChange(of: model.saving) { if model.saving { name = store.currentSpace?.name ?? "" } }
@@ -132,7 +133,7 @@ struct SpaceTemplatesSheet: View {
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
                                 .background(!model.saving && model.selection == template.id ? Look.selected : Look.controlFill,
                                             in: .rect(cornerRadius: Look.pillRadius))
-                        }.buttonStyle(.plain).disabled(model.busy)
+                        }.buttonStyle(TactileButtonStyle(scales: false)).disabled(model.busy)
                             .accessibilityLabel("Template \(template.name), \(template.layout.tabs.count) tabs")
                     }
                     if model.templates.isEmpty {

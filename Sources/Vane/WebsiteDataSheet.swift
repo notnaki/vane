@@ -9,6 +9,7 @@ struct WebsiteDataSheet: View {
     @StateObject private var model: WebsiteDataModel
     @Environment(\.dismiss) private var dismiss
     @State private var confirming = false
+    @FocusState private var searchFocused: Bool
 
     init(profileID: UUID, profileName: String, store: WKWebsiteDataStore? = nil,
          initialHost: String? = nil, isValid: (() -> Bool)? = nil, onClose: (() -> Void)? = nil) {
@@ -35,7 +36,7 @@ struct WebsiteDataSheet: View {
                 HStack(spacing: Look.inset) {
                     Image(systemName: "magnifyingglass").foregroundStyle(Look.inkSecondary)
                     TextField("Search sites", text: $model.query)
-                        .textFieldStyle(.plain).accessibilityLabel("Search stored website data")
+                        .textFieldStyle(.plain).focused($searchFocused).accessibilityLabel("Search stored website data")
                         .disabled(model.isBusy)
                 }
                 .secondaryWindowSearchField()
@@ -53,13 +54,12 @@ struct WebsiteDataSheet: View {
             Hairline()
             Text("Disk usage unavailable: WebKit’s public API does not report per-site sizes. Site entries may include subdomains.")
                 .font(Look.footnote).foregroundStyle(Look.inkSecondary)
-            if model.isBusy {
-                HStack { ProgressView().controlSize(.small); Text(model.activity).font(Look.footnote) }
-            }
+            Feel06ActivityLine(busy: model.isBusy, text: model.activity)
             if let error = model.error { Text(error).font(Look.footnote).foregroundStyle(.red) }
             if let message = model.message { Text(message).font(Look.footnote).foregroundStyle(Look.inkSecondary) }
             HStack {
-                if model.isBusy { Text("Operations continue if you close this view.").font(Look.footnote).foregroundStyle(Look.inkSecondary) }
+                Text("Operations continue if you close this view.").font(Look.footnote).foregroundStyle(Look.inkSecondary)
+                    .opacity(model.isBusy ? 1 : 0).accessibilityHidden(!model.isBusy)
                 Spacer()
                 Button("Done") { if let onClose { onClose() } else { dismiss() } }.keyboardShortcut(.cancelAction)
                 Button("Clear Selected Data…", role: .destructive) { confirming = true }
@@ -76,6 +76,9 @@ struct WebsiteDataSheet: View {
         .animation(Motion.reduced ? nil : Look.quick, value: model.isBusy)
         .vaneMotionPolicy()
         .onAppear { if !model.hasLoaded { model.refresh() } }
+        .onChange(of: model.isBusy) {
+            if !model.isBusy && model.selectedName == nil { searchFocused = true }
+        }
         .onChange(of: model.error) { if let error = model.error { axAnnounce(error) } }
         .onChange(of: model.message) { if let message = model.message { axAnnounce(message) } }
         .alert("Clear selected data for “\(model.selectedName ?? "")”?", isPresented: $confirming) {
@@ -89,15 +92,16 @@ struct WebsiteDataSheet: View {
     }
 
     private var siteList: some View {
-        VStack(alignment: .leading, spacing: Look.inset) {
-            Text("\(model.filteredEntries.count) \(model.filteredEntries.count == 1 ? "site" : "sites")").font(Look.caption).foregroundStyle(Look.inkSecondary)
+        let entries = model.filteredEntries
+        return VStack(alignment: .leading, spacing: Look.inset) {
+            Text("\(entries.count) \(entries.count == 1 ? "site" : "sites")").font(Look.caption).foregroundStyle(Look.inkSecondary)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Look.rowGap) {
-                    if model.hasLoaded && model.filteredEntries.isEmpty {
+                    if model.hasLoaded && entries.isEmpty {
                         Text(model.entries.isEmpty ? "No stored website data." : "No matching sites.")
                             .font(Look.footnote).foregroundStyle(Look.inkSecondary).padding(Look.rowInset)
                     }
-                    ForEach(model.filteredEntries) { entry in
+                    ForEach(entries) { entry in
                         Button {
                             Motion.list { model.select(entry.name) }
                         } label: {

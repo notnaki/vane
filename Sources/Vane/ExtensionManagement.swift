@@ -71,6 +71,20 @@ private struct ExtensionManagementView: View {
     @State private var filter = ExtensionManagerModel.Filter.all
     @State private var selected: String?
     @State private var importBusy = false
+    // ExtensionHost.entries reads manifests and builds runtime diagnostics. Snapshot it
+    // after host mutations, rather than repeating that work on search/focus redraws.
+    @State private var catalog: [ExtensionHost.Entry] = []
+    @State private var catalogRefresh: Task<Void, Never>?
+    @State private var presentation = Feel06PresentationCache<PresentationKey, Presentation>()
+    private struct PresentationKey: Equatable {
+        let items: [ExtensionManagerModel.Item]
+        let query: String
+        let filter: ExtensionManagerModel.Filter
+    }
+    private struct Presentation {
+        let visible: [ExtensionManagerModel.Item]
+        let counts: [ExtensionManagerModel.Filter: Int]
+    }
     @State private var dropTargeted = false
     @State private var importError: String?
     @FocusState private var searchFocused: Bool
@@ -83,21 +97,26 @@ private struct ExtensionManagementView: View {
     private var isPrivate: Bool { host.profileID == Profile.incognito.id }
     private var busy: Bool { importBusy || host.isBusy }
     private var items: [ExtensionManagerModel.Item] {
-        host.entries.map { entry in
+        catalog.map { entry in
             .init(id: entry.path, name: entry.name, version: entry.version, summary: entry.summary,
                   enabled: entry.enabled,
                   needsAttention: entry.failure != nil || !entry.sourceAvailable)
         }
     }
-    private var visible: [ExtensionManagerModel.Item] {
-        ExtensionManagerModel.visible(items, query: query, filter: filter)
-    }
-    private var entries: [ExtensionHost.Entry] {
-        let ids = Set(visible.map(\.id))
-        return host.entries.filter { ids.contains($0.path) }.sorted {
-            let order = $0.name.localizedStandardCompare($1.name)
-            return order == .orderedSame ? $0.path < $1.path : order == .orderedAscending
+    private var prepared: Presentation {
+        presentation.value(for: PresentationKey(items: items, query: query, filter: filter)) {
+            let items = items
+            let visible = ExtensionManagerModel.visible(items, query: query, filter: filter).sorted {
+                let order = $0.name.localizedStandardCompare($1.name)
+                return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+            }
+            return Presentation(visible: visible, counts: ExtensionManagerModel.counts(items))
         }
+    }
+    private var visible: [ExtensionManagerModel.Item] { prepared.visible }
+    private var entries: [ExtensionHost.Entry] {
+        let byID = Dictionary(uniqueKeysWithValues: catalog.map { ($0.path, $0) })
+        return visible.compactMap { byID[$0.id] }
     }
     private var selectedEntry: ExtensionHost.Entry? { entries.first { $0.path == selected } }
 
@@ -109,7 +128,7 @@ private struct ExtensionManagementView: View {
                 if isPrivate {
                     emptyState(icon: "eyeglasses", title: "Extensions stay out of private browsing",
                                detail: "Extensions cannot be installed in the Private profile. Open a regular profile to manage its extensions.")
-                } else if host.entries.isEmpty {
+                } else if catalog.isEmpty {
                     firstInstall
                 } else {
                     content(wide: geometry.size.width >= 800)
@@ -147,6 +166,12 @@ private struct ExtensionManagementView: View {
             .animation(Motion.reduced ? nil : Look.list, value: busy)
             .vaneMotionPolicy()
         }
+        .onAppear { catalog = host.entries }
+        .onDisappear { catalogRefresh?.cancel(); catalogRefresh = nil }
+        .onReceive(host.objectWillChange) { _ in refreshCatalog() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshCatalog()
+        }
         .onChange(of: visible.map(\.id)) { _, _ in
             selected = ExtensionManagerModel.selection(selected, in: visible)
         }
@@ -168,10 +193,8 @@ private struct ExtensionManagementView: View {
                     .help("Extensions, permissions, and settings belong to this profile.")
             }
             Spacer(minLength: 8)
-            if busy {
-                ProgressView().controlSize(.small).accessibilityLabel("Reviewing extension folder")
-                Text("Checking…").font(.callout).foregroundStyle(.secondary)
-            }
+            Feel06ActivityLine(busy: busy, text: "Checking…")
+                .frame(width: 100)
             Button("Install from Folder…", systemImage: "plus") { host.chooseAndInstall() }
                 .disabled(isPrivate || busy)
                 .accessibilityIdentifier("extension-manager.install")
@@ -194,7 +217,7 @@ private struct ExtensionManagementView: View {
             }
         } else if let entry = selectedEntry {
             VStack(alignment: .leading, spacing: 0) {
-                Button { Motion.list { selected = nil } } label: {
+                Button { Motion.list { selected = nil }; searchFocused = true } label: {
                     Label("All Extensions", systemImage: "chevron.left")
                 }.buttonStyle(.borderless).padding(.horizontal, 22).padding(.vertical, 14)
                     .accessibilityLabel("Back to extension list")
@@ -220,7 +243,7 @@ private struct ExtensionManagementView: View {
                         HStack(spacing: 5) {
                             Text(choice.rawValue).lineLimit(1)
                             Spacer(minLength: 0)
-                            Text(String(ExtensionManagerModel.counts(items)[choice] ?? 0))
+                            Text(String(prepared.counts[choice] ?? 0))
                                 .monospacedDigit().foregroundStyle(.secondary)
                         }.font(.caption).padding(.horizontal, 9).padding(.vertical, 7)
                             .background(filter == choice ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.07),
@@ -230,7 +253,7 @@ private struct ExtensionManagementView: View {
                             RoundedRectangle(cornerRadius: 7)
                                 .stroke(focusedFilter == choice ? Color.accentColor : Color.clear, lineWidth: 2)
                         }
-                        .accessibilityLabel("\(choice.rawValue), \(ExtensionManagerModel.counts(items)[choice] ?? 0) extensions")
+                        .accessibilityLabel("\(choice.rawValue), \(prepared.counts[choice] ?? 0) extensions")
                         .accessibilityAddTraits(filter == choice ? [.isSelected] : [])
                 }
             }.padding(14)
@@ -240,7 +263,7 @@ private struct ExtensionManagementView: View {
                     Image(systemName: "magnifyingglass").font(.title2).foregroundStyle(.secondary)
                     Text("No matching extensions").font(.headline)
                     Text("Try another search or filter.").font(.callout).foregroundStyle(.secondary)
-                    Button("Clear Search & Filters") { query = ""; filter = .all }
+                    Button("Clear Search & Filters") { query = ""; filter = .all; searchFocused = true }
                 }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(selection: $selected) {
@@ -282,6 +305,18 @@ private struct ExtensionManagementView: View {
             Text(detail).font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 340)
         }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func refreshCatalog() {
+        catalogRefresh?.cancel()
+        catalogRefresh = Task { @MainActor in
+            // objectWillChange arrives before the new host values. Coalesce a burst
+            // and read after the mutation without doing work from a hover callback.
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            catalog = host.entries
+            catalogRefresh = nil
+        }
     }
 
     private func importFolder(_ folder: URL) {

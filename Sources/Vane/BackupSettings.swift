@@ -12,11 +12,9 @@ struct BackupSettings: View {
                 .disabled(controller.busy)
             }
             Footnote("Includes all profiles, Spaces, tabs, bookmarks, history, settings, Easels, and the offline Reading Queue with saved images. Exported backups are not encrypted. Passwords, cookies, sign-ins, downloaded files, and extension code (including managed copies) and extension data are excluded.")
-            if controller.busy {
-                HStack { ProgressView().controlSize(.small); Text(controller.progress.isEmpty ? "Saving a recovery point…" : controller.progress) }
-                    .font(Look.footnote).padding(Look.cardInset)
-                    .accessibilityLabel(controller.progress.isEmpty ? "Saving a recovery point" : controller.progress)
-            }
+            Feel06ActivityLine(busy: controller.busy,
+                text: controller.progress.isEmpty ? "Saving a recovery point…" : controller.progress)
+                .padding(.horizontal, Look.cardInset).padding(.vertical, Look.inset)
             if let status = controller.status { Footnote(status) }
             if let error = controller.error { errorRow(error) }
             SettingsRow("Automatic local recovery") {
@@ -97,9 +95,7 @@ struct BackupPreviewView: View {
                     }
                 }.font(.subheadline).fixedSize(horizontal: false, vertical: true)
             }.frame(maxHeight: 320)
-            if controller.busy {
-                HStack { ProgressView().controlSize(.small); Text(controller.progress) }.font(.subheadline)
-            }
+            Feel06ActivityLine(busy: controller.busy, text: controller.progress)
             if let error = controller.error { Text(error).font(.subheadline).foregroundStyle(.red) }
             HStack {
                 Spacer()

@@ -23,7 +23,12 @@ import SwiftUI
     @State private var sort = PasswordSort.website
     /// The keychain is not a publisher, so the pane holds its own copy of the *names* and
     /// reloads after every write it makes.
-    @State private var logins: [Passwords.Login] = []
+    @StateObject private var metadata = Feel06PasswordMetadata()
+    private var logins: [Passwords.Login] { metadata.logins }
+    @State private var used: [String: Date] = [:]
+    @State private var presentation = Feel06PasswordPresentation()
+    @FocusState private var searchFocused: Bool
+
     /// Sites the user answered "Never for This Site" on. Listed so the answer can be taken
     /// back, which is otherwise a decision with no undo.
     @State private var never: [String] = []
@@ -52,7 +57,7 @@ import SwiftUI
         manager.profiles.first { $0.id == settingsProfileID }?.id ?? manager.active.id
     }
     private var groups: [(host: String, logins: [Passwords.Login])] {
-        PasswordsPane.groups(logins, query: query, sort: sort, used: Passwords.lastUsed(profileID: profileID))
+        presentation.groups(logins, query: query, sort: sort, used: used)
     }
     private var neverShown: [String] { PasswordsPane.matching(never, query: query) }
     private var searching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -60,6 +65,7 @@ import SwiftUI
 
     var body: some View {
         VStack(alignment: .leading, spacing: Look.inset * 2) {
+            Feel06ActivityLine(busy: metadata.busy, text: "Loading passwords…")
             if let host = selectedHost {
                 Button { navigate(to: nil) } label: {
                     Label("All passwords", systemImage: "chevron.left")
@@ -72,7 +78,7 @@ import SwiftUI
                     }
                 }
                 ScrollView {
-                    VStack(spacing: Look.inset * 2) {
+                    LazyVStack(spacing: Look.inset * 2) {
                         ForEach(logins.filter { $0.host == host }) { login in detail(login) }
                     }
                 }
@@ -112,7 +118,9 @@ import SwiftUI
                     Spacer()
                     Button("Import passwords…") { PasswordImport.chooseAndImport(profileID: profileID); reload() }
                 }
-                if groups.isEmpty && neverShown.isEmpty {
+                if metadata.busy && logins.isEmpty {
+                    Spacer(minLength: 0)
+                } else if groups.isEmpty && neverShown.isEmpty {
                     VStack(spacing: Look.inset) {
                         Image(systemName: searching ? "magnifyingglass" : "key.fill")
                             .font(.system(size: 28)).foregroundStyle(Look.inkSecondary)
@@ -129,7 +137,7 @@ import SwiftUI
                     else { ScrollView { neverCard } }
                 }
             }
-            if let problem {
+            if let problem = problem ?? metadata.error {
                 Text(problem).font(Look.text).foregroundStyle(Look.warning)
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Refresh passwords") { reload() }
@@ -141,10 +149,18 @@ import SwiftUI
         .padding(.top, Look.inset * 2)
         .sheet(isPresented: $secrets.adding, onDismiss: { forgetSecrets() }) { addSheet }
         .onAppear { reload(); secrets.watchSettingsClose() }
-        .onDisappear { secrets.stopWatching() }
+        .onDisappear { secrets.stopWatching(); metadata.cancel() }
+        .onChange(of: logins) {
+            if let selected, !logins.contains(where: { $0.id == selected || $0.host == selected }) { self.selected = nil }
+        }
         .onChange(of: selectedHost) { forgetSecrets(); problem = nil; feedback = nil }
         .onChange(of: profileID) { selectedHost = nil; secrets.adding = false; forgetSecrets(); reload() }
         .onChange(of: query) { selected = nil }
+        .onChange(of: sort) { used = Passwords.lastUsed(profileID: profileID) }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: UserDefaults.vane)) { _ in
+            let latest = Passwords.lastUsed(profileID: profileID)
+            if latest != used { used = latest }
+        }
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selectedHost)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: sort)
     }
@@ -159,9 +175,9 @@ import SwiftUI
             Image(systemName: "magnifyingglass").font(Look.fieldIcon)
                 .foregroundStyle(Look.inkTertiary)
             TextField("", text: $query, prompt: Text("Search passwords by site or username"))
-                .textFieldStyle(.plain).font(Look.text)
+                .textFieldStyle(.plain).font(Look.text).focused($searchFocused)
             if !query.isEmpty {
-                Button { query = "" } label: {
+                Button { query = ""; searchFocused = true } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(Look.inkSecondary)
                 }.buttonStyle(.plain).accessibilityLabel("Clear search")
             }
@@ -335,16 +351,17 @@ import SwiftUI
     // MARK: Actions
 
     private func reload() {
-        do { logins = try Passwords.allChecked(profileID: profileID); problem = nil }
-        catch { problem = error.localizedDescription }
+        problem = nil
+        metadata.load(profileID: profileID)
+        used = Passwords.lastUsed(profileID: profileID)
         never = Passwords.neverSaved(profileID: profileID)
-        if let selected, !logins.contains(where: { $0.id == selected }) { self.selected = nil }
     }
 
     private func navigate(to host: String?) {
         forgetSecrets()
         selected = host
         selectedHost = host
+        if host == nil { searchFocused = true }
     }
 
     private func forgetSecrets() { secrets.forget() }

@@ -7,7 +7,7 @@ enum ExtensionManagerModel {
         var id: String { rawValue }
     }
 
-    struct Item {
+    struct Item: Equatable {
         let id: String
         let name: String
         let version: String
@@ -32,7 +32,13 @@ enum ExtensionManagerModel {
     }
 
     static func counts(_ items: [Item]) -> [Filter: Int] {
-        Dictionary(uniqueKeysWithValues: Filter.allCases.map { ($0, visible(items, query: "", filter: $0).count) })
+        var counts = Dictionary(uniqueKeysWithValues: Filter.allCases.map { ($0, 0) })
+        for item in items {
+            counts[.all, default: 0] += 1
+            counts[item.enabled ? .enabled : .disabled, default: 0] += 1
+            if item.needsAttention { counts[.attention, default: 0] += 1 }
+        }
+        return counts
     }
 
     static func selection(_ current: String?, in visible: [Item]) -> String? {

@@ -62,7 +62,7 @@ enum LibraryHoverCategory: String, CaseIterable, Identifiable {
         switch category {
         case .downloads: rows = downloads.prefix(4).map(Self.download)
         case .media:
-            rows = downloads.filter { $0.status == .done && Library.isImage(name: $0.name) }
+            rows = downloads.lazy.filter { $0.status == .done && Library.isImage(name: $0.name) }
                 .prefix(4).map(Self.download)
         case .easels:
             rows = boards.sorted { $0.modified > $1.modified }.prefix(4).map(Self.easel)
@@ -93,7 +93,8 @@ struct RecentLibraryPreview: View {
                     switch item {
                     case .download(let download):
                         if let owner = downloads.owner(of: download) {
-                            RecentDownloadRow(item: download, downloads: owner, close: close)
+                            RecentDownloadRow(item: download, downloads: owner, close: close,
+                                inspect: { close(); Library.open(.downloads, in: store) })
                         }
                     default:
                         RecentLibraryRow(item: item) {
@@ -192,6 +193,7 @@ private struct RecentDownloadRow: View {
     @ObservedObject var item: Downloads.Item
     let downloads: Downloads
     let close: () -> Void
+    let inspect: () -> Void
     @State private var hovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -199,6 +201,7 @@ private struct RecentDownloadRow: View {
     var body: some View {
         Button {
             if item.status == .done { close(); downloads.open(item) }
+            else { inspect() }
         } label: {
             HStack(spacing: Look.rowSpacing) {
                 DownloadIcon(item: item, size: Look.rowIcon).frame(width: Look.rowIcon, height: Look.rowIcon)
@@ -210,7 +213,7 @@ private struct RecentDownloadRow: View {
                         Text(item.status == .done
                             ? item.completed?.formatted(.relative(presentation: .numeric)) ?? item.subtitle
                             : item.subtitle)
-                            .font(Look.small)
+                            .font(Look.small).monospacedDigit()
                             .foregroundStyle(Look.inkTertiary).lineLimit(1)
                     }
                 }
@@ -228,11 +231,24 @@ private struct RecentDownloadRow: View {
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovered)
         .accessibilityLabel(item.name)
         .accessibilityValue(item.spoken)
-        .accessibilityHint(item.status == .done ? "Opens this download." : "")
+        .accessibilityHint(item.status == .done ? "Opens this download." : "Opens Downloads to manage this transfer.")
         .contextMenu {
             if item.status == .done {
                 Button("Open") { close(); downloads.open(item) }
                 Button("Show in Finder") { close(); downloads.reveal(item) }
+            } else {
+                if item.status == .running { Button("Pause") { downloads.pause(item) } }
+                if item.status == .paused {
+                    Button("Resume") { downloads.resume(item) }.disabled(!downloads.canResume(item))
+                }
+                if downloads.canRetry(item) { Button("Retry") { downloads.retry(item) } }
+                if item.status.isLive || item.retryPending { Button("Cancel Download") { downloads.cancel(item) } }
+            }
+            if let source = item.source {
+                Button("Copy Link") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(source.absoluteString, forType: .string)
+                }
             }
         }
     }
@@ -244,6 +260,7 @@ struct LibraryBucket: View {
     let filled: Bool
     let hovered: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         ZStack {
@@ -272,8 +289,8 @@ struct LibraryBucket: View {
             }
         }
         .frame(width: 24, height: 24)
-        .animation(reduceMotion ? nil : .spring(duration: 0.25, bounce: 0.25), value: hovered)
-        .animation(reduceMotion ? nil : Look.quick, value: filled)
+        .animation(reduceMotion || batterySaver.isActive ? nil : .spring(duration: 0.25, bounce: 0.25), value: hovered)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: filled)
         .accessibilityHidden(true)
     }
 }

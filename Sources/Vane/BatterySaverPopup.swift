@@ -38,13 +38,14 @@ struct BatterySaverPopup: View {
                 .background(buttonGreen, in: .capsule)
                 .contentShape(.capsule)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileButtonStyle(scales: false))
             .padding(.trailing, 12)
             .accessibilityHint("Open Battery Saver in Advanced settings")
         }
         .foregroundStyle(.white)
         .frame(maxWidth: 320, alignment: .trailing)
         .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+        .vaneMotionPolicy()
         .onHover { saver.holdNotice($0, by: host) }
         .onDisappear { saver.holdNotice(false, by: host) }
     }
