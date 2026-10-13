@@ -88,6 +88,32 @@ import SwiftUI
 }
 
 @MainActor final class Feel06PasswordMetadataTests: XCTestCase {
+    func testActualSettingsCloseDiscardsPendingMetadata() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        SettingsWindow.show(tab: "shortcuts")
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Shortcuts" && $0.isVisible })
+        defer { window.close() }
+        let started = expectation(description: "Metadata read started")
+        let finished = expectation(description: "Metadata read finished")
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        let loader = Feel06PasswordMetadata { _ in
+            started.fulfill()
+            gate.wait()
+            finished.fulfill()
+            return [.init(host: "closed.example", account: "closed")]
+        }
+        loader.load(profileID: UUID())
+        await fulfillment(of: [started], timeout: 5)
+        window.close()
+        XCTAssertFalse(loader.busy, "Retained hosting views do not receive onDisappear when closed")
+        gate.signal()
+        await fulfillment(of: [finished], timeout: 5)
+        await Task.yield()
+        XCTAssertTrue(loader.logins.isEmpty, "The hidden pane must discard the completed read")
+    }
+
     func testSlowSupersededProfileReadCannotReplaceTheCurrentProfile() async throws {
         let oldProfile = UUID(), currentProfile = UUID()
         let started = expectation(description: "Old metadata read started")
@@ -134,6 +160,25 @@ import SwiftUI
 }
 
 @MainActor final class Feel06PasswordLayoutTests: XCTestCase {
+    func testExtensionWindowVisibilityTracksCloseAndExplicitReopen() throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let profile = UUID()
+        let host = ExtensionHost.host(for: profile)
+        defer { ExtensionManagement.close(for: profile); ExtensionHost.forget(profile) }
+        ExtensionManagement.show(for: host)
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Extensions — Profile" && $0.isVisible })
+        XCTAssertTrue(ExtensionManagement.isVisible(for: profile))
+        window.close()
+        XCTAssertFalse(ExtensionManagement.isVisible(for: profile),
+            "Closed retained managers must not run catalog refreshes on app activation")
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
+        XCTAssertFalse(ExtensionManagement.isVisible(for: profile))
+        ExtensionManagement.show(for: host)
+        XCTAssertTrue(ExtensionManagement.isVisible(for: profile))
+        XCTAssertTrue(window.isVisible, "Explicit reopening must reuse and refresh the retained manager")
+    }
+
     func testSwitchingSettingsToPasswordsDoesNotEnlargeTheRetainedWindow() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared

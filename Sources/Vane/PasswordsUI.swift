@@ -151,7 +151,12 @@ import SwiftUI
         .padding(.top, Look.inset * 2)
         .sheet(isPresented: $secrets.adding, onDismiss: { forgetSecrets() }) { addSheet }
         .onAppear { reload(); secrets.watchSettingsClose() }
-        .onDisappear { secrets.stopWatching(); metadata.cancel() }
+        .onDisappear { secrets.stopWatching(); metadata.stopWatching() }
+        .onReceive(NotificationCenter.default.publisher(for: SettingsWindow.presentationRequest)) { note in
+            // Retained hosting views also skip onAppear when reopening. Only an
+            // explicit presentation of this pane should restart its metadata read.
+            if note.object as? String == "passwords" { reload() }
+        }
         .onChange(of: logins) {
             // Reloads finish asynchronously; reconcile the detail destination only
             // once the refreshed metadata arrives, including the last-login deletion.

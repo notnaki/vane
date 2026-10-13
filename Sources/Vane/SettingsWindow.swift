@@ -100,6 +100,7 @@ enum LinkTarget {
 /// frame autosave gives "remembers where it was" for free.
 @MainActor enum SettingsWindow {
     private static var window: NSWindow?
+    static let presentationRequest = Notification.Name("VaneSettingsPresentation")
     /// The selected tab, shared by the toolbar (AppKit) and the panes (SwiftUI).
     private static let selection = SettingsSelection()
     private static let tabs = SettingsToolbar(selection)
@@ -108,6 +109,7 @@ enum LinkTarget {
         if let w = window {
             w.makeKeyAndOrderFront(nil)
             NSApp.activate()
+            NotificationCenter.default.post(name: presentationRequest, object: selection.id)
             return
         }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
@@ -148,6 +150,7 @@ enum LinkTarget {
         w.setFrameAutosaveName("VaneSettings")
         w.makeKeyAndOrderFront(nil)
         NSApp.activate()
+        NotificationCenter.default.post(name: presentationRequest, object: selection.id)
     }
 
     /// Open straight at one pane — Help ▸ Keyboard Shortcuts, and anything else that means

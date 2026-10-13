@@ -5,6 +5,9 @@ import WebKit
 @MainActor enum ExtensionManagement {
     private static var windows: [UUID: NSWindow] = [:]
     static let searchRequest = Notification.Name("VaneExtensionManagerSearch")
+    fileprivate static let presentationRequest = Notification.Name("VaneExtensionManagerPresentation")
+
+    static func isVisible(for profileID: UUID) -> Bool { windows[profileID]?.isVisible == true }
 
     /// The browser Find command otherwise consumes Command-F before SwiftUI receives it.
     static func handleKey(_ event: NSEvent) -> Bool {
@@ -21,6 +24,7 @@ import WebKit
         if let window = windows[host.profileID] {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
+            NotificationCenter.default.post(name: presentationRequest, object: host.profileID)
             return
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
@@ -39,6 +43,7 @@ import WebKit
         windows[host.profileID] = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate()
+        NotificationCenter.default.post(name: presentationRequest, object: host.profileID)
     }
 
     static func close(for profileID: UUID) {
@@ -166,11 +171,14 @@ private struct ExtensionManagementView: View {
             .animation(Motion.reduced ? nil : Look.list, value: busy)
             .vaneMotionPolicy()
         }
-        .onAppear { catalog = host.entries }
+        .onAppear { refreshCatalog() }
         .onDisappear { catalogRefresh?.cancel(); catalogRefresh = nil }
         .onReceive(host.objectWillChange) { _ in refreshCatalog() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshCatalog()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ExtensionManagement.presentationRequest)) { note in
+            if note.object as? UUID == host.profileID { refreshCatalog() }
         }
         .onChange(of: visible.map(\.id)) { _, _ in
             selected = ExtensionManagerModel.selection(selected, in: visible)
@@ -308,12 +316,13 @@ private struct ExtensionManagementView: View {
     }
 
     private func refreshCatalog() {
+        guard ExtensionManagement.isVisible(for: host.profileID) else { return }
         catalogRefresh?.cancel()
         catalogRefresh = Task { @MainActor in
             // objectWillChange arrives before the new host values. Coalesce a burst
             // and read after the mutation without doing work from a hover callback.
             await Task.yield()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, ExtensionManagement.isVisible(for: host.profileID) else { return }
             catalog = host.entries
             catalogRefresh = nil
         }

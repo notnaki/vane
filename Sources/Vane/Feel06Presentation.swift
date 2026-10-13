@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// View-owned, single-entry memoization. Keeps derived lists out of hover, focus,
 /// progress and secret-reveal redraws; the complete input key controls invalidation.
@@ -61,6 +62,7 @@ struct Feel06ActivityLine: View {
     private var profileID: UUID?
     private var request: UUID?
     private var task: Task<Void, Never>?
+    private var closing: AnyCancellable?
     private let fetch: Fetch
 
     init(fetch: @escaping Fetch = { try Passwords.allChecked(profileID: $0) }) {
@@ -68,6 +70,9 @@ struct Feel06ActivityLine: View {
     }
 
     func load(profileID: UUID) {
+        if closing == nil, let observer = SettingsWindow.onClose({ [weak self] in self?.cancel() }) {
+            closing = AnyCancellable { NotificationCenter.default.removeObserver(observer) }
+        }
         cancel()
         if self.profileID != profileID { logins = [] }
         self.profileID = profileID
@@ -95,6 +100,12 @@ struct Feel06ActivityLine: View {
         task?.cancel()
         task = nil
         busy = false
+    }
+
+    func stopWatching() {
+        cancel()
+        closing?.cancel()
+        closing = nil
     }
 
     deinit { task?.cancel() }
