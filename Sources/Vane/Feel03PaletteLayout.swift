@@ -27,8 +27,8 @@ struct Feel03PaletteLayout<Row> {
     }
 }
 
-/// Progress, loading and media updates do not change a search result. Compare only
-/// what the palette displays or ranks, including ownership and MRU ordering.
+/// Progress alone does not change a search result. Include the page state that
+/// changes action availability/titles as well as ownership and MRU ordering.
 struct Feel03TabContent: Equatable {
     let id: UUID
     let owner: ObjectIdentifier
@@ -38,6 +38,13 @@ struct Feel03TabContent: Equatable {
     let favicon: ObjectIdentifier?
     let lastActive: Date
     let current: Bool
+    let canGoBack: Bool
+    let canGoForward: Bool
+    let developer: Bool
+    let muted: Bool
+    let kind: TabKind
+    let easelID: UUID?
+    let captureAvailable: Bool
 
     /// Shared tabs can appear in two windows. A keyboard destination includes the
     /// owner window as well as the page, so their rows must have distinct identities.
@@ -54,5 +61,12 @@ struct Feel03TabContent: Equatable {
         favicon = tab.favicon.map(ObjectIdentifier.init)
         lastActive = tab.lastActive
         current = owner.current == tab.id
+        canGoBack = tab.canGoBack
+        canGoForward = tab.canGoForward
+        developer = tab.developer
+        muted = TabAudio.isMuted(tab)
+        kind = tab.kind
+        easelID = tab.easelID
+        captureAvailable = PageCapture.available(tab)
     }
 }

@@ -61,8 +61,10 @@ import XCTest
         let tab = Tab(isPrivate: true)
         let before = Feel03TabContent(tab, owner: store, windowNumber: 0)
         tab.progress = 0.5
-        tab.loading = true
         XCTAssertEqual(before, Feel03TabContent(tab, owner: store, windowNumber: 0))
+        tab.canGoBack = true
+        XCTAssertNotEqual(before, Feel03TabContent(tab, owner: store, windowNumber: 0),
+                          "Action availability must still refresh without a query edit")
         tab.title = "Arrived title"
         XCTAssertNotEqual(before, Feel03TabContent(tab, owner: store, windowNumber: 0))
         let titled = Feel03TabContent(tab, owner: store, windowNumber: 0)

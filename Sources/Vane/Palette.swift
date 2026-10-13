@@ -593,7 +593,6 @@ struct CommandField: NSViewRepresentable {
     /// In-memory rows refresh immediately; database suggestions arrive separately.
     @State private var rows: [PaletteRow] = []
     @State private var layout = Feel03PaletteLayout<PaletteRow>()
-    @State private var tabContent: [Feel03TabContent] = []
     @State private var hover: String?
     /// Arc's ⇥: the bar narrows to its actions catalogue and says so with a scope chip in
     /// the field. Escape takes the filter off before it closes the bar.
@@ -726,10 +725,9 @@ struct CommandField: NSViewRepresentable {
         // grow under the user without moving what they had already arrowed onto. The same
         // goes for a tab that renames itself or gets its favicon while the bar is up.
         .onChange(of: store.suggestions) { refresh(reset: false, rebuildLocal: false) }
-        .onChange(of: tabs.revision) {
-            guard currentTabContent != tabContent else { return }
-            refresh(reset: false)
-        }
+        // ChangeWatch invalidates the body on a tab notification; compare only
+        // result/action content before rebuilding, including store-driven changes.
+        .onChange(of: currentTabContent) { refresh(reset: false) }
         .onChange(of: tabSpaceID) { refresh() }
         // Tabs opened or closed while the bar is up: watch the new set, and list it.
         .onChange(of: allTabs.map(\.id)) { tabs.watch(allTabs); refresh(reset: false) }
@@ -1132,7 +1130,6 @@ struct CommandField: NSViewRepresentable {
     private func refresh(reset: Bool = true, rebuildLocal: Bool = true) {
         let selectedID = rows.indices.contains(index) ? rows[index].id : nil
         if rebuildLocal {
-            tabContent = currentTabContent
             var fresh = Feel03PaletteLayout<PaletteRow>()
             func matchingTabs() -> [PaletteRow] {
                 Palette.rankPages(query, tabRows(), title: \.title, url: \.matchURL)
