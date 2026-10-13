@@ -153,6 +153,11 @@ import SwiftUI
         .onAppear { reload(); secrets.watchSettingsClose() }
         .onDisappear { secrets.stopWatching(); metadata.cancel() }
         .onChange(of: logins) {
+            // Reloads finish asynchronously; reconcile the detail destination only
+            // once the refreshed metadata arrives, including the last-login deletion.
+            if let selectedHost, !logins.contains(where: { $0.host == selectedHost }) {
+                navigate(to: nil)
+            }
             if let selected, !logins.contains(where: { $0.id == selected || $0.host == selected }) { self.selected = nil }
         }
         .onChange(of: selectedHost) { forgetSecrets(); problem = nil; feedback = nil }
@@ -498,7 +503,6 @@ import SwiftUI
         secrets.revealed[login.id] = nil
         if secrets.editing == login.id { cancelEditing() }
         reload()
-        if !logins.contains(where: { $0.host == selectedHost }) { selectedHost = nil }
         axAnnounce("Saved login for \(login.host) deleted.")
     }
 
