@@ -147,7 +147,7 @@ import UniformTypeIdentifiers
         let height = min(EaselStore.canvasHeight, max(600, (board.items.map { $0.y + $0.height }.max() ?? 0) + 40))
         let scale = min(1, 4096 / width, 4096 / height)
         let renderer = ImageRenderer(content: EaselCanvas(items: board.items, selected: nil, drawing: false,
-                                    profileID: profileID, liveItems: [], toggleLive: { _ in }, stroke: [], zoom: 1, select: { _ in }, edit: { _ in }, change: { _ in true }, draw: { _, _ in }, interactive: false)
+                                    profileID: profileID, liveItems: [], toggleLive: { _ in }, zoom: 1, select: { _ in }, edit: { _ in }, change: { _ in true }, draw: { _ in }, interactive: false)
                                     .frame(width: width, height: height, alignment: .topLeading).clipped()
                                     .scaleEffect(scale, anchor: .topLeading)
                                     .frame(width: width * scale, height: height * scale, alignment: .topLeading).clipped())
@@ -261,7 +261,6 @@ private struct EaselEditor: View {
     @State private var drawing = false
     @State private var drawingKind: EaselItem.Kind = .drawing
     @State private var drawingColor = "ink"
-    @State private var stroke: [EaselPoint] = []
     @State private var editing: EaselItem?
     @State private var title = ""
     @State private var viewport = CGPoint.zero
@@ -272,7 +271,7 @@ private struct EaselEditor: View {
             ScrollView([.horizontal, .vertical]) {
                 EaselCanvas(items: board.items, selected: selected, drawing: drawing,
                             profileID: repository.profileID, liveItems: session.liveItems, toggleLive: session.toggleLive,
-                            stroke: stroke, zoom: zoom, hand: hand, editRequest: editRequest, drawingKind: drawingKind, drawingColor: drawingColor, drawingStrokeWidth: strokeWidth, drawingFillColor: fillColor, drawingStyle: drawingStyle,
+                            zoom: zoom, hand: hand, editRequest: editRequest, drawingKind: drawingKind, drawingColor: drawingColor, drawingStrokeWidth: strokeWidth, drawingFillColor: fillColor, drawingStyle: drawingStyle,
                             select: { selected = $0; canvasFocused = true },
                             edit: { editing = $0 }, annotate: annotateImage, change: { changeItem($0) },
                             textEditingChanged: { id, active in
@@ -302,6 +301,8 @@ private struct EaselEditor: View {
                     .accessibilityLabel("Easel name")
                 if drawing || selected != nil {
                     ScrollView(.vertical) { properties }.scrollIndicators(.hidden)
+                        .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: selected)
+                        .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: drawing)
                         .frame(maxHeight: max(100, viewportSize.height - (viewportSize.width < 960 ? 200 : 130)))
                 }
             }.frame(width: 190).padding(16).padding(.top, viewportSize.width < 960 ? 65 : 0)
@@ -324,9 +325,6 @@ private struct EaselEditor: View {
                 .font(.caption).foregroundStyle(.secondary).padding(16).allowsHitTesting(false)
         }
         .onGeometryChange(for: CGSize.self) { $0.size } action: { viewportSize = $0 }
-        .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: drawing)
-        .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: selected)
-        .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: hand)
         .onAppear { title = board.title; selectRequestedImage(); session.insertionPoint = CGPoint(x: 120, y: 140) }
         .onChange(of: session.requestedImage) { selectRequestedImage() }
         .onChange(of: zoom) {
@@ -504,6 +502,8 @@ private struct EaselEditor: View {
                     if let number { Text(number).font(.system(size: 8)).foregroundStyle(.secondary).padding(3) }
                 }
                 .background(active ? EaselColors.selection.opacity(0.18) : .clear, in: .rect(cornerRadius: 7))
+                .scaleEffect(active ? 1.04 : 1)
+                .animation(reduceMotion || Motion.reduced ? nil : .spring(response: 0.22, dampingFraction: 0.8), value: active)
         }.buttonStyle(TactileButtonStyle()).vaneTooltip(parts[0], shortcut: shortcut).accessibilityLabel(title)
             .accessibilityAddTraits(active ? [.isSelected] : [])
     }
@@ -517,12 +517,7 @@ private struct EaselEditor: View {
         session.edit { $0.items.removeAll { $0.id == selected } }
         self.selected = nil
     }
-    private func drawingGesture(_ point: CGPoint?, _ finished: Bool) {
-        if let point, stroke.count < 5000 {
-            stroke.append(EaselPoint(x: min(max(0, point.x), EaselStore.canvasWidth), y: min(max(0, point.y), EaselStore.canvasHeight)))
-        }
-        guard finished else { return }
-        defer { stroke = [] }
+    private func drawingGesture(_ stroke: [EaselPoint]) {
         guard var item = EaselItemLayout.created(kind: drawingKind, color: drawingColor, points: stroke) else { return }
         item.strokeWidth = strokeWidth; item.fillColor = fillColor; item.style = drawingStyle
         if item.kind == .text { item.fontSize = drawingFontSize }
@@ -613,7 +608,6 @@ private struct EaselCanvas: View {
     let profileID: UUID
     let liveItems: Set<UUID>
     let toggleLive: (UUID) -> Void
-    let stroke: [EaselPoint]
     let zoom: Double
     var hand = false
     var editRequest: UUID?
@@ -627,7 +621,7 @@ private struct EaselCanvas: View {
     var annotate: (UUID) -> Void = { _ in }
     let change: (EaselItem) -> Bool
     var textEditingChanged: (UUID, Bool) -> Void = { _, _ in }
-    let draw: (CGPoint?, Bool) -> Void
+    let draw: ([EaselPoint]) -> Void
     var interactive = true
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -640,11 +634,8 @@ private struct EaselCanvas: View {
             }
             if hand { EaselPan() }
             if drawing {
-                Color.clear.contentShape(Rectangle())
-                    .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named("easel-canvas"))
-                        .onChanged { draw($0.location, false) }.onEnded { draw($0.location, true) })
-                EaselDrawingPreview(points: stroke, kind: drawingKind, color: drawingColor, strokeWidth: drawingStrokeWidth, fillColor: drawingFillColor, style: drawingStyle)
-                    .allowsHitTesting(false)
+                Feel07DrawingSurface(kind: drawingKind, color: drawingColor, strokeWidth: drawingStrokeWidth,
+                                     fillColor: drawingFillColor, style: drawingStyle, finish: draw)
             }
             if items.isEmpty && !drawing {
                 VStack(alignment: .leading, spacing: 10) {
@@ -681,7 +672,13 @@ private struct EaselCard: View {
     @State private var movement = CGSize.zero
     @State private var resizing = CGSize.zero
     @State private var resizeCorner = EaselItemLayout.Corner.bottomTrailing
-    private var layout: EaselItem { EaselItemLayout.resized(item, corner: resizeCorner, translation: resizing, zoom: zoom) }
+    @State private var manipulating = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var layout: CGRect {
+        if resizing != .zero { return EaselItemLayout.resizeFrame(item, corner: resizeCorner, translation: resizing, zoom: zoom) }
+        let moved = EaselItemLayout.moved(item, translation: movement, zoom: zoom)
+        return CGRect(x: moved.x, y: moved.y, width: moved.width, height: moved.height)
+    }
     private var arrangedContent: some View {
         content
             .frame(width: layout.width, height: layout.height, alignment: .topLeading)
@@ -700,9 +697,11 @@ private struct EaselCard: View {
     private var selectionContent: some View {
         arrangedContent
             .overlay {
-                if selected {
-                    Rectangle().stroke(EaselColors.selection, lineWidth: 1).allowsHitTesting(false)
-                }
+                Rectangle().stroke(EaselColors.selection, lineWidth: manipulating ? 2 : 1)
+                    .opacity(selected ? 1 : 0)
+                    .animation(reduceMotion || Motion.reduced ? nil : .easeOut(duration: 0.12), value: selected)
+                    .animation(reduceMotion || Motion.reduced ? nil : .spring(response: 0.24, dampingFraction: 0.85), value: manipulating)
+                    .allowsHitTesting(false)
             }
             .overlay(alignment: .topLeading) { if selected { handle(.topLeading) } }
             .overlay(alignment: .topTrailing) { if selected { handle(.topTrailing) } }
@@ -739,7 +738,7 @@ private struct EaselCard: View {
             .accessibilityAction(named: "Move right") { move(dx: 24, dy: 0) }
             .accessibilityAction(named: "Move up") { move(dx: 0, dy: -24) }
             .accessibilityAction(named: "Move down") { move(dx: 0, dy: 24) }
-            .offset(x: layout.x - item.x + movement.width / zoom, y: layout.y - item.y + movement.height / zoom)
+            .offset(x: layout.minX - item.x, y: layout.minY - item.y)
     }
     private func handle(_ corner: EaselItemLayout.Corner) -> some View {
         RoundedRectangle(cornerRadius: 2).fill(EaselColors.paper).frame(width: 8, height: 8)
@@ -748,6 +747,7 @@ private struct EaselCard: View {
             .accessibilityLabel("Resize \(corner.rawValue) corner")
     }
     private func pointerDrag(_ translation: CGSize, _ corner: EaselItemLayout.Corner?, _ finished: Bool) {
+        manipulating = !finished
         if let corner {
             resizeCorner = corner
             resizing = translation
@@ -798,10 +798,8 @@ private struct EaselCard: View {
         case .image:
             VStack(spacing: 0) {
                 if live, let url = EaselItem.webURL(item.source) {
-                    EaselLiveView(url: url, profileID: profileID)
-                } else if let data = item.image, let image = NSImage(data: data) {
-                    Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else { Image(systemName: "photo.badge.exclamationmark").frame(maxWidth: .infinity, maxHeight: .infinity) }
+                    EaselLiveView(url: url, profileID: profileID).id(profileID)
+                } else { Feel07EaselImageView(data: item.image) }
                 HStack {
                     Text(item.text).font(.caption).lineLimit(1)
                     Spacer()

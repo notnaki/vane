@@ -89,13 +89,23 @@ import SwiftUI
     static func applyPreferences(in tab: Tab?) {
         ReaderState.shared.preferenceRevision += 1
         guard let tab, isOn(tab) else { return }
-        tab.web.evaluateJavaScript("""
+        tab.web.evaluateJavaScript(preferenceScript)
+    }
+
+    /// Shared by live and saved readers. Updating trusted CSS variables keeps the
+    /// article DOM, selection and scroll container in place, without rendering its text.
+    static var preferenceScript: String {
+        """
+        (() => {
+            const x = window.scrollX, y = window.scrollY;
             document.body.style.transition = '\(Motion.reduced ? "none" : "font-size 120ms ease-out, line-height 120ms ease-out, max-width 120ms ease-out")';
             document.documentElement.style.setProperty('--r-size','\(fontSize)px');
             document.documentElement.style.setProperty('--r-font',\(jsString(serif ? serifStack : sansStack)));
             document.documentElement.style.setProperty('--r-spacing','\(lineSpacing)');
             document.documentElement.style.setProperty('--r-width','\(readingWidth)ch');
-            """)
+            window.scrollTo(x, y);
+        })();
+        """
     }
 
     static func clampSize(_ v: Int) -> Int { min(max(v, 13), 32) }
@@ -328,7 +338,12 @@ import SwiftUI
             case "img":
                 let raw = n.a?["src"] ?? ""
                 guard let src = localImages[raw] ?? resolve(raw, base: base) else { continue }
-                out += "<img src=\"\(esc(src))\" alt=\"\(esc(n.a?["alt"] ?? ""))\" loading=\"lazy\">"
+                var dimensions = ""
+                if let width = n.a?["width"].flatMap(Int.init), let height = n.a?["height"].flatMap(Int.init),
+                   width > 0, height > 0, width <= 40_000_000 / height {
+                    dimensions = " width=\"\(width)\" height=\"\(height)\""
+                }
+                out += "<img src=\"\(esc(src))\" alt=\"\(esc(n.a?["alt"] ?? ""))\"\(dimensions) loading=\"lazy\">"
             case "a":
                 guard let href = resolve(n.a?["href"] ?? "", base: base) else {
                     render(n.c ?? [], base: base, localImages: localImages, into: &out)   // dead link, live words

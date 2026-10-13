@@ -34,12 +34,26 @@ struct ReadingQueuePane: View {
     @StateObject private var collection = ReadingQueueCollection()
     @ObservedObject var origin: TabStore
     @ObservedObject private var library = Library.shared
+    @StateObject private var preparation = Feel07ArticlePreparation()
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @State private var hoveredArticle: ReadingQueueIdentity?
     @State private var filter = ReadingQueueFilter.all
     @State private var results: [ReadingQueueItem] = []
     @State private var message: String?
     @State private var searching = true
     @FocusState private var focusedArticle: ReadingQueueIdentity?
     private struct Request: Equatable, Sendable { var query: String; var filter: ReadingQueueFilter; var revisions: [ReadingQueueCollection.Revision] }
+    private struct PreparationRequest: Equatable {
+        var identity: ReadingQueueIdentity
+        var revision: Int
+    }
+    private var preparationRequest: PreparationRequest? {
+        guard !origin.isPrivate, !batterySaver.isActive,
+              let identity = hoveredArticle ?? focusedArticle,
+              results.contains(where: { $0.id == identity }),
+              let repository = collection.repository(for: identity.profileID) else { return nil }
+        return .init(identity: identity, revision: repository.revision)
+    }
     private var request: Request { .init(query: library.query, filter: filter, revisions: collection.revisions) }
     private func size(_ bytes: Int64) -> String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
     private func perform(_ work: @escaping @MainActor () async throws -> Void) {
@@ -63,8 +77,10 @@ struct ReadingQueuePane: View {
                     Button("Retry") { collection.reload(profileID: failure.id); message = nil }
                 }.accessibilityElement(children: .contain)
             }
-            if collection.loading { Text("Loading saved articles…").font(Look.caption).foregroundStyle(Look.inkSecondary) }
-            if searching { Text("Searching…").font(Look.caption).foregroundStyle(Look.inkSecondary) }
+            Text(collection.loading ? "Loading saved articles…" : "Searching…")
+                .font(Look.caption).foregroundStyle(Look.inkSecondary)
+                .opacity(collection.loading || searching ? 1 : 0)
+                .accessibilityHidden(!collection.loading && !searching)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Look.rowGap) {
                     if results.isEmpty && !searching && !collection.loading {
@@ -91,6 +107,15 @@ struct ReadingQueuePane: View {
             }
         }
         .padding(.horizontal, Look.inset).padding(.top, Look.inset)
+        .onDisappear { preparation.clear() }
+        .task(id: preparationRequest) {
+            preparation.clear()
+            guard let asked = preparationRequest else { return }
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+            guard !Task.isCancelled, preparationRequest == asked, !origin.isPrivate,
+                  let repository = collection.repository(for: asked.identity.profileID) else { return }
+            await preparation.prepare(asked.identity.articleID, repository: repository)
+        }
         .task(id: request) {
             let asked = request, items = collection.items
             searching = true
@@ -108,7 +133,7 @@ struct ReadingQueuePane: View {
     }
     private func openSaved(_ item: ReadingQueueItem) {
         guard !origin.isPrivate, let repository = collection.repository(for: item.profileID) else { return }
-        SavedReaderWindow.show(articleID: item.article.id, repository: repository, origin: origin)
+        SavedReaderWindow.show(articleID: item.article.id, repository: repository, origin: origin, preparation: preparation)
     }
     private func row(_ item: ReadingQueueItem) -> some View {
         let article = item.article
@@ -130,6 +155,10 @@ struct ReadingQueuePane: View {
             Menu { actions(item) } label: { Image(systemName: "ellipsis") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("Actions for \(article.title)")
         }.padding(8)
+            .onHover { inside in
+                if inside { hoveredArticle = item.id }
+                else if hoveredArticle == item.id { hoveredArticle = nil }
+            }
             .background(focusedArticle == item.id ? Look.controlFill : .clear, in: .rect(cornerRadius: Look.pillRadius))
             .contextMenu { actions(item) }
     }

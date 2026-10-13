@@ -12,9 +12,10 @@ struct EaselPointer: NSViewRepresentable {
     let drag: (CGSize, EaselItemLayout.Corner?, Bool) -> Void
     func makeNSView(context: Context) -> EaselPointerView { EaselPointerView() }
     func updateNSView(_ view: EaselPointerView, context: Context) {
+        let cursorChanged = view.selected != selected
         view.selected = selected; view.editing = editing; view.footer = footer; view.live = live
         view.select = select; view.edit = edit; view.drag = drag
-        view.window?.invalidateCursorRects(for: view)
+        if cursorChanged { view.window?.invalidateCursorRects(for: view) }
     }
 }
 

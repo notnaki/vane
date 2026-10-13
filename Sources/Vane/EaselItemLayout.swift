@@ -8,22 +8,30 @@ import Foundation
         var top: Bool { self == .topLeading || self == .topTrailing }
     }
     static func moved(_ item: EaselItem, translation: CGSize, zoom: Double) -> EaselItem {
+        guard translation != .zero else { return item }
         var changed = item
         changed.x = min(max(0, item.x + translation.width / zoom), EaselStore.canvasWidth - item.width)
         changed.y = min(max(0, item.y + translation.height / zoom), EaselStore.canvasHeight - item.height)
         return changed
     }
     static func resized(_ item: EaselItem, corner: Corner, translation: CGSize, zoom: Double) -> EaselItem {
+        guard translation != .zero else { return item }
+        let frame = resizeFrame(item, corner: corner, translation: translation, zoom: zoom)
+        var changed = item
+        changed.x = frame.minX; changed.y = frame.minY; changed.width = frame.width; changed.height = frame.height
+        changed.points = item.points.map { EaselPoint(x: min(changed.width, max(0, $0.x / item.width * changed.width)), y: min(changed.height, max(0, $0.y / item.height * changed.height))) }
+        return changed
+    }
+    /// Pointer previews need only a frame; transforming a long stroke is commit work.
+    static func resizeFrame(_ item: EaselItem, corner: Corner, translation: CGSize, zoom: Double) -> CGRect {
+        guard translation != .zero else { return CGRect(x: item.x, y: item.y, width: item.width, height: item.height) }
         let dx = translation.width / zoom, dy = translation.height / zoom
         var left = item.x, top = item.y, right = item.x + item.width, bottom = item.y + item.height
         if corner.leading { left = min(right - 80, max(0, right - 4096, left + dx)) }
         else { right = max(left + 80, min(EaselStore.canvasWidth, left + 4096, right + dx)) }
         if corner.top { top = min(bottom - 60, max(0, bottom - 4096, top + dy)) }
         else { bottom = max(top + 60, min(EaselStore.canvasHeight, top + 4096, bottom + dy)) }
-        var changed = item
-        changed.x = left; changed.y = top; changed.width = right - left; changed.height = bottom - top
-        changed.points = item.points.map { EaselPoint(x: min(changed.width, max(0, $0.x / item.width * changed.width)), y: min(changed.height, max(0, $0.y / item.height * changed.height))) }
-        return changed
+        return CGRect(x: left, y: top, width: right - left, height: bottom - top)
     }
     static func created(kind: EaselItem.Kind, color: String, points: [EaselPoint]) -> EaselItem? {
         guard let first = points.first, let last = points.last else { return nil }

@@ -5,8 +5,16 @@ import Combine
 
 @MainActor enum SavedReaderDocument {
     static func html(article: ReadingArticle) -> String {
+        let resources = Dictionary(uniqueKeysWithValues: article.resources.map { ("images/" + $0.name, $0) })
         func nodes(_ input: [ReadingArticle.Node]) -> [Reader.Node] {
-            input.map { .init(x: $0.x, e: $0.e, a: $0.a, c: $0.c.map(nodes)) }
+            input.map { node in
+                var attributes = node.a
+                if node.e == "img", let source = attributes?["src"], let resource = resources[source] {
+                    attributes?["width"] = String(resource.pixelWidth)
+                    attributes?["height"] = String(resource.pixelHeight)
+                }
+                return .init(x: node.x, e: node.e, a: attributes, c: node.c.map(nodes))
+            }
         }
         let mapping = Dictionary(uniqueKeysWithValues: article.resources.map { ("images/" + $0.name, "images/" + $0.name) })
         let extraction = Reader.Extraction(title: article.title, byline: article.byline, nodes: nodes(article.nodes))
@@ -31,6 +39,12 @@ enum SavedReaderNavigation {
     private static var sessions: [Key: SavedReaderSession] = [:]
     private static var opening = Set<Key>()
     static func show(articleID: UUID, repository: ReadingQueueStore, origin: TabStore) {
+        open(articleID: articleID, repository: repository, origin: origin, preparation: nil)
+    }
+    static func show(articleID: UUID, repository: ReadingQueueStore, origin: TabStore, preparation: Feel07ArticlePreparation) {
+        open(articleID: articleID, repository: repository, origin: origin, preparation: preparation)
+    }
+    private static func open(articleID: UUID, repository: ReadingQueueStore, origin: TabStore, preparation: Feel07ArticlePreparation?) {
         guard !origin.isPrivate, !repository.invalidated else { return }
         let key = Key(profile: repository.profileID, article: articleID)
         if let session = sessions[key] { session.window.makeKeyAndOrderFront(nil); return }
@@ -38,7 +52,9 @@ enum SavedReaderNavigation {
         Task {
             defer { opening.remove(key) }
             do {
-                let candidate = try await repository.candidate(articleID)
+                let candidate: ReadingQueueCandidate
+                if let prepared = preparation?.take(articleID, repository: repository) { candidate = prepared }
+                else { candidate = try await repository.candidate(articleID) }
                 let html = SavedReaderDocument.html(article: candidate.article)
                 let directory = try await Task.detached(priority: .userInitiated) {
                     try SavedReaderPresentation.prepare(candidate: candidate, html: html)
@@ -101,6 +117,7 @@ private enum SavedReaderPresentation {
     var onClose: (() -> Void)?
     @Published var message: String?
     private var observation: AnyCancellable?
+    private var appliedPreferences: String?
     init(article: ReadingArticle, directory: URL, repository: ReadingQueueStore, origin: TabStore) {
         let articleID = article.id
         self.articleID = articleID; self.repository = repository; self.origin = origin
@@ -128,13 +145,16 @@ private enum SavedReaderPresentation {
         SavedReaderLivePage.open(url, profileID: repository.profileID)
     }
     func applyPreferences() {
-        guard let article else { return }
-        // Reuse Reader's style values without reloading or changing the saved payload/scroll.
-        let html = SavedReaderDocument.html(article: article)
-        guard let start = html.range(of: "<style>"), let end = html.range(of: "</style>") else { return }
-        let css = String(html[start.upperBound..<end.lowerBound])
-        web.evaluateJavaScript("document.body.style.transition = '\(Motion.reduced ? "none" : "font-size 120ms ease-out, line-height 120ms ease-out, max-width 120ms ease-out")'; document.querySelector('style').textContent = \(Reader.jsString(css));")
-        objectWillChange.send()
+        guard article != nil else { return }
+        guard !web.isLoading else { return }
+        let script = Reader.preferenceScript
+        guard appliedPreferences != script else { return }
+        appliedPreferences = script
+        web.evaluateJavaScript(script)
+    }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        appliedPreferences = nil
+        applyPreferences()
     }
     func windowWillClose(_ notification: Notification) {
         observation = nil; web.stopLoading(); web.navigationDelegate = nil
@@ -168,6 +188,7 @@ private struct SavedReaderView: View {
                     Button(article.isRead ? "Mark Unread" : "Mark Read") {
                         Task { do { try await repository.setRead(!article.isRead, id: article.id) } catch { session.message = error.localizedDescription } }
                     }
+                    .frame(width: 92)
                     ReaderPreferencesMenu(onChange: { session.applyPreferences() })
                     Button("Open Live Page") { if let url = URL(string: article.sourceURL) { session.open(url) } }
                 }
