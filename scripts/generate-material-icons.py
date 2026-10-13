@@ -207,7 +207,8 @@ for finish in production_finishes + fluted_studies:
     for material_group in config["groups"]:
         artwork = material_group["layers"][0]
         if artwork["name"] in {"body", "fold", "rim", "tube", "halo", "sticker"}:
-            artwork["position"]["scale"] = 1.15
+            # Luminous matches the original mark; outlined finishes retain their larger scale.
+            artwork["position"]["scale"] = 1.0 if finish == "Luminous" else 1.15
     for name, image in content.items():
         (assets / (name + ".svg")).write_text(image)
     (folder / "icon.json").write_text(json.dumps(config, indent=2) + '\n')
