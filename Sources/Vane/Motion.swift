@@ -20,6 +20,11 @@ import SwiftUI
 
     static func animate<T>(_ animation: Animation, _ body: () throws -> T) rethrows -> T {
         guard reduced else { return try withAnimation(animation, body) }
+        return try instant(body)
+    }
+
+    /// Acknowledgement and policy cancellation must also override an inherited spring.
+    static func instant<T>(_ body: () throws -> T) rethrows -> T {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         return try withTransaction(transaction, body)

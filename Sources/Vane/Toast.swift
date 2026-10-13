@@ -75,6 +75,8 @@ import SwiftUI
     /// it goes — including when a newer toast takes its place.
     private var timers: [UUID: Task<Void, Never>] = [:]
 
+    deinit { timers.values.forEach { $0.cancel() } }
+
     var current: Toast? { queue.current }
     var showing: [Toast] { queue.showing }
 
@@ -100,14 +102,15 @@ import SwiftUI
     /// caller's, so the same pill can be rewritten as its news changes.
     static func stick(_ text: String, id: UUID,
                       action: (title: String, run: @MainActor () -> Void)? = nil) {
+        if let previous = shared.queue.sticky, previous.id != id { shared.dismiss(previous) }
         shared.queue.stick(Toast(id: id, text: text, action: action, sticky: true))
     }
 
     /// Only the toast that put it there can take it back, by id — a stale caller must not
     /// clear a notice that has since been replaced.
     static func unstick(_ id: UUID) {
-        guard shared.queue.sticky?.id == id else { return }
-        shared.queue.unstick()
+        guard let toast = shared.queue.sticky, toast.id == id else { return }
+        shared.dismiss(toast)
     }
 
     /// A toast's text as it is read out: the same sentence with its emphasis markers gone,
@@ -117,7 +120,13 @@ import SwiftUI
     }
 
     func hover(_ toast: Toast, _ inside: Bool) {
-        if inside { hovering.insert(toast.id) } else { hovering.remove(toast.id); schedule(toast) }
+        guard queue.showing.contains(where: { $0.id == toast.id }) else { return }
+        if inside {
+            hovering.insert(toast.id)
+            timers.removeValue(forKey: toast.id)?.cancel()
+        } else if hovering.remove(toast.id) != nil {
+            schedule(toast)
+        }
     }
 
     /// The pill was pressed: take the toast away, then run the verb — "Undo" twice is not a
@@ -125,8 +134,10 @@ import SwiftUI
     /// a new toast up (the updater's "Update" does) would otherwise have it removed out from
     /// under it a line later.
     func act(_ toast: Toast) {
-        dismiss(toast)
-        toast.action?.run()
+        guard let current = queue.showing.first(where: { $0.id == toast.id }),
+              current.action?.title == toast.action?.title else { return }
+        dismiss(current)
+        current.action?.run()
     }
 
     func dismiss(_ toast: Toast) {
@@ -138,10 +149,11 @@ import SwiftUI
     /// A sticky toast has no clock: it is there until the × or the verb, and a timer that
     /// took it away would be the one bug this kind of toast exists to not have.
     private func schedule(_ toast: Toast) {
-        guard !toast.sticky else { return }
+        guard !toast.sticky, queue.latest?.id == toast.id,
+              !hovering.contains(toast.id) else { return }
         timers[toast.id]?.cancel()
         timers[toast.id] = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Prefs.toastSeconds))
+            do { try await Task.sleep(for: .seconds(Prefs.toastSeconds)) } catch { return }
             guard let self, !Task.isCancelled, !hovering.contains(toast.id) else { return }
             dismiss(toast)
         }
@@ -155,13 +167,17 @@ struct ToastHost: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var toasts = Toasts.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     var body: some View {
         // Grows upward from the footer: the thing that just happened is the pill nearest
         // it, and the sticky notice — when there is one — rises above. A ZStack put them in
         // depth, where the second one is simply invisible.
         VStack(alignment: .leading, spacing: Look.rowGap) {
-            ForEach(mine) { toast in
+            // Keep each of the two slots stable when its news changes. Rapid actions
+            // rewrite the existing pill rather than accumulating departing toast views.
+            ForEach(mine, id: \.sticky) { toast in
                 ToastPill(toast: toast, tint: tint)
             }
         }
@@ -169,7 +185,8 @@ struct ToastHost: View {
         // inside it; nothing here is a fixed height, so a two-line toast is taller and the
         // sidebar's overlay simply has more of it to draw.
         .padding(.horizontal, Look.inset)
-        .animation(reduceMotion ? nil : Look.list, value: mine.map(\.id))
+        .animation(reduced ? nil : .spring(duration: 0.22, bounce: 0.08), value: mine.map(\.id))
+        .vaneMotionPolicy()
         // Keep the shadow outside the stack's layout bounds. Clipping here cuts its
         // top and bottom flush with the pill, leaving a hard rectangular edge.
     }
@@ -191,6 +208,7 @@ struct ToastPill: View {
     let toast: Toasts.Toast
     let tint: Color
     @ObservedObject private var toasts = Toasts.shared
+    @State private var hovered = false
 
     /// Short toasts hug their content. Longer messages give up width to the controls,
     /// keeping the action and dismiss target beside the message at every sidebar width.
@@ -222,9 +240,15 @@ struct ToastPill: View {
         .background(Look.barMaterial, in: .rect(cornerRadius: Look.toastHeight / 2))
         .hairline(radius: Look.toastHeight / 2, Look.barStroke)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
-        .onHover { toasts.hover(toast, $0) }
-        .transition(.opacity)
-        .id(toast.id)
+        .onHover { hovered = $0; toasts.hover(toast, $0) }
+        .onChange(of: toast.id) { _, _ in
+            // A stable slot can stay under a stationary pointer through replacement.
+            if hovered { toasts.hover(toast, true) }
+        }
+        .onDisappear { toasts.hover(toast, false) }
+        .transition(.modifier(active: Feel09ToastTransition(progress: 0, id: toast.id),
+                              identity: Feel09ToastTransition(progress: 1, id: toast.id)))
+        .vaneMotionPolicy()
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Toasts.spoken(toast.text))
     }
@@ -244,7 +268,7 @@ struct ToastPill: View {
     @ViewBuilder private func controls(_ toast: Toasts.Toast, fixed: Bool) -> some View {
         if let action = toast.action {
             Button(action.title) { toasts.act(toast) }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileButtonStyle(scales: false))
                 .font(Look.Typography.shortcut.font)
                 .lineLimit(2)
                 .fixedSize(horizontal: fixed, vertical: true)
@@ -261,7 +285,7 @@ struct ToastPill: View {
                 .frame(width: Look.rowTarget, height: Look.rowTarget)
                 .contentShape(.rect)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileButtonStyle(scales: false))
         .foregroundStyle(Look.barText)
         .help("Dismiss")
         .accessibilityLabel("Dismiss \(Toasts.spoken(toast.text))")
@@ -278,6 +302,34 @@ struct ToastPill: View {
             out[run.range].font = Look.Typography.secondary.font.bold()
         }
         return out
+    }
+}
+
+/// The policy lives inside the running transition. Replacing `.transition` or removing
+/// its animation only changes the next transition; it cannot finish one already in flight.
+private struct Feel09ToastTransition: ViewModifier, Animatable {
+    nonisolated var progress: Double
+    let id: UUID
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    @ObservedObject private var toasts = Toasts.shared
+    @State private var policyStopped = false
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
+
+    nonisolated var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        // Once interrupted, stay at the semantic end state even if policy is restored
+        // before the spring ends. A departing toast's end state is invisible.
+        let present = toasts.showing.contains { $0.id == id }
+        let visible = reduced || policyStopped ? (present ? 1.0 : 0.0) : progress
+        content.opacity(visible).offset(y: (1 - visible) * 4)
+            .onChange(of: reduced, initial: true) { _, reduced in
+                if reduced { Motion.instant { policyStopped = true } }
+            }
     }
 }
 

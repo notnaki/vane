@@ -14,6 +14,12 @@ import SwiftUI
     private var tidyReset: Task<Void, Never>?
     private var arrivalHighlight = true
 
+    deinit {
+        copyReset?.cancel()
+        arrivalReset?.cancel()
+        tidyReset?.cancel()
+    }
+
     /// Drag placement already has a ghost and insertion preview; keep its snap sound
     /// without adding a second highlight after release. Other arrival actions retain it.
     func withoutArrivalHighlight<T>(_ body: () throws -> T) rethrows -> T {
@@ -21,6 +27,7 @@ import SwiftUI
         arrivalHighlight = false
         if previous {
             arrivalReset?.cancel()
+            arrivalReset = nil
             arrivingTab = nil
         }
         defer { arrivalHighlight = previous }
@@ -31,10 +38,13 @@ import SwiftUI
         copyReset?.cancel()
         copiedURL = url.absoluteString
         copyStamp = UUID()
+        let stamp = copyStamp
         InteractionSounds.play(.copy)
         copyReset = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(1.2)) } catch { return }
-            self?.copiedURL = nil
+            guard let self, !Task.isCancelled, copyStamp == stamp else { return }
+            copiedURL = nil
+            copyReset = nil
         }
     }
 
@@ -44,9 +54,12 @@ import SwiftUI
         arrivalReset?.cancel()
         arrivingTab = id
         arrivalStamp = UUID()
+        let stamp = arrivalStamp
         arrivalReset = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(0.65)) } catch { return }
-            self?.arrivingTab = nil
+            do { try await Task.sleep(for: .seconds(0.42)) } catch { return }
+            guard let self, !Task.isCancelled, arrivalStamp == stamp else { return }
+            arrivingTab = nil
+            arrivalReset = nil
         }
     }
 
@@ -55,15 +68,19 @@ import SwiftUI
         tidyRanks = Dictionary(ids.enumerated().map { ($0.element, $0.offset) },
                                uniquingKeysWith: { first, _ in first })
         tidyStamp = UUID()
+        let stamp = tidyStamp
         InteractionSounds.play(.complete)
         tidyReset = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(0.8)) } catch { return }
-            self?.tidyRanks = [:]
+            do { try await Task.sleep(for: .seconds(0.5)) } catch { return }
+            guard let self, !Task.isCancelled, tidyStamp == stamp else { return }
+            tidyRanks = [:]
+            tidyReset = nil
         }
     }
 
     func cancelTidy() {
         tidyReset?.cancel()
+        tidyReset = nil
         tidyRanks = [:]
         tidyStamp = UUID()
     }
@@ -175,44 +192,73 @@ private struct TactileButtonBody: View {
     @Environment(\.isEnabled) private var enabled
     @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var hovered = false
+    @State private var motionSuppressed = false
     private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     var body: some View {
         configuration.label
+            .modifier(Feel09TactileSurface(
+                scale: configuration.isPressed ? 0.97 : hovered ? 1.012 : 1,
+                opacity: configuration.isPressed && enabled ? 0.8 : 1,
+                motionDisabled: reduced || motionSuppressed || !enabled,
+                scales: scales, pressed: configuration.isPressed && enabled))
+            // The shape follows layout bounds, so pressing never shrinks the hit target.
             .contentShape(.rect)
-            .scaleEffect(reduced || !enabled || !scales ? 1 : configuration.isPressed ? 0.96 : hovered ? 1.025 : 1)
-            .opacity(configuration.isPressed ? 0.76 : 1)
-            .animation(reduced ? nil : .spring(duration: 0.18, bounce: 0.18),
+            .animation(configuration.isPressed || reduced ? nil : .spring(duration: 0.2, bounce: 0.12),
                        value: configuration.isPressed)
             .animation(reduced ? nil : Look.quick, value: hovered)
-            .onHover { hovered = $0 }
-            .onChange(of: configuration.isPressed) { _, pressed in
-                if pressed && enabled { InteractionSounds.play(.press) }
+            .transaction {
+                if reduced || motionSuppressed || configuration.isPressed || !enabled {
+                    $0.animation = nil
+                    $0.disablesAnimations = true
+                }
             }
+            .onHover {
+                if $0 && !reduced { motionSuppressed = false }
+                hovered = $0
+            }
+            .onChange(of: reduced) { _, reduced in
+                if reduced { Motion.instant { motionSuppressed = true } }
+            }
+            .onChange(of: configuration.isPressed) { _, pressed in
+                if pressed && enabled {
+                    Motion.instant { motionSuppressed = reduced }
+                    InteractionSounds.play(.press)
+                }
+            }
+    }
+}
+
+/// Read policy outside the interpolated values, so enabling it during a release renders
+/// the final surface immediately even when the spring already targets scale/opacity 1.
+private struct Feel09TactileSurface: ViewModifier, Animatable {
+    nonisolated var scale: CGFloat
+    nonisolated var opacity: Double
+    let motionDisabled: Bool
+    let scales: Bool
+    let pressed: Bool
+
+    nonisolated var animatableData: AnimatablePair<CGFloat, Double> {
+        get { AnimatablePair(scale, opacity) }
+        set { scale = newValue.first; opacity = newValue.second }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(motionDisabled || !scales ? 1 : scale)
+            .opacity(motionDisabled ? (pressed ? 0.8 : 1) : opacity)
     }
 }
 
 struct TabArrivalFeedback: ViewModifier {
     @ObservedObject var feedback: InteractionFeedback
     let id: UUID
-    @State private var visible = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     func body(content: Content) -> some View {
-        content.overlay {
-            RoundedRectangle(cornerRadius: Look.pillRadius)
-                .strokeBorder(.tint.opacity(visible ? 0.65 : 0), lineWidth: 1.5)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-        }
-        .task(id: feedback.arrivalStamp) {
-            guard feedback.arrivingTab == id else { return }
-            visible = true
-            do { try await Task.sleep(for: .seconds(0.12)) } catch { return }
-            withAnimation(.easeOut(duration: 0.4)) { visible = false }
-        }
-        .onChange(of: feedback.arrivingTab) { _, tab in
-            if tab != id { visible = false }
-        }
+        content.modifier(Feel09FeedbackHighlight(active: feedback.arrivingTab == id,
+            stamp: feedback.arrivalStamp, arrival: true, reduced: reduceMotion || batterySaver.isActive))
     }
 }
 
@@ -220,24 +266,51 @@ struct TidyRowFeedback: ViewModifier {
     @ObservedObject var feedback: InteractionFeedback
     let id: String
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var settled = true
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     func body(content: Content) -> some View {
-        content
-            .opacity(settled || reduceMotion ? 1 : 0.55)
-            .offset(x: settled || reduceMotion ? 0 : -8)
-            .task(id: feedback.tidyStamp) {
-                guard let rank = feedback.tidyRanks[id], !reduceMotion else {
-                    settled = true
-                    return
+        content.modifier(Feel09FeedbackHighlight(active: feedback.tidyRanks[id] != nil,
+            stamp: feedback.tidyStamp, arrival: false, reduced: reduceMotion || batterySaver.isActive))
+    }
+}
+
+/// One model clock per feedback kind, no per-row timers or delayed animation tails.
+/// Repeating the same action extends its highlight instead of blinking it off and on.
+struct Feel09FeedbackHighlight: ViewModifier {
+    let active: Bool
+    let stamp: UUID
+    let arrival: Bool
+    let reduced: Bool
+    @State private var suppressedStamp: UUID?
+    private var visible: Bool { active && !reduced && suppressedStamp != stamp }
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            RoundedRectangle(cornerRadius: Look.pillRadius)
+                .fill(.tint.opacity(arrival ? 0 : 0.1))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Look.pillRadius)
+                        .strokeBorder(.tint.opacity(arrival ? 0.6 : 0.2), lineWidth: arrival ? 1.5 : 1)
                 }
-                var instant = Transaction()
-                instant.disablesAnimations = true
-                withTransaction(instant) { settled = false }
-                await Task.yield()
-                guard !Task.isCancelled else { return }
-                withAnimation(.spring(duration: 0.26, bounce: 0.16)
-                    .delay(min(Double(rank) * 0.025, 0.18))) { settled = true }
+                .opacity(visible ? 1 : 0)
+                .animation(visible ? nil : .easeOut(duration: 0.18), value: visible)
+                // Also mask an already-running fade whose target was zero before policy
+                // changed. Disabling its transaction alone cannot finish that fade.
+                .opacity(reduced || suppressedStamp == stamp ? 0 : 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .transaction {
+            if reduced {
+                $0.animation = nil
+                $0.disablesAnimations = true
             }
+        }
+        .onChange(of: reduced, initial: true) { _, reduced in
+            if reduced { Motion.instant { suppressedStamp = stamp } }
+        }
+        .onChange(of: stamp) { _, stamp in
+            if reduced { Motion.instant { suppressedStamp = stamp } }
+        }
     }
 }
