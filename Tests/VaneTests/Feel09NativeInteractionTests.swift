@@ -170,30 +170,65 @@ import XCTest
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 280, height: 100),
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        let geometry = Feel09ToastGeometry()
         let host = NSHostingView(rootView: ToastHost().environmentObject(store)
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named("Feel09ToastFixture"))
+            } action: { geometry.frame = $0 }
+            // Exercise a different footer placement instead of relying on one machine's
+            // font metrics and an assumed control center.
+            .padding(.leading, 28).padding(.bottom, 12)
             .frame(width: 280, height: 100, alignment: .bottomLeading)
+            .coordinateSpace(name: "Feel09ToastFixture")
             .transaction { $0.disablesAnimations = true })
         window.contentView = host
         window.makeKeyAndOrderFront(nil)
         defer { window.contentView = nil; window.close() }
         var oldActions = 0, newActions = 0
-        func send(_ type: NSEvent.EventType, x: CGFloat = 80) async throws {
-            // Both one-word messages put Undo at this point; the fresh-click assertion
-            // below verifies that the control, rather than empty space, receives input.
+        func controlFrame(_ label: String) async throws -> NSRect {
+            // Let replacement invalidation reach the hosting view before reading the
+            // geometry; a nonempty frame can still belong to the preceding toast.
+            try await Task.sleep(for: .milliseconds(30))
+            host.layoutSubtreeIfNeeded()
+            let deadline = ContinuousClock.now + .seconds(3)
+            while geometry.frame.isEmpty, ContinuousClock.now < deadline {
+                host.layoutSubtreeIfNeeded()
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(geometry.frame.isEmpty, "The native toast must have laid out before input")
+            // NSHostingView doesn't expose SwiftUI accessibility descendants in this
+            // XCTest host. Measure the real stack and rendered action text instead of
+            // assuming font metrics or a fixed position in the window.
+            var stack = geometry.frame
+            if !host.isFlipped { stack.origin.y = host.bounds.height - stack.maxY }
+            let pill = host.convert(stack, to: nil).insetBy(dx: Look.inset, dy: 0)
+            let dismiss = NSRect(x: pill.maxX - Look.inset / 2 - Look.rowTarget,
+                                 y: pill.midY - Look.rowTarget / 2,
+                                 width: Look.rowTarget, height: Look.rowTarget)
+            if label == "Dismiss First" { return dismiss }
+            let title = ImageRenderer(content: Text(label).font(Look.Typography.shortcut.font).fixedSize())
+            let width = try XCTUnwrap(title.nsImage).size.width + Look.inset
+            return NSRect(x: dismiss.minX - Look.inset / 2 - width,
+                          y: pill.midY - Look.control / 2, width: width, height: Look.control)
+        }
+        func center(_ frame: NSRect) -> NSPoint { NSPoint(x: frame.midX, y: frame.midY) }
+        func send(_ type: NSEvent.EventType, at point: NSPoint) async throws {
             window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type,
-                location: NSPoint(x: x, y: 16), modifierFlags: [],
+                location: point, modifierFlags: [],
                 timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil,
                 eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
             try await Task.sleep(for: .milliseconds(30))
         }
         Toasts.show("First", action: ("Undo", { oldActions += 1 }), in: store)
-        try await Task.sleep(for: .milliseconds(80))
-        try await send(.leftMouseDown)
+        let undoPoint = center(try await controlFrame("Undo"))
+        try await send(.leftMouseDown, at: undoPoint)
         Toasts.show("First", action: ("Undo", { newActions += 1 }), in: store)
         let successor = try XCTUnwrap(toasts.current)
         try await Task.sleep(for: .milliseconds(30))
-        try await send(.leftMouseUp)
+        let undoSuccessorFrame = try await controlFrame("Undo")
+        XCTAssertTrue(undoSuccessorFrame.contains(undoPoint))
+        try await send(.leftMouseUp, at: undoPoint)
         XCTAssertEqual(oldActions, 0)
         XCTAssertEqual(newActions, 0, "A press begun on the replaced toast must not activate its successor")
         XCTAssertEqual(toasts.current?.id, successor.id)
@@ -202,37 +237,44 @@ import XCTest
             try await Task.sleep(for: .milliseconds(30))
         }
         let beforeFresh = newActions
-        try await send(.leftMouseDown)
-        try await send(.leftMouseUp)
+        let freshUndoPoint = center(try await controlFrame("Undo"))
+        try await send(.leftMouseDown, at: freshUndoPoint)
+        try await send(.leftMouseUp, at: freshUndoPoint)
         XCTAssertEqual(newActions, beforeFresh + 1, "A fresh press must activate the successor normally")
 
         // A sticky update keeps its toast ID while Download becomes Restart.
         let id = UUID()
         let beforeSticky = newActions
         Toasts.stick("First", id: id, action: ("Download", { oldActions += 1 }))
-        try await Task.sleep(for: .milliseconds(30))
-        try await send(.leftMouseDown)
+        let downloadPoint = center(try await controlFrame("Download"))
+        try await send(.leftMouseDown, at: downloadPoint)
         Toasts.stick("First", id: id, action: ("Restart", { newActions += 1 }))
         try await Task.sleep(for: .milliseconds(30))
-        try await send(.leftMouseUp)
+        let restartFrame = try await controlFrame("Restart")
+        XCTAssertTrue(restartFrame.contains(downloadPoint))
+        try await send(.leftMouseUp, at: downloadPoint)
         XCTAssertEqual(oldActions, 0)
         XCTAssertEqual(newActions, beforeSticky)
         XCTAssertEqual(toasts.current?.id, id)
-        try await send(.leftMouseDown)
-        try await send(.leftMouseUp)
+        let restartPoint = center(try await controlFrame("Restart"))
+        try await send(.leftMouseDown, at: restartPoint)
+        try await send(.leftMouseUp, at: restartPoint)
         XCTAssertEqual(newActions, beforeSticky + 1)
 
         // The same replacement rule applies to the dismiss target.
         Toasts.show("First", action: ("Undo", {}), in: store)
-        try await Task.sleep(for: .milliseconds(30))
-        try await send(.leftMouseDown, x: 106)
+        let dismissPoint = center(try await controlFrame("Dismiss First"))
+        try await send(.leftMouseDown, at: dismissPoint)
         Toasts.show("First", action: ("Undo", {}), in: store)
         let dismissSuccessor = try XCTUnwrap(toasts.current)
         try await Task.sleep(for: .milliseconds(30))
-        try await send(.leftMouseUp, x: 106)
+        let dismissSuccessorFrame = try await controlFrame("Dismiss First")
+        XCTAssertTrue(dismissSuccessorFrame.contains(dismissPoint))
+        try await send(.leftMouseUp, at: dismissPoint)
         XCTAssertEqual(toasts.current?.id, dismissSuccessor.id)
-        try await send(.leftMouseDown, x: 106)
-        try await send(.leftMouseUp, x: 106)
+        let freshDismissPoint = center(try await controlFrame("Dismiss First"))
+        try await send(.leftMouseDown, at: freshDismissPoint)
+        try await send(.leftMouseUp, at: freshDismissPoint)
         XCTAssertNil(toasts.current, "A fresh dismiss press must remove the successor")
     }
 
@@ -305,4 +347,8 @@ private struct Feel09NativeRows: View {
         .environment(\.colorScheme, .light)
         .vaneMotionPolicy()
     }
+}
+
+@MainActor private final class Feel09ToastGeometry {
+    var frame = CGRect.zero
 }
