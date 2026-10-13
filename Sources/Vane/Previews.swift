@@ -143,10 +143,16 @@ import WebKit
         let domain, path, name, value: String
         let expires: Date?
         let secure, httpOnly, sessionOnly: Bool
+        let sameSite: String?
+        let version: Int
+        let ports: [Int]?
         init(_ cookie: HTTPCookie) {
             domain = cookie.domain; path = cookie.path; name = cookie.name; value = cookie.value
             expires = cookie.expiresDate; secure = cookie.isSecure
             httpOnly = cookie.isHTTPOnly; sessionOnly = cookie.isSessionOnly
+            sameSite = cookie.sameSitePolicy?.rawValue
+            version = cookie.version
+            ports = cookie.portList?.map(\.intValue)
         }
     }
     private var sessionCookies: Set<SessionCookie>?
