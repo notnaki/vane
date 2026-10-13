@@ -171,12 +171,10 @@ import XCTest
                               styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let geometry = Feel09ToastGeometry()
-        let host = NSHostingView(rootView: ToastHost().environmentObject(store)
-            .onGeometryChange(for: CGRect.self) { proxy in
-                proxy.frame(in: .named("Feel09ToastFixture"))
-            } action: { geometry.frame = $0 }
-            // Exercise a different footer placement instead of relying on one machine's
-            // font metrics and an assumed control center.
+        let host = NSHostingView(rootView: Feel09NativeToastPill(geometry: geometry)
+            .padding(.horizontal, Look.inset)
+            // Keep the enclosing layout wider than the pill, as it can be on CI.
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 28).padding(.bottom, 12)
             .frame(width: 280, height: 100, alignment: .bottomLeading)
             .coordinateSpace(name: "Feel09ToastFixture")
@@ -196,12 +194,11 @@ import XCTest
                 try await Task.sleep(for: .milliseconds(10))
             }
             XCTAssertFalse(geometry.frame.isEmpty, "The native toast must have laid out before input")
-            // NSHostingView doesn't expose SwiftUI accessibility descendants in this
-            // XCTest host. Measure the real stack and rendered action text instead of
-            // assuming font metrics or a fixed position in the window.
-            var stack = geometry.frame
-            if !host.isFlipped { stack.origin.y = host.bounds.height - stack.maxY }
-            let pill = host.convert(stack, to: nil).insetBy(dx: Look.inset, dy: 0)
+            // Measure the pill itself: the enclosing stack may occupy unused width.
+            // The rendered action text follows the native font metrics on this SDK.
+            var frame = geometry.frame
+            if !host.isFlipped { frame.origin.y = host.bounds.height - frame.maxY }
+            let pill = host.convert(frame, to: nil)
             let dismiss = NSRect(x: pill.maxX - Look.inset / 2 - Look.rowTarget,
                                  y: pill.midY - Look.rowTarget / 2,
                                  width: Look.rowTarget, height: Look.rowTarget)
@@ -238,7 +235,11 @@ import XCTest
         }
         let beforeFresh = newActions
         let freshUndoPoint = center(try await controlFrame("Undo"))
+        let beforePress = try pixels(host)
         try await send(.leftMouseDown, at: freshUndoPoint)
+        let pressDifference = difference(try pixels(host), beforePress)
+        print("FEEL09 native toast: pill=\(geometry.frame), target=\(freshUndoPoint), flipped=\(host.isFlipped), key=\(window.isKeyWindow), active=\(NSApp.isActive), pressDifference=\(pressDifference)")
+        XCTAssertGreaterThan(pressDifference, 10, "The fresh press must reach the rendered action control")
         try await send(.leftMouseUp, at: freshUndoPoint)
         XCTAssertEqual(newActions, beforeFresh + 1, "A fresh press must activate the successor normally")
 
@@ -351,4 +352,20 @@ private struct Feel09NativeRows: View {
 
 @MainActor private final class Feel09ToastGeometry {
     var frame = CGRect.zero
+}
+
+private struct Feel09NativeToastPill: View {
+    @ObservedObject private var toasts = Toasts.shared
+    let geometry: Feel09ToastGeometry
+
+    var body: some View {
+        if let toast = toasts.current {
+            // Keep the actual production pill stable through replacement, while observing
+            // its own bounds rather than the larger ToastHost/container frame.
+            ToastPill(toast: toast, tint: .clear)
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    proxy.frame(in: .named("Feel09ToastFixture"))
+                } action: { geometry.frame = $0 }
+        }
+    }
 }
