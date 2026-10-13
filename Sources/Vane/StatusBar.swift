@@ -128,6 +128,7 @@ enum StatusBar {
 /// The bottom-left capsule, including an immediate explanation while modifiers are held.
 struct StatusBarView: View {
     @ObservedObject var tab: Tab
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var shown: StatusBar.Hover?
     @State private var pending: Task<Void, Never>?
     @State private var modifiers: NSEvent.ModifierFlags = []
@@ -175,7 +176,8 @@ struct StatusBarView: View {
                 .transition(.opacity)
             }
         }
-        .animation(reduceMotion ? nil : Look.statusFade, value: shown)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.statusFade, value: shown)
+        .vaneMotionPolicy()
         .onChange(of: tab.hoveredLink, initial: true) { _, link in schedule(link) }
         .onChange(of: modifiers) { _, _ in schedule(tab.hoveredLink) }
         .onAppear {

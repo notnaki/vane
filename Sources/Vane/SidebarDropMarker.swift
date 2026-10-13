@@ -74,6 +74,7 @@ struct SidebarDropLineOverlay: View {
                     }
                 }
         }
+        .vaneMotionPolicy()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }

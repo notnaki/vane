@@ -130,14 +130,15 @@ enum TabTooltipLayout {
 
     func refresh(for anchor: TabTooltipAnchorView) {
         guard self.anchor === anchor, let panel, let owner = anchor.window,
-              let screen = owner.screen else { return }
-        // A page title, copy confirmation, or shortcut can change under a still pointer.
-        let hosting = NSHostingView(rootView: TabTooltipSurface(title: anchor.title,
-            hint: anchor.hint, shortcut: anchor.shortcut, compact: anchor.centered))
+              let screen = owner.screen,
+              let hosting = panel.contentView as? NSHostingView<TabTooltipSurface> else { return }
+        // Keep the mounted surface when a title or copy confirmation changes under the
+        // pointer. Replacing its native host repeats setup and discards view identity.
+        hosting.rootView = TabTooltipSurface(title: anchor.title,
+            hint: anchor.hint, shortcut: anchor.shortcut, compact: anchor.centered)
         let rect = owner.convertToScreen(anchor.convert(anchor.visibleRect, to: nil))
         panel.setFrame(TabTooltipLayout.frame(anchor: rect, size: hosting.fittingSize,
                                               screen: screen.visibleFrame, centered: anchor.centered), display: false)
-        panel.contentView = hosting
     }
 
     func dismiss(for anchor: TabTooltipAnchorView) {

@@ -1152,6 +1152,7 @@ private struct NavigationTarget: ViewModifier {
     var compact: Bool
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var hovering = false
 
     func body(content: Content) -> some View {
@@ -1161,7 +1162,8 @@ private struct NavigationTarget: ViewModifier {
                         in: .rect(cornerRadius: Look.cardRadius))
             .contentShape(.rect)
             .onHover { hovering = $0 }
-            .animation(reduceMotion ? nil : Look.quick, value: enabled && hovering)
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: enabled && hovering)
+            .vaneMotionPolicy()
     }
 }
 
@@ -2866,6 +2868,7 @@ private struct SpaceDots: View {
             if over { hovered = space.id }
             else if hovered == space.id { hovered = nil }
         }
+        .modifier(Feel02PressFeedback())
         .onTapGesture { gesture.monitor.select(space, in: store) }
         .vaneKeyboardAction { gesture.monitor.select(space, in: store) }
         .onDrag { spaceDragPayload(space) }
@@ -3028,6 +3031,7 @@ private struct PinnedSection: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var live: LiveFolders
     @State private var sheet = false
+    @State private var rowsCache = Feel02SidebarRowsCache()
 
     var body: some View {
         // Drawn from `store.pins`, not from the strip: a folder is not a tab, and the order
@@ -3035,7 +3039,7 @@ private struct PinnedSection: View {
         // actually draw a row are counted — a pinned pane that is not its split's lead, and
         // an entry whose tab has gone, draw nothing, and a place in the list counted in
         // entries rather than rows lands beside the wrong one. See `OpenTabs`.
-        let available = SidebarRows(tabs: store.accessibleTabs, splits: store.splits, shape: store.pins, unlocked: store.unlockedFolders).rows
+        let available = rowsCache.resolve(in: store, shape: store.pins).rows
         // Empty is nothing, as in Arc: the divider follows the space’s name, and this
         // section draws no row at all — not even an empty one while a drag is in flight,
         // which would push the whole strip down a pitch under the pointer and take
@@ -3229,6 +3233,9 @@ private struct FolderRow: View {
 struct FolderDisclosure: View {
     let folder: Folder
     let locked: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+    private var reduced: Bool { reduceMotion || batterySaver.isActive }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -3242,9 +3249,13 @@ struct FolderDisclosure: View {
                 Image(systemName: "chevron.down")
                     .font(Look.rowGlyph)
                     .rotationEffect(.degrees(folder.collapsed ? -90 : 0))
-                    .animation(Motion.reduced ? nil : Look.quick, value: folder.collapsed)
+                    .animation(reduced ? nil : Look.quick, value: folder.collapsed)
+                    // Replace only the decoration to stop an in-flight rotation when
+                    // policy changes; the folder row/editor keep their identity.
+                    .id(reduced)
             }
         }
+        .vaneMotionPolicy()
         .foregroundStyle(Look.inkSecondary)
         .accessibilityHidden(true)
     }
@@ -3255,6 +3266,8 @@ struct FolderDisclosure: View {
 /// apart, and it does so by looking at the string rather than by a second stored field.
 struct FolderGlyph: View {
     let folder: Folder
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     /// nil where the badge would be noise rather than news — the drag preview.
     var live: LiveFolders? = nil
     var dropOpen = false
@@ -3263,6 +3276,7 @@ struct FolderGlyph: View {
             if folder.icon == Folder.defaultIcon {
                 FolderIcon(open: !folder.collapsed || dropOpen)
                     .frame(width: Look.tileIcon, height: Look.tileIcon)
+                    .id(reduceMotion || batterySaver.isActive)
             } else if folder.iconIsEmoji {
                 Text(folder.icon).font(Look.small)
             } else {
@@ -3450,6 +3464,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     @ViewBuilder let trailing: () -> Trailing
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
     @Environment(\.ghostTileMorph) private var morph
 
     var body: some View {
@@ -3466,8 +3481,15 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
         .padding(.leading, Look.rowInset)
         .padding(.trailing, Look.rowTrailingInset)
         .frame(width: morph?.width, height: morph?.height ?? Look.rowHeight)
-        .background(fill.opacity(1 - (morph?.progress ?? 0)),
-                    in: .rect(cornerRadius: Look.pillRadius))
+        .background {
+            RoundedRectangle(cornerRadius: Look.pillRadius)
+                .fill(fill.opacity(1 - (morph?.progress ?? 0)))
+                // Animate the selection ink alone: titles, inline editors and hit targets
+                // stay at their final geometry and actions take effect synchronously.
+                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: selected)
+                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
+                .id(reduceMotion || batterySaver.isActive)
+        }
         .hairline(radius: Look.pillRadius, ticked && selected
                   ? Look.selectedEdge.opacity(1 - (morph?.progress ?? 0)) : .clear)
         .overlay {
@@ -3477,7 +3499,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
                     .position(x: morph.iconX, y: morph.height / 2)
             }
         }
-        .animation(reduceMotion ? nil : Look.quick, value: hovering)
+        .modifier(Feel02PressFeedback(enabled: keyboardEnabled && !held))
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture { InteractionSounds.play(.press); action() }
@@ -3692,14 +3714,15 @@ private struct TodayEndDropArea: View {
 
 private struct OpenTabs: View {
     @EnvironmentObject var store: TabStore
+    @State private var rowsCache = Feel02SidebarRowsCache()
 
     var body: some View {
-        let open = store.accessibleTabs.filter { $0.kind == .today }
+        let snapshot = rowsCache.resolve(in: store, shape: store.todayShape)
         // Drawn from `store.todayShape`, exactly as Pinned is drawn from `store.pins`: a
         // tidy's folders live here now, and a folder is not a tab. Only the entries that
         // actually draw a row are counted — a pane that is not its split's lead, and an
         // entry whose tab has gone, draw nothing. See `PinnedSection`.
-        let rows = SidebarRows(tabs: store.accessibleTabs, splits: store.splits, shape: store.todayShape, unlocked: store.unlockedFolders).rows
+        let rows = snapshot.rows
         VStack(spacing: Look.rowGap) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 ShapeRow(row: row.visible, tab: row.tab, index: index, rows: rows.count, shape: \.todayShape)
@@ -3710,7 +3733,7 @@ private struct OpenTabs: View {
         // tabs instead of announcing an anonymous stack.
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Today")
-        .accessibilityValue("\(open.count) open")
+        .accessibilityValue("\(snapshot.todayCount) open")
         .accessibilityHint("Command 1 through 8 selects a tab, Command 9 the last one.")
         .accessibilityAction(named: "Search Tabs") { store.palette = .tabs }
         .accessibilityAction(named: "New Tab") { store.newTab(nil) }

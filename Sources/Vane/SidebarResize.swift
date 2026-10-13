@@ -65,8 +65,18 @@ struct SidebarChromeLayout {
         defaults.set(Double(width), forKey: SidebarWidth.key)
     }
 
+    /// Pointer movement must follow the hand, even inside a window reveal transaction.
+    /// At a clamp boundary repeated events should not publish identical widths.
+    func setLiveWidth(_ proposed: CGFloat) {
+        let next = Self.clamp(proposed)
+        guard next != width else { return }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { width = next }
+    }
+
     func reset() {
-        width = SidebarWidth.standard
+        Motion.animate(Look.quick) { width = SidebarWidth.standard }
         save()
     }
 
@@ -124,7 +134,7 @@ struct SidebarHandle: View {
                         // on the first frame.
                         let grab = start ?? (sidebar.width - value.location.x)
                         if start == nil { start = grab }
-                        sidebar.width = SidebarWidth.clamp(value.location.x + grab)
+                        sidebar.setLiveWidth(value.location.x + grab)
                     }
                     .onEnded { value in
                         let proposed = value.location.x + (start ?? 0)
@@ -162,7 +172,7 @@ struct SidebarHandle: View {
     }
 
     private func step(_ delta: CGFloat) {
-        sidebar.width = SidebarWidth.clamp(sidebar.width + delta)
+        Motion.animate(Look.quick) { sidebar.width = SidebarWidth.clamp(sidebar.width + delta) }
         sidebar.save()
         axAnnounce("Sidebar \(Int(sidebar.width)) points wide.")
     }

@@ -117,8 +117,7 @@ enum FavouriteLanding {
     func setDestination(_ next: Destination?) {
         guard destination != next else { return }
         Dragging.shared.favouriteShape(next?.width, from: self)
-        if Motion.reduced { destination = next }
-        else { withAnimation(Look.quick) { destination = next } }
+        Motion.animate(Look.quick) { destination = next }
     }
 
     func refresh() { track() }
@@ -289,8 +288,10 @@ struct SidebarTabGhost: View {
             }
             .frame(width: tileWidth ?? width, height: tile ? Look.tileHeight : Look.rowHeight)
             .clipShape(.rect(cornerRadius: Look.pillRadius))
-            .animation(reduced ? nil : Look.quick, value: tile)
-            .animation(reduced ? nil : Look.quick, value: tileWidth)
+            .animation(reduced ? nil : Look.list, value: tile)
+            .animation(reduced ? nil : Look.list, value: tileWidth)
+            .id(reduced)
+            .vaneMotionPolicy()
             .onChange(of: tileWidth, initial: true) { _, next in
                 if let next { lastTileWidth = next }
             }

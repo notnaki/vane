@@ -110,6 +110,7 @@ struct NewSpaceButton: View {
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var menuAnchor = ChromeMenuAnchor()
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         Button {
@@ -136,11 +137,13 @@ struct NewSpaceButton: View {
         } label: {
             Image(systemName: "plus")
                 .rotationEffect(.degrees(menuAnchor.isPresented ? 45 : 0))
-                .animation(reduceMotion || Motion.reduced ? nil : Look.quick,
+                .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
                            value: menuAnchor.isPresented)
+                .id(reduceMotion || batterySaver.isActive)
                 .frame(width: Look.footerControl, height: Look.footerControl).contentShape(.rect)
         }
             .buttonStyle(TactileButtonStyle())
+            .vaneMotionPolicy()
             .background(ChromeMenuAnchorView(anchor: menuAnchor))
             .foregroundStyle(Look.inkSecondary)
             .vaneTooltip("Create Something", hint: "Folder, Easel, Split, Tab, or Space", enabled: !menuAnchor.isPresented)
