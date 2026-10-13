@@ -1,5 +1,7 @@
 import XCTest
 import Combine
+import AppKit
+import SwiftUI
 @testable import vane
 
 @MainActor final class Feel06ManagementTests: XCTestCase {
@@ -128,5 +130,24 @@ import Combine
         await Task.yield()
         XCTAssertTrue(loader.logins.isEmpty)
         XCTAssertNil(loader.error, "A cancelled read cannot publish a late error")
+    }
+}
+
+@MainActor final class Feel06PasswordLayoutTests: XCTestCase {
+    func testSwitchingSettingsToPasswordsDoesNotEnlargeTheRetainedWindow() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        SettingsWindow.show(tab: "shortcuts")
+        let window = try XCTUnwrap(NSApp.windows.first { $0.title == "Shortcuts" && $0.isVisible })
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 760, height: 560))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let before = window.frame
+        SettingsWindow.show(tab: "passwords")
+        try await compatibilityWait { window.title == "Passwords" }
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(window.frame.height, before.height + 1,
+            "Section presentation must not enlarge the user's retained Settings frame")
+        XCTAssertLessThanOrEqual(window.frame.width, before.width + 1)
     }
 }

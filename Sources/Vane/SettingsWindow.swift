@@ -135,9 +135,14 @@ enum LinkTarget {
         // Every `@AppStorage` in this file binds to `UserDefaults.standard` unless told
         // otherwise, which would leave a test instance's Settings toggles in the user's own
         // preferences. `UserDefaults.vane` *is* `.standard` in normal use; see Store.swift.
-        w.contentView = NSHostingView(rootView: SettingsView(selection: selection)
+        let content = NSHostingView(rootView: SettingsView(selection: selection)
             .font(Look.text)
             .defaultAppStorage(.vane))
+        // The window owns its bounds and minimum size. SwiftUI's unconstrained
+        // intrinsic measurement can wrap a pane into thousands of points of height
+        // and enlarge this retained window on a section change.
+        content.sizingOptions = []
+        w.contentView = content
         // Position first, autosave second: setFrameUsingName reports whether there was one.
         if !w.setFrameUsingName("VaneSettings") { w.center() }
         w.setFrameAutosaveName("VaneSettings")
@@ -279,6 +284,7 @@ private struct SettingsView: View {
                 ScrollView { pane }.id(current.id)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(.windowBackground)
         .toggleStyle(SettingsToggleStyle())
         .controlSize(.small)

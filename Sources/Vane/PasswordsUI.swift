@@ -119,7 +119,9 @@ import SwiftUI
                     Button("Import passwords…") { PasswordImport.chooseAndImport(profileID: profileID); reload() }
                 }
                 if metadata.busy && logins.isEmpty {
-                    Spacer(minLength: 0)
+                    // This pane is also the hosting view's intrinsic content. An
+                    // unbounded Spacer during loading can grow the retained window.
+                    Color.clear.frame(height: 160).accessibilityHidden(true)
                 } else if groups.isEmpty && neverShown.isEmpty {
                     VStack(spacing: Look.inset) {
                         Image(systemName: searching ? "magnifyingglass" : "key.fill")
