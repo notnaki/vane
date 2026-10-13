@@ -151,7 +151,7 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         _ = NSApplication.shared
         let server = try Feel04WaitingServer(body: "<title>Cookie preview</title><body style='margin:0'><div style='height:240px;background:#1976d2'>Preview</div><div style='height:240px;background:#e53935'></div><div style='height:240px;background:#43a047'></div></body>", cookie: true)
         let url = try await server.start(), clock = Feel04DebounceFixture()
-        let previews = Previews(debounceSleep: clock.sleep), tab = Tab()
+        let previews = Previews(debounceSleep: clock.sleep), tab = Tab(profileID: UUID())
         let enabled = Previews.enabled, mode = BatterySaver.shared.mode
         Previews.enabled = true; BatterySaver.shared.setMode(.off)
         // A page-originated preview always has a live persistent source WebView.
@@ -185,7 +185,9 @@ private final class Feel04WaitingServer: @unchecked Sendable {
             guard ContinuousClock.now < setupDeadline else { return XCTFail("Initial source cookie change was not observed") }
             try await Task.sleep(for: .milliseconds(20))
         }
-        cookies.remove(setupObserver)
+        // Keep the source subscription alive across the production observer's handoff.
+        // The unique profile also excludes cookie-store teardown from earlier fixtures.
+        let beforeRequest = setupObserver.changes
         previews.request(url, from: tab)
         try await clock.waitUntil { clock.count == 1 }; clock.release(0)
         let deadline = ContinuousClock.now + .seconds(8)
@@ -209,6 +211,8 @@ private final class Feel04WaitingServer: @unchecked Sendable {
         while previews.current != nil, ContinuousClock.now < invalidationDeadline {
             try await Task.sleep(for: .milliseconds(20))
         }
+        print("FEEL04_COOKIE_OBSERVATION profile=\(tab.profileID) sourceStoreMatches=\(source.configuration.websiteDataStore === ProfileManager.dataStore(for: tab.profileID)) setup=\(beforeRequest) afterLogout=\(setupObserver.changes) private=\(tab.isPrivate)")
+        XCTAssertGreaterThan(setupObserver.changes, beforeRequest, "The source store must observe the actual logout")
         XCTAssertNil(previews.current, "A real source-session change must retire authenticated pixels")
     }
 }
