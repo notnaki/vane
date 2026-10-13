@@ -661,8 +661,8 @@ extension VaneWindow {
         // Visibility belongs to the window, across every Space and profile. Apply it
         // before mounting the arriving host, including when reusing a parked profile.
         arriving.sidebarShown = store.sidebarShown
+        arriving.sidebarPeeking = store.sidebarPeeking
         store.sidebarPeeking = false
-        arriving.sidebarPeeking = false
         store.parkedIn = window
         store.window = nil
         arriving.parkedIn = nil

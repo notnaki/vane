@@ -471,7 +471,9 @@ struct BrowserWindow: View {
         // ⌘S while the peek is up keeps `chrome` true, so the line above never fires and the
         // lights would stay on the peeked panel's inset line. Docking or hiding the sidebar
         // always ends the peek, and the lights follow the row that is actually there.
-        .onChange(of: store.sidebarShown) { peekTask?.cancel(); peeking = false; showTrafficLights(chrome) }
+        // The store ends the peek synchronously when visibility changes. A cached profile
+        // host may observe that change only on return, after a new peek was handed to it.
+        .onChange(of: store.sidebarShown) { peekTask?.cancel(); showTrafficLights(chrome) }
         .onChange(of: peeking) { showTrafficLights(chrome) }
         // Opening the Library ends any peek in flight, for the same reason: the lights
         // belong to the rail's row now, not to a panel sliding in behind it.

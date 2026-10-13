@@ -3,6 +3,25 @@ import XCTest
 @testable import vane
 
 @MainActor final class SidebarVisibilityTests: XCTestCase {
+    func testDockingOrHidingEndsTheFloatingRevealImmediately() {
+        TestEnvironment.prepare()
+        let profile = ProfileManager.shared.active.id
+        let store = TabStore(profileID: profile, session: [])
+        defer {
+            store.dropStashes()
+            let tabs = store.tabs
+            TabStore.all.removeAll { $0 === store }
+            SharedTabs.release(tabs)
+            Store.forget(profile)
+        }
+        store.sidebarPeeking = true
+        store.sidebarShown = false
+        XCTAssertFalse(store.sidebarPeeking)
+        store.sidebarPeeking = true
+        store.sidebarShown = true
+        XCTAssertFalse(store.sidebarPeeking)
+    }
+
     func testVisibilityFollowsWindowAcrossNewAndParkedProfiles() throws {
         TestEnvironment.prepare()
         let manager = ProfileManager.shared
@@ -25,25 +44,33 @@ import XCTest
 
         source.sidebarShown = false
         source.sidebarPeeking = true
-        let destination = try XCTUnwrap(Windows.hop(source, to: second))
+        source.switchTo(space: second)
+        let destination = try XCTUnwrap(TabStore.all.first { $0.window === window && $0.profileID == secondProfile.id })
+        XCTAssertEqual(destination.currentSpaceID, second.id)
         XCTAssertFalse(source.sidebarPeeking, "Leaving a profile must dismiss its cached hover sidebar")
-        XCTAssertFalse(destination.sidebarPeeking)
+        XCTAssertTrue(destination.sidebarPeeking, "The floating sidebar follows the window into a new profile")
         XCTAssertFalse(destination.sidebarShown, "A new profile must keep the window's hidden sidebar")
         XCTAssertTrue(unrelated.sidebarShown, "Another window keeps its own visibility")
 
-        destination.sidebarShown = true
         destination.sidebarPeeking = true
         let returning = try XCTUnwrap(Windows.hop(destination, to: first))
         XCTAssertFalse(destination.sidebarPeeking)
-        XCTAssertFalse(returning.sidebarPeeking, "Returning to a cached profile must not reopen its hover sidebar")
+        XCTAssertTrue(returning.sidebarPeeking, "The current floating sidebar follows the window into a cached profile")
         XCTAssertTrue(returning === source)
-        XCTAssertTrue(returning.sidebarShown, "A parked profile must adopt the window's latest visibility")
+        XCTAssertFalse(returning.sidebarShown, "A parked profile must adopt the window's latest visibility")
 
         returning.sidebarShown = false
+        returning.sidebarPeeking = false
         let revisited = try XCTUnwrap(Windows.hop(returning, to: second))
         XCTAssertTrue(revisited === destination)
+        XCTAssertFalse(revisited.sidebarPeeking, "A closed floating sidebar must stay closed when revisiting a profile")
         XCTAssertFalse(revisited.sidebarShown, "Revisiting a profile must not restore its old shown state")
         XCTAssertTrue(unrelated.sidebarShown)
+
+        revisited.sidebarShown = true
+        let docked = try XCTUnwrap(Windows.hop(revisited, to: first))
+        XCTAssertTrue(docked.sidebarShown, "Docked visibility also follows the window")
+        XCTAssertFalse(docked.sidebarPeeking)
     }
 
     func testVisibilitySurvivesSpaceSwitchesWithinOneProfile() {
@@ -66,7 +93,7 @@ import XCTest
         store.sidebarPeeking = true
         store.switchTo(space: second)
         XCTAssertEqual(store.currentSpaceID, second.id)
-        XCTAssertFalse(store.sidebarPeeking)
+        XCTAssertTrue(store.sidebarPeeking, "Switching Spaces must keep the floating sidebar open")
         XCTAssertFalse(store.sidebarShown)
         store.sidebarShown = true
         store.switchTo(space: first)

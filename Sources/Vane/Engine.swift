@@ -2275,8 +2275,12 @@ struct Stash {
         }
     }
     /// Per window: hiding the sidebar in one window must not hide it in the next.
-    @Published var sidebarShown = true
-    /// Transient hover reveal; cleared when this window leaves its Space or profile.
+    @Published var sidebarShown = true {
+        didSet {
+            if sidebarShown != oldValue { sidebarPeeking = false }
+        }
+    }
+    /// Transient hover reveal that follows the window across Spaces and profiles.
     @Published var sidebarPeeking = false
     /// One-shot handoff from the webpage to the sidebar address pill.
     @Published var chromeFocusRequested = false
@@ -3825,7 +3829,6 @@ struct Stash {
         // put a Space's tabs in a window that writes nothing back, and claim in the footer
         // to be showing a Space it can never save.
         guard !isLittle, !isPrivate, space.id != currentSpaceID else { return }
-        sidebarPeeking = false
         // A Space's profileID is the only link to its profile, and a store still never shows
         // another profile's tabs — everything it is built out of is that profile's. But the
         // strip runs across profiles, so a Space over the boundary is somewhere this *window*
