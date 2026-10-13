@@ -269,6 +269,8 @@ struct ToastPill: View {
         if let action = toast.action {
             Button(action.title) { toasts.act(toast) }
                 .buttonStyle(TactileButtonStyle(scales: false))
+                // Keep the surface stable, but cancel a press begun on a different action.
+                .id(Feel09ToastControlID(toast: toast.id, action: action.title))
                 .font(Look.Typography.shortcut.font)
                 .lineLimit(2)
                 .fixedSize(horizontal: fixed, vertical: true)
@@ -286,6 +288,7 @@ struct ToastPill: View {
                 .contentShape(.rect)
         }
         .buttonStyle(TactileButtonStyle(scales: false))
+        .id(toast.id)
         .foregroundStyle(Look.barText)
         .help("Dismiss")
         .accessibilityLabel("Dismiss \(Toasts.spoken(toast.text))")
@@ -303,6 +306,11 @@ struct ToastPill: View {
         }
         return out
     }
+}
+
+private struct Feel09ToastControlID: Hashable {
+    let toast: UUID
+    let action: String
 }
 
 /// The policy lives inside the running transition. Replacing `.transition` or removing

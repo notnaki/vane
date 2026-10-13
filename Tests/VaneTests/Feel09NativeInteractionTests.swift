@@ -157,6 +157,85 @@ import XCTest
                                  "Reduced replacement must leave the final pill immediately visible")
     }
 
+    func testToastReplacementCannotRetargetAnInFlightNativePress() async throws {
+        TestEnvironment.prepare()
+        let toasts = Toasts.shared
+        toasts.showing.forEach { toasts.dismiss($0) }
+        let store = TabStore(isPrivate: true)
+        defer {
+            toasts.showing.forEach { toasts.dismiss($0) }
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+        }
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 280, height: 100),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: ToastHost().environmentObject(store)
+            .frame(width: 280, height: 100, alignment: .bottomLeading)
+            .transaction { $0.disablesAnimations = true })
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        var oldActions = 0, newActions = 0
+        func send(_ type: NSEvent.EventType, x: CGFloat = 80) async throws {
+            // Both one-word messages put Undo at this point; the fresh-click assertion
+            // below verifies that the control, rather than empty space, receives input.
+            window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type,
+                location: NSPoint(x: x, y: 16), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        Toasts.show("First", action: ("Undo", { oldActions += 1 }), in: store)
+        try await Task.sleep(for: .milliseconds(80))
+        try await send(.leftMouseDown)
+        Toasts.show("First", action: ("Undo", { newActions += 1 }), in: store)
+        let successor = try XCTUnwrap(toasts.current)
+        try await Task.sleep(for: .milliseconds(30))
+        try await send(.leftMouseUp)
+        XCTAssertEqual(oldActions, 0)
+        XCTAssertEqual(newActions, 0, "A press begun on the replaced toast must not activate its successor")
+        XCTAssertEqual(toasts.current?.id, successor.id)
+        if toasts.current == nil {
+            Toasts.show("First", action: ("Undo", { newActions += 1 }), in: store)
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        let beforeFresh = newActions
+        try await send(.leftMouseDown)
+        try await send(.leftMouseUp)
+        XCTAssertEqual(newActions, beforeFresh + 1, "A fresh press must activate the successor normally")
+
+        // A sticky update keeps its toast ID while Download becomes Restart.
+        let id = UUID()
+        let beforeSticky = newActions
+        Toasts.stick("First", id: id, action: ("Download", { oldActions += 1 }))
+        try await Task.sleep(for: .milliseconds(30))
+        try await send(.leftMouseDown)
+        Toasts.stick("First", id: id, action: ("Restart", { newActions += 1 }))
+        try await Task.sleep(for: .milliseconds(30))
+        try await send(.leftMouseUp)
+        XCTAssertEqual(oldActions, 0)
+        XCTAssertEqual(newActions, beforeSticky)
+        XCTAssertEqual(toasts.current?.id, id)
+        try await send(.leftMouseDown)
+        try await send(.leftMouseUp)
+        XCTAssertEqual(newActions, beforeSticky + 1)
+
+        // The same replacement rule applies to the dismiss target.
+        Toasts.show("First", action: ("Undo", {}), in: store)
+        try await Task.sleep(for: .milliseconds(30))
+        try await send(.leftMouseDown, x: 106)
+        Toasts.show("First", action: ("Undo", {}), in: store)
+        let dismissSuccessor = try XCTUnwrap(toasts.current)
+        try await Task.sleep(for: .milliseconds(30))
+        try await send(.leftMouseUp, x: 106)
+        XCTAssertEqual(toasts.current?.id, dismissSuccessor.id)
+        try await send(.leftMouseDown, x: 106)
+        try await send(.leftMouseUp, x: 106)
+        XCTAssertNil(toasts.current, "A fresh dismiss press must remove the successor")
+    }
+
     private func pixels(_ host: NSView) throws -> Data {
         host.layoutSubtreeIfNeeded()
         host.displayIfNeeded()
