@@ -209,14 +209,28 @@ import XCTest
                           y: pill.midY - Look.control / 2, width: width, height: Look.control)
         }
         func center(_ frame: NSRect) -> NSPoint { NSPoint(x: frame.midX, y: frame.midY) }
+        var nativeEventNumber = 0
         func send(_ type: NSEvent.EventType, at point: NSPoint) async throws {
+            nativeEventNumber += 1
             window.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type,
                 location: point, modifierFlags: [],
                 timestamp: ProcessInfo.processInfo.systemUptime,
                 windowNumber: window.windowNumber, context: nil,
-                eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
+                eventNumber: nativeEventNumber, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)))
             try await Task.sleep(for: .milliseconds(30))
         }
+        // Verify input works before cancellation, so a replacement cannot pass by missing.
+        var probeActions = 0
+        Toasts.show("First", action: ("Undo", { probeActions += 1 }), in: store)
+        let probePoint = center(try await controlFrame("Undo"))
+        let beforeProbe = try pixels(host)
+        try await send(.leftMouseDown, at: probePoint)
+        let probeDifference = difference(try pixels(host), beforeProbe)
+        print("FEEL09 initial press: difference=\(probeDifference)")
+        XCTAssertGreaterThan(probeDifference, 10, "Initial native press must reach the action")
+        try await send(.leftMouseUp, at: probePoint)
+        XCTAssertEqual(probeActions, 1, "Native action must work before testing replacement")
+
         Toasts.show("First", action: ("Undo", { oldActions += 1 }), in: store)
         let undoPoint = center(try await controlFrame("Undo"))
         try await send(.leftMouseDown, at: undoPoint)
