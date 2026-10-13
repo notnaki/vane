@@ -81,12 +81,23 @@ import XCTest
         let server = try CompatibilityServer()
         defer { server.stop() }
         try await compatibilityWait { server.port != nil }
-        server.pages["/storage"] = "<title>Storage fixture</title><script>localStorage.setItem('fixture', 'keep'); document.cookie='fixture=keep; path=/; max-age=3600';</script>"
+        server.pages["/storage"] = "<title>Storage fixture</title>"
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = persistent
         var web: WKWebView? = WKWebView(frame: .zero, configuration: configuration)
         web!.load(URLRequest(url: try server.url("/storage")))
         try await compatibilityWait { web?.title == "Storage fixture" && web?.isLoading == false }
+        // Navigation completion alone does not prove a newly opened WebKit storage
+        // area has retained its initial writes. Seed after navigation and require
+        // both the live value and the store's record before exercising deletion.
+        let seeded = try await web!.evaluateJavaScript("localStorage.setItem('fixture', 'keep'); document.cookie='fixture=keep; path=/; max-age=3600'; localStorage.getItem('fixture')")
+        XCTAssertEqual(seeded as? String, "keep")
+        let initialCookies = await cookies(persistent)
+        XCTAssertTrue(initialCookies.contains { $0.name == "fixture" && $0.value == "keep" })
+        try await compatibilityWait {
+            let records = await persistent.dataRecords(ofTypes: [WKWebsiteDataTypeLocalStorage])
+            return records.contains { $0.displayName == "127.0.0.1" }
+        }
         let model = WebsiteDataModel(profileID: profile, store: persistent, isValid: { true })
         model.refresh()
         try await compatibilityWait { !model.isBusy }
