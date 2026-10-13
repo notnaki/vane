@@ -131,7 +131,8 @@ import Foundation
     /// suppressed query, an engine with no endpoint, a timeout, a broken body, or a
     /// response that a newer query has already made stale.
     static func fetch(_ query: String, isPrivate: Bool = false,
-                      using requestSession: URLSession? = nil) async -> [String] {
+                      using requestSession: URLSession? = nil,
+                      debounceSleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) async -> [String] {
         guard !Task.isCancelled, shouldSend(query, isPrivate: isPrivate) else { return [] }
         let id = Search.current.id
         guard let endpoint = endpoints[id],
@@ -142,7 +143,7 @@ import Foundation
         let task = Task { () -> [String] in
             // The debounce sits inside the cancellable Task, so a keystroke superseded
             // within the window never opens a connection at all.
-            try? await Task.sleep(for: debounce)
+            try? await debounceSleep(debounce)
             guard !Task.isCancelled,
                   let (data, _) = try? await (requestSession ?? session).data(from: url) else { return [] }
             return parse(data, engine: id)

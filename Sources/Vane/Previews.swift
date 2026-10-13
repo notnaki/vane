@@ -142,6 +142,12 @@ import WebKit
     private var showing: String?
     private weak var source: Tab?
 
+    private let debounceSleep: @MainActor (Duration) async throws -> Void
+
+    init(debounceSleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.debounceSleep = debounceSleep
+    }
+
     private var debounceTask: Task<Void, Never>?
     private var paintTask: Task<Void, Never>?
     private var summaryTask: Task<Void, Never>?
@@ -192,8 +198,9 @@ import WebKit
         p.favicon = tab.isPrivate ? nil : tab.favicons.icon(for: url)
         publish(p, for: id)
 
+        let sleep = debounceSleep
         debounceTask = Task { [weak self, weak tab] in
-            try? await Task.sleep(for: Previews.summaryDebounce)
+            try? await sleep(Previews.summaryDebounce)
             guard !Task.isCancelled, let self, let tab, self.latest == id else { return }
             // Keep speculative WebKit setup, network traffic, rendering and snapshots
             // behind the same settle gate as the summary. The shell/cache stays instant.

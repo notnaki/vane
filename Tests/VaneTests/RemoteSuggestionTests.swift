@@ -52,10 +52,16 @@ private final class CompletionProtocol: URLProtocol, @unchecked Sendable {
         XCTAssertEqual(CompletionProtocol.requests.count, 1)
         CompletionProtocol.requests.reset()
 
-        let pending = Task { await SearchSuggestions.fetch("swift", using: session) }
-        // Allow fetch to enter its debounce, as it does before the next keystroke.
-        try await Task.sleep(for: .milliseconds(25))
+        let debounce = DebounceFixture()
+        defer { debounce.finish() }
+        let pending = Task {
+            await SearchSuggestions.fetch("swift", using: session, debounceSleep: debounce.sleep)
+        }
+        defer { pending.cancel() }
+        // Cancel only once fetch has entered its debounce, regardless of runner load.
+        try await debounce.waitUntil { debounce.count == 1 }
         pending.cancel()
+        debounce.release(0)
         let phrases = await pending.value
         XCTAssertTrue(phrases.isEmpty)
         XCTAssertEqual(CompletionProtocol.requests.count, 0,
