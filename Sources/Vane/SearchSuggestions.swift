@@ -144,7 +144,8 @@ import Foundation
             // The debounce sits inside the cancellable Task, so a keystroke superseded
             // within the window never opens a connection at all.
             try? await debounceSleep(debounce)
-            guard !Task.isCancelled,
+            guard !Task.isCancelled, Search.current.id == id,
+                  shouldSend(query, isPrivate: isPrivate),
                   let (data, _) = try? await (requestSession ?? session).data(from: url) else { return [] }
             return parse(data, engine: id)
         }
@@ -156,7 +157,8 @@ import Foundation
         } onCancel: {
             task.cancel()
         }
-        guard !Task.isCancelled, isCurrent(token) else { return [] }
+        guard !Task.isCancelled, isCurrent(token), Search.current.id == id,
+              shouldSend(query, isPrivate: isPrivate) else { return [] }
         return phrases
     }
 

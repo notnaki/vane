@@ -419,6 +419,8 @@ struct CommandField: NSViewRepresentable {
     var font: NSFont = Look.Typography.input.native
     /// A new request refocuses an already-mounted field without reselecting on every edit.
     var focusRequest = 0
+    /// A retiring overlay can still be mounted during its dismissal transition.
+    var canFocus: () -> Bool = { true }
     /// Return true to swallow the key; false lets the field editor have it.
     let onKey: (Key) -> Bool
 
@@ -428,6 +430,11 @@ struct CommandField: NSViewRepresentable {
     /// gets to see it — and the field has to be a subclass to override it.
     final class BarField: NSTextField {
         var onForget: () -> Bool = { false }
+        var onMount: (() -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { onMount?() }
+        }
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
             let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first?.value
@@ -472,6 +479,12 @@ struct CommandField: NSViewRepresentable {
         context.coordinator.take(f, selectAll: selectAll)
     }
 
+    static func dismantleNSView(_ nsView: NSTextField, coordinator: Coordinator) {
+        coordinator.invalidate()
+        nsView.delegate = nil
+        (nsView as? BarField)?.onMount = nil
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     @MainActor final class Coordinator: NSObject, NSTextFieldDelegate {
@@ -479,19 +492,37 @@ struct CommandField: NSViewRepresentable {
         var focusRequest: Int?
         init(_ parent: CommandField) { self.parent = parent }
 
-        /// First responder can only be taken once the field is in a window, and SwiftUI
-        /// adds it to one *after* the update that created it — so this waits a turn, and
-        /// keeps waiting rather than silently leaving the bar unfocused.
+        private weak var pendingField: NSTextField?
+        private var focusGeneration = 0
+        private var invalidated = false
+
+        /// Wait for attachment rather than spinning the main queue. The generation
+        /// and teardown guard stop an old field from reclaiming keyboard focus.
         func take(_ f: NSTextField, selectAll: Bool, tries: Int = 20) {
-            guard let window = f.window else {
-                guard tries > 0 else { return }
-                DispatchQueue.main.async { self.take(f, selectAll: selectAll, tries: tries - 1) }
-                return
+            guard !invalidated else { return }
+            focusGeneration += 1
+            let generation = focusGeneration
+            pendingField = f
+            let focus = { [weak self, weak f] in
+                guard let self, let f, !self.invalidated,
+                      self.focusGeneration == generation, self.pendingField === f,
+                      self.parent.canFocus(), let window = f.window else { return }
+                guard window.makeFirstResponder(f) else { return }
+                let end = (f.stringValue as NSString).length
+                f.currentEditor()?.selectedRange = selectAll
+                    ? NSRange(location: 0, length: end) : NSRange(location: end, length: 0)
+                self.pendingField = nil
+                (f as? BarField)?.onMount = nil
             }
-            window.makeFirstResponder(f)
-            let end = (f.stringValue as NSString).length
-            f.currentEditor()?.selectedRange =
-                selectAll ? NSRange(location: 0, length: end) : NSRange(location: end, length: 0)
+            (f as? BarField)?.onMount = focus
+            if f.window != nil { focus() }
+        }
+
+        func invalidate() {
+            invalidated = true
+            focusGeneration += 1
+            (pendingField as? BarField)?.onMount = nil
+            pendingField = nil
         }
 
         func controlTextDidChange(_ note: Notification) {
@@ -557,20 +588,23 @@ struct CommandField: NSViewRepresentable {
     @State private var query = ""
     /// The selected address is a starting value, not a query until the user edits it.
     @State private var seededAddress: String?
+    @State private var initialized = false
     @State private var index = 0
     /// In-memory rows refresh immediately; database suggestions arrive separately.
     @State private var rows: [PaletteRow] = []
+    @State private var layout = Feel03PaletteLayout<PaletteRow>()
+    @State private var tabContent: [Feel03TabContent] = []
     @State private var hover: String?
     /// Arc's ⇥: the bar narrows to its actions catalogue and says so with a scope chip in
     /// the field. Escape takes the filter off before it closes the bar.
     @State private var actionsOnly = false
     @State private var tabSpaceID: UUID?
     @State private var activeBang: Bang?
-    /// The field is held back one frame so it is created with the prefilled address already
-    /// in it — an NSTextField can only select text it has.
-    @State private var ready = false
     /// False for the first frame, so the bar can scale and fade in from `appearScale`.
     @State private var shown = false
+    @State private var acceptingInput = true
+    @State private var fieldFocusRequest = 0
+    @State private var scrollRequest = 0
     /// Every open tab, in every window: a title or favicon arriving redraws the row for it.
     @StateObject private var tabs = ChangeWatch()
 
@@ -643,15 +677,25 @@ struct CommandField: NSViewRepresentable {
                                value: sidebarLayout.stacked)
             }
         }
+        .vaneMotionPolicy()
+        .onDisappear {
+            acceptingInput = false
+            if store.palette == nil { store.clearSuggestions() }
+        }
         .onExitCommand { close() }
-        .onAppear {
-            // ⌘L over a page opens with that page's address, selected.
-            if mode == .address, let address = store.active?.address, !address.isEmpty {
-                seededAddress = address
-                query = address
+        .onReceive(store.$palette) { presented in
+            guard let presented else {
+                acceptingInput = false
+                store.clearSuggestions()
+                return
             }
-            ready = true
-            refresh()
+            // A fast close/reopen can be coalesced into the same SwiftUI mount.
+            guard !acceptingInput else { return }
+            beginSession(presented)
+            fieldFocusRequest += 1
+        }
+        .onAppear {
+            if !initialized { beginSession(mode) }
             tabs.watch(allTabs)
             withAnimation(motion(Look.appear)) { shown = true }
         }
@@ -681,14 +725,38 @@ struct CommandField: NSViewRepresentable {
         // Completions land later than the keystroke that asked for them; the list has to
         // grow under the user without moving what they had already arrowed onto. The same
         // goes for a tab that renames itself or gets its favicon while the bar is up.
-        .onChange(of: store.suggestions) { refresh(reset: false) }
-        .onChange(of: tabs.revision) { refresh(reset: false) }
+        .onChange(of: store.suggestions) { refresh(reset: false, rebuildLocal: false) }
+        .onChange(of: tabs.revision) {
+            guard currentTabContent != tabContent else { return }
+            refresh(reset: false)
+        }
         .onChange(of: tabSpaceID) { refresh() }
         // Tabs opened or closed while the bar is up: watch the new set, and list it.
         .onChange(of: allTabs.map(\.id)) { tabs.watch(allTabs); refresh(reset: false) }
     }
 
-    private var allTabs: [Tab] { TabStore.all.flatMap(\.tabs) }
+    private var sources: [(offset: Int, element: TabStore)] {
+        TabStore.all.enumerated().filter { _, other in
+            Palette.tabSourceAllowed(profileID: store.profileID, isPrivate: store.isPrivate,
+                ownWindow: other === store, sourceProfileID: other.profileID,
+                sourcePrivate: other.isPrivate, sourceLittle: other.isLittle)
+        }
+    }
+
+    private var allTabs: [Tab] { sources.flatMap { $0.element.accessibleTabs } }
+    private var currentTabContent: [Feel03TabContent] {
+        sources.flatMap { number, owner in
+            owner.accessibleTabs.map { Feel03TabContent($0, owner: owner, windowNumber: number) }
+        }
+    }
+
+    /// Seed the native field on its first creation, before onAppear updates State.
+    /// This lets focus select the address without delaying the field by a frame.
+    private var fieldText: Binding<String> {
+        Binding(get: {
+            !initialized && mode == .address ? (store.active?.address ?? query) : query
+        }, set: { query = $0 })
+    }
 
     private var bar: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -716,8 +784,8 @@ struct CommandField: NSViewRepresentable {
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     .accessibilityLabel("Searching \(activeBang.name). Click to leave site search")
                 }
-                if ready {
-                    CommandField(text: $query, prompt: actionsOnly ? "Run a command…"
+                Group {
+                    CommandField(text: fieldText, prompt: actionsOnly ? "Run a command…"
                                  : (activeBang == nil ? mode.prompt : "Search…"),
                                  selectAll: mode == .address,
                                  label: activeBang.map { "Search \($0.name)" }
@@ -729,7 +797,8 @@ struct CommandField: NSViewRepresentable {
                                      + "Escape closes.",
                                  font: sidebarAddress ? Look.Typography.addressInput.native
                                      : Look.Typography.input.native,
-                                 onKey: key)
+                                 focusRequest: fieldFocusRequest,
+                                 canFocus: { acceptingInput }, onKey: key)
                 }
                 if let candidate = bangCandidate {
                     Button { enterBang(candidate) } label: {
@@ -802,7 +871,7 @@ struct CommandField: NSViewRepresentable {
     private var list: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: Look.barRowGap) {
+                LazyVStack(spacing: Look.barRowGap) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { i, row in
                         line(i, row)
                     }
@@ -812,7 +881,13 @@ struct CommandField: NSViewRepresentable {
             }
             .frame(height: listHeight + listPadding)
             .scrollIndicators(.never)
-            .onChange(of: index) { proxy.scrollTo(index) }
+            .onChange(of: scrollRequest) {
+                if let first = rows.first { proxy.scrollTo(first.id, anchor: .top) }
+            }
+            .onChange(of: index) {
+                guard rows.indices.contains(index) else { return }
+                proxy.scrollTo(rows[index].id)
+            }
         }
     }
 
@@ -891,7 +966,7 @@ struct CommandField: NSViewRepresentable {
         .animation(motion(Look.quick), value: lit)
         .padding(.horizontal, Look.barInset)
         .contentShape(.rect)
-        .id(i)
+        .id(row.id)
         .onHover { hover = $0 ? row.id : (hover == row.id ? nil : hover) }
         .onTapGesture { index = i; activate() }
         .accessibilityElement(children: .ignore)
@@ -1034,60 +1109,85 @@ struct CommandField: NSViewRepresentable {
 
     /// The suggestion list belongs to the window, not to this view, so it has to be handed
     /// back — otherwise the address bar's own overlay inherits a stale list.
+    private func beginSession(_ presented: PaletteMode) {
+        acceptingInput = true
+        actionsOnly = false
+        activeBang = nil
+        tabSpaceID = nil
+        seededAddress = presented == .address ? store.active?.address : nil
+        query = seededAddress ?? ""
+        initialized = true
+        store.clearSuggestions()
+        refresh()
+    }
+
     private func close() {
+        acceptingInput = false
         store.clearSuggestions()
         dismiss()
     }
 
     // MARK: The list
 
-    private func refresh(reset: Bool = true) {
+    private func refresh(reset: Bool = true, rebuildLocal: Bool = true) {
         let selectedID = rows.indices.contains(index) ? rows[index].id : nil
-        var out: [PaletteRow] = []
-        func matchingTabs() -> [PaletteRow] {
-            Palette.rankPages(query, tabRows(), title: \.title, url: \.matchURL)
-        }
-        if actionsOnly {
-            // ⇥: the catalogue and nothing else, so the bar reads as one list of verbs.
-            out = commandRows()
-        } else if mode == .tabs {
-            out = matchingTabs()
-        } else if activeBang != nil {
-            out = typedRow().map { [$0] + suggestionRows() } ?? []
-        } else if let typedRow = typedRow() {
-            // Arc's order (refs 2, 3): a tab you already have open that matches is the
-            // best answer there is, so it leads — "Switch to Tab" is what Return does. Then
-            // what you typed, what the engine and your own history complete it to, the
-            // assistant, the rest of the tabs. Sections rather than one ranked pool: the
-            // order *is* the ranking, and a fuzzy score must never be able to move "what
-            // you actually typed" around. Actions are a tail, never a headline — someone
-            // typing two letters means a search far more often than "Archive Tab" — but
-            // they are always *there*, from the first character on. Archived tabs and Spaces
-            // are places, so they are searched the moment there is something to search with.
-            let places = Palette.rankPages(typed, archiveRows() + spaceRows(),
-                                           title: \.title, url: \.matchURL)
-            // Only a strong match leads, and only one: a search is what two typed letters
-            // mean far more often than "Switch to Tab", so the tabs that merely fuzz-match
-            // wait until after what the engine completes the words to.
-            // A tab row's detail is "address — Window n" when there are several windows.
-            let tabs = matchingTabs()
-            let strong = tabs.filter {
-                Palette.strong(typed, title: $0.title, url: $0.matchURL)
+        if rebuildLocal {
+            tabContent = currentTabContent
+            var fresh = Feel03PaletteLayout<PaletteRow>()
+            func matchingTabs() -> [PaletteRow] {
+                Palette.rankPages(query, tabRows(), title: \.title, url: \.matchURL)
             }
-            let weak = tabs.filter { row in !strong.contains { $0.id == row.id } }
-            out = Palette.arrange(
-                tabs: strong + weak, typed: typedRow, suggestions: suggestionRows(), ai: aiRow(),
-                rest: places, commands: commandRows(), leadingTabs: min(strong.count, 1))
-        } else {
-            // Nothing typed (ref 2): Arc's bar at rest is the handful of tabs you are most
-            // likely to want back — this window's, most recently used first — with one row
-            // under them to report a problem. Not the other windows' tabs, not the archive,
-            // not the catalogue: all of that answers a query, and one letter brings it.
-            out = Palette.empty(tabs: recentTabRows(), report: reportRow())
+            if actionsOnly {
+                // ⇥: the catalogue and nothing else, so the bar reads as one list of verbs.
+                fresh.leading = commandRows()
+            } else if mode == .tabs {
+                fresh.leading = Array(matchingTabs().prefix(24))
+            } else if activeBang != nil {
+                fresh.leading = typedRow().map { [$0] } ?? []
+                fresh.acceptsSuggestions = !fresh.leading.isEmpty
+            } else if let typedRow = typedRow() {
+                // Arc's order (refs 2, 3): a tab you already have open that matches is the
+                // best answer there is, so it leads — "Switch to Tab" is what Return does. Then
+                // what you typed, what the engine and your own history complete it to, the
+                // assistant, the rest of the tabs. Sections rather than one ranked pool: the
+                // order *is* the ranking, and a fuzzy score must never be able to move "what
+                // you actually typed" around. Actions are a tail, never a headline — someone
+                // typing two letters means a search far more often than "Archive Tab" — but
+                // they are always *there*, from the first character on. Archived tabs and Spaces
+                // are places, so they are searched the moment there is something to search with.
+                let places = Palette.rankPages(typed, archiveRows() + spaceRows(),
+                                               title: \.title, url: \.matchURL)
+                // Only a strong match leads, and only one: a search is what two typed letters
+                // mean far more often than "Switch to Tab", so the tabs that merely fuzz-match
+                // wait until after what the engine completes the words to.
+                // A tab row's detail is "address — Window n" when there are several windows.
+                let tabs = matchingTabs()
+                let strong = tabs.filter {
+                    Palette.strong(typed, title: $0.title, url: $0.matchURL)
+                }
+                let strongIDs = Set(strong.map(\.id))
+                let weak = tabs.filter { !strongIDs.contains($0.id) }
+                let ordered = strong + weak
+                let lead = min(strong.count, 1)
+                fresh.leading = Array(ordered.prefix(lead)) + [typedRow]
+                fresh.trailing = Array((Array(ordered.dropFirst(lead)) + places + commandRows()).prefix(24))
+                fresh.assistant = aiRow()
+                fresh.acceptsSuggestions = true
+            } else {
+                // Nothing typed (ref 2): Arc's bar at rest is the handful of tabs you are most
+                // likely to want back — this window's, most recently used first — with one row
+                // under them to report a problem. Not the other windows' tabs, not the archive,
+                // not the catalogue: all of that answers a query, and one letter brings it.
+                fresh.leading = Palette.empty(tabs: recentTabRows(), report: reportRow())
+            }
+            layout = fresh
         }
+        let out = layout.rows(suggestions: layout.acceptsSuggestions ? suggestionRows() : [])
         // A cap so a bar over a hundred open tabs stays a list and not a scroll marathon —
         // but not while ⇥ is on, where the tail of the catalogue is the whole point.
-        rows = (actionsOnly ? out : Array(out.prefix(24))).map { row in
+        let visible = actionsOnly ? out : Feel03PaletteLayout.visible(out, limit: 24,
+            retaining: reset ? nil : selectedID, id: \.id)
+        rows = visible.map { row in
             var row = row
             if row.id.hasPrefix("archived:") {
                 row.image = URL(string: row.detail).flatMap(store.favicons.icon)
@@ -1097,6 +1197,7 @@ struct CommandField: NSViewRepresentable {
         index = Palette.selectedIndex(previous: index, selectedID: selectedID,
                                       rowIDs: rows.map(\.id), reset: reset)
         guard reset else { return }
+        scrollRequest += 1
         axAnnounce(rows.isEmpty ? "No results" : "\(rows.count) result\(rows.count == 1 ? "" : "s")")
     }
 
@@ -1177,7 +1278,7 @@ struct CommandField: NSViewRepresentable {
     private func tabRow(_ tab: Tab, in owner: TabStore, place: String) -> PaletteRow {
         let detail = [tab.address, place].filter { !$0.isEmpty }.joined(separator: " — ")
         let isCurrent = owner === store && tab.id == store.current
-        return PaletteRow(id: "tab:" + tab.id.uuidString, icon: "square.on.square",
+        return PaletteRow(id: Feel03TabContent.rowID(tab.id, owner: owner), icon: "square.on.square",
                           image: tab.favicon, title: tab.title, detail: detail, matchURL: tab.address, subtitle: place,
                           trailing: isCurrent ? "" : "Switch to Tab", kind: "Open tab") { [weak tab, weak owner] _ in
             guard let tab, let owner else { return }
@@ -1191,10 +1292,9 @@ struct CommandField: NSViewRepresentable {
     /// year. No "Window n" subtitle here — every row is this window's.
     private func recentTabRows() -> [PaletteRow] {
         let byID = Dictionary(store.accessibleTabs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        // No cap asked for here: `Palette.empty` is the one place the bar's cap lives, and
-        // two of them are two numbers that have to keep agreeing.
+        // Prepare only the rows that the empty bar will display.
         let order = TabSwitcher.recent(store.accessibleTabs.map { ($0.id, $0.lastActive) },
-                                       current: store.current, limit: .max)
+                                       current: store.current, limit: Look.barEmptyTabs)
         return order.compactMap { byID[$0] }.map { tabRow($0, in: store, place: "") }
     }
 

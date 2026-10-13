@@ -45,8 +45,27 @@ struct TabSwitcher: Equatable {
     /// stamped a hair later — by the clock alone the previous tab would come first.
     nonisolated static func recent(_ tabs: [(id: UUID, lastActive: Date)], current: UUID?,
                                    limit: Int = 5) -> [UUID] {
-        let rest = tabs.filter { $0.id != current }.sorted { $0.lastActive > $1.lastActive }.map(\.id)
-        return Array(([current].compactMap { $0 } + rest).prefix(limit))
+        guard limit > 0 else { return [] }
+        let first = [current].compactMap { $0 }
+        let count = limit - first.count
+        guard count > 0 else { return first }
+        // The switcher wants five cards, not a sorted copy of the entire strip.
+        // Keep ties in source order, matching the full stable sort used by search.
+        let candidates = tabs.filter { $0.id != current }
+        if count >= candidates.count {
+            return first + candidates.enumerated().sorted {
+                $0.element.lastActive == $1.element.lastActive ? $0.offset < $1.offset
+                    : $0.element.lastActive > $1.element.lastActive
+            }.map { $0.element.id }
+        }
+        var best: [(id: UUID, lastActive: Date)] = []
+        for tab in candidates {
+            let slot = best.firstIndex { $0.lastActive < tab.lastActive } ?? best.count
+            guard slot < count else { continue }
+            best.insert(tab, at: slot)
+            if best.count > count { best.removeLast() }
+        }
+        return first + best.map(\.id)
     }
 }
 
@@ -169,6 +188,7 @@ struct TabSwitcherOverlay: View {
             .hairline(radius: Look.barRadius, Look.barStroke)
             .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
             .transition(.opacity.combined(with: .scale(scale: Look.appearScale)))
+            .vaneMotionPolicy()
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Recent tabs")
             .accessibilityHint("Keep holding Control and press Tab to move. Release Control to switch.")
@@ -192,7 +212,7 @@ private struct SwitcherCard: View {
         .padding(.horizontal, Look.inset)
         .frame(width: Look.switcherCard, height: Look.switcherCardHeight)
         .background(highlighted ? Look.barSelected : .clear, in: .rect(cornerRadius: Look.pillRadius))
-        .animation(Look.quick, value: highlighted)
+        .animation(Motion.reduced ? nil : Look.quick, value: highlighted)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(TidyTitles.title(for: tab))
         .accessibilityAddTraits(highlighted ? .isSelected : [])
