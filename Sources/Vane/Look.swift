@@ -15,6 +15,9 @@ enum Look {
     static let cardRadius: CGFloat = 6
     /// Floating sidebar and page are sibling surfaces with matching corners.
     static let floatingSidebarRadius: CGFloat = pageRadius
+    /// Let the page show through the floating sidebar while its controls stay opaque.
+    static let floatingSidebarFill = Color(white: 0.08).opacity(0.55)
+    static let floatingSidebarMaterial = AnyShapeStyle(Material.thin)
     /// The page card — the sheet a page is drawn on, and the outline standing where one will
     /// go. Its own number, and a generous one: it is the only corner in the window that is
     /// read *against* the window's own, which macOS 26 rounds hard, and a settings card's

@@ -510,8 +510,8 @@ struct BrowserWindow: View {
                 .frame(width: sidebar.width)
                 .background {
                     RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
-                        .fill(Look.barFill)
-                        .background(Look.barMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
+                        .fill(Look.floatingSidebarFill)
+                        .background(Look.floatingSidebarMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
                         .hairline(radius: Look.floatingSidebarRadius)
                         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                         .opacity(floating ? 1 : 0)
