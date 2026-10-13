@@ -124,6 +124,42 @@ final class Feel05ThumbnailTests: XCTestCase {
         XCTAssertTrue(result.unchanged, "Cancellation must skip metadata and ImageIO, not cache a missing-file result")
     }
 
+    @MainActor func testFireAndForgetRequestSurvivesAFullDecodeBacklog() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("last.png")
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 20, pixelsHigh: 10,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: file)
+        let loader = Feel05ThumbnailLoader()
+        let thumbnails = Thumbnails(loader: loader)
+        let gate = Feel05DecodeGate()
+        let blocking = Task.detached { await loader.hold(gate) }
+        let entered = await Task.detached { gate.waitForEntry() }.value
+        XCTAssertEqual(entered, .success)
+        defer { gate.release.signal() }
+        // Before the worker can drain anything, fill its entire admission budget.
+        for index in 0..<64 {
+            let queued = dir.appendingPathComponent("queued-\(index).png")
+            try FileManager.default.linkItem(at: file, to: queued)
+            thumbnails.want(queued)
+        }
+        thumbnails.want(file)
+        // Repeated fallback requests must coalesce rather than multiply work.
+        for _ in 0..<100 { thumbnails.want(file) }
+        gate.release.signal()
+        await blocking.value
+        let deadline = ContinuousClock.now + .seconds(5)
+        while thumbnails.revision < 65, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertEqual(thumbnails.image(for: file)?.size.width, 20,
+                       "The one-shot caller cannot retry a request dropped at capacity")
+        XCTAssertEqual(thumbnails.revision, 65)
+    }
+
 }
 
 

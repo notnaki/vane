@@ -1516,6 +1516,9 @@ private struct MediaTile: View {
     private let cache = NSCache<NSString, Record>()
     private let loader: Feel05ThumbnailLoader
     private var loading: Set<String> = []
+    private var wanted: [URL] = []
+    private var wantedKeys: Set<String> = []
+    private var drainingWanted = false
 
     init(loader: Feel05ThumbnailLoader = Feel05ThumbnailLoader()) {
         self.loader = loader
@@ -1538,12 +1541,22 @@ private struct MediaTile: View {
         await loadAndPublish(url)
     }
 
-    /// Existing non-Library consumers retain their fire-and-forget interface.
+    /// The recent-download preview has a one-shot caller and cannot retry a full
+    /// backlog. Coalesce its URLs and drain them through the same admission budget,
+    /// using one waiting task rather than an uncancellable task per queued image.
     func want(_ url: URL) {
-        let key = url.path
-        guard !loading.contains(key), loading.count < 64 else { return }
-        loading.insert(key)
-        Task { await loadAndPublish(url) }
+        guard wantedKeys.insert(url.path).inserted else { return }
+        wanted.append(url)
+        guard !drainingWanted else { return }
+        drainingWanted = true
+        Task {
+            while !wanted.isEmpty {
+                let next = wanted.removeFirst()
+                await requestVisible(next)
+                wantedKeys.remove(next.path)
+            }
+            drainingWanted = false
+        }
     }
 
     private func loadAndPublish(_ url: URL) async {
