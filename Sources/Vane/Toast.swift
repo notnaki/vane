@@ -240,7 +240,12 @@ struct ToastPill: View {
         .background(Look.barFill, in: .rect(cornerRadius: Look.toastHeight / 2))
         .background(tint.opacity(Look.toastTint), in: .rect(cornerRadius: Look.toastHeight / 2))
         .background(Look.barMaterial, in: .rect(cornerRadius: Look.toastHeight / 2))
-        .hairline(radius: Look.toastHeight / 2, Look.barStroke)
+        .overlay {
+            RoundedRectangle(cornerRadius: Look.toastHeight / 2)
+                .strokeBorder(Look.barStroke, lineWidth: 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         .onHover { hovered = $0; toasts.hover(toast, $0) }
         .onChange(of: toast.id) { _, _ in
