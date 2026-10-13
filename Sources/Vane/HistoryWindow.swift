@@ -88,6 +88,8 @@ private struct HistoryView: View {
     @State private var query = ""
     @State private var visits: [Visit] = []
     @State private var groups: [(title: String, visits: [Visit])] = []
+    @State private var resultGate = Feel05ResultGate<Request>()
+    private var rowsAreCurrent: Bool { resultGate.isCurrent(request, refreshing: searching) }
     @State private var searching = true
     @State private var selection: Visit.ID?
     @State private var hovered: Visit.ID?
@@ -140,6 +142,7 @@ private struct HistoryView: View {
             visits = results
             groups = asked.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? HistoryWindow.grouped(results) : (results.isEmpty ? [] : [("Results", results)])
+            resultGate.present(asked)
             searching = false
             if let selected = selection, !results.contains(where: { $0.id == selected }) {
                 selection = nil
@@ -254,7 +257,7 @@ private struct HistoryView: View {
                 if direction == .down { moveSelection(1) }
             }
             .onKeyPress(.return) {
-                guard let visit = visits.first(where: { $0.id == selection }) else { return .ignored }
+                guard rowsAreCurrent, let visit = visits.first(where: { $0.id == selection }) else { return .ignored }
                 open(visit)
                 return .handled
             }
@@ -310,6 +313,7 @@ private struct HistoryView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("Opens this page in a new tab.")
         .accessibilityAction { open(visit) }
+        .disabled(!rowsAreCurrent)
     }
 
     // MARK: Doing things
@@ -324,6 +328,7 @@ private struct HistoryView: View {
     /// front. A history window you are working through is a list you are still reading, and
     /// keeping it key is also what leaves ⌫ pointed at the row you just clicked.
     private func open(_ visit: Visit) {
+        guard rowsAreCurrent else { return }
         selection = visit.id
         focus = .list
         guard let url = URL(string: visit.url) else { return }
@@ -332,14 +337,16 @@ private struct HistoryView: View {
     }
 
     private func delete(_ visit: Visit) {
-        guard store.deleteVisit(visit.id) else { HistoryWindow.showWriteFailure(store); return }
-        if selection == visit.id { selection = nil }
-        reload()
-        axAnnounce("Forgot \(visit.display).")
+        resultGate.performIfCurrent(request, refreshing: searching) {
+            guard store.deleteVisit(visit.id) else { HistoryWindow.showWriteFailure(store); return }
+            if selection == visit.id { selection = nil }
+            reload()
+            axAnnounce("Forgot \(visit.display).")
+        }
     }
 
     private func moveSelection(_ delta: Int) {
-        guard !visits.isEmpty else { return }
+        guard rowsAreCurrent, !visits.isEmpty else { return }
         let current = visits.firstIndex { $0.id == selection } ?? (delta > 0 ? -1 : visits.count)
         let next = max(0, min(visits.count - 1, current + delta))
         selection = visits[next].id

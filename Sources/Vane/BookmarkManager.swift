@@ -203,6 +203,8 @@ private struct BookmarkManagerView: View {
     @State private var editing: Bookmark?
     @State private var revision = 0
     @State private var keyboardRevision = 0
+    @State private var resultGate = Feel05ResultGate<Request>()
+    private var rowsAreCurrent: Bool { resultGate.isCurrent(request, refreshing: searching) }
     @State private var searching = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -259,6 +261,7 @@ private struct BookmarkManagerView: View {
             guard !Task.isCancelled, asked == request else { return }
             marks = results
             selection.formIntersection(Set(results.map(\.id)))
+            resultGate.present(asked)
             searching = false
         }
         .onReceive(NotificationCenter.default.publisher(for: BookmarkManager.refreshNotification)) { note in
@@ -338,7 +341,7 @@ private struct BookmarkManagerView: View {
                     .lineLimit(1).minimumScaleFactor(0.8)
                     .font(Look.caption).monospacedDigit().foregroundStyle(Look.inkSecondary)
                 Spacer(minLength: 0)
-                if !selection.isEmpty && !searching {
+                if !selection.isEmpty && rowsAreCurrent {
                     Menu("Move \(selection.count)") {
                         Button("Unfiled") { moveSelected(to: nil) }
                         ForEach(folders) { folder in Button(folder.name) { moveSelected(to: folder.id) } }
@@ -402,7 +405,7 @@ private struct BookmarkManagerView: View {
                 Text(mark.url).font(Look.caption).foregroundStyle(Look.inkQuiet).lineLimit(1)
             }
             Spacer()
-            Button("Edit") { editing = mark }.buttonStyle(.plain).foregroundStyle(.secondary)
+            Button("Edit") { edit(mark) }.buttonStyle(.plain).foregroundStyle(.secondary)
         }
         .padding(.horizontal, Look.cardInset).padding(.vertical, Look.rowInset)
         .frame(minHeight: Look.rowHeight)
@@ -411,7 +414,10 @@ private struct BookmarkManagerView: View {
         .animation(Motion.reduced ? nil : Look.quick, value: picked)
         .contentShape(.rect)
         .onTapGesture(count: 2) { open(mark) }
-        .onTapGesture { select(mark); listFocused = true }
+        .onTapGesture {
+            guard rowsAreCurrent else { return }
+            select(mark); listFocused = true
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(mark.display)
         .accessibilityValue(mark.url)
@@ -419,13 +425,14 @@ private struct BookmarkManagerView: View {
         .accessibilityHint("Opens this page in a new tab.")
         .accessibilityAction { open(mark) }
         .accessibilityAction(named: picked ? "Deselect" : "Select") {
+            guard rowsAreCurrent else { return }
             if picked { selection.remove(mark.id) } else { selection.insert(mark.id) }
         }
-        .accessibilityAction(named: "Edit") { editing = mark }
+        .accessibilityAction(named: "Edit") { edit(mark) }
         .accessibilityAction(named: "Delete") { remove([mark.id]) }
         .contextMenu {
             Button("Open in New Tab") { open(mark) }
-            Button("Edit…") { editing = mark }
+            Button("Edit…") { edit(mark) }
             Menu("Move to Folder") {
                 Button("Unfiled") { move(Set([mark.id]), to: nil) }
                 ForEach(folders) { folder in Button(folder.name) { move(Set([mark.id]), to: folder.id) } }
@@ -433,6 +440,7 @@ private struct BookmarkManagerView: View {
             Divider()
             Button("Delete", role: .destructive) { remove(Set([mark.id])) }
         }
+        .disabled(!rowsAreCurrent)
     }
 
     private func reload() {
@@ -442,14 +450,19 @@ private struct BookmarkManagerView: View {
     }
     private func reloadMarks() { searching = true; revision += 1 }
 
+    private func edit(_ mark: Bookmark) {
+        resultGate.performIfCurrent(request, refreshing: searching) { editing = mark }
+    }
+
     private func select(_ mark: Bookmark) {
+        guard rowsAreCurrent else { return }
         if NSEvent.modifierFlags.contains(.command) {
             if selection.contains(mark.id) { selection.remove(mark.id) } else { selection.insert(mark.id) }
         } else { selection = [mark.id] }
     }
 
     private func handle(_ command: BookmarkManager.KeyCommand?) -> KeyPress.Result {
-        guard let command else { return .ignored }
+        guard rowsAreCurrent, let command else { return .ignored }
         switch command {
         case .previous, .next:
             selection = BookmarkManager.keyboardSelection(ids: marks.map(\.id), selected: selection,
@@ -463,6 +476,7 @@ private struct BookmarkManagerView: View {
     }
 
     private func open(_ mark: Bookmark) {
+        guard rowsAreCurrent else { return }
         selection = [mark.id]
         listFocused = true
         guard let url = URL(string: mark.url) else { return }
@@ -472,12 +486,14 @@ private struct BookmarkManagerView: View {
 
     private func moveSelected(to folder: String?) { move(selection, to: folder) }
     private func move(_ ids: Set<Int64>, to folder: String?) {
-        guard store.moveBookmarks(ids, to: folder) else { showWriteFailure(); return }
-        reloadMarks(); rebuild()
+        resultGate.performIfCurrent(request, refreshing: searching) {
+            guard store.moveBookmarks(ids, to: folder) else { showWriteFailure(); return }
+            reloadMarks(); rebuild()
+        }
     }
 
     private func deleteSelected() {
-        guard !searching, !selection.isEmpty else { return }
+        guard rowsAreCurrent, !selection.isEmpty else { return }
         if selection.count > 1 {
             let alert = NSAlert(); alert.messageText = "Delete \(selection.count) bookmarks?"
             alert.informativeText = "This cannot be undone."
@@ -489,8 +505,10 @@ private struct BookmarkManagerView: View {
     }
 
     private func remove(_ ids: Set<Int64>) {
-        guard store.deleteBookmarks(ids) else { showWriteFailure(); return }
-        selection.subtract(ids); reloadMarks(); rebuild()
+        resultGate.performIfCurrent(request, refreshing: searching) {
+            guard store.deleteBookmarks(ids) else { showWriteFailure(); return }
+            selection.subtract(ids); reloadMarks(); rebuild()
+        }
     }
 
     private func createFolder() {

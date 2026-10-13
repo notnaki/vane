@@ -1503,10 +1503,11 @@ private struct MediaTile: View {
         }
     }
     private let cache = NSCache<NSString, Record>()
-    private let loader = Feel05ThumbnailLoader()
+    private let loader: Feel05ThumbnailLoader
     private var loading: Set<String> = []
 
-    private init() {
+    init(loader: Feel05ThumbnailLoader = Feel05ThumbnailLoader()) {
+        self.loader = loader
         cache.totalCostLimit = 32 * 1024 * 1024
         cache.countLimit = 256
     }
@@ -1514,32 +1515,40 @@ private struct MediaTile: View {
     /// Pure cache lookup: no file access or scheduling during view evaluation.
     func image(for url: URL) -> NSImage? { cache.object(forKey: url.path as NSString)?.image }
 
-    /// A fast scroll may fill the bounded worker backlog. A still-visible tile waits
-    /// for a slot; disappearing cancels this wait instead of leaving it blank forever.
+    /// Keep decode work inside the visible view's task. Cancellation also follows the
+    /// hop to the serial loader, so scrolled-off requests skip queued file work.
     func requestVisible(_ url: URL) async {
-        while loading.count >= 64 && !loading.contains(url.path) {
+        let key = url.path
+        while loading.count >= 64 || loading.contains(key) {
             do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
         }
         guard !Task.isCancelled else { return }
-        want(url)
+        loading.insert(key)
+        await loadAndPublish(url)
     }
 
+    /// Existing non-Library consumers retain their fire-and-forget interface.
     func want(_ url: URL) {
         let key = url.path
         guard !loading.contains(key), loading.count < 64 else { return }
         loading.insert(key)
-        let previous = cache.object(forKey: key as NSString)
-        Task {
-            let result = await loader.load(url, knownSignature: previous?.signature)
-            loading.remove(key)
-            if result.unchanged {
-                if let previous { cache.setObject(previous, forKey: key as NSString, cost: previous.bytes) }
-                return
-            }
-            cache.setObject(Record(result), forKey: key as NSString, cost: max(1, result.bytes))
-            revision &+= 1
-        }
+        Task { await loadAndPublish(url) }
     }
+
+    private func loadAndPublish(_ url: URL) async {
+        let key = url.path
+        defer { loading.remove(key) }
+        let previous = cache.object(forKey: key as NSString)
+        let result = await loader.load(url, knownSignature: previous?.signature)
+        guard !Task.isCancelled else { return }
+        if result.unchanged {
+            if let previous { cache.setObject(previous, forKey: key as NSString, cost: previous.bytes) }
+            return
+        }
+        cache.setObject(Record(result), forKey: key as NSString, cost: max(1, result.bytes))
+        revision &+= 1
+    }
+
 }
 
 // MARK: - Spaces

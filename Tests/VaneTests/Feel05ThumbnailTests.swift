@@ -71,4 +71,71 @@ final class Feel05ThumbnailTests: XCTestCase {
         try await waitForWidth(40)
     }
 
+    @MainActor func testVisibleRequestOwnsQueuedWorkAndDropsCancelledResults() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("queued.png")
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 20, pixelsHigh: 10,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: file)
+        let loader = Feel05ThumbnailLoader()
+        let thumbnails = Thumbnails(loader: loader)
+        let gate = Feel05DecodeGate()
+        let blocking = Task.detached { await loader.hold(gate) }
+        let entered = await Task.detached { gate.waitForEntry() }.value
+        XCTAssertEqual(entered, .success)
+        defer { gate.release.signal() }
+        var started = false
+        var returned = false
+        let visible = Task {
+            started = true
+            await thumbnails.requestVisible(file)
+            returned = true
+        }
+        while !started { await Task.yield() }
+        // The worker is blocked, so a structured request cannot have completed yet.
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(returned)
+        visible.cancel()
+        gate.release.signal()
+        await blocking.value
+        await visible.value
+        XCTAssertNil(thumbnails.image(for: file))
+        XCTAssertEqual(thumbnails.revision, 0)
+        await thumbnails.requestVisible(file)
+        XCTAssertEqual(thumbnails.image(for: file)?.size.width, 20)
+        XCTAssertEqual(thumbnails.revision, 1)
+    }
+
+    func testCancelledQueuedDecodeSkipsImageIO() async throws {
+        let loader = Feel05ThumbnailLoader()
+        let gate = Feel05DecodeGate()
+        let blocking = Task.detached { await loader.hold(gate) }
+        let entered = await Task.detached { gate.waitForEntry() }.value
+        XCTAssertEqual(entered, .success)
+        defer { gate.release.signal() }
+        let queued = Task { await loader.load(URL(fileURLWithPath: "/nonexistent/feel05.png"), knownSignature: nil) }
+        queued.cancel()
+        gate.release.signal()
+        await blocking.value
+        let result = await queued.value
+        XCTAssertTrue(result.unchanged, "Cancellation must skip metadata and ImageIO, not cache a missing-file result")
+    }
+
+}
+
+
+private final class Feel05DecodeGate: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    func waitForEntry() -> DispatchTimeoutResult { entered.wait(timeout: .now() + 5) }
+}
+
+private extension Feel05ThumbnailLoader {
+    func hold(_ gate: Feel05DecodeGate) {
+        gate.entered.signal()
+        _ = gate.release.wait(timeout: .now() + 10)
+    }
 }

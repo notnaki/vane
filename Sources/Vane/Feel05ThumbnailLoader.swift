@@ -11,7 +11,10 @@ actor Feel05ThumbnailLoader {
         let unchanged: Bool
     }
 
+    private var cancelled: Result { Result(image: nil, signature: "", bytes: 0, unchanged: true) }
+
     func load(_ url: URL, knownSignature: String?) -> Result {
+        guard !Task.isCancelled else { return cancelled }
         var freshURL = url
         freshURL.removeAllCachedResourceValues()
         let values = try? freshURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey, .fileResourceIdentifierKey])
@@ -21,6 +24,7 @@ actor Feel05ThumbnailLoader {
         if signature == knownSignature {
             return Result(image: nil, signature: signature, bytes: 0, unchanged: true)
         }
+        guard !Task.isCancelled else { return cancelled }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
