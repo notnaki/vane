@@ -53,7 +53,7 @@ enum SavedReaderNavigation {
             defer { opening.remove(key) }
             do {
                 let candidate: ReadingQueueCandidate
-                if let prepared = preparation?.take(articleID, repository: repository) { candidate = prepared }
+                if let prepared = await preparation?.takeOrWait(articleID, repository: repository) { candidate = prepared }
                 else { candidate = try await repository.candidate(articleID) }
                 let html = SavedReaderDocument.html(article: candidate.article)
                 let directory = try await Task.detached(priority: .userInitiated) {

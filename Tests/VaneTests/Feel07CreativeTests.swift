@@ -45,6 +45,88 @@ import XCTest
         XCTAssertNil(preparation.take(article.id, repository: store))
     }
 
+    func testOpenDuringPreparationReusesTheInFlightRead() async throws {
+        TestEnvironment.prepare()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ReadingQueueStore(profileID: UUID(), directory: root)
+        var article = makeReadingArticle(); article.profileID = store.profileID
+        try await store.publish(.init(article: article, images: [:]))
+        var resume: CheckedContinuation<Void, Never>?
+        var reads = 0
+        let preparation = Feel07ArticlePreparation { id, repository in
+            reads += 1
+            await withCheckedContinuation { resume = $0 }
+            return try await repository.candidate(id)
+        }
+        let preparing = Task { await preparation.prepare(article.id, repository: store) }
+        try await compatibilityWait { resume != nil }
+        var openingStarted = false
+        let opening = Task {
+            openingStarted = true
+            return await preparation.takeOrWait(article.id, repository: store)
+        }
+        try await compatibilityWait { openingStarted }
+        preparing.cancel() // Leaving the queue must not cancel the explicit open's read.
+        preparation.clear()
+        resume?.resume(); resume = nil
+        await preparing.value
+        let opened = await opening.value
+        XCTAssertEqual(opened?.article, article, "Opening must reuse the pending local read")
+        XCTAssertEqual(reads, 1)
+        XCTAssertNil(preparation.take(article.id, repository: store))
+    }
+
+    func testClearingPreparationCancelsItsUnconsumedRead() async throws {
+        TestEnvironment.prepare()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ReadingQueueStore(profileID: UUID(), directory: root)
+        var article = makeReadingArticle(); article.profileID = store.profileID
+        try await store.publish(.init(article: article, images: [:]))
+        var resume: CheckedContinuation<Void, Never>?
+        var cancelled = false
+        let preparation = Feel07ArticlePreparation { id, repository in
+            await withCheckedContinuation { resume = $0 }
+            cancelled = Task.isCancelled
+            return try await repository.candidate(id)
+        }
+        let preparing = Task { await preparation.prepare(article.id, repository: store) }
+        try await compatibilityWait { resume != nil }
+        preparation.clear()
+        resume?.resume(); resume = nil
+        await preparing.value
+        XCTAssertTrue(cancelled, "Leaving an unopened queue cancels its speculative work")
+        XCTAssertNil(preparation.take(article.id, repository: store))
+    }
+
+    func testPendingOpenRejectsARevisionChangedWhileWaiting() async throws {
+        TestEnvironment.prepare()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ReadingQueueStore(profileID: UUID(), directory: root)
+        var article = makeReadingArticle(); article.profileID = store.profileID
+        try await store.publish(.init(article: article, images: [:]))
+        var resume: CheckedContinuation<Void, Never>?
+        let preparation = Feel07ArticlePreparation { id, repository in
+            await withCheckedContinuation { resume = $0 }
+            return try await repository.candidate(id)
+        }
+        let preparing = Task { await preparation.prepare(article.id, repository: store) }
+        try await compatibilityWait { resume != nil }
+        var openingStarted = false
+        let opening = Task {
+            openingStarted = true
+            return await preparation.takeOrWait(article.id, repository: store)
+        }
+        try await compatibilityWait { openingStarted }
+        try await store.setRead(true, id: article.id)
+        resume?.resume(); resume = nil
+        await preparing.value
+        let stale = await opening.value
+        XCTAssertNil(stale, "A changed owner revision needs the ordinary fresh load")
+    }
+
     func testSavedImagesReserveTheirValidatedGeometry() throws {
         TestEnvironment.prepare()
         var article = makeReadingArticle()
