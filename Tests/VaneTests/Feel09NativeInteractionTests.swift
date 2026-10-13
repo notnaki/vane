@@ -239,6 +239,14 @@ import XCTest
         try await send(.leftMouseDown, at: freshUndoPoint)
         let pressDifference = difference(try pixels(host), beforePress)
         print("FEEL09 native toast: pill=\(geometry.frame), target=\(freshUndoPoint), flipped=\(host.isFlipped), key=\(window.isKeyWindow), active=\(NSApp.isActive), pressDifference=\(pressDifference)")
+        if pressDifference == 0 {
+            let localPoint = host.convert(freshUndoPoint, from: nil)
+            print("FEEL09 hit: local=\(localPoint), recipient=\(String(describing: host.hitTest(localPoint))), bounds=\(host.bounds), frame=\(host.frame)")
+            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            let png = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+            print("FEEL09 failed press PNG: \(png.base64EncodedString())")
+        }
         XCTAssertGreaterThan(pressDifference, 10, "The fresh press must reach the rendered action control")
         try await send(.leftMouseUp, at: freshUndoPoint)
         XCTAssertEqual(newActions, beforeFresh + 1, "A fresh press must activate the successor normally")
