@@ -99,22 +99,37 @@ private struct Feel02PressAnchor: NSViewRepresentable {
     }
 }
 
+private struct Feel02PressFeedbackEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Passive native monitors cannot infer SwiftUI's allowsHitTesting flag.
+    /// Inert preview roots explicitly exclude all of their descendant anchors.
+    var feel02PressFeedbackEnabled: Bool {
+        get { self[Feel02PressFeedbackEnabledKey.self] }
+        set { self[Feel02PressFeedbackEnabledKey.self] = newValue }
+    }
+}
+
 /// Feedback changes decoration immediately; text and hit rectangles never scale.
 struct Feel02PressFeedback: ViewModifier {
     var enabled = true
     @Environment(\.isEnabled) private var controlEnabled
+    @Environment(\.feel02PressFeedbackEnabled) private var surfaceEnabled
     @State private var pressed = false
+    private var interactive: Bool { enabled && controlEnabled && surfaceEnabled }
 
     func body(content: Content) -> some View {
         content
             .overlay {
                 RoundedRectangle(cornerRadius: Look.pillRadius)
-                    .fill(Look.inkPrimary.opacity(pressed && enabled && controlEnabled ? 0.055 : 0))
+                    .fill(Look.inkPrimary.opacity(pressed && interactive ? 0.055 : 0))
                     .transaction { $0.animation = nil; $0.disablesAnimations = true }
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
-            .background(Feel02PressAnchor(enabled: enabled && controlEnabled) { next in
+            .background(Feel02PressAnchor(enabled: interactive) { next in
                 var transaction = Transaction(animation: nil)
                 transaction.disablesAnimations = true
                 withTransaction(transaction) { pressed = next }

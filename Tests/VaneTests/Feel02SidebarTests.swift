@@ -168,6 +168,28 @@ import XCTest
         XCTAssertFalse(pressed)
     }
 
+    func testSpacePreviewRowsNeverRegisterInteractivePressTargets() async throws {
+        TestEnvironment.prepare()
+        let space = Space(name: "Inert preview", profileID: ProfileManager.shared.active.id,
+                          tabURLs: [URL(string: "about:blank#preview")!])
+        let preview = SpacePreviewList(space: space, liveTabs: nil)
+        let host = NSHostingView(rootView: preview.frame(width: 228, height: 400))
+        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 228, height: 400),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil; window.close() }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        func targets(in view: NSView) -> [Feel02PressAnchorView] {
+            (view as? Feel02PressAnchorView).map { [$0] } ?? view.subviews.flatMap { targets(in: $0) }
+        }
+        let anchors = targets(in: host)
+        XCTAssertFalse(anchors.isEmpty, "The preview must contain real row feedback anchors")
+        XCTAssertTrue(anchors.allSatisfy { !$0.enabled },
+                      "A passive monitor must honor noninteractive preview surfaces")
+    }
+
     func testDisabledHiddenAndOtherWindowAnchorsDoNotPress() throws {
         TestEnvironment.prepare()
         let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 200),

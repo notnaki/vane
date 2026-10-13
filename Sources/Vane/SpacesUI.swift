@@ -531,6 +531,7 @@ struct SpacePreviewList: View, Equatable {
                 Color.clear.frame(maxWidth: .infinity, minHeight: Look.rowHeight)
             }
         }
+        .environment(\.feel02PressFeedbackEnabled, false)
     }
 
     private func isSelected(_ row: Row) -> Bool {
