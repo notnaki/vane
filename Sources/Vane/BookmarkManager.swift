@@ -5,6 +5,8 @@ import SwiftUI
 @MainActor enum BookmarkManager {
     private static var window: NSWindow?
     private static var profileID: UUID?
+    static let refreshNotification = Notification.Name("vane.feel05.bookmarkRefresh")
+    static let focusNotification = Notification.Name("vane.feel05.bookmarkFocus")
 
     enum KeyCommand: Equatable { case previous, next, open }
 
@@ -44,15 +46,21 @@ import SwiftUI
     }
 
     static func show(profileID requested: UUID = ProfileManager.activeProfileID) {
-        profileID = requested
         if let window {
-            window.contentView = SecondaryWindowStyle.host(BookmarkManagerView(profileID: requested),
-                minimumSize: NSSize(width: 620, height: 400))
+            if profileID != requested || window.contentView == nil {
+                window.contentView = SecondaryWindowStyle.host(BookmarkManagerView(profileID: requested),
+                    minimumSize: NSSize(width: 620, height: 400))
+            } else {
+                NotificationCenter.default.post(name: refreshNotification, object: requested)
+                NotificationCenter.default.post(name: focusNotification, object: requested)
+            }
+            profileID = requested
             window.title = title(for: requested)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate()
             return
         }
+        profileID = requested
         let made = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 600),
                             styleMask: [.titled, .closable, .miniaturizable, .resizable],
                             backing: .buffered, defer: false)
@@ -70,8 +78,7 @@ import SwiftUI
 
     static func refresh(profileID requested: UUID) {
         guard let window, window.isVisible, profileID == requested else { return }
-        window.contentView = SecondaryWindowStyle.host(BookmarkManagerView(profileID: requested),
-                minimumSize: NSSize(width: 620, height: 400))
+        NotificationCenter.default.post(name: refreshNotification, object: requested)
     }
 
     private static func title(for id: UUID) -> String {
@@ -238,10 +245,11 @@ private struct BookmarkManagerView: View {
         .animation(Motion.reduced ? nil : Look.quick, value: location)
         .animation(Motion.reduced ? nil : Look.quick, value: selection.isEmpty)
         .onAppear { reload(); searchFocused = true }
-        .onChange(of: query) { selection.removeAll(); clearResults() }
-        .onChange(of: location) { selection.removeAll(); clearResults() }
+        .onChange(of: query) { searching = true }
+        .onChange(of: location) { searching = true }
         .task(id: request) {
             let asked = request
+            searching = true
             if !asked.query.isEmpty { try? await Task.sleep(for: LocalSuggestionReader.debounce) }
             guard !Task.isCancelled else { return }
             let folderID: String?
@@ -252,6 +260,12 @@ private struct BookmarkManagerView: View {
             marks = results
             selection.formIntersection(Set(results.map(\.id)))
             searching = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: BookmarkManager.refreshNotification)) { note in
+            if note.object as? UUID == profileID { reload() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: BookmarkManager.focusNotification)) { note in
+            if note.object as? UUID == profileID { searchFocused = true }
         }
         .sheet(item: $editing) { mark in
             BookmarkEditor(mark: mark, folders: folders) { title, url, folder in
@@ -278,7 +292,7 @@ private struct BookmarkManagerView: View {
                     .buttonStyle(.plain).help("New Folder").accessibilityLabel("New Folder")
             }.padding(.horizontal, Look.cardInset)
             ScrollView {
-                VStack(alignment: .leading, spacing: Look.rowGap) {
+                LazyVStack(alignment: .leading, spacing: Look.rowGap) {
                     ForEach(folders) { folder in
                         locationRow(folder.name, icon: "folder", value: .folder(folder.id))
                             .contextMenu {
@@ -320,7 +334,7 @@ private struct BookmarkManagerView: View {
             }
             .secondaryWindowSearchField()
             HStack(spacing: Look.inset) {
-                Text(selection.isEmpty ? "\(marks.count) \(marks.count == 1 ? "bookmark" : "bookmarks")" : "\(selection.count) selected")
+                Text(searching ? "Updating bookmarks…" : selection.isEmpty ? "\(marks.count) \(marks.count == 1 ? "bookmark" : "bookmarks")" : "\(selection.count) selected")
                     .lineLimit(1).minimumScaleFactor(0.8)
                     .font(Look.caption).monospacedDigit().foregroundStyle(Look.inkSecondary)
                 Spacer(minLength: 0)
@@ -421,9 +435,12 @@ private struct BookmarkManagerView: View {
         }
     }
 
-    private func reload() { folders = store.bookmarkFolders(); reloadMarks() }
-    private func reloadMarks() { clearResults(); revision += 1 }
-    private func clearResults() { marks = []; searching = true }
+    private func reload() {
+        folders = store.bookmarkFolders()
+        if case .folder(let id) = location, !folders.contains(where: { $0.id == id }) { location = .unfiled }
+        reloadMarks()
+    }
+    private func reloadMarks() { searching = true; revision += 1 }
 
     private func select(_ mark: Bookmark) {
         if NSEvent.modifierFlags.contains(.command) {
@@ -455,7 +472,8 @@ private struct BookmarkManagerView: View {
 
     private func moveSelected(to folder: String?) { move(selection, to: folder) }
     private func move(_ ids: Set<Int64>, to folder: String?) {
-        if store.moveBookmarks(ids, to: folder) { selection.removeAll(); reloadMarks(); rebuild() }
+        guard store.moveBookmarks(ids, to: folder) else { showWriteFailure(); return }
+        reloadMarks(); rebuild()
     }
 
     private func deleteSelected() {
@@ -471,20 +489,21 @@ private struct BookmarkManagerView: View {
     }
 
     private func remove(_ ids: Set<Int64>) {
-        if store.deleteBookmarks(ids) { selection.subtract(ids); reloadMarks(); rebuild() }
+        guard store.deleteBookmarks(ids) else { showWriteFailure(); return }
+        selection.subtract(ids); reloadMarks(); rebuild()
     }
 
     private func createFolder() {
         let alert = textAlert(title: "New Bookmark Folder", action: "Create", value: "")
-        guard alert.alert.runModal() == .alertFirstButtonReturn,
-              let folder = store.createBookmarkFolder(named: alert.field.stringValue) else { return }
+        guard alert.alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let folder = store.createBookmarkFolder(named: alert.field.stringValue) else { showWriteFailure(); return }
         reload(); location = .folder(folder.id)
     }
 
     private func rename(_ folder: BookmarkFolder) {
         let alert = textAlert(title: "Rename Bookmark Folder", action: "Rename", value: folder.name)
-        guard alert.alert.runModal() == .alertFirstButtonReturn,
-              store.renameBookmarkFolder(folder.id, to: alert.field.stringValue) else { return }
+        guard alert.alert.runModal() == .alertFirstButtonReturn else { return }
+        guard store.renameBookmarkFolder(folder.id, to: alert.field.stringValue) else { showWriteFailure(); return }
         reload()
     }
 
@@ -493,10 +512,19 @@ private struct BookmarkManagerView: View {
         alert.informativeText = "Its bookmarks will move to Unfiled."
         alert.addButton(withTitle: "Delete Folder"); alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
-        guard alert.runModal() == .alertFirstButtonReturn,
-              store.deleteBookmarkFolder(folder.id) else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard store.deleteBookmarkFolder(folder.id) else { showWriteFailure(); return }
         if location == .folder(folder.id) { location = .unfiled }
         reload()
+    }
+
+    private func showWriteFailure() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Could not update bookmarks"
+        alert.informativeText = "The change could not be saved. Check the folder name or storage availability and try again."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func textAlert(title: String, action: String, value: String) -> (alert: NSAlert, field: NSTextField) {

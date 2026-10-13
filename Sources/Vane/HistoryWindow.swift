@@ -12,6 +12,8 @@ import SwiftUI
 /// refreshed by cancellable searches and committed history-change notifications.
 @MainActor enum HistoryWindow {
     private static var window: NSWindow?
+    private static var profileID: UUID?
+    static let refresh = Notification.Name("vane.feel05.historyRefresh")
 
     static func showWriteFailure(_ store: Store) {
         let alert = NSAlert()
@@ -25,8 +27,13 @@ import SwiftUI
 
     static func show(profileID: UUID = Windows.current?.profileID ?? ProfileManager.activeProfileID) {
         if let w = window {
-            w.contentView = SecondaryWindowStyle.host(HistoryView(profileID: profileID)
-                .font(Look.text), minimumSize: NSSize(width: 520, height: 360))
+            if Self.profileID != profileID || w.contentView == nil {
+                w.contentView = SecondaryWindowStyle.host(HistoryView(profileID: profileID)
+                    .font(Look.text), minimumSize: NSSize(width: 520, height: 360))
+                Self.profileID = profileID
+            } else {
+                NotificationCenter.default.post(name: refresh, object: profileID)
+            }
             w.title = profileID == Profile.incognito.id ? "History — Incognito" : "History"
             w.appearance = profileID == Profile.incognito.id ? NSAppearance(named: .darkAqua) : nil
             w.makeKeyAndOrderFront(nil)
@@ -41,6 +48,7 @@ import SwiftUI
         SecondaryWindowStyle.apply(to: w)
         w.isReleasedWhenClosed = false        // closing must not free the instance we keep
         window = w
+        Self.profileID = profileID
         w.contentView = SecondaryWindowStyle.host(HistoryView(profileID: profileID)
             .font(Look.text), minimumSize: NSSize(width: 520, height: 360))
         // Position first, autosave second: setFrameUsingName reports whether there was one.
@@ -115,12 +123,13 @@ private struct HistoryView: View {
         .foregroundStyle(Look.inkPrimary)
         .background(Look.panelFill)
         .onAppear { focus = .search }
-        .onChange(of: query) { clearResults() }
+        .onChange(of: query) { searching = true }
         .onChange(of: selectedProfileID) { clearResults() }
-        .onChange(of: period) { clearResults() }
+        .onChange(of: period) { searching = true }
         .task(id: request) {
             guard profileID != Profile.incognito.id else { clearResults(); searching = false; return }
             let asked = request
+            searching = true
             if !query.isEmpty {
                 try? await Task.sleep(for: LocalSuggestionReader.debounce)
             }
@@ -135,6 +144,14 @@ private struct HistoryView: View {
             if let selected = selection, !results.contains(where: { $0.id == selected }) {
                 selection = nil
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: HistoryWindow.refresh)) { note in
+            if let requested = note.object as? UUID, requested != selectedProfileID {
+                clearResults()
+                selectedProfileID = requested
+            }
+            reload()
+            focus = .search
         }
         .onReceive(NotificationCenter.default.publisher(for: Store.historyChanged)) { note in
             if note.object as? Store === store { reload() }
@@ -162,9 +179,9 @@ private struct HistoryView: View {
                 .fixedSize()
             }
             Spacer()
-            Text("\(visits.count)\(visits.count == Self.limit ? "+" : "") visits")
+            Text(searching ? "Updating history…" : "\(visits.count)\(visits.count == Self.limit ? "+" : "") visits")
                 .font(Look.caption).monospacedDigit().foregroundStyle(Look.inkSecondary)
-                .accessibilityLabel("Showing \(visits.count) visits")
+                .accessibilityLabel(searching ? "Updating history" : "Showing \(visits.count) visits")
         }
     }
 

@@ -249,6 +249,7 @@ extension Library {
         var out: [(title: String, items: [T])] = []
         var key: Int?
         for item in items.sorted(by: { date($0) > date($1) }) {
+            guard !Task.isCancelled else { return [] }
             let at = date(item)
             let next = bucketKey(at, now: now, calendar: calendar)
             if next != key {
@@ -639,12 +640,17 @@ extension Look {
 struct LibraryPanel: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject private var library = Library.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         HStack(spacing: 0) {
             LibraryRail()
             content
+                .transition(.opacity)
         }
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: library.section)
+        .vaneMotionPolicy()
         // The rail and the air around the list are the window's handle while the Library is
         // up, exactly as the sidebar is the rest of the time: without this the window could
         // not be moved at all. A tile, a field or a row takes the hover first, so
@@ -756,6 +762,8 @@ private struct LibraryTile: View {
     let selected: Bool
     let action: () -> Void
     @State private var hovering = false
+    @FocusState private var focused: Bool
+    @EnvironmentObject private var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
 
@@ -779,6 +787,19 @@ private struct LibraryTile: View {
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture(perform: action)
+        .focusable().focused($focused)
+        .onKeyPress(.return) { action(); return .handled }
+        .onKeyPress(.space) { action(); return .handled }
+        .task(id: (hovering || focused) && !selected && !batterySaver.isActive) {
+            guard hovering || focused, !selected, !batterySaver.isActive else { return }
+            do { try await Task.sleep(for: .milliseconds(140)) } catch { return }
+            guard !Task.isCancelled else { return }
+            if section == .archived {
+                await ArchiveLibrary.library(for: store.profileID).prepare()
+            } else if section == .downloads || section == .media {
+                _ = Feel05DownloadPresentation.shared(for: DownloadLibrary.library(for: store.profileID))
+            }
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(section.title)
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
@@ -848,6 +869,7 @@ struct LibraryHead<Filter: View, Actions: View>: View {
         .padding(.horizontal, Look.inset)
         .padding(.top, Look.libraryHead)
         .padding(.bottom, Look.inset)
+        .animation(Motion.reduced ? nil : Look.quick, value: filtering)
         .onAppear { takeKeyboard() }
         .onChange(of: library.focusToken) { takeKeyboard() }
     }
@@ -994,15 +1016,18 @@ private struct ArchivedTabsPane: View {
     @ObservedObject var archives: ArchiveLibrary
     @ObservedObject private var library = Library.shared
 
-    private var groups: [(title: String, items: [ArchiveLibrary.Entry])] {
-        Library.grouped(archives.entries.filter {
-            (!library.littleArcOnly || $0.entry.isLittleArc)
-                && Library.matches([$0.entry.title, $0.entry.url, $0.profile.name], library.query)
-        }, by: { $0.entry.at })
+    @State private var groups: Feel05ArchiveSearch.Groups = []
+    @State private var searching = true
+    private struct Request: Equatable {
+        let revision: Int
+        let query: String
+        let littleOnly: Bool
+    }
+    private var request: Request {
+        Request(revision: archives.revision, query: library.query, littleOnly: library.littleArcOnly)
     }
 
     var body: some View {
-        let groups = groups
         LibraryColumn {
             LibraryHead(section: .archived, filtering: library.littleArcOnly,
                         query: $library.query) {
@@ -1012,17 +1037,37 @@ private struct ArchivedTabsPane: View {
                 Button("Clear Archive…") { clear() }.disabled(archives.entries.isEmpty)
             }
         } content: {
-            if groups.isEmpty {
-                LibraryEmpty(text: archives.entries.isEmpty
-                    ? "Nothing archived yet — a tab you close with \(Keybindings.binding(for: .closeTab).display) is kept here."
-                    : "No archived tab matches this filter.")
-            } else {
-                LibraryList(groups: groups, id: \ArchiveLibrary.Entry.id) { row in
-                    if let archive = archives.owner(of: row) {
-                        ArchivedRow(entry: row.entry, profile: row.profile, archive: archive)
-                    }
+            LibraryList(groups: groups, id: \ArchiveLibrary.Entry.id) { row in
+                if let archive = archives.owner(of: row) {
+                    ArchivedRow(entry: row.entry, profile: row.profile, archive: archive)
                 }
             }
+            .overlay {
+                if groups.isEmpty {
+                    LibraryEmpty(text: searching ? "Loading archived tabs…" : archives.entries.isEmpty
+                        ? "Nothing archived yet — a tab you close with \(Keybindings.binding(for: .closeTab).display) is kept here."
+                        : "No archived tab matches this filter.")
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if searching && !groups.isEmpty {
+                    Text("Updating…").font(Look.caption).foregroundStyle(Look.inkQuiet)
+                        .padding(Look.inset).background(Look.panelFill, in: .capsule)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
+        .task(id: request) {
+            let asked = request
+            searching = true
+            if !asked.query.isEmpty {
+                do { try await Task.sleep(for: LocalSuggestionReader.debounce) } catch { return }
+            }
+            let found = await archives.search.groups(archives.entries, revision: asked.revision,
+                query: asked.query, littleOnly: asked.littleOnly)
+            guard !Task.isCancelled, asked == request else { return }
+            groups = found
+            searching = false
         }
     }
 
@@ -1176,26 +1221,22 @@ private struct BoostsPane: View {
 // MARK: - Downloads
 
 private struct DownloadsPane: View {
-    @ObservedObject var downloads: DownloadLibrary
+    let downloads: DownloadLibrary
     @ObservedObject private var library = Library.shared
 
-    /// Not cached in `@State`: a running download republishes on every progress tick, so
-    /// the list would be regrouped by an `onChange` on every tick anyway, and the list is
-    /// capped at `Downloads.historyLimit` rather than at the archive's two thousand.
-    private var groups: [(title: String, items: [Downloads.Item])] {
-        let rows = downloads.items.filter {
-            Library.keeps(done: $0.status == .done, completedOnly: library.completedOnly)
-                && Library.matches([$0.name, $0.source?.absoluteString ?? ""], library.query)
-        }
-        // A row still arriving has no completion date: it is happening now, so it is today.
-        // One `now` for the whole sort — `.now` inside the comparator gives two in-flight
-        // rows a different answer every time they are compared, and they swap on each tick.
-        let now = Date()
-        return Library.grouped(rows, by: { $0.completed ?? now }, now: now)
+    @ObservedObject private var presentation: Feel05DownloadPresentation
+    @State private var groups: [(title: String, items: [Downloads.Item])] = []
+
+    init(downloads: DownloadLibrary) {
+        self.downloads = downloads
+        presentation = Feel05DownloadPresentation.shared(for: downloads)
+    }
+
+    private func refresh() {
+        groups = presentation.groups(query: library.query, completedOnly: library.completedOnly)
     }
 
     var body: some View {
-        let groups = groups
         LibraryColumn {
             LibraryHead(section: .downloads, filtering: library.completedOnly,
                         query: $library.query) {
@@ -1206,21 +1247,25 @@ private struct DownloadsPane: View {
                     .disabled(downloads.items.isEmpty)
             }
         } content: {
-            if groups.isEmpty {
-                LibraryEmpty(text: downloads.items.isEmpty
-                    ? "Nothing downloaded yet — files you save are listed here."
-                    : "No download matches this filter.")
-            } else {
-                LibraryList(groups: groups, id: \Downloads.Item.id) { item in
-                    if let owner = downloads.owner(of: item) {
-                        DownloadListRow(item: item, downloads: owner)
-                    }
+            LibraryList(groups: groups, id: \Downloads.Item.id) { item in
+                if let owner = downloads.owner(of: item) {
+                    DownloadListRow(item: item, downloads: owner)
+                }
+            }
+            .overlay {
+                if groups.isEmpty {
+                    LibraryEmpty(text: presentation.rows.isEmpty
+                        ? "Nothing downloaded yet — files you save are listed here."
+                        : "No download matches this filter.")
                 }
             }
         }
-        // A row that finished weeks ago may have been moved or thrown away since.
-        .onAppear { downloads.refreshMissing() }
+        .onAppear { downloads.refreshMissing(); presentation.refresh(); refresh() }
+        .onChange(of: presentation.rows) { refresh() }
+        .onChange(of: library.query) { refresh() }
+        .onChange(of: library.completedOnly) { refresh() }
     }
+
 }
 
 private struct DownloadListRow: View {
@@ -1302,22 +1347,27 @@ private struct DownloadVerbs: View {
 /// second thing to keep in step for no answer it could give that this cannot. Ceiling: an
 /// image the user looked at but never downloaded is not here.
 private struct MediaPane: View {
-    @ObservedObject var downloads: DownloadLibrary
+    let downloads: DownloadLibrary
     @ObservedObject private var library = Library.shared
-    /// Watched, not read once: a picture that decodes after the wall is drawn changes the
-    /// height the masonry balanced on, so the wall has to be laid out again.
-    @ObservedObject private var thumbnails = Thumbnails.shared
+    @ObservedObject private var presentation: Feel05DownloadPresentation
+    @State private var items: [Downloads.Item] = []
+    @State private var wall: [[Cell]] = []
 
-    private var items: [Downloads.Item] {
-        let now = Date()
-        return downloads.items
-            .filter { $0.status == .done && Library.isImage(name: $0.name)
-                && Library.matches([$0.name, $0.source?.absoluteString ?? ""], library.query) }
-            .sorted { ($0.completed ?? now) > ($1.completed ?? now) }
+    init(downloads: DownloadLibrary) {
+        self.downloads = downloads
+        presentation = Feel05DownloadPresentation.shared(for: downloads)
+    }
+
+    private func refresh() {
+        items = presentation.media(query: library.query)
+        var columns = [[Cell]](repeating: [], count: Look.mediaColumns)
+        for (index, item) in items.enumerated() {
+            columns[index % Look.mediaColumns].append(Cell(item: item, height: Look.mediaColumn, order: index))
+        }
+        wall = columns
     }
 
     var body: some View {
-        let wall = wall
         LibraryColumn {
             LibraryHead(section: .media, filtering: false, query: $library.query) {
                 EmptyView()
@@ -1325,33 +1375,36 @@ private struct MediaPane: View {
                 EmptyView()
             }
         } content: {
-            if wall.isEmpty {
-                LibraryEmpty(text: downloads.items.contains(where: { Library.isImage(name: $0.name) })
-                    ? "No picture matches that."
-                    : "No pictures yet — images you save are shown here.")
-            } else {
-                ScrollView {
-                    HStack(alignment: .top, spacing: Look.inset) {
-                        ForEach(Array(wall.enumerated()), id: \.offset) { _, column in
-                            LazyVStack(spacing: Look.inset) {
-                                ForEach(column, id: \.item.id) { cell in
-                                    if let owner = downloads.owner(of: cell.item) {
-                                        MediaTile(item: cell.item, downloads: owner,
-                                                  height: cell.height, order: cell.order)
-                                    }
+            ScrollView {
+                HStack(alignment: .top, spacing: Look.inset) {
+                    ForEach(Array(wall.enumerated()), id: \.offset) { _, column in
+                        LazyVStack(spacing: Look.inset) {
+                            ForEach(column, id: \.item.id) { cell in
+                                if let owner = downloads.owner(of: cell.item) {
+                                    MediaTile(item: cell.item, downloads: owner,
+                                              height: cell.height, order: cell.order)
                                 }
                             }
-                            .frame(width: Look.mediaColumn)
                         }
+                        .frame(width: Look.mediaColumn)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, Look.inset)
-                    .padding(.bottom, Look.cardInset)
                 }
-                .scrollContentBackground(.hidden)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Look.inset)
+                .padding(.bottom, Look.cardInset)
+            }
+            .scrollContentBackground(.hidden)
+            .overlay {
+                if items.isEmpty {
+                    LibraryEmpty(text: presentation.rows.contains(where: { $0.image })
+                        ? "No picture matches that."
+                        : "No pictures yet — images you save are shown here.")
+                }
             }
         }
-        .onAppear { downloads.refreshMissing() }
+        .onAppear { downloads.refreshMissing(); presentation.refresh(); refresh() }
+        .onChange(of: presentation.rows) { refresh() }
+        .onChange(of: library.query) { refresh() }
     }
 
     /// One picture's place on the wall. `order` is where it came in the list, which is what
@@ -1363,32 +1416,6 @@ private struct MediaPane: View {
         let order: Int
     }
 
-    /// The columns, built once: two lists of cells rather than the whole list walked once per
-    /// column. Asking for the thumbnails it has not got yet is part of laying out — the
-    /// heights come from them, so the wall re-places itself as they land.
-    private var wall: [[Cell]] {
-        let items = items
-        var out = [[Cell]](repeating: [], count: Look.mediaColumns)
-        let heights = items.map(height)
-        for (i, column) in Masonry.place(heights: heights, columns: Look.mediaColumns).enumerated()
-        where out.indices.contains(column) {
-            out[column].append(Cell(item: items[i], height: heights[i], order: i))
-        }
-        return out
-    }
-
-    /// How tall a picture will be at column width, which is what the masonry balances. One
-    /// not decoded yet stands at a row's height and asks for itself; `Thumbnails.revision`
-    /// is what brings the wall back to lay it out properly.
-    private func height(_ item: Downloads.Item) -> CGFloat {
-        guard let url = item.url else { return Look.libraryRow }
-        guard let image = thumbnails.image(for: url),
-              image.size.width > 0, image.size.height > 0 else {
-            thumbnails.want(url)
-            return Look.libraryRow
-        }
-        return (Look.mediaColumn * image.size.height / image.size.width).rounded()
-    }
 }
 
 /// One picture, at column width and its own height. Clicking opens it, the way clicking a
@@ -1443,6 +1470,9 @@ private struct MediaTile: View {
         .accessibilityActions { DownloadVerbs(item: item, downloads: downloads) }
         // Higher is read first, so the newest picture leads however the columns fell.
         .accessibilitySortPriority(Double(-order))
+        .task(id: item.url) {
+            if let url = item.url { await thumbnails.requestVisible(url) }
+        }
     }
 }
 
@@ -1455,68 +1485,60 @@ private struct MediaTile: View {
 ///
 /// So: the decode runs off the actor and the result lands in an `NSCache` with a cost limit,
 /// which is the one collection AppKit will empty under pressure. Views ask `image(for:)` for
-/// what is already there and `want(_:)` for what is not; `revision` is what tells the wall to
-/// lay itself out again when one arrives.
+/// what is already there and request decoding from visible rows/tiles. `revision` redraws
+/// those previews when a result arrives; tile geometry stays reserved.
 ///
-/// ponytail: keyed by path, so a file replaced under the same name keeps its old thumbnail
-/// until the cache drops it. That is the ceiling, and it is cheaper than stat-ing every row.
+/// Visible requests validate a file signature off the main actor. Replacing or removing
+/// a file invalidates its thumbnail, and failed decodes are cached until the file changes.
 @MainActor final class Thumbnails: ObservableObject {
     static let shared = Thumbnails()
-
-    /// Bumped when a thumbnail lands. The wall's heights come from these, so it has to be
-    /// told; a tile on its own would only need to redraw.
     @Published private(set) var revision = 0
 
-    private let cache = NSCache<NSString, NSImage>()
+    private final class Record {
+        let image: NSImage?
+        let signature: String
+        let bytes: Int
+        init(_ result: Feel05ThumbnailLoader.Result) {
+            image = result.image; signature = result.signature; bytes = max(1, result.bytes)
+        }
+    }
+    private let cache = NSCache<NSString, Record>()
+    private let loader = Feel05ThumbnailLoader()
     private var loading: Set<String> = []
 
     private init() {
-        // Bytes, roughly: a `mediaPixels`-wide thumbnail is about a quarter of a megabyte, so
-        // this is a few hundred pictures — more than a wall holds, and small enough that the
-        // system can take it back.
         cache.totalCostLimit = 32 * 1024 * 1024
+        cache.countLimit = 256
     }
 
-    /// What is already decoded, or nil. Never touches the disk, so it is safe inside `body`.
-    func image(for url: URL) -> NSImage? { cache.object(forKey: url.path as NSString) }
+    /// Pure cache lookup: no file access or scheduling during view evaluation.
+    func image(for url: URL) -> NSImage? { cache.object(forKey: url.path as NSString)?.image }
 
-    /// Ask for one. Returns at once; `revision` says when it has arrived.
+    /// A fast scroll may fill the bounded worker backlog. A still-visible tile waits
+    /// for a slot; disappearing cancels this wait instead of leaving it blank forever.
+    func requestVisible(_ url: URL) async {
+        while loading.count >= 64 && !loading.contains(url.path) {
+            do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
+        }
+        guard !Task.isCancelled else { return }
+        want(url)
+    }
+
     func want(_ url: URL) {
         let key = url.path
-        guard cache.object(forKey: key as NSString) == nil, !loading.contains(key) else { return }
+        guard !loading.contains(key), loading.count < 64 else { return }
         loading.insert(key)
-        Task.detached(priority: .utility) {
-            let made = Thumbnails.decode(url)
-            await MainActor.run { Thumbnails.shared.landed(key, made) }
+        let previous = cache.object(forKey: key as NSString)
+        Task {
+            let result = await loader.load(url, knownSignature: previous?.signature)
+            loading.remove(key)
+            if result.unchanged {
+                if let previous { cache.setObject(previous, forKey: key as NSString, cost: previous.bytes) }
+                return
+            }
+            cache.setObject(Record(result), forKey: key as NSString, cost: max(1, result.bytes))
+            revision &+= 1
         }
-    }
-
-    private func landed(_ key: String, _ made: Decoded?) {
-        loading.remove(key)
-        guard let made else { return }
-        cache.setObject(made.image, forKey: key as NSString, cost: made.bytes)
-        revision &+= 1
-    }
-
-    /// A thumbnail on its way back from the background. `NSImage` is not `Sendable`, but this
-    /// one was made on that thread and handed straight over — nothing else ever held it.
-    private struct Decoded: @unchecked Sendable {
-        let image: NSImage
-        let bytes: Int
-    }
-
-    /// Decoded straight to the size drawn, never to the size stored: ImageIO never holds the
-    /// full frame at all, which is the whole reason this is not `NSImage(contentsOf:)`.
-    private nonisolated static func decode(_ url: URL) -> Decoded? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                  kCGImageSourceCreateThumbnailFromImageAlways: true,
-                  kCGImageSourceCreateThumbnailWithTransform: true,
-                  kCGImageSourceThumbnailMaxPixelSize: Look.mediaPixels,
-              ] as CFDictionary)
-        else { return nil }
-        return Decoded(image: NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)),
-                       bytes: cg.width * cg.height * 4)
     }
 }
 
