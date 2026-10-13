@@ -185,8 +185,14 @@ import WebKit
         cacheScope = scope
         if !tab.isPrivate, sessionObserver == nil {
             sessionObserver = Feel04PreviewSessionObserver(profileID: tab.profileID) { [weak self] in
-                self?.cache = Cache()
-                self?.cancel()
+                guard let self else { return }
+                self.cache = Cache()
+                self.cancel()
+                // Retire the cookie snapshot as well as its pixels. An old asynchronous
+                // preparation can only finish writing into its discarded renderer.
+                self.web?.removeFromSuperview()
+                self.host?.contentView = nil
+                self.web = nil; self.builtFor = nil; self.bridge = nil
             }
         }
         let key = Previews.key(for: url)
@@ -227,6 +233,23 @@ import WebKit
                 self.edit(id) { $0.loading = false }; return
             }
             let web = self.webView(for: tab)
+            if !tab.isPrivate {
+                // Speculative responses must not mutate the profile session or trigger
+                // our source-session observer. Refresh this ephemeral cookie snapshot
+                // before each destination; real profile changes still cancel the request.
+                let cookies = await ProfileManager.dataStore(for: tab.profileID).httpCookieStore.allCookies()
+                let destination = web.configuration.websiteDataStore.httpCookieStore
+                for cookie in await destination.allCookies() {
+                    guard !Task.isCancelled, self.latest == id else { return }
+                    await destination.deleteCookie(cookie)
+                }
+                for cookie in cookies {
+                    guard !Task.isCancelled, self.latest == id else { return }
+                    await destination.setCookie(cookie)
+                }
+            }
+            guard !Task.isCancelled, self.latest == id, Previews.enabled,
+                  !BatterySaver.shared.isActive else { return }
             self.navigation = web.load(URLRequest(url: url))
             self.paintTask = Task(priority: .background) { [weak self] in await self?.paint(id: id, web: web) }
             // Preparing pixels never speculatively starts inference. Keep its original
@@ -315,13 +338,11 @@ import WebKit
         }
         web?.removeFromSuperview()
 
-        // The tab's own configuration: its profile's persistent data store, so a page the
-        // user is logged into previews as logged in, and — the part that matters more — the
-        // compiled content blocker, without which a preview loads the ads the browser
-        // exists to not load. A private tab gets `.nonPersistent()`, a fresh ephemeral store
-        // that writes nothing to disk and is not the private *window's* store either, so a
-        // preview cannot drop a cookie into the session the user is browsing in.
+        // Keep profile blocker/settings configuration, but isolate speculative writes.
+        // Regular previews receive a cookie snapshot just before loading; private
+        // previews stay empty and never read the user's persistent session.
         let cfg = Tab.configuration(isPrivate: tab.isPrivate, profileID: tab.profileID)
+        cfg.websiteDataStore = .nonPersistent()
         // A preview is not a tab. Extensions must not see it, script into it, or count it.
         cfg.webExtensionController = nil
         // Tab.configuration allows autoplay, which is right for a tab and wrong for a

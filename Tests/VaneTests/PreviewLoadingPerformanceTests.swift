@@ -65,6 +65,16 @@ private final class PreviewServer: @unchecked Sendable {
 }
 
 @MainActor final class PreviewLoadingPerformanceTests: XCTestCase {
+    private var previousBatteryMode: BatterySaver.Mode?
+    override func setUp() async throws {
+        TestEnvironment.prepare()
+        previousBatteryMode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.off)
+    }
+    override func tearDown() async throws {
+        if let previousBatteryMode { BatterySaver.shared.setMode(previousBatteryMode) }
+    }
+
     func testPreviewHostCannotAppearOrInterceptClicksWhenMovedOntoScreen() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
