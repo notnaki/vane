@@ -45,7 +45,11 @@ import WebKit
     /// is running; the *decision* is made in Swift, where `check()` can drive it.
     static let script = """
     (function () {
-      if (window.__vaneMute) { return; }
+      // The page can already own the public command name at document end.
+      // Keep installation identity separate, scoped to this Document.
+      var installation = Symbol.for('com.vane.TabAudio.runtime.6387b084-4d20-4a65-9ae6-13898a72aaf5');
+      if (document[installation]) { return; }
+      Object.defineProperty(document, installation, { value: true });
       var alive = true, queued = false;
       var muted = false, last = null, pending = false, observer = null, timer = null;
       // Live membership covers SPA replacements without searching the whole DOM on

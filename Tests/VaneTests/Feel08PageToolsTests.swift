@@ -308,4 +308,25 @@ import XCTest
             "Discovery should inspect added subtrees, not their large existing parents")
     }
 
+    func testAudioInstallationDoesNotTrustPageOwnedCommandName() async throws {
+        let (web, capture) = try await fixture("window.__vaneMute = {siteOwned:true};" + TabAudio.script,
+            name: TabAudio.messageName, html: "<body><video id=player></video></body>")
+        let result = try await js(web, """
+        const player=document.getElementById('player');
+        const callable=typeof window.__vaneMute==='function';
+        if (callable) window.__vaneMute(true);
+        const muted=player.muted;
+        if (callable) window.__vaneMute(false);
+        Object.defineProperties(player,{paused:{value:false},ended:{value:false},volume:{value:0.7}});
+        player.dispatchEvent(new Event('play'));
+        return {callable,muted};
+        """) as? [String: Any]
+        XCTAssertEqual(result?["callable"] as? Bool, true, "A page's command-name collision must not suppress Vane installation")
+        XCTAssertEqual(result?["muted"] as? Bool, true)
+        if result?["callable"] as? Bool == true {
+            try await compatibilityWait { capture.messages.last?["volume"] as? Double == 0.7 }
+            XCTAssertEqual(capture.messages.last?["playing"] as? Bool, true)
+        }
+    }
+
 }
