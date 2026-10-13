@@ -238,6 +238,7 @@ struct EaselWorkspace: View {
         .alert("Easel could not be updated", isPresented: Binding(get: { session.message != nil }, set: { if !$0 { session.message = nil } })) {
             Button("OK") { session.message = nil }
         } message: { Text(session.message ?? "") }
+        .vaneMotionPolicy()
     }
 }
 
