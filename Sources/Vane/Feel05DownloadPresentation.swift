@@ -9,11 +9,11 @@ import Foundation
         let name: String
         let source: String
         let done: Bool
-        let date: Date
+        let completed: Date?
         let image: Bool
         static func == (lhs: Row, rhs: Row) -> Bool {
             lhs.item === rhs.item && lhs.name == rhs.name && lhs.source == rhs.source
-                && lhs.done == rhs.done && lhs.date == rhs.date && lhs.image == rhs.image
+                && lhs.done == rhs.done && lhs.completed == rhs.completed && lhs.image == rhs.image
         }
     }
     @Published private(set) var rows: [Row] = []
@@ -50,7 +50,7 @@ import Foundation
     func refresh() {
         let next = source.items.map { item in
             Row(item: item, name: item.name, source: item.source?.absoluteString ?? "",
-                done: item.status == .done, date: item.completed ?? item.started,
+                done: item.status == .done, completed: item.completed,
                 image: Library.isImage(name: item.name))
         }
         if next != rows { rows = next }
@@ -61,10 +61,12 @@ import Foundation
         return Library.grouped(rows.filter {
             Library.keeps(done: $0.done, completedOnly: completedOnly)
                 && Library.matches([$0.name, $0.source], query)
-        }, by: { $0.done ? $0.date : now }, now: now).map { ($0.title, $0.items.map(\.item)) }
+        }, by: { $0.completed ?? now }, now: now).map { ($0.title, $0.items.map(\.item)) }
     }
 
     func media(query: String) -> [Downloads.Item] {
-        rows.filter { $0.done && $0.image && Library.matches([$0.name, $0.source], query) }.map(\.item)
+        let now = Date()
+        return rows.filter { $0.done && $0.image && Library.matches([$0.name, $0.source], query) }
+            .sorted { ($0.completed ?? now) > ($1.completed ?? now) }.map(\.item)
     }
 }
