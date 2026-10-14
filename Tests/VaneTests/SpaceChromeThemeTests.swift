@@ -4,6 +4,21 @@ import XCTest
 @testable import vane
 
 final class SpaceChromeThemeTests: XCTestCase {
+    @MainActor func testFloatingSurfacesDarkenContinuouslyToBlackWithThePrimary() throws {
+        var previous = -1.0
+        for lightness in [0.0, 0.02, 0.1, 0.25, 0.5] {
+            let theme = SpaceChromeTheme(primary: .hsl(h: 0.35, s: 0.6, l: lightness))
+            for fill in [theme.bubble, theme.barFill] {
+                let color = try XCTUnwrap(NSColor(fill).usingColorSpace(.sRGB))
+                let peak = max(color.redComponent, color.greenComponent, color.blueComponent)
+                if lightness == 0 { XCTAssertEqual(peak, 0, accuracy: 0.0001) }
+                XCTAssertGreaterThan(peak, previous)
+            }
+            let color = try XCTUnwrap(NSColor(theme.bubble).usingColorSpace(.sRGB))
+            previous = max(color.redComponent, color.greenComponent, color.blueComponent)
+        }
+    }
+
     func testPrimaryDotOwnsInteractionColourAndProfileIsFallback() {
         var space = Space(name: "Theme", profileID: UUID())
         let primary = ThemeColor(red: 0.2, green: 0.7, blue: 0.3)
