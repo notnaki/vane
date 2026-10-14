@@ -3518,7 +3518,10 @@ struct Stash {
         get { spaceGesture.swiping }
         set {
             guard newValue != spaceGesture.swiping else { return }
-            if newValue { spaceGesture.strip = strip }
+            if newValue {
+                spaceGesture.strip = strip
+                if let origin = swipeSpace { spaceGesture.outgoing = swipePreview(in: origin) }
+            }
             spaceGesture.swiping = newValue
             if !newValue {
                 spaceGesture.strip = nil

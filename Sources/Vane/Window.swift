@@ -836,6 +836,22 @@ extension VaneWindow {
     private var hosts: [ObjectIdentifier: NSView] = [:]
     private var current: ObjectIdentifier?
     private var subscription: AnyCancellable?
+    private(set) var spaceSlide: ProfileSpaceSlide?
+
+    func beginSpaceSlide(_ slide: ProfileSpaceSlide) {
+        cancelSpaceSlide()
+        spaceSlide = slide
+        addSubview(slide)
+    }
+
+    func didFinishSpaceSlide(_ slide: ProfileSpaceSlide) {
+        if spaceSlide === slide { spaceSlide = nil }
+    }
+
+    func cancelSpaceSlide() {
+        spaceSlide?.cancel()
+        spaceSlide = nil
+    }
 
     init(shown: ShownStore) {
         super.init(frame: .zero)
@@ -861,21 +877,117 @@ extension VaneWindow {
                 .font(Look.text))
             hosts[id] = host
         }
-        // A profile Space activates immediately. Animate the native host replacement
-        // independently so the page never waits for the outgoing sidebar to finish.
-        if current != nil, !Motion.spaceReduced {
-            wantsLayer = true
-            let transition = CATransition()
-            transition.type = .fade
-            transition.duration = 0.16
-            transition.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            layer?.add(transition, forKey: "profile-space")
-        }
         if let current { hosts[current]?.removeFromSuperview() }
         host.frame = bounds
         host.autoresizingMask = [.width, .height]
-        addSubview(host)
+        addSubview(host, positioned: .below, relativeTo: spaceSlide)
         current = id
+    }
+}
+
+/// A profile boundary replaces the page host at the quarter point. Keep the same two
+/// sidebar surfaces on their horizontal track above that replacement until travel ends.
+@MainActor final class ProfileSpaceSlide: NSView {
+    let outgoing: NSView
+    private let incoming: NSView
+    private let direction: Int
+    private weak var source: TabStore?
+    private weak var destination: TabStore?
+    private var finished = false
+    private let includesFavorites: Bool
+    private let travelWidth: CGFloat
+    private let contentInset: CGFloat
+    private var completion: (() -> Void)?
+    var offset: CGFloat { (outgoing.layer?.presentation()?.frame.minX ?? outgoing.frame.minX) - contentInset }
+    private var motionObserver: NSObjectProtocol?
+
+    init(frame: NSRect, outgoing: SpacePreviewList, incoming: SpacePreviewList,
+         drag: CGFloat, direction: Int, source: TabStore, includesFavorites: Bool, travelWidth: CGFloat) {
+        let outgoingTheme = SpaceChromeTheme(space: outgoing.space, fallback: source.profile.colorHex)
+        let incomingFallback = ProfileManager.shared.profiles.first { $0.id == incoming.space.profileID }?.colorHex
+            ?? source.profile.colorHex
+        let incomingTheme = SpaceChromeTheme(space: incoming.space, fallback: incomingFallback)
+        self.outgoing = NSHostingView(rootView: outgoing
+            .environment(\.spaceChromeTheme, outgoingTheme)
+            .environment(\.colorScheme, outgoing.colorScheme)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+        self.incoming = NSHostingView(rootView: incoming
+            .environment(\.spaceChromeTheme, incomingTheme)
+            .environment(\.colorScheme, incoming.colorScheme)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+        self.direction = direction
+        self.includesFavorites = includesFavorites
+        self.travelWidth = travelWidth
+        contentInset = max(0, (travelWidth - frame.width) / 2)
+        self.source = source
+        super.init(frame: frame.insetBy(dx: -contentInset, dy: 0))
+        wantsLayer = true
+        layer?.masksToBounds = true
+        self.outgoing.wantsLayer = true
+        self.incoming.wantsLayer = true
+        self.outgoing.frame = NSRect(origin: NSPoint(x: drag + contentInset, y: 0), size: frame.size)
+        self.incoming.frame = NSRect(origin: NSPoint(x: drag + CGFloat(direction) * travelWidth + contentInset, y: 0), size: frame.size)
+        addSubview(self.outgoing)
+        addSubview(self.incoming)
+        motionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    if Motion.spaceReduced { self?.finish() }
+                }
+            }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func isDestination(_ store: TabStore) -> Bool { destination === store }
+    func isSource(_ store: TabStore) -> Bool { source === store }
+
+    func attach(_ store: TabStore) {
+        guard !finished else { return }
+        destination = store
+        store.spaceGesture.profileSlidesFavorites = includesFavorites
+        store.spaceGesture.profileSliding = true
+    }
+
+    func start(duration: TimeInterval, completion: @escaping () -> Void) {
+        self.completion = completion
+        source?.spaceGesture.profileSlidesFavorites = includesFavorites
+        source?.spaceGesture.profileSliding = true
+        outgoing.layoutSubtreeIfNeeded()
+        incoming.layoutSubtreeIfNeeded()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.allowsImplicitAnimation = true
+            outgoing.animator().setFrameOrigin(NSPoint(x: -CGFloat(direction) * travelWidth + contentInset, y: 0))
+            incoming.animator().setFrameOrigin(NSPoint(x: contentInset, y: 0))
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated { self?.finish() }
+        }
+    }
+
+    func cancel() {
+        completion = nil
+        finish()
+    }
+
+    func finish() {
+        guard !finished else { return }
+        finished = true
+        if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
+        motionObserver = nil
+        let complete = completion
+        completion = nil
+        complete?()
+        Motion.instant {
+            source?.spaceGesture.profileSliding = false
+            destination?.spaceGesture.profileSliding = false
+        }
+        let host = superview as? BrowserWindowHost
+        removeFromSuperview()
+        host?.didFinishSpaceSlide(self)
     }
 }
 

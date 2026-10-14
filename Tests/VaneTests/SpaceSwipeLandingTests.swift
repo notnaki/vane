@@ -96,6 +96,8 @@ import XCTest
         let start = ProcessInfo.processInfo.systemUptime
         if clicking { monitor.select(second, in: store) }
         else { monitor.land(1, to: second, width: 250, store: store) }
+        XCTAssertEqual(store.currentSpaceID, first.id, "The page must stay until the quarter point")
+        try await Task.sleep(for: .milliseconds(clicking ? 110 : 65))
         let elapsed = ProcessInfo.processInfo.systemUptime - start
         print("COMMITTED_SPACE_FOCUS_SECONDS: \(elapsed)")
         XCTAssertEqual(store.currentSpaceID, second.id)
@@ -104,8 +106,9 @@ import XCTest
         if !empty { XCTAssertEqual(store.active?.currentURL, URL(string: "https://remembered.example/")) }
         XCTAssertTrue(store.spaceSwiping, "The page activates while the sidebar is still moving")
         print("NATIVE_HANDOFF_PRESENTATION_OFFSET: \(nativeHandoffOffset ?? 0)")
-        XCTAssertEqual(try XCTUnwrap(nativeHandoffOffset), clicking ? 0 : -90, accuracy: 0.125,
-                       "Page activation must happen at the start of the sidebar's travel")
+        let offset = try XCTUnwrap(nativeHandoffOffset)
+        XCTAssertLessThan(offset, clicking ? 0 : -90, "The sidebar must already be moving when the page changes")
+        XCTAssertGreaterThan(offset, -250, "The page must change before the sidebar reaches its endpoint")
         try await Task.sleep(for: .milliseconds(450))
         XCTAssertEqual(store.spaceDrag, 0)
         XCTAssertFalse(store.spaceSwiping)

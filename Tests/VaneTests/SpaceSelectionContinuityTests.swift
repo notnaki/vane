@@ -15,7 +15,8 @@ import XCTest
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         store.window = window
-        window.contentView = NSHostingView(rootView: ContinuityStrip(store: store).vaneMotionPolicy())
+        window.contentView = BrowserWindowHost(shown: ShownStore(store))
+        window.contentView?.layoutSubtreeIfNeeded()
         window.orderFront(nil)
         let monitor = store.spaceGesture.monitor
         monitor.install(store)
@@ -35,22 +36,51 @@ import XCTest
         return (store, spaces, window, monitor)
     }
 
-    func testClickActivatesContentBeforeTheSidebarFinishes() throws {
+    func testSwipeKeepsTheVisibleSidebarSlidingWhenContentActivates() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.spaceSwiping = true
+        store.spaceDrag = -70
+        try await Task.sleep(for: .milliseconds(60))
+        let moving = try XCTUnwrap(store.spaceGesture.outgoingView,
+                                  "The moving sidebar must be mounted before committing the page")
+        func x() throws -> CGFloat {
+            let surface = (window.contentView as? BrowserWindowHost)?.spaceSlide?.outgoing ?? moving
+            return try XCTUnwrap(surface.layer?.presentation()).convert(.zero,
+                to: window.contentView?.layer?.presentation()).x
+        }
+        let before = try x()
+        monitor.land(1, to: spaces[1], width: 250, store: store,
+                     animation: .linear(duration: 0.4), activationDelay: 0.1)
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id, "Keep the page before the quarter point")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id, "Switch at the quarter point, while the sidebar is moving")
+        let during = try x()
+        XCTAssertLessThan(during, before - 10, "The sidebar must keep sliding after content activates")
+        XCTAssertGreaterThan(during, before - 170, "Content activation must not snap it to the endpoint")
+        XCTAssertEqual(try XCTUnwrap(moving.layer?.presentation()).opacity, 1,
+                       "The swipe must stay opaque")
+        try await Task.sleep(for: .milliseconds(400))
+    }
+
+    func testClickActivatesContentAtTheQuarterPoint() async throws {
         let (store, spaces, _, monitor) = try fixture()
         let outgoing = store.newBlankTab(focus: true)
         store.switchTo(space: spaces[1])
         let incoming = store.newBlankTab(focus: true)
         store.switchTo(space: spaces[0])
         XCTAssertEqual(store.current, outgoing.id)
-
+        try await Task.sleep(for: .milliseconds(60))
         monitor.select(spaces[1], in: store)
-
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        try await Task.sleep(for: .milliseconds(110))
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
         XCTAssertEqual(store.current, incoming.id, "The page must change on selection, before animation completion")
         XCTAssertTrue(store.spaceSwiping, "The sidebar still has its travel to finish")
     }
 
-    func testCommittedSwipeActivatesContentBeforeLandingFinishes() throws {
+    func testCommittedSwipeActivatesContentAtTheQuarterPoint() async throws {
         let (store, spaces, _, monitor) = try fixture()
         store.switchTo(space: spaces[1])
         let incoming = store.newBlankTab(focus: true)
@@ -58,14 +88,16 @@ import XCTest
         store.spaceSwiping = true
         store.spaceDrag = -80
 
-        monitor.land(1, to: spaces[1], width: 250, store: store)
-
+        monitor.land(1, to: spaces[1], width: 250, store: store,
+                     animation: .linear(duration: 0.4), activationDelay: 0.1)
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        try await Task.sleep(for: .milliseconds(160))
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
         XCTAssertEqual(store.current, incoming.id)
         XCTAssertTrue(store.spaceSwiping)
     }
 
-    func testProfileClickActivatesTheDestinationHostImmediately() throws {
+    func testProfileClickSwitchesDuringTheSameOpaqueSidebarSlide() async throws {
         TestEnvironment.prepare()
         let manager = ProfileManager.shared
         let previous = manager.active
@@ -81,14 +113,56 @@ import XCTest
             _ = manager.delete(secondProfile.id)
             manager.active = previous
         }
+        try await Task.sleep(for: .milliseconds(80))
         source.spaceGesture.monitor.select(second, in: source)
+        XCTAssertTrue(source.window === window)
+        try await Task.sleep(for: .milliseconds(110))
         let destination = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(destination.profileID, secondProfile.id)
         XCTAssertEqual(destination.currentSpaceID, second.id)
         XCTAssertFalse(source.spaceSwiping)
+        XCTAssertNil(window.contentView?.layer?.animation(forKey: "profile-space"), "No full-window fade")
+        XCTAssertNotNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
+                        "The same sidebar track must survive the page host switch")
+        try await Task.sleep(for: .milliseconds(200))
         destination.spaceGesture.monitor.select(first, in: destination)
-        XCTAssertTrue(source.window === window, "A cached profile must also activate immediately")
+        try await Task.sleep(for: .milliseconds(110))
+        XCTAssertTrue(source.window === window, "A cached profile must also switch during its slide")
         XCTAssertEqual(source.currentSpaceID, first.id)
+    }
+
+    func testReturningToSameProfileBeforeQuarterCancelsTheNativeOverlay() async throws {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let firstProfile = manager.create(name: "Interrupted origin")
+        let secondProfile = manager.create(name: "Interrupted destination")
+        let first = manager.createSpace(name: "First", in: firstProfile.id)
+        let local = manager.createSpace(name: "Local", in: firstProfile.id)
+        let remote = manager.createSpace(name: "Remote", in: secondProfile.id)
+        let source = Windows.open(profile: firstProfile, space: first, focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            _ = manager.delete(firstProfile.id)
+            _ = manager.delete(secondProfile.id)
+            manager.active = previous
+        }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(70))
+        XCTAssertNotNil(source.beginSpaceSelection(remote))
+        try await Task.sleep(for: .milliseconds(30))
+        source.spaceGesture.monitor.land(1, to: remote, width: SidebarWidth.shared.width,
+            store: source, animation: .linear(duration: 0.4), activationDelay: 0.1)
+        try await Task.sleep(for: .milliseconds(40))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        XCTAssertNotNil(host.spaceSlide)
+        source.spaceGesture.monitor.select(local, in: source)
+        XCTAssertNil(host.spaceSlide, "The previous native track must not cover the replacement swipe")
+        XCTAssertFalse(source.spaceGesture.profileSliding)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(source.window === window)
+        XCTAssertEqual(source.currentSpaceID, local.id, "The superseded profile activation must not fire")
     }
 
     func testLatestClickReplacesAMountingSelection() async throws {
@@ -115,11 +189,12 @@ import XCTest
     func testLatestClickReplacesAnInFlightLanding() async throws {
         let (store, spaces, _, monitor) = try fixture()
         monitor.select(spaces[1], in: store)
-        try await Task.sleep(for: .milliseconds(60))
+        try await Task.sleep(for: .milliseconds(110))
+        let beforeRetarget = store.currentSpaceID
         monitor.select(spaces[2], in: store)
         try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(store.currentSpaceID, spaces[2].id,
-                       "Retargeting activates the latest page while the sidebar keeps moving")
+        XCTAssertEqual(store.currentSpaceID, beforeRetarget,
+                       "Retargeting keeps the old page until the new quarter-point activation")
         try await Task.sleep(for: .milliseconds(450))
         XCTAssertEqual(store.currentSpaceID, spaces[2].id)
         XCTAssertFalse(store.spaceSwiping)
@@ -134,7 +209,7 @@ import XCTest
         monitor.select(spaces[1], in: store)
         BatterySaver.shared.setMode(.alwaysOn)
         monitor.select(spaces[2], in: store)
-        XCTAssertEqual(store.currentSpaceID, spaces[2].id)
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
         XCTAssertTrue(store.spaceSwiping)
         try await Task.sleep(for: .milliseconds(450))
         XCTAssertEqual(store.currentSpaceID, spaces[2].id)
@@ -148,7 +223,7 @@ import XCTest
         defer { BatterySaver.shared.setMode(previous) }
         let (store, spaces, _, monitor) = try fixture()
         monitor.select(spaces[1], in: store)
-        try await Task.sleep(for: .milliseconds(60))
+        try await Task.sleep(for: .milliseconds(100))
         BatterySaver.shared.setMode(.alwaysOn)
         try await Task.sleep(for: .milliseconds(20))
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
@@ -225,13 +300,4 @@ import XCTest
         XCTAssertEqual(store.currentSpaceID, spaces[0].id)
     }
 
-}
-
-private struct ContinuityStrip: View {
-    @ObservedObject var store: TabStore
-    var body: some View {
-        SpaceSidebarStrip(store: store, favorites: EmptyView(), sections: Text(store.currentSpaceID?.uuidString ?? "Empty"))
-            .frame(width: 250, height: 300)
-            .spaceSwipe(store)
-    }
 }

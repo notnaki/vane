@@ -36,8 +36,8 @@ import XCTest
             saver.setMode(previousMode)
         }
         store.spaceGesture.monitor.select(spaces[1], in: store)
-        XCTAssertEqual(store.currentSpaceID, spaces[1].id,
-                       "Battery Saver must not delay page activation behind sidebar travel")
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id,
+                       "The page waits for the quarter point, including in Battery Saver")
         XCTAssertTrue(store.spaceSwiping)
         XCTAssertEqual(store.spaceGesture.neighbour?.id, spaces[1].id)
     }
