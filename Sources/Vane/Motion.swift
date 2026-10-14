@@ -47,8 +47,8 @@ import SwiftUI
         static let defaultValue = false
     }
 
-    /// The native sidebar has already completed its travel. Descendant Space transitions
-    /// must keep this content replacement immediate, including in Battery Saver.
+    /// The native sidebar owns visible travel. Descendant Space transitions must keep
+    /// the covered live content replacement immediate, including in Battery Saver.
     static func spaceHandoff<T>(_ body: () throws -> T) rethrows -> T {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true

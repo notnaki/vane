@@ -886,7 +886,7 @@ extension VaneWindow {
 }
 
 /// Keep the same two sidebar surfaces on a native track from finger movement through
-/// landing, including when the page or profile host changes at the quarter point.
+/// landing, including page selection underneath it and a profile host handoff.
 @MainActor final class ProfileSpaceSlide: NSView {
     let outgoing: NSView
     private let incoming: NSView
@@ -904,6 +904,11 @@ extension VaneWindow {
     private var completion: (() -> Void)?
     private var lastTracking: (offset: CGFloat, time: TimeInterval)?
     private var trackingVelocity: CGFloat = 0
+    private var progressLink: CADisplayLink?
+    private weak var retirementStore: TabStore?
+    private var retirementSpaceID: UUID?
+    private var retirementScheduled = false
+    private var retirementTimeout: DispatchWorkItem?
     var offset: CGFloat { (outgoing.layer?.presentation()?.frame.minX ?? outgoing.frame.minX) - contentInset }
     private var motionObserver: NSObjectProtocol?
 
@@ -997,6 +1002,7 @@ extension VaneWindow {
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         self.completion = completion
+        publishProgress(offset)
         source?.spaceGesture.profileSlidesFavorites = includesFavorites
         source?.spaceGesture.profileSliding = true
         prepare()
@@ -1035,7 +1041,16 @@ extension VaneWindow {
             } else {
                 animation = CABasicAnimation(keyPath: "position")
                 animation.duration = duration
-                animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                let distance = layer.position.x - from.x
+                let fresh = lastTracking.map { ProcessInfo.processInfo.systemUptime - $0.time < 0.1 } ?? false
+                if fresh, distance != 0 {
+                    // Cubic Hermite travel: leave with the finger's velocity and arrive
+                    // with zero velocity. Bounded controls keep even a flick monotonic.
+                    let slope = max(0, min(3, trackingVelocity * duration / distance))
+                    animation.timingFunction = CAMediaTimingFunction(controlPoints: 1 / 3, Float(slope / 3), 2 / 3, 1)
+                } else {
+                    animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                }
             }
             animation.fromValue = NSValue(point: from)
             animation.toValue = NSValue(point: layer.position)
@@ -1043,6 +1058,25 @@ extension VaneWindow {
             layer.add(animation, forKey: "space-position")
         }
         CATransaction.commit()
+        if let screen = window?.screen ?? NSScreen.main {
+            progressLink?.invalidate()
+            let link = screen.displayLink(target: self, selector: #selector(advanceProgress(_:)))
+            let rate = Float(screen.maximumFramesPerSecond)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+            progressLink = link
+            link.add(to: .main, forMode: .common)
+        }
+    }
+
+    @objc private func advanceProgress(_ link: CADisplayLink) {
+        guard !finished, let presentation = outgoing.layer?.presentation() else { return }
+        publishProgress(presentation.frame.minX - contentInset)
+    }
+
+    private func publishProgress(_ drag: CGFloat) {
+        guard let gesture = source?.spaceGesture else { return }
+        Motion.instant { gesture.nativeDrag = drag }
+        gesture.trackGround?(Double(min(1, abs(drag / travelWidth))))
     }
 
     func cancel() {
@@ -1054,6 +1088,8 @@ extension VaneWindow {
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
         finished = true
+        progressLink?.invalidate()
+        progressLink = nil
         if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
         motionObserver = nil
         removeFromSuperview()
@@ -1062,6 +1098,8 @@ extension VaneWindow {
     func finish() {
         guard !finished else { return }
         finished = true
+        progressLink?.invalidate()
+        progressLink = nil
         if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
         motionObserver = nil
         let complete = completion
@@ -1075,14 +1113,46 @@ extension VaneWindow {
         // destination surface covering it until SwiftUI has laid out and presented the
         // replacement; removing it in this callback can flash the previous Space.
         if complete != nil, !Motion.spaceReduced, let window {
-            superview?.layoutSubtreeIfNeeded()
-            DispatchQueue.main.async { [self] in
-                _ = SpaceLandingFrame(window: window) { [self] in retire() }
+            let arriving = destination ?? source
+            if arriving?.currentSpaceID != preparedOrigin.id {
+                retirementStore = arriving
+                retirementSpaceID = arriving?.currentSpaceID
+                // A disconnected/closed window or removed sidebar may never update its
+                // anchor. Bound that exceptional wait; normal retirement is acknowledged.
+                let timeout = DispatchWorkItem { [weak self] in self?.retire() }
+                retirementTimeout = timeout
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: timeout)
+            } else {
+                scheduleRetirement(in: window)
             }
         } else { retire() }
     }
 
+    /// Called by the live sections' representable after SwiftUI updates their identity
+    /// and removes the gesture offset. A display tick alone cannot establish that.
+    func sidebarDidUpdate(_ store: TabStore, renderedSpaceID: UUID?, atRest: Bool) {
+        guard finished, retirementStore === store, atRest,
+              renderedSpaceID == retirementSpaceID, store.currentSpaceID == retirementSpaceID,
+              !store.spaceSwiping, !store.spaceGesture.profileSliding,
+              let window else { return }
+        scheduleRetirement(in: window)
+    }
+
+    private func scheduleRetirement(in window: NSWindow) {
+        guard !retirementScheduled else { return }
+        retirementScheduled = true
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self else { return }
+            guard let window, self.window === window else { self.retire(); return }
+            self.superview?.layoutSubtreeIfNeeded()
+            _ = SpaceLandingFrame(window: window) { [weak self] in self?.retire() }
+        }
+    }
+
     private func retire() {
+        retirementTimeout?.cancel()
+        retirementTimeout = nil
+        retirementStore = nil
         let host = superview as? BrowserWindowHost
         removeFromSuperview()
         host?.didFinishSpaceSlide(self)

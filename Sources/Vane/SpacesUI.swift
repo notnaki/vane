@@ -53,7 +53,7 @@ import UniformTypeIdentifiers
 /// The tokens are `Look`'s, extended rather than edited.
 
 extension Look {
-    /// Original Space timing; the page changes only once the sidebar reaches rest.
+    /// Click travel shares the established Space timing.
     static let spaceSlideDuration: TimeInterval = 0.24
     static let spaceSlide = Animation.easeInOut(duration: spaceSlideDuration)
     /// The strip finishing a swipe: the rest of the travel after the fingers leave, and the
@@ -61,9 +61,8 @@ extension Look {
     /// gesture handed it a velocity and an ease throws that away — the strip has to leave the
     /// fingers at the speed they left it at.
     static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
-    /// A committed swipe reaches rest before handing the preview to the live sidebar.
-    /// A finite ease keeps focus prompt without cutting off a spring's visible tail.
-    static let spaceLandingDuration: TimeInterval = 0.10
+    /// A committed swipe finishes continuously while its captured sidebar covers page selection.
+    static let spaceLandingDuration: TimeInterval = 0.18
     static let spaceLanding = Animation.easeInOut(duration: spaceLandingDuration)
     /// Returning from a canceled drag keeps its gentler timing.
     static let spaceReturn = Animation.spring(response: 0.16, dampingFraction: 0.9)
@@ -332,7 +331,9 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
                         .accessibilityHidden(true)
                 }
             }
-            .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false, sectionsOnly: true))
+            .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false, sectionsOnly: true,
+                                         renderedSpaceID: store.currentSpaceID,
+                                         renderedAtRest: !gesture.swiping && !gesture.profileSliding && gesture.drag == 0))
             .opacity(gesture.profileSliding ? 0 : 1)
         }
         .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false))
@@ -380,6 +381,8 @@ private struct SpaceStripAnchor: NSViewRepresentable {
     let gesture: SpaceGesture
     let moving: Bool
     var sectionsOnly = false
+    var renderedSpaceID: UUID?
+    var renderedAtRest = false
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         view.wantsLayer = true
@@ -389,7 +392,11 @@ private struct SpaceStripAnchor: NSViewRepresentable {
         return view
     }
     func updateNSView(_ view: NSView, context: Context) {
-        if sectionsOnly { gesture.monitor.schedulePreparation(in: store) }
+        if sectionsOnly {
+            gesture.monitor.schedulePreparation(in: store)
+            (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidUpdate(
+                store, renderedSpaceID: renderedSpaceID, atRest: renderedAtRest)
+        }
     }
 }
 
@@ -1140,8 +1147,8 @@ private struct SpaceSwipe: ViewModifier {
         if store.spaceGesture.outgoing == nil, let origin = store.swipeSpace {
             store.spaceGesture.outgoing = store.swipePreview(in: origin)
         }
-        // Sidebar travel is complete. Swap the live content without starting another
-        // layout or palette animation underneath the destination surface.
+        // The native surface covers selection while it travels. Keep the live content
+        // replacement immediate rather than starting another animation underneath it.
         Motion.spaceHandoff { store.switchTo(space: target) }
         guard store.currentSpaceID == target.id else {
             transition = UUID()
@@ -1345,7 +1352,7 @@ private struct SpaceSwipe: ViewModifier {
         store.spaceGesture.nativeDrag = offset
     }
 
-    /// Finish sidebar travel before selecting the page, preserving the original handoff.
+    /// Continue the captured sidebar to rest while selecting the committed page underneath.
     func land(_ direction: Int, to target: Space, width: CGFloat, store: TabStore,
               animation: Animation = Look.spaceLanding, duration: TimeInterval = Look.spaceLandingDuration) {
         let token = UUID()
@@ -1366,7 +1373,6 @@ private struct SpaceSwipe: ViewModifier {
         landingFrom = store.currentSpaceID
         let destination = store.spaceGesture.neighbour ?? target
         store.spaceGesture.colourDuration = duration
-        store.spaceGesture.nativeDrag = nil
         let includesFavorites = destination.profileID != store.profileID
         let finish: () -> Void = { [weak self, weak store] in
             guard let self, self.transition == token, let store else { return }
@@ -1401,8 +1407,20 @@ private struct SpaceSwipe: ViewModifier {
                     travelWidth: width)
                 host.beginSpaceSlide(slide)
             }
-            Motion.space(animation) { store.spaceGesture.drag = -CGFloat(direction) * width }
+            // Keep native presentation as the footer/tint source across release. Updating
+            // the hidden SwiftUI endpoint must not reset it to the first finger sample.
+            Motion.spaceHandoff { store.spaceGesture.drag = -CGFloat(direction) * width }
             slide.start(duration: duration, completion: finish)
+            // Submit compositor travel first, then restore the page under its covering
+            // sidebar. Selection must not wait for the animation's endpoint.
+            if !includesFavorites {
+                DispatchQueue.main.async { [weak self, weak store] in
+                    guard let self, self.transition == token, let store,
+                          store.currentSpaceID == self.landingFrom,
+                          store.spaceGesture.neighbour?.id == destination.id else { return }
+                    _ = self.activate(destination, in: store)
+                }
+            }
         } else {
             if let host = store.window?.contentView as? BrowserWindowHost,
                let slide = host.spaceSlide, slide.isSource(store) {
@@ -1444,10 +1462,9 @@ private struct SpaceSwipe: ViewModifier {
         }
         returning = true
         store.spaceGesture.colourDuration = 0.16
-        store.spaceGesture.nativeDrag = nil
         if let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.isSource(store) {
-            Motion.space(Look.spaceReturn) { store.spaceGesture.drag = 0 }
+            Motion.spaceHandoff { store.spaceGesture.drag = 0 }
             slide.start(duration: 0.16, returning: true) { [weak self, weak store] in
                 guard let self, self.transition == token else { return }
                 self.returning = false
@@ -1455,6 +1472,7 @@ private struct SpaceSwipe: ViewModifier {
             }
             return
         }
+        store.spaceGesture.nativeDrag = nil
         Motion.space(Look.spaceReturn) { store.spaceGesture.drag = 0 } completion: { [weak store] in
             guard self.transition == token else { return }
             self.returning = false
@@ -1532,6 +1550,7 @@ private struct SpaceSwipe: ViewModifier {
     private var link: CADisplayLink?
     private var completion: (() -> Void)?
     private var timeout: DispatchWorkItem?
+    private var frames = 0
 
     init(window: NSWindow, completion: @escaping () -> Void) {
         self.completion = completion
@@ -1550,7 +1569,12 @@ private struct SpaceSwipe: ViewModifier {
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100), execute: timeout)
     }
 
-    @objc private func frame(_ link: CADisplayLink) { finish() }
+    @objc private func frame(_ link: CADisplayLink) {
+        // A callback runs before presentation. Cross one complete display interval so
+        // neither a final sidebar offset nor its replacement can still be one frame old.
+        frames += 1
+        if frames >= 2 { finish() }
+    }
 
     private func finish() {
         link?.invalidate()

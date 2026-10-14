@@ -593,7 +593,7 @@ struct SpaceGround: View {
         }
         // Gesture transactions already own the travel and cancellation timing. Only a
         // direct Space change or a theme edit needs a local animation.
-        .animation(reduceMotion ? nil : Look.spaceSlide, value: store.currentSpaceID)
+        .animation(reduceMotion || gesture.swiping ? nil : Look.spaceSlide, value: store.currentSpaceID)
         .animation(reduceMotion ? nil : Look.appear, value: store.spaceRevision)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -2879,7 +2879,7 @@ private struct SpaceDots: View {
                 .opacity(lit)
                 .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * lit)
         }
-        .animation(animation, value: here)
+        .animation(gesture.swiping ? nil : animation, value: here)
         .frame(width: layout.itemWidth, height: Look.spaceDotHit)
         .background(!layout.showsButtonBackground ? .clear : dropTarget == space.id ? chromeTheme.selected : hovered == space.id ? chromeTheme.hovered : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
@@ -2925,7 +2925,8 @@ private struct SpaceDots: View {
     /// heading for, in step with them, so the footer says where the gesture will land before
     /// it lands. At the ends nothing is handed over — the strip is only rubber-banding.
     private func weights(_ list: [Space]) -> [UUID: Double] {
-        guard let current = store.currentSpaceID, list.contains(where: { $0.id == current }) else { return [:] }
+        guard let current = gesture.outgoing?.space.id ?? store.currentSpaceID,
+              list.contains(where: { $0.id == current }) else { return [:] }
         let width = SidebarWidth.shared.width
         let drag = footer.drag ?? gesture.drag
         guard drag != 0, width > 0, let target = gesture.neighbour else { return [current: 1] }

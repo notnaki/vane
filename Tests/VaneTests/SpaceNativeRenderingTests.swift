@@ -74,6 +74,7 @@ import XCTest
         var coveredUpdate = false
         slide.start(duration: 0.02) {
             store.switchTo(space: spaces[1])
+            store.spaceDrag = 0
             store.spaceSwiping = false
             DispatchQueue.main.async {
                 coveredUpdate = slide.superview === host
@@ -163,6 +164,85 @@ import XCTest
         XCTAssertNil(host.spaceSlide)
     }
 
+    func testLandingKeepsOneContinuousNativeProgressSource() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        monitor.track(-20, width: 250, in: store)
+        monitor.track(-80, width: 250, in: store)
+        let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        var samples: [CGFloat] = []
+        let observation = store.spaceGesture.footer.$drag.sink { value in
+            guard let value else { return }
+            samples.append(value)
+            XCTAssertEqual(value, slide.offset, accuracy: 1,
+                           "Each footer publication must come from the same native presentation")
+        }
+        defer { observation.cancel() }
+        monitor.land(1, to: spaces[1], width: 250, store: store, duration: 0.4)
+        XCTAssertEqual(store.spaceGesture.footer.drag, -80,
+                       "Release must not fall back to the first drag sample")
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id,
+                       "The page should change under the covering native sidebar, not wait for its endpoint")
+        XCTAssertEqual(store.spaceGesture.outgoing?.space.id, spaces[0].id,
+                       "Footer and tint must keep their captured origin after page selection")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertGreaterThan(samples.count, 2, "Landing must publish intermediate presentation progress")
+        for (previous, next) in zip(samples, samples.dropFirst()) {
+            XCTAssertLessThanOrEqual(next, previous + 0.5, "A committed footer must never reverse")
+        }
+        XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        XCTAssertNil(store.spaceGesture.footer.drag)
+    }
+
+    func testNativeCoverWaitsForTheLiveSidebarAcknowledgement() async throws {
+        let (store, spaces, window, _) = try fixture()
+        // A host that has not rendered its new live sidebar cannot acknowledge handoff.
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        window.contentView = container
+        let slide = ProfileSpaceSlide(frame: container.bounds,
+            outgoing: store.swipePreview(in: spaces[0]), incoming: store.swipePreview(in: spaces[1]),
+            drag: -80, direction: 1, source: store, includesFavorites: false, travelWidth: 250)
+        container.addSubview(slide)
+        defer { slide.cancel() }
+        slide.start(duration: 0.02) { store.switchTo(space: spaces[1]) }
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertTrue(slide.superview === container,
+                      "One display tick alone does not prove the destination live sidebar exists")
+        slide.sidebarDidUpdate(store, renderedSpaceID: spaces[0].id, atRest: true)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(slide.superview === container, "A stale identity must not uncover the old sidebar")
+        slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: false)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(slide.superview === container, "The hidden tree still offset by the drag is not ready")
+        slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: true)
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertNil(slide.superview, "An acknowledged destination retires without waiting for the safeguard")
+    }
+
+    func testRenderedSpaceLandingAcknowledgesItsLiveSidebarPromptly() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        monitor.track(-80, width: SidebarWidth.shared.width, in: store)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.12)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        XCTAssertNil(host.spaceSlide, "The rendered identity must retire the cover before the one-second safeguard")
+    }
+
+    func testCommittedNativeLandingRetainsFingerVelocity() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        monitor.track(-20, width: 250, in: store)
+        try await Task.sleep(for: .milliseconds(20))
+        monitor.track(-60, width: 250, in: store)
+        monitor.land(1, to: spaces[1], width: 250, store: store)
+        let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        let timing = try XCTUnwrap(slide.outgoing.layer?.animation(forKey: "space-position")?.timingFunction)
+        var control: [Float] = [0, 0]
+        timing.getControlPoint(at: 1, values: &control)
+        XCTAssertGreaterThan(control[1], 0, "Release must not stop moving before easing to its endpoint")
+        try await Task.sleep(for: .milliseconds(400))
+    }
+
     func testCanceledNativeDragUsesTheReturnSpring() async throws {
         let (store, _, window, monitor) = try fixture()
         monitor.track(-60, width: 250, in: store)
@@ -239,11 +319,7 @@ import XCTest
             XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
                          "Reduce Motion switches the page and sidebar immediately")
         } else {
-            if let slide = (window.contentView as? BrowserWindowHost)?.spaceSlide {
-                XCTAssertEqual(slide.offset, -SidebarWidth.shared.width, accuracy: 0.5,
-                               "The page host changes only after the native sidebar reaches rest")
-            }
-            try await Task.sleep(for: .milliseconds(200))
+            try await Task.sleep(for: .milliseconds(100))
             XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
                          "Retire the overlay once the arriving profile has drawn")
         }

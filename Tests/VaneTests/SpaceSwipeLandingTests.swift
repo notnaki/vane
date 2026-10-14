@@ -104,9 +104,10 @@ import XCTest
         print("COMMITTED_SPACE_FOCUS_SECONDS: \(elapsed)")
         XCTAssertEqual(store.currentSpaceID, second.id)
         XCTAssertEqual(store.current, remembered?.id)
-        // Allow several frames for scheduling and disk work while rejecting the old
-        // 160 ms response, which delayed the page and address by roughly 190 ms.
-        XCTAssertLessThan(elapsed, clicking ? 0.4 : 1.0 / 6, "The page and address must switch promptly after release")
+        // This fixture exercises the SwiftUI fallback, which selects at its endpoint.
+        // The native path separately verifies selection while its captured strip travels.
+        let duration = clicking ? Look.spaceSlideDuration : Look.spaceLandingDuration
+        XCTAssertLessThan(elapsed, duration + 0.1, "Fallback must finish without a second animation tail")
         XCTAssertTrue(store.active === remembered)
         if !empty { XCTAssertEqual(store.active?.currentURL, URL(string: "https://remembered.example/")) }
         XCTAssertEqual(store.spaceDrag, 0)
