@@ -17,9 +17,15 @@ struct Feel03PaletteLayout<Row> {
     }
 
     /// Keep an arrowed destination visible when insertions push it beyond the usual
-    /// cap. A new query resets selection and returns to the normal bounded list.
+    /// cap or late local results replace a selected completion. A new query resets
+    /// selection and returns to the normal bounded list.
     static func visible(_ rows: [Row], limit: Int, retaining selectedID: String?,
-                        id: (Row) -> String) -> [Row] {
+                        fallback: Row? = nil, id: (Row) -> String) -> [Row] {
+        var rows = rows
+        if let selectedID, let fallback, id(fallback) == selectedID,
+           !rows.contains(where: { id($0) == selectedID }) {
+            rows.append(fallback)
+        }
         let selectedEnd = selectedID.flatMap { selected in
             rows.firstIndex { id($0) == selected }.map { $0 + 1 }
         } ?? 0

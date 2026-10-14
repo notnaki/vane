@@ -1129,7 +1129,8 @@ struct CommandField: NSViewRepresentable {
     // MARK: The list
 
     private func refresh(reset: Bool = true, rebuildLocal: Bool = true) {
-        let selectedID = rows.indices.contains(index) ? rows[index].id : nil
+        let selectedRow = rows.indices.contains(index) ? rows[index] : nil
+        let selectedID = selectedRow?.id
         if rebuildLocal {
             var fresh = Feel03PaletteLayout<PaletteRow>()
             func matchingTabs() -> [PaletteRow] {
@@ -1184,7 +1185,11 @@ struct CommandField: NSViewRepresentable {
         // A cap so a bar over a hundred open tabs stays a list and not a scroll marathon —
         // but not while ⇥ is on, where the tail of the catalogue is the whole point.
         let visible = actionsOnly ? out : Feel03PaletteLayout.visible(out, limit: 24,
-            retaining: reset ? nil : selectedID, id: \.id)
+            retaining: reset ? nil : selectedID,
+            // History can cap or deduplicate a completion after it was arrowed onto.
+            // Preserve its action through subsequent refreshes of the same query.
+            fallback: !reset && selectedRow?.kind == "Search suggestion"
+                ? selectedRow : nil, id: \.id)
         rows = visible.map { row in
             var row = row
             if row.id.hasPrefix("archived:") {

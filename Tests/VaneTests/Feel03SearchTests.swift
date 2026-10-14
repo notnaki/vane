@@ -42,6 +42,35 @@ import XCTest
         XCTAssertEqual(Feel03PaletteLayout.visible(updated, limit: 24, retaining: nil, id: { $0 }).count, 24)
     }
 
+    func testSelectedCompletionSurvivesHistoryCappingAndDeduplication() throws {
+        TestEnvironment.prepare()
+        let completion = try XCTUnwrap(SearchSuggestions.merge("swift", local: [],
+            remote: ["swift concurrency"]).first)
+        for count in [1, 8] {
+            let local = (0..<count).map {
+                Suggestion(url: "https://saved.example/\($0)",
+                           title: count == 1 ? "swift concurrency" : "Saved page \($0)", bookmarked: true)
+            }
+            let merged = SearchSuggestions.merge("swift", local: local, remote: ["swift concurrency"])
+            XCTAssertFalse(merged.contains { $0.id == completion.id })
+            let visible = Feel03PaletteLayout.visible(merged, limit: 24,
+                retaining: completion.id, fallback: completion, id: \.id)
+            let index = Palette.selectedIndex(previous: 0, selectedID: completion.id,
+                rowIDs: visible.map(\.id), reset: false)
+            XCTAssertEqual(visible[index].url, completion.url,
+                           "Return must still open the completion selected before history arrived")
+            let refreshed = Feel03PaletteLayout.visible(merged, limit: 24,
+                retaining: visible[index].id, fallback: visible[index], id: \.id)
+            let refreshedIndex = Palette.selectedIndex(previous: index, selectedID: completion.id,
+                rowIDs: refreshed.map(\.id), reset: false)
+            XCTAssertEqual(refreshed[refreshedIndex].url, completion.url,
+                           "Later tab-title or favicon refreshes must preserve the same destination")
+            XCTAssertFalse(Feel03PaletteLayout.visible(merged, limit: 24,
+                retaining: nil, fallback: completion, id: \.id).contains { $0.id == completion.id },
+                "A new query must discard the retained completion")
+        }
+    }
+
     func testSharedTabRowsRetainTheirIntendedWindow() {
         let tab = UUID()
         let firstWindow = NSObject(), secondWindow = NSObject()
