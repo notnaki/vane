@@ -146,7 +146,7 @@ struct NativeThemeWash: NSViewRepresentable {
                 animation.fromValue = from
                 animation.toValue = value
                 animation.duration = duration
-                animation.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
                 layer.add(animation, forKey: key)
             }

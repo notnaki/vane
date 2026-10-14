@@ -30,14 +30,6 @@ final class SpaceSwipeCommitTests: XCTestCase {
                                width: 250, count: 3, index: 1).commit)
     }
 
-    func testHoldingAShortFlickDiscardsItsOldVelocity() {
-        var swipe = Spaces.Swipe()
-        _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 1)
-        _ = swipe.feed(dx: -40, dt: 0.008, phase: .changed, width: 250, count: 3, index: 1)
-        XCTAssertNil(swipe.feed(dx: 0, dt: 1, phase: .ended,
-                               width: 250, count: 3, index: 1).commit)
-    }
-
     func testDragCanReverseBackBelowThresholdBeforeRelease() {
         var swipe = Spaces.Swipe()
         _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 1)

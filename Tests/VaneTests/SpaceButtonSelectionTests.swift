@@ -21,7 +21,7 @@ import XCTest
         return (store, spaces)
     }
 
-    func testBatterySaverKeepsSidebarAnimatedAfterActivatingContent() throws {
+    func testBatterySaverKeepsClickPreviewMountedBeforeSwitching() throws {
         let (store, spaces) = fixture()
         try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
                       "This test exercises an animated click landing")
@@ -37,7 +37,7 @@ import XCTest
         }
         store.spaceGesture.monitor.select(spaces[1], in: store)
         XCTAssertEqual(store.currentSpaceID, spaces[0].id,
-                       "The page waits for the quarter point, including in Battery Saver")
+                       "Battery Saver must let the preview travel before changing Spaces")
         XCTAssertTrue(store.spaceSwiping)
         XCTAssertEqual(store.spaceGesture.neighbour?.id, spaces[1].id)
     }

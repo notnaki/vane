@@ -52,10 +52,10 @@ import XCTest
             dx: dx, dy: dy, phase: phase, momentum: momentum, precise: precise, inverted: inverted, time: time))
     }
 
-    func testShortFastLibraryFlickCommitsWhileSlowDragReturns() {
+    func testOriginalShortLibraryDragsReturnAtAnySpeed() {
         let (store, window, _) = fixture(withSpaces: true)
         for initiallyOpen in [false, true] {
-            for (interval, shouldCommit) in [(0.008, true), (0.2, false)] {
+            for (interval, shouldCommit) in [(0.008, false), (0.2, false)] {
                 store.libraryOpen = initiallyOpen
                 let delta: CGFloat = initiallyOpen ? -20 : 20
                 send(window, phase: .began, time: 1)
@@ -76,12 +76,29 @@ import XCTest
             let before = window.scrolls
             send(window, phase: .began)
             send(window, dx: open ? -0.2 : 0.2, dy: 0.1)
-            XCTAssertNotNil(store.librarySwipeProgress)
+            XCTAssertNil(store.librarySwipeProgress)
             send(window, dy: 12)
             XCTAssertNil(store.librarySwipeProgress)
             XCTAssertEqual(store.libraryOpen, open)
-            XCTAssertEqual(window.scrolls, before + 2)
+            XCTAssertEqual(window.scrolls, before + 3)
             send(window, phase: .ended)
+        }
+    }
+
+    func testOriginalLibraryAxisLockAcceptsHorizontalTravelAfterStartupNoise() {
+        let (store, window, monitor) = fixture(withSpaces: true)
+        for open in [false, true] {
+            for (dx, dy): (CGFloat, CGFloat) in [(0, 0.5), (0.1, 0.2), (-0.2, 0.1)] {
+                monitor.remove()
+                monitor.install(store)
+                store.libraryOpen = open
+                send(window, phase: .began)
+                send(window, dx: dx, dy: dy)
+                XCTAssertNil(store.librarySwipeProgress)
+                send(window, dx: open ? -12 : 12)
+                XCTAssertNotNil(store.librarySwipeProgress,
+                                "Startup noise must not reject a deliberate horizontal drag")
+            }
         }
     }
 
@@ -100,7 +117,7 @@ import XCTest
         let prepared = try XCTUnwrap(monitor.presentationView,
                                     "The panel must be mounted before the first input")
         send(window, phase: .began)
-        for delta: CGFloat in [0.25, 0.25, 0.5, 1, 2] {
+        for delta: CGFloat in [12, 3, 3, 3, 3] {
             let start = ProcessInfo.processInfo.systemUptime
             send(window, dx: delta)
             host.layoutSubtreeIfNeeded()

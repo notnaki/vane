@@ -463,9 +463,7 @@ enum Spaces {
                 travel = 0
                 speed = 0
                 armed = true
-                // AppKit can include movement on fingers-down itself.
-                return feed(dx: dx, dt: dt, phase: .changed, width: width,
-                            count: count, index: index, create: create)
+                return (0, nil, 0)
             case .changed:
                 guard armed else { return (nil, nil, 0) }
                 travel += dx
@@ -479,14 +477,11 @@ enum Spaces {
                     armed = false
                     return (offset, 1, Self.pullFull)
                 }
-                // Keep the strip under the fingers even past the distance threshold.
-                // Selection belongs to release so the user can hold or reverse midway.
                 return (offset, nil, pull)
             case .ended:
                 defer { travel = 0; speed = 0 }
                 guard armed else { return (nil, nil, 0) }
                 armed = false
-                if dt > 0.1 { speed = 0 } // A held strip has no remaining flick velocity.
                 // A filled ring can be released to open the form; continuing the pull
                 // still opens it while the fingers are down at the solid-circle threshold.
                 if Self.pull(travel, width: width, count: count, index: index, create: create) >= 1 {

@@ -71,7 +71,7 @@ import XCTest
         }
         store.switchTo(space: first)
         store.palette = nil
-        let position = LandingPosition()
+        let position = LandingPosition(target: second.id)
         window.contentView = NSHostingView(rootView: LandingStrip(store: store, position: position).vaneMotionPolicy())
         var nativeHandoffOffset: CGFloat?
         var nativeOrigin: CGFloat = 0
@@ -96,30 +96,27 @@ import XCTest
         let start = ProcessInfo.processInfo.systemUptime
         if clicking { monitor.select(second, in: store) }
         else { monitor.land(1, to: second, width: 250, store: store) }
-        XCTAssertEqual(store.currentSpaceID, first.id, "The page must stay until the quarter point")
-        try await Task.sleep(for: .milliseconds(clicking ? 110 : 65))
+        while store.currentSpaceID != second.id,
+              ProcessInfo.processInfo.systemUptime - start < 2 {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         let elapsed = ProcessInfo.processInfo.systemUptime - start
         print("COMMITTED_SPACE_FOCUS_SECONDS: \(elapsed)")
         XCTAssertEqual(store.currentSpaceID, second.id)
         XCTAssertEqual(store.current, remembered?.id)
+        // Allow several frames for scheduling and disk work while rejecting the old
+        // 160 ms response, which delayed the page and address by roughly 190 ms.
+        XCTAssertLessThan(elapsed, clicking ? 0.4 : 1.0 / 6, "The page and address must switch promptly after release")
         XCTAssertTrue(store.active === remembered)
         if !empty { XCTAssertEqual(store.active?.currentURL, URL(string: "https://remembered.example/")) }
-        XCTAssertTrue(store.spaceSwiping, "The page activates while the sidebar is still moving")
-        print("NATIVE_HANDOFF_PRESENTATION_OFFSET: \(nativeHandoffOffset ?? 0)")
-        let offset = try XCTUnwrap(nativeHandoffOffset)
-        XCTAssertLessThan(offset, clicking ? 0 : -90, "The sidebar must already be moving when the page changes")
-        XCTAssertGreaterThan(offset, -250, "The page must change before the sidebar reaches its endpoint")
-        try await Task.sleep(for: .milliseconds(450))
         XCTAssertEqual(store.spaceDrag, 0)
-        XCTAssertFalse(store.spaceSwiping)
-        let finalOffset = try XCTUnwrap(position.marker?.layer?.presentation()).convert(.zero,
-            to: window.contentView?.layer?.presentation()).x - nativeOrigin
-        XCTAssertEqual(finalOffset, 0, accuracy: 0.125,
-                       "The live sidebar must be at rest when the captured presentation is removed")
-        try await Task.sleep(for: .milliseconds(30))
-        let stableOffset = try XCTUnwrap(position.marker?.layer?.presentation()).convert(.zero,
-            to: window.contentView?.layer?.presentation()).x - nativeOrigin
-        XCTAssertEqual(stableOffset, 0, accuracy: 0.125, "No second sidebar slide may start at handoff")
+        print("NATIVE_HANDOFF_PRESENTATION_OFFSET: \(nativeHandoffOffset ?? 0)")
+        XCTAssertEqual(try XCTUnwrap(nativeHandoffOffset), -250, accuracy: 0.125,
+                       "The ghost must reach its endpoint before the live sidebar replaces it")
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(position.handoffAnimations.isEmpty, "Observe the incoming live sidebar")
+        XCTAssertTrue(position.handoffAnimations.allSatisfy { !$0 },
+                      "The live sidebar must replace the landed preview without another animation")
     }
 }
 
@@ -131,7 +128,12 @@ private struct LandingStrip: View {
         SpaceSidebarStrip(store: store, favorites: EmptyView(),
                           sections: Text(store.currentSpaceID?.uuidString ?? "Empty")
                             .frame(width: 250, alignment: .leading)
-                            .background(LandingNativePosition(position: position)))
+                            .background(LandingNativePosition(position: position))
+                            .transaction { transaction in
+                                if store.currentSpaceID == position.target {
+                                    position.handoffAnimations.append(transaction.animation != nil && !transaction.disablesAnimations)
+                                }
+                            })
             .frame(width: 250, height: 300)
             // Match BrowserWindow's palette animation when an empty Space opens Cmd+T.
             .animation(Motion.reduced ? nil : Look.appear, value: store.palette == nil)
@@ -140,6 +142,9 @@ private struct LandingStrip: View {
 
 @MainActor private final class LandingPosition {
     weak var marker: NSView?
+    let target: UUID
+    var handoffAnimations: [Bool] = []
+    init(target: UUID) { self.target = target }
 }
 
 // A native marker follows the same layer presentation as the sidebar's NSScrollView.

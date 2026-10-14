@@ -1035,7 +1035,7 @@ extension VaneWindow {
             } else {
                 animation = CABasicAnimation(keyPath: "position")
                 animation.duration = duration
-                animation.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             }
             animation.fromValue = NSValue(point: from)
             animation.toValue = NSValue(point: layer.position)
@@ -1047,7 +1047,8 @@ extension VaneWindow {
 
     func cancel() {
         completion = nil
-        finish()
+        if finished { retire() }
+        else { finish() }
     }
 
     /// An unused idle surface has never owned the gesture's visibility state.
@@ -1066,10 +1067,22 @@ extension VaneWindow {
         let complete = completion
         completion = nil
         complete?()
-        Motion.instant {
+        Motion.spaceHandoff {
             source?.spaceGesture.profileSliding = false
             destination?.spaceGesture.profileSliding = false
         }
+        // The old live tree can still be mounted when selection publishes. Keep the
+        // destination surface covering it until SwiftUI has laid out and presented the
+        // replacement; removing it in this callback can flash the previous Space.
+        if complete != nil, !Motion.spaceReduced, let window {
+            superview?.layoutSubtreeIfNeeded()
+            DispatchQueue.main.async { [self] in
+                _ = SpaceLandingFrame(window: window) { [self] in retire() }
+            }
+        } else { retire() }
+    }
+
+    private func retire() {
         let host = superview as? BrowserWindowHost
         removeFromSuperview()
         host?.didFinishSpaceSlide(self)

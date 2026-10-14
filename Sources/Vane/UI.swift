@@ -450,12 +450,12 @@ struct BrowserWindow: View {
         .onChange(of: store.libraryOpen) { if store.libraryOpen { spaceCount = profiles.allSpaces.count } }
         // The page slides over as the panel takes its width, and back when it gives it up —
         // including when the Spaces section widens the panel to fit another card.
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.librarySlide, value: libraryWidth)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: libraryWidth)
         .animation(reduceMotion || batterySaver.isActive ? nil : .easeOut(duration: 0.2),
                    value: store.sidebarShown)
         .animation(reduceMotion || batterySaver.isActive ? nil
                    : Look.floatingSidebarAnimation, value: peeking)
-        .animation(reduceMotion || batterySaver.isActive ? nil : Look.librarySlide, value: store.libraryOpen)
+        .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.libraryOpen)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.appear, value: store.palette == nil)
         // Arc hides the traffic lights along with the sidebar: a collapsed window is the
         // page and nothing else. They come back the moment either sidebar does.

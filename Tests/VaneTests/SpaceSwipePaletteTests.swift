@@ -30,48 +30,35 @@ import XCTest
         return (store, second, window)
     }
 
-    func testSpaceDragStartsFromFirstDirectionalSample() {
-        let (store, _, window) = fixture()
-        let monitor = SwipeMonitor()
-        monitor.install(store)
-        defer { monitor.remove() }
-        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
-        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -0.25))
-        XCTAssertTrue(store.spaceSwiping, "The first directional sample must move immediately")
-        XCTAssertEqual(store.spaceDrag, -0.25, accuracy: 0.001)
-        for dx: CGFloat in [-0.25, -0.5, -1] {
-            NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: dx))
-        }
-        XCTAssertTrue(store.spaceSwiping, "A deliberate slow horizontal drag must start near its origin")
-        XCTAssertEqual(store.spaceDrag, -2, accuracy: 0.001,
-                       "The first visible offset includes the small samples before axis lock")
-    }
-
-    func testMovementOnNativeBeganEventIsNotDiscarded() {
-        let (store, _, window) = fixture()
-        let monitor = SwipeMonitor()
-        monitor.install(store)
-        defer { monitor.remove() }
-        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -0.25, phase: .began))
-        XCTAssertTrue(store.spaceSwiping)
-        XCTAssertEqual(store.spaceDrag, -0.25, accuracy: 0.001,
-                       "AppKit can carry the first movement on began itself")
-        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -0.5))
-        XCTAssertEqual(store.spaceDrag, -0.75, accuracy: 0.001)
-    }
-
-    func testSubpixelHorizontalWobbleDoesNotStealVerticalScrolling() {
+    func testOriginalAxisLockIgnoresSubpixelNoiseAndClaimsDeliberateTravel() {
         let (store, _, window) = fixture()
         let monitor = SwipeMonitor()
         monitor.install(store)
         defer { monitor.remove() }
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
         NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -0.2, dy: 0.1))
-        XCTAssertTrue(store.spaceSwiping, "Horizontal tracking still starts immediately")
+        XCTAssertFalse(store.spaceSwiping)
         NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 12))
         XCTAssertFalse(store.spaceSwiping)
-        XCTAssertEqual(store.spaceDrag, 0)
-        XCTAssertEqual(window.scrolls, 2, "The vertical sample must reach the tab list")
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -12))
+        XCTAssertTrue(store.spaceSwiping)
+        XCTAssertEqual(store.spaceDrag, -12)
+    }
+
+    func testOriginalAxisLockAcceptsHorizontalTravelAfterVerticalStartupNoise() {
+        let (store, _, window) = fixture()
+        let monitor = SwipeMonitor()
+        monitor.install(store)
+        defer { monitor.remove() }
+        for (dx, dy): (CGFloat, CGFloat) in [(0, 0.5), (0.1, 0.2), (-0.2, 0.1)] {
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: dx, dy: dy))
+            XCTAssertFalse(store.spaceSwiping)
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -12))
+            XCTAssertTrue(store.spaceSwiping, "Startup noise must not reject a deliberate horizontal drag")
+            monitor.abort()
+        }
     }
 
     func testSidebarSwipeIsClaimedWithNewTabPaletteOpen() {
