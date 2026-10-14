@@ -102,6 +102,8 @@ private struct LibrarySwipe: ViewModifier {
     private var settlement = UUID()
     private var panelWidth: CGFloat = 1
     private var dragOrigin: CGFloat?
+    private var lastInputTime: TimeInterval?
+    private var speed: CGFloat = 0
     /// An inert native marker travels with the panel. Read its presentation layer only
     /// when interrupting a landing, so a reverse swipe can take over without a jump.
     weak var presentationView: NSView?
@@ -152,6 +154,8 @@ private struct LibrarySwipe: ViewModifier {
             if let store { Motion.instant { store.librarySwipeProgress = nil } }
         }
         dragOrigin = nil
+        lastInputTime = nil
+        speed = 0
         claim = .idle
         action = nil
         travel = (0, 0, 0)
@@ -191,7 +195,15 @@ private struct LibrarySwipe: ViewModifier {
             Motion.instant(finish)
             clear()
         } else {
-            withAnimation(Look.librarySlide, completionCriteria: .removed, finish, completion: clear)
+            let destination: CGFloat = commit ? (store.libraryOpen ? 0 : 1) : (store.libraryOpen ? 1 : 0)
+            let distance = destination - (store.librarySwipeProgress ?? (store.libraryOpen ? 1 : 0))
+            let animation: Animation
+            if abs(speed) >= Spaces.Swipe.flickSpeed, abs(distance) > 0.001 {
+                let velocity = Double(speed / max(1, panelWidth) / distance)
+                animation = .interpolatingSpring(mass: 1, stiffness: 700, damping: 53,
+                                                 initialVelocity: velocity)
+            } else { animation = Look.librarySlide }
+            withAnimation(animation, completionCriteria: .removed, finish, completion: clear)
         }
     }
 
@@ -261,6 +273,7 @@ private struct LibrarySwipe: ViewModifier {
                 }
             }
             claim = action == nil ? .theirs : .undecided
+            lastInputTime = event.timestamp
         }
         guard claim == .undecided || claim == .mine else { return event }
         if finished { return claim == .mine ? nil : event }
@@ -274,10 +287,16 @@ private struct LibrarySwipe: ViewModifier {
         if event.phase.contains(.ended) {
             finished = true
             if claim == .mine {
+                // A short deliberate flick keeps its intent and speed through release.
+                // A held or reversed drag must not reuse a stale velocity sample.
+                if let lastInputTime, event.timestamp - lastInputTime > 0.1 { speed = 0 }
+                let flick = abs(travel.x) >= min(60, panelWidth * Spaces.Swipe.flickFraction)
+                    && abs(speed) >= Spaces.Swipe.flickSpeed && (speed < 0) == (travel.x < 0)
                 let commit: Bool
                 switch action {
-                case .close: commit = travel.x <= -60
-                case .open(let space): commit = travel.x >= 60 && store.strip.first?.id == space
+                case .close: commit = travel.x < 0 && (travel.x <= -60 || flick)
+                case .open(let space): commit = travel.x > 0 && (travel.x >= 60 || flick)
+                    && store.strip.first?.id == space
                 }
                 settle(in: store, commit: commit && valid(action, in: store))
             }
@@ -286,6 +305,12 @@ private struct LibrarySwipe: ViewModifier {
         // Navigation follows the fingers, independent of the scrolling preference.
         // Device deltas are positive for left; Natural Scrolling inverts them.
         let dx = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        if let lastInputTime, event.timestamp > lastInputTime {
+            let dt = max(Spaces.Swipe.minInterval, event.timestamp - lastInputTime)
+            speed = Spaces.Swipe.speedSmoothing * dx / CGFloat(dt)
+                + (1 - Spaces.Swipe.speedSmoothing) * speed
+        }
+        lastInputTime = event.timestamp
         travel.x += dx
         travel.horizontal += abs(event.scrollingDeltaX)
         travel.vertical += abs(event.scrollingDeltaY)

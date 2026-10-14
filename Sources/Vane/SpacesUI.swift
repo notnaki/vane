@@ -1171,7 +1171,7 @@ private struct SpaceSwipe: ViewModifier {
             }
             store.spacePull = out.pull
             if let direction = out.commit {
-                if phase == .changed, let window = store.window {
+                if let window = store.window {
                     Self.committedSwipes.add(window)
                 }
                 if creatable, direction > 0, index == self.list.count - 1 {

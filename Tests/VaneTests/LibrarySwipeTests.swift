@@ -46,9 +46,58 @@ import XCTest
 
     private func send(_ window: NSWindow, point: NSPoint = NSPoint(x: 100, y: 350),
                       dx: CGFloat = 0, dy: CGFloat = 0, phase: NSEvent.Phase = .changed,
-                      momentum: NSEvent.Phase = [], precise: Bool = true, inverted: Bool = true) {
+                      momentum: NSEvent.Phase = [], precise: Bool = true, inverted: Bool = true,
+                      time: TimeInterval = 1) {
         NSApplication.shared.sendEvent(LibraryScrollEvent(window: window, point: point,
-            dx: dx, dy: dy, phase: phase, momentum: momentum, precise: precise, inverted: inverted))
+            dx: dx, dy: dy, phase: phase, momentum: momentum, precise: precise, inverted: inverted, time: time))
+    }
+
+    func testShortFastLibraryFlickCommitsWhileSlowDragReturns() {
+        let (store, window, _) = fixture(withSpaces: true)
+        for initiallyOpen in [false, true] {
+            for (interval, shouldCommit) in [(0.008, true), (0.2, false)] {
+                store.libraryOpen = initiallyOpen
+                let delta: CGFloat = initiallyOpen ? -20 : 20
+                send(window, phase: .began, time: 1)
+                send(window, dx: delta, time: 1 + interval)
+                send(window, dx: delta, time: 1 + 2 * interval)
+                XCTAssertEqual(store.libraryOpen, initiallyOpen)
+                send(window, phase: .ended, time: 1 + 2 * interval + 0.001)
+                XCTAssertEqual(store.libraryOpen, shouldCommit ? !initiallyOpen : initiallyOpen,
+                               "Short flicks must carry their intent in either direction")
+            }
+        }
+    }
+
+    func testImmediateLibraryReleaseStillShowsIntermediatePositions() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, monitor) = fixture(withSpaces: true)
+        Library.open(.downloads, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(80))
+        send(window, phase: .began, time: 1)
+        send(window, dx: 40, time: 1.008)
+        send(window, dx: 40, time: 1.016)
+        send(window, phase: .ended, time: 1.017) // No render turn before the fast release.
+        try await Task.sleep(for: .milliseconds(60))
+        let marker = try XCTUnwrap(monitor.presentationView)
+        func x() throws -> CGFloat {
+            try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
+                to: host.layer?.presentation()).x
+        }
+        let moving = try x()
+        XCTAssertLessThan(moving, -5, "A quick release must not mount directly at the endpoint")
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertGreaterThan(try x(), moving + 5)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(try x(), 0, accuracy: 1)
     }
 
     func testFingerUpdatesDoNotInvalidateBrowserState() throws {
@@ -773,6 +822,7 @@ private final class LibraryScrollWindow: NSWindow {
 }
 
 private final class LibraryScrollEvent: NSEvent, @unchecked Sendable {
+    private let eventTime: TimeInterval
     private let target: NSWindow
     private let targetNumber: Int
     private let point: NSPoint
@@ -784,7 +834,9 @@ private final class LibraryScrollEvent: NSEvent, @unchecked Sendable {
     private let inverted: Bool
 
     @MainActor init(window: NSWindow, point: NSPoint, dx: CGFloat, dy: CGFloat,
-                    phase: NSEvent.Phase, momentum: NSEvent.Phase, precise: Bool, inverted: Bool) {
+                    phase: NSEvent.Phase, momentum: NSEvent.Phase, precise: Bool, inverted: Bool,
+                    time: TimeInterval = 1) {
+        eventTime = time
         target = window
         targetNumber = window.windowNumber
         self.point = point
@@ -807,5 +859,5 @@ private final class LibraryScrollEvent: NSEvent, @unchecked Sendable {
     override var scrollingDeltaY: CGFloat { dy }
     override var phase: NSEvent.Phase { scrollPhase }
     override var momentumPhase: NSEvent.Phase { momentum }
-    override var timestamp: TimeInterval { 1 }
+    override var timestamp: TimeInterval { eventTime }
 }

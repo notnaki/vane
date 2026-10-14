@@ -74,7 +74,7 @@ import XCTest
         XCTAssertEqual(store.palette, .newTab)
     }
 
-    func testSwipeChangesPageBeforeReleaseAndReplacementMonitorConsumesTheTail() async throws {
+    func testSwipeHoldsBetweenSpacesUntilReleaseAndReplacementMonitorConsumesTheTail() async throws {
         let (store, second, window) = fixture()
         let first = try XCTUnwrap(store.spaces.first)
         store.switchTo(space: second)
@@ -87,7 +87,11 @@ import XCTest
         defer { monitor.remove() }
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
         NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -SidebarWidth.shared.width * 0.31))
-        // No fingers-up event: the destination must appear during the swipe itself.
+        // Holding past the threshold must remain interactive until fingers-up.
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(store.currentSpaceID, first.id)
+        XCTAssertTrue(store.spaceSwiping)
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
         try await Task.sleep(for: .milliseconds(350))
         XCTAssertEqual(store.currentSpaceID, second.id)
         XCTAssertTrue(store.active === page)
@@ -111,6 +115,7 @@ import XCTest
         XCTAssertEqual(window.scrolls, scrolls + 1, "An ordinary mouse wheel remains available")
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
         NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: SidebarWidth.shared.width * 0.31))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
         try await Task.sleep(for: .milliseconds(350))
         XCTAssertEqual(store.currentSpaceID, first.id, "A new gesture can switch back")
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))

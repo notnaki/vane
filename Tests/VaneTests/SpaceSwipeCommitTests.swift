@@ -2,21 +2,21 @@ import XCTest
 @testable import vane
 
 final class SpaceSwipeCommitTests: XCTestCase {
-    func testCrossingDistanceThresholdCommitsBeforeFingerReleaseInEitherDirection() {
+    func testDistanceThresholdRemainsInteractiveUntilFingerRelease() {
         for direction: CGFloat in [-1, 1] {
             var swipe = Spaces.Swipe()
             _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 1)
-            XCTAssertNil(swipe.feed(dx: direction * 74, dt: 1, phase: .changed,
+            let held = swipe.feed(dx: direction * 130, dt: 1, phase: .changed,
+                                  width: 250, count: 3, index: 1)
+            XCTAssertNil(held.commit, "Keep ownership while the fingers hold between Spaces")
+            XCTAssertEqual(held.offset, direction * 130)
+            XCTAssertTrue(swipe.armed)
+            XCTAssertNil(swipe.feed(dx: -direction * 20, dt: 1, phase: .changed,
                                    width: 250, count: 3, index: 1).commit)
-            XCTAssertEqual(swipe.feed(dx: direction, dt: 1, phase: .changed,
+            XCTAssertEqual(swipe.feed(dx: 0, dt: 1, phase: .ended,
                                      width: 250, count: 3, index: 1).commit, direction < 0 ? 1 : -1)
-            XCTAssertFalse(swipe.armed)
-            for phase in [Spaces.Swipe.Phase.changed, .ended, .momentum, .cancelled] {
-                let result = swipe.feed(dx: direction * 250, dt: 1, phase: phase,
-                                        width: 250, count: 3, index: 1)
-                XCTAssertNil(result.commit, "One gesture must only switch once")
-                XCTAssertNil(result.offset, "The gesture tail cannot move the landed sidebar")
-            }
+            XCTAssertNil(swipe.feed(dx: direction * 250, dt: 1, phase: .momentum,
+                                   width: 250, count: 3, index: 1).commit)
         }
     }
 
@@ -27,6 +27,24 @@ final class SpaceSwipeCommitTests: XCTestCase {
                                width: 250, count: 3, index: 1).commit)
         _ = swipe.feed(dx: 30, dt: 0.01, phase: .changed, width: 250, count: 3, index: 1)
         XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .ended,
+                               width: 250, count: 3, index: 1).commit)
+    }
+
+    func testHoldingAShortFlickDiscardsItsOldVelocity() {
+        var swipe = Spaces.Swipe()
+        _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 1)
+        _ = swipe.feed(dx: -40, dt: 0.008, phase: .changed, width: 250, count: 3, index: 1)
+        XCTAssertNil(swipe.feed(dx: 0, dt: 1, phase: .ended,
+                               width: 250, count: 3, index: 1).commit)
+    }
+
+    func testDragCanReverseBackBelowThresholdBeforeRelease() {
+        var swipe = Spaces.Swipe()
+        _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 1)
+        _ = swipe.feed(dx: -130, dt: 1, phase: .changed, width: 250, count: 3, index: 1)
+        let reversed = swipe.feed(dx: 100, dt: 1, phase: .changed, width: 250, count: 3, index: 1)
+        XCTAssertEqual(reversed.offset, -30)
+        XCTAssertNil(swipe.feed(dx: 0, dt: 1, phase: .ended,
                                width: 250, count: 3, index: 1).commit)
     }
 
