@@ -21,7 +21,7 @@ struct SpaceStripLayout: Equatable {
                         max(showsButtonBackground ? 16 : 13, width / visibleCount))
         let compression = CGFloat(min(5, max(0, count - 5))) / 5
         dotSize = 8 - compression * 4
-        iconSize = showsButtonBackground ? 14 : 11
+        iconSize = showsButtonBackground ? 12 : 10
         // At the minimum sidebar width, preserve distinct targets even if that means
         // scrolling sooner. At the standard width, all ten Spaces fit without scrolling.
         scrolls = count > 10 || itemWidth * CGFloat(count) > width + 0.5

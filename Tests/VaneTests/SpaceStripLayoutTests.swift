@@ -6,7 +6,7 @@ final class SpaceStripLayoutTests: XCTestCase {
         let layout = SpaceStripLayout(count: 3, availableWidth: 154)
         XCTAssertEqual(layout.itemWidth, 34)
         XCTAssertEqual(layout.dotSize, 8)
-        XCTAssertEqual(layout.iconSize, 14)
+        XCTAssertEqual(layout.iconSize, 12)
         XCTAssertFalse(layout.scrolls)
     }
 
