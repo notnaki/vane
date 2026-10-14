@@ -26,6 +26,75 @@ private final class CompletionProtocol: URLProtocol, @unchecked Sendable {
 }
 
 @MainActor final class RemoteSuggestionTests: XCTestCase {
+    func testRemoteResultsArriveWhileHistoryIsStillPending() async throws {
+        TestEnvironment.prepare()
+        let gate = DebounceFixture()
+        defer { gate.finish() }
+        var updates: [[Suggestion]] = []
+        let pending = Task {
+            await SearchSuggestions.stream("swift", local: {
+                try? await gate.sleep(.zero)
+                return [Suggestion(url: "https://swift.org", title: "Swift", bookmarked: true)]
+            }, remote: { ["swift concurrency"] }, publish: { updates.append($0) })
+        }
+        defer { pending.cancel() }
+        try await gate.waitUntil { gate.count == 1 }
+        // History remains blocked until a completion is visible. This catches the
+        // serial lookup that made remote results wait behind a full history scan.
+        do {
+            try await gate.waitUntil { updates.first?.first?.title == "swift concurrency" }
+        } catch {
+            XCTFail("Online suggestions must appear before the history scan finishes")
+        }
+        gate.release(0)
+        await pending.value
+        XCTAssertEqual(updates.last?.map(\.title), ["Swift", "swift concurrency"])
+    }
+
+    func testHistoryResultsDoNotWaitForTheNetwork() async throws {
+        TestEnvironment.prepare()
+        let gate = DebounceFixture()
+        defer { gate.finish() }
+        var updates: [[Suggestion]] = []
+        let pending = Task {
+            await SearchSuggestions.stream("swift", local: {
+                [Suggestion(url: "https://swift.org", title: "Swift", bookmarked: true)]
+            }, remote: {
+                try? await gate.sleep(.zero)
+                return ["swift concurrency", "Swift"]
+            }, publish: { updates.append($0) })
+        }
+        defer { pending.cancel() }
+        try await gate.waitUntil { gate.count == 1 && updates.first?.first?.title == "Swift" }
+        XCTAssertEqual(updates.first?.count, 1)
+        gate.release(0)
+        await pending.value
+        XCTAssertEqual(updates.last?.map(\.title), ["Swift", "swift concurrency"],
+                       "Local pages must keep priority and deduplicate engine completions")
+    }
+
+    func testCancelledPipelineDoesNotPublishLateResults() async throws {
+        TestEnvironment.prepare()
+        let gate = DebounceFixture()
+        defer { gate.finish() }
+        var updates: [[Suggestion]] = []
+        let pending = Task {
+            await SearchSuggestions.stream("swift", local: {
+                try? await gate.sleep(.zero)
+                return [Suggestion(url: "https://swift.org", title: "Swift", bookmarked: true)]
+            }, remote: {
+                try? await gate.sleep(.zero)
+                return ["swift concurrency"]
+            }, publish: { updates.append($0) })
+        }
+        defer { pending.cancel() }
+        try await gate.waitUntil { gate.count == 2 }
+        pending.cancel()
+        gate.finish()
+        await pending.value
+        XCTAssertTrue(updates.isEmpty, "Closing or replacing a query must discard both sources")
+    }
+
     func testCancelingTheOriginatingTaskPreventsTheRemoteRequest() async throws {
         TestEnvironment.prepare()
         let suite = "vane.remote-test.\(UUID())"

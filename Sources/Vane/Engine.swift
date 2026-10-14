@@ -2333,17 +2333,18 @@ struct Stash {
         guard !isPrivate, query.trimmingCharacters(in: .whitespaces).count >= 2 else { return }
         let history = history
         suggestTask = Task { [weak self] in
-            try? await Task.sleep(for: LocalSuggestionReader.debounce)
-            guard !Task.isCancelled else { return }
-            let local = await history.suggestAsync(query, scopedTo: engine)
-            guard !Task.isCancelled else { return }
-            self?.suggestions = local
-            // A scoped query must never be sent to the default engine for completions.
-            guard engine == nil, SearchSuggestions.shouldSend(query) else { return }
-            // Later completions widen the list without resetting the arrow selection.
-            let merged = await SearchSuggestions.merged(query, local: local)
-            guard !Task.isCancelled else { return }
-            if self?.suggestions != merged { self?.suggestions = merged }
+            await SearchSuggestions.stream(query, local: {
+                try? await Task.sleep(for: LocalSuggestionReader.debounce)
+                guard !Task.isCancelled else { return [] }
+                return await history.suggestAsync(query, scopedTo: engine)
+            }, remote: {
+                // Scoped queries stay local; private windows never enter this task.
+                guard engine == nil else { return [] }
+                return await SearchSuggestions.fetch(query)
+            }, publish: { [weak self] rows in
+                guard let self, self.suggestions != rows else { return }
+                self.suggestions = rows
+            })
         }
     }
 

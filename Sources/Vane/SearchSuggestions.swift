@@ -171,11 +171,30 @@ import Foundation
 
     // MARK: - Merge
 
-    /// Local history and bookmarks first, then remote completions, as one ranked list.
-    /// Local always wins: it is free, it is private, and it is what the user has actually
-    /// visited.
-    static func merged(_ query: String, local: [Suggestion], isPrivate: Bool = false) async -> [Suggestion] {
-        merge(query, local: local, remote: await fetch(query, isPrivate: isPrivate))
+    /// Run history and online completions independently. Publish either source as it
+    /// arrives, then merge local pages first without holding online results behind a scan.
+    static func stream(_ query: String,
+                       local: @escaping @MainActor @Sendable () async -> [Suggestion],
+                       remote: @escaping @MainActor @Sendable () async -> [String],
+                       publish: @MainActor ([Suggestion]) -> Void) async {
+        enum Result: Sendable {
+            case local([Suggestion])
+            case remote([String])
+        }
+        await withTaskGroup(of: Result.self) { group in
+            group.addTask { .local(await local()) }
+            group.addTask { .remote(await remote()) }
+            var saved: [Suggestion] = []
+            var phrases: [String] = []
+            for await result in group {
+                guard !Task.isCancelled else { group.cancelAll(); return }
+                switch result {
+                case .local(let rows): saved = rows
+                case .remote(let rows): phrases = rows
+                }
+                publish(merge(query, local: saved, remote: phrases))
+            }
+        }
     }
 
     /// The pure half, so `check()` can prove the de-duplication with no network.
