@@ -142,6 +142,50 @@ import WebKit
         previews.dismiss(owner: owner)
     }
 
+    func testFinalSessionProofRejectsChangedAccountEvenWithoutCookieNotification() async throws {
+        TestEnvironment.prepare()
+        let loader = FavouriteFixtureLoader(), owner = UUID()
+        loader.holdReplies = true
+        defer { loader.releaseReplies() }
+        let a = context(ProfileManager.shared.active.id)
+        let dataStore = WKWebsiteDataStore.nonPersistent()
+        let store = dataStore.httpCookieStore
+        defer { withExtendedLifetime(dataStore) {} }
+        func cookie(_ value: String) -> HTTPCookie {
+            HTTPCookie(properties: [.domain: ".github.com", .path: "/", .name: "user_session", .value: value, .secure: "TRUE"])!
+        }
+        func fingerprint() async -> FavouriteSessionFingerprint {
+            let cookies = await withCheckedContinuation { continuation in
+                store.getAllCookies { continuation.resume(returning: $0) }
+            }
+            return FavouriteSessionFingerprint(cookies)
+        }
+        await store.setCookie(cookie("original-session"))
+        let original = await fingerprint()
+        XCTAssertTrue(original.hasAuthentication(for: .github))
+        let previews = FavouritePreviews(loader: loader, observeSessions: true,
+            sessionObserverFactory: { id, coordinator in
+                let observer = FavouriteSessionObserver(profileID: id, previews: coordinator, store: store)
+                // Isolate final cookie proof from automatic notification invalidation.
+                // The post-load comparison must protect data independently of callbacks.
+                observer.previews = nil
+                return observer
+            })
+        previews.request(a, owner: owner)
+        try await settle { loader.calls == 1 }
+        await store.setCookie(cookie("replacement-session"))
+        let replacement = await fingerprint()
+        XCTAssertNotEqual(original, replacement)
+        loader.releaseReplies()
+        try await settle { loader.replies == 1 && previews.state != .loading }
+        XCTAssertEqual(previews.state, .unavailable, "An extracted account must not publish after its session changes")
+        previews.dismiss(owner: owner)
+        previews.request(a, owner: owner, account: "fixture")
+        try await settle { previews.state != .loading }
+        XCTAssertEqual(previews.state, .unavailable, "The rejected account must not have entered the cache")
+        previews.dismiss(owner: owner)
+    }
+
     func testDismissCannotPublishLateReply() async throws {
         let loader = FavouriteFixtureLoader()
         let coordinator = FavouritePreviews(loader: loader)

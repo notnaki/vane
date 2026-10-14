@@ -174,7 +174,12 @@ import WebKit
                 // WebKit may have coalesced, before attaching it to a cached account.
                 let currentSession = await self.observers[context.profileID]?.synchronize()
                 guard !Task.isCancelled, self.generation == ticket else { return }
-                self.cache.store(snapshot, context: context, now: self.now(), session: currentSession == session ? session : nil)
+                guard currentSession == session else {
+                    self.cache.invalidate(profileID: context.profileID)
+                    self.setState(.unavailable)
+                    return
+                }
+                self.cache.store(snapshot, context: context, now: self.now(), session: session)
                 self.setState(.ready(snapshot))
             case .signedOut:
                 self.cache.invalidate(profileID: context.profileID)
