@@ -766,7 +766,7 @@ private struct LibraryTile: View {
     let selected: Bool
     let action: () -> Void
     @State private var hovering = false
-    @FocusState private var focused: Bool
+    @State private var focused = false
     @EnvironmentObject private var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var batterySaver = BatterySaver.shared
@@ -791,9 +791,9 @@ private struct LibraryTile: View {
         .contentShape(.rect)
         .onHover { hovering = $0 }
         .onTapGesture(perform: action)
-        .focusable().focused($focused)
-        .onKeyPress(.return) { action(); return .handled }
-        .onKeyPress(.space) { action(); return .handled }
+        // Spaces has no search field to take focus after a click. Use the same
+        // keyboard-only outline as the sidebar rather than the native focus ring.
+        .vaneKeyboardAction(radius: Look.cardRadius, focusChanged: { focused = $0 }, action: action)
         .task(id: (hovering || focused) && !selected && !batterySaver.isActive) {
             guard hovering || focused, !selected, !batterySaver.isActive else { return }
             do { try await Task.sleep(for: .milliseconds(140)) } catch { return }

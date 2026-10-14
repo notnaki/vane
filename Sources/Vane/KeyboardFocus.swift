@@ -52,6 +52,7 @@ private struct KeyboardAction: ViewModifier {
     let action: () -> Void
     var previewAction: (() -> Void)?
     var requestFocus: Binding<Bool>?
+    var focusChanged: ((Bool) -> Void)?
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focused: Bool
@@ -64,6 +65,7 @@ private struct KeyboardAction: ViewModifier {
             .focusable(enabled && isEnabled)
             .focused($focused)
             .focusEffectDisabled()
+            .onChange(of: focused) { _, value in focusChanged?(value) }
             .onChange(of: requestFocus?.wrappedValue, initial: true) { _, requested in
                 guard requested == true, enabled, isEnabled else { return }
                 focusVisibility.showForKeyboard()
@@ -99,8 +101,9 @@ extension View {
     func vaneKeyboardAction(enabled: Bool = true, radius: CGFloat = Look.pillRadius,
                             requestFocus: Binding<Bool>? = nil,
                             previewAction: (() -> Void)? = nil,
+                            focusChanged: ((Bool) -> Void)? = nil,
                             action: @escaping () -> Void) -> some View {
         modifier(KeyboardAction(enabled: enabled, radius: radius, action: action, previewAction: previewAction,
-                                requestFocus: requestFocus))
+                                requestFocus: requestFocus, focusChanged: focusChanged))
     }
 }
