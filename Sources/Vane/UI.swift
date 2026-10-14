@@ -3990,11 +3990,17 @@ struct LivePRTitle: View {
     var reveal = TitleReveal()
     var pr: GitHub.Row?
     var developerEndpoint: String? = nil
+    var returnCaption = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ShimmerTitle(title: title, reveal: reveal)
-            if let developerEndpoint {
+            if returnCaption {
+                Text("Return to Pinned Tab")
+                    .font(Look.small)
+                    .foregroundStyle(Look.inkTertiary)
+                    .transition(.offset(y: 4).combined(with: .opacity))
+            } else if let developerEndpoint {
                 Text(developerEndpoint)
                     .font(Look.small)
                     .foregroundStyle(Look.inkTertiary)
@@ -4022,6 +4028,8 @@ struct SidebarTabSurface: View {
     var previewSelected: Bool? = nil
     var previewTicked = false
     @Environment(\.ghostTileMorph) private var morph
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     var body: some View {
         let selected = previewSelected ?? (store.current == tab.id)
@@ -4044,16 +4052,16 @@ struct SidebarTabSurface: View {
                 // Keep the away marker visible during rename and Return hover too.
                 if previewSelected == nil && !held && store.renamingTab == tab.id {
                     RenameField(store: store, tab: tab, initialTitle: title)
-                } else if returning && returnHovering {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(title).truncationMode(.tail)
-                        Text("Return to Pinned Tab")
-                            .font(Look.small)
-                            .foregroundStyle(Look.inkTertiary)
-                    }
                 } else {
                     LivePRTitle(title: title, reveal: tab.titleReveal, pr: pr,
-                                developerEndpoint: tab.developer ? DeveloperMode.endpoint(tab.currentURL) : nil)
+                                developerEndpoint: tab.developer ? DeveloperMode.endpoint(tab.currentURL) : nil,
+                                returnCaption: returning && returnHovering)
+                        // A stable title inside a fixed slot: the growing caption stack
+                        // moves the title upward without jumping the label's layout box.
+                        .frame(height: Look.rowHeight)
+                        .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
+                                   value: returning && returnHovering)
+                        .vaneMotionPolicy()
                 }
             }
         } trailing: {
