@@ -193,4 +193,117 @@ import WebKit
         previews.dismiss(owner: owner)
     }
 
+    func testRepeatHoverWithoutLivePageReusesVerifiedSessionAndRetiresItOnChange() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let dataStore = WKWebsiteDataStore.nonPersistent()
+        let store = dataStore.httpCookieStore
+        func cookie(_ value: String) -> HTTPCookie {
+            HTTPCookie(properties: [.domain: ".github.com", .path: "/", .name: "user_session", .value: value, .secure: "TRUE"])!
+        }
+        await store.setCookie(cookie("fixture-session"))
+        var clock = Date(timeIntervalSince1970: 1000)
+        let loader = FavouriteFixtureLoader()
+        var observer: FavouriteSessionObserver?
+        let previews = FavouritePreviews(loader: loader, observeSessions: true, now: { clock }, sessionObserverFactory: { profile, previews in
+            let value = FavouriteSessionObserver(profileID: profile, previews: previews, store: store)
+            observer = value
+            return value
+        })
+        let a = context(ProfileManager.shared.active.id), owner = UUID()
+        defer { previews.dismiss(owner: owner); observer?.detach(); withExtendedLifetime(dataStore) {} }
+        previews.request(a, owner: owner)
+        try await settle { loader.replies == 1 && previews.state == .ready(.init(account: "fixture", items: [])) }
+        previews.dismiss(owner: owner)
+        clock = clock.addingTimeInterval(31)
+        previews.request(a, owner: owner)
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        XCTAssertEqual(loader.calls, 1, "Repeat hover should not reload the service website")
+        previews.dismiss(owner: owner)
+        await store.setCookie(cookie("replacement-session"))
+        observer?.refresh()
+        await observer?.ready()
+        clock = clock.addingTimeInterval(31)
+        previews.request(a, owner: owner)
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        XCTAssertEqual(loader.calls, 2, "A changed session must load and verify again")
+    }
+
+    func testAlreadyLoadedListDoesNotStartAnotherWebsiteLoad() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let web = WKWebView(frame: NSRect(x: 0, y: 0, width: 1000, height: 700))
+        let host = PreviewHostWindow(content: web)
+        defer { web.stopLoading(); host.contentView = nil; host.close() }
+        web.loadHTMLString("""
+        <meta name="user-login" content="fixture">
+        <div class="js-issue-row"><a class="Link--primary" href="/fixture/repo/pull/42">Fixture PR</a></div>
+        """, baseURL: URL(string: "https://github.com/pulls?q=is:open%20is:pr%20involves:@me")!)
+        for _ in 0..<100 {
+            if !web.isLoading, (try? await web.evaluateJavaScript("document.readyState")) as? String == "complete" { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let loader = FavouriteFixtureLoader()
+        let coordinator = FavouritePreviews(loader: loader), owner = UUID()
+        defer { coordinator.dismiss(owner: owner) }
+        coordinator.request(context(), owner: owner, source: web)
+        try await settle {
+            guard case .ready(let value) = coordinator.state else { return false }
+            return value.items.first?.title == "Fixture PR"
+        }
+        XCTAssertEqual(loader.calls, 0)
+    }
+
+    func testQuickReturnReusesTheSameInflightRequest() async throws {
+        let loader = FavouriteFixtureLoader()
+        loader.holdReplies = true
+        defer { loader.releaseReplies() }
+        let previews = FavouritePreviews(loader: loader), a = context(), owner = UUID()
+        previews.request(a, owner: owner, account: "fixture")
+        try await settle { loader.calls == 1 }
+        let cancellations = loader.cancellations
+        previews.dismiss(owner: owner)
+        previews.request(a, owner: owner, account: "fixture")
+        XCTAssertEqual(loader.cancellations, cancellations)
+        loader.releaseReplies()
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        XCTAssertEqual(loader.calls, 1)
+        previews.dismiss(owner: owner)
+    }
+
+    func testClosedRequestFillsCacheWithoutPublishingIntoDismissedCard() async throws {
+        let loader = FavouriteFixtureLoader()
+        loader.holdReplies = true
+        defer { loader.releaseReplies() }
+        let previews = FavouritePreviews(loader: loader), a = context(), owner = UUID()
+        previews.request(a, owner: owner, account: "fixture")
+        try await settle { loader.calls == 1 }
+        previews.dismiss(owner: owner)
+        loader.releaseReplies()
+        try await settle { loader.replies == 1 }
+        XCTAssertNil(previews.owner)
+        XCTAssertEqual(previews.state, .loading)
+        previews.request(a, owner: owner, account: "fixture")
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        XCTAssertEqual(loader.calls, 1)
+        previews.dismiss(owner: owner)
+    }
+
+    func testInvalidationRetiresClosedWarmCompletionBeforeItCanCache() async throws {
+        let loader = FavouriteFixtureLoader()
+        loader.holdReplies = true
+        defer { loader.releaseReplies() }
+        let previews = FavouritePreviews(loader: loader), a = context(), owner = UUID()
+        previews.request(a, owner: owner, account: "fixture")
+        try await settle { loader.calls == 1 }
+        previews.dismiss(owner: owner)
+        previews.invalidate(profileID: a.profileID)
+        loader.releaseReplies()
+        try await settle { loader.replies == 1 }
+        previews.request(a, owner: owner, account: "fixture")
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        XCTAssertEqual(loader.calls, 2, "Invalidated in-flight data must never repopulate the cache")
+        previews.dismiss(owner: owner)
+    }
+
 }

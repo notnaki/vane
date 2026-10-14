@@ -64,7 +64,7 @@ struct FavouritePreviewPanel: NSViewRepresentable {
                 panel.isOpaque = false
                 panel.backgroundColor = .clear
                 panel.isExcludedFromWindowsMenu = true
-                let host = NSHostingView(rootView: AnyView(content.clipShape(RoundedRectangle(cornerRadius: 16))))
+                let host = NSHostingView(rootView: AnyView(content.clipShape(RoundedRectangle(cornerRadius: 14))))
                 self.host = host; panel.contentView = host; self.panel = panel
                 owner.addChildWindow(panel, ordered: .above)
                 outsideMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
@@ -80,7 +80,7 @@ struct FavouritePreviewPanel: NSViewRepresentable {
                     object: nil, queue: .main) { [weak self] _ in
                         MainActor.assumeIsolated { self?.dismiss?() }
                     }
-            } else { host?.rootView = AnyView(content.clipShape(RoundedRectangle(cornerRadius: 16))) }
+            } else { host?.rootView = AnyView(content.clipShape(RoundedRectangle(cornerRadius: 14))) }
             guard let host else { return }
             host.layoutSubtreeIfNeeded()
             let fitted = host.fittingSize

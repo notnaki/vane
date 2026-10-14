@@ -157,4 +157,46 @@ import XCTest
         XCTAssertEqual(opened, [item.url])
     }
 
+    func testPRLoadingAndStaleUseTheSameNativeReferenceShell() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let owner = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        owner.isReleasedWhenClosed = false
+        let anchor = FavouritePreviewPanel.Anchor(frame: NSRect(x: 0, y: 0, width: 70, height: 50))
+        owner.contentView = anchor
+        owner.makeKeyAndOrderFront(nil)
+        defer { anchor.hide(); owner.contentView = nil; owner.close() }
+        let context = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!
+        let items = (1...5).map { number in
+            var item = FavouritePreviewItem(title: "Refine the browser sidebar and page spacing", subtitle: "fixture/browser", url: URL(string: "https://github.com/fixture/browser/pull/\(number)")!)
+            item.status = "Review required · All checks passed"
+            item.timeLabel = "19h"
+            return item
+        }
+        var images: [String: Data] = [:]
+        let cases: [(FavouritePreviewState, String)] = [(.loading, "loading"), (.ready(.init(account: "fixture", items: items)), "pr"), (.stale(.init(account: "fixture", items: items)), "stale")]
+        for (state, name) in cases {
+            let card = FavouritePreviewCard(context: context, state: state, open: { _ in }, dismiss: {}).environment(\.colorScheme, .dark)
+            anchor.configure(visible: true, keyboard: false, content: AnyView(card), dismiss: {})
+            try await Task.sleep(for: .milliseconds(250))
+            let panel = try XCTUnwrap(owner.childWindows?.first)
+            XCTAssertEqual(panel.frame.size, NSSize(width: 240, height: 270))
+            let content = try XCTUnwrap(panel.contentView)
+            let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            if name == "loading" {
+                let scale = CGFloat(bitmap.pixelsWide) / 240
+                func brightness(_ pointY: CGFloat) -> CGFloat {
+                    bitmap.colorAt(x: Int(2 * scale), y: Int(pointY * scale))?.usingColorSpace(.deviceRGB)?.redComponent ?? 0
+                }
+                let separator = stride(from: CGFloat(83), through: 84, by: 0.25).map(brightness).max() ?? 0
+                XCTAssertGreaterThan(separator, brightness(80) + 0.01, "Skeleton rows must start at the top and align with final row separators")
+            }
+            let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+            images[name] = png
+            try png.write(to: URL(fileURLWithPath: "/tmp/vane-favourite-\(name)-fixture.png"))
+        }
+        XCTAssertNotEqual(images["pr"], images["stale"], "Cached results must have a visible freshness marker")
+    }
+
 }

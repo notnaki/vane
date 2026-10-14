@@ -44,7 +44,7 @@ import XCTest
         XCTAssertEqual(loader.contexts.count, 1)
     }
 
-    func testCardKeepsWidthWhileHeightFitsContent() throws {
+    func testCardKeepsReferenceGeometryAsContentArrives() throws {
         TestEnvironment.prepare()
         let target = context()
         let items = (1...5).map { FavouritePreviewItem(title: "Pull request \($0)", subtitle: "owner/repo", url: URL(string: "https://github.com/owner/repo/pull/\($0)")!) }
@@ -55,10 +55,9 @@ import XCTest
             host.layoutSubtreeIfNeeded()
             return host.fittingSize
         }
-        for size in sizes { XCTAssertEqual(size.width, sizes[0].width) }
-        for size in sizes.prefix(3) { XCTAssertLessThan(size.height, 240) }
-        XCTAssertGreaterThan(sizes[3].height, sizes[0].height)
-        for size in sizes.suffix(2) { XCTAssertLessThan(size.height, 400) }
+        for size in sizes { XCTAssertEqual(size, sizes[0]) }
+        XCTAssertEqual(sizes[0].width, 240)
+        XCTAssertEqual(sizes[0].height, 270)
     }
 }
 
@@ -92,7 +91,7 @@ import XCTest
         hover.dismiss()
         XCTAssertFalse(hover.preparing)
     }
-    func testPromotionReusesWorkAndCanceledPreparationCanRetryImmediately() async throws {
+    func testPromotionAndQuickReturnReusePreparationWithoutRestart() async throws {
         TestEnvironment.prepare()
         let loader = Feel04Loader(), previews = FavouritePreviews(loader: loader)
         let target = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com")!)!, owner = UUID()
@@ -110,10 +109,11 @@ import XCTest
         try await settle { loader.contexts.count == 2 }
         previews.dismiss(owner: owner)
         previews.prepare(target, owner: owner)
-        try await settle { loader.contexts.count == 3 }
+        XCTAssertEqual(loader.contexts.count, 2)
         previews.request(target, owner: owner)
         loader.finish()
         try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        XCTAssertEqual(loader.contexts.count, 2)
     }
     func testPrivateDisabledAndBatterySavingPreparationNeverLoads() async throws {
         TestEnvironment.prepare()

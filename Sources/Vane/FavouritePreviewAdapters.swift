@@ -45,7 +45,10 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
                 item.timeLabel = row.timeLabel.map { String($0.prefix(40)) }
                 item.snippet = row.snippet.map { String($0.prefix(300)).trimmingCharacters(in: .whitespacesAndNewlines) }
             }
-            if service == .github { item.status = row.status.map { String($0.prefix(160)) } }
+            if service == .github {
+                item.status = row.status.map { String($0.prefix(160)) }
+                item.timeLabel = row.timeLabel.map { String($0.prefix(40)) }
+            }
             if service == .calendar {
                 guard let start = row.start, let date = ISO8601DateFormatter().date(from: start) else { return .unavailable }
                 item.startsAt = date
@@ -83,6 +86,16 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
           return unknown();
         }
         const text = el => (el?.textContent || '').trim().replace(/\\s+/g,' ');
+        const age = el => {
+          const raw = (el?.getAttribute('datetime') || el?.getAttribute('title') || '').replace(/\\s+/g,' ');
+          const date = Date.parse(raw), seconds = Math.floor((Date.now() - date) / 1000);
+          if (!Number.isFinite(date) || seconds < 0) return text(el);
+          if (seconds < 60) return 'now';
+          if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+          if (seconds < 86400) return Math.floor(seconds / 3600) + 'h';
+          if (seconds < 604800) return Math.floor(seconds / 86400) + 'd';
+          return text(el);
+        };
         const result = (state, items=[]) => ({state,account,items});
         const visible = el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
         \(extractionBody)
@@ -114,7 +127,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
               const badgeLabel = badge?.getAttribute('aria-label') || text(badge);
               if (badgeLabel && !labels.includes(badgeLabel)) labels.push(badgeLabel);
               return {title:text(link), subtitle:url ? url.pathname.split('/').slice(1,3).join('/') : '',
-                url:url?.href || '', unread:false, status:labels.slice(0,2).join(' · ') || null};
+                url:url?.href || '', unread:false, timeLabel:age(row.querySelector('relative-time[datetime], time[datetime]')) || null, status:labels.slice(0,2).join(' · ') || null};
             });
             return result('ready',items);
             """#
@@ -140,7 +153,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
               }
               return {title:text(subject), subtitle:sender?.getAttribute('name') || text(sender) || sender?.getAttribute('email') || '',
                 url, snippet:text(row.querySelector('.y2')).replace(/^[-–—]\s*/, '').slice(0,300) || null,
-                unread:row.classList.contains('zE'), timeLabel:text(row.querySelector('.xW [title], .xW')) || null};
+                unread:row.classList.contains('zE'), timeLabel:age(row.querySelector('.xW [title]') || row.querySelector('.xW')) || null};
             });
             return result('ready',items);
             """#

@@ -131,26 +131,35 @@ enum FavouritePreviewURL {
     }
 }
 
-/// No disk tier. Explicit account identity is required even within the same profile/slot.
+/// No disk tier. Account identity or its unchanged, verified authentication session
+/// is required even within the same profile/slot.
 struct FavouritePreviewCache {
     struct Hit { let snapshot: FavouritePreviewSnapshot; let stale: Bool }
     private struct Key: Hashable { let context: FavouritePreviewContext; let account: String }
-    private struct Entry { let snapshot: FavouritePreviewSnapshot; let at: Date }
+    private struct Entry { let snapshot: FavouritePreviewSnapshot; let at: Date; let session: FavouriteSessionFingerprint? }
     private var entries: [Key: Entry] = [:]
     static let ttl: TimeInterval = 120
     static let lifetime: TimeInterval = 600
     static let capacity = 12
 
-    mutating func store(_ snapshot: FavouritePreviewSnapshot, context: FavouritePreviewContext, now: Date = .now) {
+    mutating func store(_ snapshot: FavouritePreviewSnapshot, context: FavouritePreviewContext, now: Date = .now, session: FavouriteSessionFingerprint? = nil) {
         // Replacing the account in a slot also retires its old data.
         entries = entries.filter { $0.key.context != context || $0.key.account == snapshot.account }
-        entries[Key(context: context, account: snapshot.account)] = Entry(snapshot: snapshot, at: now)
+        entries[Key(context: context, account: snapshot.account)] = Entry(snapshot: snapshot, at: now, session: session)
         while entries.count > Self.capacity, let oldest = entries.min(by: { $0.value.at < $1.value.at })?.key {
             entries[oldest] = nil
         }
     }
     func lookup(context: FavouritePreviewContext, account: String, now: Date = .now) -> Hit? {
         guard !account.isEmpty, let entry = entries[Key(context: context, account: account)],
+              now.timeIntervalSince(entry.at) < Self.lifetime else { return nil }
+        return Hit(snapshot: entry.snapshot, stale: now.timeIntervalSince(entry.at) >= Self.ttl)
+    }
+    /// A previously verified account can be reused without waking a parked favourite,
+    /// but only while that exact route still has the same authenticated session.
+    func lookup(context: FavouritePreviewContext, session: FavouriteSessionFingerprint, now: Date = .now) -> Hit? {
+        guard session.hasAuthentication(for: context.service),
+              let entry = entries.first(where: { $0.key.context == context && $0.value.session == session })?.value,
               now.timeIntervalSince(entry.at) < Self.lifetime else { return nil }
         return Hit(snapshot: entry.snapshot, stale: now.timeIntervalSince(entry.at) >= Self.ttl)
     }

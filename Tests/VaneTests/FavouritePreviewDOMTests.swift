@@ -70,6 +70,18 @@ import XCTest
         XCTAssertEqual(snapshot.items.first?.snippet, "Visible inbox snippet")
     }
 
+
+    func testListTimestampsUseCompactAgeLabelsFromVisibleDateFields() async throws {
+        let date = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-(19 * 3600 + 60)))
+        let result = try await extract("""
+        <header><a aria-label="Google Account: Fixture (fixture@example.test)" href="https://accounts.google.com/SignOutOptions"></a></header>
+        <main role="main"><table><tr class="zA"><td class="yW"><span email="sender@example.test">Sender</span></td>
+        <td><span class="bog" data-legacy-thread-id="abc123">Subject</span></td><td class="xW"><span title="\(date)">Oct 13</span></td></tr></table></main>
+        """, service: .gmail, url: "https://mail.google.com/mail/u/0/#inbox")
+        guard case .ready(let snapshot) = result else { return XCTFail("Expected list fields") }
+        XCTAssertEqual(snapshot.items.first?.timeLabel, "19h")
+    }
+
     func testVerifiedEmptyAndChangedMarkupDiffer() async throws {
         let identity = "<header><a aria-label='Google Account: Fixture (fixture@example.test)' href='https://accounts.google.com/SignOutOptions'></a></header>"
         let empty = try await extract(identity + "<main role='main'><table><tr><td>Your inbox is empty.</td></tr></table></main>", service: .gmail, url: "https://mail.google.com/mail/u/0/#inbox")
