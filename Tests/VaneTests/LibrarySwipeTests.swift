@@ -69,6 +69,41 @@ import XCTest
         }
     }
 
+    func testLibraryDragMovesThePageWithoutResizingWebKitForEachSample() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires interactive navigation")
+        let (store, window, _) = fixture(withSpaces: true)
+        Library.open(.downloads, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        let tab = store.newBlankTab(loading: URL(string: "about:blank"))
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(100))
+        let initialWidth = tab.web.bounds.width
+        let initialX = tab.web.convert(.zero, to: host).x
+        XCTAssertGreaterThan(initialWidth, 100)
+        send(window, phase: .began)
+        send(window, dx: 40)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(tab.web.bounds.width, initialWidth, accuracy: 1,
+                       "Finger tracking must translate the page, without repeated WebKit reflow")
+        XCTAssertGreaterThan(tab.web.convert(.zero, to: host).x, initialX + 5,
+                             "The stable page must still move with the navigation")
+        send(window, dx: 40)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(tab.web.bounds.width, initialWidth, accuracy: 1)
+        send(window, phase: .ended)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertNil(store.librarySwipeProgress)
+        XCTAssertNil(store.libraryGesture.pageWidth)
+        XCTAssertLessThan(tab.web.bounds.width, initialWidth - 50,
+                          "Apply the destination page width once the navigation settles")
+    }
+
     func testImmediateLibraryReleaseStillShowsIntermediatePositions() async throws {
         try XCTSkipIf(Motion.reduced, "Requires animated navigation")
         let (store, window, monitor) = fixture(withSpaces: true)

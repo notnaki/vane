@@ -944,7 +944,8 @@ private struct SpaceSwipe: ViewModifier {
     /// enough to have an answer — see `mine`.
     private enum Claim { case undecided, mine, theirs }
     private var claim = Claim.undecided
-    private var travelled = (h: CGFloat(0), v: CGFloat(0))
+    private var travelled = (h: CGFloat(0), v: CGFloat(0), x: CGFloat(0))
+    private var initialDelta: CGFloat?
 
     /// Reduce Motion commits an owned destination and finishes its presentation at once.
     func finishForReducedMotion() {
@@ -1158,7 +1159,9 @@ private struct SpaceSwipe: ViewModifier {
                 : (self.list.firstIndex { $0.id == store.currentSpaceID } ?? 0)
             let count = creating ? self.list.count + 1 : self.list.count
             let creatable = !store.isPrivate && !store.isLittle && !creating
-            let out = self.swipe.feed(dx: event.scrollingDeltaX, dt: dt, phase: phase,
+            let dx = self.initialDelta ?? event.scrollingDeltaX
+            self.initialDelta = nil
+            let out = self.swipe.feed(dx: dx, dt: dt, phase: phase,
                                       width: width, count: count, index: index,
                                       create: creatable)
             if creating {
@@ -1221,7 +1224,8 @@ private struct SpaceSwipe: ViewModifier {
     private func forget() {
         swipe = Spaces.Swipe()
         claim = .undecided
-        travelled = (0, 0)
+        travelled = (0, 0, 0)
+        initialDelta = nil
         last = 0
         list = []
     }
@@ -1447,6 +1451,7 @@ private struct SpaceSwipe: ViewModifier {
         }
         travelled.h += abs(event.scrollingDeltaX)
         travelled.v += abs(event.scrollingDeltaY)
+        travelled.x += event.scrollingDeltaX
         // A gesture that has gone this far down is a scroll, whatever it does next: a flick
         // down a long tab list wanders sideways as the fingers roll, and a monitor that
         // re-asks on every frame will eventually catch one of those wobbles and eat the rest
@@ -1462,13 +1467,14 @@ private struct SpaceSwipe: ViewModifier {
         // The first claimed event is the gesture's beginning as far as the state machine is
         // concerned: the `.began` that opened it carried no deltas and went to the tab list.
         swipe = Spaces.Swipe()
+        initialDelta = travelled.x
         last = 0
         list = store.strip
         return true
     }
 
     /// Points of travel, in both axes together, before the gesture is given a direction.
-    private static let lockDistance: CGFloat = 10
+    static let lockDistance: CGFloat = 2
     /// …and points *down* after which it can never be a Space swipe, however far it then
     /// wanders sideways.
     private static let verticalVeto: CGFloat = 6

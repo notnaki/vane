@@ -30,6 +30,20 @@ import XCTest
         return (store, second, window)
     }
 
+    func testSlowSpaceDragStartsWithoutTenPointDeadZone() {
+        let (store, _, window) = fixture()
+        let monitor = SwipeMonitor()
+        monitor.install(store)
+        defer { monitor.remove() }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
+        for dx: CGFloat in [-0.5, -0.5, -1] {
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: dx))
+        }
+        XCTAssertTrue(store.spaceSwiping, "A deliberate slow horizontal drag must start near its origin")
+        XCTAssertEqual(store.spaceDrag, -2, accuracy: 0.001,
+                       "The first visible offset includes the small samples before axis lock")
+    }
+
     func testSidebarSwipeIsClaimedWithNewTabPaletteOpen() {
         let (store, _, window) = fixture()
         let monitor = SwipeMonitor()

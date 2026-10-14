@@ -8,7 +8,11 @@ extension Look {
 
 /// Finger samples affect navigation geometry, not the browser or its tab rows.
 @MainActor final class LibraryGesture: ObservableObject {
-    @Published var progress: CGFloat?
+    @Published var progress: CGFloat? {
+        didSet { if progress == nil { pageWidth = nil } }
+    }
+    /// Translate an unchanged page while the fingers move; resize WebKit once at rest.
+    @Published var pageWidth: CGFloat?
 }
 
 /// Keep the animated geometry in one small observation boundary. The page, sidebar
@@ -29,40 +33,45 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
     private var progress: CGFloat { gesture.progress ?? (libraryOpen ? 1 : 0) }
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            HStack(spacing: 0) {
-                Color.clear.frame(width: (sidebarShown ? sidebarWidth : 0)
-                    * (1 - progress) + panelWidth * progress)
-                // Resolve navigation geometry once per surface, rather than per leaf.
-                page.geometryGroup()
-            }
-            .disabled(palettePresented)
-            .accessibilityHidden(palettePresented)
-            // Adjacent surfaces follow the same translation, clipped at the page seam.
-            sidebar
-                .geometryGroup()
-                .offset(x: panelWidth * progress)
-                .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
-                    * (1 - progress) + panelWidth * progress, alignment: .leading)
-                .mask {
-                    Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - progress) : 0)
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                HStack(spacing: 0) {
+                    Color.clear.frame(width: (sidebarShown ? sidebarWidth : 0)
+                        * (1 - progress) + panelWidth * progress)
+                    // Resolve navigation geometry once per surface, rather than per leaf.
+                    page.geometryGroup().frame(width: gesture.pageWidth ?? max(0,
+                        geometry.size.width - ((sidebarShown ? sidebarWidth : 0) * (1 - progress)
+                            + panelWidth * progress)))
                 }
-                .zIndex(1)
-            if libraryOpen || gesture.progress != nil {
-                panel
-                    .frame(width: panelWidth)
-                    .overlay(alignment: .leading) {
-                        LibrarySwipePosition(monitor: monitor)
-                            .frame(width: 1, height: 1)
-                            .allowsHitTesting(false).accessibilityHidden(true)
-                    }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .disabled(palettePresented)
+                .accessibilityHidden(palettePresented)
+                // Adjacent surfaces follow the same translation, clipped at the page seam.
+                sidebar
                     .geometryGroup()
-                    .offset(x: -panelWidth * (1 - progress))
-                    .transition(.offset(x: -panelWidth))
-                    .disabled(palettePresented)
-                    .allowsHitTesting(libraryOpen && !palettePresented)
-                    .accessibilityHidden(!libraryOpen || palettePresented)
+                    .offset(x: panelWidth * progress)
+                    .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
+                        * (1 - progress) + panelWidth * progress, alignment: .leading)
+                    .mask {
+                        Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - progress) : 0)
+                    }
                     .zIndex(1)
+                if libraryOpen || gesture.progress != nil {
+                    panel
+                        .frame(width: panelWidth)
+                        .overlay(alignment: .leading) {
+                            LibrarySwipePosition(monitor: monitor)
+                                .frame(width: 1, height: 1)
+                                .allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                        .geometryGroup()
+                        .offset(x: -panelWidth * (1 - progress))
+                        .transition(.offset(x: -panelWidth))
+                        .disabled(palettePresented)
+                        .allowsHitTesting(libraryOpen && !palettePresented)
+                        .accessibilityHidden(!libraryOpen || palettePresented)
+                        .zIndex(1)
+                }
             }
         }
     }
@@ -318,7 +327,7 @@ private struct LibrarySwipe: ViewModifier {
             // Match the sidebar's axis lock: a vertical scroll cannot later become
             // navigation as the fingers drift sideways.
             if travel.vertical >= 6 { claim = .theirs; return event }
-            guard travel.horizontal + travel.vertical >= 10 else { return event }
+            guard travel.horizontal + travel.vertical >= SwipeMonitor.lockDistance else { return event }
             guard travel.horizontal > travel.vertical * 1.5 else { claim = .theirs; return event }
             switch action {
             case .close: claim = travel.x < 0 ? .mine : .theirs
@@ -334,6 +343,13 @@ private struct LibrarySwipe: ViewModifier {
                 dragOrigin = store.librarySwipeProgress == nil ? endpoint
                     : (presentedProgress ?? store.librarySwipeProgress ?? endpoint)
                 settlement = UUID()
+                if store.libraryGesture.pageWidth == nil, let window = store.window {
+                    let origin = dragOrigin ?? endpoint
+                    let leading = (store.sidebarShown ? SidebarWidth.shared.width : 0) * (1 - origin)
+                        + panelWidth * origin
+                    let width = (window.contentView?.bounds.width ?? window.frame.width) - leading
+                    if width > 0 { store.libraryGesture.pageWidth = width }
+                }
             }
             Motion.instant {
                 store.librarySwipeProgress = min(1, max(0, (dragOrigin ?? 0)
