@@ -1,6 +1,65 @@
 import AppKit
 import SwiftUI
 
+/// Finger samples affect navigation geometry, not the browser or its tab rows.
+@MainActor final class LibraryGesture: ObservableObject {
+    @Published var progress: CGFloat?
+}
+
+/// Keep the animated geometry in one small observation boundary. The page, sidebar
+/// and Library values remain unchanged during dragging, so their bodies can stay cached.
+struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
+    @ObservedObject var gesture: LibraryGesture
+    let libraryOpen: Bool
+    let sidebarShown: Bool
+    let floating: Bool
+    let sidebarWidth: CGFloat
+    let panelWidth: CGFloat
+    let palettePresented: Bool
+    let monitor: LibrarySwipeMonitor
+    let page: Page
+    let sidebar: Sidebar
+    let panel: Panel
+
+    private var progress: CGFloat { gesture.progress ?? (libraryOpen ? 1 : 0) }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            HStack(spacing: 0) {
+                Color.clear.frame(width: (sidebarShown ? sidebarWidth : 0)
+                    * (1 - progress) + panelWidth * progress)
+                page
+            }
+            .disabled(palettePresented)
+            .accessibilityHidden(palettePresented)
+            // Adjacent surfaces follow the same translation, clipped at the page seam.
+            sidebar
+                .offset(x: panelWidth * progress)
+                .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
+                    * (1 - progress) + panelWidth * progress, alignment: .leading)
+                .mask {
+                    Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - progress) : 0)
+                }
+                .zIndex(1)
+            if libraryOpen || gesture.progress != nil {
+                panel
+                    .frame(width: panelWidth)
+                    .overlay(alignment: .leading) {
+                        LibrarySwipePosition(monitor: monitor)
+                            .frame(width: 1, height: 1)
+                            .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                    .offset(x: -panelWidth * (1 - progress))
+                    .transition(.offset(x: -panelWidth))
+                    .disabled(palettePresented)
+                    .allowsHitTesting(libraryOpen && !palettePresented)
+                    .accessibilityHidden(!libraryOpen || palettePresented)
+                    .zIndex(1)
+            }
+        }
+    }
+}
+
 extension View {
     /// Keep the monitor on the window root: closing Library must still consume the
     /// gesture's momentum instead of handing it to the newly exposed page or sidebar.

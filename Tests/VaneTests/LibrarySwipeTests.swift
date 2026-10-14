@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import XCTest
 @testable import vane
@@ -48,6 +49,119 @@ import XCTest
                       momentum: NSEvent.Phase = [], precise: Bool = true, inverted: Bool = true) {
         NSApplication.shared.sendEvent(LibraryScrollEvent(window: window, point: point,
             dx: dx, dy: dy, phase: phase, momentum: momentum, precise: precise, inverted: inverted))
+    }
+
+    func testFingerUpdatesDoNotInvalidateBrowserState() throws {
+        try XCTSkipIf(Motion.reduced, "Requires interactive presentation")
+        let (store, window, _) = fixture(withSpaces: true)
+        var publications = 0
+        let observation = store.objectWillChange.sink { publications += 1 }
+        defer { observation.cancel() }
+        send(window, phase: .began)
+        send(window, dx: -15)
+        for _ in 0..<20 { send(window, dx: -3) }
+        XCTAssertNotNil(store.librarySwipeProgress)
+        XCTAssertEqual(publications, 0,
+                       "Finger samples should update presentation without invalidating the browser and every tab row")
+    }
+
+    /// Run separately with VANE_UI_PERFORMANCE=1. Timings are diagnostic rather than
+    /// machine-dependent assertions; the ordinary test above guards the invalidation boundary.
+    func testPopulatedArchiveSwipeTiming() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["VANE_UI_PERFORMANCE"] == "1")
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(.off)
+        defer { saver.setMode(previousMode) }
+        try XCTSkipIf(Motion.reduced, "Requires interactive presentation")
+        _ = NSApplication.shared
+        let previousPolicy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.regular)
+        defer { NSApp.setActivationPolicy(previousPolicy) }
+        let (store, originalWindow, monitor) = fixture(withSpaces: true)
+        let window = VaneWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 700),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        store.window = window
+        monitor.remove()
+        monitor.install(store)
+        defer { store.window = originalWindow; window.close() }
+        store.sharingReady = false
+        let count = ProcessInfo.processInfo.environment["VANE_LIBRARY_PERF_TABS"].flatMap(Int.init) ?? 300
+        store.tabs = (0..<count).map { index in
+            let tab = Tab(profileID: store.profileID)
+            tab.kind = .today
+            tab.park(url: URL(string: "about:blank#swipe-\(index)")!, Parked(title: "Swipe fixture \(index)"))
+            return tab
+        }
+        store.syncShapes()
+        let key = ProfileManager.defaultsKey("archivedTabs", store.profileID)
+        let oldArchive = UserDefaults.vane.data(forKey: key)
+        let archived = (0..<2000).map { Archive.Entry(url: "about:blank#archive-\($0)",
+            title: "Archived fixture \($0)", at: Date.now.addingTimeInterval(Double(-$0 * 60))) }
+        UserDefaults.vane.set(try JSONEncoder().encode(archived), forKey: key)
+        defer {
+            Archive.shared(for: store.profileID).clear()
+            UserDefaults.vane.set(oldArchive, forKey: key)
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+        Library.open(.archived, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.level = .floating
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(500))
+        print("LIBRARY_SWIPE_WINDOW visible=\(window.isVisible) occlusion=\(window.occlusionState.rawValue) active=\(NSApp.isActive) frame=\(window.frame) screens=\(NSScreen.screens.map(\.frame))")
+        // Force native layout even when this desktop session occludes test windows.
+        // These timings measure main-thread update work, not displayed frame rate.
+        var lastTick = ProcessInfo.processInfo.systemUptime
+        var maxGap = 0.0
+        let timer = Timer(timeInterval: 0.001, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                let now = ProcessInfo.processInfo.systemUptime
+                maxGap = max(maxGap, now - lastTick)
+                lastTick = now
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        defer { timer.invalidate() }
+        for visit in 0..<3 {
+            for opening in [true, false] {
+                var publications = 0
+                let observation = store.objectWillChange.sink { publications += 1 }
+                maxGap = 0
+                lastTick = ProcessInfo.processInfo.systemUptime
+                send(window, phase: .began)
+                let start = ProcessInfo.processInfo.systemUptime
+                send(window, dx: opening ? 15 : -15)
+                host.layoutSubtreeIfNeeded()
+                let first = (ProcessInfo.processInfo.systemUptime - start) * 1000
+                var times: [Double] = []
+                for _ in 0..<30 {
+                    let frame = ProcessInfo.processInfo.systemUptime
+                    send(window, dx: opening ? 3 : -3)
+                    host.layoutSubtreeIfNeeded()
+                    times.append((ProcessInfo.processInfo.systemUptime - frame) * 1000)
+                    try await Task.sleep(for: .milliseconds(8))
+                }
+                observation.cancel()
+                times.sort()
+                print("LIBRARY_SWIPE_PERF tabs=\(count) visit=\(visit) opening=\(opening) first_ms=\(first) median_ms=\(times[15]) p95_ms=\(times[28]) max_ms=\(times.last!) max_gap_ms=\(maxGap * 1000) browser_publications=\(publications)")
+                send(window, phase: .ended)
+                try await Task.sleep(for: .milliseconds(300))
+            }
+        }
+        XCTAssertEqual(ArchiveLibrary.library(for: store.profileID).entries.count, 2000)
     }
 
     func testOpeningAndClosingTrackFingersBeforeCommitting() throws {

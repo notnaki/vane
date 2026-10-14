@@ -164,6 +164,15 @@ VANE_STORE_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter
 VANE_STORE_PERFORMANCE=1 swift test -c release -Xswiftc -enable-testing --filter BookmarkPresentationTests
 ```
 
+The Library swipe fixture uses 300 tabs and 2,000 archived entries to report first-update
+and subsequent native layout costs, browser invalidations, and window visibility. Forced
+layout can run with an occluded test window; these numbers measure main-thread update
+work, not displayed frame rate. Set `VANE_LIBRARY_PERF_TABS` to compare other sidebar sizes.
+
+```sh
+VANE_UI_PERFORMANCE=1 swift test --filter LibrarySwipeTests.testPopulatedArchiveSwipeTiming
+```
+
 Run comparisons on the same quiet logged-in Mac, with the same fixtures and build
 configuration. Coordinate with other profiling/build tasks before collecting
 timings; use `--skip-build` only after building the exact revision to measure.

@@ -391,45 +391,19 @@ struct BrowserWindow: View {
                                   private: store.isPrivate, available: windowWidth)
     }
 
-    private var libraryProgress: CGFloat {
-        store.librarySwipeProgress ?? (store.libraryOpen ? 1 : 0)
-    }
-
     var body: some View {
         ZStack(alignment: .leading) {
             WindowGlass()
             SpaceGround()
-            HStack(spacing: 0) {
-                // Arc's Library replaces the *sidebar*, not the window: a rail and one list
-                // column stand where the sidebar stood, and the page simply moves over by
-                // the difference in width. Nothing is covered and nothing is unmounted, so
-                // media, the mini player and picture-in-picture carry straight on.
-                // A stable spacer interpolates the page's origin; the Library keeps
-                // its full width in an overlay rather than reflowing during dismissal.
-                Color.clear.frame(width: (store.sidebarShown ? sidebar.width : 0)
-                    * (1 - libraryProgress) + libraryWidth * libraryProgress)
-                WebCard()
-                    .anchorPreference(key: DownloadFeedbackBounds.self, value: .bounds) { [.page: $0] }
-            }
-            .disabled(store.palette != nil)
-            .accessibilityHidden(store.palette != nil)
+            LibraryNavigationLayout(gesture: store.libraryGesture,
+                libraryOpen: store.libraryOpen, sidebarShown: store.sidebarShown,
+                floating: !store.sidebarShown, sidebarWidth: sidebar.width,
+                panelWidth: libraryWidth, palettePresented: store.palette != nil,
+                monitor: store.librarySwipeMonitor,
+                page: WebCard().anchorPreference(key: DownloadFeedbackBounds.self,
+                                                value: .bounds) { [.page: $0] },
+                sidebar: sidebarSurface, panel: LibraryPanel())
             edgeStrip
-            sidebarSurface
-            if store.libraryOpen || store.librarySwipeProgress != nil {
-                LibraryPanel()
-                    .frame(width: libraryWidth)
-                    .overlay(alignment: .leading) {
-                        LibrarySwipePosition(monitor: store.librarySwipeMonitor)
-                            .frame(width: 1, height: 1)
-                            .allowsHitTesting(false).accessibilityHidden(true)
-                    }
-                    .offset(x: -libraryWidth * (1 - libraryProgress))
-                    .transition(.offset(x: -libraryWidth))
-                    .disabled(store.palette != nil)
-                    .allowsHitTesting(store.libraryOpen && store.palette == nil)
-                    .accessibilityHidden(!store.libraryOpen || store.palette != nil)
-                    .zIndex(1)
-            }
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
             // Not while the Library is up: the rail is not the sidebar, and is not dragged.
@@ -547,16 +521,6 @@ struct BrowserWindow: View {
                         .allowsHitTesting(false)
                 }
                 .padding(floating ? Look.floatingSidebarGap : 0)
-                // Library's trailing edge and the sidebar's leading edge travel
-                // together. Clip only at the page seam, so this is a neighboring
-                // surface leaving the viewport rather than a panel covering it.
-                .offset(x: libraryWidth * libraryProgress)
-                .frame(width: (sidebar.width + (floating ? 2 * Look.floatingSidebarGap : 0))
-                    * (1 - libraryProgress) + libraryWidth * libraryProgress,
-                       alignment: .leading)
-                .mask {
-                    Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - libraryProgress) : 0)
-                }
                 .allowsHitTesting(!store.libraryOpen)
                 .transition(.move(edge: .leading).combined(with: .opacity))
                 // Above the page during edge reveal and dismissal; below the resize handle.
