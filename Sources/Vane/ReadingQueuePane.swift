@@ -31,6 +31,7 @@ struct ReadingQueueHost: View {
 }
 
 struct ReadingQueuePane: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @StateObject private var collection = ReadingQueueCollection()
     @ObservedObject var origin: TabStore
     @ObservedObject private var library = Library.shared
@@ -159,7 +160,7 @@ struct ReadingQueuePane: View {
                 if inside { hoveredArticle = item.id }
                 else if hoveredArticle == item.id { hoveredArticle = nil }
             }
-            .background(focusedArticle == item.id ? Look.controlFill : .clear, in: .rect(cornerRadius: Look.pillRadius))
+            .background(focusedArticle == item.id ? chromeTheme.controlFill : .clear, in: .rect(cornerRadius: Look.pillRadius))
             .contextMenu { actions(item) }
     }
     @ViewBuilder private func actions(_ item: ReadingQueueItem) -> some View {

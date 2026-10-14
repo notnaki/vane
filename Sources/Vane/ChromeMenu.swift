@@ -107,7 +107,7 @@ struct ChromeMenuTypeahead {
         panel.level = .popUpMenu
         panel.title = title
         panel.contentView = NSHostingView(rootView: ChromeMenuSurface(
-            items: items, selection: selection, title: title,
+            items: items, theme: source?.theme ?? SpaceChromeTheme(), selection: selection, title: title,
             pointerX: showsPointer ? min(max(anchor.midX - frame.minX, 24), frame.width - 24) : nil,
             pointerBelow: frame.minY >= anchor.maxY,
             choose: { [weak self] in self?.choose($0) }))
@@ -214,6 +214,7 @@ private final class ChromeMenuPanel: NSPanel {
 
 private struct ChromeMenuSurface: View {
     let items: [ChromeMenuItem]
+    let theme: SpaceChromeTheme
     @ObservedObject var selection: ChromeMenuSelection
     let title: String
     let pointerX: CGFloat?
@@ -242,7 +243,7 @@ private struct ChromeMenuSurface: View {
 
     private var pointer: some View {
         ChromeMenuPointer(x: pointerX ?? 0, below: pointerBelow)
-            .fill(.black)
+            .fill(theme.bubble)
             .frame(height: ChromeMenuLayout.pointerHeight)
             .accessibilityHidden(true)
     }
@@ -267,7 +268,7 @@ private struct ChromeMenuSurface: View {
             }
         }
         .padding(ChromeMenuLayout.inset)
-        .background(.black, in: .rect(cornerRadius: 16))
+        .background(theme.bubble, in: .rect(cornerRadius: 16))
         .clipShape(.rect(cornerRadius: 16))
     }
 
@@ -294,7 +295,7 @@ private struct ChromeMenuSurface: View {
             .padding(.horizontal, 12)
             .frame(height: ChromeMenuLayout.rowHeight)
             .contentShape(.rect)
-            .background(selection.index == index ? .white.opacity(0.14) : .clear,
+            .background(selection.index == index ? theme.bubbleHover : .clear,
                         in: .rect(cornerRadius: 10))
         }
         .buttonStyle(TactileButtonStyle())
@@ -327,6 +328,7 @@ private struct ChromeMenuPointer: Shape {
 
 /// A noninteractive anchor lets the SwiftUI button retain its normal accessibility.
 @MainActor final class ChromeMenuAnchor: ObservableObject {
+    fileprivate var theme = SpaceChromeTheme()
     fileprivate weak var view: NSView?
     @Published fileprivate(set) var isPresented = false
 
@@ -345,10 +347,11 @@ private struct ChromeMenuPointer: Shape {
 
 struct ChromeMenuAnchorView: NSViewRepresentable {
     let anchor: ChromeMenuAnchor
+    @Environment(\.spaceChromeTheme) private var theme
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         anchor.view = view
         return view
     }
-    func updateNSView(_ view: NSView, context: Context) { anchor.view = view }
+    func updateNSView(_ view: NSView, context: Context) { anchor.view = view; anchor.theme = theme }
 }

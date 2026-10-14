@@ -4,12 +4,12 @@ import SwiftUI
 enum TabTooltipLayout {
     static func width(title: String, hint: String? = "Double-click to rename", shortcut: String? = nil,
                       compact: Bool = false) -> CGFloat {
-        let titleWidth = (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)]).width
-        let hintWidth = ((hint ?? "") as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width
+        let titleWidth = (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)]).width
+        let hintWidth = ((hint ?? "") as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]).width
         let shortcutWidth = shortcut.map {
             ($0 as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]).width + 22
         } ?? 0
-        return min(compact ? 240 : 300, ceil(max(titleWidth + shortcutWidth, hintWidth)) + 24)
+        return min(compact ? 240 : 300, ceil(max(titleWidth + shortcutWidth, hintWidth)) + 20)
     }
 
     static func frame(anchor: CGRect, size: CGSize, screen: CGRect, centered: Bool = false) -> CGRect {
@@ -100,7 +100,7 @@ enum TabTooltipLayout {
         let pointer = anchor.convert(owner.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
         guard anchor.visibleRect.contains(pointer) else { dismiss(); return }
         let surface = TabTooltipSurface(title: anchor.title, hint: anchor.hint,
-                                        shortcut: anchor.shortcut, compact: anchor.centered)
+                                        shortcut: anchor.shortcut, compact: anchor.centered, theme: anchor.theme)
         let hosting = NSHostingView(rootView: surface)
         let size = hosting.fittingSize
         let rect = owner.convertToScreen(anchor.convert(anchor.visibleRect, to: nil))
@@ -135,7 +135,7 @@ enum TabTooltipLayout {
         // Keep the mounted surface when a title or copy confirmation changes under the
         // pointer. Replacing its native host repeats setup and discards view identity.
         hosting.rootView = TabTooltipSurface(title: anchor.title,
-            hint: anchor.hint, shortcut: anchor.shortcut, compact: anchor.centered)
+            hint: anchor.hint, shortcut: anchor.shortcut, compact: anchor.centered, theme: anchor.theme)
         let rect = owner.convertToScreen(anchor.convert(anchor.visibleRect, to: nil))
         panel.setFrame(TabTooltipLayout.frame(anchor: rect, size: hosting.fittingSize,
                                               screen: screen.visibleFrame, centered: anchor.centered), display: false)
@@ -186,12 +186,13 @@ private struct TabTooltipSurface: View {
     let hint: String?
     let shortcut: String?
     let compact: Bool
+    let theme: SpaceChromeTheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.94))
                     .lineLimit(2)
                     .truncationMode(.tail)
@@ -206,24 +207,26 @@ private struct TabTooltipSurface: View {
             }
             if let hint {
                 Text(hint)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color(red: 0.66, green: 0.65, blue: 0.83))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(theme.bubbleHint)
                     .lineLimit(compact ? 2 : 3)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .frame(width: TabTooltipLayout.width(title: title, hint: hint, shortcut: shortcut,
                                              compact: compact), alignment: .leading)
-        .background(Color(red: 0.045, green: 0.035, blue: 0.24), in: .rect(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.14), lineWidth: 1) }
+        .background(theme.bubble, in: .rect(cornerRadius: 9))
+        .overlay { RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.14), lineWidth: 1) }
+        .animation(Motion.reduced ? nil : Look.quick, value: theme)
         .accessibilityHidden(true)
     }
 }
 
 final class TabTooltipAnchorView: NSView {
     let tooltip: TabTooltip
+    private(set) var theme = SpaceChromeTheme()
     private(set) var title = ""
     private(set) var hint: String? = "Double-click to rename"
     private(set) var shortcut: String?
@@ -239,9 +242,10 @@ final class TabTooltipAnchorView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func configure(title: String, hint: String? = "Double-click to rename", shortcut: String? = nil,
-                   centered: Bool = false, enabled: Bool) {
+                   centered: Bool = false, enabled: Bool, theme: SpaceChromeTheme = SpaceChromeTheme()) {
         let changed = self.title != title || self.hint != hint || self.shortcut != shortcut
-            || self.centered != centered
+            || self.centered != centered || self.theme != theme
+        self.theme = theme
         self.title = title
         self.hint = hint
         self.shortcut = shortcut
@@ -278,9 +282,10 @@ private struct TabTooltipAnchor: NSViewRepresentable {
     let shortcut: String?
     let centered: Bool
     let enabled: Bool
+    @Environment(\.spaceChromeTheme) private var theme
     func makeNSView(context: Context) -> TabTooltipAnchorView { TabTooltipAnchorView() }
     func updateNSView(_ view: TabTooltipAnchorView, context: Context) {
-        view.configure(title: title, hint: hint, shortcut: shortcut, centered: centered, enabled: enabled)
+        view.configure(title: title, hint: hint, shortcut: shortcut, centered: centered, enabled: enabled, theme: theme)
     }
     static func dismantleNSView(_ view: TabTooltipAnchorView, coordinator: ()) {
         view.tooltip.dismiss(for: view)

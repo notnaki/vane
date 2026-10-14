@@ -62,6 +62,7 @@ private func applyTidyGroups(_ groups: [TidyTabs.Group], to store: TabStore) -> 
 }
 
 struct TidyPreviewSheet: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var store: TabStore
     let preview: TidyPreview
     @Environment(\.dismiss) private var dismiss
@@ -110,7 +111,7 @@ struct TidyPreviewSheet: View {
                 .font(Look.icon)
                 .foregroundStyle(Look.inkSecondary)
                 .frame(width: Look.pillHeight, height: Look.pillHeight)
-                .background(Look.controlFill, in: .rect(cornerRadius: Look.pillRadius))
+                .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.pillRadius))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Look.rowGap) {
                 Text("Tidy preview").font(Look.dialogTitle)
@@ -144,7 +145,7 @@ struct TidyPreviewSheet: View {
             }
             .padding(.horizontal, Look.cardInset)
             .padding(.vertical, Look.rowInset)
-            .background(Look.controlFill)
+            .background(chromeTheme.controlFill)
 
             VStack(alignment: .leading, spacing: Look.listRowGap) {
                 ForEach(tabs) { tab in
@@ -166,7 +167,7 @@ struct TidyPreviewSheet: View {
             .padding(.horizontal, Look.inset)
             .padding(.vertical, Look.listRowGap)
         }
-        .background(Look.cardFill)
+        .background(chromeTheme.cardFill)
         .clipShape(.rect(cornerRadius: Look.pillRadius))
         .overlay {
             RoundedRectangle(cornerRadius: Look.pillRadius)

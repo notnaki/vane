@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SpaceTemplatesSheet: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var store: TabStore
     @StateObject private var model: WorkspaceTemplateModel
     @Environment(\.dismiss) private var dismiss
@@ -131,7 +132,7 @@ struct SpaceTemplatesSheet: View {
                                 Text("\(template.layout.tabs.count) tabs · \(template.layout.splits.count) splits")
                                     .font(.caption).foregroundStyle(.secondary)
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                                .background(!model.saving && model.selection == template.id ? Look.selected : Look.controlFill,
+                                .background(!model.saving && model.selection == template.id ? chromeTheme.selected : chromeTheme.controlFill,
                                             in: .rect(cornerRadius: Look.pillRadius))
                         }.buttonStyle(TactileButtonStyle(scales: false)).disabled(model.busy)
                             .accessibilityLabel("Template \(template.name), \(template.layout.tabs.count) tabs")
@@ -157,6 +158,7 @@ struct SpaceTemplatesSheet: View {
 }
 
 struct WorkspaceContentsPreview: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let layout: SpaceLayout
     let unlocked: Set<UUID>
     var body: some View {
@@ -185,7 +187,7 @@ struct WorkspaceContentsPreview: View {
             }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
         }
         .frame(height: 280)
-        .background(Look.controlFill, in: .rect(cornerRadius: Look.pillRadius))
+        .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.pillRadius))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Workspace contents preview")
     }

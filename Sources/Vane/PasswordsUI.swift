@@ -16,6 +16,7 @@ import SwiftUI
 /// The pure parts (grouping, search, what a keystroke means, what VoiceOver is allowed to
 /// hear) are static functions with a `check()`, so they can be proved headless.
 @MainActor struct PasswordsPane: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @AppStorage(FolderUnlockMethod.key, store: UserDefaults.vane) private var folderUnlockMethod = FolderUnlockMethod.touchID
     var settingsProfileID: UUID? = nil
     @ObservedObject private var manager = ProfileManager.shared
@@ -196,7 +197,7 @@ import SwiftUI
         }
         .padding(.horizontal, Look.inset)
         .frame(height: Look.control + Look.inset)
-        .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+        .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
         .accessibilityLabel("Search saved logins")
     }
 
@@ -535,6 +536,7 @@ import SwiftUI
 
 /// A bounded list keeps the manager's search in place and keyboard selection visible.
 @MainActor struct PasswordManagerList<Footer: View>: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let groups: [(host: String, logins: [Passwords.Login])]
     @Binding var selected: String?
     let profileID: UUID
@@ -567,7 +569,7 @@ import SwiftUI
                                         Image(systemName: "chevron.right").foregroundStyle(Look.inkTertiary)
                                     }
                                     .padding(Look.cardInset).frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(selected == group.host ? Look.accentSelected : .clear)
+                                    .background(selected == group.host ? chromeTheme.accentSelected : .clear)
                                     .contentShape(.rect)
                                 }.buttonStyle(.plain).id(group.host)
                                 if group.host != groups.last?.host {
@@ -1149,6 +1151,7 @@ extension PasswordChooser {
 }
 
 private struct ChooserRow: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let account: String
     let host: String
     let website: String
@@ -1194,7 +1197,7 @@ private struct ChooserRow: View {
     /// Hover wins over the selection, so the row under the pointer is always the one that
     /// looks like it will be clicked.
     private func fill(for selected: Bool, hovered: Bool) -> Color {
-        hovered ? Look.hovered : (selected ? Look.accentSelected : .clear)
+        hovered ? chromeTheme.hovered : (selected ? chromeTheme.accentSelected : .clear)
     }
 }
 
@@ -1228,6 +1231,7 @@ struct PasswordOffer: View {
 }
 
 struct PasswordOfferCard: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let offer: PendingSave
     let profileID: UUID
     var problem: String? = nil
@@ -1348,7 +1352,7 @@ struct PasswordOfferCard: View {
             .padding(Look.rowInset)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+        .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
         // The password is the user's own and is on its way into their keychain, but it is
         // still not something VoiceOver should read out unprompted.
         .accessibilityElement(children: .contain)
@@ -1469,6 +1473,7 @@ struct PasswordValue: View {
 }
 
 struct PasswordSiteIcon: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let host: String
     let profileID: UUID
 
@@ -1477,7 +1482,7 @@ struct PasswordSiteIcon: View {
             Favicons.cache(for: profileID).icon(for: $0)
         }, fallback: "key.fill", size: Look.rowIcon)
             .frame(width: 32, height: 32)
-            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+            .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
             .accessibilityHidden(true)
     }
 }

@@ -758,6 +758,7 @@ private struct LibraryRail: View {
 /// selections stacked on each other — the glyph is drawn bare and the card is what says
 /// which section this is.
 private struct LibraryTile: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let section: LibrarySection
     let selected: Bool
     let action: () -> Void
@@ -781,7 +782,7 @@ private struct LibraryTile: View {
         .foregroundStyle(selected ? Look.inkPrimary : Look.inkSecondary)
         .frame(maxWidth: .infinity)
         .frame(minHeight: Look.libraryTile)
-        .background(selected ? Look.selected : (hovering ? Look.hovered : .clear),
+        .background(selected ? chromeTheme.selected : (hovering ? chromeTheme.hovered : .clear),
                     in: .rect(cornerRadius: Look.cardRadius))
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
@@ -814,6 +815,7 @@ private struct LibraryTile: View {
 /// list. Filter filters and nothing else — Clear under a menu called Filter is a destructive
 /// verb nobody would look for there.
 struct LibraryHead<Filter: View, Actions: View>: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let section: LibrarySection
     let filtering: Bool
     @Binding var query: String
@@ -836,7 +838,7 @@ struct LibraryHead<Filter: View, Actions: View>: View {
             .padding(.horizontal, Look.captionGap * 3)
             .frame(height: Look.libraryField)
             .frame(maxWidth: .infinity)
-            .background(Look.controlFill, in: .rect(cornerRadius: Look.pillRadius))
+            .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.pillRadius))
             .accessibilityLabel(section.searchPrompt)
 
             if section.filterable {
@@ -888,7 +890,7 @@ struct LibraryHead<Filter: View, Actions: View>: View {
             .fixedSize()
             .padding(.horizontal, Look.inset)
             .frame(height: Look.libraryField)
-            .background(filling ? Look.selected : Look.controlFill,
+            .background(filling ? chromeTheme.selected : chromeTheme.controlFill,
                         in: .rect(cornerRadius: Look.pillRadius))
     }
 }
@@ -921,6 +923,7 @@ private struct LibraryEmpty: View {
 /// pointer — the "…" that opens the row's verbs. The row is one accessibility element
 /// carrying the same verbs as named actions rather than a row of buttons to tab through.
 private struct LibraryRow<Leading: View, Actions: View>: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let title: String
     let subtitle: String
     var spoken: String = ""
@@ -955,7 +958,7 @@ private struct LibraryRow<Leading: View, Actions: View>: View {
         .padding(.horizontal, Look.inset)
         .frame(height: Look.libraryRow)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(hovering ? Look.hovered : .clear, in: .rect(cornerRadius: Look.cardRadius))
+        .background(hovering ? chromeTheme.hovered : .clear, in: .rect(cornerRadius: Look.cardRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -1432,6 +1435,7 @@ private struct MediaPane: View {
 /// One picture, at column width and its own height. Clicking opens it, the way clicking a
 /// finished download does; the pointer brings up the same verbs the list row has.
 private struct MediaTile: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var item: Downloads.Item
     let downloads: Downloads
     let height: CGFloat
@@ -1453,7 +1457,7 @@ private struct MediaTile: View {
                 Image(systemName: "photo").font(Look.libraryTileIcon)
                     .foregroundStyle(Look.inkQuiet)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Look.controlFill)
+                    .background(chromeTheme.controlFill)
             }
         }
         .frame(width: Look.mediaColumn, height: height)
@@ -1462,10 +1466,10 @@ private struct MediaTile: View {
         // the column would stop being one clean edge.
         .overlay {
             if hovering {
-                RoundedRectangle(cornerRadius: Look.cardRadius).fill(Look.hovered)
+                RoundedRectangle(cornerRadius: Look.cardRadius).fill(chromeTheme.hovered)
             }
         }
-        .hairline(radius: Look.cardRadius, hovering ? Look.selectedEdge : .clear)
+        .hairline(radius: Look.cardRadius, hovering ? chromeTheme.selectedEdge : .clear)
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -1609,6 +1613,7 @@ private struct SpacesPane: View {
 /// the sidebar minutes later, for a Space made from here. The naming panel belongs on the new
 /// card instead; see `SpaceCard.editing`.
 private struct NewSpaceCard: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @ObservedObject private var library = Library.shared
     @State private var hovering = false
@@ -1618,7 +1623,7 @@ private struct NewSpaceCard: View {
             Image(systemName: "plus").font(Look.icon)
                 .foregroundStyle(hovering ? Look.inkPrimary : Look.inkSecondary)
                 .frame(width: Look.libraryField, height: Look.libraryField)
-                .background(hovering ? Look.hovered : Look.controlFill,
+                .background(hovering ? chromeTheme.hovered : chromeTheme.controlFill,
                             in: .rect(cornerRadius: Look.pillRadius))
         }
         .buttonStyle(.plain)
@@ -1637,6 +1642,7 @@ private struct NewSpaceCard: View {
 }
 
 private struct SpaceCard: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var profiles: ProfileManager
     @ObservedObject private var library = Library.shared
@@ -1763,12 +1769,12 @@ private struct SpaceCard: View {
         .background {
             ZStack {
                 ground
-                if space.id == store.currentSpaceID { Look.selected }
-                if over { Look.hovered }
+                if space.id == store.currentSpaceID { chromeTheme.selected }
+                if over { chromeTheme.hovered }
             }
             .clipShape(.rect(cornerRadius: Look.cardRadius))
         }
-        .hairline(radius: Look.cardRadius, over ? Look.selectedEdge : Look.cardStroke)
+        .hairline(radius: Look.cardRadius, over ? chromeTheme.selectedEdge : Look.cardStroke)
         .onDrop(of: [.utf8PlainText], isTargeted: $over) { drop($0) }
         .onAppear { reload() }
         .onChange(of: profiles.spacesRevision) { reload() }
@@ -1797,7 +1803,7 @@ private struct SpaceCard: View {
                     .foregroundStyle(Look.inkQuiet)
                     .padding(.horizontal, Look.captionGap * 2)
                     .padding(.vertical, 1)
-                    .background(Look.hovered, in: .rect(cornerRadius: Look.chipRadius))
+                    .background(chromeTheme.hovered, in: .rect(cornerRadius: Look.chipRadius))
                     .accessibilityLabel("Profile \(profile.name)")
             }
             Button { editing = true } label: { Image(systemName: "pencil") }
@@ -1875,6 +1881,7 @@ private struct SpaceCard: View {
 /// A folder on a card: its glyph, its name and the chevron that folds it shut. The rows it
 /// holds are the ones after it at a greater depth — see `Library.visible`.
 private struct FolderCardRow: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let folder: Folder
     let depth: Int
     let shut: Bool
@@ -1901,7 +1908,7 @@ private struct FolderCardRow: View {
         .padding(.trailing, Look.inset)
         .frame(height: Look.cardRow)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(hovering ? Look.hovered : .clear, in: .rect(cornerRadius: Look.chipRadius))
+        .background(hovering ? chromeTheme.hovered : .clear, in: .rect(cornerRadius: Look.chipRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -1917,6 +1924,7 @@ private struct FolderCardRow: View {
 /// A page on a Space's card. Not a `LibraryRow`: a card is 180pt wide, where a 44pt row with
 /// a second line of grey under it would be one page filling a fifth of the card.
 private struct PageRow: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     let space: Space
     let url: URL
@@ -1945,7 +1953,7 @@ private struct PageRow: View {
         .padding(.trailing, Look.inset)
         .frame(height: Look.cardRow)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(hovering ? Look.selected : .clear, in: .rect(cornerRadius: Look.chipRadius))
+        .background(hovering ? chromeTheme.selected : .clear, in: .rect(cornerRadius: Look.chipRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }

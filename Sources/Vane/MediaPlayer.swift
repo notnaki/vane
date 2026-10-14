@@ -564,6 +564,7 @@ struct OffscreenPages: View {
 /// The player itself. Sits in the sidebar's bottom overlay under the toast, and draws
 /// nothing at all unless there is a tab to draw.
 struct MediaTrayView: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @ObservedObject private var media = MediaState.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -667,7 +668,7 @@ struct MediaTrayView: View {
             .frame(height: Look.trayHeight)
         }
         .padding(.horizontal, Look.rowInset)
-        .background(Look.barFill, in: RoundedRectangle(cornerRadius: Look.pillRadius))
+        .background(chromeTheme.barFill, in: RoundedRectangle(cornerRadius: Look.pillRadius))
         .hairline(radius: Look.pillRadius, Look.barStroke)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
         .onHover { hovered = $0 }

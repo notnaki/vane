@@ -577,6 +577,7 @@ struct CommandField: NSViewRepresentable {
 /// open. Commands are a tail that only shows up once the query is long enough to mean one.
 /// Every entry point — ⌘L, ⌘T, the address pill, ⌘⇧P, ⌘⇧A — lands here, looking the same.
 @MainActor struct PaletteView: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var sidebar = SidebarWidth.shared
@@ -821,7 +822,7 @@ struct CommandField: NSViewRepresentable {
                         .foregroundStyle(Look.barSelectedText)
                         .padding(.horizontal, Look.barRowGap * 2)
                         .padding(.vertical, Look.barRowGap / 2)
-                        .background(Look.barSelected, in: .rect(cornerRadius: Look.chipRadius))
+                        .background(chromeTheme.barSelected, in: .rect(cornerRadius: Look.chipRadius))
                         .fixedSize()
                         .accessibilityLabel("Searching actions")
                 }
@@ -853,7 +854,7 @@ struct CommandField: NSViewRepresentable {
         // Arc's bar is one flat surface, not glass: a blur of whatever is behind it,
         // darkened almost to opaque, and a single hairline. No specular edge, no
         // refraction — the shadow is what lifts it off the page.
-        .background(Look.barFill, in: .rect(cornerRadius: Look.barRadius))
+        .background(chromeTheme.barFill, in: .rect(cornerRadius: Look.barRadius))
         .background(Look.barMaterial, in: .rect(cornerRadius: Look.barRadius))
         .hairline(radius: Look.barRadius, Look.barStroke)
         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
@@ -957,8 +958,8 @@ struct CommandField: NSViewRepresentable {
         }
         .padding(.horizontal, Look.barRowInset)
         .frame(height: Look.barRowHeight)
-        .background(on ? (activeBang == nil ? Look.barSelected : bangColor)
-                    : (lit ? Look.barHovered : .clear),
+        .background(on ? (activeBang == nil ? chromeTheme.barSelected : bangColor)
+                    : (lit ? chromeTheme.hovered : .clear),
                     in: .rect(cornerRadius: Look.pillRadius))
         .animation(motion(Look.quick), value: on)
         .animation(motion(Look.quick), value: lit)

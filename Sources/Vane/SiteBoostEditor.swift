@@ -47,7 +47,11 @@ import SwiftUI
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: BoostEditorView(session: self))
+        if let store = TabStore.all.first(where: { $0.window === parent && $0.active === tab }) {
+            panel.contentView = NSHostingView(rootView: BoostEditorView(session: self).spaceChrome(store))
+        } else {
+            panel.contentView = NSHostingView(rootView: BoostEditorView(session: self))
+        }
         SiteChanges.shared.$revision.sink { [weak self] _ in
             guard let self, !self.closed else { return }
             self.value = SiteBoosts.value(origin: self.origin, tab: self.tab)
@@ -123,6 +127,7 @@ import SwiftUI
 }
 
 private struct BoostEditorView: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var session: BoostEditorSession
     @ObservedObject private var saver = BatterySaver.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -230,7 +235,7 @@ private struct BoostEditorView: View {
             TextEditor(text: session.binding(language == "CSS" ? \.css : \.script))
                 .font(.system(size: 12, design: .monospaced)).scrollContentBackground(.hidden)
                 .padding(8).frame(height: 280)
-                .background(Look.controlFill, in: .rect(cornerRadius: 8))
+                .background(chromeTheme.controlFill, in: .rect(cornerRadius: 8))
                 .accessibilityLabel(language == "CSS" ? "Custom CSS" : "User JavaScript")
             if language == "JavaScript" {
                 Toggle("Enable JavaScript", isOn: session.binding(\.scriptEnabled)).toggleStyle(.switch)

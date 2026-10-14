@@ -216,6 +216,7 @@ import WebKit
         let session = Session(store: store, parent: parent, source: source.id, window: window)
         window.contentView = NSHostingView(rootView: PeekView(shown: session.shown)
             .font(Look.text)
+            .spaceChrome(parent)
             .environmentObject(store)
             .environmentObject(ProfileManager.shared))
         store.window = window
@@ -509,6 +510,7 @@ private struct PeekBar: View {
 /// One glyph on that bar. The sidebar's own button: `pillFill` at rest, the selection's step
 /// under the pointer, `pillRadius` around it.
 private struct PeekButton: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let symbol: String
     let label: String
     let act: () -> Void
@@ -525,7 +527,7 @@ private struct PeekButton: View {
                 .font(Look.pillGlyph)
                 .foregroundStyle(Look.inkPrimary)
                 .frame(width: Look.topRow, height: Look.topRow)
-                .background(hovering ? Look.selected : Look.pillFill,
+                .background(hovering ? chromeTheme.selected : chromeTheme.pillFill,
                             in: .rect(cornerRadius: Look.pillRadius))
                 .contentShape(.rect)
         }

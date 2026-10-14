@@ -676,6 +676,7 @@ struct SiteControlPopover: View {
 /// The whole row is the hit target, the way the sidebar's rows are — a 20pt switch is not
 /// something anyone should have to aim at.
 private struct SiteControlRow: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let row: SiteControlModel.Row
     let tab: Tab
     /// The extensions the popover indexed its rows against, taken once where the model was
@@ -709,7 +710,7 @@ private struct SiteControlRow: View {
         .padding(.horizontal, Look.rowInset)
         .padding(.vertical, Look.rowPadding)
         .frame(minHeight: Look.rowHeight)
-        .background(hovering && !row.inert ? Look.hovered : .clear,
+        .background(hovering && !row.inert ? chromeTheme.hovered : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .animation(Motion.reduced ? nil : Look.quick, value: row.control)
@@ -866,6 +867,7 @@ private struct SiteControlRow: View {
 
 /// −/+ beside the zoom label. A plain glyph on a fill, sized like a settings control.
 private struct StepButton: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let glyph: String
     let action: () -> Void
     var body: some View {
@@ -873,7 +875,7 @@ private struct StepButton: View {
             Image(systemName: glyph)
                 .font(Look.caption)
                 .frame(width: Look.step, height: Look.step)
-                .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+                .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)

@@ -3,6 +3,7 @@ import SwiftUI
 import WebKit
 
 struct WebsiteDataSheet: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let profileName: String
     let isPrivate: Bool
     let onClose: (() -> Void)?
@@ -111,7 +112,7 @@ struct WebsiteDataSheet: View {
                                     .font(Look.footnote).foregroundStyle(Look.inkSecondary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading).padding(Look.rowInset)
-                            .background(model.selectedName == entry.name ? Look.accentSelected : .clear,
+                            .background(model.selectedName == entry.name ? chromeTheme.accentSelected : .clear,
                                         in: .rect(cornerRadius: Look.chipRadius))
                         }
                         .buttonStyle(.plain).disabled(model.isBusy)

@@ -8,6 +8,7 @@ import SwiftUI
 /// next keystroke. The pure parts (what a keystroke means, how the list is grouped, how a
 /// conflict is worded) are static functions with a `check()` so they can be proved headless.
 @MainActor struct ShortcutsPane: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var query = ""
     /// The row currently listening for a keystroke, if any.
@@ -120,7 +121,7 @@ import SwiftUI
                 }
             }
         }
-        .background(Look.cardFill)
+        .background(chromeTheme.cardFill)
         .clipShape(.rect(cornerRadius: Look.pillRadius))
         .hairline(radius: Look.pillRadius, Look.cardStroke)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -147,7 +148,7 @@ import SwiftUI
         }
         .padding(.horizontal, Look.cardInset)
         .frame(height: Look.settingsRow)
-        .background(Look.controlFill)
+        .background(chromeTheme.controlFill)
     }
 
     // MARK: - Guidance
@@ -187,7 +188,7 @@ import SwiftUI
                     .font(Look.text)
                     .frame(maxWidth: .infinity)
                     .frame(height: Look.control + Look.inset)
-                    .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+                    .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
                     .disabled(customized.isEmpty)
                 Menu {
                     Button("Reset All Shortcuts…", action: resetAll)
@@ -198,7 +199,7 @@ import SwiftUI
                 } label: {
                     Image(systemName: "ellipsis")
                         .frame(width: Look.control + Look.inset, height: Look.control + Look.inset)
-                        .background(Look.controlFill, in: .circle)
+                        .background(chromeTheme.controlFill, in: .circle)
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -264,7 +265,7 @@ import SwiftUI
             }
         }
         .contentShape(.rect)
-        .background(live ? Look.accentSelected : isHovered ? Look.hovered : .clear)
+        .background(live ? chromeTheme.accentSelected : isHovered ? chromeTheme.hovered : .clear)
         .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: isHovered)
         .onHover { inside in
             if inside { hovered = command } else if hovered == command { hovered = nil }
@@ -313,7 +314,7 @@ import SwiftUI
                 .padding(.horizontal, Look.inset)
                 .frame(minWidth: Look.chip * 2.5)
                 .frame(height: Look.chip + 2)
-                .background(live ? Color.accentColor : Look.controlFill,
+                .background(live ? Color.accentColor : chromeTheme.controlFill,
                             in: .rect(cornerRadius: Look.chipRadius))
                 .hairline(radius: Look.chipRadius, live ? Color.accentColor : Look.hairline)
         }

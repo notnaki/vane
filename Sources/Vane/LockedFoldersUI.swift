@@ -6,6 +6,7 @@ import LocalAuthenticationEmbeddedUI
 /// Only a frozen, heavily obscured image is drawn behind the unlock control. The live
 /// WebView has already been released, so it cannot receive clicks, focus, or accessibility.
 struct LockedFolderPage: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     let folder: Folder
     @StateObject private var control = FolderUnlockControl()
@@ -68,7 +69,7 @@ struct LockedFolderPage: View {
                             .font(.system(size: 12, weight: .medium))
                     }
                     .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(Look.pillFill, in: .rect(cornerRadius: 10))
+                    .background(chromeTheme.pillFill, in: .rect(cornerRadius: 10))
                     .overlay {
                         RoundedRectangle(cornerRadius: 10).strokeBorder(Look.inkTertiary.opacity(0.15))
                     }

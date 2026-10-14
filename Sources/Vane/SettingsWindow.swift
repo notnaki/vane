@@ -339,6 +339,7 @@ private struct SettingsToggleStyle: ToggleStyle {
 /// without it a ViewBuilder is one opaque blob and there is nowhere to put the hairlines.
 /// `divided: false` for a card of links, which Arc runs together without lines.
 struct SettingsCard<Content: View>: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     var divided = true
     @ViewBuilder var content: Content
 
@@ -355,7 +356,7 @@ struct SettingsCard<Content: View>: View {
                 VStack(alignment: .leading, spacing: 0) { content }
             }
         }
-        .background(Look.cardFill, in: .rect(cornerRadius: Look.cardRadius))
+        .background(chromeTheme.cardFill, in: .rect(cornerRadius: Look.cardRadius))
         .hairline(radius: Look.cardRadius, Look.cardStroke)
     }
 }
@@ -446,11 +447,12 @@ private struct Pane<Content: View>: View {
 
 /// A text field that reads as a control rather than a hole in the card.
 private struct FieldStyle: ViewModifier {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     func body(content: Content) -> some View {
         content.textFieldStyle(.plain).font(Look.text)
             .padding(.horizontal, Look.inset)
             .frame(height: Look.control)
-            .background(Look.controlFill, in: .rect(cornerRadius: Look.chipRadius))
+            .background(chromeTheme.controlFill, in: .rect(cornerRadius: Look.chipRadius))
     }
 }
 
@@ -561,6 +563,7 @@ private struct PreviewsPane: View {
 // MARK: - Profiles
 
 private struct ProfilesPane: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var selection: SettingsSelection
     @ObservedObject private var manager = ProfileManager.shared
     private var selected: UUID {
@@ -701,7 +704,7 @@ private struct ProfilesPane: View {
         .padding(.horizontal, Look.inset)
         // Arc's list rows: a 32pt fill set 15 in from the card, on a 40 pitch.
         .frame(height: Look.listRow)
-        .background(p.id == selected ? Look.accentSelected : .clear,
+        .background(p.id == selected ? chromeTheme.accentSelected : .clear,
                     in: .rect(cornerRadius: Look.chipRadius))
         .padding(.horizontal, Look.cardInset)
         .padding(.vertical, Look.listRowGap)

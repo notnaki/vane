@@ -127,6 +127,7 @@ enum StatusBar {
 
 /// The bottom-left capsule, including an immediate explanation while modifiers are held.
 struct StatusBarView: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var tab: Tab
     @ObservedObject private var batterySaver = BatterySaver.shared
     @State private var shown: StatusBar.Hover?
@@ -170,7 +171,7 @@ struct StatusBarView: View {
                 .font(Look.small)
                 .padding(.horizontal, Look.rowInset)
                 .frame(height: Look.statusHeight)
-                .background(Look.barFill, in: .capsule)
+                .background(chromeTheme.bubble, in: .capsule)
                 .background(Look.barMaterial, in: .capsule)
                 .overlay { Capsule().strokeBorder(Look.barStroke, lineWidth: 1) }
                 .transition(.opacity)

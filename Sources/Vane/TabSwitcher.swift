@@ -170,6 +170,7 @@ struct TabSwitcher: Equatable {
 /// The cards over the page. Sits in `WebCard`'s overlay, so it is centred on the page and
 /// not on the window; drawn only for the window the session was started in.
 struct TabSwitcherOverlay: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @ObservedObject private var switching = TabSwitching.shared
 
@@ -183,7 +184,7 @@ struct TabSwitcherOverlay: View {
                 }
             }
             .padding(Look.inset)
-            .background(Look.barFill, in: .rect(cornerRadius: Look.barRadius))
+            .background(chromeTheme.barFill, in: .rect(cornerRadius: Look.barRadius))
             .background(Look.barMaterial, in: .rect(cornerRadius: Look.barRadius))
             .hairline(radius: Look.barRadius, Look.barStroke)
             .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
@@ -197,6 +198,7 @@ struct TabSwitcherOverlay: View {
 }
 
 private struct SwitcherCard: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var tab: Tab
     let highlighted: Bool
 
@@ -211,7 +213,7 @@ private struct SwitcherCard: View {
         }
         .padding(.horizontal, Look.inset)
         .frame(width: Look.switcherCard, height: Look.switcherCardHeight)
-        .background(highlighted ? Look.barSelected : .clear, in: .rect(cornerRadius: Look.pillRadius))
+        .background(highlighted ? chromeTheme.barSelected : .clear, in: .rect(cornerRadius: Look.pillRadius))
         .animation(Motion.reduced ? nil : Look.quick, value: highlighted)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(TidyTitles.title(for: tab))

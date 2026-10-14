@@ -490,6 +490,7 @@ struct BrowserWindow: View {
             $0.animation = nil
             $0.disablesAnimations = true
         }
+        .spaceChrome(store)
         .vaneMotionPolicy()
     }
 
@@ -1136,6 +1137,7 @@ private struct NavGlyphs: View {
 /// The target participates in layout, so Reload's hover edge ends on the address
 /// pill's trailing edge. Equal slots also keep Stop from moving its neighbours.
 private struct NavigationTarget: ViewModifier {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     var compact: Bool
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1145,7 +1147,7 @@ private struct NavigationTarget: ViewModifier {
     func body(content: Content) -> some View {
         content
             .frame(width: compact ? 20 : Look.control, height: Look.control)
-            .background(enabled && hovering ? Look.hovered : .clear,
+            .background(enabled && hovering ? chromeTheme.hovered : .clear,
                         in: .rect(cornerRadius: Look.cardRadius))
             .contentShape(.rect)
             .onHover { hovering = $0 }
@@ -1198,6 +1200,7 @@ private struct LiveAddressPill: View {
 }
 
 private struct PillBody: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @Environment(\.sidebarDragPreview) private var dragPreview
@@ -1226,7 +1229,7 @@ private struct PillBody: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // A step up under the pointer, the way a row does: the pill is a button, and a
         // button that does not react reads as a label.
-        .background(hovering ? Look.selected : Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+        .background(hovering ? chromeTheme.selected : chromeTheme.pillFill, in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
                    value: compact)
@@ -1363,6 +1366,7 @@ private struct PillBody: View {
 
 /// Copy Link and Site Settings, the two glyphs Arc's pill grows on hover.
 private struct PillHoverGlyphs: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let tab: Tab
     let site: SiteControlModel
@@ -1393,7 +1397,7 @@ private struct PillHoverGlyphs: View {
                     }
                 }
                 .frame(width: Look.control, height: Look.control)
-                .background(showingSiteControls ? Look.hovered : .clear,
+                .background(showingSiteControls ? chromeTheme.hovered : .clear,
                             in: .rect(cornerRadius: Look.pillRadius))
                 .contentShape(.rect)
         }
@@ -1521,6 +1525,7 @@ private struct ExtensionGlyph: View {
 
 /// "125%" in the pill while the page is zoomed. A click is Actual Size.
 private struct ZoomChip: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let label: String
     let tab: Tab
     var body: some View {
@@ -1529,7 +1534,7 @@ private struct ZoomChip: View {
                 .font(Look.caption)
                 .padding(.horizontal, 5)
                 .frame(height: Look.chip - 6)
-                .background(Look.selected, in: .rect(cornerRadius: Look.chipRadius))
+                .background(chromeTheme.selected, in: .rect(cornerRadius: Look.chipRadius))
         }
         .vaneTooltip("Zoom · \(label)", hint: "Reset to actual size", shortcut: Keybindings.binding(for: .actualSize).display)
         .accessibilityLabel("Zoom \(label)")
@@ -1547,6 +1552,7 @@ private struct ZoomChip: View {
 /// Empty, it is nothing at all — Arc's fresh space is the pill and then the space's name,
 /// no placeholder. Approaching the empty area reveals the first favourite's landing tile.
 private struct Favorites: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @EnvironmentObject var dragPreview: SidebarDragPreview
@@ -1620,7 +1626,7 @@ private struct Favorites: View {
 
     private var slot: some View {
         RoundedRectangle(cornerRadius: Look.pillRadius)
-            .fill(Look.selected.opacity(0.4))
+            .fill(chromeTheme.selected.opacity(0.4))
             .overlay {
                 RoundedRectangle(cornerRadius: Look.pillRadius)
                     .strokeBorder(Look.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
@@ -1633,6 +1639,7 @@ private struct Favorites: View {
 
 /// Shared visual surface, kept separate from the tile's native tooltip and drag targets.
 struct FavoriteTileBackground: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let selected: Bool
     let hovering: Bool
     let icon: NSImage?
@@ -1645,7 +1652,7 @@ struct FavoriteTileBackground: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: Look.pillRadius)
-            .fill(selected ? Look.ink(0.32) : hovering ? Look.selected : Look.pillFill)
+            .fill(selected ? chromeTheme.selected : hovering ? chromeTheme.hovered : chromeTheme.pillFill)
             .overlay {
                 RoundedRectangle(cornerRadius: Look.pillRadius)
                     .strokeBorder(LinearGradient(colors: outlineColors,
@@ -2024,6 +2031,7 @@ private struct Lifted: ViewModifier {
 /// pages load their titles is a row you cannot aim at, and four panes have to fit a sidebar
 /// either way, so the truncation is the answer at every count.
 struct PaneStrip: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     /// Passed in rather than read from the environment, as `SpaceMenu`'s is: this is also
     /// built for the drag preview, which AppKit renders outside the view hierarchy, and a
     /// missing `@EnvironmentObject` there is a crash rather than a blank row.
@@ -2068,7 +2076,7 @@ struct PaneStrip: View {
             }
         }
         .hairline(radius: Look.pillRadius, ticked && selected
-                  ? Look.selectedEdge.opacity(1 - (morph?.progress ?? 0)) : .clear)
+                  ? chromeTheme.selectedEdge.opacity(1 - (morph?.progress ?? 0)) : .clear)
         .animation(reduceMotion || Motion.reduced ? nil : Look.quick, value: hovering)
         .contentShape(.rect)
         .onHover { hovering = $0 }
@@ -2096,13 +2104,14 @@ struct PaneStrip: View {
 
     /// The container wears the row's own states, exactly as `SidebarRow` does.
     private var fill: Color {
-        selected || ticked ? Look.selected : (held || hovering ? Look.hovered : .clear)
+        selected || ticked ? chromeTheme.selected : (held || hovering ? chromeTheme.hovered : .clear)
     }
 }
 
 /// One pane of a split, in the strip. Its own element for VoiceOver, because a pane is a
 /// page you can go to and a row with four of them is four places, not one.
 private struct PanePill: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     /// See `PaneStrip`: handed in, because this is drawn in the drag preview too.
     @ObservedObject var store: TabStore
     @ObservedObject var tab: Tab
@@ -2134,7 +2143,7 @@ private struct PanePill: View {
         .frame(height: (morph?.height ?? Look.rowHeight) - Look.paneInset * 2)
         // The pane being looked at is the lighter one; the rest are a step quieter, so the
         // row says which page the card is showing without a second mark to read.
-        .background((active ? Look.selected : Look.hovered).opacity(1 - (morph?.progress ?? 0)),
+        .background((active ? chromeTheme.selected : chromeTheme.hovered).opacity(1 - (morph?.progress ?? 0)),
                     in: .rect(cornerRadius: Look.panePillRadius))
         .overlay {
             if let morph {
@@ -2414,6 +2423,7 @@ struct TabDrop: DropDelegate {
 /// right-click target for everything a space can be: its icon, its name, its colour and the
 /// profile it belongs to.
 private struct SpaceRow: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     @State private var icons = false
@@ -2523,7 +2533,7 @@ private struct SpaceRow: View {
         .padding(.leading, Look.rowInset)
         .padding(.trailing, space == nil ? Look.rowInset : Look.rowInset / 2)
         .frame(height: Look.rowHeight)
-        .background(highlighted ? Look.hovered : .clear,
+        .background(highlighted ? chromeTheme.hovered : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
         .contentShape(.rect(cornerRadius: Look.pillRadius))
         .onHover { hovered = $0 }
@@ -2736,6 +2746,7 @@ private struct SpaceMenu: View {
 /// space is ever named after, and the alternative is shipping a search field over an API
 /// that cannot enumerate itself.
 private struct SpaceIcons: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let store: TabStore
     let space: Space
     @Environment(\.dismiss) private var dismiss
@@ -2761,7 +2772,7 @@ private struct SpaceIcons: View {
         Image(systemName: name)
             .font(Look.icon)
             .frame(width: Look.rowHeight, height: Look.rowHeight)
-            .background(current == name ? Look.selected : .clear,
+            .background(current == name ? chromeTheme.selected : .clear,
                         in: .rect(cornerRadius: Look.pillRadius))
     }
 
@@ -2777,6 +2788,7 @@ private struct SpaceIcons: View {
 /// case any more: an ordinary window is always in a Space, so exactly one dot is always the
 /// current one. Only a private window has none, and it does not draw this at all.
 private struct SpaceDots: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let layout: SpaceStripLayout
     @EnvironmentObject var store: TabStore
     @EnvironmentObject private var gesture: SpaceGesture
@@ -2855,7 +2867,7 @@ private struct SpaceDots: View {
         }
         .animation(animation, value: here)
         .frame(width: layout.itemWidth, height: Look.spaceDotHit)
-        .background(!layout.showsButtonBackground ? .clear : dropTarget == space.id ? Look.selected : hovered == space.id ? Look.hovered : .clear,
+        .background(!layout.showsButtonBackground ? .clear : dropTarget == space.id ? chromeTheme.selected : hovered == space.id ? chromeTheme.hovered : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
         .overlay {
             if !layout.showsButtonBackground && dropTarget == space.id {
@@ -3123,6 +3135,7 @@ private enum FolderZone: Equatable { case before, inside, after }
 /// folded. Clicking anywhere on it folds or unfolds; everything else it can be is in its
 /// right-click menu, which is the only route the keyboard and VoiceOver have.
 private struct FolderRow: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     let folder: Folder
@@ -3177,7 +3190,7 @@ private struct FolderRow: View {
         labelRow()
         // A drop *into* the folder fills the whole row; a drop beside it draws a line at the
         // edge it will land on. Behind `SidebarRow`, whose own fill is clear at rest.
-        .background(receiving ? Look.selected : .clear,
+        .background(receiving ? chromeTheme.selected : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
         .overlay {
             RoundedRectangle(cornerRadius: Look.pillRadius)
@@ -3449,6 +3462,7 @@ private struct FolderDrop: DropDelegate {
 /// Every clickable line in the sidebar: an icon, a title, and whatever the row wants on the
 /// trailing edge. One shape so the list reads as one list.
 struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let selected: Bool
     /// In a multi-select. It wears the same fill as `selected` — a selection is a selection —
     /// and the row that is *also* `selected` is picked out by an accent hairline, so the
@@ -3497,7 +3511,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
                 .id(reduceMotion || batterySaver.isActive)
         }
         .hairline(radius: Look.pillRadius, ticked && selected
-                  ? Look.selectedEdge.opacity(1 - (morph?.progress ?? 0)) : .clear)
+                  ? chromeTheme.selectedEdge.opacity(1 - (morph?.progress ?? 0)) : .clear)
         .overlay {
             if let morph {
                 leading()
@@ -3514,7 +3528,7 @@ struct SidebarRow<Leading: View, Label: View, Trailing: View>: View {
     }
 
     private var fill: Color {
-        selected || ticked ? Look.selected : (held || hovering ? Look.hovered : .clear)
+        selected || ticked ? chromeTheme.selected : (held || hovering ? chromeTheme.hovered : .clear)
     }
 }
 
@@ -3749,6 +3763,7 @@ private struct OpenTabs: View {
 /// One line of the strip: a tab's row — unless the tab is a pane of a split, in which case
 /// the split owns one row between all of its panes and draws it where its first pane sits.
 private struct StripRow: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.sidebarDropMarker) private var dropMarker
     @EnvironmentObject var store: TabStore
     let tab: Tab
@@ -3808,7 +3823,7 @@ private struct StripRow: View {
         .overlay {
             Color.clear
                 .overlay(alignment: half == .trailing ? .trailing : .leading) {
-                    Rectangle().fill(Look.dropHalf).frame(width: width / 2)
+                    Rectangle().fill(chromeTheme.dropHalf).frame(width: width / 2)
                 }
                 .clipShape(.rect(cornerRadius: Look.pillRadius))
                 .overlay {
@@ -4694,6 +4709,7 @@ enum TabRowGlyph: Equatable, Sendable, CaseIterable {
 /// `@Published` on the store — so one `current` write invalidated two views per row instead
 /// of one. Nothing here reads the store except the click.
 private struct TabRowTrailing: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let store: TabStore
     @ObservedObject var tab: Tab
     /// On a split's row the × closes the pane the row is showing, not a whole tab's worth of
@@ -4740,7 +4756,7 @@ private struct TabRowTrailing: View {
                         .rowTarget()
                         .background {
                             RoundedRectangle(cornerRadius: Look.cardRadius, style: .continuous)
-                                .fill(closeHovering ? Look.controlFill : .clear)
+                                .fill(closeHovering ? chromeTheme.controlFill : .clear)
                                 .animation(reduced ? nil : Look.quick, value: closeHovering)
                         }
                 }
@@ -4800,6 +4816,7 @@ private struct TabHomeIcon: View {
 /// tile rather than in the icon's place, and because the two must say the same words: the
 /// tooltip, the VoiceOver label and the row's own accessibility action are all these.
 private struct GoHomeGlyph: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let store: TabStore
     let tab: Tab
     var tiled = false
@@ -4824,7 +4841,7 @@ private struct GoHomeGlyph: View {
                 .frame(width: Look.returnTileSize, height: Look.returnTileSize)
                 .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
                            value: returnHovering.wrappedValue)
-                .background(returnHovering.wrappedValue ? Look.hovered : .clear,
+                .background(returnHovering.wrappedValue ? chromeTheme.hovered : .clear,
                             in: .rect(cornerRadius: Look.pillRadius))
                 .contentShape(.rect(cornerRadius: Look.pillRadius))
                 .onHover { returnHovering.wrappedValue = $0 }
@@ -5003,6 +5020,7 @@ struct BottomRow: View {
 /// Arc's Library, at the bottom-left corner of the sidebar: the button that slides the
 /// Library panel out over the sidebar. The panel itself is LibraryWindow.swift.
 private struct LibraryButton: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     /// Archive stays scoped to this window's profile; regular downloads span profiles.
     @ObservedObject var archive: Archive
@@ -5027,7 +5045,7 @@ private struct LibraryButton: View {
                 // The bucket's artwork occupies the bottom of its 24pt canvas.
                 .offset(y: -4)
                 .frame(width: Look.footerControl, height: Look.footerControl)
-                .background(hoverActive ? Look.hovered : .clear, in: .rect(cornerRadius: 8))
+                .background(hoverActive ? chromeTheme.hovered : .clear, in: .rect(cornerRadius: 8))
                 .contentShape(.rect)
         }
             // A ring around the glyph while anything is downloading, so progress is visible

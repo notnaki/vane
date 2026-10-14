@@ -120,6 +120,7 @@ import SwiftUI
         window.backgroundColor = NSColor.black.withAlphaComponent(0.001)
         window.contentView = NSHostingView(rootView: LittleArcView()
             .font(Look.text)
+            .spaceChrome(store)
             .environmentObject(store)
             .environmentObject(ProfileManager.shared))
         // Centred, and cascading from there once there is more than one — deliberately no
@@ -649,6 +650,7 @@ struct LittleArcBar: View {
 /// One pill with two halves rather than two buttons: it is one control, and the split is
 /// only about which of the two things a click means. Flat, in the sidebar's own pill.
 private struct OpenInButton: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @State private var hovering = false
     /// The Space's name, read when the window appears and again whenever a window takes the
@@ -693,7 +695,7 @@ private struct OpenInButton: View {
             }
         }
         .foregroundStyle(Look.inkPrimary)
-        .background(hovering ? Look.selected : Look.pillFill,
+        .background(hovering ? chromeTheme.selected : chromeTheme.pillFill,
                     in: .rect(cornerRadius: Look.pillRadius))
         .animation(reduceMotion ? nil : Look.quick, value: hovering)
         .onHover { hovering = $0 }

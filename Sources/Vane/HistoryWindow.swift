@@ -62,6 +62,7 @@ import SwiftUI
 // MARK: - The window's contents
 
 private struct HistoryView: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let profileID: UUID
     @State private var selectedProfileID: UUID
     @State private var period = HistoryPeriod.all
@@ -302,7 +303,7 @@ private struct HistoryView: View {
         .padding(.vertical, Look.rowInset)
         .frame(minHeight: Look.rowHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? Look.selected : (hovered == visit.id ? Look.hovered : .clear))
+        .background(isSelected ? chromeTheme.selected : (hovered == visit.id ? chromeTheme.hovered : .clear))
         .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick, value: hovered == visit.id)
         .contentShape(.rect)
         .onHover { hovered = $0 ? visit.id : (hovered == visit.id ? nil : hovered) }

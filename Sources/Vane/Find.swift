@@ -292,6 +292,7 @@ struct FindBar: View {
 }
 
 private struct FindBarBody: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @ObservedObject var session: Find
     @ObservedObject var tab: Tab
@@ -337,7 +338,7 @@ private struct FindBarBody: View {
         }
         .buttonStyle(FindControlStyle()).font(Look.caption).foregroundStyle(.secondary)
         .padding(.horizontal, Look.rowTrailingInset).padding(.vertical, Look.rowPadding)
-        .background(Look.barFill, in: .rect(cornerRadius: Look.cardRadius))
+        .background(chromeTheme.barFill, in: .rect(cornerRadius: Look.cardRadius))
         .background(Look.barMaterial, in: .rect(cornerRadius: Look.cardRadius))
         .hairline(radius: Look.cardRadius)
         .shadow(color: Look.floatShadow, radius: Look.floatShadowRadius, y: Look.floatShadowY)
@@ -396,6 +397,7 @@ private struct FindBarBody: View {
 
 /// A full control-sized target without enlarging the find bar's quiet glyphs.
 struct FindControlStyle: ButtonStyle {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @Environment(\.isEnabled) private var enabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
@@ -406,7 +408,7 @@ struct FindControlStyle: ButtonStyle {
             .contentShape(.rect)
             .foregroundStyle(enabled ? Look.barText : Look.barText.opacity(Look.dimmed))
             .background(enabled && (configuration.isPressed || hovering)
-                        ? Look.barSelected : .clear,
+                        ? chromeTheme.selected : .clear,
                         in: .rect(cornerRadius: Look.chipRadius))
             .onHover { hovering = $0 }
             .animation(reduceMotion ? nil : Look.quick, value: hovering)

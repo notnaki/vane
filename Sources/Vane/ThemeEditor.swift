@@ -15,6 +15,7 @@ import SwiftUI
 /// (a new Space still has to be called something), the dot's "Edit Theme Color…" without;
 /// two panels that drift apart is exactly what this file is replacing.
 struct ThemeEditor: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let store: TabStore
     /// The Space as the sidebar last read it, and what the panel starts from.
     let space: Space
@@ -126,7 +127,7 @@ struct ThemeEditor: View {
         }
         .padding(.horizontal, Look.rowInset)
         .frame(height: Look.rowHeight)
-        .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+        .background(chromeTheme.pillFill, in: .rect(cornerRadius: Look.pillRadius))
     }
 
     // MARK: The canvas
@@ -141,7 +142,7 @@ struct ThemeEditor: View {
         ThemeGrid()
             .equatable()
             .frame(height: Look.themeCanvas)
-            .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+            .background(chromeTheme.pillFill, in: .rect(cornerRadius: Look.pillRadius))
             .overlay(alignment: .top) { appearance.padding(.top, Look.inset * 1.5) }
             .overlay(alignment: .bottom) { steps.padding(.bottom, Look.inset * 1.5) }
             .overlay {
@@ -227,7 +228,7 @@ struct ThemeEditor: View {
             Image(systemName: symbol)
                 .font(Look.symbol)
                 .frame(width: Look.control + Look.inset, height: Look.control + Look.inset)
-                .background(current.appearance == value ? Look.selected : .clear,
+                .background(current.appearance == value ? chromeTheme.selected : .clear,
                             in: .rect(cornerRadius: Look.cardRadius))
                 .contentShape(.rect)
         }
@@ -480,6 +481,7 @@ private struct WaveSlider: View {
 /// a turn, and turned by how far the finger sweeps — see `Spaces.dialTurn`, which is also why
 /// a click on the dial moves nothing.
 private struct GrainDial: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let value: Double
     /// Where the finger took hold, and what the knob read then. On the editor rather than
     /// here so the gesture survives the panel redrawing under it.
@@ -490,7 +492,7 @@ private struct GrainDial: View {
     var body: some View {
         ZStack {
             ring
-            Circle().fill(Look.controlFill).frame(width: Look.themeDial, height: Look.themeDial)
+            Circle().fill(chromeTheme.controlFill).frame(width: Look.themeDial, height: Look.themeDial)
             marker
         }
         .frame(width: Look.themeDialRing, height: Look.themeDialRing)

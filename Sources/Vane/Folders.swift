@@ -1671,6 +1671,7 @@ struct FolderNameField: View {
 /// picker (⌃⌘Space) is the browser — shipping a second one would mean bundling an emoji
 /// catalogue to search, which is a data file, not a feature.
 struct FolderIcons: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var store: TabStore
     let folder: Folder
     /// See `FolderNameField.shape`.
@@ -1697,7 +1698,7 @@ struct FolderIcons: View {
                     .frame(width: Look.rowHeight)
                     .padding(.horizontal, 8)
                     .frame(height: Look.rowHeight)
-                    .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
+                    .background(chromeTheme.pillFill, in: .rect(cornerRadius: Look.pillRadius))
                     .onSubmit { pickEmoji() }
                     .accessibilityLabel("Folder emoji")
                 Text("Control-Command-Space for the emoji picker.")
@@ -1720,7 +1721,7 @@ struct FolderIcons: View {
             }
         }
         .frame(width: Look.rowHeight, height: Look.rowHeight)
-        .background(folder.icon == name ? Look.selected : .clear,
+        .background(folder.icon == name ? chromeTheme.selected : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
     }
 

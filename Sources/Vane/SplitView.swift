@@ -525,6 +525,7 @@ struct SplitPanes: View {
 /// One pane. The frame is the only thing that says which pane the address pill and ⌘L are
 /// pointed at, so it is drawn inside the pane's own clip rather than around it.
 private struct Pane: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var tab: Tab
     let active: Bool
     let focus: () -> Void
@@ -541,7 +542,7 @@ private struct Pane: View {
             .clipShape(.rect(cornerRadius: Look.paneRadius))
             .overlay {
                 RoundedRectangle(cornerRadius: Look.paneRadius)
-                    .strokeBorder(active ? Look.paneFrame : .clear, lineWidth: Look.paneFrameWidth)
+                    .strokeBorder(active ? chromeTheme.paneFrame : .clear, lineWidth: Look.paneFrameWidth)
                     .allowsHitTesting(false)
             }
             .accessibilityElement(children: .contain)
@@ -685,6 +686,7 @@ private struct SplitDivider: View {
 /// ZStack sits above it and wins. It is only in the tree while a tab is being dragged, so it
 /// never comes between the pointer and the page.
 struct SplitDropWell: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @EnvironmentObject var store: TabStore
     @ObservedObject private var dragging = Dragging.shared
     @State private var zone: Split.Zone?
@@ -706,7 +708,7 @@ struct SplitDropWell: View {
             GeometryReader { geo in
                 let across = zone.isVertical ? geo.size.height : geo.size.width
                 Rectangle()
-                    .fill(Look.paneFrame)
+                    .fill(chromeTheme.paneFrame)
                     .frame(width: zone.isVertical ? nil : across * Look.splitDropBand,
                            height: zone.isVertical ? across * Look.splitDropBand : nil)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment(zone))

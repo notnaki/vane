@@ -1297,6 +1297,7 @@ private struct SpaceSwipe: ViewModifier {
 /// Space, and a form the moment it is full. Overlaid on the sidebar's scroll view, trailing
 /// and centred, so it sits where the pull is coming from.
 struct PullPlus: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject private var gesture: SpaceGesture
 
     init(store: TabStore) { gesture = store.spaceGesture }
@@ -1306,7 +1307,7 @@ struct PullPlus: View {
         let ring = min(1, pull)
         let solid = max(0, pull - 1)
         ZStack {
-            Circle().fill(Look.barFill)
+            Circle().fill(chromeTheme.barFill)
             // The second stage: the circle fills from the centre out, and only a full one
             // makes a Space. The plus turns dark against it so it stays a plus.
             Circle().fill(Look.inkPrimary).scaleEffect(solid)
@@ -1316,7 +1317,7 @@ struct PullPlus: View {
                 .stroke(Look.inkPrimary, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             Image(systemName: "plus").font(.system(size: 13, weight: .medium))
-                .foregroundStyle(solid > 0.5 ? Look.barFill : Look.inkPrimary)
+                .foregroundStyle(solid > 0.5 ? chromeTheme.barFill : Look.inkPrimary)
         }
         .frame(width: Look.pullPlus, height: Look.pullPlus)
         // Rides in from the edge with the first stage, and is gone the moment it is over:
@@ -1331,6 +1332,7 @@ struct PullPlus: View {
 /// Arc's Create a Space: the sidebar's sections give way to a name, a profile, a theme and
 /// two buttons. Nothing exists until Create Space is pressed; Cancel puts the sections back.
 struct CreateSpaceForm: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var store: TabStore
     @ObservedObject private var profiles = ProfileManager.shared
     @State private var name = ""
@@ -1440,6 +1442,6 @@ struct CreateSpaceForm: View {
             .foregroundStyle(Look.inkPrimary)
             .padding(.horizontal, Look.rowInset)
             .frame(height: Look.rowHeight)
-            .background(Look.selected, in: .rect(cornerRadius: Look.pillRadius))
+            .background(chromeTheme.selected, in: .rect(cornerRadius: Look.pillRadius))
     }
 }

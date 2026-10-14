@@ -207,6 +207,7 @@ struct ToastHost: View {
 
 /// The toast surface, sized to the space its host offers.
 struct ToastPill: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let toast: Toasts.Toast
     let tint: Color
     @ObservedObject private var toasts = Toasts.shared
@@ -239,7 +240,7 @@ struct ToastPill: View {
         .frame(minHeight: Look.toastHeight)
         // A corner, not a capsule: a capsule on a two-line pill is a lozenge. At one line
         // this radius *is* the capsule, so the short toast is unchanged.
-        .background(Look.barFill, in: .rect(cornerRadius: Look.toastHeight / 2))
+        .background(chromeTheme.barFill, in: .rect(cornerRadius: Look.toastHeight / 2))
         .background(tint.opacity(Look.toastTint), in: .rect(cornerRadius: Look.toastHeight / 2))
         .background(Look.barMaterial, in: .rect(cornerRadius: Look.toastHeight / 2))
         .overlay {
@@ -289,7 +290,7 @@ struct ToastPill: View {
                 .foregroundStyle(Look.barText)
                 .padding(.horizontal, Look.inset / 2)
                 .frame(minHeight: Look.control)
-                .background(Look.barSelected, in: .capsule)
+                .background(chromeTheme.barSelected, in: .capsule)
         }
         // Every toast, not only the sticky one: the pointer resting on a pill already stops
         // its clock, so by the time you are anywhere near the × it has stopped moving away.

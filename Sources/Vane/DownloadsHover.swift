@@ -121,6 +121,7 @@ struct RecentLibraryPreview: View {
 }
 
 private struct RecentLibraryRow: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let item: LibraryHoverItem
     let open: () -> Void
     @State private var hovered = false
@@ -173,7 +174,7 @@ private struct RecentLibraryRow: View {
             .padding(.leading, Look.rowInset)
             .padding(.trailing, Look.rowTrailingInset)
             .frame(height: Look.rowHeight).contentShape(.rect)
-            .background(hovered ? Look.selected : Look.pillFill,
+            .background(hovered ? chromeTheme.selected : chromeTheme.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
         }
         .buttonStyle(TactileButtonStyle(scales: false))
@@ -190,6 +191,7 @@ private struct RecentLibraryRow: View {
 }
 
 private struct RecentDownloadRow: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var item: Downloads.Item
     let downloads: Downloads
     let close: () -> Void
@@ -223,7 +225,7 @@ private struct RecentDownloadRow: View {
             .padding(.trailing, Look.rowTrailingInset)
             .frame(height: Look.rowHeight)
             .contentShape(.rect)
-            .background(hovered ? Look.selected : Look.pillFill,
+            .background(hovered ? chromeTheme.selected : chromeTheme.pillFill,
                         in: .rect(cornerRadius: Look.pillRadius))
         }
         .buttonStyle(TactileButtonStyle(scales: false))

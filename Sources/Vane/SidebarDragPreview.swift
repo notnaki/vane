@@ -148,7 +148,7 @@ enum FavouriteLanding {
             panel.animationBehavior = .none
             panel.setContentSize(CGSize(width: SidebarWidth.shared.width + 32,
                                         height: Look.tileHeight + 32))
-            panel.contentView = NSHostingView(rootView: SidebarTabGhost(preview: self, store: store))
+            panel.contentView = NSHostingView(rootView: SidebarTabGhost(preview: self, store: store).spaceChrome(store))
             ghost = panel
         }
         guard let ghost else { return }

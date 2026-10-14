@@ -194,6 +194,7 @@ private enum BookmarkLocation: Hashable, Sendable {
 }
 
 private struct BookmarkManagerView: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let profileID: UUID
     @State private var query = ""
     @State private var location: BookmarkLocation = .all
@@ -307,7 +308,7 @@ private struct BookmarkManagerView: View {
             }
             Spacer(minLength: 0)
         }
-        .background(Look.controlFill)
+        .background(chromeTheme.controlFill)
     }
 
     private func locationRow(_ title: String, icon: String, value: BookmarkLocation) -> some View {
@@ -320,7 +321,7 @@ private struct BookmarkManagerView: View {
             .font(Look.text)
             .padding(.horizontal, Look.cardInset)
             .frame(height: Look.control)
-            .background(location == value ? Look.selected : .clear,
+            .background(location == value ? chromeTheme.selected : .clear,
                         in: .rect(cornerRadius: Look.chipRadius))
             .contentShape(.rect)
         }
@@ -410,7 +411,7 @@ private struct BookmarkManagerView: View {
         .padding(.horizontal, Look.cardInset).padding(.vertical, Look.rowInset)
         .frame(minHeight: Look.rowHeight)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(picked ? Look.selected : .clear)
+        .background(picked ? chromeTheme.selected : .clear)
         .animation(Motion.reduced ? nil : Look.quick, value: picked)
         .contentShape(.rect)
         .onTapGesture(count: 2) { open(mark) }

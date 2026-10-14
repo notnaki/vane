@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct TabOrganizationSheet: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     @ObservedObject var store: TabStore
     @StateObject private var model: TabOrganization
     @Environment(\.dismiss) private var dismiss
@@ -99,7 +100,7 @@ struct TabOrganizationSheet: View {
                         }
                         .toggleStyle(.checkbox).disabled(!row.canChange)
                         .padding(10)
-                        .background(model.selection.contains(row.id) ? Look.selected : Look.controlFill,
+                        .background(model.selection.contains(row.id) ? chromeTheme.selected : chromeTheme.controlFill,
                                     in: .rect(cornerRadius: Look.pillRadius))
                         .accessibilityLabel("\(row.title), \(row.spaceName)\(row.canChange ? "" : ", protected")")
                         .help(row.url.absoluteString)

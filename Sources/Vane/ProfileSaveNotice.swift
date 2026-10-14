@@ -105,6 +105,7 @@ private struct ProfileSaveFailureCard: View {
 }
 
 private struct RecoveryAction: View {
+    @Environment(\.spaceChromeTheme) private var chromeTheme
     let title: String
     let symbol: String
     var primary = false
@@ -128,7 +129,7 @@ private struct RecoveryAction: View {
                 .padding(.horizontal, 10)
                 .frame(height: 28)
                 .background(primary ? Look.warning.opacity(hovered ? 0.22 : 0.15)
-                            : hovered ? Look.hovered : .clear,
+                            : hovered ? chromeTheme.hovered : .clear,
                             in: .rect(cornerRadius: Look.chipRadius))
                 .contentShape(.rect)
         }
