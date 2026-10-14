@@ -405,9 +405,9 @@ enum Spaces {
         /// strip through the next Space and the one after it.
         enum Phase { case began, changed, ended, cancelled, momentum }
 
-        /// How far across the sidebar the fingers have to have carried the strip for
-        /// fingers-up to commit. A shade under Arc's third, so the page changes a little
-        /// earlier under the fingers; below ~0.25 a diagonal scroll
+        /// How far across the sidebar the fingers have to carry the strip to commit
+        /// while still down. A shade under a third, so the page changes earlier in the
+        /// gesture; below ~0.25 a diagonal scroll
         /// down a long tab list changes Space by accident.
         static let commitFraction: CGFloat = 0.3
         /// …or this fast, in points per second, so a flick that barely moves still switches.
@@ -476,6 +476,13 @@ enum Spaces {
                 if pull >= Self.pullFull {
                     armed = false
                     return (offset, 1, Self.pullFull)
+                }
+                // Distance is deliberate enough to commit before fingers-up. Velocity
+                // alone still waits for release so a short flick can reverse or cancel.
+                if let direction = Self.commit(travel: travel, speed: 0, width: width,
+                                               count: count, index: index) {
+                    armed = false
+                    return (offset, direction, pull)
                 }
                 return (offset, nil, pull)
             case .ended:
@@ -783,8 +790,8 @@ enum Spaces {
 
         assert("the strip tracks the fingers one for one",
                swipe([(0, .began), (-30, .changed), (-30, .changed)]).last == -60)
-        assert("nothing is committed while the fingers are still down",
-               swipe([(0, .began), (-200, .changed)]).commits.isEmpty)
+        assert("crossing the distance threshold commits while the fingers are still down",
+               swipe([(0, .began), (-200, .changed)]).commits == [1])
         assert("a short slow drag springs back rather than switching",
                swipe(slow(-w * 0.2, steps: 60), dt: 0.05).commits.isEmpty)
         do {
@@ -809,15 +816,15 @@ enum Spaces {
                    Swipe.pull(-w * 0.5, width: w, count: 2, index: 1, create: false) == 0
                        && Swipe.pull(-w * 0.5, width: w, count: 2, index: 0, create: true) == 0)
         }
-        assert("past three tenths of the sidebar, fingers up switches to the next space",
+        assert("past three tenths of the sidebar switches to the next space",
                swipe(slow(-w * 0.4, steps: 60), dt: 0.05).commits == [1])
         assert("dragging the other way goes to the previous space",
                swipe(slow(w * 0.4, steps: 60), dt: 0.05).commits == [-1])
         assert("a short fast flick commits on velocity alone",
                swipe([(0, .began), (-20, .changed), (-20, .changed), (0, .ended)],
                      dt: 1.0 / 120).commits == [1])
-        assert("a flick back the way it came is a cancellation, not a commit",
-               swipe([(0, .began), (-200, .changed), (150, .changed), (0, .ended)],
+        assert("a short flick back the way it came is a cancellation, not a commit",
+               swipe([(0, .began), (-60, .changed), (50, .changed), (0, .ended)],
                      dt: 1.0 / 120).commits.isEmpty)
         assert("the strip never travels further than one sidebar width",
                swipe([(0, .began), (-2000, .changed)]).last == -w)
@@ -845,9 +852,10 @@ enum Spaces {
                      dt: 0.05).commits == [1])
         var once = Swipe()
         _ = once.feed(dx: 0, dt: 0, phase: .began, width: w, count: 3, index: 1)
-        _ = once.feed(dx: -200, dt: 0.05, phase: .changed, width: w, count: 3, index: 1)
-        assert("the first fingers-up commits",
-               once.feed(dx: 0, dt: 0, phase: .ended, width: w, count: 3, index: 1).commit == 1)
+        assert("crossing the distance threshold commits exactly once",
+               once.feed(dx: -200, dt: 0.05, phase: .changed, width: w, count: 3, index: 1).commit == 1)
+        assert("fingers-up does not repeat an early commit",
+               once.feed(dx: 0, dt: 0, phase: .ended, width: w, count: 3, index: 1).commit == nil)
         assert("a second fingers-up in the same gesture does not",
                once.feed(dx: 0, dt: 0, phase: .ended, width: w, count: 3, index: 1).commit == nil)
         assert("and the strip is not dragged any further either",
