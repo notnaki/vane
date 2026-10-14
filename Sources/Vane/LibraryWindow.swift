@@ -1240,6 +1240,7 @@ private struct BoostsPane: View {
 // MARK: - Downloads
 
 private struct DownloadsPane: View {
+    @EnvironmentObject private var store: TabStore
     let downloads: DownloadLibrary
     @ObservedObject private var library = Library.shared
 
@@ -1280,6 +1281,9 @@ private struct DownloadsPane: View {
             }
         }
         .onAppear { downloads.refreshMissing(); presentation.refresh(); refresh() }
+        .onChange(of: store.libraryOpen) {
+            if store.libraryOpen { downloads.refreshMissing(); presentation.refresh(); refresh() }
+        }
         .onChange(of: presentation.rows) { refresh() }
         .onChange(of: library.query) { refresh() }
         .onChange(of: library.completedOnly) { refresh() }
@@ -1366,6 +1370,7 @@ private struct DownloadVerbs: View {
 /// second thing to keep in step for no answer it could give that this cannot. Ceiling: an
 /// image the user looked at but never downloaded is not here.
 private struct MediaPane: View {
+    @EnvironmentObject private var store: TabStore
     let downloads: DownloadLibrary
     @ObservedObject private var library = Library.shared
     @ObservedObject private var presentation: Feel05DownloadPresentation
@@ -1422,6 +1427,9 @@ private struct MediaPane: View {
             }
         }
         .onAppear { downloads.refreshMissing(); presentation.refresh(); refresh() }
+        .onChange(of: store.libraryOpen) {
+            if store.libraryOpen { downloads.refreshMissing(); presentation.refresh(); refresh() }
+        }
         .onChange(of: presentation.rows) { refresh() }
         .onChange(of: library.query) { refresh() }
     }

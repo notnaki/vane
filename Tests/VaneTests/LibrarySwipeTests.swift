@@ -102,6 +102,35 @@ import XCTest
         }
     }
 
+    func testReopeningMountedDownloadAndMediaPanesRefreshesMissingFiles() async throws {
+        let (store, window, _) = fixture(withSpaces: true)
+        let downloads = Downloads.manager(for: store.profileID)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let host = NSHostingView(rootView: LibraryPanel().environmentObject(store))
+        window.contentView = host
+        defer { window.contentView = nil }
+        for section: LibrarySection in [.downloads, .media] {
+            let file = directory.appendingPathComponent(UUID().uuidString + ".png")
+            try Data([1]).write(to: file)
+            let item = downloads.add(.init(name: file.lastPathComponent, destination: file, state: "done"))
+            defer { downloads.forget(item) }
+            Library.open(section, in: store)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(80))
+            XCTAssertEqual(item.status, .done)
+            Library.close(store)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(80))
+            try FileManager.default.removeItem(at: file)
+            Library.open(section, in: store)
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(80))
+            XCTAssertEqual(item.status, .missing, "A mounted pane must refresh on logical reopen")
+        }
+    }
+
     func testLibraryIsLaidOutBeforeFirstDragSample() async throws {
         let (store, window, monitor) = fixture(withSpaces: true)
         Library.open(.downloads, in: store)
