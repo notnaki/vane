@@ -4971,7 +4971,7 @@ struct TabIcon: View {
 
 // MARK: - Sidebar footer
 
-private struct BottomRow: View {
+struct BottomRow: View {
     @EnvironmentObject var store: TabStore
     @ObservedObject var downloadsHover: DownloadsHover
     let hasPreviewItems: Bool

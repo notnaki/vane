@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import vane
 
@@ -48,5 +50,49 @@ final class SpaceStripLayoutTests: XCTestCase {
         let layout = SpaceStripLayout(count: 0, availableWidth: 0)
         XCTAssertTrue(layout.itemWidth.isFinite)
         XCTAssertFalse(layout.scrolls)
+    }
+}
+
+@MainActor final class SpaceStripViewportTests: XCTestCase {
+    func testOverflowCreatesScrollableNativeContent() throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let manager = ProfileManager.shared
+        let profile = manager.active.id
+        let previous = manager.spaces(for: profile)
+        let spaces = (1...12).map { Space(name: "Space \($0)", profileID: profile) }
+        XCTAssertTrue(manager.saveSpaces(spaces, for: profile))
+        let store = TabStore(profileID: profile, space: spaces[0], session: [])
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 212, height: 28),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: BottomRow(downloadsHover: DownloadsHover(),
+            hasPreviewItems: false, preparePreview: { false })
+            .environmentObject(store).environmentObject(store.spaceGesture)
+            .environmentObject(DownloadFeedback()))
+        window.contentView = host
+        defer {
+            window.contentView = nil
+            window.close()
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+            XCTAssertTrue(manager.saveSpaces(previous, for: profile))
+        }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        host.layoutSubtreeIfNeeded()
+        func scrollView(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+        }
+        let scroll = try XCTUnwrap(scrollView(in: host))
+        let document = try XCTUnwrap(scroll.documentView)
+        XCTAssertGreaterThan(document.frame.width, scroll.contentSize.width,
+                             "Twelve dots must create actual scrollable content, not draw beyond a fixed viewport")
+        let before = scroll.contentView.bounds.minX
+        scroll.contentView.scroll(to: NSPoint(x: 100, y: 0))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        XCTAssertGreaterThan(scroll.contentView.bounds.minX, before)
+        XCTAssertNotNil(store.spaceGesture.scrollingFooter)
     }
 }
