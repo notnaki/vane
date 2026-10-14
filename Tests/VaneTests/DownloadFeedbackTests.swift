@@ -1,8 +1,72 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import vane
 
 @MainActor final class DownloadFeedbackTests: XCTestCase {
+    func testHiddenSidebarRendersFeedbackAndDismissesWithBatterySaver() async throws {
+        try await assertHiddenSidebarFeedback(savingBattery: true)
+    }
+
+    func testHiddenSidebarRendersFeedbackAndDismissesWithAnimation() async throws {
+        try await assertHiddenSidebarFeedback(savingBattery: false)
+    }
+
+    private func assertHiddenSidebarFeedback(savingBattery: Bool) async throws {
+        TestEnvironment.prepare()
+        let previousMode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(savingBattery ? .alwaysOn : .off)
+        defer { BatterySaver.shared.setMode(previousMode) }
+        let store = TabStore(isPrivate: true)
+        store.sidebarShown = false
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 600, height: 400),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        store.window = window
+        let host = NSHostingView(rootView: Color.gray
+            .anchorPreference(key: DownloadFeedbackBounds.self, value: .bounds) { [.page: $0] }
+            .modifier(DownloadFeedbackPresentation(store: store, chrome: false)))
+        window.contentView = host
+        defer {
+            window.contentView = nil
+            window.close()
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+        }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        let before = try SidebarSnapshot.pixels(in: host)
+        let start = DownloadFeedback.Start(name: "report.pdf", profileID: Profile.incognito.id, window: window)
+        NotificationCenter.default.post(name: DownloadFeedback.started, object: start)
+        try await Task.sleep(for: .milliseconds(150))
+        host.layoutSubtreeIfNeeded()
+        XCTAssertNotEqual(try SidebarSnapshot.pixels(in: host), before,
+                          "A download must visibly appear even without a sidebar bucket anchor")
+        XCTAssertFalse(store.sidebarShown)
+        try await Task.sleep(for: .milliseconds(2100))
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(try SidebarSnapshot.pixels(in: host), before,
+                       "The temporary download control must disappear after feedback ends")
+    }
+
+    func testHiddenSidebarGetsVisibleDownloadTargetInsidePage() throws {
+        let page = CGRect(x: 8, y: 8, width: 900, height: 600)
+        let hiddenBucket = CGRect(x: -200, y: 550, width: 32, height: 32)
+        let target = try XCTUnwrap(DownloadFeedbackBounds.destination(
+            page: page, bucket: hiddenBucket, chrome: false))
+        XCTAssertTrue(page.contains(target))
+        XCTAssertEqual(target.minX, page.minX + 16)
+        XCTAssertEqual(target.maxY, page.maxY - 16)
+        XCTAssertEqual(DownloadFeedbackBounds.destination(page: page, bucket: nil, chrome: false), target)
+    }
+
+    func testVisibleSidebarUsesActualLibraryTarget() {
+        let page = CGRect(x: 240, y: 8, width: 900, height: 600)
+        let bucket = CGRect(x: 16, y: 550, width: 32, height: 32)
+        XCTAssertEqual(DownloadFeedbackBounds.destination(page: page, bucket: bucket, chrome: true), bucket)
+        XCTAssertNil(DownloadFeedbackBounds.destination(page: page, bucket: nil, chrome: true))
+    }
+
     func testFeedbackStaysInOriginWindowAndPrivateDownloadsStayPrivate() {
         let window = NSWindow()
         let other = NSWindow()

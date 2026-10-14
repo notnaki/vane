@@ -57,24 +57,42 @@ struct DownloadFeedbackPresentation: ViewModifier {
         content
         .overlayPreferenceValue(DownloadFeedbackBounds.self) { bounds in
             GeometryReader { geometry in
-                if let start = downloadFeedback.start, !downloadFeedback.landed,
-                   !reduceMotion, !batterySaver.isActive,
-                   let page = bounds[.page], let bucket = bounds[.bucket] {
+                if let start = downloadFeedback.start, let page = bounds[.page],
+                   let target = DownloadFeedbackBounds.destination(
+                    page: geometry[page], bucket: bounds[.bucket].map { geometry[$0] }, chrome: chrome) {
                     let source = geometry[page]
-                    let target = geometry[bucket]
-                    DownloadFlight(source: CGPoint(x: source.midX, y: source.midY),
-                                   destination: CGPoint(x: target.midX, y: target.midY - 4))
-                        .id(start.id)
+                    if !chrome {
+                        Button {
+                            Motion.list { Library.open(.downloads, in: store) }
+                        } label: {
+                            LibraryDownloadGlyph(filled: true, hovered: false)
+                                .offset(y: -4)
+                                .frame(width: target.width, height: target.height)
+                                .background(.regularMaterial, in: .rect(cornerRadius: 10))
+                                .contentShape(.rect)
+                        }
+                        .buttonStyle(TactileButtonStyle())
+                        .foregroundStyle(Look.inkSecondary)
+                        .accessibilityLabel("Download started: \(start.name)")
+                        .accessibilityHint("Open Downloads in Library")
+                        .position(x: target.midX, y: target.midY)
+                        .transition(.opacity)
+                    }
+                    if !downloadFeedback.landed, !reduceMotion, !batterySaver.isActive {
+                        DownloadFlight(source: CGPoint(x: source.midX, y: source.midY),
+                                       destination: CGPoint(x: target.midX, y: target.midY - 4))
+                            .id(start.id)
+                    }
                 }
             }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+            .animation(reduceMotion || batterySaver.isActive ? nil : Look.quick,
+                       value: downloadFeedback.start?.id)
         }
         .environmentObject(downloadFeedback)
         .onReceive(NotificationCenter.default.publisher(for: DownloadFeedback.started)) { notification in
             guard let start = notification.object as? DownloadFeedback.Start else { return }
             downloadFeedback.receive(start, in: store.window, isPrivate: store.isPrivate,
-                                     reduced: reduceMotion || batterySaver.isActive || !chrome || store.libraryOpen)
+                                     reduced: reduceMotion || batterySaver.isActive || store.libraryOpen)
         }
         .task(id: downloadFeedback.start?.id) {
             guard let start = downloadFeedback.start else { return }
@@ -87,8 +105,8 @@ struct DownloadFeedbackPresentation: ViewModifier {
                 downloadFeedback.dismiss(start.id)
             } catch { }
         }
-        .onChange(of: reduceMotion || batterySaver.isActive || !chrome || store.libraryOpen) {
-            if reduceMotion || batterySaver.isActive || !chrome || store.libraryOpen,
+        .onChange(of: reduceMotion || batterySaver.isActive || store.libraryOpen) {
+            if reduceMotion || batterySaver.isActive || store.libraryOpen,
                let start = downloadFeedback.start { downloadFeedback.land(start.id) }
         }
         .onDisappear { downloadFeedback.cancel() }
@@ -123,6 +141,12 @@ struct LibraryDownloadGlyph: View {
 struct DownloadFeedbackBounds: PreferenceKey {
     enum Target: Hashable { case page, bucket }
     static let defaultValue: [Target: Anchor<CGRect>] = [:]
+
+    /// With chrome hidden, give the flight a visible landing point inside the page.
+    static func destination(page: CGRect, bucket: CGRect?, chrome: Bool) -> CGRect? {
+        if chrome { return bucket }
+        return CGRect(x: page.minX + 16, y: page.maxY - 56, width: 40, height: 40)
+    }
     static func reduce(value: inout [Target: Anchor<CGRect>],
                        nextValue: () -> [Target: Anchor<CGRect>]) {
         value.merge(nextValue(), uniquingKeysWith: { _, new in new })
