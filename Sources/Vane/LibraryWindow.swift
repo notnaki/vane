@@ -1698,41 +1698,18 @@ private struct SpaceCard: View {
         return space.tabURLs.filter { shape?.lockedFolders(for: $0.absoluteString, unlocked: []).isEmpty ?? true }
     }
 
-    /// The card's ground, off the same stops `SpaceGround` builds the window's from — so a
-    /// Space the theme editor gave two colours reads as that diagonal here too, rather than
-    /// as a flat wash of whichever one happens to be `colorHex`.
-    ///
-    /// Laid opaque, where the window lays its own at `groundOpacity`: the window has a
-    /// wallpaper behind it to show through and a card has the panel, which is already
-    /// wearing the *current* Space's wash. At 62 % every card would be tinted by the Space
-    /// the window is in rather than by its own.
-    private var stops: [Color] {
+    /// Render the Space's own base and overlay colours. Cards remain opaque so the
+    /// current window's wash cannot leak into a different Space's preview.
+    private var ground: some View {
         let mine = Spaces.palette(of: space)
         let list = mine.isEmpty
             ? [ThemeColor(hex: profiles.profiles.first { $0.id == space.profileID }?.colorHex ?? store.profile.colorHex)!]
             : mine
-        return Look.groundStops(list, towards: list, fraction: 0, dark: scheme == .dark,
-                                strength: space.tint ?? Look.defaultTint)
-    }
-
-    /// One colour is one even wash; several are the diagonal, exactly as `SpaceGround` mixes
-    /// them. The grain rides on top at the Space's own strength, so a grainy Space looks
-    /// grainy here too.
-    @ViewBuilder private var ground: some View {
-        let stops = stops
-        ZStack {
-            if stops.count > 1 {
-                LinearGradient(colors: stops, startPoint: .topLeading, endPoint: .bottomTrailing)
-            } else {
-                stops.first ?? Color.clear
-            }
-            if let grain = space.grain, grain > 0 {
-                Image(nsImage: Look.grain)
-                    .resizable(resizingMode: .tile)
-                    .interpolation(.none)          // one noisy pixel per pixel; see SpaceGround
-                    .opacity(grain * Look.grainMax)
-            }
-        }
+        let systemDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+            .map { $0 == .darkAqua } ?? (scheme == .dark)
+        let dark = space.appearance == "dark" || (space.appearance == nil && systemDark)
+        return ThemeWashView(wash: ThemeWash(colors: list, strength: space.tint ?? Look.defaultTint,
+                                             opacity: 1, grain: space.grain ?? 0, dark: dark))
     }
 
     var body: some View {

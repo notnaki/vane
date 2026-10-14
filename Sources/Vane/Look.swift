@@ -28,6 +28,11 @@ enum Look {
     /// read *against* the window's own, which macOS 26 rounds hard, and a settings card's
     /// 6pt inside that reads as a pinch rather than as a corner. Arc's is 8–10.
     static let pageRadius: CGFloat = 10
+    /// A dark rim stays visible over even the brightest Space wash. The soft outline
+    /// shadow belongs to the card shape, so empty and loaded pages have the same edge.
+    static let pageRim = Color.black.opacity(0.12)
+    static let pageShadow = Color.black.opacity(0.24)
+    static let pageShadowRadius: CGFloat = 3
     /// The address pill, favourites tiles, sidebar rows, buttons. Fitted at 12 (a 24px arc
     /// at 2x); 10 undershot every sample.
     static let pillRadius: CGFloat = 12
@@ -574,22 +579,23 @@ enum Look {
 
     // MARK: The ground
 
-    /// How much of the derived ground colour sits over the blurred desktop. Arc's black
-    /// theme reads 33–36 over a dark wallpaper and 66–73 over a bright one; at 0.62 over
-    /// `WindowGlass` (`.fullScreenUI`, itself ~44 % opaque) ours spans 30 over black to 84
-    /// over white, a fifth of the backdrop showing through. Light is laid on heavier: a
-    /// pale ground a fifth wallpaper turns to mud over a dark desktop.
-    static func groundOpacity(dark: Bool) -> Double { dark ? 0.62 : 0.78 }
+    /// The usual glass wash, with a smooth stronger range at the slider's upper end.
+    /// A fixed 62% ceiling visibly muted colours compared with Arc at maximum intensity.
+    static func groundOpacity(dark: Bool, strength: Double = defaultTint) -> Double {
+        let base = dark ? 0.62 : 0.78
+        return base + (0.9 - base) * ThemeIntensity.boost(strength)
+    }
 
-    /// Intensity mixes the selected colour with a neutral wash. The window's glass and
-    /// outer opacity remain constant; dimming every colour to a fixed brightness makes
-    /// Arc's intensity control impossible to reproduce.
+    /// Intensity mixes the selected colour with a neutral wash. The strongest settings
+    /// additionally increase opacity, with a small dark-appearance shade correction.
     nonisolated static func ground(hex: String, dark: Bool, strength: Double = defaultTint)
         -> (r: Double, g: Double, b: Double)? {
         guard let h = hsb(hex: hex) else { return nil }
         let c = rgb(h: h.h, s: h.s, b: h.b)
         let v = min(max(strength, 0), 1)
-        return (0.5 + (c.r - 0.5) * v, 0.5 + (c.g - 0.5) * v, 0.5 + (c.b - 0.5) * v)
+        let shade = dark ? 1 - 0.075 * ThemeIntensity.boost(v) : 1
+        return ((0.5 + (c.r - 0.5) * v) * shade, (0.5 + (c.g - 0.5) * v) * shade,
+                (0.5 + (c.b - 0.5) * v) * shade)
     }
 
     static func groundColor(hex: String, dark: Bool, strength: Double) -> Color {
@@ -636,8 +642,8 @@ enum Look {
         let f = min(max(fraction, 0), 1)
         let to = b.isEmpty ? a : b
         return (0..<max(a.count, to.count)).map { i in
-            let x = a[min(i, a.count - 1)].ground(strength: strength)
-            let y = to[min(i, to.count - 1)].ground(strength: strength)
+            let x = a[min(i, a.count - 1)].ground(strength: strength, dark: dark)
+            let y = to[min(i, to.count - 1)].ground(strength: strength, dark: dark)
             return ThemeColor(red: x.red + (y.red - x.red) * f,
                               green: x.green + (y.green - x.green) * f,
                               blue: x.blue + (y.blue - x.blue) * f).color
@@ -1106,7 +1112,7 @@ extension Look {
         func near(_ v: Double, _ want: Double) -> Bool { abs(v * 255 - want) <= 2 }
         let blue = ground(hex: "#5A9BD5", dark: true)
         out.append(("intensity zero is a neutral wash", ground(hex: "#5A9BD5", dark: true, strength: 0).map { $0 == (0.5, 0.5, 0.5) } == true))
-        out.append(("intensity one retains the selected colour", ground(hex: "#5A9BD5", dark: true, strength: 1).map { near($0.r, 90) && near($0.g, 155) && near($0.b, 213) } == true))
+        out.append(("light intensity one retains the selected colour", ground(hex: "#5A9BD5", dark: false, strength: 1).map { near($0.r, 90) && near($0.g, 155) && near($0.b, 213) } == true))
         out.append(("the slider changes brightness as well as saturation", blue.map { $0.b > 0.5 && $0.r < 0.5 } == true))
         out.append(("invalid colours have no ground", ground(hex: "sky", dark: true) == nil))
 

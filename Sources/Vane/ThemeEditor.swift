@@ -27,6 +27,8 @@ struct ThemeEditor: View {
     /// Which page of presets the chevrons have walked to.
     @State private var page = 0
     @State private var wheel: ThemeWheel?
+    @State private var hueOffsets: [Double] = [0]
+    @State private var harmony: ThemeHarmony = .complementary
     @State private var hovered: Int?
     /// The Space as this panel has it, including edits a finger has not let go of yet.
     @State private var live: Space?
@@ -83,7 +85,10 @@ struct ThemeEditor: View {
         .onAppear {
             name = space.name
             focused = naming
-            page = Self.page(of: colors.first)
+            page = ThemePreset.page(of: palette)
+            hueOffsets = ThemeWheel.offsets(palette: palette)
+            harmony = current.themeHarmony ?? ThemeWheel.harmony(palette: palette)
+            if palette.first?.hsl.s ?? 0 < 1e-8 { hueOffsets = ThemeWheel.offsets(count: palette.count, harmony: harmony) }
             if let primary = palette.first { wheel = ThemeWheel(primary) }
         }
         // Committed on the way out too: a panel dismissed by clicking the page must not throw
@@ -207,11 +212,11 @@ struct ThemeEditor: View {
         guard let primary = palette.first else { return }
         let pad = wheel ?? ThemeWheel(primary)
         wheel = pad
-        let positions = ThemeWheel.positions(dragged: point, index: i, count: palette.count)
+        let positions = ThemeWheel.positions(dragged: point, index: i, count: palette.count, offsets: hueOffsets)
         let color = pad.color(at: positions[0], hueAtCenter: primary.hsl.h)
-        let list = ThemeWheel.palette(color, count: palette.count)
+        let list = ThemeWheel.palette(color, count: palette.count, offsets: hueOffsets)
         for j in list.indices { placed[j] = positions[j] }
-        slide { Spaces.setPalette(list, on: &$0) }
+        slide { Spaces.setPalette(list, on: &$0, harmony: harmony) }
     }
 
     /// The three appearance toggles across the canvas' top: automatic, light, dark.
@@ -246,15 +251,17 @@ struct ThemeEditor: View {
         HStack(spacing: Look.inset * 4) {
             step("minus", colors.count > 1 ? "Remove a colour" : "No theme colour", enabled: !colors.isEmpty) {
                 guard let primary = palette.first else { return }
-                let list = colors.count > 1 ? ThemeWheel.palette(primary, count: colors.count - 1) : []
+                let list = colors.count > 1 ? ThemeWheel.palette(primary, count: colors.count - 1, offsets: ThemeWheel.offsets(count: colors.count - 1, harmony: harmony)) : []
                 placed = [:]
-                Motion.animate(Look.quick) { edit { Spaces.setPalette(list, on: &$0) } }
+                hueOffsets = ThemeWheel.offsets(count: list.count, harmony: harmony)
+                Motion.animate(Look.quick) { edit { Spaces.setPalette(list, on: &$0, harmony: harmony) } }
             }
             step("plus", "Add a colour", enabled: colors.count < Spaces.maxThemeColors) {
                 let primary = palette.first ?? ThemeColor(hex: "#808080")!
                 if palette.isEmpty || wheel == nil { wheel = ThemeWheel(primary) }
                 placed = [:]
-                Motion.animate(Look.quick) { edit { Spaces.setPalette(ThemeWheel.palette(primary, count: colors.count + 1), on: &$0) } }
+                hueOffsets = ThemeWheel.offsets(count: colors.count + 1, harmony: harmony)
+                Motion.animate(Look.quick) { edit { Spaces.setPalette(ThemeWheel.palette(primary, count: colors.count + 1, offsets: hueOffsets), on: &$0, harmony: harmony) } }
             }
         }
     }
@@ -280,7 +287,7 @@ struct ThemeEditor: View {
     /// not tap gestures: these are the keyboard's and VoiceOver's route to a colour, because
     /// the canvas above them is a pointer control.
     private var presets: some View {
-        let all = Look.themeSwatches
+        let all = ThemePreset.all
         let pages = max(1, (all.count + Look.swatchPage - 1) / Look.swatchPage)
         let start = min(max(page, 0), pages - 1) * Look.swatchPage
         return HStack(spacing: Look.inset / 2) {
@@ -299,20 +306,21 @@ struct ThemeEditor: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Preset colours")
+        .animation(Motion.reduced ? nil : Look.quick, value: page)
     }
 
-    private func swatch(_ hex: String) -> some View {
-        Button { pick(hex) } label: {
-            Circle()
-                .fill(Look.themePresetColors[hex]?.color ?? Color(hex: hex) ?? Look.inkQuiet)
+    private func swatch(_ preset: ThemePreset) -> some View {
+        Button { pick(preset) } label: {
+            ThemeWashView(wash: ThemeWash(colors: preset.colors, strength: 1, opacity: 1, grain: 0))
+                .clipShape(.circle)
                 .frame(width: Look.swatch, height: Look.swatch)
                 .overlay { Circle().strokeBorder(.white.opacity(0.15), lineWidth: 2) }
                 .contentShape(.circle)
         }
         .buttonStyle(.plain)
-        .help(hex)
-        .accessibilityLabel("Theme colour \(hex)")
-        .accessibilityAddTraits(colors.contains(hex) ? [.isButton, .isSelected] : .isButton)
+        .help(preset.name)
+        .accessibilityLabel(preset.name)
+        .accessibilityAddTraits(preset.matches(palette) ? [.isButton, .isSelected] : .isButton)
     }
 
     private func chevron(_ symbol: String, _ label: String,
@@ -330,19 +338,15 @@ struct ThemeEditor: View {
     }
 
     /// Presets replace the whole palette and calibrate a fresh pad.
-    private func pick(_ hex: String) {
-        guard let color = Look.themePresetColors[hex] ?? ThemeColor(hex: hex) else { return }
-        wheel = ThemeWheel(color)
+    private func pick(_ preset: ThemePreset) {
+        guard let primary = preset.colors.first else { return }
+        wheel = ThemeWheel(primary)
+        hueOffsets = ThemeWheel.offsets(palette: preset.colors)
+        harmony = ThemeWheel.harmony(palette: preset.colors)
         placed = [:]
-
         Motion.animate(Look.quick) {
-            edit { Spaces.setPalette([color], on: &$0) }
+            edit { Spaces.setPalette(preset.colors, on: &$0, harmony: harmony) }
         }
-    }
-
-    private static func page(of hex: String?) -> Int {
-        guard let hex, let i = Look.themeSwatches.firstIndex(of: hex) else { return 0 }
-        return i / Look.swatchPage
     }
 
     static func check() -> [(String, Bool)] {

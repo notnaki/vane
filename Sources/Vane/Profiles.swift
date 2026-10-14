@@ -434,6 +434,8 @@ struct Space: Identifiable, Codable, Equatable {
     var colors: [String]?
     /// Unclipped Display P3 colours; absent in older backups.
     var themePalette: [ThemeColor]? = nil
+    /// Preset harmony survives neutral endpoints, where RGB no longer retains hue.
+    var themeHarmony: ThemeHarmony? = nil
     /// How much static noise the ground wears, 0…1. See `Look.grain`.
     var grain: Double?
     /// Address-only row identities and layout, atomically committed with template-created Spaces.

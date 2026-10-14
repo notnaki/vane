@@ -62,16 +62,19 @@ struct ThemeColor: Codable, Equatable, Hashable, Sendable {
         return ThemeColor(red: rgb.0 + m, green: rgb.1 + m, blue: rgb.2 + m)
     }
 
-    func ground(strength: Double) -> ThemeColor {
+    func ground(strength: Double, dark: Bool = false) -> ThemeColor {
         let v = min(max(strength, 0), 1)
-        return ThemeColor(red: 0.5 + (red - 0.5) * v,
-                          green: 0.5 + (green - 0.5) * v,
-                          blue: 0.5 + (blue - 0.5) * v)
+        let shade = dark ? 1 - 0.075 * ThemeIntensity.boost(v) : 1
+        return ThemeColor(red: (0.5 + (red - 0.5) * v) * shade,
+                          green: (0.5 + (green - 0.5) * v) * shade,
+                          blue: (0.5 + (blue - 0.5) * v) * shade)
     }
 }
 
 /// A pad is calibrated when opened or when a preset is chosen. Moving a dot must never
 /// recalibrate its own range: that makes the colour under a stationary pointer drift.
+enum ThemeHarmony: String, Codable, Sendable { case complementary, analogous }
+
 struct ThemeWheel: Sendable {
     let saturation: Double
     let lower: Double
@@ -96,9 +99,27 @@ struct ThemeWheel: Sendable {
         return .hsl(h: h, s: saturation, l: lower + w.r * (upper - lower))
     }
 
-    static func positions(dragged point: CGPoint, index: Int, count: Int) -> [CGPoint] {
+    static func offsets(count: Int, harmony: ThemeHarmony = .complementary) -> [Double] {
+        if harmony == .analogous { return count >= 3 ? [0, 1.0 / 9, -1.0 / 9] : count == 2 ? [0, 1.0 / 9] : [0] }
+        return count >= 3 ? [0, 5.0 / 12, -5.0 / 12] : count == 2 ? [0, 0.5] : [0]
+    }
+
+    static func harmony(palette: [ThemeColor]) -> ThemeHarmony {
+        let offsets = offsets(palette: palette)
+        return offsets.count > 1 && abs(abs(offsets[1]) - 1.0 / 9) < 1e-4 ? .analogous : .complementary
+    }
+
+    static func offsets(palette: [ThemeColor]) -> [Double] {
+        guard let primary = palette.first, primary.hsl.s > 1e-8 else { return offsets(count: palette.count) }
+        return palette.map {
+            let d = $0.hsl.h - primary.hsl.h
+            return d - (d + 0.5).rounded(.down)
+        }
+    }
+
+    static func positions(dragged point: CGPoint, index: Int, count: Int, offsets supplied: [Double]? = nil) -> [CGPoint] {
         let w = Spaces.wheel(x: point.x, y: point.y)
-        let offsets: [Double] = count >= 3 ? [0, 5.0 / 12, -5.0 / 12] : count == 2 ? [0, 0.5] : [0]
+        let offsets = supplied?.count == count ? supplied! : offsets(count: count)
         let angle = w.a - offsets[index] * 2 * .pi
         return offsets.map {
             let p = Spaces.wheelPoint(r: w.r, a: angle + $0 * 2 * .pi)
@@ -111,9 +132,9 @@ struct ThemeWheel: Sendable {
                 y: model.y + (location.y - start.y) / field.height)
     }
 
-    static func palette(_ primary: ThemeColor, count: Int) -> [ThemeColor] {
+    static func palette(_ primary: ThemeColor, count: Int, offsets supplied: [Double]? = nil) -> [ThemeColor] {
         let c = primary.hsl
-        let offsets: [Double] = count >= 3 ? [0, 5.0 / 12, -5.0 / 12] : count == 2 ? [0, 0.5] : [0]
+        let offsets = supplied?.count == count ? supplied! : offsets(count: count)
         return offsets.map { $0 == 0 ? primary : .hsl(h: c.h + $0, s: c.s, l: c.l) }
     }
 }
@@ -122,6 +143,11 @@ struct ThemeWheel: Sendable {
 /// and a thumb whose size follows intensity instead of changing the travel distance.
 enum ThemeIntensity {
     static let width: CGFloat = 224
+    /// Extend the top of the slider smoothly beyond the former fixed-opacity ceiling.
+    static func boost(_ value: Double) -> Double {
+        let t = min(max((value - 0.8) / 0.2, 0), 1)
+        return t * t * (3 - 2 * t)
+    }
     static func value(x: Double, width: Double) -> Double {
         min(max((x - 8) / max(width - 16, 1), 0), 1)
     }

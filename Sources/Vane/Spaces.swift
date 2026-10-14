@@ -305,6 +305,7 @@ enum Spaces {
         space.colors = capped.isEmpty ? nil : capped
         space.colorHex = capped.first
         space.themePalette = nil
+        space.themeHarmony = nil
     }
 
     static func palette(of space: Space) -> [ThemeColor] {
@@ -314,10 +315,11 @@ enum Spaces {
         return fallback.compactMap(ThemeColor.init(hex:))
     }
 
-    static func setPalette(_ colors: [ThemeColor], on space: inout Space) {
+    static func setPalette(_ colors: [ThemeColor], on space: inout Space, harmony: ThemeHarmony? = nil) {
         let list = Array(colors.prefix(maxThemeColors))
         setThemeColors(list.map(\.hex), on: &space)
         space.themePalette = list.isEmpty ? nil : list
+        space.themeHarmony = list.isEmpty ? nil : harmony ?? (list.count > 1 ? ThemeWheel.harmony(palette: list) : nil)
     }
 
     static func themePoint(hex: String) -> (x: Double, y: Double)? {

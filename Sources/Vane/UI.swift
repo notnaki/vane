@@ -641,7 +641,8 @@ struct SpaceGround: View {
             dark = systemDark
         }
         return ThemeWash(colors: colors(of: space), strength: space?.tint ?? Look.defaultTint,
-                         opacity: Look.groundOpacity(dark: dark), grain: space?.grain ?? 0)
+                         opacity: Look.groundOpacity(dark: dark, strength: space?.tint ?? Look.defaultTint),
+                         grain: space?.grain ?? 0, dark: dark)
     }
 
     /// A Space's colours, falling back to its profile's — Arc has no colourless space, and a
@@ -771,6 +772,20 @@ struct WebCard: View {
         // ⌃⇥: the recent tabs, centred on the page rather than on the window.
         .overlay { TabSwitcherOverlay() }
         .clipShape(.rect(cornerRadius: Look.pageRadius))
+        .background {
+            RoundedRectangle(cornerRadius: Look.pageRadius)
+                .stroke(Look.pageShadow, lineWidth: 1)
+                .blur(radius: Look.pageShadowRadius)
+                .offset(y: 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: Look.pageRadius)
+                .strokeBorder(Look.pageRim, lineWidth: 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
