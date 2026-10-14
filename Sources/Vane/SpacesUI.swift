@@ -558,7 +558,7 @@ struct SpacePreviewList: View, Equatable {
                 .padding(.bottom, pinnedCollapsed || !pinnedAvailable ? 0 : Look.sectionGap / 2 - Look.rowGap)
             } rows: {
                 if pinnedAvailable {
-                    VStack(spacing: Look.rowGap) {
+                    LazyVStack(spacing: Look.rowGap) {
                         ForEach(Array(rows.pinned.enumerated()), id: \.offset) { _, entry in
                             row(entry, selected: isSelected(entry))
                         }
@@ -567,7 +567,7 @@ struct SpacePreviewList: View, Equatable {
                 }
                 tidy
                 newTab
-                VStack(spacing: Look.rowGap) {
+                LazyVStack(spacing: Look.rowGap) {
                     ForEach(Array(rows.today.enumerated()), id: \.offset) { _, entry in
                         row(entry, selected: isSelected(entry))
                     }

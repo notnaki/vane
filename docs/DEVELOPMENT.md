@@ -171,7 +171,13 @@ work, not displayed frame rate. Set `VANE_LIBRARY_PERF_TABS` to compare other si
 
 ```sh
 VANE_UI_PERFORMANCE=1 swift test --filter LibrarySwipeTests.testPopulatedArchiveSwipeTiming
+# Small-sidebar Library and Space swipe comparisons:
+VANE_UI_PERFORMANCE=1 VANE_LIBRARY_PERF_TABS=10 swift test --filter 'LibrarySwipeTests.testPopulatedArchiveSwipeTiming|SidebarViewportPerformanceTests.testSpaceSwipeLayoutTiming'
 ```
+
+`SidebarViewportPerformanceTests` also guards viewport-only row mounting, saved
+scroll offsets, and access to the last row. Layout work under 8.33 ms leaves CPU
+headroom for a 120 Hz display; these timings do not establish displayed frame rate.
 
 Run comparisons on the same quiet logged-in Mac, with the same fixtures and build
 configuration. Coordinate with other profiling/build tasks before collecting

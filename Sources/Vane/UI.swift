@@ -2969,7 +2969,8 @@ struct SpaceSectionsLayout<Header: View, Rows: View>: View {
         VStack(spacing: Look.rowGap) {
             header()
             ScrollView {
-                VStack(spacing: Look.rowGap) { rows() }
+                // Both the live sidebar and moving previews mount only the viewport.
+                LazyVStack(spacing: Look.rowGap) { rows() }
                     .frame(minHeight: scrollHeight, alignment: .top)
                     .background(WindowDragArea())
             }
@@ -3068,7 +3069,7 @@ private struct PinnedSection: View {
         // of this list and takes a drop as one; the space row above; ⌘⇧D; or New Folder.
         let rows = store.pinnedSectionCollapsed ? [] : available
         if !available.isEmpty {
-            VStack(spacing: Look.rowGap) {
+            LazyVStack(spacing: Look.rowGap) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                     ShapeRow(row: row.visible, tab: row.tab, index: index, rows: rows.count,
                              shape: \.pins, pr: presentation(of: row.visible))
@@ -3750,7 +3751,7 @@ private struct OpenTabs: View {
         // actually draw a row are counted — a pane that is not its split's lead, and an
         // entry whose tab has gone, draw nothing. See `PinnedSection`.
         let rows = snapshot.rows
-        VStack(spacing: Look.rowGap) {
+        LazyVStack(spacing: Look.rowGap) {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                 ShapeRow(row: row.visible, tab: row.tab, index: index, rows: rows.count, shape: \.todayShape)
                     .transition(.todayRow)

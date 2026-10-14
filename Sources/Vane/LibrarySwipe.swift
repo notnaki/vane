@@ -28,12 +28,14 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
             HStack(spacing: 0) {
                 Color.clear.frame(width: (sidebarShown ? sidebarWidth : 0)
                     * (1 - progress) + panelWidth * progress)
-                page
+                // Resolve navigation geometry once per surface, rather than per leaf.
+                page.geometryGroup()
             }
             .disabled(palettePresented)
             .accessibilityHidden(palettePresented)
             // Adjacent surfaces follow the same translation, clipped at the page seam.
             sidebar
+                .geometryGroup()
                 .offset(x: panelWidth * progress)
                 .frame(width: (sidebarWidth + (floating ? 2 * Look.floatingSidebarGap : 0))
                     * (1 - progress) + panelWidth * progress, alignment: .leading)
@@ -49,6 +51,7 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
                             .frame(width: 1, height: 1)
                             .allowsHitTesting(false).accessibilityHidden(true)
                     }
+                    .geometryGroup()
                     .offset(x: -panelWidth * (1 - progress))
                     .transition(.offset(x: -panelWidth))
                     .disabled(palettePresented)
