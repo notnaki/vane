@@ -88,7 +88,7 @@ struct NativeThemeWash: NSViewRepresentable {
         }
         if reduced { view.finishAnimations() }
         view.apply(wash, duration: !reduced && context.transaction.animation != nil
-            && !context.transaction.disablesAnimations ? Look.spaceSlideDuration : 0)
+            && !context.transaction.disablesAnimations ? gesture.colourDuration : 0)
     }
 }
 

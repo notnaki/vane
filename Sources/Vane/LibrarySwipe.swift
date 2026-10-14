@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+extension Look {
+    static let librarySlideDuration: TimeInterval = 0.24
+    static let librarySlide = Animation.easeInOut(duration: librarySlideDuration)
+}
+
 /// Finger samples affect navigation geometry, not the browser or its tab rows.
 @MainActor final class LibraryGesture: ObservableObject {
     @Published var progress: CGFloat?
@@ -186,7 +191,7 @@ private struct LibrarySwipe: ViewModifier {
             Motion.instant(finish)
             clear()
         } else {
-            withAnimation(Look.appear, completionCriteria: .removed, finish, completion: clear)
+            withAnimation(Look.librarySlide, completionCriteria: .removed, finish, completion: clear)
         }
     }
 

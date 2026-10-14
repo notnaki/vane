@@ -209,6 +209,34 @@ import XCTest
         XCTAssertNil(store.librarySwipeProgress)
     }
 
+    func testClickOpeningPresentsIntermediatePanelPositions() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, monitor) = fixture(withSpaces: true)
+        Library.open(.downloads, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(80))
+        Library.open(.downloads, in: store)
+        try await Task.sleep(for: .milliseconds(70))
+        let marker = try XCTUnwrap(monitor.presentationView)
+        func x() throws -> CGFloat {
+            try XCTUnwrap(marker.layer?.presentation()).convert(.zero,
+                to: host.layer?.presentation()).x
+        }
+        let moving = try x()
+        XCTAssertLessThan(moving, -5, "Opening must show travel rather than the final panel immediately")
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertGreaterThan(try x(), moving + 5)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(try x(), 0, accuracy: 1)
+    }
+
     func testRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose() async throws {
         let saver = BatterySaver.shared
         let previousMode = saver.mode

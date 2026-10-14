@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
     /// While native surfaces follow the fingers, keep raw input out of SwiftUI publication.
     var nativeDrag: CGFloat?
     var trackGround: ((Double) -> Void)?
+    var colourDuration = Look.spaceSlideDuration
     @Published var pull: CGFloat = 0
     @Published var swiping = false
     @Published var travelsFavorites = false
@@ -44,7 +45,7 @@ import UniformTypeIdentifiers
 
 extension Look {
     /// Keep the existing sidebar travel; page selection happens at its quarter point.
-    static let spaceSlideDuration: TimeInterval = 0.16
+    static let spaceSlideDuration: TimeInterval = 0.24
     static let spaceSlide = Animation.easeIn(duration: spaceSlideDuration)
     /// The strip finishing a swipe: the rest of the travel after the fingers leave, and the
     /// spring back when they did not go far enough. A spring rather than an ease because the
@@ -53,7 +54,7 @@ extension Look {
     static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
     /// A committed swipe reaches rest before handing the preview to the live sidebar.
     /// A finite ease keeps focus prompt without cutting off a spring's visible tail.
-    static let spaceLandingDuration: TimeInterval = 0.08
+    static let spaceLandingDuration: TimeInterval = 0.18
     static let spaceLanding = Animation.easeIn(duration: spaceLandingDuration)
     /// Returning from a canceled drag keeps its gentler timing.
     static let spaceReturn = Animation.spring(response: 0.16, dampingFraction: 0.9)
@@ -1300,6 +1301,7 @@ private struct SpaceSwipe: ViewModifier {
         landing = true
         landingFrom = store.currentSpaceID
         let destination = store.spaceGesture.neighbour ?? target
+        store.spaceGesture.colourDuration = activationDelay * 4
         store.spaceGesture.nativeDrag = nil
         let includesFavorites = destination.profileID != store.profileID
         let finish: () -> Void = { [weak self, weak store] in
@@ -1379,6 +1381,7 @@ private struct SpaceSwipe: ViewModifier {
             return
         }
         returning = true
+        store.spaceGesture.colourDuration = 0.16
         store.spaceGesture.nativeDrag = nil
         if let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.isSource(store) {
