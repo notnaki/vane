@@ -160,14 +160,14 @@ struct FavouritePreviewCard: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
                     Text(context.service == .calendar ? item.title : item.subtitle)
-                        .font(.system(size: 14, weight: .bold)).lineLimit(1)
+                        .font(.system(size: 14, weight: context.service == .gmail && !item.unread ? .regular : .bold)).lineLimit(1)
                     Spacer(minLength: 0)
                     if let time = item.timeLabel {
                         Text(time).font(.system(size: 11, weight: .semibold)).lineLimit(1).fixedSize()
                     }
                 }
                 Text(context.service == .calendar ? item.startsAt?.formatted(date: .abbreviated, time: .shortened) ?? "Upcoming event" : item.title)
-                    .font(.system(size: 13)).lineLimit(1)
+                    .font(.system(size: 13, weight: context.service == .gmail && item.unread ? .semibold : .regular)).lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(detail(item)).font(.system(size: 12)).foregroundStyle(.secondary)
                     .lineLimit(2, reservesSpace: true)

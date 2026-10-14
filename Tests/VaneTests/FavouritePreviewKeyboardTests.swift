@@ -110,6 +110,32 @@ import XCTest
         try png.write(to: URL(fileURLWithPath: "/tmp/vane-favourite-inbox-fixture.png"))
     }
 
+    func testGmailReadAndUnreadMessagesHaveDistinctVisibleTypography() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let owner = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        owner.isReleasedWhenClosed = false
+        let anchor = FavouritePreviewPanel.Anchor(frame: NSRect(x: 0, y: 0, width: 70, height: 50))
+        owner.contentView = anchor
+        owner.makeKeyAndOrderFront(nil)
+        defer { anchor.hide(); owner.contentView = nil; owner.close() }
+        let context = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://mail.google.com/mail/u/0/")!)!
+        var images: [Data] = []
+        for unread in [false, true] {
+            let item = FavouritePreviewItem(title: "Fixture subject", subtitle: "Fixture Sender", url: URL(string: "https://mail.google.com/mail/u/0/#inbox/abc1")!, unread: unread, snippet: "Fixture inbox snippet")
+            let card = FavouritePreviewCard(context: context, state: .ready(.init(account: "fixture@example.test", items: [item])), open: { _ in }, dismiss: {}).environment(\.colorScheme, .dark)
+            anchor.configure(visible: true, keyboard: false, content: AnyView(card), dismiss: {})
+            try await Task.sleep(for: .milliseconds(250))
+            let panel = try XCTUnwrap(owner.childWindows?.first)
+            XCTAssertEqual(panel.frame.size, NSSize(width: 240, height: 270))
+            let content = try XCTUnwrap(panel.contentView)
+            let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            images.append(try XCTUnwrap(bitmap.representation(using: .png, properties: [:])))
+        }
+        XCTAssertNotEqual(images[0], images[1], "Unread state must be visible as well as accessible")
+    }
+
     func testKeyboardOpeningInboxFocusesFirstMessage() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared
