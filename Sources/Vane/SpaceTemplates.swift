@@ -312,7 +312,8 @@ enum WorkspaceError: LocalizedError {
         guard all.contains(where: { $0.id == id }) else { throw WorkspaceError.missing }
         try write(all.filter { $0.id != id }, profile: profile)
     }
-    func create(_ id: UUID, profile: UUID, name: String, unlocked: Set<UUID>) throws -> Space {
+    func create(_ id: UUID, profile: UUID, name: String, unlocked: Set<UUID>,
+                replacingEmptySpace: UUID? = nil) throws -> Space {
         guard let template = try load(profile: profile).first(where: { $0.id == id }) else { throw WorkspaceError.missing }
         try template.layout.requireAuthentication(unlocked)
         let layout = try template.layout.recreated()
@@ -329,7 +330,18 @@ enum WorkspaceError: LocalizedError {
             guard all.allSatisfy({ $0.profileID == profile }), Set(all.map(\.id)).count == all.count else { throw WorkspaceError.damaged }
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile { all = [] }
         catch { throw WorkspaceError.damaged }
-        guard manager.saveSpaces(all + [space], for: profile) else { throw WorkspaceError.storage }
+        if let replacingEmptySpace {
+            guard let index = all.firstIndex(where: { $0.id == replacingEmptySpace }) else { throw WorkspaceError.changed }
+            let previous = all[index]
+            guard previous.tabURLs.isEmpty, (previous.pinnedTabURLs ?? []).isEmpty,
+                  previous.pinnedURLs.isEmpty,
+                  previous.layout.map({ $0.tabs.isEmpty && $0.pins.entries.isEmpty && $0.today.entries.isEmpty
+                      && $0.splits.isEmpty && $0.omitted == 0 }) ?? true else { throw WorkspaceError.changed }
+            all[index] = space
+        } else {
+            all.append(space)
+        }
+        guard manager.saveSpaces(all, for: profile) else { throw WorkspaceError.storage }
         return space
     }
 }

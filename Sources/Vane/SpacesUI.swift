@@ -106,8 +106,6 @@ struct SpaceName: View {
         }
     } + [ChromeMenuItem(title: "New Space", symbol: "rectangle.stack.badge.plus", startsGroup: true) {
         store.newSpace(); rebuild()
-    }, ChromeMenuItem(title: "New Space from Template", symbol: "rectangle.stack") {
-        store.showWorkspaceTemplates()
     }]
     anchor.show(items, title: "Spaces")
 }
@@ -138,10 +136,6 @@ struct NewSpaceButton: View {
                 },
                 ChromeMenuItem(title: "New Tab", symbol: "plus.square",
                                shortcut: shortcut == .unassigned ? "" : shortcut.display) { store.newTab(nil) },
-                ChromeMenuItem(title: "New Space from Template", symbol: "rectangle.stack",
-                               startsGroup: true) {
-                    store.showWorkspaceTemplates()
-                },
             ], above: true, title: "Create", showsPointer: true)
         } label: {
             Image(systemName: "plus")
@@ -164,7 +158,10 @@ struct NewSpaceButton: View {
                 // The strip, not this profile's list: `+` can make a Space in another
                 // profile, and the editor that opens on it hangs off this same button.
                 if let id = store.editingSpace, let space = store.strip.first(where: { $0.id == id }) {
-                    ThemeEditor(store: store, space: space, naming: true)
+                    ThemeEditor(store: store, space: space, naming: true, useTemplate: {
+                        store.editingSpace = nil
+                        store.showWorkspaceTemplates(replacingEmptySpace: space.id)
+                    })
                 }
             }
     }

@@ -144,7 +144,7 @@ editor transitions immediate.
 ## Space templates
 
 Choose the Space menu → **Save Space as Template…** to save a named workspace. **Space
-Templates…**, also available as **New Space from Template…** in the creation menu,
+Templates…**, also available through **New Space → Use Template**,
 previews the current profile’s saved setups and creates a new Space. Templates preserve
 pinned and Today tab order, duplicate pages, custom names, nested folders, Space
 appearance, and supported split layouts including divider sizes. Rename a template,

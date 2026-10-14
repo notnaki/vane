@@ -28,6 +28,35 @@ import XCTest
                            weights: [0.3, 0.7])], selected: second)
     }
 
+    func testTemplateReplacesOnlyTheEmptyCreationSpaceInOneWrite() throws {
+        let (manager, library) = try fixture()
+        let profile = manager.active.id
+        let existing = Space(name: "Keep", profileID: profile)
+        let draft = Space(name: "New Space", profileID: profile)
+        XCTAssertTrue(manager.saveSpaces([existing, draft], for: profile))
+        let template = try library.save(name: "Work", space: existing, layout: layout(), unlocked: [])
+        let created = try library.create(template.id, profile: profile, name: "Work", unlocked: [],
+                                         replacingEmptySpace: draft.id)
+        let spaces = manager.spaces(for: profile)
+        XCTAssertEqual(spaces.count, 2)
+        XCTAssertEqual(spaces.first, existing)
+        XCTAssertEqual(spaces.last?.id, created.id)
+        XCTAssertFalse(spaces.contains { $0.id == draft.id })
+        XCTAssertEqual(created.layout?.tabs.count, 2)
+    }
+
+    func testTemplateCannotReplaceASpaceThatHasGainedContent() throws {
+        let (manager, library) = try fixture()
+        let profile = manager.active.id
+        let draft = Space(name: "New Space", profileID: profile,
+                          tabURLs: [URL(string: "https://example.com/keep")!])
+        XCTAssertTrue(manager.saveSpaces([draft], for: profile))
+        let template = try library.save(name: "Work", space: draft, layout: layout(), unlocked: [])
+        XCTAssertThrowsError(try library.create(template.id, profile: profile, name: "Work", unlocked: [],
+                                                replacingEmptySpace: draft.id))
+        XCTAssertEqual(manager.spaces(for: profile), [draft])
+    }
+
     func testCredentialAddressesAreCleanedWithoutLosingPageNavigation() {
         let raw = URL(string: "https://alice:secret@example.com/docs?chapter=2&access_token=hidden&code=oauth#page=3&session=hidden")!
         XCTAssertEqual(SpaceLayout.templateURL(raw)?.absoluteString,

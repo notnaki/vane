@@ -7,6 +7,22 @@ final class ChromeMenuTests: XCTestCase {
     private let screen = CGRect(x: 0, y: 0, width: 1440, height: 900)
     private let size = CGSize(width: 264, height: 165)
 
+    func testCreationMenuFitsDefaultSidebarPaddingAndKeepsWidthAfterResize() {
+        let menu = CGSize(width: ChromeMenuLayout.width, height: 198)
+        let defaultFrame = ChromeMenuLayout.frame(anchor: CGRect(x: 188, y: 30, width: 32, height: 32),
+            size: menu, window: screen, screen: screen, above: true)
+        XCTAssertEqual(defaultFrame.minX, 8)
+        XCTAssertEqual(defaultFrame.maxX, 220)
+        XCTAssertEqual(defaultFrame.width, 212)
+        let wider = ChromeMenuLayout.frame(anchor: CGRect(x: 280, y: 30, width: 32, height: 32),
+            size: menu, window: screen, screen: screen, above: true)
+        XCTAssertEqual(wider.width, defaultFrame.width)
+        XCTAssertEqual(wider.maxX, 312)
+        let narrower = ChromeMenuLayout.frame(anchor: CGRect(x: 124, y: 30, width: 32, height: 32),
+            size: menu, window: screen, screen: screen, above: true)
+        XCTAssertEqual(narrower.width, defaultFrame.width)
+    }
+
     func testMenuStaysInsideTheWindowWhenTheSidebarIsNarrowerThanTheMenu() {
         let window = CGRect(x: 200, y: 180, width: 800, height: 600)
         let anchor = CGRect(x: 390, y: 200, width: 28, height: 28)

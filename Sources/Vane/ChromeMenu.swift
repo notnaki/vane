@@ -13,10 +13,11 @@ import SwiftUI
 }
 
 enum ChromeMenuLayout {
-    static let width: CGFloat = 256
-    static let rowHeight: CGFloat = 36
+    // Match the default sidebar’s content width; resizing the sidebar only moves the anchor.
+    static let width: CGFloat = Look.sidebarWidth - Look.inset * 2
+    static let rowHeight: CGFloat = 32
     static let inset: CGFloat = 6
-    static let groupHeight: CGFloat = 13
+    static let groupHeight: CGFloat = 9
     static let pointerHeight: CGFloat = 8
 
     /// Keep the entire surface inside both the owner's content and the visible screen.
@@ -254,7 +255,7 @@ private struct ChromeMenuSurface: View {
                     ForEach(items.indices, id: \.self) { index in
                         if items[index].startsGroup {
                             Rectangle().fill(.white.opacity(0.12)).frame(height: 1)
-                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .padding(.horizontal, 10).padding(.vertical, 4)
                                 .accessibilityHidden(true)
                         }
                         row(index).id(index)

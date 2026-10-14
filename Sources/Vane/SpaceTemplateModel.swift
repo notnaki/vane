@@ -117,7 +117,14 @@ import Foundation
             guard let self, let store, store.profileID == request.profileID, !store.isPrivate, !store.isLittle else { throw WorkspaceError.profile }
             let latest = try library.load(profile: request.profileID).first { $0.id == reviewed.id }
             guard latest == reviewed else { throw WorkspaceError.changed }
-            let space = try library.create(reviewed.id, profile: request.profileID, name: name, unlocked: unlocked)
+            if let replacing = request.replacingEmptySpace {
+                let (source, layout) = try source()
+                guard source.id == replacing, layout.tabs.isEmpty, layout.omitted == 0,
+                      layout.pins.entries.isEmpty, layout.today.entries.isEmpty,
+                      layout.splits.isEmpty else { throw WorkspaceError.changed }
+            }
+            let space = try library.create(reviewed.id, profile: request.profileID, name: name, unlocked: unlocked,
+                                           replacingEmptySpace: request.replacingEmptySpace)
             done(space)
         }
     }
