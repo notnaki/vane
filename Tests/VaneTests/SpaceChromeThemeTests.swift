@@ -13,6 +13,28 @@ final class SpaceChromeThemeTests: XCTestCase {
                        ThemeColor(hex: "#2233FF"))
     }
 
+    @MainActor func testHoverAndSelectionOverlaysStayNeutralAcrossSpaceColours() throws {
+        for hex in ["#22BB55", "#DD3355", "#3355EE"] {
+            let theme = SpaceChromeTheme(primary: ThemeColor(hex: hex))
+            let fills = [theme.hovered, theme.selected, theme.favoriteSelected,
+                         theme.pillFill, theme.controlFill, theme.cardFill,
+                         theme.barHovered, theme.barSelected, theme.bubbleHover]
+            for scheme in [ColorScheme.dark, .light] {
+                for fill in fills {
+                    let renderer = ImageRenderer(content: Rectangle().fill(fill)
+                        .frame(width: 12, height: 12)
+                        .background(Color(white: 0.5))
+                        .environment(\.colorScheme, scheme))
+                    let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+                    let pixel = try XCTUnwrap(bitmap.colorAt(x: 6, y: 6)?.usingColorSpace(.sRGB))
+                    XCTAssertEqual(pixel.redComponent, pixel.greenComponent, accuracy: 0.01,
+                                   "Interaction overlays must stay gray for primary \(hex)")
+                    XCTAssertEqual(pixel.greenComponent, pixel.blueComponent, accuracy: 0.01)
+                }
+            }
+        }
+    }
+
     @MainActor func testSelectedFavoriteUsesSpacePrimaryInsteadOfItsWebsiteIcon() throws {
         let icon = NSImage(size: CGSize(width: 16, height: 16), flipped: false) { rect in
             NSColor.red.setFill()
