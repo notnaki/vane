@@ -20,6 +20,9 @@ enum Look {
     /// Let the page show through the floating sidebar while its controls stay opaque.
     static let floatingSidebarFill = Color(white: 0.08).opacity(0.55)
     static let floatingSidebarMaterial = AnyShapeStyle(Material.thin)
+    /// A one-pixel rim on Retina displays, visible over the translucent material.
+    static let floatingSidebarStroke = Color.white.opacity(0.25)
+    static let floatingSidebarStrokeWidth: CGFloat = 0.5
     /// The page card — the sheet a page is drawn on, and the outline standing where one will
     /// go. Its own number, and a generous one: it is the only corner in the window that is
     /// read *against* the window's own, which macOS 26 rounds hard, and a settings card's
@@ -769,8 +772,8 @@ enum Look {
     /// has to stay alive for exactly as long as its own fade, and `Animation` will not say.
     static let appearDuration: Double = 0.15
     static let appear = Animation.easeOut(duration: appearDuration)
-    /// Matching edge reveal and dismissal, with a little spring as the floating sidebar settles.
-    static let floatingSidebarAnimation = Animation.spring(duration: 0.18, bounce: 0.2)
+    /// Keep a small spring on reveal and dismissal without the pronounced edge rebound.
+    static let floatingSidebarAnimation = Animation.spring(duration: 0.18, bounce: 0.08)
     static let appearScale: CGFloat = 0.97
     /// The tab list changing shape: a row arriving, leaving, or moving between sections. A
     /// touch of spring, the way Arc's rows settle, but short enough that ⌘W ⌘W ⌘W never

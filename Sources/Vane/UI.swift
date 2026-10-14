@@ -521,6 +521,11 @@ struct BrowserWindow: View {
                     RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
                         .fill(Look.floatingSidebarFill)
                         .background(Look.floatingSidebarMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
+                                .strokeBorder(Look.floatingSidebarStroke,
+                                              lineWidth: Look.floatingSidebarStrokeWidth)
+                        }
                         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                         .opacity(floating ? 1 : 0)
                         .allowsHitTesting(false)
