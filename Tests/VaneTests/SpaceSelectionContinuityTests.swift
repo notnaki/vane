@@ -91,6 +91,8 @@ import XCTest
         monitor.track(-80, width: 250, in: store)
         XCTAssertEqual(publications, 0, "Finger tracking must not invalidate SwiftUI on each event")
         XCTAssertEqual(store.spaceDrag, -80)
+        XCTAssertEqual(store.spaceGesture.footer.drag, -80,
+                       "The isolated footer must follow every native finger update")
         withExtendedLifetime(observer) {}
         XCTAssertTrue(host.spaceSlide === slide, "Scroll events must retain the mounted lists")
         XCTAssertEqual(slide.offset, -80, accuracy: 1)
@@ -101,6 +103,20 @@ import XCTest
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
         XCTAssertNil(host.spaceSlide)
+    }
+
+    func testCanceledNativeDragUsesTheReturnSpring() async throws {
+        let (store, _, window, monitor) = try fixture()
+        monitor.track(-60, width: 250, in: store)
+        let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        var completed = false
+        slide.start(duration: 0.16, returning: true) { completed = true }
+        XCTAssertNotNil(slide.outgoing.layer?.animation(forKey: "space-position") as? CASpringAnimation,
+                        "The visible native surface must spring back, not just its hidden SwiftUI copy")
+        XCTAssertFalse(completed)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(completed)
+        XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
     }
 
     func testFingerTrackingCanCrossZeroAndReverseToAnotherNeighbour() throws {

@@ -2802,6 +2802,7 @@ private struct SpaceIcons: View {
 private struct SpaceDots: View {
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let layout: SpaceStripLayout
+    @ObservedObject var footer: SpaceFooterProgress
     @EnvironmentObject var store: TabStore
     @EnvironmentObject private var gesture: SpaceGesture
     /// *Which* dot's panel is open, not merely whether one is. Every dot draws its own
@@ -2925,8 +2926,9 @@ private struct SpaceDots: View {
     private func weights(_ list: [Space]) -> [UUID: Double] {
         guard let current = store.currentSpaceID, list.contains(where: { $0.id == current }) else { return [:] }
         let width = SidebarWidth.shared.width
-        guard gesture.drag != 0, width > 0, let target = gesture.neighbour else { return [current: 1] }
-        let f = Double(min(1, abs(gesture.drag / width)))
+        let drag = footer.drag ?? gesture.drag
+        guard drag != 0, width > 0, let target = gesture.neighbour else { return [current: 1] }
+        let f = Double(min(1, abs(drag / width)))
         return SpaceDotBlend.weights(current: current, target: target.id, fraction: f)
     }
 }
@@ -5007,7 +5009,7 @@ struct BottomRow: View {
                     let layout = SpaceStripLayout(count: count, availableWidth: geometry.size.width)
                     ScrollViewReader { proxy in
                         ScrollView(.horizontal) {
-                            SpaceDots(layout: layout)
+                            SpaceDots(layout: layout, footer: gesture.footer)
                                 .frame(minWidth: geometry.size.width)
                         }
                         .scrollIndicators(.never)

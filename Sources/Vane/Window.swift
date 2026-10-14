@@ -899,6 +899,8 @@ extension VaneWindow {
     private let travelWidth: CGFloat
     private let contentInset: CGFloat
     private var completion: (() -> Void)?
+    private var lastTracking: (offset: CGFloat, time: TimeInterval)?
+    private var trackingVelocity: CGFloat = 0
     var offset: CGFloat { (outgoing.layer?.presentation()?.frame.minX ?? outgoing.frame.minX) - contentInset }
     private var motionObserver: NSObjectProtocol?
 
@@ -959,6 +961,13 @@ extension VaneWindow {
 
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
     func track(drag: CGFloat) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let previous = lastTracking {
+            let dt = now - previous.time
+            if dt > 0.001, dt < 0.1 { trackingVelocity = (drag - previous.offset) / dt }
+            else { trackingVelocity = 0 }
+        }
+        lastTracking = (drag, now)
         if let gesture = source?.spaceGesture {
             if gesture.profileSlidesFavorites != includesFavorites { gesture.profileSlidesFavorites = includesFavorites }
             if !gesture.profileSliding { gesture.profileSliding = true }
@@ -1000,11 +1009,25 @@ extension VaneWindow {
             MainActor.assumeIsolated { self?.finish() }
         }
         for (layer, from) in [(outgoingLayer, fromOutgoing), (incomingLayer, fromIncoming)] {
-            let animation = CABasicAnimation(keyPath: "position")
+            let animation: CABasicAnimation
+            if returning {
+                let spring = CASpringAnimation(keyPath: "position")
+                // Match Look.spaceReturn's response and damping, retaining finger velocity.
+                let frequency = 2 * Double.pi / 0.16
+                spring.mass = 1
+                spring.stiffness = frequency * frequency
+                spring.damping = 2 * 0.9 * frequency
+                let distance = layer.position.x - from.x
+                if distance != 0 { spring.initialVelocity = Double(trackingVelocity / distance) }
+                spring.duration = spring.settlingDuration
+                animation = spring
+            } else {
+                animation = CABasicAnimation(keyPath: "position")
+                animation.duration = duration
+                animation.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            }
             animation.fromValue = NSValue(point: from)
             animation.toValue = NSValue(point: layer.position)
-            animation.duration = duration
-            animation.timingFunction = CAMediaTimingFunction(name: .easeIn)
             animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
             layer.add(animation, forKey: "space-position")
         }

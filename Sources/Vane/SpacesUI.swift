@@ -2,13 +2,21 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Native finger tracking only republishes the small footer, not sidebar lists or tint.
+@MainActor final class SpaceFooterProgress: ObservableObject {
+    @Published var drag: CGFloat?
+}
+
 /// Only the sliding sections, tint and footer track these per-frame gesture values.
 /// Publishing them on TabStore would invalidate the entire browser on every scroll event.
 @MainActor final class SpaceGesture: ObservableObject {
     let monitor = SwipeMonitor()
     @Published var drag: CGFloat = 0
     /// While native surfaces follow the fingers, keep raw input out of SwiftUI publication.
-    var nativeDrag: CGFloat?
+    let footer = SpaceFooterProgress()
+    var nativeDrag: CGFloat? {
+        didSet { if footer.drag != nativeDrag { footer.drag = nativeDrag } }
+    }
     var trackGround: ((Double) -> Void)?
     var colourDuration = Look.spaceSlideDuration
     @Published var pull: CGFloat = 0
