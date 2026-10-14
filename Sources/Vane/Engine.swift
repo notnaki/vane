@@ -2580,26 +2580,23 @@ struct Stash {
     /// `parked` may carry the state each one was last on.
     @discardableResult
     func restore(_ urls: [URL], as kind: TabKind, parked: [String: Parked]) -> [Tab] {
-        // Unfocused, and into its own run of the strip: `newBlankTab` has both now, and a
-        // restore wants both. Every caller sets `current` itself, once, when the strip is
-        // built — being walked through thirty pages on the way there was only ever noise.
-        urls.map { url in
-            if kind == .favourite, sharesTabs,
-               let existing = SharedTabs.favourites(for: self).first(where: { $0.pinnedURL == url }) {
-                tabs.append(existing)
-                return existing
-            }
-            let t = newBlankTab(focus: false, as: kind)
-            let p = parked[url.absoluteString] ?? Parked()
-            // `url` is what the Space's list calls this row, which for a favourite or a
-            // pinned row is its home; `p.page` is where it actually was when the Space was
-            // last written down, and is nil for everything that never left home. So the row
-            // comes back on the page it was reading, still standing for its home — the same
-            // pair `restoreSession` gets from a session entry, and the same thing the stash
-            // hands back on a switch that never touches the disk. See `saveCurrentSpace`.
-            t.restore(url: p.page ?? url, home: url, parked: p)
-            return t
+        guard !urls.isEmpty else { return [] }
+        if sharingReady { SharedTabs.flush() }
+        let favourites = kind == .favourite && sharesTabs ? SharedTabs.favourites(for: self) : []
+        // Restore off-strip, then publish the finished collection. Interactive insertion
+        // rescans shapes and invalidates every browser observer once per saved row.
+        let restored = urls.map { url -> Tab in
+            if let existing = favourites.first(where: { $0.pinnedURL == url }) { return existing }
+            let tab = makeBlankTab(as: kind)
+            let saved = parked[url.absoluteString] ?? Parked()
+            tab.restore(url: saved.page ?? url, home: kind == .today ? nil : url, parked: saved)
+            return tab
         }
+        tabs.insert(contentsOf: restored, at: TabStore.clampedDestination(
+            others: tabs.map(\.kind), moving: kind, to: tabs.count))
+        syncShapes()
+        extensions.sync()
+        return restored
     }
 
     var active: Tab? { tabs.first { $0.id == current && !isTabLocked($0.id) } }
@@ -2669,10 +2666,7 @@ struct Stash {
     func newBlankTab(focus: Bool = true, as kind: TabKind = .today,
                      id: UUID = UUID(), loading url: URL? = nil) -> Tab {
         if sharingReady { SharedTabs.flush() }
-        let t = Tab(id: id, isPrivate: isPrivate, profileID: profileID)
-        t.sharedSpaceID = currentSpaceID
-        wire(t)
-        t.kind = kind
+        let t = makeBlankTab(as: kind, id: id)
         if let url { t.go(url) }
         // Into its own section, not onto the end of the strip: the sections are contiguous
         // runs (see `clampedDestination`), and a pinned row appended past the Today tabs
@@ -2688,6 +2682,16 @@ struct Stash {
         if focus { current = t.id }
         extensions.sync()
         return t
+    }
+
+    /// Configure a row without publishing membership or waking a page. Bulk restores
+    /// commit tabs and shapes after every saved row has been prepared.
+    func makeBlankTab(as kind: TabKind, id: UUID = UUID()) -> Tab {
+        let tab = Tab(id: id, isPrivate: isPrivate, profileID: profileID)
+        tab.sharedSpaceID = currentSpaceID
+        wire(tab)
+        tab.kind = kind
+        return tab
     }
 
     /// Rebuild one v4 window from its own entries. This path intentionally does not merge
@@ -3950,12 +3954,8 @@ struct Stash {
             let parked = Suspension.SpaceState.load(space: space.id, profileID: profileID, in: Store.directory)
             if !restoreWorkspaceLayout(space, parked: parked) {
                 restorePins(urls: space.pinnedTabURLs ?? [], parked: parked)
-                adoptTodayShape(tabs: space.tabURLs.map { url in
-                    let t = newBlankTab(focus: false)
-                    t.restore(url: url, home: nil, parked: parked[url.absoluteString] ?? Parked())
-                    // The folder shape must be in place before selecting or waking a page.
-                    return (url: url, tab: t)
-                })
+                let restored = restore(space.tabURLs, as: .today, parked: parked)
+                adoptTodayShape(tabs: zip(space.tabURLs, restored).map { (url: $0, tab: $1) })
                 // Arc lands on the tab this Space was left on; `Spaces.landing` is the ladder down
                 // to the first Today tab, the first pinned row, and finally an empty pill.
                 current = landing(in: space.id)

@@ -39,12 +39,14 @@ extension TabStore {
     @discardableResult
     func restoreWorkspaceLayout(_ space: Space, parked: [String: Parked]) -> Bool {
         guard let layout = space.layout, layout.matches(space), (try? layout.validate()) != nil else { return false }
-        for page in layout.tabs {
-            let tab = newBlankTab(focus: false, as: page.kind, id: page.id)
+        let restored = layout.tabs.map { page in
+            let tab = makeBlankTab(as: page.kind, id: page.id)
             tab.workspaceName = page.customName ?? ""
             tab.restore(url: page.url, home: page.home,
                         parked: parked[page.savedURL.absoluteString] ?? Parked(title: page.title))
+            return tab
         }
+        tabs += TabKind.allCases.flatMap { kind in restored.filter { $0.kind == kind } }
         pins = layout.pins; todayShape = layout.today
         applyOrder(.pinned); applyOrder(.today)
         applySplits(layout.splits)
