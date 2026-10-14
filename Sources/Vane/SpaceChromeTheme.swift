@@ -16,6 +16,7 @@ struct SpaceChromeTheme: Equatable {
         return ThemeColor.hsl(h: hsl.h, s: hsl.s * saturation, l: lightness).color
     }
 
+    var favoriteSelected: Color { primary == nil ? Look.ink(0.32) : tone(0.66).opacity(0.48) }
     var pillFill: Color { primary == nil ? Look.pillFill : tone(0.58).opacity(0.12) }
     var controlFill: Color { primary == nil ? Look.controlFill : tone(0.58).opacity(0.14) }
     var cardFill: Color { primary == nil ? Look.cardFill : tone(0.58).opacity(0.06) }
