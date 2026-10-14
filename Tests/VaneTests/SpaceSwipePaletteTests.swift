@@ -30,13 +30,16 @@ import XCTest
         return (store, second, window)
     }
 
-    func testSlowSpaceDragStartsWithoutTenPointDeadZone() {
+    func testSpaceDragStartsFromFirstDirectionalSample() {
         let (store, _, window) = fixture()
         let monitor = SwipeMonitor()
         monitor.install(store)
         defer { monitor.remove() }
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
-        for dx: CGFloat in [-0.5, -0.5, -1] {
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -0.25))
+        XCTAssertTrue(store.spaceSwiping, "The first directional sample must move immediately")
+        XCTAssertEqual(store.spaceDrag, -0.25, accuracy: 0.001)
+        for dx: CGFloat in [-0.25, -0.5, -1] {
             NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: dx))
         }
         XCTAssertTrue(store.spaceSwiping, "A deliberate slow horizontal drag must start near its origin")

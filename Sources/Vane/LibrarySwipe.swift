@@ -327,7 +327,7 @@ private struct LibrarySwipe: ViewModifier {
             // Match the sidebar's axis lock: a vertical scroll cannot later become
             // navigation as the fingers drift sideways.
             if travel.vertical >= 6 { claim = .theirs; return event }
-            guard travel.horizontal + travel.vertical >= SwipeMonitor.lockDistance else { return event }
+            guard travel.horizontal + travel.vertical > 0 else { return event }
             guard travel.horizontal > travel.vertical * 1.5 else { claim = .theirs; return event }
             switch action {
             case .close: claim = travel.x < 0 ? .mine : .theirs

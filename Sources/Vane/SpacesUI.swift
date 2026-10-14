@@ -1457,9 +1457,9 @@ private struct SpaceSwipe: ViewModifier {
         // re-asks on every frame will eventually catch one of those wobbles and eat the rest
         // of the flick.
         if travelled.v >= Self.verticalVeto { claim = .theirs; return false }
-        // Undecided until there is enough travel to have a direction at all — the opening
-        // frames of any two-finger gesture are a pixel of noise in both axes.
-        guard travelled.h + travelled.v >= Self.lockDistance else { return false }
+        // A zero-delta `.began` has no direction. Start tracking on the first directional
+        // sample, however small, so a slow drag never crosses a visible dead zone.
+        guard travelled.h + travelled.v > 0 else { return false }
         // 1.5, not 1: even a deliberate sideways swipe drifts down a little, and at parity
         // that drift is enough to lose the toss.
         claim = travelled.h > travelled.v * 1.5 ? .mine : .theirs
@@ -1473,9 +1473,7 @@ private struct SpaceSwipe: ViewModifier {
         return true
     }
 
-    /// Points of travel, in both axes together, before the gesture is given a direction.
-    static let lockDistance: CGFloat = 2
-    /// …and points *down* after which it can never be a Space swipe, however far it then
+    /// Points *down* after which it can never be a Space swipe, however far it then
     /// wanders sideways.
     private static let verticalVeto: CGFloat = 6
 }
