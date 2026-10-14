@@ -34,6 +34,16 @@ private struct LibrarySwipe: ViewModifier {
     private weak var store: TabStore?
     private var settlement = UUID()
     private var panelWidth: CGFloat = 1
+    private var dragOrigin: CGFloat?
+    /// An inert native marker travels with the panel. Read its presentation layer only
+    /// when interrupting a landing, so a reverse swipe can take over without a jump.
+    weak var presentationView: NSView?
+
+    private var presentedProgress: CGFloat? {
+        guard let view = presentationView, let layer = view.layer?.presentation(),
+              let root = view.window?.contentView?.layer?.presentation() else { return nil }
+        return min(1, max(0, 1 + layer.convert(.zero, to: root).x / max(1, panelWidth)))
+    }
     private var watchers: [any NSObjectProtocol] = []
     private enum Claim { case idle, undecided, mine, theirs }
     private enum Action { case close, open(UUID) }
@@ -69,9 +79,12 @@ private struct LibrarySwipe: ViewModifier {
         reset()
     }
 
-    private func reset() {
-        settlement = UUID()
-        if let store { Motion.instant { store.librarySwipeProgress = nil } }
+    private func reset(clearPresentation: Bool = true) {
+        if clearPresentation {
+            settlement = UUID()
+            if let store { Motion.instant { store.librarySwipeProgress = nil } }
+        }
+        dragOrigin = nil
         claim = .idle
         action = nil
         travel = (0, 0, 0)
@@ -166,7 +179,9 @@ private struct LibrarySwipe: ViewModifier {
         }
         guard !event.phase.isEmpty else { return event }
         if event.phase.contains(.began) {
-            reset()
+            // A new scroll is not necessarily navigation. Let an existing landing
+            // continue until this gesture actually earns ownership.
+            reset(clearPresentation: false)
             if startsInNavigationArea(event, window: window, store: store) {
                 let bounds = window.contentView?.bounds ?? NSRect(origin: .zero, size: window.frame.size)
                 panelWidth = Library.panelWidth(section: Library.shared.section,
@@ -222,11 +237,34 @@ private struct LibrarySwipe: ViewModifier {
             }
         }
         if claim == .mine, valid(action, in: store), !Motion.reduced {
-            let origin: CGFloat = switch action { case .close: 1; case .open: 0 }
+            if dragOrigin == nil {
+                let endpoint: CGFloat = switch action { case .close: 1; case .open: 0 }
+                dragOrigin = store.librarySwipeProgress == nil ? endpoint
+                    : (presentedProgress ?? store.librarySwipeProgress ?? endpoint)
+                settlement = UUID()
+            }
             Motion.instant {
-                store.librarySwipeProgress = min(1, max(0, origin + travel.x / max(1, panelWidth)))
+                store.librarySwipeProgress = min(1, max(0, (dragOrigin ?? 0)
+                    + travel.x / max(1, panelWidth)))
             }
         }
         return claim == .mine ? nil : event
+    }
+}
+
+/// No drawing or event handling: this marker lets a new gesture sample the actual
+/// SwiftUI slide position without publishing model changes on every animation frame.
+struct LibrarySwipePosition: NSViewRepresentable {
+    let monitor: LibrarySwipeMonitor
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.wantsLayer = true
+        monitor.presentationView = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        monitor.presentationView = view
     }
 }

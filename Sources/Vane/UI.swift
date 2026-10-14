@@ -418,6 +418,11 @@ struct BrowserWindow: View {
             if store.libraryOpen || store.librarySwipeProgress != nil {
                 LibraryPanel()
                     .frame(width: libraryWidth)
+                    .overlay(alignment: .leading) {
+                        LibrarySwipePosition(monitor: store.librarySwipeMonitor)
+                            .frame(width: 1, height: 1)
+                            .allowsHitTesting(false).accessibilityHidden(true)
+                    }
                     .offset(x: -libraryWidth * (1 - libraryProgress))
                     .transition(.offset(x: -libraryWidth))
                     .disabled(store.palette != nil)
