@@ -174,6 +174,19 @@ import XCTest
         XCTAssertEqual(source.currentSpaceID, local.id, "The superseded profile activation must not fire")
     }
 
+    func testClosingWindowBeforeQuarterCancelsTheDelayedSelection() async throws {
+        let (store, spaces, _, monitor) = try fixture()
+        store.spaceSwiping = true
+        store.spaceDrag = -70
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width,
+                     store: store, animation: .linear(duration: 0.2), activationDelay: 0.05)
+        store.window = nil
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id,
+                       "Closing the window must not activate or resume the destination later")
+        XCTAssertFalse(store.spaceSwiping)
+    }
+
     func testLatestClickReplacesAMountingSelection() async throws {
         let (store, spaces, _, monitor) = try fixture()
         monitor.select(spaces[1], in: store)

@@ -1246,7 +1246,8 @@ private struct SpaceSwipe: ViewModifier {
         let includesFavorites = destination.profileID != store.profileID
         let finish: () -> Void = { [weak self, weak store] in
             guard let self, self.transition == token, let store else { return }
-            if store.currentSpaceID == self.landingFrom, let target = store.spaceGesture.neighbour {
+            if store.window != nil, store.currentSpaceID == self.landingFrom,
+               let target = store.spaceGesture.neighbour {
                 _ = self.activate(target, in: store)
             }
             self.landing = false
