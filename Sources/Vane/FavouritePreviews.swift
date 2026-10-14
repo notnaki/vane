@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import WebKit
 
 @MainActor protocol FavouritePreviewLoading: AnyObject {
@@ -83,6 +84,9 @@ import WebKit
         let ticket = generation
         task = Task(priority: preparation ? .background : .utility) { [weak self, weak source] in
             guard let self else { return }
+            // Establish the session baseline before the hidden page can write cookies.
+            await self.observers[context.profileID]?.ready()
+            guard !Task.isCancelled, self.generation == ticket else { return }
             var identity = account
             let liveProof = source?.url.flatMap { FavouritePreviewContext(profileID: context.profileID, url: $0) } == context
             // The live favourite supplies account proof before any cached data is displayed.
@@ -222,22 +226,69 @@ import WebKit
     }
 }
 
-@MainActor private final class FavouriteSessionObserver: NSObject, WKHTTPCookieStoreObserver {
+/// Ignore page/analytics cookie churn. Keep only in-memory digests of authentication
+/// cookies; sign-out, deletion and account replacement still invalidate all cached data.
+struct FavouriteSessionFingerprint: Equatable {
+    private struct Cookie: Hashable {
+        let domain, path, name: String
+        let digest: Data
+    }
+    private var cookies: Set<Cookie>
+    init(_ cookies: [HTTPCookie]) {
+        self.cookies = Set(cookies.compactMap { cookie in
+            let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let names: Set<String>
+            if domain == "github.com" {
+                names = ["user_session", "__Host-user_session_same_site", "logged_in", "dotcom_user"]
+            } else if ["google.com", "accounts.google.com", "mail.google.com", "calendar.google.com"].contains(domain) {
+                names = ["SID", "HSID", "SSID", "APISID", "SAPISID", "LSID", "__Host-GAPS",
+                         "__Secure-1PSID", "__Secure-3PSID", "__Secure-1PAPISID", "__Secure-3PAPISID"]
+            } else { return nil }
+            guard names.contains(cookie.name) else { return nil }
+            return Cookie(domain: domain, path: cookie.path, name: cookie.name,
+                          digest: Data(SHA256.hash(data: Data(cookie.value.utf8))))
+        })
+    }
+}
+
+@MainActor final class FavouriteSessionObserver: NSObject, WKHTTPCookieStoreObserver {
     let profileID: UUID
     weak var previews: FavouritePreviews?
     let store: WKHTTPCookieStore
-    init(profileID: UUID, previews: FavouritePreviews) {
+    private var fingerprint: FavouriteSessionFingerprint?
+    private var update: Task<Void, Never>?
+    private var dirty = false
+    init(profileID: UUID, previews: FavouritePreviews, store: WKHTTPCookieStore? = nil) {
         self.profileID = profileID; self.previews = previews
-        store = ProfileManager.dataStore(for: profileID).httpCookieStore
-        super.init(); store.add(self)
+        self.store = store ?? ProfileManager.dataStore(for: profileID).httpCookieStore
+        super.init(); self.store.add(self)
+        refresh()
     }
     nonisolated func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
-        Task { @MainActor [weak self] in
+        Task { @MainActor [weak self] in self?.refresh() }
+    }
+    func refresh() {
+        dirty = true
+        guard update == nil else { return }
+        // Serialize/coalesce reads so an older callback cannot overwrite newer proof.
+        update = Task { @MainActor [weak self] in
             guard let self else { return }
-            previews?.sessionChanged(profileID: profileID)
+            while dirty && !Task.isCancelled {
+                dirty = false
+                let values = await withCheckedContinuation { continuation in
+                    store.getAllCookies { continuation.resume(returning: $0) }
+                }
+                let next = FavouriteSessionFingerprint(values)
+                guard !Task.isCancelled else { return }
+                let changed = fingerprint.map { $0 != next } ?? false
+                fingerprint = next
+                if changed { previews?.sessionChanged(profileID: profileID) }
+            }
+            update = nil
         }
     }
-    func detach() { store.remove(self) }
+    func ready() async { await update?.value }
+    func detach() { store.remove(self); update?.cancel(); update = nil }
 }
 
 @MainActor private final class FavouriteIdentityProbe {

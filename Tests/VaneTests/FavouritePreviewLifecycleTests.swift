@@ -1,4 +1,5 @@
 import XCTest
+import WebKit
 @testable import vane
 
 @MainActor private final class FavouriteFixtureLoader: FavouritePreviewLoading {
@@ -156,6 +157,40 @@ import XCTest
         XCTAssertEqual(coordinator.state, .unavailable)
         XCTAssertLessThanOrEqual(loader.calls, 2)
         coordinator.dismiss(owner: owner)
+    }
+
+    func testRoutineCookieUpdatesDoNotCancelPreviewButSessionChangesDo() async throws {
+        _ = NSApplication.shared
+        let loader = FavouriteFixtureLoader()
+        loader.holdReplies = true
+        defer { loader.releaseReplies() }
+        let previews = FavouritePreviews(loader: loader), a = context(), owner = UUID()
+        let dataStore = WKWebsiteDataStore.nonPersistent()
+        let store = dataStore.httpCookieStore
+        func cookie(_ name: String, _ value: String, domain: String = ".github.com") -> HTTPCookie {
+            HTTPCookie(properties: [.domain: domain, .path: "/", .name: name, .value: value, .secure: "TRUE"])!
+        }
+        await store.setCookie(cookie("user_session", "fixture-session"))
+        let observer = FavouriteSessionObserver(profileID: a.profileID, previews: previews, store: store)
+        defer { observer.detach(); withExtendedLifetime(dataStore) {} }
+        await observer.ready()
+        previews.request(a, owner: owner, account: "fixture")
+        try await settle { loader.calls == 1 }
+        let cancellations = loader.cancellations
+        await store.setCookie(cookie("_gh_sess", "ordinary-page-update"))
+        await store.setCookie(cookie("unrelated", "other-site", domain: ".example.test"))
+        // Exercise the same snapshot comparison as cookie-store notifications.
+        observer.refresh()
+        await observer.ready()
+        XCTAssertEqual(loader.calls, 1)
+        XCTAssertEqual(loader.cancellations, cancellations)
+        XCTAssertEqual(previews.owner, owner)
+        await store.setCookie(cookie("user_session", "changed-session"))
+        observer.refresh()
+        await observer.ready()
+        try await settle { loader.calls == 2 }
+        loader.releaseReplies()
+        previews.dismiss(owner: owner)
     }
 
 }

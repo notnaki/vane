@@ -83,7 +83,7 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             } else { host?.rootView = AnyView(content.clipShape(RoundedRectangle(cornerRadius: 16))) }
             guard let host else { return }
             host.layoutSubtreeIfNeeded()
-            let size = NSSize(width: 370, height: max(150, min(host.fittingSize.height, screen.visibleFrame.height - 24)))
+            let size = NSSize(width: FavouritePreviewCard.width, height: max(150, min(host.fittingSize.height, screen.visibleFrame.height - 24)))
             let tile = owner.convertToScreen(convert(bounds, to: nil))
             let ground = screen.visibleFrame.insetBy(dx: 8, dy: 8)
             let preferredX = tile.maxX + 8
@@ -91,7 +91,15 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             let y = min(max(tile.maxY - size.height, ground.minY), ground.maxY - size.height)
             let frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
             // Metadata updates must not snap an in-progress anchored arrival to its end.
-            if targetFrame != frame || Motion.reduced { panel.setFrame(frame, display: true) }
+            if targetFrame != frame || Motion.reduced {
+                if !isNew, targetFrame != nil, !Motion.reduced {
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = 0.12
+                        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                        panel.animator().setFrame(frame, display: true)
+                    }
+                } else { panel.setFrame(frame, display: true) }
+            }
             targetFrame = frame
             if Motion.reduced { panel.alphaValue = 1 }
             if isNew && !Motion.reduced {

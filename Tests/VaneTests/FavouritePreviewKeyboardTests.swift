@@ -101,7 +101,7 @@ import XCTest
         anchor.configure(visible: true, keyboard: false, content: AnyView(card), dismiss: {})
         try await Task.sleep(for: .milliseconds(250))
         let panel = try XCTUnwrap(owner.childWindows?.first)
-        XCTAssertEqual(panel.frame.width, 370)
+        XCTAssertEqual(panel.frame.width, 340)
         XCTAssertLessThan(panel.frame.height, 520)
         let content = try XCTUnwrap(panel.contentView)
         let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))

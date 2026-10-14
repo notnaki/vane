@@ -49,6 +49,8 @@ import AppKit
 }
 
 struct FavouritePreviewCard: View {
+    static let width: CGFloat = 340
+    static let maxContentHeight: CGFloat = 220
     let context: FavouritePreviewContext
     let state: FavouritePreviewState
     let open: (URL) -> Void
@@ -74,27 +76,11 @@ struct FavouritePreviewCard: View {
                     .vaneKeyboardAction(radius: 6, action: dismiss).accessibilityLabel("Close favourite preview")
                     .help("Close preview (Escape)")
             }
-            ScrollView {
-                Group {
-                    switch state {
-                    case .loading:
-                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Loading preview…").foregroundStyle(.secondary) }
-                            .accessibilityElement(children: .combine)
-                    case .signedOut:
-                        notice("Sign in to \(context.service.title)", detail: "Open the site to sign in with this profile.")
-                    case .unavailable:
-                        notice("Preview unavailable", detail: "Vane couldn’t reliably read this page. Open the site to view the latest items.")
-                    case .ready(let snapshot): content(snapshot)
-                    case .stale(let snapshot):
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Saved preview · couldn’t refresh", systemImage: "clock").font(.caption).foregroundStyle(.secondary)
-                            content(snapshot)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            ViewThatFits(in: .vertical) {
+                previewContent.fixedSize(horizontal: false, vertical: true)
+                ScrollView { previewContent }.frame(height: Self.maxContentHeight)
             }
-            .frame(height: 300)
+            .frame(maxHeight: Self.maxContentHeight)
             Divider()
             HStack(spacing: 8) {
                 Button("Open Site") { open(context.siteURL) }
@@ -121,7 +107,7 @@ struct FavouritePreviewCard: View {
                 if !populatedInbox { Spacer(minLength: 0) }
             }.frame(height: 32)
         }
-        .padding(16).frame(width: 370, alignment: .leading)
+        .padding(16).frame(width: Self.width, alignment: .leading)
         .background(Look.panelFill)
         .vaneMotionPolicy()
         .onExitCommand(perform: dismiss)
@@ -135,6 +121,27 @@ struct FavouritePreviewCard: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(context.service.title) favourite preview")
+    }
+
+    private var previewContent: some View {
+        Group {
+            switch state {
+            case .loading:
+                HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Loading preview…").foregroundStyle(.secondary) }
+                    .accessibilityElement(children: .combine)
+            case .signedOut:
+                notice("Sign in to \(context.service.title)", detail: "Open the site to sign in with this profile.")
+            case .unavailable:
+                notice("Preview unavailable", detail: "Vane couldn’t reliably read this page. Open the site to view the latest items.")
+            case .ready(let snapshot): content(snapshot)
+            case .stale(let snapshot):
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Saved preview · couldn’t refresh", systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+                    content(snapshot)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func notice(_ title: String, detail: String) -> some View {
