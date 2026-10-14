@@ -662,6 +662,7 @@ extension VaneWindow {
         // before mounting the arriving host, including when reusing a parked profile.
         arriving.sidebarShown = store.sidebarShown
         arriving.sidebarPeeking = store.sidebarPeeking
+        arriving.sidebarPresentationRevision &+= 1
         store.sidebarPeeking = false
         store.parkedIn = window
         store.window = nil

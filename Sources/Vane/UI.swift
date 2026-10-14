@@ -484,6 +484,12 @@ struct BrowserWindow: View {
         .librarySwipe(store)
         .onAppear { store.applySpaceAppearance() }
         .environmentObject(store.spaceGesture)
+        // A cached profile adopts the window's current presentation at rest. The
+        // revision survives detachment, unlike the transaction used to write the model.
+        .transaction(value: store.sidebarPresentationRevision) {
+            $0.animation = nil
+            $0.disablesAnimations = true
+        }
         .vaneMotionPolicy()
     }
 
@@ -510,6 +516,7 @@ struct BrowserWindow: View {
                 .disabled(store.palette != nil)
                 .accessibilityHidden(store.palette != nil)
                 .frame(width: sidebar.width)
+                .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
                 .background {
                     RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
                         .fill(Look.floatingSidebarFill)
@@ -876,7 +883,6 @@ private struct Sidebar: View {
             .overlayPreferenceValue(SidebarDropLineBounds.self) { bounds in
                 SidebarDropLineOverlay(marker: dropMarker, bounds: bounds)
             }
-            .clipped()
             // The plus that fills as the fingers pull past the last Space.
             .overlay(alignment: .trailing) { PullPlus(store: store) }
             .transition(.move(edge: .leading).combined(with: .opacity))
@@ -886,6 +892,8 @@ private struct Sidebar: View {
             // On the stack, not the list: the swipe has to keep working while the form is
             // standing where the list was, because swiping back is how the form is left.
             .spaceSwipe(store)
+            // Keep the resting content inset, but let moving rows reach the sidebar edge.
+            .padding(.horizontal, Look.inset)
             .mask {
                 GeometryReader { geometry in
                     let height = max(1, geometry.size.height)
@@ -901,6 +909,7 @@ private struct Sidebar: View {
                     }
                 }
             }
+            .padding(.horizontal, -Look.inset)
             BottomRow(downloadsHover: downloadsHover, hasPreviewItems: !previewItems.isEmpty,
                       preparePreview: preparePreview)
         }

@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import SwiftUI
 @testable import vane
 
 @MainActor final class SidebarVisibilityTests: XCTestCase {
@@ -71,6 +72,102 @@ import XCTest
         let docked = try XCTUnwrap(Windows.hop(revisited, to: first))
         XCTAssertTrue(docked.sidebarShown, "Docked visibility also follows the window")
         XCTAssertFalse(docked.sidebarPeeking)
+    }
+
+    func testSlidingRowsReachTheWindowEdge() throws {
+        TestEnvironment.prepare()
+        let store = TabStore(isPrivate: true)
+        defer {
+            store.dropStashes()
+            TabStore.all.removeAll { $0 === store }
+        }
+        let tab = store.newBlankTab(focus: false)
+        tab.park(url: URL(string: "https://edge.invalid")!, Parked(title: "Window edge row"))
+        store.current = tab.id
+        store.palette = nil
+        func edgePixels() throws -> [CGFloat] {
+            let bounds = NSRect(x: 0, y: 0, width: 900, height: 700)
+            let window = NSWindow(contentRect: bounds, styleMask: .borderless,
+                                  backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: .darkAqua)
+            let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+                .environmentObject(ProfileManager.shared)
+                .environment(\.colorScheme, .dark)
+                .transaction { $0.disablesAnimations = true })
+            host.frame = bounds
+            window.contentView = host
+            defer { window.contentView = nil; window.close() }
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: bounds))
+            host.cacheDisplay(in: bounds, to: bitmap)
+            let scaleX = CGFloat(bitmap.pixelsWide) / bounds.width
+            let scaleY = CGFloat(bitmap.pixelsHigh) / bounds.height
+            return try (120..<500).flatMap { y in
+                try (0..<4).map { x in
+                    let color = try XCTUnwrap(bitmap.colorAt(x: Int(CGFloat(x) * scaleX),
+                        y: Int(CGFloat(y) * scaleY))?.usingColorSpace(.deviceRGB))
+                    return color.redComponent
+                }
+            }
+        }
+        let resting = try edgePixels()
+        store.spaceDrag = -24
+        let sliding = try edgePixels()
+        let changed = zip(resting, sliding).filter { abs($0 - $1) > 0.03 }.count
+        XCTAssertGreaterThan(changed, 20, "Sliding rows must remain visible up to the window edge")
+    }
+
+    func testReturningToCachedProfileDoesNotReplaySidebarDocking() async throws {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let mode = BatterySaver.shared.mode
+        BatterySaver.shared.setMode(.off)
+        defer { BatterySaver.shared.setMode(mode) }
+        let firstProfile = manager.create(name: "Dock source")
+        let secondProfile = manager.create(name: "Dock target")
+        let first = manager.createSpace(name: "First", in: firstProfile.id)
+        let second = manager.createSpace(name: "Second", in: secondProfile.id)
+        let source = Windows.open(profile: firstProfile, space: first, focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            _ = manager.delete(firstProfile.id)
+            _ = manager.delete(secondProfile.id)
+            manager.active = previous
+        }
+        source.sidebarShown = false
+        source.sidebarPeeking = true
+        let target = try XCTUnwrap(Windows.hop(source, to: second))
+        try await Task.sleep(for: .milliseconds(350))
+        let returning = try XCTUnwrap(Windows.hop(target, to: first))
+        try await Task.sleep(for: .milliseconds(350))
+        returning.sidebarShown = true
+        // Switch before the outgoing dock animation has finished.
+        try await Task.sleep(for: .milliseconds(20))
+        _ = try XCTUnwrap(Windows.hop(returning, to: second))
+        try await Task.sleep(for: .milliseconds(30))
+        let host = try XCTUnwrap(window.contentView)
+        host.layoutSubtreeIfNeeded()
+        func scroll(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scroll(in: $0) }.first
+        }
+        let viewport = try XCTUnwrap(scroll(in: host))
+        func presentedOrigin() throws -> CGPoint {
+            let layer = try XCTUnwrap(viewport.layer?.presentation())
+            return layer.convert(.zero, to: host.layer?.presentation())
+        }
+        let early = try presentedOrigin()
+        try await Task.sleep(for: .milliseconds(350))
+        let settled = try presentedOrigin()
+        XCTAssertEqual(early.x, settled.x, accuracy: 0.5,
+                       "The arriving profile must already use docked geometry")
+        XCTAssertEqual(early.y, settled.y, accuracy: 0.5,
+                       "An old floating inset must not animate after switching profiles")
     }
 
     func testVisibilitySurvivesSpaceSwitchesWithinOneProfile() {

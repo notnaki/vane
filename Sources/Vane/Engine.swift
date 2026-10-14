@@ -2282,6 +2282,9 @@ struct Stash {
     }
     /// Transient hover reveal that follows the window across Spaces and profiles.
     @Published var sidebarPeeking = false
+    /// Cached profile hosts may process visibility changes only when reattached.
+    /// A changed revision marks that update as restoration, rather than a fresh toggle.
+    @Published var sidebarPresentationRevision: UInt = 0
     /// One-shot handoff from the webpage to the sidebar address pill.
     @Published var chromeFocusRequested = false
     /// Presentation only, per Space and window: hiding pins never changes their contents.
