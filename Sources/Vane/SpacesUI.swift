@@ -33,10 +33,9 @@ import UniformTypeIdentifiers
 /// The tokens are `Look`'s, extended rather than edited.
 
 extension Look {
-    /// The strip sliding sideways as the Space changes. A touch longer than `appear`: it is
-    /// the whole column moving, and at 0.15 it read as a flicker rather than as travel.
-    /// Ease into and out of the travel, with the fastest movement in the middle.
-    static let spaceSlide = Animation.easeInOut(duration: 0.24)
+    /// Accelerate through the switch without a slow tail. Keep the travel brief so the
+    /// destination page and address arrive sooner, after the preview reaches its endpoint.
+    static let spaceSlide = Animation.easeIn(duration: 0.16)
     /// The strip finishing a swipe: the rest of the travel after the fingers leave, and the
     /// spring back when they did not go far enough. A spring rather than an ease because the
     /// gesture handed it a velocity and an ease throws that away — the strip has to leave the
@@ -44,7 +43,7 @@ extension Look {
     static let spaceSpring = Animation.spring(response: 0.35, dampingFraction: 0.85)
     /// A committed swipe reaches rest before handing the preview to the live sidebar.
     /// A finite ease keeps focus prompt without cutting off a spring's visible tail.
-    static let spaceLanding = Animation.easeInOut(duration: 0.10)
+    static let spaceLanding = Animation.easeIn(duration: 0.08)
     /// Returning from a canceled drag keeps its gentler timing.
     static let spaceReturn = Animation.spring(response: 0.16, dampingFraction: 0.9)
     /// A footer-height target leaves room for a rounded hover fill around the glyph.

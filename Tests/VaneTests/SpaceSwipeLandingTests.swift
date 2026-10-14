@@ -104,9 +104,9 @@ import XCTest
         print("COMMITTED_SPACE_FOCUS_SECONDS: \(elapsed)")
         XCTAssertEqual(store.currentSpaceID, second.id)
         XCTAssertEqual(store.current, remembered?.id)
-        // Allow several frames for scheduling and disk work while rejecting the old
-        // 160 ms response, which delayed the page and address by roughly 190 ms.
-        XCTAssertLessThan(elapsed, clicking ? 0.4 : 1.0 / 6, "The page and address must switch promptly after release")
+        // Include preview mounting, display frames and disk work, while rejecting
+        // the old 240 ms click slide that held the destination page back.
+        XCTAssertLessThan(elapsed, clicking ? 0.25 : 1.0 / 6, "The page and address must switch promptly after release")
         XCTAssertTrue(store.active === remembered)
         if !empty { XCTAssertEqual(store.active?.currentURL, URL(string: "https://remembered.example/")) }
         XCTAssertEqual(store.spaceDrag, 0)
