@@ -97,7 +97,7 @@ import XCTest
         XCTAssertTrue(store.spaceSwiping)
     }
 
-    func testProfileClickSwitchesDuringTheSameOpaqueSidebarSlide() async throws {
+    func testProfileClickPreservesSlideAndReduceMotionAcrossHosts() async throws {
         TestEnvironment.prepare()
         let manager = ProfileManager.shared
         let previous = manager.active
@@ -113,26 +113,35 @@ import XCTest
             _ = manager.delete(secondProfile.id)
             manager.active = previous
         }
+        let reduced = Motion.spaceReduced
         try await Task.sleep(for: .milliseconds(80))
         source.spaceGesture.monitor.select(second, in: source)
-        XCTAssertTrue(source.window === window)
-        try await Task.sleep(for: .milliseconds(110))
+        if !reduced {
+            XCTAssertTrue(source.window === window)
+            try await Task.sleep(for: .milliseconds(110))
+        }
         let destination = try XCTUnwrap(TabStore.all.first { $0.window === window })
         XCTAssertEqual(destination.profileID, secondProfile.id)
         XCTAssertEqual(destination.currentSpaceID, second.id)
         XCTAssertFalse(source.spaceSwiping)
         XCTAssertNil(window.contentView?.layer?.animation(forKey: "profile-space"), "No full-window fade")
-        XCTAssertNotNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
-                        "The same sidebar track must survive the page host switch")
-        try await Task.sleep(for: .milliseconds(200))
+        if reduced {
+            XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
+                         "Reduce Motion switches the page and sidebar immediately")
+        } else {
+            XCTAssertNotNil((window.contentView as? BrowserWindowHost)?.spaceSlide,
+                            "The same sidebar track must survive the page host switch")
+            try await Task.sleep(for: .milliseconds(200))
+        }
         destination.spaceGesture.monitor.select(first, in: destination)
-        try await Task.sleep(for: .milliseconds(110))
+        if !reduced { try await Task.sleep(for: .milliseconds(110)) }
         XCTAssertTrue(source.window === window, "A cached profile must also switch during its slide")
         XCTAssertEqual(source.currentSpaceID, first.id)
     }
 
     func testReturningToSameProfileBeforeQuarterCancelsTheNativeOverlay() async throws {
         TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "Interrupting a native slide requires animation")
         let manager = ProfileManager.shared
         let previous = manager.active
         let firstProfile = manager.create(name: "Interrupted origin")
