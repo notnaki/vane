@@ -101,7 +101,7 @@ private struct LibrarySwipe: ViewModifier {
             return panel.contains(event.locationInWindow)
         }
         guard store.sidebarShown || (window as? VaneWindow)?.peekingSidebar == true else { return false }
-        let inset = store.sidebarShown ? 0 : Look.cardGap
+        let inset = store.sidebarShown ? 0 : Look.floatingSidebarGap
         let sidebar = NSRect(x: bounds.minX + inset, y: bounds.minY + inset,
                              width: SidebarWidth.shared.width,
                              height: max(0, bounds.height - 2 * inset))

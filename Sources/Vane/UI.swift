@@ -521,12 +521,11 @@ struct BrowserWindow: View {
                     RoundedRectangle(cornerRadius: Look.floatingSidebarRadius)
                         .fill(Look.floatingSidebarFill)
                         .background(Look.floatingSidebarMaterial, in: .rect(cornerRadius: Look.floatingSidebarRadius))
-                        .hairline(radius: Look.floatingSidebarRadius)
                         .shadow(color: Look.barShadow, radius: Look.barShadowRadius, y: Look.barShadowY)
                         .opacity(floating ? 1 : 0)
                         .allowsHitTesting(false)
                 }
-                .padding(floating ? Look.cardGap : 0)
+                .padding(floating ? Look.floatingSidebarGap : 0)
                 .transition(.move(edge: .leading).combined(with: .opacity))
                 // Above the page during edge reveal and dismissal; below the resize handle.
                 .zIndex(1)
@@ -553,7 +552,7 @@ struct BrowserWindow: View {
             store.window?.standardWindowButton(kind)?.isHidden = !visible
         }
         // Which row the lights belong to depends on which sidebar is showing: the docked one
-        // starts at the window's edge, the peeked panel is inset by `Look.inset` all round.
+        // starts at the window's edge, the peeked panel is inset by `Look.floatingSidebarGap` all round.
         let window = store.window as? VaneWindow
         window?.peekingSidebar = !store.sidebarShown && peeking
         // Unhiding re-lays the group, so put it back on the row's centre line before the

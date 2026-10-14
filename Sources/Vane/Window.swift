@@ -21,23 +21,18 @@ final class VaneWindow: NSWindow {
         top - lightsCentre(peeking: peeking) - h / 2
     }
 
-    /// The line the lights sit on, which is the sidebar's top row — and the peeked sidebar is
-    /// not the same sidebar. With ⌘S the docked one is gone and the panel that slides in from
-    /// the edge is inset by `Look.inset` on every side, so its top row is that much lower and
-    /// that much further right. Leaving the lights on the docked line put them 8pt above and
-    /// 8pt left of the row they are supposed to belong to.
-    /// This is `Look.inset + Look.lightsCentre` written out: `Look.check` already pins
-    /// `lightsCentre == topInset + topRow / 2`, and spelling it in the parts makes it obvious
-    /// that the number follows the panel's own padding rather than being a second constant.
+    /// The lights follow the floating panel's inset so they stay on its top row.
+    /// `Look.check` pins `lightsCentre == topInset + topRow / 2`; the additional
+    /// clearance is shared with the panel's layout and gesture bounds.
     nonisolated static func lightsCentre(peeking: Bool) -> CGFloat {
-        peeking ? Look.inset + Look.topInset + Look.topRow / 2 : Look.lightsCentre
+        peeking ? Look.floatingSidebarGap + Look.topInset + Look.topRow / 2 : Look.lightsCentre
     }
 
     /// How far right of AppKit's own x the lights sit. Zero docked — AppKit's x already
     /// matches Arc's, 18.75pt from the window edge and 23pt apart — and the panel's inset
     /// while peeking.
     nonisolated static func lightsOffsetX(peeking: Bool) -> CGFloat {
-        peeking ? Look.inset : 0
+        peeking ? Look.floatingSidebarGap : 0
     }
 
     /// True while the sidebar is hidden *and* the pointer has peeked the floating panel back.
@@ -49,7 +44,7 @@ final class VaneWindow: NSWindow {
     /// AppKit's own x for each light, captured the first time we see it. Read once and kept:
     /// after the first shift the button's own frame is no longer AppKit's answer, and AppKit
     /// puts it back to this on its own relayouts, so a delta from "wherever it is now" drifts
-    /// by 8pt every time the peek opens.
+    /// by the inset every time the peek opens.
     private var baseX: [NSWindow.ButtonType: CGFloat] = [:]
 
     /// The lights' resting face, laid over AppKit's own three. See `TrafficLightRest`.
@@ -334,14 +329,14 @@ extension VaneWindow {
             ("docked, the lights sit on the sidebar's own top row",
              lightsCentre(peeking: false) == Look.lightsCentre),
             ("peeked, they move down by the panel's inset",
-             lightsCentre(peeking: true) == Look.lightsCentre + Look.inset),
+             lightsCentre(peeking: true) == Look.lightsCentre + Look.floatingSidebarGap),
             ("…which is the panel's padding plus its own top row",
-             lightsCentre(peeking: true) == Look.inset + Look.topInset + Look.topRow / 2),
+             lightsCentre(peeking: true) == Look.floatingSidebarGap + Look.topInset + Look.topRow / 2),
             ("docked, x is AppKit's own", lightsOffsetX(peeking: false) == 0),
-            ("peeked, x moves right by the same inset", lightsOffsetX(peeking: true) == Look.inset),
+            ("peeked, x moves right by the same inset", lightsOffsetX(peeking: true) == Look.floatingSidebarGap),
             ("the y origin follows the peeked line",
              lightOriginY(windowTop: 800, buttonHeight: 14, peeking: true)
-                == lightOriginY(windowTop: 800, buttonHeight: 14) - Look.inset),
+                == lightOriginY(windowTop: 800, buttonHeight: 14) - Look.floatingSidebarGap),
             ("peeking is the only thing that moves them",
              lightOriginY(windowTop: 800, buttonHeight: 14, peeking: false)
                 == lightOriginY(windowTop: 800, buttonHeight: 14)),

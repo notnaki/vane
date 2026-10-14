@@ -1202,7 +1202,7 @@ private struct SpaceSwipe: ViewModifier {
         else { return false }
         // The floating panel is inset on every side and extends that much further right
         // than the docked rail. Its surrounding gaps still belong to the page.
-        let inset = store.sidebarShown ? 0 : Look.cardGap
+        let inset = store.sidebarShown ? 0 : Look.floatingSidebarGap
         let bounds = window.contentView.map { $0.convert($0.bounds, to: nil) }
             ?? NSRect(origin: .zero, size: window.frame.size)
         let sidebar = NSRect(x: bounds.minX + inset, y: bounds.minY + inset,

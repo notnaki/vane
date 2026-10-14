@@ -52,6 +52,13 @@ import XCTest
         send(window, at: NSPoint(x: width + 4, y: 350))
         XCTAssertTrue(store.spaceSwiping, "The floating panel extends past the docked sidebar's edge")
         monitor.abort()
+        // The narrower outer gap leaves these points inside the panel on all three edges.
+        for point in [NSPoint(x: 6, y: 350), NSPoint(x: 100, y: 6),
+                      NSPoint(x: 100, y: 694)] {
+            send(window, at: point, phase: .began)
+            XCTAssertTrue(store.spaceSwiping, "The panel must claim gestures just inside its edge: \(point)")
+            monitor.abort()
+        }
         for point in [NSPoint(x: 4, y: 350), NSPoint(x: width + 20, y: 350),
                       NSPoint(x: 100, y: 4), NSPoint(x: 100, y: 696)] {
             send(window, at: point, phase: .began)

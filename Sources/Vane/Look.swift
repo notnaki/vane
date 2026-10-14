@@ -15,6 +15,8 @@ enum Look {
     static let cardRadius: CGFloat = 6
     /// Floating sidebar and page are sibling surfaces with matching corners.
     static let floatingSidebarRadius: CGFloat = pageRadius
+    /// Equal clearance from the window edges, independent of the page card spacing.
+    static let floatingSidebarGap: CGFloat = 5
     /// Let the page show through the floating sidebar while its controls stay opaque.
     static let floatingSidebarFill = Color(white: 0.08).opacity(0.55)
     static let floatingSidebarMaterial = AnyShapeStyle(Material.thin)
@@ -37,10 +39,8 @@ enum Look {
     static let tileHeight: CGFloat = 46
     /// The sidebar's side padding, and the gap between a pill's edge and the card.
     static let inset: CGFloat = 8
-    /// Around the page card on its top, trailing and bottom edges — a point more than the
-    /// sidebar's own padding, which is how Arc's reads (18px at 2x on every side but the
-    /// sidebar's).
-    static let cardGap: CGFloat = 9
+    /// Clearance around the page card on its top, trailing and bottom edges.
+    static let cardGap: CGFloat = 11
     /// Inside a row: from its fill to the favicon, and from the favicon to the title.
     static let rowInset: CGFloat = 10
     static let rowSpacing: CGFloat = 11
@@ -983,12 +983,14 @@ extension Look {
                     paneRadius < pageRadius && cardGap > inset))
         out.append(("the page card's corner is the generous one, not a settings card's — it is "
                     + "the only one read against the window's own",
-                    pageRadius > cardRadius && pageRadius >= cardGap))
+                    pageRadius > cardRadius))
         out.append(("a pane inside a split takes a tighter corner, and it is still a round one",
                     paneRadius < pageRadius && paneRadius > cardRadius))
         out.append(("its fill is a tone on the ground, not a panel: above a settings card, "
                     + "below a hovered row",
                     emptyPaneFillAlpha > cardFillAlpha && emptyPaneFillAlpha < hoveredAlpha))
+        out.append(("the floating sidebar sits closer to the window than the page card",
+                    floatingSidebarGap > 0 && floatingSidebarGap < cardGap))
         // The traffic lights at rest: three grey discs, each ringed in its own colour, with
         // AppKit's full-colour buttons showing through the moment the pointer arrives.
         out.append(("there is a rest colour for each of the three lights", lightColours.count == 3))
