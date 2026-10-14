@@ -64,6 +64,64 @@ import XCTest
         try await Task.sleep(for: .milliseconds(400))
     }
 
+    func testFirstNativeDragReusesSurfacesPreparedWhileIdle() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        for space in spaces.prefix(2) {
+            store.switchTo(space: space)
+            for index in 0..<10 {
+                let tab = store.newBlankTab(focus: false)
+                tab.park(url: URL(string: "https://example.test/\(index)")!, Parked(title: "Document \(index)"))
+            }
+        }
+        store.switchTo(space: spaces[0])
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(250))
+        for _ in 0..<50 where monitor.preparedSlides[spaces[1].id] == nil {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id],
+                                    "Adjacent surfaces must be laid out before finger movement")
+        let originX = prepared.outgoing.frame.minX
+        for offset: CGFloat in [-0.25, -0.5, -1, -2, -4] {
+            let start = ProcessInfo.processInfo.systemUptime
+            monitor.track(offset, width: SidebarWidth.shared.width, in: store)
+            print("INITIAL_NATIVE_DRAG offset=\(offset) seconds=\(ProcessInfo.processInfo.systemUptime - start)")
+            let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+            XCTAssertTrue(slide === prepared, "The first sample must not construct a new hosting tree")
+            XCTAssertEqual(slide.outgoing.frame.minX - originX, offset, accuracy: 0.001)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func testIdleSurfacesRefreshWithSidebarContentAndLeaveWithMonitor() async throws {
+        let (store, spaces, _, monitor) = try fixture()
+        try await Task.sleep(for: .milliseconds(250))
+        let previous = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        _ = store.newBlankTab(focus: false)
+        try await Task.sleep(for: .milliseconds(250))
+        let refreshed = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        XCTAssertFalse(previous === refreshed, "Changed sidebar content must invalidate the prepared capture")
+        XCTAssertNil(previous.superview)
+        let remaining = Array(monitor.preparedSlides.values)
+        monitor.remove()
+        XCTAssertTrue(monitor.preparedSlides.isEmpty)
+        XCTAssertTrue(remaining.allSatisfy { $0.superview == nil })
+    }
+
+    func testSidebarPreparationWaitsUntilLibraryDragIsIdle() async throws {
+        let (store, _, _, monitor) = try fixture()
+        store.librarySwipeProgress = 0.2
+        monitor.schedulePreparation(in: store)
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "Background sidebar layout must not interrupt an active Library drag")
+        store.librarySwipeProgress = nil
+        monitor.schedulePreparation(in: store)
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertFalse(monitor.preparedSlides.isEmpty)
+    }
+
     func testClickActivatesContentAtTheQuarterPoint() async throws {
         let (store, spaces, _, monitor) = try fixture()
         let outgoing = store.newBlankTab(focus: true)

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -324,17 +325,17 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
                     .accessibilityHidden(gesture.swiping)
                 if gesture.swiping, let outgoing = gesture.outgoing {
                     outgoing.equatable()
-                        .background(SpaceStripAnchor(gesture: gesture, moving: true))
+                        .background(SpaceStripAnchor(store: store, gesture: gesture, moving: true))
                         .environment(\.colorScheme, outgoing.colorScheme)
                         .offset(x: gesture.drag)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
                 }
             }
-            .background(SpaceStripAnchor(gesture: gesture, moving: false, sectionsOnly: true))
+            .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false, sectionsOnly: true))
             .opacity(gesture.profileSliding ? 0 : 1)
         }
-        .background(SpaceStripAnchor(gesture: gesture, moving: false))
+        .background(SpaceStripAnchor(store: store, gesture: gesture, moving: false))
         .overlay(alignment: .topLeading) { preview }
         .transaction(value: gesture.swiping) { transaction in
             if !gesture.swiping {
@@ -375,6 +376,7 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
 
 /// Native geometry keeps a profile boundary on the same sidebar track.
 private struct SpaceStripAnchor: NSViewRepresentable {
+    let store: TabStore
     let gesture: SpaceGesture
     let moving: Bool
     var sectionsOnly = false
@@ -386,7 +388,9 @@ private struct SpaceStripAnchor: NSViewRepresentable {
         else { gesture.stripView = view }
         return view
     }
-    func updateNSView(_ view: NSView, context: Context) {}
+    func updateNSView(_ view: NSView, context: Context) {
+        if sectionsOnly { gesture.monitor.schedulePreparation(in: store) }
+    }
 }
 
 private struct SpaceSlide: ViewModifier {
@@ -914,6 +918,49 @@ private struct SpaceSwipe: ViewModifier {
 /// the ends, the one-commit rule — lives in the pure state machine, where `check()` can hold
 /// it to account.
 @MainActor final class SwipeMonitor {
+    private(set) var preparedSlides: [UUID: ProfileSpaceSlide] = [:]
+    private var preparation: DispatchWorkItem?
+    private var preparationObservers: [AnyCancellable] = []
+
+    /// Build adjacent sidebar surfaces while idle, never in the first directional sample.
+    /// Anchor updates invalidate them when the live sidebar or its geometry changes.
+    func schedulePreparation(in store: TabStore) {
+        guard monitor != nil, self.store === store, !store.spaceSwiping, !landing,
+              !store.libraryOpen, store.librarySwipeProgress == nil else { return }
+        preparation?.cancel()
+        discardPreparation()
+        let work = DispatchWorkItem { [weak self, weak store] in
+            guard let self, let store, self.monitor != nil, self.store === store,
+                  !store.spaceSwiping, !self.landing,
+                  !store.libraryOpen, store.librarySwipeProgress == nil,
+                  !Motion.spaceReduced, store.sidebarShown,
+                  let host = store.window?.contentView as? BrowserWindowHost else { return }
+            let strip = store.strip
+            guard let index = strip.firstIndex(where: { $0.id == store.currentSpaceID }),
+                  let origin = store.swipeSpace else { return }
+            for direction in [-1, 1] where strip.indices.contains(index + direction) {
+                let target = strip[index + direction]
+                let favorites = target.profileID != store.profileID
+                guard let anchor = favorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView,
+                      anchor.bounds.width > 0, anchor.bounds.height > 0 else { continue }
+                let slide = ProfileSpaceSlide(frame: anchor.convert(anchor.bounds, to: host),
+                    outgoing: store.swipePreview(in: origin, includingFavorites: favorites),
+                    incoming: store.swipePreview(in: target), drag: 0, direction: direction,
+                    source: store, includesFavorites: favorites, travelWidth: SidebarWidth.shared.width)
+                slide.isHidden = true
+                host.addSubview(slide, positioned: .below, relativeTo: nil)
+                slide.prepare()
+                self.preparedSlides[target.id] = slide
+            }
+        }
+        preparation = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+    }
+
+    private func discardPreparation() {
+        for slide in preparedSlides.values { slide.discardPreparation() }
+        preparedSlides.removeAll()
+    }
     /// A committed finger gesture belongs to its window even if a profile hop replaces
     /// the monitor. Consume its finger and momentum tail until the next beginning.
     private static let committedSwipes = NSHashTable<NSWindow>.weakObjects()
@@ -1133,6 +1180,17 @@ private struct SpaceSwipe: ViewModifier {
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
         self.store = store
+        // Store collections and neighbouring Space metadata can change without updating
+        // the geometry anchor. Read their completed state on the next main-loop turn.
+        for publisher in [store.objectWillChange, store.spaceGesture.objectWillChange,
+                          ProfileManager.shared.objectWillChange] {
+            preparationObservers.append(publisher.sink { [weak self, weak store] _ in
+                DispatchQueue.main.async { [weak self, weak store] in
+                    guard let self, let store else { return }
+                    self.schedulePreparation(in: store)
+                }
+            })
+        }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
             guard let store else { return event }
             if event.hasPreciseScrollingDeltas, let window = event.window, window === store.window {
@@ -1208,9 +1266,14 @@ private struct SpaceSwipe: ViewModifier {
                     MainActor.assumeIsolated { self?.abort() }
                 })
         }
+        schedulePreparation(in: store)
     }
 
     func remove() {
+        preparationObservers.removeAll()
+        preparation?.cancel()
+        preparation = nil
+        discardPreparation()
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
         watchers.forEach(NotificationCenter.default.removeObserver)
@@ -1283,7 +1346,18 @@ private struct SpaceSwipe: ViewModifier {
               let origin = store.spaceGesture.outgoing?.space else { return }
         let includesFavorites = target.profileID != store.profileID
         guard let anchor = includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView else { return }
-        let slide = ProfileSpaceSlide(frame: anchor.convert(anchor.bounds, to: host),
+        let frame = anchor.convert(anchor.bounds, to: host)
+        if let slide = preparedSlides[target.id],
+           slide.preparedFor(origin: origin, target: target, frame: frame, width: width) {
+            preparedSlides.removeValue(forKey: target.id)
+            preparation?.cancel()
+            host.beginSpaceSlide(slide)
+            slide.isHidden = false
+            slide.track(drag: offset)
+            store.spaceGesture.nativeDrag = offset
+            return
+        }
+        let slide = ProfileSpaceSlide(frame: frame,
             outgoing: store.swipePreview(in: origin, includingFavorites: includesFavorites),
             incoming: store.swipePreview(in: target), drag: offset, direction: direction,
             source: store, includesFavorites: includesFavorites, travelWidth: width)

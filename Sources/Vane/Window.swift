@@ -892,6 +892,9 @@ extension VaneWindow {
     private let incoming: NSView
     private let direction: Int
     private let targetID: UUID
+    private let preparedOrigin: Space
+    private let preparedTarget: Space
+    private let preparedFrame: NSRect
     private weak var source: TabStore?
     private weak var destination: TabStore?
     private var finished = false
@@ -920,6 +923,9 @@ extension VaneWindow {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
         self.direction = direction
         targetID = incoming.space.id
+        preparedOrigin = outgoing.space
+        preparedTarget = incoming.space
+        preparedFrame = frame
         self.includesFavorites = includesFavorites
         self.travelWidth = travelWidth
         contentInset = max(0, (travelWidth - frame.width) / 2)
@@ -957,6 +963,11 @@ extension VaneWindow {
 
     func follows(_ target: Space, direction: Int) -> Bool {
         !finished && targetID == target.id && self.direction == direction
+    }
+
+    func preparedFor(origin: Space, target: Space, frame: NSRect, width: CGFloat) -> Bool {
+        !finished && preparedOrigin == origin && preparedTarget == target
+            && preparedFrame == frame && travelWidth == width
     }
 
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
@@ -1037,6 +1048,14 @@ extension VaneWindow {
     func cancel() {
         completion = nil
         finish()
+    }
+
+    /// An unused idle surface has never owned the gesture's visibility state.
+    func discardPreparation() {
+        finished = true
+        if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
+        motionObserver = nil
+        removeFromSuperview()
     }
 
     func finish() {
