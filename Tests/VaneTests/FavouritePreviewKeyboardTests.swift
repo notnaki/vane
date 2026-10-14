@@ -132,4 +132,29 @@ import XCTest
         XCTAssertEqual(opened, [item.url])
     }
 
+    func testKeyboardFocusMovesToFirstMessageWhenInboxFinishesLoading() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let owner = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        owner.isReleasedWhenClosed = false
+        let anchor = FavouritePreviewPanel.Anchor(frame: NSRect(x: 0, y: 0, width: 70, height: 50))
+        owner.contentView = anchor
+        owner.makeKeyAndOrderFront(nil)
+        defer { anchor.hide(); owner.contentView = nil; owner.close() }
+        let context = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://mail.google.com/mail/u/0/")!)!
+        let item = FavouritePreviewItem(title: "Fixture subject", subtitle: "Fixture Sender", url: URL(string: "https://mail.google.com/mail/u/0/#inbox/abc1")!)
+        var opened: [URL] = []
+        let card = FavouritePreviewCard(context: context, state: .ready(.init(account: "fixture@example.test", items: [item])), open: { opened.append($0) }, dismiss: {}, keyboardOpened: true)
+        let loading = FavouritePreviewCard(context: context, state: .loading, open: { opened.append($0) }, dismiss: {}, keyboardOpened: true)
+        anchor.configure(visible: true, keyboard: true, content: AnyView(loading), dismiss: {})
+        try await Task.sleep(for: .milliseconds(200))
+        anchor.configure(visible: true, keyboard: true, content: AnyView(card), dismiss: {})
+        try await Task.sleep(for: .milliseconds(300))
+        let panel = try XCTUnwrap(owner.childWindows?.first)
+        let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        NSApp.sendEvent(enter)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(opened, [item.url])
+    }
+
 }

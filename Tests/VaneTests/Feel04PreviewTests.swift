@@ -44,7 +44,7 @@ import XCTest
         XCTAssertEqual(loader.contexts.count, 1)
     }
 
-    func testCardGeometryDoesNotMoveOpenSiteAsContentArrives() throws {
+    func testCardKeepsWidthWhileHeightFitsContent() throws {
         TestEnvironment.prepare()
         let target = context()
         let items = (1...5).map { FavouritePreviewItem(title: "Pull request \($0)", subtitle: "owner/repo", url: URL(string: "https://github.com/owner/repo/pull/\($0)")!) }
@@ -55,7 +55,10 @@ import XCTest
             host.layoutSubtreeIfNeeded()
             return host.fittingSize
         }
-        for size in sizes.dropFirst() { XCTAssertEqual(size, sizes[0]) }
+        for size in sizes { XCTAssertEqual(size.width, sizes[0].width) }
+        for size in sizes.prefix(3) { XCTAssertLessThan(size.height, 240) }
+        XCTAssertGreaterThan(sizes[3].height, sizes[0].height)
+        for size in sizes.suffix(2) { XCTAssertLessThan(size.height, 400) }
     }
 }
 

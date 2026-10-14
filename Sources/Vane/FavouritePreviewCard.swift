@@ -66,6 +66,12 @@ struct FavouritePreviewCard: View {
         }
     }
 
+    private enum FocusTarget: Hashable { case none, site, inbox }
+    private var focusTarget: FocusTarget {
+        guard keyboardOpened else { return .none }
+        return inboxSnapshot == nil ? .site : .inbox
+    }
+
     var body: some View {
         Group {
             if let snapshot = inboxSnapshot { inbox(snapshot) }
@@ -74,8 +80,8 @@ struct FavouritePreviewCard: View {
         .background(Look.panelFill)
         .vaneMotionPolicy()
         .onExitCommand(perform: dismiss)
-        .task(id: keyboardOpened) {
-            if keyboardOpened {
+        .task(id: focusTarget) {
+            if focusTarget != .none {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled else { return }
                 siteFocusRequested = true
