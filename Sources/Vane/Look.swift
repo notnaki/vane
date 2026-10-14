@@ -117,9 +117,9 @@ enum Look {
     /// Favicon / symbol slot at the leading edge of a row. Sidebar artwork is inset
     /// within this slot; command bar icons keep their own sizing.
     static let rowIcon: CGFloat = 16
-    /// Arc's sidebar favicon artwork is 28px at 2x, centered in a 16pt slot.
-    /// Keep the slot fixed so reducing the mark does not move titles or hit targets.
-    static let sidebarFaviconScale: CGFloat = 14.0 / 16.0
+    /// Arc lets site artwork draw slightly beyond the sidebar's 16pt alignment slot.
+    /// The slot stays fixed so larger favicons do not move row titles or controls.
+    static let sidebarFaviconScale: CGFloat = 18.0 / 16.0
     /// The site's initial, standing in a favicon's box while a tab has none — a fraction of
     /// the box rather than a point size, because that box is 16 in a row and 16 in a tile.
     /// Short of the full box, so a letter and an icon read as one size.
