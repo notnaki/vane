@@ -96,6 +96,21 @@ struct ThemeWheel: Sendable {
         return .hsl(h: h, s: saturation, l: lower + w.r * (upper - lower))
     }
 
+    static func positions(dragged point: CGPoint, index: Int, count: Int) -> [CGPoint] {
+        let w = Spaces.wheel(x: point.x, y: point.y)
+        let offsets: [Double] = count >= 3 ? [0, 5.0 / 12, -5.0 / 12] : count == 2 ? [0, 0.5] : [0]
+        let angle = w.a - offsets[index] * 2 * .pi
+        return offsets.map {
+            let p = Spaces.wheelPoint(r: w.r, a: angle + $0 * 2 * .pi)
+            return CGPoint(x: p.x, y: p.y)
+        }
+    }
+
+    static func dragPoint(start: CGPoint, location: CGPoint, model: CGPoint, field: CGRect) -> CGPoint {
+        CGPoint(x: model.x + (location.x - start.x) / field.width,
+                y: model.y + (location.y - start.y) / field.height)
+    }
+
     static func palette(_ primary: ThemeColor, count: Int) -> [ThemeColor] {
         let c = primary.hsl
         let offsets: [Double] = count >= 3 ? [0, 5.0 / 12, -5.0 / 12] : count == 2 ? [0, 0.5] : [0]
@@ -106,6 +121,7 @@ struct ThemeWheel: Sendable {
 /// Measured independently of the colour pad: fixed 8pt end insets, a whole-track wave,
 /// and a thumb whose size follows intensity instead of changing the travel distance.
 enum ThemeIntensity {
+    static let width: CGFloat = 224
     static func value(x: Double, width: Double) -> Double {
         min(max((x - 8) / max(width - 16, 1), 0), 1)
     }

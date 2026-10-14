@@ -67,6 +67,27 @@ extension ThemeWheelTests {
         XCTAssertEqual(Spaces.palette(of: space), [ThemeColor(hex: "#808080")!])
     }
 
+    func testNeutralAndEndpointDragsKeepGeometryIndependentlyOfHue() {
+        let target = CGPoint(x: 0.25, y: 0.5)
+        let wheel = ThemeWheel(ThemeColor(red: 0.5, green: 0.5, blue: 0.5))
+        let points = ThemeWheel.positions(dragged: target, index: 1, count: 3)
+        XCTAssertEqual(points[1].x, target.x, accuracy: 1e-9)
+        XCTAssertEqual(points[1].y, target.y, accuracy: 1e-9)
+        XCTAssertEqual(wheel.color(at: points[0]).hsl.s, 0)
+        let dark = ThemeWheel.positions(dragged: CGPoint(x: 0.5, y: 0.25), index: 0, count: 1)
+        XCTAssertEqual(dark[0].x, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(dark[0].y, 0.25, accuracy: 1e-9)
+    }
+
+    func testRimGrabPreservesModelPositionUntilPointerMoves() {
+        let model = CGPoint(x: 1, y: 0.5), start = CGPoint(x: 318, y: 170)
+        let field = CGRect(x: 0, y: 0, width: 340, height: 340)
+        XCTAssertEqual(ThemeWheel.dragPoint(start: start, location: start, model: model, field: field), model)
+        let moved = ThemeWheel.dragPoint(start: start, location: CGPoint(x: 284, y: 170), model: model, field: field)
+        XCTAssertEqual(moved.x, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(ThemeIntensity.width, 224)
+    }
+
     func testCompanionsAreRebuiltAroundOnePrimaryColor() {
         let primary = ThemeColor.hsl(h: 0.05, s: 0.6, l: 0.65)
         let two = ThemeWheel.palette(primary, count: 2)

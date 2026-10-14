@@ -323,7 +323,7 @@ enum Spaces {
     static func themePoint(hex: String) -> (x: Double, y: Double)? {
         guard let color = ThemeColor(hex: hex) else { return nil }
         let point = ThemeWheel(color).point(color)
-        return (point.x, point.y)
+        return (Double(point.x), Double(point.y))
     }
 
     static func wheel(x: Double, y: Double) -> (r: Double, a: Double) {

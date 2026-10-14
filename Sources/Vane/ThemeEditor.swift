@@ -25,8 +25,6 @@ struct ThemeEditor: View {
     @State private var name = ""
     /// Which page of presets the chevrons have walked to.
     @State private var page = 0
-    /// Which colour a preset, or `−`, acts on: the last dot touched.
-    @State private var selected = 0
     @State private var wheel: ThemeWheel?
     @State private var hovered: Int?
     /// The Space as this panel has it, including edits a finger has not let go of yet.
@@ -44,7 +42,7 @@ struct ThemeEditor: View {
     @State private var placed: [Int: CGPoint] = [:]
     /// The dot under the finger and where inside it the finger took hold, so the dot does not
     /// jump its own radius on the first frame.
-    @State private var held: (index: Int, grab: CGSize)?
+    @State private var held: (index: Int, point: CGPoint)?
     /// Where the knob was when the finger landed on it, so the dial turns by how far the
     /// finger sweeps rather than jumping to wherever it was put down.
     @State private var knob: (angle: Double, value: Double)?
@@ -65,6 +63,8 @@ struct ThemeEditor: View {
             HStack(spacing: Look.inset * 1.5) {
                 WaveSlider(value: current.tint ?? Look.defaultTint,
                            change: { v in slide { $0.tint = v } }, end: commitLive)
+                    .frame(width: ThemeIntensity.width)
+                Spacer(minLength: 0)
                 GrainDial(value: current.grain ?? 0, knob: $knob,
                           change: { v in slide { $0.grain = v } }, end: commitLive)
             }
@@ -179,12 +179,10 @@ struct ThemeEditor: View {
             .onHover { inside in Motion.animate(Look.quick) { hovered = inside ? i : nil } }
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named(fieldSpace))
                 .onChanged { drag in
-                    selected = i
-                    let grab = held?.index == i ? held!.grab
-                        : CGSize(width: drag.startLocation.x - centre.x, height: drag.startLocation.y - centre.y)
-                    held = (i, grab)
-                    let point = CGPoint(x: (drag.location.x - grab.width - box.minX) / box.width,
-                                        y: (drag.location.y - grab.height - box.minY) / box.height)
+                    let initial = held?.index == i ? held!.point : p
+                    held = (i, initial)
+                    let point = ThemeWheel.dragPoint(start: drag.startLocation, location: drag.location,
+                                                     model: initial, field: box)
                     move(i, to: point)
                 }
                 .onEnded { _ in held = nil; commitLive() })
@@ -208,12 +206,10 @@ struct ThemeEditor: View {
         guard let primary = palette.first else { return }
         let pad = wheel ?? ThemeWheel(primary)
         wheel = pad
-        let w = Spaces.wheel(x: point.x, y: point.y)
-        let offset = i == 0 ? 0 : (palette.count == 2 ? 0.5 : i == 1 ? 5.0 / 12 : -5.0 / 12)
-        let p = Spaces.wheelPoint(r: w.r, a: w.a - offset * 2 * .pi)
-        let color = pad.color(at: CGPoint(x: p.x, y: p.y), hueAtCenter: primary.hsl.h)
+        let positions = ThemeWheel.positions(dragged: point, index: i, count: palette.count)
+        let color = pad.color(at: positions[0], hueAtCenter: primary.hsl.h)
         let list = ThemeWheel.palette(color, count: palette.count)
-        for j in list.indices { placed[j] = pad.point(list[j]) }
+        for j in list.indices { placed[j] = positions[j] }
         slide { Spaces.setPalette(list, on: &$0) }
     }
 
@@ -337,7 +333,7 @@ struct ThemeEditor: View {
         guard let color = Look.themePresetColors[hex] ?? ThemeColor(hex: hex) else { return }
         wheel = ThemeWheel(color)
         placed = [:]
-        selected = 0
+
         Motion.animate(Look.quick) {
             edit { Spaces.setPalette([color], on: &$0) }
         }
