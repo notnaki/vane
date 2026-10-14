@@ -586,62 +586,36 @@ struct SpaceGround: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let dark = scheme == .dark
-        // The gesture's snapshot avoids rereading Space files on each tint frame. The
-        // theme editor's unsaved colour preview still takes precedence.
         let here = store.swipeSpace
-        let mine = colors(of: here)
-        let pull = pulled(from: here)
-        let stops = Look.groundStops(mine, towards: pull.colors,
-                                     fraction: pull.fraction, dark: dark,
-                                     strength: here?.tint ?? Look.defaultTint)
-        // Grain crosses the swipe with the colour: the neighbour's texture arrives with its
-        // wash rather than snapping on at the end.
-        let noise = (here?.grain ?? 0) * (1 - pull.fraction) + pull.grain * pull.fraction
-        // Always in the tree, so switching space cross-fades one ground into the next instead
-        // of cutting — the fade *is* what says the whole window changed space. While a
-        // two-finger swipe is live the wash is dragged towards the Space being pulled in, by
-        // the same fraction the strip has travelled: the colour has to arrive with the
-        // content, or one switch reads as two events.
+        let systemDark = here?.appearance == nil ? scheme == .dark
+            : NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let mine = surface(of: here, systemDark: systemDark)
+        let pull = pulled(from: here, systemDark: systemDark)
+        let wash = mine.mixed(towards: pull.surface, fraction: pull.fraction)
         ZStack {
-            if store.isPrivate {
-                Color(hex: Profile.incognito.colorHex)
-            }
-            wash(stops)
-                .opacity(Look.groundOpacity(dark: dark))
-                // A `LinearGradient` is not animatable, so a switch between two multi-colour
-                // Spaces would cut where a single colour faded. Identity keyed on the colours
-                // — never on the swipe's fraction, which changes every frame — turns the
-                // switch into a removal and an insertion, and two opacity transitions inside
-                // the animations below are the cross-fade.
-                .id(mine + pull.colors)
-                .transition(.opacity)
-            if noise > 0 {
-                Image(nsImage: Look.grain)
-                    .resizable(resizingMode: .tile)
-                    // Nearest neighbour: the tile is one noisy pixel per pixel, and smoothing
-                    // it up to a 2x backing store turns the grain into mottle.
-                    .interpolation(.none)
-                    .opacity(noise * Look.grainMax)
-            }
+            if store.isPrivate { Color(hex: Profile.incognito.colorHex) }
+            ThemeWashView(wash: wash)
         }
-        .animation(reduceMotion ? nil : Look.appear, value: store.currentSpaceID)
+        // Gesture transactions already own the travel and cancellation timing. Only a
+        // direct Space change or a theme edit needs a local animation.
+        .animation(reduceMotion ? nil : Look.spaceSlide, value: store.currentSpaceID)
         .animation(reduceMotion ? nil : Look.appear, value: store.spaceRevision)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 
-    /// One colour is one even wash — deliberately not a bottom-weighted gradient: that one's
-    /// strongest band landed in the 8pt gap under the card, where it read as a fat coloured
-    /// bar along the card's bottom edge rather than as the sidebar's tint. Several colours are
-    /// the theme editor's extra dots, mixed across the window's diagonal at that same
-    /// strength.
-    @ViewBuilder private func wash(_ stops: [Color]) -> some View {
-        if stops.count > 1 {
-            LinearGradient(colors: stops, startPoint: .topLeading, endPoint: .bottomTrailing)
-        } else {
-            stops.first ?? .clear
+    private func surface(of space: Space?, systemDark: Bool) -> ThemeWash {
+        let dark: Bool
+        switch space?.appearance {
+        case "dark": dark = true
+        case "light": dark = false
+        default:
+            // A neighbour following the system must not inherit the departing Space's
+            // pinned appearance. The environment still invalidates us on system changes.
+            dark = systemDark
         }
+        return ThemeWash(colors: colors(of: space), strength: space?.tint ?? Look.defaultTint,
+                         opacity: Look.groundOpacity(dark: dark), grain: space?.grain ?? 0)
     }
 
     /// A Space's colours, falling back to its profile's — Arc has no colourless space, and a
@@ -665,13 +639,11 @@ struct SpaceGround: View {
     /// The strip, so the wash pulls the *neighbour's* colour whichever profile owns it: at a
     /// profile boundary the ground has to arrive with the sections, or the window would cut
     /// to the new profile's colour after having slid to it.
-    private func pulled(from here: Space?) -> (colors: [ThemeColor], grain: Double, fraction: Double) {
-        let idle = (colors(of: here), here?.grain ?? 0, 0.0)
+    private func pulled(from here: Space?, systemDark: Bool) -> (surface: ThemeWash, fraction: Double) {
+        let idle = (surface(of: here, systemDark: systemDark), 0.0)
         let width = SidebarWidth.shared.width
-        guard gesture.drag != 0, width > 0 else { return idle }
-        guard let target = gesture.neighbour else { return idle }
-        let f = Double(min(1, abs(gesture.drag / width)))
-        return (colors(of: target), target.grain ?? 0, f)
+        guard gesture.drag != 0, width > 0, let target = gesture.neighbour else { return idle }
+        return (surface(of: target, systemDark: systemDark), Double(min(1, abs(gesture.drag / width))))
     }
 }
 
