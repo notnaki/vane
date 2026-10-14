@@ -86,18 +86,31 @@ import XCTest
     }
 
     func testOriginalLibraryAxisLockAcceptsHorizontalTravelAfterStartupNoise() {
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        defer { saver.setMode(previousMode) }
         let (store, window, monitor) = fixture(withSpaces: true)
-        for open in [false, true] {
-            for (dx, dy): (CGFloat, CGFloat) in [(0, 0.5), (0.1, 0.2), (-0.2, 0.1)] {
-                monitor.remove()
-                monitor.install(store)
-                store.libraryOpen = open
-                send(window, phase: .began)
-                send(window, dx: dx, dy: dy)
-                XCTAssertNil(store.librarySwipeProgress)
-                send(window, dx: open ? -12 : 12)
-                XCTAssertNotNil(store.librarySwipeProgress,
-                                "Startup noise must not reject a deliberate horizontal drag")
+        for mode: BatterySaver.Mode in [.off, .alwaysOn] {
+            saver.setMode(mode)
+            for open in [false, true] {
+                for (dx, dy): (CGFloat, CGFloat) in [(0, 0.5), (0.1, 0.2), (-0.2, 0.1)] {
+                    monitor.remove()
+                    monitor.install(store)
+                    store.libraryOpen = open
+                    send(window, phase: .began)
+                    send(window, dx: dx, dy: dy)
+                    XCTAssertNil(store.librarySwipeProgress)
+                    let event = LibraryScrollEvent(window: window, point: NSPoint(x: 100, y: 350),
+                        dx: open ? -12 : 12, dy: 0, phase: .changed, momentum: [],
+                        precise: true, inverted: true, time: 1)
+                    XCTAssertNil(monitor.handle(event, in: store),
+                                 "Startup noise must not reject a deliberate horizontal drag")
+                    if Motion.reduced {
+                        XCTAssertNil(store.librarySwipeProgress)
+                    } else {
+                        XCTAssertNotNil(store.librarySwipeProgress)
+                    }
+                }
             }
         }
     }
