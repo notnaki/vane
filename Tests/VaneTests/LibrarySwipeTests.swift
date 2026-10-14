@@ -69,6 +69,47 @@ import XCTest
         }
     }
 
+    func testSubpixelHorizontalWobbleReleasesLibraryToVerticalScrolling() {
+        let (store, window, _) = fixture(withSpaces: true)
+        for open in [true, false] {
+            store.libraryOpen = open
+            let before = window.scrolls
+            send(window, phase: .began)
+            send(window, dx: open ? -0.2 : 0.2, dy: 0.1)
+            XCTAssertNotNil(store.librarySwipeProgress)
+            send(window, dy: 12)
+            XCTAssertNil(store.librarySwipeProgress)
+            XCTAssertEqual(store.libraryOpen, open)
+            XCTAssertEqual(window.scrolls, before + 2)
+            send(window, phase: .ended)
+        }
+    }
+
+    func testLibraryIsLaidOutBeforeFirstDragSample() async throws {
+        let (store, window, monitor) = fixture(withSpaces: true)
+        Library.open(.downloads, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        defer { window.contentView = nil }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(150))
+        let prepared = try XCTUnwrap(monitor.presentationView,
+                                    "The panel must be mounted before the first input")
+        send(window, phase: .began)
+        for delta: CGFloat in [0.25, 0.25, 0.5, 1, 2] {
+            let start = ProcessInfo.processInfo.systemUptime
+            send(window, dx: delta)
+            host.layoutSubtreeIfNeeded()
+            print("LIBRARY_INITIAL_LAYOUT delta=\(delta) seconds=\(ProcessInfo.processInfo.systemUptime - start)")
+            XCTAssertTrue(monitor.presentationView === prepared)
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     func testLibraryDragMovesThePageWithoutResizingWebKitForEachSample() async throws {
         try XCTSkipIf(Motion.reduced, "Requires interactive navigation")
         let (store, window, _) = fixture(withSpaces: true)
@@ -102,6 +143,41 @@ import XCTest
         XCTAssertNil(store.libraryGesture.pageWidth)
         XCTAssertLessThan(tab.web.bounds.width, initialWidth - 50,
                           "Apply the destination page width once the navigation settles")
+    }
+
+    func testFloatingSidebarLibraryLandingKeepsInnerWebWidthFixed() async throws {
+        try XCTSkipIf(Motion.reduced, "Requires animated navigation")
+        let (store, window, _) = fixture(withSpaces: true)
+        Library.open(.downloads, in: store)
+        store.sidebarShown = false
+        let tab = store.newBlankTab(loading: URL(string: "about:blank"))
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(100))
+        let width = tab.web.bounds.width
+        send(window, phase: .began)
+        send(window, dx: -80)
+        try await Task.sleep(for: .milliseconds(40))
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+        var landingSamples = 0
+        for _ in 0..<4 {
+            try await Task.sleep(for: .milliseconds(30))
+            if store.libraryGesture.pageWidth != nil {
+                landingSamples += 1
+                XCTAssertEqual(tab.web.bounds.width, width, accuracy: 0.5,
+                               "The floating card's inner padding must stay fixed through landing")
+            }
+        }
+        XCTAssertGreaterThan(landingSamples, 0, "Inspect the page while its landing is in progress")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(store.libraryGesture.pageWidth)
+        XCTAssertNil(store.libraryGesture.pageLeadingInset)
+        XCTAssertGreaterThan(tab.web.bounds.width, width + 50)
     }
 
     func testImmediateLibraryReleaseStillShowsIntermediatePositions() async throws {
@@ -408,9 +484,10 @@ import XCTest
         send(window, phase: .ended)
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertNil(store.librarySwipeProgress)
-        XCTAssertNil(search(host))
+        XCTAssertTrue(search(host) === field, "Keep the panel ready offscreen for the next gesture")
+        XCTAssertFalse(field.isEnabled, "Closed Library fields cannot retain keyboard interaction")
 
-        // A short swipe springs back without committing or keeping a hidden panel alive.
+        // A short swipe springs back without committing; the prepared panel stays inactive.
         send(window, phase: .began)
         send(window, dx: 40)
         try await Task.sleep(for: .milliseconds(40))
@@ -419,7 +496,8 @@ import XCTest
         XCTAssertFalse(store.libraryOpen)
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertNil(store.librarySwipeProgress)
-        XCTAssertNil(search(host))
+        XCTAssertTrue(search(host) === field)
+        XCTAssertFalse(field.isEnabled)
     }
 
     func testBatterySaverUsesImmediateDestinationWithoutInteractivePreview() {

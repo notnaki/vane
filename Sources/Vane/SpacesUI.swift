@@ -3,6 +3,72 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
+#if DEBUG
+/// Opt-in, local numeric diagnostics for reproducing physical trackpad input.
+@MainActor enum NavigationInputTrace {
+    private static let enabled = ProcessInfo.processInfo.environment["VANE_NAV_TRACE"] == "1"
+    private static let queue = DispatchQueue(label: "vane.navigation.input-trace", qos: .utility)
+    private static let sampler = NavigationFrameTrace()
+    private static let handle: FileHandle? = {
+        guard enabled else { return nil }
+        let path = "/tmp/vane-navigation-input.jsonl"
+        if !FileManager.default.fileExists(atPath: path) {
+            _ = FileManager.default.createFile(atPath: path, contents: nil)
+        }
+        let file = FileHandle(forWritingAtPath: path)
+        try? file?.seekToEnd()
+        return file
+    }()
+    static func prepare() { _ = handle }
+    static func record(_ tag: String, store: TabStore, event: NSEvent? = nil, landing: Bool = false) {
+        guard enabled, let handle else { return }
+        if event != nil { sampler.start(in: store) }
+        var fields: [String: Any] = ["tag": tag, "time": ProcessInfo.processInfo.systemUptime,
+            "space": store.currentSpaceID?.uuidString ?? "nil", "drag": store.spaceDrag,
+            "swiping": store.spaceSwiping, "landing": landing,
+            "hidden": store.spaceGesture.profileSliding,
+            "origin": store.spaceGesture.outgoing?.space.id.uuidString ?? "nil",
+            "neighbour": store.spaceGesture.neighbour?.id.uuidString ?? "nil",
+            "native": (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.offset ?? 999,
+            "library": store.libraryOpen, "libraryProgress": store.librarySwipeProgress ?? -1]
+        if let event {
+            fields["phase"] = event.phase.rawValue
+            fields["momentum"] = event.momentumPhase.rawValue
+            fields["dx"] = event.scrollingDeltaX
+            fields["dy"] = event.scrollingDeltaY
+            fields["eventTime"] = event.timestamp
+        }
+        guard var data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]) else { return }
+        data.append(10)
+        let output = data
+        queue.async { try? handle.write(contentsOf: output) }
+    }
+}
+
+@MainActor private final class NavigationFrameTrace: NSObject {
+    private weak var store: TabStore?
+    private var link: CADisplayLink?
+    private var until: TimeInterval = 0
+    func start(in store: TabStore) {
+        self.store = store
+        until = ProcessInfo.processInfo.systemUptime + 0.5
+        guard link == nil, let screen = store.window?.screen else { return }
+        let link = screen.displayLink(target: self, selector: #selector(frame(_:)))
+        let rate = Float(screen.maximumFramesPerSecond)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        self.link = link
+        link.add(to: .main, forMode: .common)
+    }
+    @objc private func frame(_ link: CADisplayLink) {
+        guard let store else { link.invalidate(); self.link = nil; return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if store.spaceSwiping || store.librarySwipeProgress != nil { until = now + 0.3 }
+        guard now < until else { link.invalidate(); self.link = nil; return }
+        NavigationInputTrace.record("frame", store: store)
+    }
+}
+#endif
+
 /// Native finger tracking only republishes the small footer, not sidebar lists or tint.
 @MainActor final class SpaceFooterProgress: ObservableObject {
     @Published var drag: CGFloat?
@@ -921,6 +987,7 @@ private struct SpaceSwipe: ViewModifier {
     private(set) var preparedSlides: [UUID: ProfileSpaceSlide] = [:]
     private var preparation: DispatchWorkItem?
     private var preparationObservers: [AnyCancellable] = []
+    private var axisEstablished = false
 
     /// Build adjacent sidebar surfaces while idle, never in the first directional sample.
     /// Anchor updates invalidate them when the live sidebar or its geometry changes.
@@ -1180,6 +1247,9 @@ private struct SpaceSwipe: ViewModifier {
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
         self.store = store
+#if DEBUG
+        NavigationInputTrace.prepare()
+#endif
         // Store collections and neighbouring Space metadata can change without updating
         // the geometry anchor. Read their completed state on the next main-loop turn.
         for publisher in [store.objectWillChange, store.spaceGesture.objectWillChange,
@@ -1193,6 +1263,13 @@ private struct SpaceSwipe: ViewModifier {
         }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
             guard let store else { return event }
+#if DEBUG
+            defer {
+                if event.window === store.window, event.hasPreciseScrollingDeltas {
+                    NavigationInputTrace.record("space-event", store: store, event: event, landing: self.landing)
+                }
+            }
+#endif
             if event.hasPreciseScrollingDeltas, let window = event.window, window === store.window {
                 if event.phase.contains(.began) {
                     Self.committedSwipes.remove(window)
@@ -1285,6 +1362,7 @@ private struct SpaceSwipe: ViewModifier {
     /// Everything a finished gesture forgets, without touching the strip: the next gesture
     /// starts from scratch whether this one committed, sprang back or was interrupted.
     private func forget() {
+        axisEstablished = false
         swipe = Spaces.Swipe()
         claim = .undecided
         travelled = (0, 0, 0)
@@ -1515,7 +1593,18 @@ private struct SpaceSwipe: ViewModifier {
                              height: max(0, bounds.height - 2 * inset))
         guard sidebar.contains(event.locationInWindow) else { return false }
         switch claim {
-        case .mine:   return true
+        case .mine:
+            if !axisEstablished, event.phase.contains(.changed) {
+                travelled.h += abs(event.scrollingDeltaX)
+                travelled.v += abs(event.scrollingDeltaY)
+                if travelled.v >= Self.verticalVeto {
+                    Motion.instant { abort() }
+                    claim = .theirs
+                    return false
+                }
+                axisEstablished = travelled.h >= Self.verticalVeto
+            }
+            return true
         case .theirs: return false
         case .undecided: break
         }
@@ -1538,6 +1627,9 @@ private struct SpaceSwipe: ViewModifier {
         // that drift is enough to lose the toss.
         claim = travelled.h > travelled.v * 1.5 ? .mine : .theirs
         guard claim == .mine else { return false }
+        // Tracking has already begun; only its ownership remains provisional through
+        // subpixel startup noise so a vertical scroll can still reclaim its recipient.
+        axisEstablished = travelled.h >= Self.verticalVeto
         // The first claimed event is the gesture's beginning as far as the state machine is
         // concerned: the `.began` that opened it carried no deltas and went to the tab list.
         swipe = Spaces.Swipe()

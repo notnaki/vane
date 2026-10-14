@@ -94,6 +94,31 @@ import XCTest
         }
     }
 
+    func testSlowNativeSpaceLandingNeverReversesItsPresentation() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.palette = nil
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        try await Task.sleep(for: .milliseconds(400))
+        var samples: [CGFloat] = []
+        for index in 1...40 {
+            monitor.track(-CGFloat(index) * 3, width: SidebarWidth.shared.width, in: store)
+            try await Task.sleep(for: .milliseconds(10))
+            samples.append(try XCTUnwrap(host.spaceSlide).offset)
+        }
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store)
+        for _ in 0..<35 {
+            try await Task.sleep(for: .milliseconds(8))
+            samples.append(host.spaceSlide?.offset ?? -SidebarWidth.shared.width)
+        }
+        print("SLOW_SPACE_PRESENTATION: \(samples)")
+        for (previous, next) in zip(samples, samples.dropFirst()) {
+            XCTAssertLessThanOrEqual(next, previous + 0.5,
+                                     "A forward slide must never expose the origin again")
+        }
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        XCTAssertFalse(store.spaceSwiping)
+    }
+
     func testIdleSurfacesRefreshWithSidebarContentAndLeaveWithMonitor() async throws {
         let (store, spaces, _, monitor) = try fixture()
         try await Task.sleep(for: .milliseconds(250))

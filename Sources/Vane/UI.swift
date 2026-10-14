@@ -650,6 +650,7 @@ struct SpaceGround: View {
 /// hovers over the page (find, the save-password prompt) inside its clip.
 struct WebCard: View {
     @EnvironmentObject var store: TabStore
+    @Environment(\.libraryPageLeadingInset) private var libraryPageLeadingInset
     @ObservedObject private var batterySaver = BatterySaver.shared
     @ObservedObject private var profileManager = ProfileManager.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -759,7 +760,7 @@ struct WebCard: View {
         // No inset on the leading edge while the sidebar is docked — its own padding
         // already leaves the gap, and doubling it reads as a misaligned card. The Library's
         // column stands in the same place and leaves the same gap.
-        .padding(.leading, store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap)
+        .padding(.leading, libraryPageLeadingInset ?? (store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap))
         .padding(.top, topGap)
         .padding([.trailing, .bottom], Look.cardGap)
     }

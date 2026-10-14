@@ -9,10 +9,22 @@ extension Look {
 /// Finger samples affect navigation geometry, not the browser or its tab rows.
 @MainActor final class LibraryGesture: ObservableObject {
     @Published var progress: CGFloat? {
-        didSet { if progress == nil { pageWidth = nil } }
+        didSet { if progress == nil { pageWidth = nil; pageLeadingInset = nil } }
     }
     /// Translate an unchanged page while the fingers move; resize WebKit once at rest.
     @Published var pageWidth: CGFloat?
+    @Published var pageLeadingInset: CGFloat?
+}
+
+private struct LibraryPageLeadingInset: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+extension EnvironmentValues {
+    var libraryPageLeadingInset: CGFloat? {
+        get { self[LibraryPageLeadingInset.self] }
+        set { self[LibraryPageLeadingInset.self] = newValue }
+    }
 }
 
 /// Keep the animated geometry in one small observation boundary. The page, sidebar
@@ -39,7 +51,8 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
                     Color.clear.frame(width: (sidebarShown ? sidebarWidth : 0)
                         * (1 - progress) + panelWidth * progress)
                     // Resolve navigation geometry once per surface, rather than per leaf.
-                    page.geometryGroup().frame(width: gesture.pageWidth ?? max(0,
+                    page.environment(\.libraryPageLeadingInset, gesture.pageLeadingInset)
+                        .geometryGroup().frame(width: gesture.pageWidth ?? max(0,
                         geometry.size.width - ((sidebarShown ? sidebarWidth : 0) * (1 - progress)
                             + panelWidth * progress)))
                 }
@@ -56,22 +69,22 @@ struct LibraryNavigationLayout<Page: View, Sidebar: View, Panel: View>: View {
                         Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - progress) : 0)
                     }
                     .zIndex(1)
-                if libraryOpen || gesture.progress != nil {
-                    panel
-                        .frame(width: panelWidth)
-                        .overlay(alignment: .leading) {
-                            LibrarySwipePosition(monitor: monitor)
-                                .frame(width: 1, height: 1)
-                                .allowsHitTesting(false).accessibilityHidden(true)
-                        }
-                        .geometryGroup()
-                        .offset(x: -panelWidth * (1 - progress))
-                        .transition(.offset(x: -panelWidth))
-                        .disabled(palettePresented)
-                        .allowsHitTesting(libraryOpen && !palettePresented)
-                        .accessibilityHidden(!libraryOpen || palettePresented)
-                        .zIndex(1)
-                }
+                // Keep the panel laid out offscreen. Mounting its search field and list
+                // during the first directional sample otherwise stalls that frame.
+                panel
+                    .frame(width: panelWidth)
+                    .overlay(alignment: .leading) {
+                        LibrarySwipePosition(monitor: monitor)
+                            .frame(width: 1, height: 1)
+                            .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                    .geometryGroup()
+                    .offset(x: -panelWidth * (1 - progress))
+                    .opacity(libraryOpen || gesture.progress != nil ? 1 : 0)
+                    .disabled(palettePresented || (!libraryOpen && gesture.progress == nil))
+                    .allowsHitTesting(libraryOpen && !palettePresented)
+                    .accessibilityHidden(!libraryOpen || palettePresented)
+                    .zIndex(1)
             }
         }
     }
@@ -131,6 +144,7 @@ private struct LibrarySwipe: ViewModifier {
     private var lastWasConsumed = false
     private var travel = (x: CGFloat(0), horizontal: CGFloat(0), vertical: CGFloat(0))
     private var finished = false
+    private var axisEstablished = false
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
@@ -169,6 +183,7 @@ private struct LibrarySwipe: ViewModifier {
         action = nil
         travel = (0, 0, 0)
         finished = false
+        axisEstablished = false
         lastEvent = nil
         lastWasConsumed = false
     }
@@ -220,6 +235,13 @@ private struct LibrarySwipe: ViewModifier {
     /// through both, so classify and accumulate each native event exactly once.
     func handle(_ event: NSEvent, in store: TabStore) -> NSEvent? {
         self.store = store
+#if DEBUG
+        defer {
+            if event.window === store.window, event.hasPreciseScrollingDeltas {
+                NavigationInputTrace.record("library-event", store: store, event: event)
+            }
+        }
+#endif
         if lastEvent === event { return lastWasConsumed ? nil : event }
         let result = process(event, in: store)
         lastEvent = event
@@ -323,6 +345,12 @@ private struct LibrarySwipe: ViewModifier {
         travel.x += dx
         travel.horizontal += abs(event.scrollingDeltaX)
         travel.vertical += abs(event.scrollingDeltaY)
+        if claim == .mine, !axisEstablished, travel.vertical >= 6 {
+            settlement = UUID()
+            Motion.instant { store.librarySwipeProgress = nil }
+            claim = .theirs
+            return event
+        }
         if claim == .undecided {
             // Match the sidebar's axis lock: a vertical scroll cannot later become
             // navigation as the fingers drift sideways.
@@ -337,6 +365,7 @@ private struct LibrarySwipe: ViewModifier {
                 claim = travel.x > 0 && store.strip.first?.id == space ? .mine : .theirs
             }
         }
+        if claim == .mine { axisEstablished = axisEstablished || travel.horizontal >= 6 }
         if claim == .mine, valid(action, in: store), !Motion.reduced {
             if dragOrigin == nil {
                 let endpoint: CGFloat = switch action { case .close: 1; case .open: 0 }
@@ -344,6 +373,7 @@ private struct LibrarySwipe: ViewModifier {
                     : (presentedProgress ?? store.librarySwipeProgress ?? endpoint)
                 settlement = UUID()
                 if store.libraryGesture.pageWidth == nil, let window = store.window {
+                    store.libraryGesture.pageLeadingInset = store.sidebarShown || store.libraryOpen ? 0 : Look.cardGap
                     let origin = dragOrigin ?? endpoint
                     let leading = (store.sidebarShown ? SidebarWidth.shared.width : 0) * (1 - origin)
                         + panelWidth * origin

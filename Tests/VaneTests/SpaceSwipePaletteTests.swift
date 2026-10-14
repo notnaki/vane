@@ -47,6 +47,33 @@ import XCTest
                        "The first visible offset includes the small samples before axis lock")
     }
 
+    func testMovementOnNativeBeganEventIsNotDiscarded() {
+        let (store, _, window) = fixture()
+        let monitor = SwipeMonitor()
+        monitor.install(store)
+        defer { monitor.remove() }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -0.25, phase: .began))
+        XCTAssertTrue(store.spaceSwiping)
+        XCTAssertEqual(store.spaceDrag, -0.25, accuracy: 0.001,
+                       "AppKit can carry the first movement on began itself")
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -0.5))
+        XCTAssertEqual(store.spaceDrag, -0.75, accuracy: 0.001)
+    }
+
+    func testSubpixelHorizontalWobbleDoesNotStealVerticalScrolling() {
+        let (store, _, window) = fixture()
+        let monitor = SwipeMonitor()
+        monitor.install(store)
+        defer { monitor.remove() }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -0.2, dy: 0.1))
+        XCTAssertTrue(store.spaceSwiping, "Horizontal tracking still starts immediately")
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 12))
+        XCTAssertFalse(store.spaceSwiping)
+        XCTAssertEqual(store.spaceDrag, 0)
+        XCTAssertEqual(window.scrolls, 2, "The vertical sample must reach the tab list")
+    }
+
     func testSidebarSwipeIsClaimedWithNewTabPaletteOpen() {
         let (store, _, window) = fixture()
         let monitor = SwipeMonitor()

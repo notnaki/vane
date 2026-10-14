@@ -463,7 +463,9 @@ enum Spaces {
                 travel = 0
                 speed = 0
                 armed = true
-                return (0, nil, 0)
+                // AppKit can include movement on fingers-down itself.
+                return feed(dx: dx, dt: dt, phase: .changed, width: width,
+                            count: count, index: index, create: create)
             case .changed:
                 guard armed else { return (nil, nil, 0) }
                 travel += dx
