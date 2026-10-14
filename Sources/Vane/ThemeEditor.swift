@@ -27,6 +27,8 @@ struct ThemeEditor: View {
     @State private var page = 0
     /// Which colour a preset, or `−`, acts on: the last dot touched.
     @State private var selected = 0
+    @State private var wheel: ThemeWheel?
+    @State private var hovered: Int?
     /// The Space as this panel has it, including edits a finger has not let go of yet.
     @State private var live: Space?
     /// Whether `live` holds anything the file does not.
@@ -53,6 +55,7 @@ struct ThemeEditor: View {
     /// the store's until then.
     private var current: Space { live ?? space }
     private var colors: [String] { Spaces.themeColors(of: current) }
+    private var palette: [ThemeColor] { Spaces.palette(of: current) }
 
     var body: some View {
         VStack(spacing: Look.inset) {
@@ -73,11 +76,14 @@ struct ThemeEditor: View {
         .fixedSize()
         // An opaque ground of its own. Without it NSPopover's translucent material lets the
         // window's own wash streak through the panel that is editing it.
-        .background(Look.panelFill)
+        .background(Color(white: 0.16))
+        .environment(\.colorScheme, .dark)
+        .vaneMotionPolicy()
         .onAppear {
             name = space.name
             focused = naming
             page = Self.page(of: colors.first)
+            if let primary = palette.first { wheel = ThemeWheel(primary) }
         }
         // Committed on the way out too: a panel dismissed by clicking the page must not throw
         // away what was typed into it, nor leave a preview on the store with nothing showing
@@ -125,7 +131,7 @@ struct ThemeEditor: View {
 
     // MARK: The canvas
 
-    /// The colour field: hue across, saturation down, printed with Arc's fine dot grid so it
+    /// The colour field: hue around the centre and lightness along the radius, so it
     /// reads as a surface a dot has been *put on* rather than as an empty panel.
     ///
     /// The dots are the last overlay on purpose: the appearance row and the `−`/`+` sit over
@@ -155,53 +161,60 @@ struct ThemeEditor: View {
     /// The wheel's square, centred in the canvas and inset by a dot's radius, so a colour on
     /// the rim still draws as a whole dot inside the field rather than half over its edge.
     private func field(_ size: CGSize) -> CGRect {
-        let side = max(min(size.width, size.height) - Look.themeDot, 1)
+        let side = max(min(size.width, size.height), 1)
         return CGRect(x: (size.width - side) / 2, y: (size.height - side) / 2, width: side, height: side)
     }
 
     private func dot(_ i: Int, _ hex: String, in size: CGSize) -> some View {
         let box = field(size)
         let p = place(i, hex)
-        let centre = CGPoint(x: box.minX + p.x * box.width, y: box.minY + p.y * box.height)
+        let diameter: CGFloat = i == 0 ? 44 : 26
+        let centre = CGPoint(x: min(max(box.minX + p.x * box.width, diameter / 2), size.width - diameter / 2),
+                             y: min(max(box.minY + p.y * box.height, diameter / 2), size.height - diameter / 2))
         return Circle()
-            .fill(Color(hex: hex) ?? Look.inkQuiet)
-            .overlay { Circle().strokeBorder(Look.themeThumbInk, lineWidth: Look.themeRing) }
-            .frame(width: Look.themeDot, height: Look.themeDot)
-            // Before `.position`, which takes all the space it is offered: a gesture added
-            // after it would take the whole canvas with it.
+            .fill(palette.indices.contains(i) ? palette[i].color : (Color(hex: hex) ?? .gray))
+            .overlay { Circle().strokeBorder(.white, lineWidth: i == 0 ? 4 : 3) }
+            .frame(width: diameter, height: diameter)
+            .scaleEffect(hovered == i ? 1.1 : 1)
+            .onHover { inside in Motion.animate(Look.quick) { hovered = inside ? i : nil } }
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named(fieldSpace))
                 .onChanged { drag in
                     selected = i
                     let grab = held?.index == i ? held!.grab
-                        : CGSize(width: drag.startLocation.x - centre.x,
-                                 height: drag.startLocation.y - centre.y)
+                        : CGSize(width: drag.startLocation.x - centre.x, height: drag.startLocation.y - centre.y)
+                    held = (i, grab)
                     let point = CGPoint(x: (drag.location.x - grab.width - box.minX) / box.width,
                                         y: (drag.location.y - grab.height - box.minY) / box.height)
-                    held = (i, grab)
-                    let from = place(i, hex)
-                    let was = Spaces.wheel(x: from.x, y: from.y)
-                    let now = Spaces.wheel(x: point.x, y: point.y)
-                    shift(dr: now.r - was.r, da: now.a - was.a)
+                    move(i, to: point)
                 }
                 .onEnded { _ in held = nil; commitLive() })
             .position(centre)
-            .accessibilityLabel("Theme colour \(i + 1)")
+            .accessibilityLabel(i == 0 ? "Primary theme colour" : "Theme colour \(i + 1)")
             .accessibilityValue(hex)
-            .accessibilityHint("Drag to change the colour; adjust to walk it round the hue.")
             .accessibilityAdjustableAction { direction in
-                selected = i
-                let step = direction == .increment ? Self.hueStep : -Self.hueStep
-                shift(dr: 0, da: step * 2 * .pi)
-                commitLive()
+                let p = place(i, hex), w = Spaces.wheel(x: p.x, y: p.y)
+                let next = Spaces.wheelPoint(r: w.r, a: w.a + (direction == .increment ? 0.05 : -0.05) * 2 * .pi)
+                move(i, to: CGPoint(x: next.x, y: next.y)); commitLive()
             }
     }
 
-    /// Where dot `i` sits: where it was put if it has been, and what its colour reads back as
-    /// if it has not.
     private func place(_ i: Int, _ hex: String) -> CGPoint {
         if let point = placed[i] { return point }
-        guard let p = Spaces.themePoint(hex: hex) else { return CGPoint(x: 0.5, y: 0.5) }
-        return CGPoint(x: p.x, y: p.y)
+        guard let primary = palette.first, palette.indices.contains(i) else { return CGPoint(x: 0.5, y: 0.5) }
+        return (wheel ?? ThemeWheel(primary)).point(palette[i])
+    }
+
+    private func move(_ i: Int, to point: CGPoint) {
+        guard let primary = palette.first else { return }
+        let pad = wheel ?? ThemeWheel(primary)
+        wheel = pad
+        let w = Spaces.wheel(x: point.x, y: point.y)
+        let offset = i == 0 ? 0 : (palette.count == 2 ? 0.5 : i == 1 ? 5.0 / 12 : -5.0 / 12)
+        let p = Spaces.wheelPoint(r: w.r, a: w.a - offset * 2 * .pi)
+        let color = pad.color(at: CGPoint(x: p.x, y: p.y), hueAtCenter: primary.hsl.h)
+        let list = ThemeWheel.palette(color, count: palette.count)
+        for j in list.indices { placed[j] = pad.point(list[j]) }
+        slide { Spaces.setPalette(list, on: &$0) }
     }
 
     /// The three appearance toggles across the canvas' top: automatic, light, dark.
@@ -234,19 +247,17 @@ struct ThemeEditor: View {
     /// colour, which is what the old panel's "None" button did.
     private var steps: some View {
         HStack(spacing: Look.inset * 4) {
-            step("minus", colors.count > 1 ? "Remove this colour" : "No theme colour",
-                 enabled: !colors.isEmpty) {
-                var list = colors
-                list.remove(at: min(selected, list.count - 1))
-                selected = max(0, min(selected, list.count - 1))
-                placed = [:]            // the indices have shifted under every remembered place
-                edit { Spaces.setThemeColors(list, on: &$0) }
+            step("minus", colors.count > 1 ? "Remove a colour" : "No theme colour", enabled: !colors.isEmpty) {
+                guard let primary = palette.first else { return }
+                let list = colors.count > 1 ? ThemeWheel.palette(primary, count: colors.count - 1) : []
+                placed = [:]
+                Motion.animate(Look.quick) { edit { Spaces.setPalette(list, on: &$0) } }
             }
             step("plus", "Add a colour", enabled: colors.count < Spaces.maxThemeColors) {
-                selected = colors.count
-                placed[colors.count] = nil
-                edit { Spaces.setThemeColors(colors + [Spaces.nextThemeColor(after: colors)],
-                                             on: &$0) }
+                let primary = palette.first ?? ThemeColor(hex: "#808080")!
+                if palette.isEmpty || wheel == nil { wheel = ThemeWheel(primary) }
+                placed = [:]
+                Motion.animate(Look.quick) { edit { Spaces.setPalette(ThemeWheel.palette(primary, count: colors.count + 1), on: &$0) } }
             }
         }
     }
@@ -296,15 +307,9 @@ struct ThemeEditor: View {
     private func swatch(_ hex: String) -> some View {
         Button { pick(hex) } label: {
             Circle()
-                .fill(Color(hex: hex) ?? Look.inkQuiet)
+                .fill(Look.themePresetColors[hex]?.color ?? Color(hex: hex) ?? Look.inkQuiet)
                 .frame(width: Look.swatch, height: Look.swatch)
-                // Arc's ring stands off the swatch rather than lying on its edge, so the
-                // chosen colour is still a full disc.
-                .overlay {
-                    Circle().strokeBorder(.primary, lineWidth: Look.themeSelectRing)
-                        .padding(-Look.themeRingGap)
-                        .opacity(colors.contains(hex) ? 1 : 0)
-                }
+                .overlay { Circle().strokeBorder(.white.opacity(0.15), lineWidth: 2) }
                 .contentShape(.circle)
         }
         .buttonStyle(.plain)
@@ -327,73 +332,25 @@ struct ThemeEditor: View {
         .accessibilityLabel(label)
     }
 
-    /// A preset lands on the dot last touched — and, as in Arc, the other dots come with it,
-    /// keeping their offsets, so a gradient built round one colour is rebuilt round the next.
+    /// Presets replace the whole palette and calibrate a fresh pad.
     private func pick(_ hex: String) {
-        var list = colors
-        if list.indices.contains(selected) {
-            if list.count > 1, let target = Spaces.themePoint(hex: hex) {
-                let from = place(selected, list[selected])
-                let was = Spaces.wheel(x: from.x, y: from.y)
-                let to = Spaces.wheel(x: target.x, y: target.y)
-                shift(dr: to.r - was.r, da: to.a - was.a)
-                list = colors
-            }
-            list[selected] = hex
-        } else {
-            list.append(hex)
-        }
-        // The colour came from a preset, not from the canvas, so the dot goes where the new
-        // colour reads back to rather than staying where the last drag left it.
-        placed[selected] = nil
-        edit {
-            Spaces.setThemeColors(list, on: &$0)
-            $0.tint = $0.tint ?? Look.defaultTint
+        guard let color = Look.themePresetColors[hex] ?? ThemeColor(hex: hex) else { return }
+        wheel = ThemeWheel(color)
+        placed = [:]
+        selected = 0
+        Motion.animate(Look.quick) {
+            edit { Spaces.setPalette([color], on: &$0) }
         }
     }
 
-    /// Which page of presets a colour is on, so the row opens showing the Space's own.
     private static func page(of hex: String?) -> Int {
         guard let hex, let i = Look.themeSwatches.firstIndex(of: hex) else { return 0 }
         return i / Look.swatchPage
     }
 
-    /// How far one VoiceOver adjustment walks a dot round the hue wheel.
-    private static let hueStep = 0.05
-
-    // MARK: Writing it down
-
-    /// Arc's dots move as one constellation about the wheel's centre: pull any of them out
-    /// and they all move out by as much, turn one and they all turn.
-    private func shift(dr: Double, da: Double) {
-        var list = colors
-        let places = list.indices.map { i -> (r: Double, a: Double) in
-            let p = place(i, list[i])
-            return Spaces.wheel(x: p.x, y: p.y)
-        }
-        let step = Self.constellationStep(places.map(\.r), by: dr)
-        for i in list.indices {
-            let p = Spaces.wheelPoint(r: places[i].r + step, a: places[i].a + da)
-            placed[i] = CGPoint(x: p.x, y: p.y)
-            list[i] = Spaces.themeHex(x: p.x, y: p.y)
-        }
-        slide { Spaces.setThemeColors(list, on: &$0) }
-    }
-
-    /// The radial move that keeps every dot on the wheel: the asked-for change, cut back by
-    /// however far the innermost dot would pass the centre or the outermost the rim.
-    nonisolated static func constellationStep(_ radii: [Double], by dr: Double) -> Double {
-        guard let inner = radii.min(), let outer = radii.max() else { return 0 }
-        return min(max(dr, -inner), 1 - outer)
-    }
-
     static func check() -> [(String, Bool)] {
-        [
-            ("a move inside the wheel is taken whole", constellationStep([0.2, 0.6], by: 0.1) == 0.1),
-            ("the outermost dot stops at the rim and the rest with it", constellationStep([0.2, 0.6], by: 0.9) == 0.4),
-            ("the innermost stops at the centre", constellationStep([0.2, 0.6], by: -0.5) == -0.2),
-            ("no dots, no move", constellationStep([], by: 1) == 0),
-        ]
+        [("slider travel is independent of the growing thumb", abs(ThemeIntensity.x(value: 0.8, width: 224) - 174.4) < 1e-9),
+         ("the intensity endpoints are reachable", ThemeIntensity.value(x: 8, width: 224) == 0 && ThemeIntensity.value(x: 216, width: 224) == 1)]
     }
 
     private func commit() {
@@ -468,55 +425,55 @@ private struct WaveSlider: View {
     let value: Double
     let change: (Double) -> Void
     let end: () -> Void
+    @State private var grab: Double?
 
     var body: some View {
         GeometryReader { geo in
-            let travel = max(geo.size.width - Look.themeThumb.width, 1)
-            let x = Look.themeThumb.width / 2 + CGFloat(value) * travel
+            let x = ThemeIntensity.x(value: value, width: geo.size.width)
+            let thumb = ThemeIntensity.thumb(value)
             ZStack {
-                Capsule().fill(Look.pillFill).frame(height: Look.themeTrack)
-                wave
-                    .padding(.horizontal, Look.themeThumb.width / 2)
-                Capsule()
-                    .fill(Look.themeThumbInk)
-                    .frame(width: Look.themeThumb.width, height: Look.themeThumb.height)
+                Capsule().fill(.white.opacity(0.08)).frame(height: 16)
+                Canvas { ctx, size in
+                    let start: CGFloat = 8, travel = max(size.width - 16, 1)
+                    let cut = CGFloat(x), mid = size.height / 2
+                    var active = Path(), inactive = Path()
+                    var previous: CGPoint?
+                    for t in stride(from: start, through: size.width - 8, by: 0.5) {
+                        let phase = Double((t - start) / travel) * 5.5 * 2 * Double.pi
+                        let point = CGPoint(x: t, y: mid - CGFloat(14 * value * sin(phase)))
+                        if t <= cut {
+                            if active.isEmpty { active.move(to: point) } else { active.addLine(to: point) }
+                        } else {
+                            if inactive.isEmpty { inactive.move(to: previous ?? point) }
+                            inactive.addLine(to: point)
+                        }
+                        previous = point
+                    }
+                    let style = StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round)
+                    ctx.stroke(active, with: .color(.white.opacity(0.55)), style: style)
+                    ctx.stroke(inactive, with: .color(.white.opacity(0.15)), style: style)
+                }
+                Capsule().fill(.white)
+                    .frame(width: thumb.width, height: thumb.height)
                     .position(x: x, y: geo.size.height / 2)
             }
             .contentShape(.rect)
             .gesture(DragGesture(minimumDistance: 0)
-                .onChanged {
-                    change(min(max(($0.location.x - Look.themeThumb.width / 2) / travel, 0), 1))
+                .onChanged { drag in
+                    if grab == nil {
+                        grab = abs(drag.startLocation.x - x) <= thumb.width / 2 ? drag.startLocation.x - x : 0
+                    }
+                    change(ThemeIntensity.value(x: drag.location.x - (grab ?? 0), width: geo.size.width))
                 }
-                .onEnded { _ in end() })
+                .onEnded { _ in grab = nil; end() })
         }
-        .frame(height: Look.themeThumb.height)
+        .frame(height: 64)
         .accessibilityElement()
         .accessibilityLabel("Colour strength")
         .accessibilityValue("\(Int((value * 100).rounded())) percent")
         .accessibilityAdjustableAction { direction in
-            change(min(max(value + (direction == .increment ? 0.1 : -0.1), 0), 1))
-            end()
+            change(min(max(value + (direction == .increment ? 0.05 : -0.05), 0), 1)); end()
         }
-    }
-
-    private var wave: some View {
-        Canvas { ctx, size in
-            let cut = CGFloat(value) * size.width
-            let mid = size.height / 2
-            var path = Path()
-            var t: CGFloat = 0
-            while t <= size.width {
-                let phase = Double(t / max(size.width, 1)) * Look.themeWaves * 2 * .pi
-                let amplitude = Look.themeWave * (t < cut ? 1 : Look.themeWaveRest)
-                let point = CGPoint(x: t, y: mid - amplitude * CGFloat(sin(phase)))
-                if t == 0 { path.move(to: point) } else { path.addLine(to: point) }
-                t += 1
-            }
-            ctx.stroke(path, with: .color(Look.inkSecondary),
-                       style: StrokeStyle(lineWidth: Look.themeWaveWidth,
-                                          lineCap: .round, lineJoin: .round))
-        }
-        .accessibilityHidden(true)
     }
 }
 

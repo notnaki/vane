@@ -1694,9 +1694,9 @@ private struct SpaceCard: View {
     /// wearing the *current* Space's wash. At 62 % every card would be tinted by the Space
     /// the window is in rather than by its own.
     private var stops: [Color] {
-        let mine = Spaces.themeColors(of: space)
+        let mine = Spaces.palette(of: space)
         let list = mine.isEmpty
-            ? [profiles.profiles.first { $0.id == space.profileID }?.colorHex ?? store.profile.colorHex]
+            ? [ThemeColor(hex: profiles.profiles.first { $0.id == space.profileID }?.colorHex ?? store.profile.colorHex)!]
             : mine
         return Look.groundStops(list, towards: list, fraction: 0, dark: scheme == .dark,
                                 strength: space.tint ?? Look.defaultTint)

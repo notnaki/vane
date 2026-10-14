@@ -239,36 +239,13 @@ enum Look {
     /// a 250pt sidebar — which is the same reason `Pins.maxDepth` stops where it does.
     static let folderIndent: CGFloat = 14
 
-    /// The theme editor popover, measured off `arc-ref/arc-theme-editor.png` at 2x: a 350pt
-    /// panel over a near-square dot-grid canvas, a row of preset circles under it, and the
-    /// intensity slider beside the grain dial along the bottom.
-    static let themeWidth: CGFloat = 380
-    /// The canvas' height; its width is whatever the panel leaves (690px at 2x = 345).
-    static let themeCanvas: CGFloat = 300
-    /// The fine grid printed on it: pitch and dot.
-    static let themeGrid: CGFloat = 10
-    static let themeGridDot: CGFloat = 1
-    /// A draggable colour dot and the ring round it (90px at 2x).
-    static let themeDot: CGFloat = 44
-    static let themeRing: CGFloat = 3
-    /// The ring on the chosen preset, and how far it stands off the swatch.
-    static let themeSelectRing: CGFloat = 2
-    static let themeRingGap: CGFloat = 3
-    /// A preset circle (58px at 2x) and how many fit a page between the two chevrons.
-    static let swatch: CGFloat = 30
+    /// Arc's 340pt square pad, with a 24pt preset row below it.
+    static let themeWidth: CGFloat = 356
+    static let themeCanvas: CGFloat = 340
+    static let themeGrid: CGFloat = 4.25
+    static let themeGridDot: CGFloat = 0.5
+    static let swatch: CGFloat = 24
     static let swatchPage = 9
-    /// The intensity slider: a `themeTrack`-tall pill with a sinusoid along it and a thumb
-    /// standing proud of it, the way Arc's does.
-    static let themeTrack: CGFloat = 30
-    static let themeThumb = CGSize(width: 24, height: 46)
-    /// The sinusoid's amplitude at full intensity, how many waves fit the track, and what is
-    /// left of the amplitude past the thumb.
-    static let themeWave: CGFloat = 11
-    static let themeWaves: Double = 8
-    /// Past the thumb the sinusoid flattens out entirely, the way Arc's does: the wave is
-    /// the strength, so there is nothing left of it past where the strength stops.
-    static let themeWaveRest: CGFloat = 0
-    static let themeWaveWidth: CGFloat = 4
     /// The grain dial: the knob, the dotted ring round it, and how many dots the ring has.
     static let themeDial: CGFloat = 46
     static let themeDialRing: CGFloat = 74
@@ -546,21 +523,52 @@ enum Look {
         NSColor(srgbRed: 0.16, green: 0.78, blue: 0.25, alpha: 1),
     ]
 
-    /// The colours a space can be tinted with. The profile palette first, so a space and its
-    /// profile can wear the same colour, then the spread Arc offers.
-    /// @MainActor because `ProfileManager.palette` is; every caller is a view anyway.
-    /// Arc's five pages of nine: bright, vivid, pale, earthy, grey.
+    /// Arc's four pages, converted from its colour catalog into Display P3. Hex keys are
+    /// compatibility fallbacks only; the editor and saved palette keep the unclipped values.
     static let themeSwatches = [
-        "#F1ECEA", "#EBA2C5", "#A87CBE", "#E5646F", "#F2925F", "#F2D45E", "#7CE39B", "#7FBEE8", "#6D6FA8",
-        "#E9E9E9", "#E4A9A4", "#7D5F7C", "#E8906C", "#E6B85A", "#A9D25C", "#5FD3B2", "#6F7EE6", "#5F6079",
-        "#FFFDFC", "#F7E9F2", "#E5CCE6", "#F2C7C9", "#F7DDCE", "#FAF3DA", "#DBF0E2", "#D9ECF8", "#C7CAE6",
-        "#5A4A78", "#7A4A6A", "#8A4A48", "#B0703C", "#D4B054", "#C8D2B4", "#7CA88A", "#3D6A54", "#3A5288",
-        "#FFFFFF", "#E2E2E2", "#BDBDBD", "#9A9A9A", "#777777", "#5C5C5C", "#3A3A3A", "#1C1C1C", "#000000",
+        "#F2EAE4", "#F29BBB", "#A6729D", "#F25E6B", "#FF8558", "#F8D558", "#34E895", "#6CBAD9", "#666789", "#FEFBFA", "#FFE9F3", "#F1D1EC", "#FFCBD1", "#FFE0D3", "#FFF9E5", "#DEFDEB", "#DCF3FC", "#C5C6E5", "#4E3A5A", "#693558", "#8F4042", "#B16D40", "#D7B35D", "#CDCCA4", "#7AA982", "#226149", "#26456B", "#FFFFFF", "#E6E6E6", "#CCCCCC", "#B2B2B2", "#808080", "#666666", "#333333", "#1A1A1A", "#000000"
     ]
-        + ["#F2EDE4", "#E48FB1", "#9B6FB0", "#D9564F", "#E08A3C", "#E3C34A", "#4CAF6E", "#5A9BD5"]
+    static let themePresetColors: [String: ThemeColor] = [
+        "#F2EAE4": ThemeColor(red: 0.9444217085838318, green: 0.9190871715545654, blue: 0.8967581987380981),
+        "#F29BBB": ThemeColor(red: 0.9014095664024353, green: 0.6234707236289978, blue: 0.7293687462806702),
+        "#A6729D": ThemeColor(red: 0.6209162473678589, green: 0.45569396018981934, blue: 0.6063727736473083),
+        "#F25E6B": ThemeColor(red: 0.8808955550193787, green: 0.4071536660194397, blue: 0.4333076477050781),
+        "#FF8558": ThemeColor(red: 0.9377320408821106, green: 0.5472549796104431, blue: 0.3847135007381439),
+        "#F8D558": ThemeColor(red: 0.949999988079071, green: 0.8399999737739563, blue: 0.42800000309944153),
+        "#34E895": ThemeColor(red: 0.45100000500679016, green: 0.8970000147819519, blue: 0.6119999885559082),
+        "#6CBAD9": ThemeColor(red: 0.4959999918937683, green: 0.7210000157356262, blue: 0.8379999995231628),
+        "#666789": ThemeColor(red: 0.4009999930858612, green: 0.40400001406669617, blue: 0.5270000100135803),
+        "#FEFBFA": ThemeColor(red: 0.9940000176429749, green: 0.984000027179718, blue: 0.9810000061988831),
+        "#FFE9F3": ThemeColor(red: 0.9850000143051147, green: 0.9169999957084656, blue: 0.9509999752044678),
+        "#F1D1EC": ThemeColor(red: 0.9240000247955322, green: 0.824999988079071, blue: 0.9179999828338623),
+        "#FFCBD1": ThemeColor(red: 0.9679999947547913, green: 0.8040000200271606, blue: 0.8220000267028809),
+        "#FFE0D3": ThemeColor(red: 0.9800000190734863, green: 0.8820000290870667, blue: 0.8339999914169312),
+        "#FFF9E5": ThemeColor(red: 0.9959999918937683, green: 0.9769999980926514, blue: 0.906000018119812),
+        "#DEFDEB": ThemeColor(red: 0.8939999938011169, green: 0.9879999756813049, blue: 0.9259999990463257),
+        "#DCF3FC": ThemeColor(red: 0.8799999952316284, green: 0.949999988079071, blue: 0.984000027179718),
+        "#C5C6E5": ThemeColor(red: 0.7739999890327454, green: 0.7760000228881836, blue: 0.8880000114440918),
+        "#4E3A5A": ThemeColor(red: 0.2939999997615814, green: 0.23100000619888306, blue: 0.3449999988079071),
+        "#693558": ThemeColor(red: 0.3840000033378601, green: 0.2199999988079071, blue: 0.3370000123977661),
+        "#8F4042": ThemeColor(red: 0.5220000147819519, green: 0.2669999897480011, blue: 0.2669999897480011),
+        "#B16D40": ThemeColor(red: 0.6549999713897705, green: 0.4390000104904175, blue: 0.28200000524520874),
+        "#D7B35D": ThemeColor(red: 0.8199999928474426, green: 0.7059999704360962, blue: 0.41600000858306885),
+        "#CDCCA4": ThemeColor(red: 0.8040000200271606, green: 0.800000011920929, blue: 0.6589999794960022),
+        "#7AA982": ThemeColor(red: 0.5180000066757202, green: 0.6589999794960022, blue: 0.5220000147819519),
+        "#226149": ThemeColor(red: 0.20399999618530273, green: 0.37599998712539673, blue: 0.2939999997615814),
+        "#26456B": ThemeColor(red: 0.17599999904632568, green: 0.2669999897480011, blue: 0.40799999237060547),
+        "#FFFFFF": ThemeColor(red: 1.0, green: 1.0, blue: 1.0),
+        "#E6E6E6": ThemeColor(red: 0.8999999761581421, green: 0.8999999761581421, blue: 0.8999999761581421),
+        "#CCCCCC": ThemeColor(red: 0.800000011920929, green: 0.800000011920929, blue: 0.800000011920929),
+        "#B2B2B2": ThemeColor(red: 0.699999988079071, green: 0.699999988079071, blue: 0.699999988079071),
+        "#808080": ThemeColor(red: 0.5, green: 0.5, blue: 0.5),
+        "#666666": ThemeColor(red: 0.4000000059604645, green: 0.4000000059604645, blue: 0.4000000059604645),
+        "#333333": ThemeColor(red: 0.20000000298023224, green: 0.20000000298023224, blue: 0.20000000298023224),
+        "#1A1A1A": ThemeColor(red: 0.10000000149011612, green: 0.10000000149011612, blue: 0.10000000149011612),
+        "#000000": ThemeColor(red: 0.0, green: 0.0, blue: 0.0),
+    ]
 
     /// The strength a space's colour has before anyone touches the slider.
-    static let defaultTint = 0.35
+    static let defaultTint = 0.8
 
     // MARK: The ground
 
@@ -571,23 +579,15 @@ enum Look {
     /// pale ground a fifth wallpaper turns to mud over a dark desktop.
     static func groundOpacity(dark: Bool) -> Double { dark ? 0.62 : 0.78 }
 
-    /// The sidebar's colour for a space, the way Arc derives it: the hue is kept, dark takes
-    /// the colour down to ~14 % brightness with its saturation *raised* (Arc's green space
-    /// has a `#001E15` background), light takes it up to 96 % with most of the saturation
-    /// gone. `strength` is the space's `tint` slider, 0…1, and scales the saturation: at the
-    /// default 0.35 dark is ×1.44 and light ×0.24. A grey colour stays grey — Arc's black
-    /// "sky" theme is (36,36,36) with nothing behind it.
-    /// Pure, so `selfcheck --pure` can prove it; `groundColor` wraps it for views.
+    /// Intensity mixes the selected colour with a neutral wash. The window's glass and
+    /// outer opacity remain constant; dimming every colour to a fixed brightness makes
+    /// Arc's intensity control impossible to reproduce.
     nonisolated static func ground(hex: String, dark: Bool, strength: Double = defaultTint)
         -> (r: Double, g: Double, b: Double)? {
-        guard let (h, s, b) = hsb(hex: hex) else { return nil }
-        let k = 0.5 + 2 * min(max(strength, 0), 1)
-        let sat = dark ? min(1, s * 1.2 * k) : min(1, s * 0.2 * k)
-        // A dark colour takes the dark ground down with it: 14 % for anything at half
-        // brightness or more, sliding to 4 % for black. Arc's black theme stops at 36; a
-        // black dot on the wheel should mean black, and 36 read as grey.
-        let bri = dark ? 0.04 + 0.10 * min(1, b / 0.5) : 0.96
-        return rgb(h: h, s: sat, b: bri)
+        guard let h = hsb(hex: hex) else { return nil }
+        let c = rgb(h: h.h, s: h.s, b: h.b)
+        let v = min(max(strength, 0), 1)
+        return (0.5 + (c.r - 0.5) * v, 0.5 + (c.g - 0.5) * v, 0.5 + (c.b - 0.5) * v)
     }
 
     static func groundColor(hex: String, dark: Bool, strength: Double) -> Color {
@@ -626,6 +626,20 @@ enum Look {
     nonisolated static func stops(_ colors: [String], dark: Bool, strength: Double = defaultTint)
         -> [(r: Double, g: Double, b: Double)] {
         colors.compactMap { ground(hex: $0, dark: dark, strength: strength) }
+    }
+
+    static func groundStops(_ a: [ThemeColor], towards b: [ThemeColor], fraction: Double,
+                            dark: Bool, strength: Double) -> [Color] {
+        guard !a.isEmpty else { return [] }
+        let f = min(max(fraction, 0), 1)
+        let to = b.isEmpty ? a : b
+        return (0..<max(a.count, to.count)).map { i in
+            let x = a[min(i, a.count - 1)].ground(strength: strength)
+            let y = to[min(i, to.count - 1)].ground(strength: strength)
+            return ThemeColor(red: x.red + (y.red - x.red) * f,
+                              green: x.green + (y.green - x.green) * f,
+                              blue: x.blue + (y.blue - x.blue) * f).color
+        }
     }
 
     /// The same, dragged `fraction` of the way towards the Space a swipe is pulling in. The
@@ -1088,32 +1102,11 @@ extension Look {
 
         // The ground. Tolerances are ±2/255: what a screenshot can be measured to.
         func near(_ v: Double, _ want: Double) -> Bool { abs(v * 255 - want) <= 2 }
-        let black = ground(hex: "#000000", dark: true)
-        out.append(("a black space is near-black (10,10,10) and neutral, not blue",
-                    black.map { near($0.r, 10) && near($0.g, 10) && near($0.b, 10) } == true))
-        let dim = ground(hex: "#404040", dark: true)
-        out.append(("a dim grey space sits between black's ground and a bright colour's",
-                    dim.map { $0.r * 255 > 12 && $0.r * 255 < 34 } == true))
         let blue = ground(hex: "#5A9BD5", dark: true)
-        out.append(("a blue space's dark ground keeps its hue: blue leads, red trails",
-                    blue.map { $0.b > $0.g && $0.g > $0.r } == true))
-        out.append(("a blue space's dark ground is as deep as the black one (14 % brightness)",
-                    blue.map { near(max($0.r, $0.g, $0.b), 36) } == true))
-        out.append(("dark raises the saturation: the ground is more saturated than the swatch",
-                    blue.map { hsbOf($0).s > hsb(hex: "#5A9BD5")!.s } == true))
-        let light = ground(hex: "#5A9BD5", dark: false)
-        out.append(("a blue space's light ground is a pale tint (96 % brightness, still blue-led)",
-                    light.map { near(max($0.r, $0.g, $0.b), 245) && $0.b > $0.r } == true))
-        out.append(("light keeps only a hint of the saturation",
-                    light.map { hsbOf($0).s < 0.2 } == true))
-        let strong = ground(hex: "#5A9BD5", dark: true, strength: 1)
-        let weak = ground(hex: "#5A9BD5", dark: true, strength: 0)
-        out.append(("the tint slider scales saturation, brightness untouched",
-                    strong.map { s in weak.map { w in hsbOf(s).s > hsbOf(w).s
-                        && near(max(s.r, s.g, s.b), 36) && near(max(w.r, w.g, w.b), 36) } } == true))
-        out.append(("Arc's default lavender resolves in both appearances",
-                    ground(hex: "#6E7DD2", dark: true) != nil && ground(hex: "#6E7DD2", dark: false) != nil))
-        out.append(("a colour that is not #RRGGBB has no ground", ground(hex: "sky", dark: true) == nil))
+        out.append(("intensity zero is a neutral wash", ground(hex: "#5A9BD5", dark: true, strength: 0).map { $0 == (0.5, 0.5, 0.5) } == true))
+        out.append(("intensity one retains the selected colour", ground(hex: "#5A9BD5", dark: true, strength: 1).map { near($0.r, 90) && near($0.g, 155) && near($0.b, 213) } == true))
+        out.append(("the slider changes brightness as well as saturation", blue.map { $0.b > 0.5 && $0.r < 0.5 } == true))
+        out.append(("invalid colours have no ground", ground(hex: "sky", dark: true) == nil))
 
         // The tint cross-fade a live Space swipe drags the ground through.
         let red = ground(hex: "#D9564F", dark: true), green = ground(hex: "#4CAF6E", dark: true)

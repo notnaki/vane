@@ -614,7 +614,7 @@ struct SpaceGround: View {
                 // — never on the swipe's fraction, which changes every frame — turns the
                 // switch into a removal and an insertion, and two opacity transitions inside
                 // the animations below are the cross-fade.
-                .id(mine.joined(separator: "-") + "|" + pull.colors.joined(separator: "-"))
+                .id(mine + pull.colors)
                 .transition(.opacity)
             if noise > 0 {
                 Image(nsImage: Look.grain)
@@ -650,11 +650,11 @@ struct SpaceGround: View {
     /// Its *own* profile's, which need not be this window's: the strip crosses profiles, and
     /// the wash a swipe pulls in has to be the neighbour's colour or the window would slide to
     /// one ground and then cut to another on landing.
-    private func colors(of space: Space?) -> [String] {
-        let list = space.map(Spaces.themeColors(of:)) ?? []
+    private func colors(of space: Space?) -> [ThemeColor] {
+        let list = space.map(Spaces.palette(of:)) ?? []
         guard list.isEmpty else { return list }
         let owner = space.flatMap { s in profiles.profiles.first { $0.id == s.profileID } }
-        return [(owner ?? store.profile).colorHex]
+        return [ThemeColor(hex: (owner ?? store.profile).colorHex)!]
     }
 
     /// The Space the fingers are pulling in, its grain, and how much of it is already
@@ -665,7 +665,7 @@ struct SpaceGround: View {
     /// The strip, so the wash pulls the *neighbour's* colour whichever profile owns it: at a
     /// profile boundary the ground has to arrive with the sections, or the window would cut
     /// to the new profile's colour after having slid to it.
-    private func pulled(from here: Space?) -> (colors: [String], grain: Double, fraction: Double) {
+    private func pulled(from here: Space?) -> (colors: [ThemeColor], grain: Double, fraction: Double) {
         let idle = (colors(of: here), here?.grain ?? 0, 0.0)
         let width = SidebarWidth.shared.width
         guard gesture.drag != 0, width > 0 else { return idle }

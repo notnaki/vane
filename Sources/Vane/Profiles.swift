@@ -432,6 +432,8 @@ struct Space: Identifiable, Codable, Equatable {
     /// editor could hold more than one still reads as a one-colour theme and everything that
     /// only knows about one — the footer dot, the toast, the Spaces menu — is untouched.
     var colors: [String]?
+    /// Unclipped Display P3 colours; absent in older backups.
+    var themePalette: [ThemeColor]? = nil
     /// How much static noise the ground wears, 0…1. See `Look.grain`.
     var grain: Double?
     /// Address-only row identities and layout, atomically committed with template-created Spaces.
