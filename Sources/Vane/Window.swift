@@ -885,12 +885,13 @@ extension VaneWindow {
     }
 }
 
-/// A profile boundary replaces the page host at the quarter point. Keep the same two
-/// sidebar surfaces on their horizontal track above that replacement until travel ends.
+/// Keep the same two sidebar surfaces on a native track from finger movement through
+/// landing, including when the page or profile host changes at the quarter point.
 @MainActor final class ProfileSpaceSlide: NSView {
     let outgoing: NSView
     private let incoming: NSView
     private let direction: Int
+    private let targetID: UUID
     private weak var source: TabStore?
     private weak var destination: TabStore?
     private var finished = false
@@ -916,6 +917,7 @@ extension VaneWindow {
             .environment(\.colorScheme, incoming.colorScheme)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
         self.direction = direction
+        targetID = incoming.space.id
         self.includesFavorites = includesFavorites
         self.travelWidth = travelWidth
         contentInset = max(0, (travelWidth - frame.width) / 2)
@@ -951,21 +953,62 @@ extension VaneWindow {
         store.spaceGesture.profileSliding = true
     }
 
-    func start(duration: TimeInterval, completion: @escaping () -> Void) {
+    func follows(_ target: Space, direction: Int) -> Bool {
+        !finished && targetID == target.id && self.direction == direction
+    }
+
+    /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
+    func track(drag: CGFloat) {
+        if let gesture = source?.spaceGesture {
+            if gesture.profileSlidesFavorites != includesFavorites { gesture.profileSlidesFavorites = includesFavorites }
+            if !gesture.profileSliding { gesture.profileSliding = true }
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        outgoing.setFrameOrigin(NSPoint(x: drag + contentInset, y: 0))
+        incoming.setFrameOrigin(NSPoint(x: drag + CGFloat(direction) * travelWidth + contentInset, y: 0))
+        CATransaction.commit()
+    }
+
+    func prepare() {
+        outgoing.layoutSubtreeIfNeeded()
+        incoming.layoutSubtreeIfNeeded()
+    }
+
+    func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         self.completion = completion
         source?.spaceGesture.profileSlidesFavorites = includesFavorites
         source?.spaceGesture.profileSliding = true
-        outgoing.layoutSubtreeIfNeeded()
-        incoming.layoutSubtreeIfNeeded()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            context.allowsImplicitAnimation = true
-            outgoing.animator().setFrameOrigin(NSPoint(x: -CGFloat(direction) * travelWidth + contentInset, y: 0))
-            incoming.animator().setFrameOrigin(NSPoint(x: contentInset, y: 0))
-        } completionHandler: { [weak self] in
+        prepare()
+        guard let outgoingLayer = outgoing.layer, let incomingLayer = incoming.layer else {
+            finish()
+            return
+        }
+        let fromOutgoing = outgoingLayer.presentation()?.position ?? outgoingLayer.position
+        let fromIncoming = incomingLayer.presentation()?.position ?? incomingLayer.position
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let endpoint: CGFloat = returning ? 0 : -CGFloat(direction) * travelWidth
+        outgoing.setFrameOrigin(NSPoint(x: endpoint + contentInset, y: 0))
+        incoming.setFrameOrigin(NSPoint(x: endpoint + CGFloat(direction) * travelWidth + contentInset, y: 0))
+        CATransaction.commit()
+
+        let rate = Float(window?.screen?.maximumFramesPerSecond ?? 60)
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(duration)
+        CATransaction.setCompletionBlock { [weak self] in
             MainActor.assumeIsolated { self?.finish() }
         }
+        for (layer, from) in [(outgoingLayer, fromOutgoing), (incomingLayer, fromIncoming)] {
+            let animation = CABasicAnimation(keyPath: "position")
+            animation.fromValue = NSValue(point: from)
+            animation.toValue = NSValue(point: layer.position)
+            animation.duration = duration
+            animation.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+            layer.add(animation, forKey: "space-position")
+        }
+        CATransaction.commit()
     }
 
     func cancel() {

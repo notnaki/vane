@@ -87,7 +87,12 @@ extension SpaceColourTransitionTests {
         func pixel() throws -> NSColor {
             host.layoutSubtreeIfNeeded()
             let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-            host.cacheDisplay(in: host.bounds, to: bitmap)
+            // AppKit's cacheDisplay snapshots model-layer endpoints. Native gradients
+            // interpolate on the compositor; sample their presentation tree instead.
+            let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+            context.cgContext.scaleBy(x: CGFloat(bitmap.pixelsWide) / host.bounds.width,
+                                      y: CGFloat(bitmap.pixelsHigh) / host.bounds.height)
+            try XCTUnwrap(host.layer?.presentation()).render(in: context.cgContext)
             return try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.displayP3))
         }
         let start = try pixel()

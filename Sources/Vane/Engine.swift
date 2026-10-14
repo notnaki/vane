@@ -3506,8 +3506,9 @@ struct Stash {
     /// for them to finish. See `Spaces.Swipe`.
     let spaceGesture = SpaceGesture()
     var spaceDrag: CGFloat {
-        get { spaceGesture.drag }
+        get { spaceGesture.nativeDrag ?? spaceGesture.drag }
         set {
+            spaceGesture.nativeDrag = nil
             // A zero target starts the return spring; retain the grid's motion mode
             // until that animation completes.
             if newValue != 0 {
@@ -3535,6 +3536,7 @@ struct Stash {
             }
             spaceGesture.swiping = newValue
             if !newValue {
+                spaceGesture.nativeDrag = nil
                 spaceGesture.strip = nil
                 spaceGesture.neighbour = nil
                 spaceGesture.previewDirection = 0

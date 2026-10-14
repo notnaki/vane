@@ -80,6 +80,86 @@ import XCTest
         XCTAssertTrue(store.spaceSwiping, "The sidebar still has its travel to finish")
     }
 
+    func testFingerTrackingReusesNativeSurfaceThroughCommit() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        monitor.track(-30, width: 250, in: store)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let slide = try XCTUnwrap(host.spaceSlide)
+        XCTAssertEqual(slide.offset, -30, accuracy: 1)
+        var publications = 0
+        let observer = store.spaceGesture.objectWillChange.sink { publications += 1 }
+        monitor.track(-80, width: 250, in: store)
+        XCTAssertEqual(publications, 0, "Finger tracking must not invalidate SwiftUI on each event")
+        XCTAssertEqual(store.spaceDrag, -80)
+        withExtendedLifetime(observer) {}
+        XCTAssertTrue(host.spaceSlide === slide, "Scroll events must retain the mounted lists")
+        XCTAssertEqual(slide.offset, -80, accuracy: 1)
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id, "Dragging must not activate the page")
+        monitor.land(1, to: spaces[1], width: 250, store: store,
+                     activationDelay: 0.1)
+        XCTAssertTrue(host.spaceSlide === slide, "Release must animate the surface already under the fingers")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        XCTAssertNil(host.spaceSlide)
+    }
+
+    func testFingerTrackingCanCrossZeroAndReverseToAnotherNeighbour() throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.switchTo(space: spaces[1])
+        window.contentView?.layoutSubtreeIfNeeded()
+        monitor.track(-40, width: 250, in: store)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let first = try XCTUnwrap(host.spaceSlide)
+        monitor.track(0, width: 250, in: store)
+        XCTAssertTrue(host.spaceSlide === first)
+        XCTAssertEqual(first.offset, 0, accuracy: 1)
+        monitor.track(40, width: 250, in: store)
+        let reversed = try XCTUnwrap(host.spaceSlide)
+        XCTAssertFalse(reversed === first)
+        XCTAssertTrue(reversed.follows(spaces[0], direction: -1))
+        XCTAssertEqual(reversed.offset, 40, accuracy: 1)
+        monitor.abort()
+    }
+
+    func testAbortedFingerTrackingRemovesNativeSurface() throws {
+        let (store, _, window, monitor) = try fixture()
+        monitor.track(-40, width: 250, in: store)
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        XCTAssertNotNil(host.spaceSlide)
+        monitor.abort()
+        XCTAssertNil(host.spaceSlide)
+        XCTAssertFalse(store.spaceSwiping)
+        XCTAssertFalse(store.spaceGesture.profileSliding)
+        XCTAssertEqual(store.spaceDrag, 0)
+    }
+
+    func testSidebarContinuesMovingAfterFocusedPageHandoff() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        let outgoing = store.newBlankTab(focus: true)
+        store.switchTo(space: spaces[1])
+        let incoming = store.newBlankTab(focus: true)
+        store.switchTo(space: spaces[0])
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(window.makeFirstResponder(outgoing.web))
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        try await Task.sleep(for: .milliseconds(60))
+        let moving = try XCTUnwrap(store.spaceGesture.outgoingView)
+        func x() throws -> CGFloat {
+            let surface = (window.contentView as? BrowserWindowHost)?.spaceSlide?.outgoing ?? moving
+            return try XCTUnwrap(surface.layer?.presentation()).convert(.zero,
+                to: window.contentView?.layer?.presentation()).x
+        }
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store,
+                     animation: .easeIn(duration: 0.4), activationDelay: 0.1)
+        try await Task.sleep(for: .milliseconds(160))
+        XCTAssertEqual(store.current, incoming.id)
+        let first = try x()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertLessThan(try x(), first - 5,
+                          "Page activation must not freeze the still-travelling sidebar")
+        try await Task.sleep(for: .milliseconds(250))
+    }
+
     func testCommittedSwipeActivatesContentAtTheQuarterPoint() async throws {
         let (store, spaces, _, monitor) = try fixture()
         store.switchTo(space: spaces[1])
@@ -165,10 +245,12 @@ import XCTest
             store: source, animation: .linear(duration: 0.4), activationDelay: 0.1)
         try await Task.sleep(for: .milliseconds(40))
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
-        XCTAssertNotNil(host.spaceSlide)
+        let previousSlide = try XCTUnwrap(host.spaceSlide)
         source.spaceGesture.monitor.select(local, in: source)
-        XCTAssertNil(host.spaceSlide, "The previous native track must not cover the replacement swipe")
-        XCTAssertFalse(source.spaceGesture.profileSliding)
+        XCTAssertFalse(host.spaceSlide === previousSlide,
+                       "The previous native track must not cover the replacement swipe")
+        XCTAssertFalse(source.spaceGesture.profileSlidesFavorites,
+                       "The replacement same-profile track must leave favourites fixed")
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertTrue(source.window === window)
         XCTAssertEqual(source.currentSpaceID, local.id, "The superseded profile activation must not fire")

@@ -214,13 +214,16 @@ final class WebHost: NSView {
         // page out of the window used to leave it, only without the trip through nobody.
         // Only when the page being left is the one that actually holds it: a first
         // responder anywhere else in the window — the address pill, the find field — is
-        // somebody's on purpose and a switch must not pull it into the page. Deferred a
-        // turn, the way `TabStore.focusPage` is, so the hand-off happens after AppKit has
-        // finished with this pass and not in the middle of it.
+        // somebody's on purpose and a switch must not pull it into the page. Release it
+        // before hiding: AppKit otherwise searches the whole SwiftUI key-view tree
+        // synchronously while the Space's rows are being replaced. Focus the arriving
+        // page next turn, after this rendering pass has finished.
         if let window, let outgoing, outgoing !== next,
            let holder = window.firstResponder as? NSView, holder.isDescendant(of: outgoing) {
-            DispatchQueue.main.async { [weak next] in
-                guard let next, next.window === window else { return }
+            window.makeFirstResponder(nil)
+            DispatchQueue.main.async { [weak self, weak next] in
+                guard let self, let next, self.web === next, !next.isHidden,
+                      next.window === window else { return }
                 window.makeFirstResponder(next)
             }
         }
@@ -577,7 +580,7 @@ struct SpaceGround: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let here = store.swipeSpace
+        let here = gesture.outgoing?.space ?? store.swipeSpace
         let systemDark = here?.appearance == nil ? scheme == .dark
             : NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         let mine = surface(of: here, systemDark: systemDark)
@@ -585,7 +588,8 @@ struct SpaceGround: View {
         let wash = mine.mixed(towards: pull.surface, fraction: pull.fraction)
         ZStack {
             if store.isPrivate { Color(hex: Profile.incognito.colorHex) }
-            ThemeWashView(wash: wash)
+            NativeThemeWash(wash: wash, reduced: reduceMotion, gesture: gesture,
+                            origin: mine, destination: pull.surface)
         }
         // Gesture transactions already own the travel and cancellation timing. Only a
         // direct Space change or a theme edit needs a local animation.
@@ -634,8 +638,9 @@ struct SpaceGround: View {
     private func pulled(from here: Space?, systemDark: Bool) -> (surface: ThemeWash, fraction: Double) {
         let idle = (surface(of: here, systemDark: systemDark), 0.0)
         let width = SidebarWidth.shared.width
-        guard gesture.drag != 0, width > 0, let target = gesture.neighbour else { return idle }
-        return (surface(of: target, systemDark: systemDark), Double(min(1, abs(gesture.drag / width))))
+        let drag = gesture.nativeDrag ?? gesture.drag
+        guard drag != 0, width > 0, let target = gesture.neighbour else { return idle }
+        return (surface(of: target, systemDark: systemDark), Double(min(1, abs(drag / width))))
     }
 }
 
