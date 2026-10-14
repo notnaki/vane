@@ -1572,12 +1572,13 @@ extension TabStore {
             }
             // The rows already belong to the folder. Expose only the new arrivals while
             // it stays folded, retaining row identity and the usual list animation.
-            let children = Set(pins.children(of: folder))
-            let arrivals = plan.add.compactMap { byURL[$0]?.uuidString }
-            pins.edit(folder: folder) {
-                guard $0.collapsed else { return }
-                $0.pendingLiveRows = Array(Set(($0.pendingLiveRows ?? []) + arrivals)
-                    .intersection(children)).sorted()
+            if pins.folder(folder)?.collapsed == true {
+                let arrivals = Set(plan.add.compactMap { byURL[$0]?.uuidString })
+                for index in pins.entries.indices where pins.entries[index].parent == folder {
+                    if arrivals.contains(pins.entries[index].id) {
+                        pins.entries[index].liveArrival = true
+                    }
+                }
             }
             applyOrder(.pinned)
         }

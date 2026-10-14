@@ -110,6 +110,25 @@ final class LiveFolderPresentationTests: XCTestCase {
         }
     }
 
+    func testRestoringArrivalDoesNotExposeOlderDuplicateURL() throws {
+        try withFixture { store, live, folder in
+            let url = URL(string: "https://github.com/fixture/project/pull/1")!
+            let manual = store.newBlankTab(focus: false, as: .pinned)
+            manual.park(url: url, Parked(title: "Manually pinned"))
+            store.syncShapes()
+            store.pins.move(manual.id.uuidString, into: folder.id)
+            store.pins.toggle(folder: folder.id)
+            receive([1], live: live, folder: folder)
+            let saved = store.pins.mapped(store.rowURL)
+            let restored = TabStore.adopted(saved, opened: [
+                (url: url.absoluteString, id: "older-manual"),
+                (url: url.absoluteString, id: "new-arrival")
+            ])
+            XCTAssertEqual(restored.children(of: folder.id), ["older-manual", "new-arrival"])
+            XCTAssertEqual(restored.visible.map(\.id), [folder.id.uuidString, "new-arrival"])
+        }
+    }
+
     private func receive(_ numbers: [Int], live: LiveFolders, folder: Folder) {
         live.receive(.success(numbers.map {
             GitHub.PR(url: "https://github.com/fixture/project/pull/\($0)", title: "PR \($0)",
