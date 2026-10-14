@@ -13,10 +13,10 @@ import SwiftUI
 }
 
 enum ChromeMenuLayout {
-    static let width: CGFloat = 264
-    static let rowHeight: CGFloat = 44
-    static let inset: CGFloat = 8
-    static let groupHeight: CGFloat = 17
+    static let width: CGFloat = 256
+    static let rowHeight: CGFloat = 36
+    static let inset: CGFloat = 6
+    static let groupHeight: CGFloat = 13
     static let pointerHeight: CGFloat = 8
 
     /// Keep the entire surface inside both the owner's content and the visible screen.
@@ -264,7 +264,7 @@ private struct ChromeMenuSurface: View {
                     ForEach(items.indices, id: \.self) { index in
                         if items[index].startsGroup {
                             Rectangle().fill(.white.opacity(0.12)).frame(height: 1)
-                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .padding(.horizontal, 10).padding(.vertical, 6)
                                 .accessibilityHidden(true)
                         }
                         row(index).id(index)
@@ -277,18 +277,18 @@ private struct ChromeMenuSurface: View {
             }
         }
         .padding(ChromeMenuLayout.inset)
-        .background(theme.bubble, in: .rect(cornerRadius: 16))
-        .clipShape(.rect(cornerRadius: 16))
+        .background(theme.bubble, in: .rect(cornerRadius: 10))
+        .clipShape(.rect(cornerRadius: 10))
     }
 
     private func row(_ index: Int) -> some View {
         let item = items[index]
         return Button { choose(index) } label: {
-            HStack(spacing: 12) {
-                Image(systemName: item.symbol).font(.system(size: 19, weight: .medium))
-                    .frame(width: 24).accessibilityHidden(true)
+            HStack(spacing: 8) {
+                Image(systemName: item.symbol).font(.system(size: 16, weight: .medium))
+                    .frame(width: 20).accessibilityHidden(true)
                     .scaleEffect(selection.index == index && !reduced ? 1.08 : 1)
-                Text(item.title).font(.system(size: 14, weight: .semibold))
+                Text(item.title).font(.system(size: 13, weight: .medium))
                     .lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 8)
                 if item.checked {
@@ -296,16 +296,16 @@ private struct ChromeMenuSurface: View {
                         .accessibilityHidden(true)
                 }
                 if !item.shortcut.isEmpty {
-                    Text(item.shortcut).font(.system(size: 13, weight: .medium))
+                    Text(item.shortcut).font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.white.opacity(0.42)).accessibilityHidden(true)
                 }
             }
             .foregroundStyle(.white.opacity(0.95))
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 10)
             .frame(height: ChromeMenuLayout.rowHeight)
             .contentShape(.rect)
             .background(selection.index == index ? theme.bubbleHover : .clear,
-                        in: .rect(cornerRadius: 10))
+                        in: .rect(cornerRadius: 6))
         }
         .buttonStyle(TactileButtonStyle())
         .animation(reduced ? nil : Look.quick, value: selection.index == index)

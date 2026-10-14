@@ -125,6 +125,7 @@ struct NewSpaceButton: View {
         Button {
             let shortcut = Keybindings.binding(for: .newTab)
             menuAnchor.show([
+                ChromeMenuItem(title: "New Space", symbol: "rectangle.stack.badge.plus") { store.newSpace() },
                 ChromeMenuItem(title: "New Folder", symbol: "folder") { store.newFolder() },
                 ChromeMenuItem(title: "New Easel", symbol: "scribble.variable",
                                shortcut: Keybindings.binding(for: .newEasel).display,
@@ -137,9 +138,8 @@ struct NewSpaceButton: View {
                 },
                 ChromeMenuItem(title: "New Tab", symbol: "plus.square",
                                shortcut: shortcut == .unassigned ? "" : shortcut.display) { store.newTab(nil) },
-                ChromeMenuItem(title: "New Space", symbol: "rectangle.stack.badge.plus",
-                               startsGroup: true) { store.newSpace() },
-                ChromeMenuItem(title: "New Space from Template…", symbol: "rectangle.stack") {
+                ChromeMenuItem(title: "New Space from Template…", symbol: "rectangle.stack",
+                               startsGroup: true) {
                     store.showWorkspaceTemplates()
                 },
             ], above: true, title: "Create", showsPointer: true)
@@ -862,6 +862,9 @@ private struct SpaceSwipe: ViewModifier {
 /// the ends, the one-commit rule — lives in the pure state machine, where `check()` can hold
 /// it to account.
 @MainActor final class SwipeMonitor {
+    /// A committed finger gesture belongs to its window even if a profile hop replaces
+    /// the monitor. Consume its finger and momentum tail until the next beginning.
+    private static let committedSwipes = NSHashTable<NSWindow>.weakObjects()
     private var monitor: Any?
     /// Weak, and kept, so `abort` has something to put back when the gesture is taken away
     /// rather than finished.
@@ -1001,6 +1004,14 @@ private struct SpaceSwipe: ViewModifier {
         self.store = store
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak store] event in
             guard let store else { return event }
+            if event.hasPreciseScrollingDeltas, let window = event.window, window === store.window {
+                if event.phase.contains(.began) {
+                    Self.committedSwipes.remove(window)
+                } else if Self.committedSwipes.contains(window) {
+                    self.forget()
+                    return nil
+                }
+            }
             // Library sits before the first Space. Give its shared navigation handler
             // priority even when AppKit invokes the sidebar's monitor first.
             guard store.librarySwipeMonitor.handle(event, in: store) != nil else { return nil }
@@ -1031,6 +1042,9 @@ private struct SpaceSwipe: ViewModifier {
             }
             store.spacePull = out.pull
             if let direction = out.commit {
+                if phase == .changed, let window = store.window {
+                    Self.committedSwipes.add(window)
+                }
                 if creatable, direction > 0, index == self.list.count - 1 {
                     self.create(store)
                 } else {

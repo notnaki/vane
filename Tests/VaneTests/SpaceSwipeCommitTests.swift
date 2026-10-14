@@ -2,6 +2,34 @@ import XCTest
 @testable import vane
 
 final class SpaceSwipeCommitTests: XCTestCase {
+    func testCrossingDistanceThresholdCommitsBeforeFingerReleaseInEitherDirection() {
+        for direction: CGFloat in [-1, 1] {
+            var swipe = Spaces.Swipe()
+            _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 1)
+            XCTAssertNil(swipe.feed(dx: direction * 74, dt: 1, phase: .changed,
+                                   width: 250, count: 3, index: 1).commit)
+            XCTAssertEqual(swipe.feed(dx: direction, dt: 1, phase: .changed,
+                                     width: 250, count: 3, index: 1).commit, direction < 0 ? 1 : -1)
+            XCTAssertFalse(swipe.armed)
+            for phase in [Spaces.Swipe.Phase.changed, .ended, .momentum, .cancelled] {
+                let result = swipe.feed(dx: direction * 250, dt: 1, phase: phase,
+                                        width: 250, count: 3, index: 1)
+                XCTAssertNil(result.commit, "One gesture must only switch once")
+                XCTAssertNil(result.offset, "The gesture tail cannot move the landed sidebar")
+            }
+        }
+    }
+
+    func testShortFastSwipeWaitsForReleaseAndCanReverse() {
+        var swipe = Spaces.Swipe()
+        _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: 1)
+        XCTAssertNil(swipe.feed(dx: -40, dt: 0.01, phase: .changed,
+                               width: 250, count: 3, index: 1).commit)
+        _ = swipe.feed(dx: 30, dt: 0.01, phase: .changed, width: 250, count: 3, index: 1)
+        XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .ended,
+                               width: 250, count: 3, index: 1).commit)
+    }
+
     func testTinyFastEdgeMovementDoesNotSwitchSpaces() {
         XCTAssertNil(Spaces.Swipe.commit(travel: 4, speed: 1100, width: 250, count: 3, index: 1))
         XCTAssertNil(Spaces.Swipe.commit(travel: -4, speed: -1100, width: 250, count: 3, index: 1))
@@ -19,7 +47,8 @@ final class SpaceSwipeCommitTests: XCTestCase {
         for index in [1, 2] {
             var swipe = Spaces.Swipe()
             _ = swipe.feed(dx: 0, dt: 0, phase: .began, width: 250, count: 3, index: index, create: true)
-            _ = swipe.feed(dx: -100, dt: 0.5, phase: .changed, width: 250, count: 3, index: index, create: true)
+            _ = swipe.feed(dx: index == 1 ? -50 : -100, dt: 0.5, phase: .changed,
+                           width: 250, count: 3, index: index, create: true)
             XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .cancelled, width: 250, count: 3, index: index, create: true).commit)
             XCTAssertNil(swipe.feed(dx: 0, dt: 0.01, phase: .ended, width: 250, count: 3, index: index, create: true).commit)
         }

@@ -4911,7 +4911,11 @@ struct SidebarPageIcon: View {
         Group {
             if pr != nil { GitHubMark().fill(Look.inkPrimary) }
             else if easel { EaselIcon().frame(width: 16, height: 16) }
-            else if let icon { SiteIcon(icon: icon, size: size, rounded: rounded) }
+            else if let icon {
+                SiteIcon(icon: icon,
+                         size: rounded ? size * Look.sidebarFaviconScale : size,
+                         rounded: rounded)
+            }
             else { FaviconPlaceholder(size: size) }
         }
         .frame(width: size, height: size)

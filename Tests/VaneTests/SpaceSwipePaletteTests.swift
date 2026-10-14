@@ -5,10 +5,11 @@ import XCTest
 @MainActor final class SpaceSwipePaletteTests: XCTestCase {
     private func fixture() -> (TabStore, Space, ScrollWindow) {
         TestEnvironment.prepare()
-        let profile = UUID()
+        let profile = ProfileManager.shared.create(name: "Swipe palette fixture").id
         let first = Space(name: "First", profileID: profile)
         let second = Space(name: "Second", profileID: profile)
-        XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second], for: profile))
+        let third = Space(name: "Third", profileID: profile)
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([first, second, third], for: profile))
         let store = TabStore(profileID: profile, space: first, session: [])
         let window = ScrollWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
                               styleMask: .borderless, backing: .buffered, defer: false)
@@ -23,6 +24,7 @@ import XCTest
             TabStore.all.removeAll { $0 === store }
             SharedTabs.release(tabs)
             Store.forget(profile)
+            _ = ProfileManager.shared.delete(profile)
             try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
         }
         return (store, second, window)
@@ -71,6 +73,48 @@ import XCTest
         XCTAssertEqual(store.currentSpaceID, second.id)
         XCTAssertEqual(store.palette, .newTab)
     }
+
+    func testSwipeChangesPageBeforeReleaseAndReplacementMonitorConsumesTheTail() async throws {
+        let (store, second, window) = fixture()
+        let first = try XCTUnwrap(store.spaces.first)
+        store.switchTo(space: second)
+        let page = store.newBlankTab(focus: false)
+        page.park(url: URL(string: "https://swipe.example/")!, Parked(title: "Swipe destination"))
+        store.current = page.id
+        store.switchTo(space: first)
+        let monitor = SwipeMonitor()
+        monitor.install(store)
+        defer { monitor.remove() }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -SidebarWidth.shared.width * 0.31))
+        // No fingers-up event: the destination must appear during the swipe itself.
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(store.currentSpaceID, second.id)
+        XCTAssertTrue(store.active === page)
+        XCTAssertEqual(store.active?.currentURL, URL(string: "https://swipe.example/"))
+        monitor.remove()
+        // A profile hop remounts the monitor in this same window. It must not interpret
+        // the remaining finger movement as the beginning of a second Space switch.
+        let replacement = SwipeMonitor()
+        replacement.install(store)
+        defer { replacement.remove() }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -SidebarWidth.shared.width))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -SidebarWidth.shared.width,
+                                                   phase: [], momentum: .changed))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(store.currentSpaceID, second.id)
+        XCTAssertFalse(store.spaceSwiping)
+        XCTAssertEqual(store.spaceDrag, 0)
+        let scrolls = window.scrolls
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dy: 20, precise: false))
+        XCTAssertEqual(window.scrolls, scrolls + 1, "An ordinary mouse wheel remains available")
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: SidebarWidth.shared.width * 0.31))
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(store.currentSpaceID, first.id, "A new gesture can switch back")
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
+    }
 }
 
 /// Observe events after local monitors have had their turn. A second swallowing
@@ -92,15 +136,20 @@ private final class ScrollEvent: NSEvent, @unchecked Sendable {
     private let dx: CGFloat
     private let dy: CGFloat
     private let x: CGFloat
+    private let momentum: NSEvent.Phase
+    private let precise: Bool
 
     @MainActor init(window: NSWindow, dx: CGFloat = 0, dy: CGFloat = 0,
-         phase: NSEvent.Phase = .changed, x: CGFloat = 30) {
+         phase: NSEvent.Phase = .changed, x: CGFloat = 30,
+         momentum: NSEvent.Phase = [], precise: Bool = true) {
         owner = window
         ownerNumber = window.windowNumber
         self.dx = dx
         self.dy = dy
         eventPhase = phase
         self.x = x
+        self.momentum = momentum
+        self.precise = precise
         super.init()
     }
 
@@ -109,11 +158,11 @@ private final class ScrollEvent: NSEvent, @unchecked Sendable {
     override var window: NSWindow? { owner }
     override var windowNumber: Int { ownerNumber }
     override var locationInWindow: NSPoint { NSPoint(x: x, y: 150) }
-    override var hasPreciseScrollingDeltas: Bool { true }
+    override var hasPreciseScrollingDeltas: Bool { precise }
     override var isDirectionInvertedFromDevice: Bool { true }
     override var scrollingDeltaX: CGFloat { dx }
     override var scrollingDeltaY: CGFloat { dy }
     override var phase: NSEvent.Phase { eventPhase }
-    override var momentumPhase: NSEvent.Phase { [] }
+    override var momentumPhase: NSEvent.Phase { momentum }
     override var timestamp: TimeInterval { 1 }
 }
