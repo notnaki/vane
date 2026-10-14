@@ -547,14 +547,15 @@ struct BrowserWindow: View {
                         .allowsHitTesting(false)
                 }
                 .padding(floating ? Look.floatingSidebarGap : 0)
-                .mask(alignment: .trailing) {
-                    if libraryProgress > 0 {
-                        Rectangle().frame(width: max(0, sidebar.width
-                            + (floating ? 2 * Look.floatingSidebarGap : 0)
-                            - libraryWidth * libraryProgress))
-                    } else {
-                        Rectangle().padding(-2 * Look.barShadowRadius)
-                    }
+                // Library's trailing edge and the sidebar's leading edge travel
+                // together. Clip only at the page seam, so this is a neighboring
+                // surface leaving the viewport rather than a panel covering it.
+                .offset(x: libraryWidth * libraryProgress)
+                .frame(width: (sidebar.width + (floating ? 2 * Look.floatingSidebarGap : 0))
+                    * (1 - libraryProgress) + libraryWidth * libraryProgress,
+                       alignment: .leading)
+                .mask {
+                    Rectangle().padding(floating ? -2 * Look.barShadowRadius * (1 - libraryProgress) : 0)
                 }
                 .allowsHitTesting(!store.libraryOpen)
                 .transition(.move(edge: .leading).combined(with: .opacity))

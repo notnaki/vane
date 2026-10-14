@@ -112,6 +112,17 @@ import XCTest
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
         try await Task.sleep(for: .milliseconds(80))
+        func scroll(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scroll(in: $0) }.first
+        }
+        let sidebarScroll = try XCTUnwrap(scroll(in: host))
+        sidebarScroll.wantsLayer = true
+        func sidebarOrigin() throws -> CGFloat {
+            try XCTUnwrap(sidebarScroll.layer?.presentation())
+                .convert(.zero, to: host.layer?.presentation()).x
+        }
+        let sidebarStart = try sidebarOrigin()
         send(window, phase: .began)
         send(window, dx: 40)
         try await Task.sleep(for: .milliseconds(40))
@@ -126,6 +137,8 @@ import XCTest
             try XCTUnwrap(field.layer?.presentation()).convert(.zero, to: host.layer?.presentation()).x
         }
         let initial = try origin()
+        XCTAssertEqual(try sidebarOrigin() - sidebarStart, 40, accuracy: 1,
+                       "The sidebar travels with the Library instead of being covered")
         let width = field.bounds.width
         XCTAssertFalse(window.firstResponder is NSTextView, "A preview must not take the keyboard")
         send(window, dx: 40)
@@ -133,15 +146,20 @@ import XCTest
         XCTAssertEqual(try origin() - initial, 40, accuracy: 1,
                        "The rendered panel follows fingers without an implicit spring")
         XCTAssertEqual(field.bounds.width, width, accuracy: 1)
+        XCTAssertEqual(try sidebarOrigin() - sidebarStart, 80, accuracy: 1,
+                       "Both neighbors stay connected to the fingers")
         send(window, phase: .ended)
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertTrue(store.libraryOpen)
         XCTAssertNil(store.librarySwipeProgress)
         let resting = try origin()
+        let sidebarResting = try sidebarOrigin()
         send(window, phase: .began)
         send(window, dx: -80)
         try await Task.sleep(for: .milliseconds(40))
         XCTAssertEqual(try origin(), resting - 80, accuracy: 1)
+        XCTAssertEqual(try sidebarOrigin(), sidebarResting - 80, accuracy: 1,
+                       "Returning reveals a moving sidebar, not a stationary layer")
         send(window, phase: .ended)
         try await Task.sleep(for: .milliseconds(40))
         XCTAssertFalse(store.libraryOpen)
