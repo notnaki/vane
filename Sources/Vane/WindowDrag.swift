@@ -25,46 +25,56 @@ import SwiftUI
 /// What is left is the one thing SwiftUI does report reliably from a view underneath
 /// everything else: hover. A row, a button or the pill takes the hover before the ground
 /// does, so "the pointer is over bare ground" is a question SwiftUI is already answering —
-/// and `VaneWindow.sendEvent` only has to believe the answer.
+/// and `VaneWindow.sendEvent` validates that the patch still belongs to its window.
 @MainActor final class WindowDragGround {
     static let shared = WindowDragGround()
 
-    /// How many ground patches the pointer is currently inside. A count, not a bool: the
-    /// sidebar has more than one patch of ground (behind the chrome, and behind the tab list
-    /// inside the scroll view), and with a bool the one the pointer *left* would clear the
-    /// flag the one it *entered* had just set — whichever order the two callbacks arrive in.
-    private var inside = 0
+    private let patches = NSHashTable<WindowDragPatch>.weakObjects()
 
-    /// True while the pointer is over sidebar ground and nothing else. Read on the way
-    /// through `sendEvent`, so this is one integer rather than a hit-test of our own.
-    var over: Bool { inside > 0 }
+    func hover(_ entered: Bool, patch: WindowDragPatch) {
+        patches.add(patch)
+        patch.hovered = entered
+    }
 
-    func hover(_ entered: Bool) { inside = max(0, inside + (entered ? 1 : -1)) }
+    /// Cached profile hosts retain SwiftUI state while detached. Only a visible patch
+    /// in the receiving window can claim this mouse-down; a parked host cannot.
+    func over(in window: NSWindow, at point: NSPoint) -> Bool {
+        patches.allObjects.contains { patch in
+            patch.hovered && patch.window === window && !patch.isHiddenOrHasHiddenAncestor
+                && patch.bounds.intersection(patch.visibleRect).contains(patch.convert(point, from: nil))
+        }
+    }
+}
+
+/// A passive native anchor gives hover state the same lifetime as its actual window
+/// attachment. SwiftUI does not always call onDisappear when a cached host is parked.
+@MainActor final class WindowDragPatch: NSView, ObservableObject {
+    var hovered = false
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { hovered = false }
+    }
+}
+
+private struct WindowDragAnchor: NSViewRepresentable {
+    let patch: WindowDragPatch
+    func makeNSView(context: Context) -> WindowDragPatch { patch }
+    func updateNSView(_ view: WindowDragPatch, context: Context) {}
+    static func dismantleNSView(_ view: WindowDragPatch, coordinator: ()) { view.hovered = false }
 }
 
 /// The ground itself: nothing to see, one job, and it is the lowest thing in the sidebar so
 /// anything interactive above it takes the pointer first.
 struct WindowDragArea: View {
-    /// Whether *this* patch is counted in the shared total. A patch that goes away while the
-    /// pointer is on it — a Little Arc closing under the pointer, the sidebar sliding out —
-    /// never gets its `onHover(false)`, and the leaked count left the app believing every
-    /// click was on bare ground: a click on a page dragged the window instead of pressing
-    /// the link, and the window it dragged never became key.
-    @State private var counted = false
+    @StateObject private var patch = WindowDragPatch()
 
     var body: some View {
         Color.clear
             .contentShape(.rect)
-            .onHover { over in
-                guard over != counted else { return }      // idempotent, so it cannot double-count
-                counted = over
-                WindowDragGround.shared.hover(over)
-            }
-            .onDisappear {
-                guard counted else { return }
-                counted = false
-                WindowDragGround.shared.hover(false)
-            }
+            .background(WindowDragAnchor(patch: patch))
+            .onHover { WindowDragGround.shared.hover($0, patch: patch) }
+            .onDisappear { WindowDragGround.shared.hover(false, patch: patch) }
             // Decoration. "Move window" is what the window's own accessibility offers; a
             // second, invisible copy of it in the middle of the tab list is noise.
             .accessibilityHidden(true)

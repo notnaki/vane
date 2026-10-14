@@ -23,9 +23,24 @@ import SwiftUI
     /// `QuitAsk.refuses`.
     private(set) static var isUp = false
 
+    /// Menus can release key status just before ⌘Q is dispatched. Keep the question
+    /// over their owning user window rather than falling back to an unblurred panel.
+    static func presentationHost(preferred: NSWindow?, main: NSWindow?, ordered: [NSWindow]) -> NSWindow? {
+        func eligible(_ candidate: NSWindow?) -> NSWindow? {
+            guard var candidate else { return nil }
+            while let parent = candidate.parent ?? candidate.sheetParent { candidate = parent }
+            guard candidate.isVisible, !candidate.isMiniaturized,
+                  !candidate.isExcludedFromWindowsMenu, !(candidate is NSPanel),
+                  candidate.contentView != nil else { return nil }
+            return candidate
+        }
+        return eligible(preferred) ?? eligible(main) ?? ordered.lazy.compactMap(eligible).first
+    }
+
     static func ask(over host: NSWindow?) -> Answer {
         isUp = true
         defer { isUp = false }
+        let host = presentationHost(preferred: host, main: NSApp.mainWindow, ordered: NSApp.orderedWindows)
         if let host, let content = host.contentView { return ask(in: host, content: content) }
         var answer = Answer.cancel
         let panel = Panel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)

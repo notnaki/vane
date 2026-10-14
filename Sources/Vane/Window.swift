@@ -114,6 +114,12 @@ final class VaneWindow: NSWindow {
     /// deliberately does not use `isMovableByWindowBackground`, which cannot tell the
     /// difference and moved the window from a drag on a tab row.
     override func sendEvent(_ event: NSEvent) {
+        // The quit scrim owns input while its modal loop is running. In particular,
+        // stale sidebar hover must never turn its buttons into window drags.
+        if MainActor.assumeIsolated({ QuitDialog.isUp }) {
+            super.sendEvent(event)
+            return
+        }
         MainActor.assumeIsolated { PasswordChooser.handlePointer(event) }
         // Escape takes the saved-account list down first — it is the newest thing on screen
         // and the one thing the user cannot dismiss any other way — then drops a
@@ -132,7 +138,7 @@ final class VaneWindow: NSWindow {
         if event.type == .leftMouseDown {
             let at = event.locationInWindow
             if MainActor.assumeIsolated({
-                Self.picksUpWindow(overGround: WindowDragGround.shared.over,
+                Self.picksUpWindow(overGround: WindowDragGround.shared.over(in: self, at: at),
                                    onLight: onTrafficLight(at))
             }) {
                 // Runs its own event loop until the button comes up, and gives us AppKit's
