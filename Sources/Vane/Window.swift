@@ -861,6 +861,16 @@ extension VaneWindow {
                 .font(Look.text))
             hosts[id] = host
         }
+        // A profile Space activates immediately. Animate the native host replacement
+        // independently so the page never waits for the outgoing sidebar to finish.
+        if current != nil, !Motion.spaceReduced {
+            wantsLayer = true
+            let transition = CATransition()
+            transition.type = .fade
+            transition.duration = 0.16
+            transition.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            layer?.add(transition, forKey: "profile-space")
+        }
         if let current { hosts[current]?.removeFromSuperview() }
         host.frame = bounds
         host.autoresizingMask = [.width, .height]

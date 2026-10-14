@@ -35,6 +35,62 @@ import XCTest
         return (store, spaces, window, monitor)
     }
 
+    func testClickActivatesContentBeforeTheSidebarFinishes() throws {
+        let (store, spaces, _, monitor) = try fixture()
+        let outgoing = store.newBlankTab(focus: true)
+        store.switchTo(space: spaces[1])
+        let incoming = store.newBlankTab(focus: true)
+        store.switchTo(space: spaces[0])
+        XCTAssertEqual(store.current, outgoing.id)
+
+        monitor.select(spaces[1], in: store)
+
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        XCTAssertEqual(store.current, incoming.id, "The page must change on selection, before animation completion")
+        XCTAssertTrue(store.spaceSwiping, "The sidebar still has its travel to finish")
+    }
+
+    func testCommittedSwipeActivatesContentBeforeLandingFinishes() throws {
+        let (store, spaces, _, monitor) = try fixture()
+        store.switchTo(space: spaces[1])
+        let incoming = store.newBlankTab(focus: true)
+        store.switchTo(space: spaces[0])
+        store.spaceSwiping = true
+        store.spaceDrag = -80
+
+        monitor.land(1, to: spaces[1], width: 250, store: store)
+
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        XCTAssertEqual(store.current, incoming.id)
+        XCTAssertTrue(store.spaceSwiping)
+    }
+
+    func testProfileClickActivatesTheDestinationHostImmediately() throws {
+        TestEnvironment.prepare()
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let firstProfile = manager.create(name: "Immediate origin")
+        let secondProfile = manager.create(name: "Immediate destination")
+        let first = manager.createSpace(name: "First", in: firstProfile.id)
+        let second = manager.createSpace(name: "Second", in: secondProfile.id)
+        let source = Windows.open(profile: firstProfile, space: first, focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            _ = manager.delete(firstProfile.id)
+            _ = manager.delete(secondProfile.id)
+            manager.active = previous
+        }
+        source.spaceGesture.monitor.select(second, in: source)
+        let destination = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        XCTAssertEqual(destination.profileID, secondProfile.id)
+        XCTAssertEqual(destination.currentSpaceID, second.id)
+        XCTAssertFalse(source.spaceSwiping)
+        destination.spaceGesture.monitor.select(first, in: destination)
+        XCTAssertTrue(source.window === window, "A cached profile must also activate immediately")
+        XCTAssertEqual(source.currentSpaceID, first.id)
+    }
+
     func testLatestClickReplacesAMountingSelection() async throws {
         let (store, spaces, _, monitor) = try fixture()
         monitor.select(spaces[1], in: store)
@@ -62,8 +118,8 @@ import XCTest
         try await Task.sleep(for: .milliseconds(60))
         monitor.select(spaces[2], in: store)
         try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(store.currentSpaceID, spaces[0].id,
-                       "Retargeting must not unmount an unfinished visual slide")
+        XCTAssertEqual(store.currentSpaceID, spaces[2].id,
+                       "Retargeting activates the latest page while the sidebar keeps moving")
         try await Task.sleep(for: .milliseconds(450))
         XCTAssertEqual(store.currentSpaceID, spaces[2].id)
         XCTAssertFalse(store.spaceSwiping)
@@ -78,7 +134,7 @@ import XCTest
         monitor.select(spaces[1], in: store)
         BatterySaver.shared.setMode(.alwaysOn)
         monitor.select(spaces[2], in: store)
-        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        XCTAssertEqual(store.currentSpaceID, spaces[2].id)
         XCTAssertTrue(store.spaceSwiping)
         try await Task.sleep(for: .milliseconds(450))
         XCTAssertEqual(store.currentSpaceID, spaces[2].id)
@@ -95,7 +151,7 @@ import XCTest
         try await Task.sleep(for: .milliseconds(60))
         BatterySaver.shared.setMode(.alwaysOn)
         try await Task.sleep(for: .milliseconds(20))
-        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
         XCTAssertTrue(store.spaceSwiping)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)

@@ -3524,6 +3524,7 @@ struct Stash {
                 spaceGesture.neighbour = nil
                 spaceGesture.previewDirection = 0
                 spaceGesture.previews.removeAll()
+                spaceGesture.outgoing = nil
                 if spaceGesture.travelsFavorites { spaceGesture.travelsFavorites = false }
             }
         }

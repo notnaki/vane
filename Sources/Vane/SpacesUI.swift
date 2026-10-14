@@ -15,6 +15,8 @@ import UniformTypeIdentifiers
     var neighbour: Space?
     var previewDirection = 0
     var previews: [UUID: SpacePreviewList] = [:]
+    /// The sidebar stays on its captured origin while the active page changes immediately.
+    var outgoing: SpacePreviewList?
     /// The overflowing footer owns its horizontal scroll gestures. Weak because the
     /// SwiftUI anchor can disappear while a floating sidebar is hidden.
     weak var scrollingFooter: NSView?
@@ -33,8 +35,7 @@ import UniformTypeIdentifiers
 /// The tokens are `Look`'s, extended rather than edited.
 
 extension Look {
-    /// Accelerate through the switch without a slow tail. Keep the travel brief so the
-    /// destination page and address arrive sooner, after the preview reaches its endpoint.
+    /// Brief sidebar travel; page and address selection happen before it starts.
     static let spaceSlide = Animation.easeIn(duration: 0.16)
     /// The strip finishing a swipe: the rest of the travel after the fingers leave, and the
     /// spring back when they did not go far enough. A spring rather than an ease because the
@@ -292,13 +293,30 @@ struct SpaceSidebarStrip<Favorites: View, Sections: View>: View {
         VStack(spacing: Look.rowGap) {
             favorites.offset(x: gesture.travelsFavorites ? gesture.drag : 0)
             sections.spaceSlide(store)
+                .opacity(gesture.outgoing != nil && gesture.swiping ? 0 : 1)
+                .allowsHitTesting(!gesture.swiping)
+                .accessibilityHidden(gesture.swiping)
+                .overlay(alignment: .topLeading) {
+                    if gesture.swiping, let outgoing = gesture.outgoing {
+                        outgoing.equatable()
+                            .environment(\.colorScheme, outgoing.colorScheme)
+                            .offset(x: gesture.drag)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
         }
         .overlay(alignment: .topLeading) { preview }
         .transaction(value: store.currentSpaceID) { transaction in
-            // The preview has already arrived. A simultaneous window animation (such
-            // as Cmd+T opening in an empty Space) must not animate the live replacement
-            // or the strip's offset reset, including the favourites and preview overlay.
+            // Content activation must not animate the live sections underneath the
+            // captured strip, including when an empty Space opens Cmd+T.
             if gesture.swiping {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        }
+        .transaction(value: gesture.swiping) { transaction in
+            if !gesture.swiping {
                 transaction.animation = nil
                 transaction.disablesAnimations = true
             }
@@ -740,11 +758,12 @@ extension TabStore {
     /// including when the destination skips Spaces or belongs to another profile.
     func beginSpaceSelection(_ requested: Space) -> Int? {
         guard !isPrivate, !isLittle, !isParked,
-              requested.id != currentSpaceID else { return nil }
+              requested.id != (spaceGesture.outgoing?.space.id ?? currentSpaceID) else { return nil }
+        let origin = spaceGesture.outgoing?.space.id ?? currentSpaceID
         let list = strip
         guard let target = list.first(where: { $0.id == requested.id }),
-              list.contains(where: { $0.id == currentSpaceID }) else { return nil }
-        let direction = Spaces.direction(from: currentSpaceID, to: target.id, in: list.map(\.id))
+              list.contains(where: { $0.id == origin }) else { return nil }
+        let direction = Spaces.direction(from: origin, to: target.id, in: list.map(\.id))
         creatingSpace = false
         spaceSwiping = true
         spaceGesture.strip = list
@@ -887,12 +906,10 @@ private struct SpaceSwipe: ViewModifier {
     private var claim = Claim.undecided
     private var travelled = (h: CGFloat(0), v: CGFloat(0))
 
-    /// A policy change must finish an owned selection even without another input.
-    /// An uncommitted drag returns home; a clicked/released destination commits.
+    /// Finish only the presentation: committed selections already activated their page,
+    /// and an uncommitted drag has not changed it.
     func finishForReducedMotion() {
         guard let store, store.spaceSwiping else { return }
-        let destination = landing && store.currentSpaceID == landingFrom && store.window != nil
-            ? store.spaceGesture.neighbour : nil
         transition = UUID()
         pendingSelection = nil
         landing = false
@@ -905,7 +922,6 @@ private struct SpaceSwipe: ViewModifier {
             store.spaceGesture.drag = 0
             store.spacePull = 0
             store.spaceSwiping = false
-            if let destination { store.switchTo(space: destination); rebuild() }
         }
     }
 
@@ -936,7 +952,8 @@ private struct SpaceSwipe: ViewModifier {
             store.spaceSwiping = false
         }
         if store.spaceSwiping {
-            if space.id == store.currentSpaceID {
+            if space.id == (store.spaceGesture.outgoing?.space.id ?? store.currentSpaceID) {
+                if let origin = store.spaceGesture.outgoing?.space { store.switchTo(space: origin); rebuild() }
                 settle(store)
                 return
             }
@@ -949,8 +966,9 @@ private struct SpaceSwipe: ViewModifier {
                   let target = store.spaceGesture.neighbour else { return }
             // The endpoint is already assigned while its presentation is travelling.
             // Reassigning that endpoint creates a zero-length animation whose completion
-            // would tear down the moving strip. Let the existing landing commit its latest
-            // preview instead; an actual reversal still retargets the offset animation.
+            // would tear down the moving strip. Its existing completion retires the latest
+            // preview; an actual reversal still retargets the offset animation.
+            guard activate(target, in: store) else { return }
             if continuing, direction == previousDirection { return }
             pendingSelection = nil
             land(direction, to: target, width: SidebarWidth.shared.width, store: store,
@@ -968,6 +986,7 @@ private struct SpaceSwipe: ViewModifier {
         }
         // Mount the preview offscreen before animating it into place. In the same update
         // as its insertion, SwiftUI would draw it at the final offset and skip the travel.
+        guard activate(target, in: store) else { return }
         let from = store.currentSpaceID
         // Own the landing from preparation onward. Sidebar removal and resign-key
         // notifications use this same monitor and must not release it for a second switch.
@@ -991,6 +1010,42 @@ private struct SpaceSwipe: ViewModifier {
             self.land(direction, to: target, width: SidebarWidth.shared.width, store: store,
                       animation: Look.spaceSlide)
         }
+    }
+
+    /// Commit the page separately from the sidebar presentation. Profile hops replace
+    /// the native host, so they finish this store's gesture before handing over.
+    @discardableResult private func activate(_ target: Space, in store: TabStore) -> Bool {
+        if target.profileID != store.profileID {
+            transition = UUID()
+            pendingSelection = nil
+            landing = false
+            landingFrom = nil
+            returning = false
+            store.spaceDrag = 0
+            store.spaceSwiping = false
+            Motion.space(Look.spaceSlide) { store.switchTo(space: target) }
+            rebuild()
+            return false
+        }
+        if store.spaceGesture.outgoing == nil, let origin = store.swipeSpace {
+            store.spaceGesture.outgoing = store.swipePreview(in: origin)
+        }
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { store.switchTo(space: target) }
+        guard store.currentSpaceID == target.id else {
+            transition = UUID()
+            pendingSelection = nil
+            landing = false
+            landingFrom = nil
+            returning = false
+            store.spaceDrag = 0
+            store.spaceSwiping = false
+            return false
+        }
+        landingFrom = store.currentSpaceID
+        rebuild()
+        return true
     }
 
     func install(_ store: TabStore) {
@@ -1112,17 +1167,14 @@ private struct SpaceSwipe: ViewModifier {
         return .changed
     }
 
-    /// Over the line: run the rest of the travel out under the spring and swap the Space at
-    /// the far end, where the preview is already standing exactly where the real sections
-    /// are about to be — which is the whole reason the swap is invisible.
+    /// Commit the page now; keep the captured sidebar moving until its visual handoff.
     func land(_ direction: Int, to target: Space, width: CGFloat, store: TabStore,
               animation: Animation = Look.spaceLanding) {
         let token = UUID()
         transition = token
         pendingSelection = nil
         returning = false
-        // Finish the preview's travel before swapping hosts, including across profiles.
-        // Cached profile interfaces can be attached at rest without tearing down the page.
+        // Reduced motion changes both content and sidebar immediately.
         guard !Motion.spaceReduced else {
             landing = false
             landingFrom = nil
@@ -1132,6 +1184,7 @@ private struct SpaceSwipe: ViewModifier {
             rebuild()
             return
         }
+        guard activate(store.spaceGesture.neighbour ?? target, in: store) else { return }
         let from = store.currentSpaceID
         landing = true
         landingFrom = from
@@ -1144,21 +1197,24 @@ private struct SpaceSwipe: ViewModifier {
             guard self.transition == token else { return }
             let finish = { [weak store] in
                 guard self.transition == token else { return }
+                let ownedSpace = self.landingFrom
                 self.landing = false
                 self.landingFrom = nil
-                guard let store, store.window != nil, store.currentSpaceID == from else {
+                guard let store, store.window != nil, store.currentSpaceID == ownedSpace else {
                     // Somebody else got there first, or the window is gone.
                     store?.spaceDrag = 0
                     store?.spaceSwiping = false
                     return
                 }
-                store.switchTo(space: store.spaceGesture.neighbour ?? target)
-                store.spaceDrag = 0
-                rebuild()
-                DispatchQueue.main.async { [weak store] in
-                    guard self.transition == token else { return }
-                    store?.spaceSwiping = false
+                // Reveal the already-mounted live sidebar atomically. Resetting the
+                // offset a frame before removing the snapshot would flash the origin.
+                var transaction = Transaction(animation: nil)
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    store.spaceDrag = 0
+                    store.spaceSwiping = false
                 }
+                rebuild()
             }
             // SwiftUI can remove its animation before AppKit's scroll layer has
             // presented the endpoint. Keep the ghost through that final display frame.
