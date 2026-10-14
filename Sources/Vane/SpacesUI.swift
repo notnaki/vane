@@ -15,6 +15,15 @@ import UniformTypeIdentifiers
     var neighbour: Space?
     var previewDirection = 0
     var previews: [UUID: SpacePreviewList] = [:]
+    /// The overflowing footer owns its horizontal scroll gestures. Weak because the
+    /// SwiftUI anchor can disappear while a floating sidebar is hidden.
+    weak var scrollingFooter: NSView?
+
+    func isOverScrollingFooter(_ event: NSEvent) -> Bool {
+        guard let view = scrollingFooter, let window = view.window,
+              event.window === window else { return false }
+        return view.convert(view.bounds, to: nil).contains(event.locationInWindow)
+    }
 }
 
 /// The Spaces chrome: the header row's two clicks, the footer's dots and its `+`, the inline
@@ -1214,6 +1223,10 @@ private struct SpaceSwipe: ViewModifier {
         case .mine:   return true
         case .theirs: return false
         case .undecided: break
+        }
+        if store.spaceGesture.isOverScrollingFooter(event) {
+            claim = .theirs
+            return false
         }
         travelled.h += abs(event.scrollingDeltaX)
         travelled.v += abs(event.scrollingDeltaY)

@@ -2805,6 +2805,7 @@ private struct SpaceIcons: View {
 /// case any more: an ordinary window is always in a Space, so exactly one dot is always the
 /// current one. Only a private window has none, and it does not draw this at all.
 private struct SpaceDots: View {
+    let layout: SpaceStripLayout
     @EnvironmentObject var store: TabStore
     @EnvironmentObject private var gesture: SpaceGesture
     /// *Which* dot's panel is open, not merely whether one is. Every dot draws its own
@@ -2818,6 +2819,9 @@ private struct SpaceDots: View {
     @State private var dropTarget: UUID?
     @State private var hovered: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
+
+    private var animation: Animation? { reduceMotion || batterySaver.isActive ? nil : Look.quick }
 
     var body: some View {
         // Share the gesture's captured strip with the tint and preview. Reading the
@@ -2832,7 +2836,9 @@ private struct SpaceDots: View {
                 newDot(lit: store.creatingSpace ? 1 : Double(min(1, gesture.pull / Spaces.Swipe.pullFull)))
             }
         }
-        .animation(reduceMotion ? nil : Look.quick, value: store.creatingSpace)
+        .animation(animation, value: store.creatingSpace)
+        .animation(animation, value: layout)
+        .vaneMotionPolicy()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spaces")
     }
@@ -2840,11 +2846,12 @@ private struct SpaceDots: View {
     private func newDot(lit: Double) -> some View {
         // A dot like the others — it has no icon yet — that brightens as the pull fills.
         ZStack {
-            Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
-            Circle().fill(Look.inkPrimary).frame(width: Look.dot, height: Look.dot)
+            Circle().fill(Look.dotFill).frame(width: layout.dotSize, height: layout.dotSize)
+            Circle().fill(Look.inkPrimary).frame(width: layout.dotSize, height: layout.dotSize)
                 .opacity(lit)
         }
-        .frame(width: Look.spaceDotHit, height: Look.spaceDotHit)
+        .frame(width: layout.itemWidth, height: Look.spaceDotHit)
+        .id("new-space")
         .accessibilityLabel("New Space")
         .accessibilityHidden(!store.creatingSpace)
     }
@@ -2864,26 +2871,34 @@ private struct SpaceDots: View {
         let showLive = Binding(get: { live == space.id },
                                set: { live = $0 ? space.id : nil })
         ZStack {
-            Circle().fill(Look.dotFill).frame(width: Look.dot, height: Look.dot)
+            Circle().fill(hovered == space.id && !layout.showsButtonBackground ? Look.inkSecondary : Look.dotFill)
+                .frame(width: layout.dotSize, height: layout.dotSize)
                 .opacity(1 - lit)
                 .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - lit))
             Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
-                .font(Look.small)
+                .font(.system(size: layout.iconSize))
                 .foregroundStyle(Look.inkPrimary)
                 .opacity(lit)
                 .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * lit)
         }
-        .animation(reduceMotion ? nil : Look.quick, value: here)
-        .frame(width: Look.spaceDotHit, height: Look.spaceDotHit)
-        .background(dropTarget == space.id ? Look.selected : hovered == space.id ? Look.hovered : .clear,
+        .animation(animation, value: here)
+        .frame(width: layout.itemWidth, height: Look.spaceDotHit)
+        .background(!layout.showsButtonBackground ? .clear : dropTarget == space.id ? Look.selected : hovered == space.id ? Look.hovered : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
-        .animation(Motion.reduced ? nil : Look.quick, value: hovered == space.id)
+        .overlay {
+            if !layout.showsButtonBackground && dropTarget == space.id {
+                Circle().strokeBorder(Look.inkPrimary, lineWidth: 1)
+                    .frame(width: layout.iconSize, height: layout.iconSize)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(animation, value: hovered == space.id)
         .contentShape(.rect)
         .onHover { over in
             if over { hovered = space.id }
             else if hovered == space.id { hovered = nil }
         }
-        .modifier(Feel02PressFeedback())
+        .modifier(Feel02PressFeedback(enabled: layout.showsButtonBackground))
         .onTapGesture { gesture.monitor.select(space, in: store) }
         .vaneKeyboardAction { gesture.monitor.select(space, in: store) }
         .onDrag { spaceDragPayload(space) }
@@ -4961,6 +4976,7 @@ private struct BottomRow: View {
     @ObservedObject var downloadsHover: DownloadsHover
     let hasPreviewItems: Bool
     let preparePreview: () -> Bool
+    @EnvironmentObject private var gesture: SpaceGesture
 
     var body: some View {
         HStack(spacing: Look.inset) {
@@ -4972,15 +4988,32 @@ private struct BottomRow: View {
             // is nothing to draw dots for and nothing a `+` could make. The row keeps its
             // height regardless: nothing in the sidebar's chrome may come and go.
             if !store.isPrivate {
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal) {
-                        SpaceDots()
-                            .frame(maxWidth: .infinity)
-                    }
-                    .scrollIndicators(.never)
-                    .defaultScrollAnchor(.center)
-                    .onChange(of: store.currentSpaceID, initial: true) {
-                        proxy.scrollTo(store.currentSpaceID, anchor: .center)
+                GeometryReader { geometry in
+                    let count = store.swipeStrip.count + (store.creatingSpace || gesture.pull > 0 ? 1 : 0)
+                    let layout = SpaceStripLayout(count: count, availableWidth: geometry.size.width)
+                    ScrollViewReader { proxy in
+                        ScrollView(.horizontal) {
+                            SpaceDots(layout: layout)
+                                .frame(minWidth: geometry.size.width)
+                        }
+                        .scrollIndicators(.never)
+                        .scrollDisabled(!layout.scrolls)
+                        .defaultScrollAnchor(.center)
+                        .background(SpaceFooterScrollAnchor(gesture: gesture, enabled: layout.scrolls))
+                        .onChange(of: store.currentSpaceID, initial: true) {
+                            Motion.animate(Look.quick) {
+                                proxy.scrollTo(store.currentSpaceID, anchor: .center)
+                            }
+                        }
+                        .onChange(of: layout) {
+                            Motion.animate(Look.quick) {
+                                if store.creatingSpace || gesture.pull > 0 {
+                                    proxy.scrollTo("new-space", anchor: .trailing)
+                                } else {
+                                    proxy.scrollTo(store.currentSpaceID, anchor: .center)
+                                }
+                            }
+                        }
                     }
                 }
                 NewSpaceButton()
@@ -4988,9 +5021,8 @@ private struct BottomRow: View {
                 Spacer(minLength: 0)
             }
         }
-        .font(Look.icon)
+        .font(.system(size: 17, weight: .medium))
         .frame(height: Look.footer)
-        .padding(.horizontal, Look.inset)
     }
 }
 

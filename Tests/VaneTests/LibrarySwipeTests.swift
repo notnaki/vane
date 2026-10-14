@@ -80,6 +80,34 @@ import XCTest
         }
     }
 
+    func testScrollingSpaceFooterKeepsWholeGestureAwayFromSidebarNavigation() {
+        let (store, window, libraryMonitor) = fixture(withSpaces: true)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        let footer = NSView(frame: NSRect(x: 48, y: 10, width: 132, height: 28))
+        window.contentView?.addSubview(footer)
+        store.spaceGesture.scrollingFooter = footer
+        let spaceMonitor = store.spaceGesture.monitor
+        defer { spaceMonitor.remove() }
+        for libraryFirst in [true, false] {
+            libraryMonitor.remove()
+            spaceMonitor.remove()
+            if libraryFirst { libraryMonitor.install(store); spaceMonitor.install(store) }
+            else { spaceMonitor.install(store); libraryMonitor.install(store) }
+            for delta in [CGFloat(-120), CGFloat(120)] {
+                let before = window.scrolls
+                send(window, point: NSPoint(x: 100, y: 24), phase: .began)
+                send(window, point: NSPoint(x: 100, y: 24), dx: delta)
+                // Keep the recipient even if the fingers leave the footer mid-gesture.
+                send(window, point: NSPoint(x: 100, y: 100), dx: delta)
+                send(window, point: NSPoint(x: 100, y: 100), phase: .ended)
+                XCTAssertFalse(store.libraryOpen)
+                XCTAssertFalse(store.spaceSwiping)
+                XCTAssertEqual(window.scrolls - before, 4)
+            }
+        }
+    }
+
     func testHiddenSidebarDoesNotClaimLibraryOpeningSwipes() {
         let (store, window, _) = fixture(withSpaces: true)
         store.libraryOpen = false
