@@ -114,10 +114,12 @@ enum Look {
     static let barRowInset: CGFloat = 13
     /// From a bar row's icon to its title.
     static let barRowSpacing: CGFloat = 13
-    /// Favicon / symbol box at the leading edge of a command bar row. Arc draws bar favicons
-    /// at 14 and the selected row's on a 24pt plate; 16 is the sidebar's, kept for one
-    /// favicon cache.
+    /// Favicon / symbol slot at the leading edge of a row. Sidebar artwork is inset
+    /// within this slot; command bar icons keep their own sizing.
     static let rowIcon: CGFloat = 16
+    /// Arc's sidebar favicon artwork is 28px at 2x, centered in a 16pt slot.
+    /// Keep the slot fixed so reducing the mark does not move titles or hit targets.
+    static let sidebarFaviconScale: CGFloat = 14.0 / 16.0
     /// The site's initial, standing in a favicon's box while a tab has none — a fraction of
     /// the box rather than a point size, because that box is 16 in a row and 16 in a tile.
     /// Short of the full box, so a letter and an icon read as one size.
@@ -223,7 +225,7 @@ enum Look {
     static let footerControl: CGFloat = 32
     /// Under the footer.
     static let footerInset: CGFloat = 10
-    /// A favourite tile's icon: the same 16 as a row's (32px at 2x in ref 1).
+    /// A favourite tile's icon slot: the same 16pt as a row's.
     static let tileIcon: CGFloat = 16
     /// A space dot in the footer.
     static let dot: CGFloat = 8

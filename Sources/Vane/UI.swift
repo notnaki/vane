@@ -4924,6 +4924,7 @@ struct SidebarPageIcon: View {
             else if let icon { SiteIcon(icon: icon, size: size, rounded: rounded) }
             else { FaviconPlaceholder(size: size) }
         }
+        .scaleEffect(Look.sidebarFaviconScale)
         .frame(width: size, height: size)
         .accessibilityHidden(true)
     }
