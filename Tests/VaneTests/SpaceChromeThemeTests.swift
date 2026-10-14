@@ -6,16 +6,20 @@ import XCTest
 final class SpaceChromeThemeTests: XCTestCase {
     @MainActor func testFloatingSurfacesDarkenContinuouslyToBlackWithThePrimary() throws {
         var previous = -1.0
-        for lightness in [0.0, 0.02, 0.1, 0.25, 0.5] {
+        for lightness in [0.0, 0.02, 0.1, 0.25, 0.5, 0.75, 1.0] {
             let theme = SpaceChromeTheme(primary: .hsl(h: 0.35, s: 0.6, l: lightness))
             for fill in [theme.bubble, theme.barFill] {
-                let color = try XCTUnwrap(NSColor(fill).usingColorSpace(.sRGB))
+                let color = try XCTUnwrap(NSColor(fill).usingColorSpace(.displayP3))
                 let peak = max(color.redComponent, color.greenComponent, color.blueComponent)
+                let floor = min(color.redComponent, color.greenComponent, color.blueComponent)
                 if lightness == 0 { XCTAssertEqual(peak, 0, accuracy: 0.0001) }
-                XCTAssertGreaterThan(peak, previous)
+                if lightness == 0.5 { XCTAssertGreaterThan(peak, 0.12,
+                    "Midtone spaces should retain a visible tint instead of looking almost black") }
+                XCTAssertGreaterThan((peak + floor) / 2, previous)
             }
-            let color = try XCTUnwrap(NSColor(theme.bubble).usingColorSpace(.sRGB))
-            previous = max(color.redComponent, color.greenComponent, color.blueComponent)
+            let color = try XCTUnwrap(NSColor(theme.bubble).usingColorSpace(.displayP3))
+            previous = (max(color.redComponent, color.greenComponent, color.blueComponent)
+                + min(color.redComponent, color.greenComponent, color.blueComponent)) / 2
         }
     }
 
@@ -58,8 +62,8 @@ final class SpaceChromeThemeTests: XCTestCase {
                 let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
                 let pixel = try XCTUnwrap(bitmap.colorAt(x: 6, y: 6)?.usingColorSpace(.sRGB))
                 let rgb = [pixel.redComponent, pixel.greenComponent, pixel.blueComponent]
-                XCTAssertLessThan(try XCTUnwrap(rgb.max()), 0.18,
-                                  "Floating surfaces should stay near black, with a hint of the primary hue")
+                XCTAssertLessThan(try XCTUnwrap(rgb.max()), 0.3,
+                                  "Floating surfaces should stay dark, with a visible primary tint")
                 for index in rgb.indices where index != dominant {
                     XCTAssertGreaterThan(rgb[dominant], rgb[index])
                 }
