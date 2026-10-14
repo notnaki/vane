@@ -154,7 +154,7 @@ struct ReadingQueuePane: View {
                 .accessibilityLabel("\(article.title), saved copy in \(item.profileName), \(article.isRead ? "read" : "unread")")
                 .help("\(article.sourceURL)\nSaved \(article.capturedAt.formatted()) · \(size(collection.repository(for: item.profileID)?.bytes(for: article) ?? 0))")
             Menu { actions(item) } label: { Image(systemName: "ellipsis") }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("Actions for \(article.title)")
+                .menuStyle(.borderlessButton).tint(Look.inkSecondary).menuIndicator(.hidden).fixedSize().accessibilityLabel("Actions for \(article.title)")
         }.padding(8)
             .onHover { inside in
                 if inside { hoveredArticle = item.id }

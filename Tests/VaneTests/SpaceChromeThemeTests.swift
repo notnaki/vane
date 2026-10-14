@@ -35,6 +35,40 @@ final class SpaceChromeThemeTests: XCTestCase {
         }
     }
 
+    @MainActor func testFloatingBackgroundsKeepADarkVersionOfThePrimaryHue() throws {
+        for (hex, dominant) in [("#22BB55", 1), ("#DD3355", 0), ("#3355EE", 2)] {
+            let theme = SpaceChromeTheme(primary: ThemeColor(hex: hex))
+            for fill in [theme.bubble, theme.barFill] {
+                let renderer = ImageRenderer(content: Rectangle().fill(fill).frame(width: 12, height: 12))
+                let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+                let pixel = try XCTUnwrap(bitmap.colorAt(x: 6, y: 6)?.usingColorSpace(.sRGB))
+                let rgb = [pixel.redComponent, pixel.greenComponent, pixel.blueComponent]
+                XCTAssertLessThan(try XCTUnwrap(rgb.max()), 0.18,
+                                  "Floating surfaces should stay near black, with a hint of the primary hue")
+                for index in rgb.indices where index != dominant {
+                    XCTAssertGreaterThan(rgb[dominant], rgb[index])
+                }
+            }
+        }
+    }
+
+    @MainActor func testNativeControlAccentRemainsReadableForDarkAndPalePrimaries() throws {
+        for hex in ["#080808", "#FAFAFA", "#FFFF22", "#2222FF", "#22BB55"] {
+            let theme = SpaceChromeTheme(primary: ThemeColor(hex: hex))
+            let pixel = try XCTUnwrap(NSColor(theme.accent).usingColorSpace(.sRGB))
+            func linear(_ value: CGFloat) -> Double {
+                let value = Double(value)
+                return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+            }
+            let luminance = 0.2126 * linear(pixel.redComponent) + 0.7152 * linear(pixel.greenComponent)
+                + 0.0722 * linear(pixel.blueComponent)
+            XCTAssertGreaterThan((luminance + 0.05) / (0.02 + 0.05), 2.99,
+                                 "Tinted controls need contrast against dark surfaces")
+            XCTAssertGreaterThan(1.05 / (luminance + 0.05), 3.5,
+                                 "Pale primaries must preserve contrast for native controls and white button labels")
+        }
+    }
+
     @MainActor func testSelectedFavoriteUsesSpacePrimaryInsteadOfItsWebsiteIcon() throws {
         let icon = NSImage(size: CGSize(width: 16, height: 16), flipped: false) { rect in
             NSColor.red.setFill()

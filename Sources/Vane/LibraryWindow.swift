@@ -885,7 +885,7 @@ struct LibraryHead<Filter: View, Actions: View>: View {
 
     private func pill<Label: View>(filling: Bool, @ViewBuilder _ label: () -> Label) -> some View {
         label()
-            .menuStyle(.borderlessButton)
+            .menuStyle(.borderlessButton).tint(Look.inkSecondary)
             .menuIndicator(.hidden)
             .fixedSize()
             .padding(.horizontal, Look.inset)
@@ -948,7 +948,7 @@ private struct LibraryRow<Leading: View, Actions: View>: View {
             // the row: opacity costs no space, so a title never shortens as the pointer
             // arrives and no row ever changes shape under it.
             Menu { actions() } label: { Image(systemName: "ellipsis") }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.borderlessButton).tint(Look.inkSecondary)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .font(Look.caption).foregroundStyle(Look.inkSecondary)
@@ -1841,7 +1841,7 @@ private struct SpaceCard: View {
             } label: {
                 Image(systemName: "ellipsis")
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .menuStyle(.borderlessButton).tint(Look.inkSecondary).menuIndicator(.hidden).fixedSize()
             .font(Look.caption).foregroundStyle(Look.inkTertiary)
             .accessibilityLabel("\(space.name) actions")
         }

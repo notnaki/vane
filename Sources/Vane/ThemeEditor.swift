@@ -111,7 +111,7 @@ struct ThemeEditor: View {
             } label: {
                 Image(systemName: current.icon ?? "cloud").font(Look.spaceIcon)
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.borderlessButton).tint(Look.inkSecondary)
             .menuIndicator(.hidden)
             .fixedSize()
             .foregroundStyle(Look.inkSecondary)

@@ -408,7 +408,7 @@ struct FindControlStyle: ButtonStyle {
             .contentShape(.rect)
             .foregroundStyle(enabled ? Look.barText : Look.barText.opacity(Look.dimmed))
             .background(enabled && (configuration.isPressed || hovering)
-                        ? chromeTheme.selected : .clear,
+                        ? chromeTheme.barSelected : .clear,
                         in: .rect(cornerRadius: Look.chipRadius))
             .onHover { hovering = $0 }
             .animation(reduceMotion ? nil : Look.quick, value: hovering)

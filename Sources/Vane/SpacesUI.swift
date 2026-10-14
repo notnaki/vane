@@ -1393,7 +1393,7 @@ struct CreateSpaceForm: View {
                 } label: {
                     Text(chosenProfile.name).lineLimit(1)
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.borderlessButton).tint(Look.inkSecondary)
             }
             field {
                 Image(systemName: "paintbrush").frame(width: Look.tileIcon)

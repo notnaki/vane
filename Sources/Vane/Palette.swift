@@ -959,7 +959,7 @@ struct CommandField: NSViewRepresentable {
         .padding(.horizontal, Look.barRowInset)
         .frame(height: Look.barRowHeight)
         .background(on ? (activeBang == nil ? chromeTheme.barSelected : bangColor)
-                    : (lit ? chromeTheme.hovered : .clear),
+                    : (lit ? chromeTheme.barHovered : .clear),
                     in: .rect(cornerRadius: Look.pillRadius))
         .animation(motion(Look.quick), value: on)
         .animation(motion(Look.quick), value: lit)

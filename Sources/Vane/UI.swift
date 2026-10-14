@@ -1304,7 +1304,7 @@ private struct PillBody: View {
         } label: {
             Image(systemName: "ellipsis")
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.borderlessButton).tint(Look.inkSecondary)
         .menuIndicator(.hidden)
         .fixedSize()
         .actionAnchor(overflowAnchor)
@@ -2516,10 +2516,11 @@ private struct SpaceRow: View {
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(Look.spaceIcon.weight(.bold))
+                        .foregroundStyle(Look.inkSecondary)
                         .frame(width: Look.rowTarget, height: Look.rowHeight)
                         .contentShape(.rect)
                 }
-                .menuStyle(.borderlessButton)
+                .menuStyle(.borderlessButton).tint(Look.inkSecondary)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .focused($optionsFocused)
