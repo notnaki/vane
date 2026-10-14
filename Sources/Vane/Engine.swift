@@ -2592,9 +2592,11 @@ struct Stash {
             tab.restore(url: saved.page ?? url, home: kind == .today ? nil : url, parked: saved)
             return tab
         }
-        tabs.insert(contentsOf: restored, at: TabStore.clampedDestination(
-            others: tabs.map(\.kind), moving: kind, to: tabs.count))
-        syncShapes()
+        Motion.list {
+            tabs.insert(contentsOf: restored, at: TabStore.clampedDestination(
+                others: tabs.map(\.kind), moving: kind, to: tabs.count))
+            syncShapes()
+        }
         extensions.sync()
         return restored
     }
