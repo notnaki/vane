@@ -988,7 +988,7 @@ private struct LibraryList<T, ID: Hashable, Row: View>: View {
     @ViewBuilder let row: (T) -> Row
 
     var body: some View {
-        ScrollView {
+        LibraryScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(groups, id: \.title) { group in
                     LibraryGroupHeader(title: group.title)
@@ -997,43 +997,7 @@ private struct LibraryList<T, ID: Hashable, Row: View>: View {
             }
             .padding(.horizontal, Look.inset)
             .padding(.bottom, Look.cardInset)
-            .background(LibraryListScrollStyle())
         }
-        .scrollContentBackground(.hidden)
-        .scrollIndicators(.automatic)
-    }
-}
-
-/// Keep Library lists compact and transient even when macOS prefers legacy scrollbars.
-/// The marker lives inside the scroll content so it configures only its enclosing list.
-private struct LibraryListScrollStyle: NSViewRepresentable {
-    final class Anchor: NSView {
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            configureScrollView()
-        }
-
-        override func layout() {
-            super.layout()
-            configureScrollView()
-        }
-
-        func configureScrollView() {
-            guard let scroll = enclosingScrollView else { return }
-            if scroll.scrollerStyle != .overlay { scroll.scrollerStyle = .overlay }
-            if !scroll.autohidesScrollers { scroll.autohidesScrollers = true }
-            if let scroller = scroll.verticalScroller, scroller.controlSize != .small {
-                scroller.controlSize = .small
-            }
-        }
-    }
-
-    func makeNSView(context: Context) -> Anchor { Anchor() }
-
-    func updateNSView(_ view: Anchor, context: Context) {
-        view.configureScrollView()
     }
 }
 
