@@ -115,6 +115,39 @@ import XCTest
         }
     }
 
+    func testClosingMountedLibrarySearchReturnsKeyboardToPage() async throws {
+        let (store, window, _) = fixture(withSpaces: true)
+        let tab = store.newBlankTab(loading: URL(string: "about:blank"))
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        Library.open(.downloads, in: store)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(150))
+        func search(_ view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, field.isEditable { return field }
+            return view.subviews.lazy.compactMap { search($0) }.first
+        }
+        let field = try XCTUnwrap(search(host))
+        for _ in 0..<50 where !(window.firstResponder is NSTextView) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(window.firstResponder is NSTextView)
+        // A departing panel stays enabled while its native/SwiftUI landing is in flight.
+        // Hold that presentation to cover delayed or interrupted completion.
+        store.librarySwipeProgress = 0.5
+        Library.close(store)
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertNotNil(field.superview, "The prepared panel remains mounted")
+        let responder = window.firstResponder as? NSView
+        XCTAssertTrue(responder === tab.web || responder?.isDescendant(of: tab.web) == true,
+                      "The invisible search field must release page keyboard input; holder=\(String(describing: window.firstResponder)) page=\(String(describing: store.activePageResponder)) webWindow=\(tab.web.window != nil) palette=\(store.palette != nil)")
+    }
+
     func testReopeningMountedDownloadAndMediaPanesRefreshesMissingFiles() async throws {
         let (store, window, _) = fixture(withSpaces: true)
         let downloads = Downloads.manager(for: store.profileID)
