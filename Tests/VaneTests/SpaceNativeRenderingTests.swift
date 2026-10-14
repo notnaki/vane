@@ -73,9 +73,13 @@ import XCTest
         let slide = try XCTUnwrap(host.spaceSlide)
         var coveredUpdate = false
         slide.start(duration: 0.02) {
-            store.switchTo(space: spaces[1])
-            store.spaceDrag = 0
-            store.spaceSwiping = false
+            // Match the production completion: selection and gesture reset share a
+            // handoff transaction so SpaceSlide cannot begin an independent transition.
+            Motion.spaceHandoff {
+                store.switchTo(space: spaces[1])
+                store.spaceDrag = 0
+                store.spaceSwiping = false
+            }
             DispatchQueue.main.async {
                 coveredUpdate = slide.superview === host
             }
@@ -126,6 +130,63 @@ import XCTest
         XCTAssertTrue(remaining.allSatisfy { $0.superview == nil })
     }
 
+    private func adjacentProfile(to store: TabStore, after space: Space) -> (UUID, Space) {
+        let profile = ProfileManager.shared.create(name: "Prepared destination").id
+        let target = Space(name: "Remote", profileID: profile)
+        XCTAssertTrue(ProfileManager.shared.saveSpaces([target], for: profile))
+        store.switchTo(space: space)
+        XCTAssertEqual(store.swipeNeighbour(for: -1)?.id, target.id)
+        addTeardownBlock { @MainActor in
+            for peer in TabStore.all.filter({ $0.profileID == profile }) {
+                peer.spaceGesture.monitor.remove()
+                let tabs = peer.everyTab
+                peer.dropStashes()
+                TabStore.all.removeAll { $0 === peer }
+                SharedTabs.release(tabs)
+            }
+            Store.forget(profile)
+            ProfileManager.shared.delete(profile)
+            try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
+        }
+        return (profile, target)
+    }
+
+    func testPreparedDestinationInvalidatesBeforeAnotherProfileMutatesItsTabs() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        let (profile, target) = adjacentProfile(to: store, after: spaces.last!)
+        let peer = TabStore(profileID: profile, space: target, session: [])
+        _ = peer.newBlankTab(focus: false)
+        window.contentView?.layoutSubtreeIfNeeded()
+        monitor.schedulePreparation(in: store)
+        try await Task.sleep(for: .milliseconds(250))
+        let stale = try XCTUnwrap(monitor.preparedSlides[target.id])
+        _ = peer.newBlankTab(focus: false)
+        XCTAssertNil(monitor.preparedSlides[target.id],
+                     "A peer mutation must invalidate before a same-turn gesture can claim the capture")
+        XCTAssertNil(stale.superview)
+        try await Task.sleep(for: .milliseconds(250))
+        let refreshed = try XCTUnwrap(monitor.preparedSlides[target.id])
+        XCTAssertFalse(refreshed === stale)
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === refreshed)
+    }
+
+    func testNewPreviewSupplyingStoreCannotReuseAnOlderPreparedDestination() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        let (profile, target) = adjacentProfile(to: store, after: spaces.last!)
+        window.contentView?.layoutSubtreeIfNeeded()
+        monitor.schedulePreparation(in: store)
+        try await Task.sleep(for: .milliseconds(250))
+        let stale = try XCTUnwrap(monitor.preparedSlides[target.id])
+        let peer = TabStore(profileID: profile, space: target, session: [])
+        _ = peer.newBlankTab(focus: false)
+        // No run-loop turn for preparation/registry observation before the gesture.
+        monitor.track(-30, width: SidebarWidth.shared.width, in: store)
+        let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        XCTAssertFalse(slide === stale, "A newly live preview supplier changes the frozen row structure")
+        XCTAssertNil(stale.superview)
+    }
+
     func testSidebarPreparationWaitsUntilLibraryDragIsIdle() async throws {
         let (store, _, _, monitor) = try fixture()
         store.librarySwipeProgress = 0.2
@@ -159,9 +220,21 @@ import XCTest
         monitor.land(1, to: spaces[1], width: 250, store: store,
                      duration: 0.4)
         XCTAssertTrue(host.spaceSlide === slide, "Release must animate the surface already under the fingers")
-        try await Task.sleep(for: .milliseconds(500))
+        // A newly ordered window may submit its first compositor frame after start().
+        // Observe native completion before measuring the separate live-tree handoff.
+        let animationDeadline = ProcessInfo.processInfo.systemUptime + 1
+        while (store.spaceSwiping || store.spaceGesture.profileSliding),
+              ProcessInfo.processInfo.systemUptime < animationDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertFalse(store.spaceSwiping, "The native landing must complete")
+        XCTAssertFalse(store.spaceGesture.profileSliding)
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
-        XCTAssertNil(host.spaceSlide)
+        let handoffDeadline = ProcessInfo.processInfo.systemUptime + 0.18
+        while host.spaceSlide != nil, ProcessInfo.processInfo.systemUptime < handoffDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertNil(host.spaceSlide, "After native completion, retire through the live acknowledgement, not the one-second safeguard")
     }
 
     func testLandingKeepsOneContinuousNativeProgressSource() async throws {
@@ -227,6 +300,29 @@ import XCTest
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
         XCTAssertNil(host.spaceSlide, "The rendered identity must retire the cover before the one-second safeguard")
+    }
+
+    func testSynchronousLiveSidebarAcknowledgementIsNotLostDuringCompletion() async throws {
+        let (store, spaces, window, _) = try fixture()
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        window.contentView = container
+        let slide = ProfileSpaceSlide(frame: container.bounds,
+            outgoing: store.swipePreview(in: spaces[0]), incoming: store.swipePreview(in: spaces[1]),
+            drag: -80, direction: 1, source: store, includesFavorites: false, travelWidth: 250)
+        container.addSubview(slide)
+        defer { slide.cancel() }
+        slide.start(duration: 0.02) {
+            store.switchTo(space: spaces[1])
+            store.spaceDrag = 0
+            store.spaceSwiping = false
+            store.spaceGesture.profileSliding = false
+            // NSHostingView can update synchronously with final state publication,
+            // before finish() arms its destination-specific retirement guard.
+            slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: true)
+        }
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertNil(slide.superview,
+                     "A valid acknowledgement during completion must retire without the safeguard")
     }
 
     func testCommittedNativeLandingRetainsFingerVelocity() async throws {

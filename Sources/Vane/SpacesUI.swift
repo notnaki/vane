@@ -928,14 +928,37 @@ private struct SpaceSwipe: ViewModifier {
     private(set) var preparedSlides: [UUID: ProfileSpaceSlide] = [:]
     private var preparation: DispatchWorkItem?
     private var preparationObservers: [AnyCancellable] = []
+    private var preparationPeers: [ObjectIdentifier: AnyCancellable] = [:]
+    private var preparationProfiles: Set<UUID> = []
+
+    /// Preview rows can come from another window or a parked profile. Observe the
+    /// supplying profiles, and invalidate synchronously before their row mutations.
+    private func observePreparationPeers(for profiles: Set<UUID>, in store: TabStore) {
+        preparationProfiles = profiles
+        preparationPeers.removeAll()
+        for peer in TabStore.all where peer !== store && profiles.contains(peer.profileID) {
+            preparationPeers[ObjectIdentifier(peer)] = peer.objectWillChange.sink { [weak self, weak store] _ in
+                self?.invalidatePreparation()
+                DispatchQueue.main.async { [weak self, weak store] in
+                    guard let self, let store else { return }
+                    self.schedulePreparation(in: store)
+                }
+            }
+        }
+    }
+
+    private func invalidatePreparation() {
+        preparation?.cancel()
+        preparation = nil
+        discardPreparation()
+    }
 
     /// Build adjacent sidebar surfaces while idle, never in the first directional sample.
     /// Anchor updates invalidate them when the live sidebar or its geometry changes.
     func schedulePreparation(in store: TabStore) {
         guard monitor != nil, self.store === store, !store.spaceSwiping, !landing,
               !store.libraryOpen, store.librarySwipeProgress == nil else { return }
-        preparation?.cancel()
-        discardPreparation()
+        invalidatePreparation()
         let work = DispatchWorkItem { [weak self, weak store] in
             guard let self, let store, self.monitor != nil, self.store === store,
                   !store.spaceSwiping, !self.landing,
@@ -945,6 +968,10 @@ private struct SpaceSwipe: ViewModifier {
             let strip = store.strip
             guard let index = strip.firstIndex(where: { $0.id == store.currentSpaceID }),
                   let origin = store.swipeSpace else { return }
+            let adjacent = [-1, 1].compactMap { direction in
+                strip.indices.contains(index + direction) ? strip[index + direction] : nil
+            }
+            self.observePreparationPeers(for: Set(adjacent.map(\.profileID) + [origin.profileID]), in: store)
             for direction in [-1, 1] where strip.indices.contains(index + direction) {
                 let target = strip[index + direction]
                 let favorites = target.profileID != store.profileID
@@ -1172,7 +1199,9 @@ private struct SpaceSwipe: ViewModifier {
         // the geometry anchor. Read their completed state on the next main-loop turn.
         for publisher in [store.objectWillChange, store.spaceGesture.objectWillChange,
                           ProfileManager.shared.objectWillChange] {
+            let invalidates = publisher !== store.spaceGesture.objectWillChange
             preparationObservers.append(publisher.sink { [weak self, weak store] _ in
+                if invalidates { self?.invalidatePreparation() }
                 DispatchQueue.main.async { [weak self, weak store] in
                     guard let self, let store else { return }
                     self.schedulePreparation(in: store)
@@ -1257,6 +1286,8 @@ private struct SpaceSwipe: ViewModifier {
 
     func remove() {
         preparationObservers.removeAll()
+        preparationPeers.removeAll()
+        preparationProfiles.removeAll()
         preparation?.cancel()
         preparation = nil
         discardPreparation()
@@ -1304,6 +1335,14 @@ private struct SpaceSwipe: ViewModifier {
     /// asking SwiftUI to render a translated list for every event.
     func track(_ offset: CGFloat, width: CGFloat, in store: TabStore) {
         guard width > 0 else { return }
+        if !store.spaceSwiping, !preparedSlides.isEmpty {
+            // A store created since idle preparation has no subscription yet. Validate
+            // suppliers once at claim, never on the per-event native tracking path.
+            let peers = Set(TabStore.all.filter {
+                $0 !== store && preparationProfiles.contains($0.profileID)
+            }.map(ObjectIdentifier.init))
+            if peers != Set(preparationPeers.keys) { invalidatePreparation() }
+        }
         store.spaceSwiping = true
         if offset == 0, let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.isSource(store) {

@@ -909,6 +909,7 @@ extension VaneWindow {
     private var retirementSpaceID: UUID?
     private var retirementScheduled = false
     private var retirementTimeout: DispatchWorkItem?
+    private var sidebarAcknowledgements: [ObjectIdentifier: (spaceID: UUID?, atRest: Bool)] = [:]
     var offset: CGFloat { (outgoing.layer?.presentation()?.frame.minX ?? outgoing.frame.minX) - contentInset }
     private var motionObserver: NSObjectProtocol?
 
@@ -1002,6 +1003,7 @@ extension VaneWindow {
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         self.completion = completion
+        sidebarAcknowledgements.removeAll()
         publishProgress(offset)
         source?.spaceGesture.profileSlidesFavorites = includesFavorites
         source?.spaceGesture.profileSliding = true
@@ -1122,6 +1124,7 @@ extension VaneWindow {
                 let timeout = DispatchWorkItem { [weak self] in self?.retire() }
                 retirementTimeout = timeout
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: timeout)
+                retireIfAcknowledged()
             } else {
                 scheduleRetirement(in: window)
             }
@@ -1131,8 +1134,17 @@ extension VaneWindow {
     /// Called by the live sections' representable after SwiftUI updates their identity
     /// and removes the gesture offset. A display tick alone cannot establish that.
     func sidebarDidUpdate(_ store: TabStore, renderedSpaceID: UUID?, atRest: Bool) {
-        guard finished, retirementStore === store, atRest,
-              renderedSpaceID == retirementSpaceID, store.currentSpaceID == retirementSpaceID,
+        // NSHostingView may acknowledge synchronously during completion's final state
+        // publication, before finish() knows the arriving store. Retain that rendered
+        // identity/rest pair instead of waiting for a second update that may never come.
+        sidebarAcknowledgements[ObjectIdentifier(store)] = (renderedSpaceID, atRest)
+        retireIfAcknowledged()
+    }
+
+    private func retireIfAcknowledged() {
+        guard finished, let store = retirementStore,
+              let rendered = sidebarAcknowledgements[ObjectIdentifier(store)], rendered.atRest,
+              rendered.spaceID == retirementSpaceID, store.currentSpaceID == retirementSpaceID,
               !store.spaceSwiping, !store.spaceGesture.profileSliding,
               let window else { return }
         scheduleRetirement(in: window)
@@ -1153,6 +1165,7 @@ extension VaneWindow {
         retirementTimeout?.cancel()
         retirementTimeout = nil
         retirementStore = nil
+        sidebarAcknowledgements.removeAll()
         let host = superview as? BrowserWindowHost
         removeFromSuperview()
         host?.didFinishSpaceSlide(self)
