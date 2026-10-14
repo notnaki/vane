@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import vane
 
@@ -47,6 +48,154 @@ import XCTest
                       momentum: NSEvent.Phase = [], precise: Bool = true, inverted: Bool = true) {
         NSApplication.shared.sendEvent(LibraryScrollEvent(window: window, point: point,
             dx: dx, dy: dy, phase: phase, momentum: momentum, precise: precise, inverted: inverted))
+    }
+
+    func testOpeningAndClosingTrackFingersBeforeCommitting() throws {
+        try XCTSkipIf(Motion.reduced, "Requires interactive presentation")
+        let (store, window, _) = fixture(withSpaces: true)
+        store.sidebarShown = true
+        store.libraryOpen = false
+        send(window, phase: .began)
+        send(window, dx: 40)
+        let opening = store.librarySwipeProgress
+        XCTAssertNotNil(opening)
+        XCTAssertGreaterThan(opening ?? 0, 0)
+        XCTAssertLessThan(opening ?? 1, 1)
+        send(window, dx: 30)
+        XCTAssertGreaterThan(store.librarySwipeProgress ?? 0, opening ?? 0)
+        XCTAssertFalse(store.libraryOpen)
+        send(window, phase: .ended)
+        XCTAssertTrue(store.libraryOpen)
+
+        send(window, phase: .began)
+        send(window, dx: -40)
+        let closing = store.librarySwipeProgress
+        XCTAssertNotNil(closing)
+        XCTAssertGreaterThan(closing ?? 0, 0)
+        XCTAssertLessThan(closing ?? 1, 1)
+        send(window, dx: -30)
+        XCTAssertLessThan(store.librarySwipeProgress ?? 1, closing ?? 1)
+        XCTAssertTrue(store.libraryOpen)
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+    }
+
+    func testInterruptedSwipeClearsPresentationWithoutChangingDestination() throws {
+        try XCTSkipIf(Motion.reduced, "Requires interactive presentation")
+        let (store, window, monitor) = fixture()
+        send(window, phase: .began)
+        send(window, dx: -40)
+        XCTAssertNotNil(store.librarySwipeProgress)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        XCTAssertNil(store.librarySwipeProgress)
+        XCTAssertTrue(store.libraryOpen)
+        send(window, phase: .began)
+        send(window, dx: -40)
+        monitor.remove()
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testRenderedLibraryTracksDragAndSlidesAtFullWidthOnClose() async throws {
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(.off)
+        defer { saver.setMode(previousMode) }
+        try XCTSkipIf(Motion.reduced, "Requires animated presentation")
+        let (store, window, _) = fixture(withSpaces: true)
+        Library.open(.downloads, in: store)
+        store.libraryOpen = false
+        store.sidebarShown = true
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.orderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        try await Task.sleep(for: .milliseconds(80))
+        send(window, phase: .began)
+        send(window, dx: 40)
+        try await Task.sleep(for: .milliseconds(40))
+        func search(_ view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField,
+               field.placeholderString == LibrarySection.downloads.searchPrompt { return field }
+            return view.subviews.lazy.compactMap { search($0) }.first
+        }
+        let field = try XCTUnwrap(search(host))
+        field.wantsLayer = true
+        func origin() throws -> CGFloat {
+            try XCTUnwrap(field.layer?.presentation()).convert(.zero, to: host.layer?.presentation()).x
+        }
+        let initial = try origin()
+        let width = field.bounds.width
+        XCTAssertFalse(window.firstResponder is NSTextView, "A preview must not take the keyboard")
+        send(window, dx: 40)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(try origin() - initial, 40, accuracy: 1,
+                       "The rendered panel follows fingers without an implicit spring")
+        XCTAssertEqual(field.bounds.width, width, accuracy: 1)
+        send(window, phase: .ended)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+        let resting = try origin()
+        send(window, phase: .began)
+        send(window, dx: -80)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(try origin(), resting - 80, accuracy: 1)
+        send(window, phase: .ended)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertNotNil(field.superview, "Keep the departing panel mounted through its landing")
+        XCTAssertLessThan(try origin(), resting - 80)
+        XCTAssertEqual(field.bounds.width, width, accuracy: 1,
+                       "Closing slides the panel rather than collapsing its contents")
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertNil(store.librarySwipeProgress)
+        XCTAssertNil(search(host))
+
+        // A short swipe springs back without committing or keeping a hidden panel alive.
+        send(window, phase: .began)
+        send(window, dx: 40)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertNotNil(search(host))
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertNil(store.librarySwipeProgress)
+        XCTAssertNil(search(host))
+    }
+
+    func testBatterySaverUsesImmediateDestinationWithoutInteractivePreview() {
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(.alwaysOn)
+        defer { saver.setMode(previousMode) }
+        let (store, window, _) = fixture(withSpaces: true)
+        store.libraryOpen = false
+        send(window, phase: .began)
+        send(window, dx: 120)
+        XCTAssertNil(store.librarySwipeProgress)
+        XCTAssertFalse(store.libraryOpen)
+        send(window, phase: .ended)
+        XCTAssertTrue(store.libraryOpen)
+        XCTAssertNil(store.librarySwipeProgress)
+    }
+
+    func testReducingMotionDuringDragClearsPreviewButKeepsGestureOwnership() {
+        let saver = BatterySaver.shared
+        let previousMode = saver.mode
+        saver.setMode(.off)
+        defer { saver.setMode(previousMode) }
+        let (store, window, monitor) = fixture()
+        send(window, phase: .began)
+        send(window, dx: -80)
+        monitor.finishForReducedMotion()
+        XCTAssertNil(store.librarySwipeProgress)
+        send(window, phase: .ended)
+        XCTAssertFalse(store.libraryOpen)
+        let scrolls = window.scrolls
+        send(window, dx: -200, phase: [], momentum: .began)
+        XCTAssertEqual(window.scrolls, scrolls)
     }
 
     func testPageSwipesPassThroughWithLibraryOpenOrClosedRegardlessOfMonitorOrder() {

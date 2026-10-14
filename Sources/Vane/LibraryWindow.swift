@@ -634,8 +634,8 @@ extension Look {
 /// sidebar stood, with the page still on the right — pushed over by the difference in width
 /// and pushed back when the Library closes. Nothing floats and nothing is covered.
 ///
-/// It lives in `BrowserWindow`'s HStack in place of `Sidebar`, which is why it has no shadow
-/// and no scrim, and why the page card never has to be unmounted: the web views stay in the
+/// BrowserWindow reserves its width beside the page and slides the full panel over that
+/// space. It has no shadow or scrim, and the page card never has to be unmounted: web views stay in the
 /// window, so media, the mini player and picture-in-picture all carry on.
 struct LibraryPanel: View {
     @EnvironmentObject var store: TabStore
@@ -662,7 +662,7 @@ struct LibraryPanel: View {
         // while the command bar is up — that reads Escape itself, and the innermost cancel
         // action would otherwise win.
         .background {
-            if store.palette == nil && !store.findOpen {
+            if store.libraryOpen && store.palette == nil && !store.findOpen {
                 Button("Close Library") { Library.close(store) }
                     .keyboardShortcut(.cancelAction)
                     .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
@@ -678,7 +678,10 @@ struct LibraryPanel: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Library")
-        .onAppear { axAnnounce("Library, \(library.section.title).") }
+        .onAppear { if store.libraryOpen { axAnnounce("Library, \(library.section.title).") } }
+        .onChange(of: store.libraryOpen) {
+            if store.libraryOpen { axAnnounce("Library, \(library.section.title).") }
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -815,6 +818,7 @@ private struct LibraryTile: View {
 /// list. Filter filters and nothing else — Clear under a menu called Filter is a destructive
 /// verb nobody would look for there.
 struct LibraryHead<Filter: View, Actions: View>: View {
+    @EnvironmentObject private var store: TabStore
     @Environment(\.spaceChromeTheme) private var chromeTheme
     let section: LibrarySection
     let filtering: Bool
@@ -880,7 +884,10 @@ struct LibraryHead<Filter: View, Actions: View>: View {
     /// the window is dropped, and the keyboard stays where it was — which, the first time the
     /// Library opens over a page, is the web view: every keystroke would go to the page.
     private func takeKeyboard() {
-        DispatchQueue.main.async { focused = true }
+        DispatchQueue.main.async {
+            guard store.libraryOpen else { return }
+            focused = true
+        }
     }
 
     private func pill<Label: View>(filling: Bool, @ViewBuilder _ label: () -> Label) -> some View {

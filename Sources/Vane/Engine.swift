@@ -4033,6 +4033,8 @@ struct Stash {
 
     /// The Library panel in this window, opened from the footer, ⇧⌘L, or an edge swipe.
     @Published var libraryOpen = false
+    /// Interactive reveal, retained through the landing animation; nil adopts libraryOpen.
+    @Published var librarySwipeProgress: CGFloat?
     /// Shared by the window and sidebar event monitors so Library gets first refusal
     /// on its gestures regardless of AppKit's local-monitor ordering.
     let librarySwipeMonitor = LibrarySwipeMonitor()

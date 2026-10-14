@@ -11,12 +11,18 @@ extension View {
 
 private struct LibrarySwipe: ViewModifier {
     let store: TabStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var batterySaver = BatterySaver.shared
 
     func body(content: Content) -> some View {
         let monitor = store.librarySwipeMonitor
         content
             .onAppear { monitor.install(store) }
             .onDisappear { monitor.remove() }
+            .onChange(of: reduceMotion) { if reduceMotion { monitor.finishForReducedMotion() } }
+            .onChange(of: batterySaver.isActive) {
+                if batterySaver.isActive { monitor.finishForReducedMotion() }
+            }
     }
 }
 
@@ -25,6 +31,9 @@ private struct LibrarySwipe: ViewModifier {
 /// Page content, vertical scrolling and other Spaces' gestures keep their recipient.
 @MainActor final class LibrarySwipeMonitor {
     private var monitor: Any?
+    private weak var store: TabStore?
+    private var settlement = UUID()
+    private var panelWidth: CGFloat = 1
     private var watchers: [any NSObjectProtocol] = []
     private enum Claim { case idle, undecided, mine, theirs }
     private enum Action { case close, open(UUID) }
@@ -37,6 +46,7 @@ private struct LibrarySwipe: ViewModifier {
 
     func install(_ store: TabStore) {
         guard monitor == nil else { return }
+        self.store = store
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self, weak store] event in
             guard let self, let store else { return event }
             return self.handle(event, in: store)
@@ -60,6 +70,8 @@ private struct LibrarySwipe: ViewModifier {
     }
 
     private func reset() {
+        settlement = UUID()
+        if let store { Motion.instant { store.librarySwipeProgress = nil } }
         claim = .idle
         action = nil
         travel = (0, 0, 0)
@@ -68,9 +80,45 @@ private struct LibrarySwipe: ViewModifier {
         lastWasConsumed = false
     }
 
+    func finishForReducedMotion() {
+        settlement = UUID()
+        if let store { Motion.instant { store.librarySwipeProgress = nil } }
+    }
+
+    /// The destination changes on release, but keep both surfaces mounted until the
+    /// presentation reaches its endpoint. A new gesture invalidates this completion.
+    private func settle(in store: TabStore, commit: Bool) {
+        let token = UUID()
+        settlement = token
+        let finish = {
+            if commit, let action = self.action {
+                switch action {
+                case .close: Library.close(store)
+                case .open:
+                    store.palette = nil
+                    Library.open(Library.shared.section, in: store)
+                }
+            }
+            if store.librarySwipeProgress != nil {
+                store.librarySwipeProgress = store.libraryOpen ? 1 : 0
+            }
+        }
+        let clear = { [weak self, weak store] in
+            guard let self, self.settlement == token, let store else { return }
+            Motion.instant { store.librarySwipeProgress = nil }
+        }
+        if Motion.reduced {
+            Motion.instant(finish)
+            clear()
+        } else {
+            withAnimation(Look.appear, completionCriteria: .removed, finish, completion: clear)
+        }
+    }
+
     /// Both local monitors consult this shared owner. An undecided event can pass
     /// through both, so classify and accumulate each native event exactly once.
     func handle(_ event: NSEvent, in store: TabStore) -> NSEvent? {
+        self.store = store
         if lastEvent === event { return lastWasConsumed ? nil : event }
         let result = process(event, in: store)
         lastEvent = event
@@ -120,6 +168,10 @@ private struct LibrarySwipe: ViewModifier {
         if event.phase.contains(.began) {
             reset()
             if startsInNavigationArea(event, window: window, store: store) {
+                let bounds = window.contentView?.bounds ?? NSRect(origin: .zero, size: window.frame.size)
+                panelWidth = Library.panelWidth(section: Library.shared.section,
+                    spaces: Library.shared.section == .spaces ? ProfileManager.shared.allSpaces.count : 0,
+                    private: store.isPrivate, available: bounds.width)
                 if store.libraryOpen { action = .close }
                 else if let space = store.currentSpaceID, !store.isPrivate, !store.isLittle,
                         !store.creatingSpace, !store.spaceSwiping {
@@ -134,20 +186,18 @@ private struct LibrarySwipe: ViewModifier {
         if claim == .undecided && !valid(action, in: store) { claim = .theirs; return event }
         if event.phase.contains(.cancelled) {
             finished = true
+            if claim == .mine { settle(in: store, commit: false) }
             return claim == .mine ? nil : event
         }
         if event.phase.contains(.ended) {
             finished = true
-            if claim == .mine, valid(action, in: store) {
+            if claim == .mine {
+                let commit: Bool
                 switch action {
-                case .close:
-                    if travel.x <= -60 { Library.close(store) }
-                case .open(let space):
-                    if travel.x >= 60, store.strip.first?.id == space {
-                        store.palette = nil
-                        Library.open(Library.shared.section, in: store)
-                    }
+                case .close: commit = travel.x <= -60
+                case .open(let space): commit = travel.x >= 60 && store.strip.first?.id == space
                 }
+                settle(in: store, commit: commit && valid(action, in: store))
             }
             return claim == .mine ? nil : event
         }
@@ -169,6 +219,12 @@ private struct LibrarySwipe: ViewModifier {
                 // Read the strip only after a rightward horizontal gesture qualifies,
                 // rather than decoding every profile's Spaces on vertical/page scrolls.
                 claim = travel.x > 0 && store.strip.first?.id == space ? .mine : .theirs
+            }
+        }
+        if claim == .mine, valid(action, in: store), !Motion.reduced {
+            let origin: CGFloat = switch action { case .close: 1; case .open: 0 }
+            Motion.instant {
+                store.librarySwipeProgress = min(1, max(0, origin + travel.x / max(1, panelWidth)))
             }
         }
         return claim == .mine ? nil : event

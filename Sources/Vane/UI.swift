@@ -384,12 +384,15 @@ struct BrowserWindow: View {
     @State private var spaceCount = 0
 
     /// The rail plus its list column, or — in the Spaces section — a card per Space, up to
-    /// what the page can spare. Zero with the Library shut, so nothing animates on a number
-    /// nobody is looking at. See `Library.panelWidth`.
+    /// what the page can spare. Keep its full width while sliding offscreen so the
+    /// contents never reflow during a close. See `Library.panelWidth`.
     private var libraryWidth: CGFloat {
-        guard store.libraryOpen else { return 0 }
         return Library.panelWidth(section: library.section, spaces: spaceCount,
                                   private: store.isPrivate, available: windowWidth)
+    }
+
+    private var libraryProgress: CGFloat {
+        store.librarySwipeProgress ?? (store.libraryOpen ? 1 : 0)
     }
 
     var body: some View {
@@ -401,13 +404,10 @@ struct BrowserWindow: View {
                 // column stand where the sidebar stood, and the page simply moves over by
                 // the difference in width. Nothing is covered and nothing is unmounted, so
                 // media, the mini player and picture-in-picture carry straight on.
-                if store.libraryOpen {
-                    LibraryPanel().frame(width: libraryWidth)
-                } else if store.sidebarShown {
-                    // The sidebar itself stays in the overlay, so docking an open
-                    // hover panel changes its geometry without replacing its contents.
-                    Color.clear.frame(width: sidebar.width)
-                }
+                // A stable spacer interpolates the page's origin; the Library keeps
+                // its full width in an overlay rather than reflowing during dismissal.
+                Color.clear.frame(width: (store.sidebarShown ? sidebar.width : 0)
+                    * (1 - libraryProgress) + libraryWidth * libraryProgress)
                 WebCard()
                     .anchorPreference(key: DownloadFeedbackBounds.self, value: .bounds) { [.page: $0] }
             }
@@ -415,6 +415,16 @@ struct BrowserWindow: View {
             .accessibilityHidden(store.palette != nil)
             edgeStrip
             sidebarSurface
+            if store.libraryOpen || store.librarySwipeProgress != nil {
+                LibraryPanel()
+                    .frame(width: libraryWidth)
+                    .offset(x: -libraryWidth * (1 - libraryProgress))
+                    .transition(.offset(x: -libraryWidth))
+                    .disabled(store.palette != nil)
+                    .allowsHitTesting(store.libraryOpen && store.palette == nil)
+                    .accessibilityHidden(!store.libraryOpen || store.palette != nil)
+                    .zIndex(1)
+            }
             // On the seam, over the card: the sidebar's own trailing edge is what Arc's
             // resize handle is, and it has to be above the web view to see a drag at all.
             // Not while the Library is up: the rail is not the sidebar, and is not dragged.
@@ -511,11 +521,11 @@ struct BrowserWindow: View {
     @ViewBuilder private var sidebarSurface: some View {
         // One sidebar for both presentations. ⌘S while peeking keeps this view alive:
         // only its inset and floating chrome settle away as the page makes room.
-        if (store.sidebarShown || peeking) && !store.libraryOpen {
+        if store.sidebarShown || peeking {
             let floating = !store.sidebarShown
             Sidebar()
-                .disabled(store.palette != nil)
-                .accessibilityHidden(store.palette != nil)
+                .disabled(store.palette != nil || store.libraryOpen)
+                .accessibilityHidden(store.palette != nil || store.libraryOpen)
                 .frame(width: sidebar.width)
                 .clipShape(.rect(cornerRadius: floating ? Look.floatingSidebarRadius : 0))
                 .background {
@@ -532,6 +542,16 @@ struct BrowserWindow: View {
                         .allowsHitTesting(false)
                 }
                 .padding(floating ? Look.floatingSidebarGap : 0)
+                .mask(alignment: .trailing) {
+                    if libraryProgress > 0 {
+                        Rectangle().frame(width: max(0, sidebar.width
+                            + (floating ? 2 * Look.floatingSidebarGap : 0)
+                            - libraryWidth * libraryProgress))
+                    } else {
+                        Rectangle().padding(-2 * Look.barShadowRadius)
+                    }
+                }
+                .allowsHitTesting(!store.libraryOpen)
                 .transition(.move(edge: .leading).combined(with: .opacity))
                 // Above the page during edge reveal and dismissal; below the resize handle.
                 .zIndex(1)
