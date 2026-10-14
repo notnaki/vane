@@ -106,7 +106,7 @@ struct SpaceName: View {
         }
     } + [ChromeMenuItem(title: "New Space", symbol: "rectangle.stack.badge.plus", startsGroup: true) {
         store.newSpace(); rebuild()
-    }, ChromeMenuItem(title: "New Space from Template…", symbol: "rectangle.stack") {
+    }, ChromeMenuItem(title: "New Space from Template", symbol: "rectangle.stack") {
         store.showWorkspaceTemplates()
     }]
     anchor.show(items, title: "Spaces")
@@ -138,7 +138,7 @@ struct NewSpaceButton: View {
                 },
                 ChromeMenuItem(title: "New Tab", symbol: "plus.square",
                                shortcut: shortcut == .unassigned ? "" : shortcut.display) { store.newTab(nil) },
-                ChromeMenuItem(title: "New Space from Template…", symbol: "rectangle.stack",
+                ChromeMenuItem(title: "New Space from Template", symbol: "rectangle.stack",
                                startsGroup: true) {
                     store.showWorkspaceTemplates()
                 },
