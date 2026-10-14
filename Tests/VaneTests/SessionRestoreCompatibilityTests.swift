@@ -66,7 +66,10 @@ import XCTest
             XCTAssertEqual(tab.currentURL, sharedURL)
             XCTAssertTrue(tab.web.canGoBack)
             tab.web.goBack()
-            try await compatibilityWait { !tab.web.isLoading && tab.web.url?.path == path }
+            // WebKit can publish the restored URL/loading state before its title.
+            try await compatibilityWait {
+                !tab.web.isLoading && tab.web.url?.path == path && tab.web.title == "Page \(path)"
+            }
             XCTAssertEqual(tab.web.title, "Page \(path)")
         }
     }
