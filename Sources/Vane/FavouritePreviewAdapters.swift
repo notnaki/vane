@@ -8,6 +8,7 @@ struct FavouritePreviewExtraction: Codable, Sendable {
         var unread: Bool = false
         var status: String? = nil
         var timeLabel: String? = nil
+        var snippet: String? = nil
         var start: String? = nil
         var meeting: String? = nil
     }
@@ -40,7 +41,10 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
                   let url = FavouritePreviewURL.item(row.url, service: service) else { return .unavailable }
             guard service != .gmail || !row.subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .unavailable }
             var item = FavouritePreviewItem(title: row.title, subtitle: row.subtitle, url: url, unread: row.unread)
-            if service == .gmail { item.timeLabel = row.timeLabel.map { String($0.prefix(40)) } }
+            if service == .gmail {
+                item.timeLabel = row.timeLabel.map { String($0.prefix(40)) }
+                item.snippet = row.snippet.map { String($0.prefix(300)).trimmingCharacters(in: .whitespacesAndNewlines) }
+            }
             if service == .github { item.status = row.status.map { String($0.prefix(160)) } }
             if service == .calendar {
                 guard let start = row.start, let date = ISO8601DateFormatter().date(from: start) else { return .unavailable }
@@ -135,7 +139,8 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
                 const target = new URL(location.href); target.hash = 'inbox/' + id; url = target.href;
               }
               return {title:text(subject), subtitle:sender?.getAttribute('name') || text(sender) || sender?.getAttribute('email') || '',
-                url, unread:row.classList.contains('zE'), timeLabel:text(row.querySelector('.xW [title], .xW')) || null};
+                url, snippet:text(row.querySelector('.y2')).replace(/^[-–—]\s*/, '').slice(0,300) || null,
+                unread:row.classList.contains('zE'), timeLabel:text(row.querySelector('.xW [title], .xW')) || null};
             });
             return result('ready',items);
             """#

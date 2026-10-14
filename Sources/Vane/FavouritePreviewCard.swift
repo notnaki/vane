@@ -58,12 +58,34 @@ struct FavouritePreviewCard: View {
     @State private var siteFocusRequested = false
     var keyboardOpened: Bool = false
 
-    private var populatedInbox: Bool {
-        guard context.service == .gmail else { return false }
-        switch state { case .ready(let snapshot), .stale(let snapshot): return !snapshot.items.isEmpty; default: return false }
+    private var inboxSnapshot: FavouritePreviewSnapshot? {
+        guard context.service == .gmail else { return nil }
+        switch state {
+        case .ready(let snapshot), .stale(let snapshot): return snapshot.items.isEmpty ? nil : snapshot
+        default: return nil
+        }
     }
 
     var body: some View {
+        Group {
+            if let snapshot = inboxSnapshot { inbox(snapshot) }
+            else { standardCard }
+        }
+        .background(Look.panelFill)
+        .vaneMotionPolicy()
+        .onExitCommand(perform: dismiss)
+        .task(id: keyboardOpened) {
+            if keyboardOpened {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard !Task.isCancelled else { return }
+                siteFocusRequested = true
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(context.service.title) favourite preview")
+    }
+
+    private var standardCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
@@ -88,39 +110,78 @@ struct FavouritePreviewCard: View {
                     .vaneKeyboardAction(radius: 6, requestFocus: $siteFocusRequested) { open(context.siteURL) }
                     .accessibilityHint("Opens \(context.service.title) in a new tab in this favourite’s profile")
                 if let compose = context.composeURL {
-                    if populatedInbox {
-                        Spacer(minLength: 0)
-                        Button { open(compose) } label: {
-                            Image(systemName: "plus").font(.title3).frame(width: 32, height: 32)
-                                .background(.quaternary, in: Circle())
-                        }
-                        .buttonStyle(.plain).focusable(false)
-                        .vaneKeyboardAction(radius: 16) { open(compose) }
-                        .accessibilityLabel("Compose").help("Compose a new message")
+                    Button("Compose") { open(compose) }.focusable(false)
+                        .vaneKeyboardAction(radius: 6) { open(compose) }
                         .accessibilityHint("Opens Gmail’s compose page. Does not send a message.")
-                    } else {
-                        Button("Compose") { open(compose) }.focusable(false)
-                            .vaneKeyboardAction(radius: 6) { open(compose) }
-                            .accessibilityHint("Opens Gmail’s compose page. Does not send a message.")
-                    }
                 }
-                if !populatedInbox { Spacer(minLength: 0) }
+                Spacer(minLength: 0)
             }.frame(height: 32)
         }
         .padding(16).frame(width: Self.width, alignment: .leading)
-        .background(Look.panelFill)
-        .vaneMotionPolicy()
-        .onExitCommand(perform: dismiss)
-        .task(id: keyboardOpened) {
-            // The hosting window must be attached before SwiftUI can move native focus.
-            if keyboardOpened {
-                try? await Task.sleep(for: .milliseconds(100))
-                guard !Task.isCancelled else { return }
-                siteFocusRequested = true
+    }
+
+    private func inbox(_ snapshot: FavouritePreviewSnapshot) -> some View {
+        ViewThatFits(in: .vertical) {
+            inboxRows(snapshot).fixedSize(horizontal: false, vertical: true)
+            ScrollView { inboxRows(snapshot) }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(height: 270)
+        }
+        .frame(maxHeight: 270)
+        .frame(width: 240)
+        .overlay(alignment: .bottomTrailing) {
+            if let compose = context.composeURL {
+                Button { open(compose) } label: {
+                    Image(systemName: "plus").font(.system(size: 18, weight: .medium))
+                        .frame(width: 32, height: 32)
+                        .background(Look.panelFill, in: Circle())
+                        .overlay(Circle().strokeBorder(.primary.opacity(0.18), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
+                }
+                .buttonStyle(.plain).focusable(false)
+                .vaneKeyboardAction(radius: 16) { open(compose) }
+                .accessibilityLabel("Compose").help("Compose a new message")
+                .accessibilityHint("Opens Gmail’s compose page. Does not send a message.")
+                .padding(9)
             }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(context.service.title) favourite preview")
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(0.18), lineWidth: 0.5))
+    }
+
+    private func inboxRows(_ snapshot: FavouritePreviewSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if case .stale = state {
+                Text("Saved preview · couldn’t refresh").font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 11).padding(.top, 8)
+            }
+            ForEach(snapshot.items) { item in
+                Button { open(item.url) } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(item.subtitle).font(.system(size: 14, weight: .bold)).lineLimit(1)
+                            Spacer(minLength: 0)
+                            if let time = item.timeLabel {
+                                Text(time).font(.system(size: 11, weight: .semibold)).lineLimit(1).fixedSize()
+                            }
+                        }
+                        Text(item.title).font(.system(size: 13)).lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if let snippet = item.snippet, !snippet.isEmpty {
+                            Text(snippet).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(.horizontal, 11).padding(.vertical, 10).contentShape(.rect)
+                }
+                .buttonStyle(.plain).focusable(false)
+                .vaneKeyboardAction(radius: 6,
+                    requestFocus: item.id == snapshot.items.first?.id ? $siteFocusRequested : .constant(false)) { open(item.url) }
+                .accessibilityValue(item.unread ? "Unread" : "Read")
+                .accessibilityHint("Opens this message in a new tab in this favourite’s profile")
+                if item.id != snapshot.items.last?.id { Divider() }
+            }
+        }
+        .padding(.bottom, 38)
     }
 
     private var previewContent: some View {
@@ -156,30 +217,6 @@ struct FavouritePreviewCard: View {
             if snapshot.items.isEmpty {
                 Text(context.service == .github ? "No open pull requests involving you." : context.service == .gmail ? "Your inbox is empty." : "No upcoming events.")
                     .font(.subheadline).foregroundStyle(.secondary)
-            } else if context.service == .gmail {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(snapshot.items) { item in
-                        Button { open(item.url) } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    HStack(spacing: 6) {
-                                        if item.unread { Circle().fill(Color.accentColor).frame(width: 5, height: 5).accessibilityHidden(true) }
-                                        Text(item.subtitle).font(.subheadline).fontWeight(item.unread ? .bold : .semibold).lineLimit(1)
-                                    }
-                                    Spacer(minLength: 8)
-                                    if let time = item.timeLabel { Text(time).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                                }
-                                Text(item.title).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }.padding(.vertical, 10).padding(.horizontal, 4).contentShape(.rect)
-                        }
-                        .buttonStyle(.plain).focusable(false)
-                        .vaneKeyboardAction(radius: 6) { open(item.url) }
-                        .accessibilityValue(item.unread ? "Unread" : "Read")
-                        .accessibilityHint("Opens this message in a new tab in this favourite’s profile")
-                        if item.id != snapshot.items.last?.id { Divider() }
-                    }
-                }
             } else {
                 ForEach(snapshot.items) { item in
                     VStack(alignment: .leading, spacing: 4) {

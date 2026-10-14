@@ -92,22 +92,44 @@ import XCTest
         defer { anchor.hide(); owner.contentView = nil; owner.close() }
         let context = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://mail.google.com/mail/u/0/")!)!
         let items = [
-            FavouritePreviewItem(title: "Design review is ready", subtitle: "Alex", url: URL(string: "https://mail.google.com/mail/u/0/#inbox/abc1")!, unread: true, timeLabel: "7m"),
-            FavouritePreviewItem(title: "Your receipt for Sunday’s trip", subtitle: "Receipts", url: URL(string: "https://mail.google.com/mail/u/0/#inbox/abc2")!, timeLabel: "18h"),
-            FavouritePreviewItem(title: "Your weekly activity summary", subtitle: "Weekly updates", url: URL(string: "https://mail.google.com/mail/u/0/#inbox/abc3")!, timeLabel: "2d")
+            FavouritePreviewItem(title: "Design review is ready", subtitle: "Alex", url: URL(string: "https://mail.google.com/mail/u/0/#inbox/abc1")!, unread: true, timeLabel: "7m", snippet: "The latest changes are ready for your feedback before the next review."),
+            FavouritePreviewItem(title: "Your receipt for Sunday’s trip", subtitle: "Receipts", url: URL(string: "https://mail.google.com/mail/u/0/#inbox/abc2")!, timeLabel: "18h", snippet: "Thanks for travelling with us. Here is a summary of your trip."),
+            FavouritePreviewItem(title: "Your weekly activity summary", subtitle: "Weekly updates", url: URL(string: "https://mail.google.com/mail/u/0/#inbox/abc3")!, timeLabel: "2d", snippet: "See what happened this week across your projects and repositories.")
         ]
         let card = FavouritePreviewCard(context: context, state: .ready(.init(account: "fixture@example.test", items: items)), open: { _ in }, dismiss: {})
             .environment(\.colorScheme, .dark)
         anchor.configure(visible: true, keyboard: false, content: AnyView(card), dismiss: {})
         try await Task.sleep(for: .milliseconds(250))
         let panel = try XCTUnwrap(owner.childWindows?.first)
-        XCTAssertEqual(panel.frame.width, 340)
-        XCTAssertLessThan(panel.frame.height, 520)
+        XCTAssertEqual(panel.frame.width, 240)
+        XCTAssertLessThanOrEqual(panel.frame.height, 280)
         let content = try XCTUnwrap(panel.contentView)
         let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
         content.cacheDisplay(in: content.bounds, to: bitmap)
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         try png.write(to: URL(fileURLWithPath: "/tmp/vane-favourite-inbox-fixture.png"))
+    }
+
+    func testKeyboardOpeningInboxFocusesFirstMessage() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let owner = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 800, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        owner.isReleasedWhenClosed = false
+        let anchor = FavouritePreviewPanel.Anchor(frame: NSRect(x: 0, y: 0, width: 70, height: 50))
+        owner.contentView = anchor
+        owner.makeKeyAndOrderFront(nil)
+        defer { anchor.hide(); owner.contentView = nil; owner.close() }
+        let context = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://mail.google.com/mail/u/0/")!)!
+        let item = FavouritePreviewItem(title: "Fixture subject", subtitle: "Fixture Sender", url: URL(string: "https://mail.google.com/mail/u/0/#inbox/abc1")!)
+        var opened: [URL] = []
+        let card = FavouritePreviewCard(context: context, state: .ready(.init(account: "fixture@example.test", items: [item])), open: { opened.append($0) }, dismiss: {}, keyboardOpened: true)
+        anchor.configure(visible: true, keyboard: true, content: AnyView(card), dismiss: {})
+        try await Task.sleep(for: .milliseconds(300))
+        let panel = try XCTUnwrap(owner.childWindows?.first)
+        let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        NSApp.sendEvent(enter)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(opened, [item.url])
     }
 
 }

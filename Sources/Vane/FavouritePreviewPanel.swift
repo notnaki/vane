@@ -83,7 +83,9 @@ struct FavouritePreviewPanel: NSViewRepresentable {
             } else { host?.rootView = AnyView(content.clipShape(RoundedRectangle(cornerRadius: 16))) }
             guard let host else { return }
             host.layoutSubtreeIfNeeded()
-            let size = NSSize(width: FavouritePreviewCard.width, height: max(150, min(host.fittingSize.height, screen.visibleFrame.height - 24)))
+            let fitted = host.fittingSize
+            let size = NSSize(width: min(max(200, fitted.width), screen.visibleFrame.width - 24),
+                              height: max(100, min(fitted.height, screen.visibleFrame.height - 24)))
             let tile = owner.convertToScreen(convert(bounds, to: nil))
             let ground = screen.visibleFrame.insetBy(dx: 8, dy: 8)
             let preferredX = tile.maxX + 8
