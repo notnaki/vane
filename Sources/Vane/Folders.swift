@@ -41,6 +41,10 @@ struct Folder: Identifiable, Codable, Equatable, Sendable {
     /// folder saved before today fail to decode — and nil and [] both mean "nothing hidden".
     /// See `GitHub.dismissed`.
     var dismissed: [String]? = nil
+    /// Newly supplied rows shown beneath a collapsed live folder until it is opened.
+    /// Like tab entries, these are IDs at runtime and URLs in the saved shape.
+    /// Optional keeps older saved folders decodable.
+    var pendingLiveRows: [String]? = nil
 
     static let defaultIcon = "folder"
 
@@ -186,7 +190,7 @@ struct Pins: Codable, Equatable, Sendable {
         var id: String { entry.id }
     }
 
-    /// What the sidebar draws: everything with no folded-up folder above it.
+    /// What the sidebar draws: unfolded rows and arrivals previewed by collapsed live folders.
     var visible: [Visible] { visible(unlocked: []) }
 
     func visible(unlocked: Set<UUID>) -> [Visible] {
@@ -195,7 +199,16 @@ struct Pins: Codable, Equatable, Sendable {
         while i < entries.count {
             out.append(Visible(entry: entries[i], depth: depth(of: i)))
             if let f = entries[i].folder, f.collapsed || (f.requiresAuthentication == true && !unlocked.contains(f.id)) {
-                i = subtree(at: i).upperBound          // skip what it is hiding
+                let end = subtree(at: i).upperBound
+                if f.collapsed, f.live != nil,
+                   f.requiresAuthentication != true || unlocked.contains(f.id) {
+                    let pending = Set(f.pendingLiveRows ?? [])
+                    for child in (i + 1)..<end where entries[child].parent == f.id {
+                        guard let tab = entries[child].tab, pending.contains(tab) else { continue }
+                        out.append(Visible(entry: entries[child], depth: depth(of: child)))
+                    }
+                }
+                i = end
             } else {
                 i += 1
             }
@@ -368,6 +381,7 @@ struct Pins: Codable, Equatable, Sendable {
     mutating func edit(folder id: UUID, _ change: (inout Folder) -> Void) {
         guard let i = index(of: id), var f = entries[i].folder else { return }
         change(&f)
+        if !f.collapsed || f.live == nil { f.pendingLiveRows = nil }
         entries[i].row = .folder(f)
     }
 
@@ -427,13 +441,26 @@ struct Pins: Codable, Equatable, Sendable {
     /// kept, because an empty folder is a thing the user made on purpose.
     func mapped(_ name: (String) -> String?) -> Pins {
         var out = Pins()
+        let pending = Dictionary(entries.compactMap { entry -> (UUID, Set<String>)? in
+            guard let folder = entry.folder, let rows = folder.pendingLiveRows else { return nil }
+            return (folder.id, Set(rows))
+        }, uniquingKeysWith: { first, _ in first })
+        var renamedPending: [UUID: [String]] = [:]
         for entry in entries {
             switch entry.row {
             case .folder: out.entries.append(entry)
             case .tab(let t):
                 guard let renamed = name(t) else { continue }
                 out.entries.append(Entry(row: .tab(renamed), parent: entry.parent))
+                if let parent = entry.parent, pending[parent]?.contains(t) == true {
+                    renamedPending[parent, default: []].append(renamed)
+                }
             }
+        }
+        // Reuse each entry's translation: restoration consumes duplicate URLs one at a
+        // time, so calling `name` again for preview metadata would steal a tab's identity.
+        for id in pending.keys {
+            out.edit(folder: id) { $0.pendingLiveRows = renamedPending[id] ?? [] }
         }
         return out
     }

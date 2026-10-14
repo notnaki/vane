@@ -62,3 +62,76 @@ final class LiveFolderPresentationTests: XCTestCase {
         }
     }
 }
+
+
+@MainActor final class LiveFolderArrivalTests: XCTestCase {
+    func testCollapsedFolderShowsOnlyArrivalsUntilOpened() throws {
+        try withFixture { store, live, folder in
+            receive([1], live: live, folder: folder)
+            store.pins.toggle(folder: folder.id)
+            XCTAssertTrue(store.pins.folder(folder.id)!.collapsed)
+            receive([2, 1], live: live, folder: folder)
+            let arrival = try XCTUnwrap(store.tabs.first { store.rowURL($0.id.uuidString)?.hasSuffix("/2") == true })
+            XCTAssertEqual(store.pins.visible.map(\.id), [folder.id.uuidString, arrival.id.uuidString])
+            XCTAssertEqual(store.pins.visible.map(\.depth), [0, 1])
+            XCTAssertTrue(store.pins.folder(folder.id)!.collapsed)
+            receive([3, 2, 1], live: live, folder: folder)
+            XCTAssertEqual(store.pins.visible.count, 3, "Unopened arrivals accumulate")
+            receive([3, 2, 1], live: live, folder: folder)
+            XCTAssertEqual(store.pins.visible.count, 3, "An unchanged refresh preserves previews")
+            store.pins.toggle(folder: folder.id)
+            XCTAssertEqual(store.pins.visible.count, 4)
+            store.pins.toggle(folder: folder.id)
+            XCTAssertEqual(store.pins.visible.map(\.id), [folder.id.uuidString])
+        }
+    }
+
+    func testArrivalSurvivesSaveMappingButNeverLeaksThroughLocksOrAncestors() throws {
+        try withFixture { store, live, folder in
+            store.pins.toggle(folder: folder.id)
+            receive([1], live: live, folder: folder)
+            let saved = store.pins.mapped(store.rowURL)
+            let restored = try JSONDecoder().decode(Pins.self, from: JSONEncoder().encode(saved))
+            XCTAssertEqual(restored.visible.map(\.id), [folder.id.uuidString, "https://github.com/fixture/project/pull/1"])
+            let adopted = TabStore.adopted(restored, opened: [
+                (url: "https://github.com/fixture/project/pull/1", id: "restored-tab")
+            ])
+            XCTAssertEqual(adopted.children(of: folder.id), ["restored-tab"])
+            XCTAssertEqual(adopted.visible.map(\.id), [folder.id.uuidString, "restored-tab"])
+            store.pins.edit(folder: folder.id) { $0.requiresAuthentication = true }
+            XCTAssertEqual(store.pins.visible.count, 1)
+            XCTAssertEqual(store.pins.visible(unlocked: [folder.id]).count, 2)
+            store.pins.edit(folder: folder.id) { $0.requiresAuthentication = false }
+            var outer = Folder(name: "Outer")
+            outer.collapsed = true
+            store.pins.entries.insert(.init(row: .folder(outer)), at: 0)
+            store.pins.entries[1].parent = outer.id
+            XCTAssertEqual(store.pins.visible.map(\.id), [outer.id.uuidString])
+        }
+    }
+
+    private func receive(_ numbers: [Int], live: LiveFolders, folder: Folder) {
+        live.receive(.success(numbers.map {
+            GitHub.PR(url: "https://github.com/fixture/project/pull/\($0)", title: "PR \($0)",
+                      draft: false, repo: "fixture/project", number: $0, author: "fixture")
+        }), for: folder.id, token: "fixture-token")
+    }
+
+    private func withFixture(_ body: (TabStore, LiveFolders, Folder) throws -> Void) throws {
+        TestEnvironment.prepare()
+        let profile = UUID()
+        let space = Space(name: "Work", profileID: profile)
+        let store = TabStore(profileID: profile, space: space, session: [])
+        let live = LiveFolders(profileID: profile,
+            readCredential: { .found(account: "fixture", password: "fixture-token") })
+        defer {
+            store.tabs.forEach { $0.tearDown() }
+            TabStore.all.removeAll { $0 === store }
+            LiveFolders.forget(profile)
+            Store.forget(profile)
+        }
+        let folder = Folder(name: "Pull Requests", live: .github(GitHubQuery()))
+        store.pins = Pins(entries: [.init(row: .folder(folder))])
+        try body(store, live, folder)
+    }
+}
