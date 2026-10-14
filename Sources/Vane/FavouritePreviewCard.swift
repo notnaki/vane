@@ -134,17 +134,19 @@ struct FavouritePreviewCard: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(value.items.prefix(visibleItemCount))) { item in
-                            itemRow(item, first: item.id == value.items.first?.id)
-                                .onAppear {
-                                    if item.id == value.items.prefix(visibleItemCount).last?.id,
-                                       visibleItemCount < value.items.count {
-                                        visibleItemCount = min(visibleItemCount + 10, value.items.count)
-                                    }
+                            VStack(spacing: 0) {
+                                itemRow(item, first: item.id == value.items.first?.id, last: item.id == value.items.last?.id)
+                                if item.id != value.items.last?.id { separator }
+                            }
+                            .frame(height: Self.rowHeight + (item.id == value.items.last?.id ? 0 : 0.5))
+                            .onAppear {
+                                if item.id == value.items.prefix(visibleItemCount).last?.id,
+                                   visibleItemCount < value.items.count {
+                                    visibleItemCount = min(visibleItemCount + 10, value.items.count)
                                 }
-                            if item.id != value.items.last?.id { separator }
+                            }
                         }
                     }
-                    .padding(.bottom, 38)
                 }
                 .scrollBounceBehavior(.basedOnSize)
             }
@@ -153,7 +155,7 @@ struct FavouritePreviewCard: View {
 
     private var separator: some View { Rectangle().fill(.primary.opacity(0.08)).frame(height: 0.5) }
 
-    private func itemRow(_ item: FavouritePreviewItem, first: Bool) -> some View {
+    private func itemRow(_ item: FavouritePreviewItem, first: Bool, last: Bool) -> some View {
         Button { open(item.url) } label: {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -169,6 +171,8 @@ struct FavouritePreviewCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(detail(item)).font(.system(size: 12)).foregroundStyle(.secondary)
                     .lineLimit(2, reservesSpace: true)
+                    .padding(.trailing, last ? 40 : 0)
+                    .padding(.leading, last && !freshnessLabel.isEmpty ? 20 : 0)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 11).padding(.vertical, 9)

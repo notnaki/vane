@@ -117,6 +117,31 @@ import WebKit
         previews.dismiss(owner: owner)
     }
 
+    func testQuickReturnAfterCookiePreflightAdoptionKeepsForegroundOwner() async throws {
+        TestEnvironment.prepare()
+        let loader = FavouriteFixtureLoader(), owner = UUID()
+        loader.holdReplies = true
+        defer { loader.releaseReplies() }
+        let a = context(ProfileManager.shared.active.id)
+        let store = WKWebsiteDataStore.nonPersistent().httpCookieStore
+        let previews = FavouritePreviews(loader: loader, observeSessions: true,
+            sessionObserverFactory: { id, coordinator in
+                Task { @MainActor in coordinator.request(a, owner: owner) }
+                return FavouriteSessionObserver(profileID: id, previews: coordinator, store: store)
+            })
+        let warming = Task { await previews.warm(a) }
+        try await settle { loader.calls == 1 }
+        XCTAssertEqual(previews.owner, owner)
+        previews.dismiss(owner: owner)
+        previews.request(a, owner: owner)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(loader.calls, 1, "A quick return must reattach to the adopted load")
+        loader.releaseReplies()
+        await warming.value
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        previews.dismiss(owner: owner)
+    }
+
     func testDismissCannotPublishLateReply() async throws {
         let loader = FavouriteFixtureLoader()
         let coordinator = FavouritePreviews(loader: loader)

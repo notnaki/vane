@@ -162,9 +162,11 @@ import XCTest
         _ = NSApplication.shared
         let context = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!
         let items = (1...40).map {
-            FavouritePreviewItem(title: "PR \($0)", subtitle: "fixture/repo", url: URL(string: "https://github.com/fixture/repo/pull/\($0)")!)
+            var item = FavouritePreviewItem(title: "PR \($0)", subtitle: "fixture/repo", url: URL(string: "https://github.com/fixture/repo/pull/\($0)")!)
+            item.status = "All checks passed · Review required · Verified result with a long ending"
+            return item
         }
-        let host = NSHostingView(rootView: FavouritePreviewCard(context: context, state: .ready(.init(account: "fixture", items: items)), open: { _ in }, dismiss: {}))
+        let host = NSHostingView(rootView: FavouritePreviewCard(context: context, state: .stale(.init(account: "fixture", items: items)), open: { _ in }, dismiss: {}))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 270), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
@@ -177,6 +179,7 @@ import XCTest
         }
         let scroll = try XCTUnwrap(scrollView(in: host))
         let document = try XCTUnwrap(scroll.documentView)
+        XCTAssertEqual(scroll.verticalScrollElasticity, .none, "Preview lists must stop at their content boundary")
         let initialHeight = document.bounds.height
         XCTAssertLessThan(initialHeight, 1_500, "Initial rendering should be a small batch")
         document.scroll(NSPoint(x: 0, y: initialHeight))
@@ -186,7 +189,17 @@ import XCTest
             try await Task.sleep(for: .milliseconds(30))
         }
         XCTAssertGreaterThan(document.bounds.height, initialHeight + 500, "Scrolling to the end must reveal more rows")
+        for _ in 0..<5 {
+            document.scroll(NSPoint(x: 0, y: document.bounds.height))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertLessThanOrEqual(document.bounds.height, CGFloat(items.count) * 83.5 + 1,
+            "The last row must not be followed by an empty scrollable footer")
         XCTAssertEqual(window.frame.size, NSSize(width: 240, height: 270))
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: "/tmp/vane-favourite-scroll-bottom.png"))
     }
 
     func testPRLoadingAndStaleUseTheSameNativeReferenceShell() async throws {

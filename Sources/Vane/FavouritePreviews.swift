@@ -140,7 +140,7 @@ import WebKit
             if self.attempts.count > 48, let oldest = self.attempts.min(by: { $0.value < $1.value })?.key {
                 self.attempts[oldest] = nil
             }
-            self.loading = true; self.loadingOwner = owner
+            self.loading = true; self.loadingOwner = self.owner ?? owner
             var result = FavouritePreviewResult.unavailable
             if liveProof, let source, !source.isLoading {
                 result = await FavouriteIdentityProbe.extraction(source, service: context.service)
