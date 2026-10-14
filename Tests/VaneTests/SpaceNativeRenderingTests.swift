@@ -142,6 +142,66 @@ import XCTest
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
     }
 
+    func testHidingSidebarRetiresCommittedNativeLandingWithoutCoveringThePage() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        monitor.track(-80, width: SidebarWidth.shared.width, in: store)
+        let departing = try XCTUnwrap(host.spaceSlide)
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 1)
+        try await Task.sleep(for: .milliseconds(30))
+        Motion.instant { store.sidebarShown = false; store.sidebarPeeking = false }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(host.spaceSlide, "A closed sidebar must not leave its native lists over the page")
+        XCTAssertNil(departing.superview)
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id, "Closing the sidebar preserves the committed selection")
+        XCTAssertFalse(store.spaceSwiping)
+        XCTAssertFalse(store.spaceGesture.profileSliding)
+
+        Motion.instant { store.sidebarShown = true }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        monitor.select(spaces[2], in: store)
+        let replacement = try XCTUnwrap(host.spaceSlide)
+        XCTAssertFalse(replacement === departing)
+        departing.finish() // An old compositor callback must not remove the replacement.
+        XCTAssertTrue(host.spaceSlide === replacement)
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while host.spaceSlide != nil, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.currentSpaceID, spaces[2].id)
+        XCTAssertNil(host.spaceSlide)
+    }
+
+    func testDisappearingSourceDoesNotUncoverAVisibleArrivingSidebarBeforeAcknowledgement() async throws {
+        let (source, spaces, window, _) = try fixture()
+        let (profile, target) = adjacentProfile(to: source, after: spaces.last!)
+        let arriving = TabStore(profileID: profile, space: target, session: [])
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 400))
+        window.contentView = container
+        let slide = ProfileSpaceSlide(frame: container.bounds,
+            outgoing: source.swipePreview(in: spaces.last!), incoming: source.swipePreview(in: target),
+            drag: -80, direction: 1, source: source, includesFavorites: true, travelWidth: 250)
+        container.addSubview(slide)
+        defer { slide.cancel(); arriving.window = nil }
+        source.sidebarShown = false
+        source.sidebarPeeking = false
+        slide.start(duration: 1) {
+            source.window = nil
+            arriving.window = window
+            arriving.sidebarShown = true
+            slide.attach(arriving)
+        }
+        slide.sidebarDidDisappear(source)
+        XCTAssertTrue(slide.isDestination(arriving))
+        XCTAssertTrue(slide.superview === container,
+                      "Completion must recheck the arriving visibility instead of unconditionally retiring")
+        slide.sidebarDidUpdate(arriving, renderedSpaceID: target.id, atRest: true)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(slide.superview, "A visible arrival retires after its real rendered acknowledgement")
+    }
+
     func testSlowNativeSpaceLandingNeverReversesItsPresentation() async throws {
         let (store, spaces, window, monitor) = try fixture()
         store.palette = nil
@@ -475,6 +535,43 @@ import XCTest
         if !reduced { try await Task.sleep(for: .milliseconds(310)) }
         XCTAssertTrue(source.window === window, "A cached profile must also switch during its slide")
         XCTAssertEqual(source.currentSpaceID, first.id)
+    }
+
+    func testHiddenCrossProfileLandingTracksAndRetiresTheActualArrivingSidebar() async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "A committed native profile landing requires motion")
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let firstProfile = manager.create(name: "Hidden profile origin")
+        let secondProfile = manager.create(name: "Hidden profile destination")
+        let first = manager.createSpace(name: "First", in: firstProfile.id)
+        let second = manager.createSpace(name: "Second", in: secondProfile.id)
+        let source = Windows.open(profile: firstProfile, space: first, focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            _ = manager.delete(firstProfile.id)
+            _ = manager.delete(secondProfile.id)
+            manager.active = previous
+        }
+        try await Task.sleep(for: .milliseconds(80))
+        source.spaceGesture.monitor.select(second, in: source)
+        let departing = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        Motion.instant { source.sidebarShown = false; source.sidebarPeeking = false }
+        window.contentView?.layoutSubtreeIfNeeded()
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.4
+        while source.window === window, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        XCTAssertEqual(arriving.profileID, secondProfile.id, "Hiding preserves the committed profile selection")
+        XCTAssertEqual(arriving.currentSpaceID, second.id)
+        XCTAssertTrue(departing.isDestination(arriving),
+                      "Completion must attach the actual destination before deciding sidebar retirement")
+        XCTAssertFalse(arriving.sidebarShown)
+        XCTAssertFalse(arriving.spaceGesture.profileSliding)
+        XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        XCTAssertNil(departing.superview)
     }
 
     func testReturningToSameProfileBeforeLandingCancelsTheNativeOverlay() async throws {

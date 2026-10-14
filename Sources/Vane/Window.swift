@@ -898,6 +898,7 @@ extension VaneWindow {
     private weak var source: TabStore?
     private weak var destination: TabStore?
     private var finished = false
+    private var completingSelection = false
     private let includesFavorites: Bool
     private let travelWidth: CGFloat
     private let contentInset: CGFloat
@@ -961,7 +962,9 @@ extension VaneWindow {
     func isSource(_ store: TabStore) -> Bool { source === store }
 
     func attach(_ store: TabStore) {
-        guard !finished else { return }
+        // Profile activation occurs inside finish's completion. It still owns this
+        // overlay until the arriving sidebar is attached and acknowledged.
+        guard !finished || completingSelection else { return }
         destination = store
         store.spaceGesture.profileSlidesFavorites = includesFavorites
         store.spaceGesture.profileSliding = true
@@ -1087,6 +1090,17 @@ extension VaneWindow {
         else { finish() }
     }
 
+    /// The sidebar owning this overlay has closed. Complete committed selection once,
+    /// then uncover the page without waiting for an acknowledgement from a removed tree.
+    func sidebarDidDisappear(_ store: TabStore) {
+        guard !completingSelection, (destination ?? source) === store,
+              !store.sidebarShown, !store.sidebarPeeking else { return }
+        // An in-flight completion may attach a different, visible sidebar. Let
+        // finish() evaluate that arrival; only an already-finished hidden owner can cut.
+        if finished { retire() }
+        else { finish() }
+    }
+
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
         finished = true
@@ -1106,7 +1120,9 @@ extension VaneWindow {
         motionObserver = nil
         let complete = completion
         completion = nil
+        completingSelection = true
         complete?()
+        completingSelection = false
         Motion.spaceHandoff {
             source?.spaceGesture.profileSliding = false
             destination?.spaceGesture.profileSliding = false
@@ -1116,11 +1132,15 @@ extension VaneWindow {
         // replacement; removing it in this callback can flash the previous Space.
         if complete != nil, !Motion.spaceReduced, let window {
             let arriving = destination ?? source
+            if let arriving, !arriving.sidebarShown, !arriving.sidebarPeeking {
+                retire()
+                return
+            }
             if arriving?.currentSpaceID != preparedOrigin.id {
                 retirementStore = arriving
                 retirementSpaceID = arriving?.currentSpaceID
-                // A disconnected/closed window or removed sidebar may never update its
-                // anchor. Bound that exceptional wait; normal retirement is acknowledged.
+                // A disconnected window may never update its anchor. Bound that
+                // exceptional wait; visible sidebar retirement is acknowledged.
                 let timeout = DispatchWorkItem { [weak self] in self?.retire() }
                 retirementTimeout = timeout
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: timeout)

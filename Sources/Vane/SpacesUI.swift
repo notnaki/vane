@@ -1296,6 +1296,9 @@ private struct SpaceSwipe: ViewModifier {
         monitor = nil
         watchers.forEach(NotificationCenter.default.removeObserver)
         watchers = []
+        if let store, !store.sidebarShown, !store.sidebarPeeking {
+            (store.window?.contentView as? BrowserWindowHost)?.spaceSlide?.sidebarDidDisappear(store)
+        }
         abort()
         store = nil
     }
