@@ -4,15 +4,17 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceNativeRenderingTests: XCTestCase {
-    private func fixture() throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
+    private func fixture(floatingWindow: Bool = false) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Animated interruption requires motion")
         let profile = ProfileManager.shared.create(name: "Continuity fixture").id
         let spaces = ["First", "Second", "Third", "Fourth"].map { Space(name: $0, profileID: profile) }
         XCTAssertTrue(ProfileManager.shared.saveSpaces(spaces, for: profile))
         let store = TabStore(profileID: profile, space: spaces[0], session: [])
-        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 300, height: 400),
-                              styleMask: [.titled], backing: .buffered, defer: false)
+        let frame = NSRect(x: 100, y: 100, width: 300, height: 400)
+        let window: NSWindow = floatingWindow
+            ? VaneWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
+            : NSWindow(contentRect: frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         store.window = window
         window.contentView = BrowserWindowHost(shown: ShownStore(store))
@@ -64,6 +66,56 @@ import XCTest
             XCTAssertEqual(slide.outgoing.frame.minX - originX, offset, accuracy: 0.001)
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+
+    func testPeekingSidebarPreparesAndReusesItsNativeSurface() async throws {
+        let (store, spaces, window, monitor) = try fixture(floatingWindow: true)
+        // Separate the docked sidebar's disappearance from the floating mount. Instant
+        // fixture setup leaves native Space motion enabled, with stable peek geometry.
+        Motion.instant { store.sidebarShown = false }
+        try await Task.sleep(for: .milliseconds(100))
+        Motion.instant { store.sidebarPeeking = true; store.palette = nil }
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue((window as? VaneWindow)?.peekingSidebar == true)
+        XCTAssertTrue(store.spaceGesture.sectionsView?.window === window,
+                      "The floating sidebar must have its actual rendered geometry")
+        XCTAssertGreaterThan(store.spaceGesture.sectionsView?.bounds.width ?? 0, 0)
+        XCTAssertGreaterThan(store.spaceGesture.sectionsView?.bounds.height ?? 0, 0)
+        monitor.install(store)
+        monitor.schedulePreparation(in: store)
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while monitor.preparedSlides[spaces[1].id] == nil,
+              ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id],
+                                    "A visible floating sidebar must prepare before finger input")
+        monitor.track(-0.5, width: SidebarWidth.shared.width, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared,
+                      "The first floating-sidebar drag must reuse its laid-out hosting trees")
+    }
+
+    func testHiddenSidebarDoesNotPrepareNativeSurfaces() async throws {
+        let (store, _, window, monitor) = try fixture(floatingWindow: true)
+        store.sidebarShown = false
+        store.sidebarPeeking = false
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertFalse((window as? VaneWindow)?.peekingSidebar ?? true)
+        // Keep a valid native anchor as an outgoing sidebar could during its removal.
+        // The hidden-state guard, rather than missing geometry, must prevent preparation.
+        let anchor = NSView(frame: NSRect(x: Look.floatingSidebarGap, y: Look.floatingSidebarGap,
+                                         width: SidebarWidth.shared.width, height: 300))
+        window.contentView?.addSubview(anchor)
+        store.spaceGesture.sectionsView = anchor
+        store.spaceGesture.stripView = anchor
+        monitor.install(store)
+        monitor.schedulePreparation(in: store)
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                      "No hidden sidebar should allocate prepared native lists")
     }
 
     func testNativeSurfaceCoversTheLiveSidebarUpdateTurn() async throws {

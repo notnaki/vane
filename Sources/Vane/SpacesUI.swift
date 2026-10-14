@@ -963,7 +963,8 @@ private struct SpaceSwipe: ViewModifier {
             guard let self, let store, self.monitor != nil, self.store === store,
                   !store.spaceSwiping, !self.landing,
                   !store.libraryOpen, store.librarySwipeProgress == nil,
-                  !Motion.spaceReduced, store.sidebarShown,
+                  !Motion.spaceReduced,
+                  store.sidebarShown || (store.window as? VaneWindow)?.peekingSidebar == true,
                   let host = store.window?.contentView as? BrowserWindowHost else { return }
             let strip = store.strip
             guard let index = strip.firstIndex(where: { $0.id == store.currentSpaceID }),
