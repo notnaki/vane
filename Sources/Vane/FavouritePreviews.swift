@@ -353,10 +353,17 @@ import WebKit
     }
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,
                  decisionHandler: @escaping @MainActor (WKNavigationResponsePolicy) -> Void) {
-        guard response.canShowMIMEType, (response.response as? HTTPURLResponse).map({ (200..<400).contains($0.statusCode) }) ?? true else {
+        guard Self.acceptsResponse(isMainFrame: response.isForMainFrame,
+                                   canShowMIMEType: response.canShowMIMEType,
+                                   statusCode: (response.response as? HTTPURLResponse)?.statusCode) else {
             decisionHandler(.cancel); finish(.unavailable); return
         }
         decisionHandler(.allow)
+    }
+    static func acceptsResponse(isMainFrame: Bool, canShowMIMEType: Bool, statusCode: Int?) -> Bool {
+        // Auxiliary frames (including Google's cookie rotation page) can fail while
+        // the main service document remains readable. Only that document owns the load.
+        !isMainFrame || (canShowMIMEType && (statusCode.map { (200..<400).contains($0) } ?? true))
     }
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }

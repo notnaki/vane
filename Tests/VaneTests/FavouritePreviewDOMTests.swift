@@ -46,6 +46,15 @@ import XCTest
         XCTAssertEqual(snapshot.items.first?.status, "0 of 1 successful checks")
     }
 
+    func testGitHubAcceptsOpenStateQuerySpelling() async throws {
+        let result = try await extract("""
+        <meta name="user-login" content="fixture-user">
+        <main><ul><li><a data-testid="listitem-title-link" href="/fixture/repo/pull/44">Open PR</a></li></ul></main>
+        """, service: .github, url: "https://github.com/pulls?q=state:open%20is:pr%20involves:@me")
+        guard case .ready(let snapshot) = result else { return XCTFail("Expected open-state query to extract PRs") }
+        XCTAssertEqual(snapshot.items.first?.title, "Open PR")
+    }
+
     func testGmailExtractsOnlySubjectSenderUnreadAndThreadRoute() async throws {
         let result = try await extract("""
         <header><a aria-label="Google Account: Fixture (fixture@example.test)" href="https://accounts.google.com/SignOutOptions"></a></header>

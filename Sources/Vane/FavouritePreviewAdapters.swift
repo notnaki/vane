@@ -92,7 +92,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
             return #"""
             // /pulls with an explicit open/involves query; no private API calls or application state.
             const query = new URL(location.href).searchParams.get('q') || '';
-            if (!['/pulls','/pulls/search'].includes(location.pathname) || !query.includes('involves:@me') || !query.includes('is:open')) return unknown();
+            if (!['/pulls','/pulls/search'].includes(location.pathname) || !/(^|\s)involves:@me(?=\s|$)/.test(query) || !/(^|\s)(is|state):open(?=\s|$)/.test(query)) return unknown();
             const modern = Array.from(document.querySelectorAll('a[data-testid="listitem-title-link"][href*="/pull/"]')).map(a => a.closest('li')).filter(Boolean);
             const rows = Array.from(new Set([...document.querySelectorAll('.js-issue-row'), ...modern])).filter(visible).slice(0,5);
             if (!rows.length) {
