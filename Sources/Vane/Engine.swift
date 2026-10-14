@@ -2582,7 +2582,8 @@ struct Stash {
     func restore(_ urls: [URL], as kind: TabKind, parked: [String: Parked]) -> [Tab] {
         guard !urls.isEmpty else { return [] }
         if sharingReady { SharedTabs.flush() }
-        let favourites = kind == .favourite && sharesTabs ? SharedTabs.favourites(for: self) : []
+        let favourites = kind == .favourite && sharesTabs
+            ? tabs.filter { $0.kind == .favourite } + SharedTabs.favourites(for: self) : []
         // Restore off-strip, then publish the finished collection. Interactive insertion
         // rescans shapes and invalidates every browser observer once per saved row.
         let restored = urls.map { url -> Tab in
@@ -2592,8 +2593,12 @@ struct Stash {
             tab.restore(url: saved.page ?? url, home: kind == .today ? nil : url, parked: saved)
             return tab
         }
+        // A preceding window's restore may already have propagated these shared rows.
+        var insertedIDs = Set(tabs.map(\.id))
+        let additions = restored.filter { insertedIDs.insert($0.id).inserted }
+        guard !additions.isEmpty else { return restored }
         Motion.list {
-            tabs.insert(contentsOf: restored, at: TabStore.clampedDestination(
+            tabs.insert(contentsOf: additions, at: TabStore.clampedDestination(
                 others: tabs.map(\.kind), moving: kind, to: tabs.count))
             syncShapes()
         }

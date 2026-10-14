@@ -4,6 +4,37 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceSwitchPerformanceTests: XCTestCase {
+    func testBulkFavouriteRestoreDoesNotReinsertRowsPropagatedToOtherWindows() throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let manager = ProfileManager.shared
+        let profile = manager.create(name: "Shared restore fixture").id
+        let spaces = (0..<3).map { Space(name: "Window \($0)", profileID: profile) }
+        XCTAssertTrue(manager.saveSpaces(spaces, for: profile))
+        let stores = spaces.map { TabStore(profileID: profile, space: $0, session: []) }
+        defer {
+            SharedTabs.flush()
+            let owned = stores.flatMap(\.everyTab)
+            stores.forEach { $0.dropStashes() }
+            TabStore.all.removeAll { store in stores.contains { $0 === store } }
+            SharedTabs.release(owned)
+            Store.forget(profile)
+            manager.delete(profile)
+        }
+        let urls = (0..<2).map { URL(string: "https://example.test/favourite/\($0)")! }
+        for store in stores {
+            let restored = store.restore(urls, as: .favourite, parked: [:])
+            XCTAssertEqual(restored.count, urls.count)
+        }
+        SharedTabs.flush()
+        let expected = stores[0].tabs.map(\.id)
+        for store in stores {
+            XCTAssertEqual(store.tabs.count, urls.count)
+            XCTAssertEqual(store.tabs.map(\.id), expected)
+            XCTAssertEqual(Set(store.tabs.map(\.id)).count, urls.count)
+        }
+    }
+
     func testColdSpacePublishesCompletedCollectionsInsteadOfEachRestoredTab() throws {
         try checkColdRestore(template: false)
     }

@@ -46,9 +46,11 @@ extension TabStore {
                         parked: parked[page.savedURL.absoluteString] ?? Parked(title: page.title))
             return tab
         }
-        tabs += TabKind.allCases.flatMap { kind in restored.filter { $0.kind == kind } }
-        pins = layout.pins; todayShape = layout.today
-        applyOrder(.pinned); applyOrder(.today)
+        Motion.list {
+            tabs += TabKind.allCases.flatMap { kind in restored.filter { $0.kind == kind } }
+            pins = layout.pins; todayShape = layout.today
+            applyOrder(.pinned); applyOrder(.today)
+        }
         applySplits(layout.splits)
         current = layout.selected ?? tabs.first { $0.kind == .today }?.id ?? tabs.first { $0.kind == .pinned }?.id
         return true
