@@ -114,17 +114,18 @@ import Foundation
     func create(name: String, then done: @escaping @MainActor (Space) -> Void) {
         guard let reviewed = selected else { return }
         authenticate(reviewed.layout) { [weak self] in
-            guard let self, let store, store.profileID == request.profileID, !store.isPrivate, !store.isLittle else { throw WorkspaceError.profile }
+            guard let self, let store, !store.isPrivate, !store.isLittle else { throw WorkspaceError.profile }
+            if request.creatingSpace {
+                guard store.creatingSpace, !store.isParked,
+                      store.profileID == request.sourceProfileID, store.currentSpaceID == request.sourceID,
+                      ProfileManager.shared.profiles.contains(where: { $0.id == request.profileID })
+                else { throw WorkspaceError.changed }
+            } else {
+                guard store.profileID == request.profileID else { throw WorkspaceError.profile }
+            }
             let latest = try library.load(profile: request.profileID).first { $0.id == reviewed.id }
             guard latest == reviewed else { throw WorkspaceError.changed }
-            if let replacing = request.replacingEmptySpace {
-                let (source, layout) = try source()
-                guard source.id == replacing, layout.tabs.isEmpty, layout.omitted == 0,
-                      layout.pins.entries.isEmpty, layout.today.entries.isEmpty,
-                      layout.splits.isEmpty else { throw WorkspaceError.changed }
-            }
-            let space = try library.create(reviewed.id, profile: request.profileID, name: name, unlocked: unlocked,
-                                           replacingEmptySpace: request.replacingEmptySpace)
+            let space = try library.create(reviewed.id, profile: request.profileID, name: name, unlocked: unlocked)
             done(space)
         }
     }

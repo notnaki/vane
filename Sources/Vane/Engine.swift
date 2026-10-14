@@ -3545,6 +3545,18 @@ struct Stash {
     /// The Create a Space form is standing in for the sidebar's sections.
     @Published var creatingSpace = false
 
+    /// The footer menu and a completed pull past the last Space enter the same form.
+    /// Opening it does not create a Space or leave the current one.
+    func beginCreatingSpace() {
+        guard !isPrivate, !isLittle else { return }
+        palette = nil
+        editingSpace = nil
+        Motion.space(Look.spaceSlide) {
+            spacePull = 0
+            creatingSpace = true
+        }
+    }
+
     /// The form's Cancel, and ⎋: the sections come back.
     func cancelCreatingSpace() {
         creatingSpace = false            // the sidebar animates the swap itself

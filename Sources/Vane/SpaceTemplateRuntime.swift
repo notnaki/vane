@@ -67,16 +67,21 @@ struct WorkspaceSheetRequest: Identifiable {
     let profileID: UUID
     let sourceID: UUID?
     let saving: Bool
-    var replacingEmptySpace: UUID? = nil
+    var creatingSpace = false
+    var sourceProfileID: UUID? = nil
+    var creationName: String? = nil
 }
 
 extension TabStore {
-    func showWorkspaceTemplates(saving: Bool = false, replacingEmptySpace: UUID? = nil) {
+    func showWorkspaceTemplates(saving: Bool = false, for profileID: UUID? = nil,
+                                creatingSpace: Bool = false, creationName: String? = nil) {
         guard !isPrivate, !isLittle, !saving || currentSpaceID != nil else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, !isPrivate, !isLittle else { return }
-            workspaceSheet = .init(profileID: profileID, sourceID: currentSpaceID, saving: saving,
-                                   replacingEmptySpace: replacingEmptySpace)
+            guard !creatingSpace || self.creatingSpace else { return }
+            workspaceSheet = .init(profileID: profileID ?? self.profileID, sourceID: currentSpaceID, saving: saving,
+                                   creatingSpace: creatingSpace, sourceProfileID: self.profileID,
+                                   creationName: creationName)
         }
     }
 }

@@ -21,7 +21,6 @@ struct ThemeEditor: View {
     /// Whether the panel also names the Space. The `+` route does; Arc names a Space in the
     /// sidebar, and so does Vane once it exists.
     var naming = false
-    var useTemplate: (() -> Void)? = nil
 
     @State private var name = ""
     /// Which page of presets the chevrons have walked to.
@@ -68,22 +67,6 @@ struct ThemeEditor: View {
                 Spacer(minLength: 0)
                 GrainDial(value: current.grain ?? 0, knob: $knob,
                           change: { v in slide { $0.grain = v } }, end: commitLive)
-            }
-            if let useTemplate {
-                Button {
-                    commit(); commitLive(); dismiss()
-                    useTemplate()
-                } label: {
-                    Label("Use Template", systemImage: "rectangle.stack")
-                        .font(Look.text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, Look.rowInset)
-                        .frame(height: Look.rowHeight)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(TactileButtonStyle())
-                .foregroundStyle(Look.inkSecondary)
-                .background(Look.pillFill, in: .rect(cornerRadius: Look.pillRadius))
             }
         }
         .padding(Look.inset)

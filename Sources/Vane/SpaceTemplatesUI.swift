@@ -24,11 +24,12 @@ struct SpaceTemplatesSheet: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Space Templates").font(.title2.weight(.semibold))
-                    Text("Saved workspaces for \(store.profile.name)").foregroundStyle(.secondary)
+                    Text("Saved workspaces for \(ProfileManager.shared.profiles.first { $0.id == model.request.profileID }?.name ?? store.profile.name)")
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Refresh") { model.reload(); if model.saving { model.refreshSource() } }.disabled(model.busy)
-                Button("Done") { model.cancel(); dismiss() }.keyboardShortcut(.cancelAction)
+                Button(model.request.creatingSpace ? "Cancel" : "Done") { model.cancel(); dismiss() }.keyboardShortcut(.cancelAction)
             }
             HStack(alignment: .top, spacing: 18) {
                 templateList.frame(width: 190)
@@ -37,9 +38,13 @@ struct SpaceTemplatesSheet: View {
                     if model.saving {
                         Text(replacing ? "Update from Current Space" : "Save Current Space").font(.headline)
                     } else if let selected = model.selected {
-                        HStack {
-                            TextField("Template name", text: $rename).textFieldStyle(.roundedBorder)
-                            Button("Rename") { model.rename(name: rename) }.disabled(model.busy || rename == selected.name)
+                        if model.request.creatingSpace {
+                            Text(selected.name).font(.headline)
+                        } else {
+                            HStack {
+                                TextField("Template name", text: $rename).textFieldStyle(.roundedBorder)
+                                Button("Rename") { model.rename(name: rename) }.disabled(model.busy || rename == selected.name)
+                            }
                         }
                         Text(selected.modified, format: .dateTime.day().month().year().hour().minute())
                             .font(.caption).foregroundStyle(.secondary)
@@ -72,7 +77,7 @@ struct SpaceTemplatesSheet: View {
                                     .buttonStyle(.borderedProminent).disabled(!validName || model.busy)
                             }
                         }
-                        if !model.saving {
+                        if !model.saving && !model.request.creatingSpace {
                             HStack {
                                 Button("Update from Current Space…") {
                                     replacing = true; model.beginSaving()
@@ -102,11 +107,20 @@ struct SpaceTemplatesSheet: View {
         }
         .padding(22).frame(width: 780)
         .vaneMotionPolicy()
-        .onAppear { name = store.currentSpace?.name ?? ""; rename = model.selected?.name ?? "" }
-        .onChange(of: model.selection) { rename = model.selected?.name ?? ""; name = model.selected?.name ?? "" }
+        .onAppear {
+            name = model.request.creatingSpace ? (model.request.creationName ?? model.selected?.name ?? "") : (store.currentSpace?.name ?? "")
+            rename = model.selected?.name ?? ""
+        }
+        .onChange(of: model.selection) {
+            rename = model.selected?.name ?? ""
+            name = model.request.creationName ?? model.selected?.name ?? ""
+        }
         .onChange(of: model.saving) { if model.saving { name = store.currentSpace?.name ?? "" } }
         .onChange(of: store.currentSpaceID) { model.cancel(); dismiss() }
         .onChange(of: store.isParked) { if store.isParked { model.cancel(); dismiss() } }
+        .onChange(of: store.creatingSpace) {
+            if model.request.creatingSpace && !store.creatingSpace { model.cancel(); dismiss() }
+        }
         .onDisappear { model.cancel() }
         .alert("Delete this template?", isPresented: $confirmingDelete) {
             Button("Delete", role: .destructive) { model.delete() }
@@ -119,9 +133,11 @@ struct SpaceTemplatesSheet: View {
     }
     private var templateList: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Button { replacing = false; model.beginSaving() } label: {
-                Label("Save Current Space…", systemImage: "plus.rectangle.on.rectangle")
-            }.disabled(model.busy || model.request.sourceID == nil)
+            if !model.request.creatingSpace {
+                Button { replacing = false; model.beginSaving() } label: {
+                    Label("Save Current Space…", systemImage: "plus.rectangle.on.rectangle")
+                }.disabled(model.busy || model.request.sourceID == nil)
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(model.templates) { template in
@@ -150,7 +166,11 @@ struct SpaceTemplatesSheet: View {
         } else {
             model.create(name: name) { space in
                 model.cancel(); dismiss()
-                DispatchQueue.main.async { store.switchTo(space: space); Toasts.show("Space created from template", in: store) }
+                DispatchQueue.main.async {
+                    if model.request.creatingSpace { store.cancelCreatingSpace() }
+                    store.switchTo(space: space)
+                    Toasts.show("Space created from template", in: Windows.current ?? store)
+                }
             }
         }
     }
