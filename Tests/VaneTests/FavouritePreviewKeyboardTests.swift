@@ -157,6 +157,38 @@ import XCTest
         XCTAssertEqual(opened, [item.url])
     }
 
+    func testScrollingRevealsAnotherBatchWithoutGrowingThePanel() async throws {
+        TestEnvironment.prepare()
+        _ = NSApplication.shared
+        let context = FavouritePreviewContext(profileID: UUID(), url: URL(string: "https://github.com/")!)!
+        let items = (1...40).map {
+            FavouritePreviewItem(title: "PR \($0)", subtitle: "fixture/repo", url: URL(string: "https://github.com/fixture/repo/pull/\($0)")!)
+        }
+        let host = NSHostingView(rootView: FavouritePreviewCard(context: context, state: .ready(.init(account: "fixture", items: items)), open: { _ in }, dismiss: {}))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 270), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        try await Task.sleep(for: .milliseconds(200))
+        func scrollView(in view: NSView) -> NSScrollView? {
+            if let scroll = view as? NSScrollView { return scroll }
+            return view.subviews.lazy.compactMap { scrollView(in: $0) }.first
+        }
+        let scroll = try XCTUnwrap(scrollView(in: host))
+        let document = try XCTUnwrap(scroll.documentView)
+        let initialHeight = document.bounds.height
+        XCTAssertLessThan(initialHeight, 1_500, "Initial rendering should be a small batch")
+        document.scroll(NSPoint(x: 0, y: initialHeight))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        for _ in 0..<30 {
+            if document.bounds.height > initialHeight + 500 { break }
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        XCTAssertGreaterThan(document.bounds.height, initialHeight + 500, "Scrolling to the end must reveal more rows")
+        XCTAssertEqual(window.frame.size, NSSize(width: 240, height: 270))
+    }
+
     func testPRLoadingAndStaleUseTheSameNativeReferenceShell() async throws {
         TestEnvironment.prepare()
         _ = NSApplication.shared

@@ -58,6 +58,7 @@ struct FavouritePreviewCard: View {
     let dismiss: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var focusRequested = false
+    @State private var visibleItemCount = 10
     var keyboardOpened: Bool = false
 
     private var surface: Color {
@@ -96,6 +97,7 @@ struct FavouritePreviewCard: View {
         .background(surface)
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(0.18), lineWidth: 0.5))
         .vaneMotionPolicy()
+        .onChange(of: context) { _, _ in visibleItemCount = 10 }
         .onExitCommand(perform: dismiss)
         .task(id: focusTarget) {
             if focusTarget != .none {
@@ -130,9 +132,15 @@ struct FavouritePreviewCard: View {
                 notice(context.service == .github ? "No open pull requests" : context.service == .gmail ? "Your inbox is empty" : "No upcoming events", detail: "Open the site to view more.")
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(value.items) { item in
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(value.items.prefix(visibleItemCount))) { item in
                             itemRow(item, first: item.id == value.items.first?.id)
+                                .onAppear {
+                                    if item.id == value.items.prefix(visibleItemCount).last?.id,
+                                       visibleItemCount < value.items.count {
+                                        visibleItemCount = min(visibleItemCount + 10, value.items.count)
+                                    }
+                                }
                             if item.id != value.items.last?.id { separator }
                         }
                     }

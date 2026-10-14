@@ -37,6 +37,86 @@ import WebKit
     private func context(_ profile: UUID = UUID()) -> FavouritePreviewContext {
         FavouritePreviewContext(profileID: profile, url: URL(string: "https://github.com/")!)!
     }
+    func testBackgroundWarmupCachesWithoutPublishingAndNeverInterruptsVisiblePreview() async throws {
+        let loader = FavouriteFixtureLoader()
+        let previews = FavouritePreviews(loader: loader), a = context(), owner = UUID()
+        await previews.warm(a)
+        XCTAssertEqual(loader.calls, 1)
+        XCTAssertNil(previews.owner)
+        XCTAssertEqual(previews.state, .loading)
+        previews.request(a, owner: owner, account: "fixture")
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        XCTAssertEqual(loader.calls, 1, "Opening a warmed result should not load another page")
+        await previews.warm(context())
+        XCTAssertEqual(previews.owner, owner)
+        XCTAssertEqual(loader.calls, 1, "Background work must not replace an open preview")
+        previews.dismiss(owner: owner)
+    }
+
+    func testOpeningInFlightWarmupAdoptsItWithoutReloading() async throws {
+        let loader = FavouriteFixtureLoader()
+        loader.holdReplies = true
+        defer { loader.releaseReplies() }
+        let previews = FavouritePreviews(loader: loader), a = context(), owner = UUID()
+        let warming = Task { await previews.warm(a) }
+        try await settle { loader.calls == 1 }
+        previews.request(a, owner: owner)
+        loader.releaseReplies()
+        await warming.value
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        XCTAssertEqual(loader.calls, 1)
+        XCTAssertEqual(previews.owner, owner)
+        previews.dismiss(owner: owner)
+    }
+
+    func testBackgroundBudgetAndPolicyAreRecheckedBetweenServices() async throws {
+        let loader = FavouriteFixtureLoader()
+        let previews = FavouritePreviews(loader: loader)
+        let warmer = FavouritePreviewWarmup(previews: previews)
+        let candidates = (0..<6).map { _ in FavouritePreviewWarmup.Candidate(context: context()) }
+        await warmer.refresh(candidates, allowed: { false })
+        XCTAssertEqual(loader.calls, 0)
+        await warmer.refresh(candidates, allowed: { true })
+        XCTAssertEqual(loader.calls, 3, "Only three services may consume the background budget")
+        await warmer.refresh(Array(candidates.suffix(3)), allowed: { loader.calls < 4 })
+        XCTAssertEqual(loader.calls, 4, "A policy change stops the remaining background batch")
+        XCTAssertNil(previews.owner)
+    }
+
+    func testCancellingBackgroundWorkCannotCancelAdoptedForegroundRequest() async throws {
+        let loader = FavouriteFixtureLoader()
+        loader.holdReplies = true
+        defer { loader.releaseReplies() }
+        let previews = FavouritePreviews(loader: loader), a = context(), owner = UUID()
+        let warming = Task { await previews.warm(a) }
+        try await settle { loader.calls == 1 }
+        previews.request(a, owner: owner)
+        let cancellations = loader.cancellations
+        previews.cancelWarmup()
+        XCTAssertEqual(loader.cancellations, cancellations)
+        loader.releaseReplies()
+        await warming.value
+        try await settle { previews.state == .ready(.init(account: "fixture", items: [])) }
+        previews.dismiss(owner: owner)
+    }
+
+    func testForegroundAdoptionDuringUnsignedCookiePreflightStillCompletes() async throws {
+        TestEnvironment.prepare()
+        let loader = FavouriteFixtureLoader(), owner = UUID()
+        let a = context(ProfileManager.shared.active.id)
+        let store = WKWebsiteDataStore.nonPersistent().httpCookieStore
+        let previews = FavouritePreviews(loader: loader, observeSessions: true,
+            sessionObserverFactory: { id, coordinator in
+                // Queue user intent at the next suspension, while cookie preflight is pending.
+                Task { @MainActor in coordinator.request(a, owner: owner) }
+                return FavouriteSessionObserver(profileID: id, previews: coordinator, store: store)
+            })
+        await previews.warm(a)
+        try await settle { previews.owner == owner && previews.state == .ready(.init(account: "fixture", items: [])) }
+        XCTAssertEqual(loader.calls, 1)
+        previews.dismiss(owner: owner)
+    }
+
     func testDismissCannotPublishLateReply() async throws {
         let loader = FavouriteFixtureLoader()
         let coordinator = FavouritePreviews(loader: loader)

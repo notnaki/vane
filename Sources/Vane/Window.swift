@@ -505,7 +505,10 @@ extension VaneWindow {
                              restoringLegacySession: restoringLegacySession, recoveringSession: recoveringSession)
         // Live folders keep themselves filled for as long as a window is open. A private
         // window holds none — it has no Pinned section — so it does not start the clock.
-        if !isPrivate { LiveFolders.shared(for: profile.id).begin() }
+        if !isPrivate {
+            LiveFolders.shared(for: profile.id).begin()
+            FavouritePreviewWarmup.shared.begin()
+        }
         let window = VaneWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 840),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],

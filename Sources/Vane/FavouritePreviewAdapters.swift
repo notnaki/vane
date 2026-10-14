@@ -31,7 +31,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
     func parse(_ extraction: FavouritePreviewExtraction) -> FavouritePreviewResult {
         if extraction.state == "signedOut" { return .signedOut }
         let account = extraction.account.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !account.isEmpty, account.count <= 254, extraction.items.count <= 5,
+        guard !account.isEmpty, account.count <= 254, extraction.items.count <= 50,
               extraction.state == "ready" || extraction.state == "empty" else { return .unavailable }
         guard extraction.state == "empty" ? extraction.items.isEmpty : !extraction.items.isEmpty else { return .unavailable }
         var items: [FavouritePreviewItem] = []
@@ -111,7 +111,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
             const query = new URL(location.href).searchParams.get('q') || '';
             if (!['/pulls','/pulls/search'].includes(location.pathname) || !/(^|\s)involves:@me(?=\s|$)/.test(query) || !/(^|\s)(is|state):open(?=\s|$)/.test(query)) return unknown();
             const modern = Array.from(document.querySelectorAll('a[data-testid="listitem-title-link"][href*="/pull/"]')).map(a => a.closest('li')).filter(Boolean);
-            const rows = Array.from(new Set([...document.querySelectorAll('.js-issue-row'), ...modern])).filter(visible).slice(0,5);
+            const rows = Array.from(new Set([...document.querySelectorAll('.js-issue-row'), ...modern])).filter(visible).slice(0,50);
             if (!rows.length) {
               const empty = Array.from(document.querySelectorAll('.blankslate, [data-testid="results-empty-state"]'))
                 .some(el => /no (results|pull requests)|nothing matched/i.test(text(el)));
@@ -136,7 +136,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
             if (!location.pathname.startsWith('/mail/') || !location.hash.startsWith('#inbox')) return unknown();
             const main = document.querySelector('[role="main"]');
             if (!main) return unknown();
-            const rows = Array.from(main.querySelectorAll('tr.zA')).filter(visible).slice(0,5);
+            const rows = Array.from(main.querySelectorAll('tr.zA')).filter(visible).slice(0,50);
             if (!rows.length) {
               const empty = Array.from(main.querySelectorAll('td, [role="status"]'))
                 .some(el => /^(Your inbox is empty\.?|No new mail!?|No conversations in Inbox\.?)$/i.test(text(el)));
@@ -179,7 +179,7 @@ struct DOMFavouritePreviewAdapter: FavouritePreviewAdapter {
                 unread:false, start:new Date(start).toISOString().replace(/\.\d{3}Z$/,'Z'), meeting:meeting?.href || null});
             }
             items.sort((a,b) => Date.parse(a.start) - Date.parse(b.start));
-            if (items.length) return result('ready',items.slice(0,5));
+            if (items.length) return result('ready',items.slice(0,50));
             // A short virtualized window is not proof that the upcoming calendar is empty.
             return unknown();
             """#

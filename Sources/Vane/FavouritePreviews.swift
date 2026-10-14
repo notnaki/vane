@@ -35,6 +35,7 @@ import WebKit
     private var sessionRetries = 0
     private var loading = false
     private var loadingOwner: UUID?
+    private var backgroundLoad = false
     private var preparing = false
     private var preparedState: FavouritePreviewState?
     private var promotionTask: Task<Void, Never>?
@@ -55,6 +56,23 @@ import WebKit
         self.sessionObserverFactory = sessionObserverFactory
     }
 
+    /// Shares the foreground loader and cache. Never interrupts a user intent or
+    /// wakes a parked tab; its hidden page is released by the normal load deadline.
+    func warm(_ context: FavouritePreviewContext, source: WKWebView? = nil) async {
+        guard owner == nil, !loading, !backgroundLoad, Self.enabled(context.service),
+              !BatterySaver.shared.isActive, source?.isLoading != true else { return }
+        start(context, owner: UUID(), source: source, preparation: true, background: true)
+        let ticket = generation
+        await task?.value
+        // A foreground request may have adopted this work while it was in flight.
+        if generation == ticket, backgroundLoad { stop(); self.context = nil }
+    }
+
+    func cancelWarmup() {
+        guard backgroundLoad else { return }
+        stop(); context = nil
+    }
+
     func request(_ context: FavouritePreviewContext, owner: UUID, account: String? = nil,
                  source: WKWebView? = nil, privateSession: Bool = false, sessionRetries: Int = 0) {
         start(context, owner: owner, account: account, source: source, privateSession: privateSession,
@@ -63,24 +81,25 @@ import WebKit
 
     private func start(_ context: FavouritePreviewContext, owner: UUID, account: String? = nil,
                        source: WKWebView? = nil, privateSession: Bool = false,
-                       sessionRetries: Int = 0, preparation: Bool) {
+                       sessionRetries: Int = 0, preparation: Bool, background: Bool = false) {
         if task != nil, self.context == context,
-           (self.owner == owner || (self.owner == nil && loading && loadingOwner == owner)), accountHint == account,
+           (self.owner == owner || (self.owner == nil && (backgroundLoad || (loading && loadingOwner == owner)))), accountHint == account,
            self.sessionRetries == sessionRetries,
            requestSource === source, Self.enabled(context.service), !privateSession,
            blocked[context.profileID] == nil {
             // A quick return reattaches to the already-started, bounded request.
             if self.owner == nil {
-                self.owner = owner; preparing = preparation; state = .loading
+                self.owner = owner; backgroundLoad = false; loadingOwner = owner; preparing = preparing || preparation; state = .loading
             }
             // A promotion must not restart WebKit or consume the failed-refresh cooldown.
             if !preparation && preparing { promote(context, source: source) }
             return
         }
         stop()
+        backgroundLoad = background
         preparing = preparation; accountHint = account; requestSource = source
         self.sessionRetries = sessionRetries
-        self.owner = owner; self.context = context; state = .loading
+        self.owner = background ? nil : owner; self.context = context; state = .loading
         guard Self.enabled(context.service), !privateSession, blocked[context.profileID] == nil else {
             state = .unavailable; return
         }
@@ -96,6 +115,8 @@ import WebKit
             // Establish the session baseline before the hidden page can write cookies.
             let session = await self.observers[context.profileID]?.synchronize()
             guard !Task.isCancelled, self.generation == ticket else { return }
+            // Speculative work is useful only for an already authenticated session.
+            if self.backgroundLoad && self.observeSessions && session?.hasAuthentication(for: context.service) != true { return }
             var identity = account
             let liveProof = source?.url.flatMap { FavouritePreviewContext(profileID: context.profileID, url: $0) } == context
             // The live favourite supplies account proof before any cached data is displayed.
@@ -114,7 +135,7 @@ import WebKit
                 if hit == nil { self.setState(.unavailable) }
                 return
             }
-            // Bound failed refreshes as well as successes. No timer refreshes a closed card.
+            // Bound failed refreshes as well as successes, including background warmups.
             self.attempts[context] = self.now()
             if self.attempts.count > 48, let oldest = self.attempts.min(by: { $0.value < $1.value })?.key {
                 self.attempts[oldest] = nil
@@ -126,7 +147,7 @@ import WebKit
                 guard !Task.isCancelled, self.generation == ticket else { return }
             }
             if result == .unavailable { result = await self.loader.load(context) }
-            guard !Task.isCancelled, self.generation == ticket, (self.owner == owner || self.owner == nil),
+            guard !Task.isCancelled, self.generation == ticket,
                   Self.enabled(context.service), self.blocked[context.profileID] == nil else { return }
             // Verification is still in-flight work: cancellation here must permit a retry.
             defer { if self.generation == ticket { self.loading = false; self.loadingOwner = nil } }
@@ -217,7 +238,7 @@ import WebKit
     private func stop() {
         // Cancellation is not a failed refresh. A deliberate return may retry immediately.
         if loading, let context { attempts[context] = nil }
-        generation += 1; task?.cancel(); task = nil; loading = false; loadingOwner = nil; loader.cancel()
+        generation += 1; task?.cancel(); task = nil; loading = false; loadingOwner = nil; backgroundLoad = false; loader.cancel()
         preparing = false; preparedState = nil; accountHint = nil; requestSource = nil
         promotionTask?.cancel(); promotionTask = nil
     }
@@ -253,6 +274,7 @@ import WebKit
     }
 
     private func setState(_ state: FavouritePreviewState) {
+        if backgroundLoad { preparedState = state; return }
         guard owner != nil else { return }
         if preparing { preparedState = state; return }
         Motion.animate(Look.quick) { self.state = state }

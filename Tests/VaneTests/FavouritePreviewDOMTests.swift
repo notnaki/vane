@@ -22,6 +22,15 @@ import XCTest
         return adapter.parse(try JSONDecoder().decode(FavouritePreviewExtraction.self, from: data))
     }
 
+    func testExtractsMoreRowsForScrollingWithBoundedPayload() async throws {
+        let rows = (1...60).map { "<div class='js-issue-row'><a class='Link--primary' href='/fixture/repo/pull/\($0)'>PR \($0)</a></div>" }.joined()
+        let result = try await extract("<meta name='user-login' content='fixture-user'>" + rows,
+            service: .github, url: "https://github.com/pulls?q=is:open%20involves:@me")
+        guard case .ready(let snapshot) = result else { return XCTFail("Expected scrollable PRs") }
+        XCTAssertEqual(snapshot.items.count, 50)
+        XCTAssertEqual(snapshot.items.last?.title, "PR 50")
+    }
+
     func testGitHubVisibleRowsAndStatus() async throws {
         let result = try await extract("""
         <meta name="user-login" content="fixture-user">
