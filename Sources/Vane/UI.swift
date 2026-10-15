@@ -2833,8 +2833,8 @@ private struct SpaceDots: View {
         .accessibilityHidden(!store.creatingSpace)
     }
 
-    /// Hand the selected symbol to the neighbour halfway through the visible travel.
-    /// Each glyph owns its replacement animation, including a reversal on cancellation.
+    /// Morph each fixed-position dot continuously with the sidebar's visible progress.
+    /// Returning over the same fractions retraces the same geometry on cancellation.
     @ViewBuilder private func dot(_ space: Space, lit: Double) -> some View {
         let here = store.currentSpaceID == space.id
         let icon = space.icon ?? "cloud"
@@ -2847,7 +2847,7 @@ private struct SpaceDots: View {
         let showLive = Binding(get: { live == space.id },
                                set: { live = $0 ? space.id : nil })
         SpaceIndicatorGlyph(icon: icon == "cloud" ? "cloud.fill" : icon,
-                            selected: lit >= 0.5, layout: layout,
+                            lit: lit, layout: layout,
                             dotColor: hovered == space.id && !layout.showsButtonBackground ? Look.inkSecondary : Look.dotFill,
                             reduced: reduceMotion || batterySaver.isActive)
         .equatable()
@@ -2906,27 +2906,21 @@ private struct SpaceDots: View {
     }
 }
 
-/// One persistent symbol image lets SF Symbols animate the actual dot/icon replacement.
-/// Native progress is deliberately published without animations to keep the sidebar
-/// attached to the fingers; only this small glyph opts back into its brief transition.
+/// Geometry follows native progress directly, with no threshold or independent timer.
 struct SpaceIndicatorGlyph: View, Equatable {
     let icon: String
-    let selected: Bool
+    let lit: Double
     let layout: SpaceStripLayout
     let dotColor: Color
     let reduced: Bool
 
     var body: some View {
-        Image(systemName: selected ? icon : "circle.fill")
-            .font(.system(size: layout.iconSize))
-            .foregroundStyle(selected ? Look.inkPrimary : dotColor)
-            .scaleEffect(selected ? 1 : layout.dotSize / layout.iconSize)
-            .contentTransition(reduced ? .identity : .symbolEffect(.replace.magic(fallback: .replace.downUp)))
-            .animation(reduced ? nil : Look.quick, value: selected)
-            .transaction {
-                // Do not propagate this override to the sidebar or the native cover.
-                $0.disablesAnimations = reduced
-            }
+        let progress = reduced ? (lit >= 0.5 ? 1.0 : 0.0) : min(1, max(0, lit))
+        let entry = SpaceIndicatorGeometryCache.entry(icon: icon, iconSize: layout.iconSize, dotSize: layout.dotSize)
+        SpaceIndicatorMorph(geometry: entry.geometry, progress: progress)
+            .fill(style: FillStyle(eoFill: true))
+            .foregroundStyle(dotColor.mix(with: Look.inkPrimary, by: progress))
+            .frame(width: entry.geometry.extent, height: entry.geometry.extent)
     }
 }
 
