@@ -536,6 +536,68 @@ import XCTest
         }
     }
 
+    func testPreparedSurfaceStaysAttachedToCompositorAtFirstDrag() async throws {
+        try await assertPreparedCompositorHandoff(selecting: false)
+    }
+
+    func testPreparedSurfaceStaysAttachedToCompositorAtButtonSelection() async throws {
+        try await assertPreparedCompositorHandoff(selecting: true)
+    }
+
+    private func assertPreparedCompositorHandoff(selecting: Bool) async throws {
+        let (store, spaces, window, monitor) = try fixture(floatingWindow: true)
+        window.setContentSize(NSSize(width: 1280, height: 840))
+        window.contentView?.wantsLayer = true
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(250))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while monitor.preparedSlides[spaces[1].id]?.layer?.superlayer !== host.layer,
+              ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        let layer = try XCTUnwrap(prepared.layer)
+        XCTAssertTrue(layer.superlayer === host.layer, "Idle preparation must already reach the compositor")
+        XCTAssertTrue(prepared.isHidden, "Idle surfaces must not paint over the live sidebar")
+        if selecting { monitor.select(spaces[1], in: store) }
+        else { monitor.track(-10, width: SidebarWidth.shared.width, in: store) }
+        XCTAssertTrue(host.spaceSlide === prepared)
+        XCTAssertTrue(store.spaceGesture.profileSliding)
+        XCTAssertFalse(prepared.isHidden)
+        XCTAssertFalse(layer.isHidden)
+        XCTAssertTrue(layer.superlayer === host.layer,
+                      "Hiding live sections must not detach their replacement until a later AppKit turn")
+        XCTAssertTrue(host.layer?.sublayers?.last === layer,
+                      "The already attached replacement must paint above the live hosting tree")
+    }
+
+    func testFreshSurfaceReachesCompositorBeforeCoveringLiveSidebar() async throws {
+        let (store, spaces, window, monitor) = try fixture(floatingWindow: true)
+        for space in spaces.prefix(2) {
+            store.switchTo(space: space)
+            for index in 0..<10 {
+                let tab = store.newBlankTab(focus: false)
+                tab.park(url: URL(string: "about:blank")!, Parked(title: "Document \(index)"))
+            }
+        }
+        store.switchTo(space: spaces[0])
+        store.palette = nil
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        host.wantsLayer = true
+        try await Task.sleep(for: .milliseconds(250))
+        monitor.remove()
+        monitor.install(store)
+        XCTAssertTrue(monitor.preparedSlides.isEmpty)
+        let start = ProcessInfo.processInfo.systemUptime
+        monitor.track(-10, width: SidebarWidth.shared.width, in: store)
+        print("COLD_NATIVE_COMPOSITOR_CLAIM seconds=\(ProcessInfo.processInfo.systemUptime - start)")
+        let slide = try XCTUnwrap(host.spaceSlide)
+        XCTAssertTrue(store.spaceGesture.profileSliding)
+        XCTAssertTrue(slide.layer?.superlayer === host.layer,
+                      "A cold claim must attach its surface before covering live content too")
+    }
+
     func testAdjacentButtonSelectionReusesPreparedPopulatedNativeSurfaceWithoutChangingTiming() async throws {
         let (store, spaces, window, monitor) = try fixture()
         for space in spaces.prefix(2) {

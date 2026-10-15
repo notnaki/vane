@@ -863,7 +863,14 @@ extension VaneWindow {
         cancelSpaceSlide()
         slide.groundStart = ground
         spaceSlide = slide
-        addSubview(slide)
+        // Idle surfaces are already above the live host. Re-adding one detaches its
+        // backing layer until AppKit's next display turn, leaving hidden live rows blank.
+        if slide.superview !== self {
+            addSubview(slide)
+            // A cold insertion has no committed backing hierarchy yet. Complete that
+            // AppKit display pass before track/start transfers visibility from live rows.
+            if slide.layer?.superlayer !== layer { window?.displayIfNeeded() }
+        }
     }
 
     func didFinishSpaceSlide(_ slide: ProfileSpaceSlide) {

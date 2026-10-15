@@ -1008,7 +1008,9 @@ private struct SpaceSwipe: ViewModifier {
                     incoming: store.swipePreview(in: target), drag: 0, direction: direction,
                     source: store, includesFavorites: favorites, travelWidth: SidebarWidth.shared.width)
                 slide.isHidden = true
-                host.addSubview(slide, positioned: .below, relativeTo: nil)
+                // Claim this surface in place; moving it above live rows on the first
+                // finger sample would detach its compositor layer until a later frame.
+                host.addSubview(slide, positioned: .above, relativeTo: nil)
                 slide.prepare()
                 self.preparedSlides[target.id] = slide
             }
