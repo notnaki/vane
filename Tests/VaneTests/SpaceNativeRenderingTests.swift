@@ -303,9 +303,13 @@ import XCTest
             let animation = try XCTUnwrap(surface.base.animation(forKey: "colors") as? CABasicAnimation)
             let values = try XCTUnwrap(animation.fromValue as? [CGColor])
             let from = try XCTUnwrap(NSColor(cgColor: XCTUnwrap(values.first))?.usingColorSpace(.deviceRGB))
-            let delta = abs(from.redComponent-before.redComponent)
-                + abs(from.greenComponent-before.greenComponent) + abs(from.blueComponent-before.blueComponent)
-            XCTAssertLessThan(delta, 0.02, "The replacement compositor animation must begin at the actual presented wash")
+            if targetIndex == 0 {
+                let delta = abs(from.redComponent-before.redComponent)
+                    + abs(from.greenComponent-before.greenComponent) + abs(from.blueComponent-before.blueComponent)
+                XCTAssertLessThan(delta, 0.02, "A reversal must begin at the actual presented wash")
+            } else {
+                XCTAssertTrue(host.spaceSlide === previous, "A new destination waits for the exposed leg")
+            }
             CATransaction.flush()
             try await Task.sleep(for: .milliseconds(8))
             XCTAssertTrue(try XCTUnwrap(host.spaceSlide).isActive, "The superseded animation must not finish its replacement")
@@ -324,10 +328,182 @@ import XCTest
                 let renderedError = abs(actual.redComponent-expected[0])+abs(actual.greenComponent-expected[1])+abs(actual.blueComponent-expected[2])
                 XCTAssertLessThan(renderedError, 0.02, "Retargeted presented colour must remain on the native sidebar's actual curve")
             }
-            try await Task.sleep(for: .milliseconds(500))
+            let finalDeadline = ProcessInfo.processInfo.systemUptime + 3
+            while (store.currentSpaceID != spaces[targetIndex].id || store.spaceSwiping || host.spaceSlide != nil),
+                  ProcessInfo.processInfo.systemUptime < finalDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
             XCTAssertEqual(store.currentSpaceID, spaces[targetIndex].id)
             XCTAssertFalse(surface.nativeAnimating)
         }
+    }
+
+    func testQueuedDestinationDoesNotReplaceAlreadyVisibleIncomingRows() async throws {
+        let (store, spaces, window, monitor) = try fixture(defaultColours: true)
+        store.palette = nil
+        try await Task.sleep(for: .milliseconds(250))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.8)
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while abs(host.spaceSlide?.offset ?? 0) / SidebarWidth.shared.width < 0.35,
+              ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let original = try XCTUnwrap(host.spaceSlide)
+        let incoming = try XCTUnwrap(original.subviews.last)
+        func pixels(_ view: NSView) throws -> Data {
+            let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: image)
+            return try XCTUnwrap(image.tiffRepresentation)
+        }
+        let before = try pixels(incoming)
+        monitor.select(spaces[2], in: store)
+        XCTAssertTrue(host.spaceSlide === original, "Already visible B rows must remain on their native surface")
+        let after = try XCTUnwrap(host.spaceSlide?.subviews.last)
+        XCTAssertTrue(after === incoming)
+        XCTAssertEqual(try pixels(after), before, "Requesting C must not swap the exposed B pixels")
+        let finalDeadline = ProcessInfo.processInfo.systemUptime + 3
+        while (store.currentSpaceID != spaces[2].id || store.spaceSwiping || host.spaceSlide != nil),
+              ProcessInfo.processInfo.systemUptime < finalDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.currentSpaceID, spaces[2].id)
+        XCTAssertFalse(store.spaceSwiping)
+        XCTAssertNil(host.spaceSlide)
+    }
+
+    func testQueuedDestinationHonorsLatestClickAndClearsForVisibleOrOriginClicks() async throws {
+        for requestedIndex in [3, 1, 0] {
+            let (store, spaces, window, monitor) = try fixture()
+            store.palette = nil
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
+            monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.5)
+            try await Task.sleep(for: .milliseconds(60))
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            let original = try XCTUnwrap(host.spaceSlide)
+            monitor.select(spaces[2], in: store)
+            monitor.select(spaces[requestedIndex], in: store)
+            XCTAssertTrue(host.spaceSlide === original)
+            let deadline = ProcessInfo.processInfo.systemUptime + 3
+            while (store.currentSpaceID != spaces[requestedIndex].id || store.spaceSwiping || host.spaceSlide != nil),
+                  ProcessInfo.processInfo.systemUptime < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(store.currentSpaceID, spaces[requestedIndex].id)
+            XCTAssertNil(host.spaceSlide)
+        }
+    }
+
+    func testQueuedDestinationKeepsVisibleIncomingDuringNativeReturnSpring() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        store.palette = nil
+        try await Task.sleep(for: .milliseconds(150))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.8)
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        while (store.currentSpaceID != spaces[1].id || abs(host.spaceSlide?.offset ?? 0) / SidebarWidth.shared.width < 0.35),
+              ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let original = try XCTUnwrap(host.spaceSlide)
+        monitor.select(spaces[0], in: store)
+        monitor.select(spaces[2], in: store)
+        XCTAssertTrue(host.spaceSlide === original)
+        XCTAssertTrue(original.outgoing.layer?.animation(forKey: "space-position") is CASpringAnimation)
+        let finalDeadline = ProcessInfo.processInfo.systemUptime + 3
+        while (store.currentSpaceID != spaces[2].id || store.spaceSwiping || host.spaceSlide != nil),
+              ProcessInfo.processInfo.systemUptime < finalDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.currentSpaceID, spaces[2].id)
+        XCTAssertNil(host.spaceSlide)
+    }
+
+    func testQueuedDestinationResolvesReducedMotionAndDoesNotSurviveAbortOrHide() async throws {
+        for action in ["reduce", "abort", "hide"] {
+            let (store, spaces, window, monitor) = try fixture()
+            store.palette = nil
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
+            monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.5)
+            try await Task.sleep(for: .milliseconds(60))
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            monitor.select(spaces[2], in: store)
+            switch action {
+            case "reduce": monitor.finishForReducedMotion()
+            case "abort": monitor.abort()
+            default:
+                store.sidebarShown = false
+                host.spaceSlide?.sidebarDidDisappear(store)
+            }
+            try await Task.sleep(for: .milliseconds(800))
+            XCTAssertEqual(store.currentSpaceID, spaces[action == "reduce" ? 2 : 1].id, action)
+            XCTAssertFalse(store.spaceSwiping, action)
+            XCTAssertNil(host.spaceSlide, action)
+        }
+    }
+
+    func testQueuedDestinationRevalidatesDeletionAndExternalSelection() async throws {
+        for action in ["delete", "external"] {
+            let (store, spaces, window, monitor) = try fixture()
+            store.palette = nil
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
+            monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.5)
+            try await Task.sleep(for: .milliseconds(60))
+            monitor.select(spaces[2], in: store)
+            if action == "delete" {
+                XCTAssertTrue(ProfileManager.shared.deleteSpace(spaces[2].id, in: store.profileID))
+            } else {
+                Motion.spaceHandoff { store.switchTo(space: spaces[3]) }
+            }
+            try await Task.sleep(for: .milliseconds(1000))
+            XCTAssertEqual(store.currentSpaceID, spaces[action == "delete" ? 1 : 3].id)
+            XCTAssertFalse(store.spaceSwiping)
+            XCTAssertNil((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        }
+    }
+
+    func testQueuedDestinationStartsFromActualArrivingProfileStore() async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "Native queue requires animation")
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let firstProfile = manager.create(name: "Queued origin")
+        let secondProfile = manager.create(name: "Queued arrival")
+        let first = manager.createSpace(name: "A", in: firstProfile.id)
+        let second = manager.createSpace(name: "B", in: secondProfile.id)
+        let third = manager.createSpace(name: "C", in: secondProfile.id)
+        let source = Windows.open(profile: firstProfile, space: first, focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            _ = manager.delete(firstProfile.id)
+            _ = manager.delete(secondProfile.id)
+            manager.active = previous
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNotNil(source.beginSpaceSelection(second))
+        source.spaceGesture.monitor.land(1, to: second, width: SidebarWidth.shared.width, store: source, duration: 0.5)
+        try await Task.sleep(for: .milliseconds(60))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let original = try XCTUnwrap(host.spaceSlide)
+        source.spaceGesture.monitor.select(third, in: source)
+        XCTAssertTrue(host.spaceSlide === original)
+        let deadline = ProcessInfo.processInfo.systemUptime + 4
+        while (TabStore.all.first { $0.window === window }?.currentSpaceID != third.id || host.spaceSlide != nil),
+              ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let arriving = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        XCTAssertEqual(arriving.profileID, secondProfile.id)
+        XCTAssertEqual(arriving.currentSpaceID, third.id)
+        XCTAssertFalse(arriving.spaceSwiping)
+        XCTAssertNil(source.window)
+        XCTAssertNil(host.spaceSlide)
     }
 
     func testFirstNativeDragReusesSurfacesPreparedWhileIdle() async throws {
@@ -931,7 +1107,7 @@ import XCTest
         XCTAssertNil(departing.superview)
     }
 
-    func testReturningToSameProfileBeforeLandingCancelsTheNativeOverlay() async throws {
+    func testQueuedSameProfileSelectionPreservesVisibleProfileLandingBeforeReturning() async throws {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Interrupting a native slide requires animation")
         let manager = ProfileManager.shared
@@ -959,13 +1135,18 @@ import XCTest
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
         let previousSlide = try XCTUnwrap(host.spaceSlide)
         source.spaceGesture.monitor.select(local, in: source)
-        XCTAssertFalse(host.spaceSlide === previousSlide,
-                       "The previous native track must not cover the replacement swipe")
-        XCTAssertFalse(source.spaceGesture.profileSlidesFavorites,
-                       "The replacement same-profile track must leave favourites fixed")
-        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(host.spaceSlide === previousSlide,
+                      "Already visible incoming profile rows must finish on their original surface")
+        XCTAssertTrue(source.spaceGesture.profileSlidesFavorites,
+                      "The committed profile's visible favourites must not disappear on the next click")
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while (source.window !== window || source.currentSpaceID != local.id || source.spaceSwiping || host.spaceSlide != nil),
+              ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertTrue(source.window === window)
-        XCTAssertEqual(source.currentSpaceID, local.id, "The superseded profile activation must not fire")
+        XCTAssertEqual(source.currentSpaceID, local.id, "The latest requested local Space must follow the visible profile leg")
+        XCTAssertNil(host.spaceSlide)
     }
 }
 

@@ -837,6 +837,24 @@ extension VaneWindow {
     private var current: ObjectIdentifier?
     private var subscription: AnyCancellable?
     private(set) var spaceSlide: ProfileSpaceSlide?
+    private var queuedSpaceSelection: (slide: ProfileSpaceSlide, target: Space)?
+    private var queueRevision = UUID()
+
+    func clearQueuedSpaceSelection() {
+        queuedSpaceSelection = nil
+        queueRevision = UUID()
+    }
+
+    func queueSpaceSelection(_ target: Space, after slide: ProfileSpaceSlide) {
+        clearQueuedSpaceSelection()
+        queuedSpaceSelection = (slide, target)
+    }
+
+    func takeQueuedSpaceSelection() -> Space? {
+        let target = queuedSpaceSelection?.target
+        clearQueuedSpaceSelection()
+        return target
+    }
 
     func beginSpaceSlide(_ slide: ProfileSpaceSlide, preservingGround: Bool = false) {
         // Capture before cancel resolves the old selection's final wash. The replacement
@@ -849,10 +867,27 @@ extension VaneWindow {
     }
 
     func didFinishSpaceSlide(_ slide: ProfileSpaceSlide) {
-        if spaceSlide === slide { spaceSlide = nil }
+        guard spaceSlide === slide else { return }
+        spaceSlide = nil
+        guard let queued = queuedSpaceSelection, queued.slide === slide else { return }
+        queuedSpaceSelection = nil
+        let revision = queueRevision
+        let arrivedID = slide.completedSpaceID
+        let window = window
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.window === window, self.queueRevision == revision,
+                  self.spaceSlide == nil,
+                  let arriving = TabStore.all.first(where: { $0.window === window }),
+                  arriving.currentSpaceID == arrivedID, !arriving.libraryOpen,
+                  arriving.sidebarShown || arriving.sidebarPeeking else { return }
+            // The visible destination has reached rest and its live rows are drawn.
+            // Revalidate the last requested Space through the arriving profile's monitor.
+            arriving.spaceGesture.monitor.select(queued.target, in: arriving)
+        }
     }
 
     func cancelSpaceSlide() {
+        clearQueuedSpaceSelection()
         spaceSlide?.cancel()
         spaceSlide = nil
     }
@@ -965,6 +1000,8 @@ extension VaneWindow {
     /// A completed cover can remain mounted for presentation handoff. Its identity is
     /// still useful for cleanup, but it must never reacquire input or animation ownership.
     var isActive: Bool { !finished }
+    private var restingSpaceID: UUID?
+    fileprivate var completedSpaceID: UUID { restingSpaceID ?? targetID }
     func isDestination(_ store: TabStore) -> Bool { destination === store }
     func isSource(_ store: TabStore) -> Bool { source === store }
 
@@ -1020,6 +1057,7 @@ extension VaneWindow {
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
         self.completion = completion
+        restingSpaceID = returning ? preparedOrigin.id : targetID
         let animationID = UUID()
         self.animationID = animationID
         let presentedGround = groundStart ?? (finishGround != nil ? captureGroundPresentation() : nil)
@@ -1122,6 +1160,7 @@ extension VaneWindow {
     func sidebarDidDisappear(_ store: TabStore) {
         guard !completingSelection, (destination ?? source) === store,
               !store.sidebarShown, !store.sidebarPeeking else { return }
+        (superview as? BrowserWindowHost)?.clearQueuedSpaceSelection()
         // An in-flight completion may attach a different, visible sidebar. Let
         // finish() evaluate that arrival; only an already-finished hidden owner can cut.
         if finished { retire() }

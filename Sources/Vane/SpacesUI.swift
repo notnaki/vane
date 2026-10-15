@@ -1055,8 +1055,10 @@ private struct SpaceSwipe: ViewModifier {
     /// Reduce Motion commits an owned destination and finishes its presentation at once.
     func finishForReducedMotion() {
         guard let store, store.spaceSwiping else { return }
-        let destination = landing && store.currentSpaceID == landingFrom ? store.spaceGesture.neighbour : nil
-        (store.window?.contentView as? BrowserWindowHost)?.cancelSpaceSlide()
+        let host = store.window?.contentView as? BrowserWindowHost
+        let destination = host?.takeQueuedSpaceSelection()
+            ?? (landing && store.currentSpaceID == landingFrom ? store.spaceGesture.neighbour : nil)
+        host?.cancelSpaceSlide()
         transition = UUID()
         pendingSelection = nil
         landing = false
@@ -1075,11 +1077,14 @@ private struct SpaceSwipe: ViewModifier {
 
     func select(_ space: Space, in store: TabStore) {
         guard !store.isPrivate, !store.isLittle, !store.isParked else { return }
-        if let host = store.window?.contentView as? BrowserWindowHost,
+        let host = store.window?.contentView as? BrowserWindowHost
+        host?.clearQueuedSpaceSelection()
+        if let host,
            let slide = host.spaceSlide, slide.isDestination(store) {
             host.cancelSpaceSlide()
         }
         guard !Motion.spaceReduced, store.window != nil else {
+            host?.cancelSpaceSlide()
             transition = UUID()
             pendingSelection = nil
             landing = false
@@ -1120,6 +1125,12 @@ private struct SpaceSwipe: ViewModifier {
                 return
             }
             if landing, space.id == store.spaceGesture.neighbour?.id { return }
+            if landing || returning, let host, let slide = host.spaceSlide, slide.isActive, slide.isSource(store) {
+                // Already exposed incoming rows must not swap underneath a moving strip.
+                // Finish that leg, then honor the latest click from its live destination.
+                host.queueSpaceSelection(space, after: slide)
+                return
+            }
             let continuing = landing && pendingSelection == nil
             let previousDirection = store.spaceGesture.previewDirection
             // Keep the presentation offset while replacing the requested destination.
@@ -1348,6 +1359,7 @@ private struct SpaceSwipe: ViewModifier {
     /// left for a spring to be the tail of.
     func abort() {
         forget()
+        (store?.window?.contentView as? BrowserWindowHost)?.clearQueuedSpaceSelection()
         // Several teardown notifications can arrive for the same window. A committed
         // landing keeps ownership until its completion, even after the monitor is removed.
         guard let store, !landing, store.spaceDrag != 0 || store.spaceSwiping else { return }
