@@ -1558,6 +1558,13 @@ private struct SpaceSwipe: ViewModifier {
             }
             return
         }
+        if store.spaceGesture.drag == 0, store.spaceGesture.nativeDrag == nil {
+            // A claimed beginning can end before any travel. With no native surface
+            // or SwiftUI displacement there is no animation completion to wait for.
+            returning = false
+            store.spaceSwiping = false
+            return
+        }
         store.spaceGesture.nativeDrag = nil
         Motion.space(Look.spaceReturn) { store.spaceGesture.drag = 0 } completion: { [weak store] in
             guard self.transition == token else { return }

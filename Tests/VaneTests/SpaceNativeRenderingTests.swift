@@ -140,7 +140,8 @@ import XCTest
             guard !hidden, !queuedRepeat, host.spaceSlide != nil else { return }
             queuedRepeat = true
             DispatchQueue.main.async {
-                XCTAssertNotNil(host.spaceSlide, "Repeat starts while the completed cover awaits retirement")
+                // The acknowledged cover can already be retired. A new zero-travel
+                // gesture at this boundary must still release its swiping ownership.
                 NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -12, phase: .began))
                 NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
             }
@@ -727,12 +728,10 @@ import XCTest
                 store.spaceDrag = 0
                 store.spaceSwiping = false
             }
-            DispatchQueue.main.async {
-                coveredUpdate = slide.superview === host
-            }
+            coveredUpdate = slide.superview === host
         }
         try await Task.sleep(for: .milliseconds(180))
-        XCTAssertTrue(coveredUpdate, "Keep the destination surface over the old live tree until its update is drawn")
+        XCTAssertTrue(coveredUpdate, "Keep the native rows through publication until the live update acknowledges them")
         XCTAssertNil(host.spaceSlide)
         XCTAssertEqual(store.currentSpaceID, spaces[1].id)
     }
@@ -985,6 +984,7 @@ import XCTest
         container.addSubview(slide)
         defer { slide.cancel() }
         slide.start(duration: 0.02) { store.switchTo(space: spaces[1]) }
+        slide.sidebarDidUpdate(store, renderedSpaceID: spaces[1].id, atRest: true)
         try await Task.sleep(for: .milliseconds(120))
         XCTAssertTrue(slide.superview === container,
                       "One display tick alone does not prove the destination live sidebar exists")
@@ -1051,7 +1051,13 @@ import XCTest
         monitor.track(-60, width: 250, in: store)
         let slide = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
         var completed = false
-        slide.start(duration: 0.16, returning: true) { completed = true }
+        slide.start(duration: 0.16, returning: true) {
+            Motion.spaceHandoff {
+                completed = true
+                store.spaceDrag = 0
+                store.spaceSwiping = false
+            }
+        }
         XCTAssertNotNil(slide.outgoing.layer?.animation(forKey: "space-position") as? CASpringAnimation,
                         "The visible native surface must spring back, not just its hidden SwiftUI copy")
         XCTAssertFalse(completed)

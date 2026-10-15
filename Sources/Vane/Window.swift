@@ -1205,18 +1205,20 @@ extension VaneWindow {
             source?.spaceGesture.profileSliding = false
             destination?.spaceGesture.profileSliding = false
         }
-        // The old live tree can still be mounted when selection publishes. Keep the
-        // destination surface covering it until SwiftUI has laid out and presented the
-        // replacement; removing it in this callback can flash the previous Space.
+        // Keep the native rows until the live tree acknowledges its resting identity.
+        // The two surfaces contain translucent ink: leaving both visible for extra
+        // display frames brightens every row, including a canceled swipe's origin.
         if complete != nil, !Motion.spaceReduced, let window {
             let arriving = destination ?? source
             if let arriving, !arriving.sidebarShown, !arriving.sidebarPeeking {
                 retire()
                 return
             }
-            if arriving?.currentSpaceID != preparedOrigin.id {
+            if let arriving, arriving.currentSpaceID != preparedOrigin.id
+                || arriving.spaceGesture.sectionsView != nil
+                || sidebarAcknowledgements[ObjectIdentifier(arriving)] != nil {
                 retirementStore = arriving
-                retirementSpaceID = arriving?.currentSpaceID
+                retirementSpaceID = arriving.currentSpaceID
                 // A disconnected window may never update its anchor. Bound that
                 // exceptional wait; visible sidebar retirement is acknowledged.
                 let timeout = DispatchWorkItem { [weak self] in self?.retire() }
@@ -1235,6 +1237,7 @@ extension VaneWindow {
         // NSHostingView may acknowledge synchronously during completion's final state
         // publication, before finish() knows the arriving store. Retain that rendered
         // identity/rest pair instead of waiting for a second update that may never come.
+        guard finished else { return }
         sidebarAcknowledgements[ObjectIdentifier(store)] = (renderedSpaceID, atRest)
         retireIfAcknowledged()
     }
@@ -1243,9 +1246,11 @@ extension VaneWindow {
         guard finished, let store = retirementStore,
               let rendered = sidebarAcknowledgements[ObjectIdentifier(store)], rendered.atRest,
               rendered.spaceID == retirementSpaceID, store.currentSpaceID == retirementSpaceID,
-              !store.spaceSwiping, !store.spaceGesture.profileSliding,
-              let window else { return }
-        scheduleRetirement(in: window)
+              !store.spaceSwiping, !store.spaceGesture.profileSliding else { return }
+        // This acknowledgement is issued by SwiftUI while committing the live opacity
+        // and identity. Remove the native list in that same transaction, not two frames
+        // later when both lists would already have painted their translucent text.
+        retire()
     }
 
     private func scheduleRetirement(in window: NSWindow) {
