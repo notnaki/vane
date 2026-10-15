@@ -2833,8 +2833,9 @@ private struct SpaceDots: View {
         .accessibilityHidden(!store.creatingSpace)
     }
 
-    /// Morph each fixed-position dot continuously with the sidebar's visible progress.
-    /// Returning over the same fractions retraces the same geometry on cancellation.
+    /// Both shapes are always in the tree, cross-fading on one number, so a live swipe can
+    /// hand the icon over a fraction at a time. A transition can only be all or nothing, and
+    /// mid-swipe the answer to "which Space are you in" genuinely is "between two".
     @ViewBuilder private func dot(_ space: Space, lit: Double) -> some View {
         let here = store.currentSpaceID == space.id
         let icon = space.icon ?? "cloud"
@@ -2846,11 +2847,18 @@ private struct SpaceDots: View {
                                 set: { theme = $0 ? space.id : nil })
         let showLive = Binding(get: { live == space.id },
                                set: { live = $0 ? space.id : nil })
-        SpaceIndicatorGlyph(icon: icon == "cloud" ? "cloud.fill" : icon,
-                            lit: lit, layout: layout,
-                            dotColor: hovered == space.id && !layout.showsButtonBackground ? Look.inkSecondary : Look.dotFill,
-                            reduced: reduceMotion || batterySaver.isActive)
-        .equatable()
+        ZStack {
+            Circle().fill(hovered == space.id && !layout.showsButtonBackground ? Look.inkSecondary : Look.dotFill)
+                .frame(width: layout.dotSize, height: layout.dotSize)
+                .opacity(1 - lit)
+                .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - lit))
+            Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
+                .font(.system(size: layout.iconSize))
+                .foregroundStyle(Look.inkPrimary)
+                .opacity(lit)
+                .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * lit)
+        }
+        .animation(gesture.swiping ? nil : animation, value: here)
         .frame(width: layout.itemWidth, height: Look.spaceDotHit)
         .background(!layout.showsButtonBackground ? .clear : dropTarget == space.id ? chromeTheme.selected : hovered == space.id ? chromeTheme.hovered : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
@@ -2903,24 +2911,6 @@ private struct SpaceDots: View {
         guard drag != 0, width > 0, let target = gesture.neighbour else { return [current: 1] }
         let f = Double(min(1, abs(drag / width)))
         return SpaceDotBlend.weights(current: current, target: target.id, fraction: f)
-    }
-}
-
-/// Geometry follows native progress directly, with no threshold or independent timer.
-struct SpaceIndicatorGlyph: View, Equatable {
-    let icon: String
-    let lit: Double
-    let layout: SpaceStripLayout
-    let dotColor: Color
-    let reduced: Bool
-
-    var body: some View {
-        let progress = reduced ? (lit >= 0.5 ? 1.0 : 0.0) : min(1, max(0, lit))
-        let entry = SpaceIndicatorGeometryCache.entry(icon: icon, iconSize: layout.iconSize, dotSize: layout.dotSize)
-        SpaceIndicatorMorph(geometry: entry.geometry, progress: progress)
-            .fill(style: FillStyle(eoFill: true))
-            .foregroundStyle(dotColor.mix(with: Look.inkPrimary, by: progress))
-            .frame(width: entry.geometry.extent, height: entry.geometry.extent)
     }
 }
 
