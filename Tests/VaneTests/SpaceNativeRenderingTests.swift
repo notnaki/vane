@@ -4,11 +4,15 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceNativeRenderingTests: XCTestCase {
-    private func fixture(floatingWindow: Bool = false) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
+    private func fixture(floatingWindow: Bool = false, coloured: Bool = false) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Animated interruption requires motion")
         let profile = ProfileManager.shared.create(name: "Continuity fixture").id
-        let spaces = ["First", "Second", "Third", "Fourth"].map { Space(name: $0, profileID: profile) }
+        let spaces = ["First", "Second", "Third", "Fourth"].enumerated().map { index, name in
+            coloured ? Space(name: name, profileID: profile,
+                             colorHex: index == 0 ? "#FF0000" : "#0000FF", appearance: "dark", tint: 1)
+                : Space(name: name, profileID: profile)
+        }
         XCTAssertTrue(ProfileManager.shared.saveSpaces(spaces, for: profile))
         let store = TabStore(profileID: profile, space: spaces[0], session: [])
         let frame = NSRect(x: 100, y: 100, width: 300, height: 400)
@@ -36,6 +40,62 @@ import XCTest
             try? FileManager.default.removeItem(at: ProfileManager.spacesURL(for: profile, in: Store.directory))
         }
         return (store, spaces, window, monitor)
+    }
+
+    private func colourSurface(in view: NSView) -> ThemeWashSurface? {
+        if let surface = view as? ThemeWashSurface { return surface }
+        return view.subviews.lazy.compactMap { self.colourSurface(in: $0) }.first
+    }
+
+    private func firstColour(of surface: ThemeWashSurface, presented: Bool = false) throws -> NSColor {
+        let layer = presented ? surface.base.presentation() ?? surface.base : surface.base
+        let colours = try XCTUnwrap(layer.colors as? [CGColor])
+        return try XCTUnwrap(NSColor(cgColor: XCTUnwrap(colours.first))?.usingColorSpace(.deviceRGB))
+    }
+
+    func testZeroOffsetKeepsTheIncomingBackgroundColourPrepared() async throws {
+        let (store, spaces, window, _) = try fixture(coloured: true)
+        _ = store.beginSpaceSelection(spaces[1])
+        store.spaceGesture.nativeDrag = 0
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        let surface = try XCTUnwrap(colourSurface(in: XCTUnwrap(window.contentView)))
+        let start = try firstColour(of: surface)
+        XCTAssertGreaterThan(start.redComponent, 0.9)
+        let track = try XCTUnwrap(store.spaceGesture.trackGround)
+        track(1)
+        let end = try firstColour(of: surface)
+        track(0.5)
+        let middle = try firstColour(of: surface)
+        XCTAssertLessThan(middle.redComponent, start.redComponent - 0.1)
+        XCTAssertGreaterThan(middle.redComponent, end.redComponent + 0.1)
+        XCTAssertGreaterThan(middle.blueComponent, start.blueComponent + 0.1)
+        XCTAssertLessThan(middle.blueComponent, end.blueComponent - 0.1,
+                          "A zero-offset click must retain the incoming colour for native tracking")
+    }
+
+    func testNativeSpaceClickBlendsBackgroundDuringSidebarTravel() async throws {
+        let (store, spaces, window, monitor) = try fixture(coloured: true)
+        try await Task.sleep(for: .milliseconds(120))
+        let surface = try XCTUnwrap(colourSurface(in: XCTUnwrap(window.contentView)))
+        let start = try firstColour(of: surface, presented: true).redComponent
+        monitor.select(spaces[1], in: store)
+        var samples = [start]
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        repeat {
+            try await Task.sleep(for: .milliseconds(16))
+            samples.append(try firstColour(of: surface, presented: true).redComponent)
+        } while store.spaceSwiping && ProcessInfo.processInfo.systemUptime < deadline
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        try await Task.sleep(for: .milliseconds(60))
+        let end = try firstColour(of: surface, presented: true).redComponent
+        samples.append(end)
+        XCTAssertGreaterThan(abs(start - end), 0.5)
+        XCTAssertTrue(samples.contains { abs($0 - start) > 0.05 && abs($0 - end) > 0.05 },
+                      "The actual BrowserWindowHost must show intermediate background colours")
+        let largestStep = zip(samples, samples.dropFirst()).map { abs($0 - $1) }.max() ?? 0
+        XCTAssertLessThan(largestStep, abs(start - end) * 0.6,
+                          "The background must blend during native travel instead of cutting at handoff")
     }
 
     func testFirstNativeDragReusesSurfacesPreparedWhileIdle() async throws {

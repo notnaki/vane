@@ -639,7 +639,9 @@ struct SpaceGround: View {
         let idle = (surface(of: here, systemDark: systemDark), 0.0)
         let width = SidebarWidth.shared.width
         let drag = gesture.nativeDrag ?? gesture.drag
-        guard drag != 0, width > 0, let target = gesture.neighbour else { return idle }
+        // Zero progress still needs the destination: native tracking can advance the
+        // wash without publishing another SwiftUI body update after a click starts.
+        guard width > 0, let target = gesture.neighbour else { return idle }
         return (surface(of: target, systemDark: systemDark), Double(min(1, abs(drag / width))))
     }
 }
