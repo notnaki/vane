@@ -98,6 +98,71 @@ import XCTest
                           "The background must blend during native travel instead of cutting at handoff")
     }
 
+    func testRealShortSwipeRestoresLiveSidebarAfterCancellation() async throws {
+        let (store, spaces, window, _) = try fixture()
+        let tab = store.newBlankTab(focus: false)
+        tab.park(url: URL(string: "https://example.test/source")!, Parked(title: "Visible source row"))
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(250))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        func capture() throws -> NSBitmapImageRep {
+            let image = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: image)
+            return image
+        }
+        let baseline = try capture()
+        let originalAnchor = try XCTUnwrap(store.spaceGesture.sectionsView)
+        let region = originalAnchor.convert(originalAnchor.bounds, to: host)
+        func edges(_ image: NSBitmapImageRep) -> Double {
+            let scale = Double(image.pixelsWide) / host.bounds.width
+            let x0 = max(0, Int(region.minX * scale)), x1 = min(image.pixelsWide - 2, Int(region.maxX * scale))
+            let y0 = max(0, Int(region.minY * scale)), y1 = min(image.pixelsHigh - 2, Int(region.maxY * scale))
+            var total: Double = 0
+            for y in stride(from: y0, to: y1, by: 2) {
+                for x in stride(from: x0, to: x1, by: 2) {
+                    if let a = image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                       let b = image.colorAt(x: x + 1, y: y)?.usingColorSpace(.deviceRGB) {
+                        total += abs(a.redComponent - b.redComponent) + abs(a.greenComponent - b.greenComponent) + abs(a.blueComponent - b.blueComponent)
+                    }
+                }
+            }
+            return total
+        }
+        let beforeEdges = edges(baseline)
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -12))
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -8))
+        XCTAssertNotNil(host.spaceSlide, "The real monitor must mount its native finger track")
+        var queuedRepeat = false
+        let observer = store.spaceGesture.$profileSliding.sink { hidden in
+            guard !hidden, !queuedRepeat, host.spaceSlide != nil else { return }
+            queuedRepeat = true
+            DispatchQueue.main.async {
+                XCTAssertNotNil(host.spaceSlide, "Repeat starts while the completed cover awaits retirement")
+                NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -12, phase: .began))
+                NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
+            }
+        }
+        defer { observer.cancel() }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertTrue(queuedRepeat)
+        XCTAssertEqual(store.currentSpaceID, spaces[0].id)
+        XCTAssertFalse(store.spaceSwiping)
+        XCTAssertFalse(store.spaceGesture.profileSliding)
+        XCTAssertEqual(store.spaceGesture.drag, 0)
+        XCTAssertNil(store.spaceGesture.nativeDrag)
+        XCTAssertNil(host.spaceSlide)
+        let anchor = try XCTUnwrap(store.spaceGesture.sectionsView)
+        XCTAssertTrue(anchor.window === window)
+        XCTAssertFalse(anchor.isHiddenOrHasHiddenAncestor)
+        let afterEdges = edges(try capture())
+        XCTAssertGreaterThan(beforeEdges, 1, "The pre-gesture fixture must render sidebar content")
+        XCTAssertGreaterThan(afterEdges, beforeEdges * 0.7,
+                             "Canceled swipe must restore visible text and rows instead of a blank sidebar")
+    }
+
     func testFirstNativeDragReusesSurfacesPreparedWhileIdle() async throws {
         let (store, spaces, window, monitor) = try fixture()
         for space in spaces.prefix(2) {

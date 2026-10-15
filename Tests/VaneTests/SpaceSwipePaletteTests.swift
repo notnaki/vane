@@ -165,7 +165,7 @@ private final class ScrollWindow: NSWindow {
 
 /// Trackpad samples enter through AppKit's real local event monitors without moving
 /// the user's cursor or requiring accessibility permissions.
-private final class ScrollEvent: NSEvent, @unchecked Sendable {
+final class ScrollEvent: NSEvent, @unchecked Sendable {
     private let owner: NSWindow
     private let ownerNumber: Int
     private let eventPhase: NSEvent.Phase

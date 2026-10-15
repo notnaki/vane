@@ -1364,7 +1364,7 @@ private struct SpaceSwipe: ViewModifier {
         guard width > 0 else { return }
         store.spaceSwiping = true
         if offset == 0, let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
-           slide.isSource(store) {
+           slide.isActive, slide.isSource(store) {
             store.spaceGesture.nativeDrag = 0
             slide.track(drag: 0)
             store.spaceGesture.trackGround?(0)
@@ -1451,9 +1451,10 @@ private struct SpaceSwipe: ViewModifier {
             let presentationOffset = store.spaceGesture.outgoingView?.layer?.presentation().map {
                 $0.convert(.zero, to: host.layer?.presentation()).x - frame.minX
             }
-            let drag = host.spaceSlide?.offset ?? presentationOffset ?? store.spaceDrag
+            let active = host.spaceSlide.flatMap { $0.isActive ? $0 : nil }
+            let drag = active?.offset ?? presentationOffset ?? store.spaceDrag
             let slide: ProfileSpaceSlide
-            if let tracking = host.spaceSlide, tracking.follows(destination, direction: direction) {
+            if let tracking = active, tracking.follows(destination, direction: direction) {
                 slide = tracking
             } else if drag == 0,
                       let prepared = takePreparedSlide(origin: origin, target: destination, direction: direction,
@@ -1527,7 +1528,7 @@ private struct SpaceSwipe: ViewModifier {
         returning = true
         store.spaceGesture.colourDuration = 0.16
         if let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
-           slide.isSource(store) {
+           slide.isActive, slide.isSource(store) {
             Motion.spaceHandoff { store.spaceGesture.drag = 0 }
             slide.start(duration: 0.16, returning: true) { [weak self, weak store] in
                 guard let self, self.transition == token else { return }

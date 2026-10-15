@@ -958,6 +958,9 @@ extension VaneWindow {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+    /// A completed cover can remain mounted for presentation handoff. Its identity is
+    /// still useful for cleanup, but it must never reacquire input or animation ownership.
+    var isActive: Bool { !finished }
     func isDestination(_ store: TabStore) -> Bool { destination === store }
     func isSource(_ store: TabStore) -> Bool { source === store }
 
@@ -981,6 +984,7 @@ extension VaneWindow {
 
     /// Finger tracking changes only layer positions; the two hosted lists are laid out once.
     func track(drag: CGFloat) {
+        guard isActive else { return }
         let now = ProcessInfo.processInfo.systemUptime
         if let previous = lastTracking {
             let dt = now - previous.time
@@ -1005,6 +1009,7 @@ extension VaneWindow {
     }
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
+        guard isActive else { return }
         self.completion = completion
         sidebarAcknowledgements.removeAll()
         publishProgress(offset)
