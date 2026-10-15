@@ -34,7 +34,9 @@ struct SpaceIndicatorGeometry: Sendable {
                    from: .zero, operation: .copy, fraction: 1)
         NSGraphicsContext.restoreGraphicsState()
         let bytes = context.data!.assumingMemoryBound(to: UInt8.self)
-        let mask = (0..<n*n).map { k in bytes[((n - 1 - k / n) * n + k % n) * 4 + 3] >= 128 }
+        // NSImage draws its symbol into this AppKit context in the orientation used by
+        // the SwiftUI shape. A second row inversion flips the live footer upside down.
+        let mask = (0..<n*n).map { k in bytes[k * 4 + 3] >= 128 }
         let boundary = (0..<n*n).filter { k in
             let x = k % n, y = k / n
             return (x > 0 && mask[k] != mask[k - 1]) || (x + 1 < n && mask[k] != mask[k + 1])
