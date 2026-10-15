@@ -2839,6 +2839,11 @@ private struct SpaceDots: View {
     @ViewBuilder private func dot(_ space: Space, lit: Double) -> some View {
         let here = store.currentSpaceID == space.id
         let icon = space.icon ?? "cloud"
+        // Grow the dot's footprint into the icon while cross-fading their shapes.
+        // Use the native travel fraction directly, so cancellation retraces the morph
+        // instead of starting a second animation behind the fingers.
+        let progress = reduceMotion || batterySaver.isActive ? (here ? 1.0 : 0.0) : lit
+        let diameter = layout.dotSize + (layout.iconSize - layout.dotSize) * progress
         let over = Binding(get: { dropTarget == space.id },
                            set: { dropTarget = $0 ? space.id : nil })
         let showIcons = Binding(get: { icons == space.id },
@@ -2850,13 +2855,13 @@ private struct SpaceDots: View {
         ZStack {
             Circle().fill(hovered == space.id && !layout.showsButtonBackground ? Look.inkSecondary : Look.dotFill)
                 .frame(width: layout.dotSize, height: layout.dotSize)
-                .opacity(1 - lit)
-                .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * (1 - lit))
+                .opacity(1 - progress)
+                .scaleEffect(diameter / layout.dotSize)
             Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
                 .font(.system(size: layout.iconSize))
                 .foregroundStyle(Look.inkPrimary)
-                .opacity(lit)
-                .scaleEffect(Look.tileAppearScale + (1 - Look.tileAppearScale) * lit)
+                .opacity(progress)
+                .scaleEffect(diameter / layout.iconSize)
         }
         .animation(gesture.swiping ? nil : animation, value: here)
         .frame(width: layout.itemWidth, height: Look.spaceDotHit)
