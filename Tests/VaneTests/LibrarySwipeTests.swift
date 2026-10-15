@@ -148,6 +148,48 @@ import XCTest
                       "The invisible search field must release page keyboard input; holder=\(String(describing: window.firstResponder)) page=\(String(describing: store.activePageResponder)) webWindow=\(tab.web.window != nil) palette=\(store.palette != nil)")
     }
 
+    func testOpeningEaselReleasesDepartingLibrarySearchFocus() async throws {
+        let (store, window, _) = fixture(withSpaces: true)
+        _ = store.newBlankTab(loading: URL(string: "about:blank"))
+        store.palette = nil
+        let host = NSHostingView(rootView: BrowserWindow().environmentObject(store)
+            .environmentObject(ProfileManager.shared))
+        window.contentView = host
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil); window.contentView = nil }
+        Library.open(.easels, in: store)
+        host.layoutSubtreeIfNeeded()
+        func search(_ view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField,
+               field.placeholderString?.contains("Search Easels") == true { return field }
+            return view.subviews.lazy.compactMap { search($0) }.first
+        }
+        let focusDeadline = ProcessInfo.processInfo.systemUptime + 1
+        while (search(host)?.currentEditor() == nil), ProcessInfo.processInfo.systemUptime < focusDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let field = try XCTUnwrap(search(host))
+        XCTAssertTrue(field.currentEditor() === window.firstResponder,
+                      "The real Easel search autofocus must own the field editor first")
+        store.librarySwipeProgress = 0.5
+        let tab = try XCTUnwrap(store.openEasel(create: true))
+        let boardID = try XCTUnwrap(tab.easelID)
+        defer { try? EaselStore.shared(profileID: store.profileID, directory: Store.directory).delete(boardID) }
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertFalse(store.libraryOpen)
+        XCTAssertNotNil(field.superview, "The departing search remains mounted during landing")
+        let page = try XCTUnwrap(store.activePageResponder)
+        let responder = window.firstResponder as? NSView
+        XCTAssertTrue(responder === page || responder?.isDescendant(of: page) == true,
+                      "Opening the board must return keyboard input to its Easel page; holder=\(String(describing: window.firstResponder))")
+        let holder = window.firstResponder
+        Library.focusSearch()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(window.firstResponder === holder,
+                      "A delayed focus token must not refocus the logically closed Easel search")
+    }
+
     func testReopeningMountedDownloadAndMediaPanesRefreshesMissingFiles() async throws {
         let (store, window, _) = fixture(withSpaces: true)
         let downloads = Downloads.manager(for: store.profileID)

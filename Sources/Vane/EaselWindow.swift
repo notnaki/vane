@@ -1008,8 +1008,11 @@ private struct EaselLibraryContent: View {
         }.padding(.horizontal, 12).padding(.top, Look.libraryHead).frame(width: Look.easelLibraryList)
             .frame(maxHeight: .infinity, alignment: .top)
             .vaneMotionPolicy()
-            .onAppear { DispatchQueue.main.async { searchFocused = true } }
-            .onChange(of: library.focusToken) { searchFocused = true }
+            .onAppear { takeKeyboard() }
+            .onChange(of: library.focusToken) { takeKeyboard() }
+            .onChange(of: store.libraryOpen) {
+                if !store.libraryOpen { searchFocused = false }
+            }
             .alert("Delete this Easel?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
                 Button("Cancel", role: .cancel) { deleting = nil }
                 Button("Delete", role: .destructive) {
@@ -1025,6 +1028,13 @@ private struct EaselLibraryContent: View {
                 Button("OK") { deletionError = nil }
             } message: { Text(deletionError ?? "") }
     }
+    private func takeKeyboard() {
+        DispatchQueue.main.async {
+            guard store.libraryOpen else { return }
+            searchFocused = true
+        }
+    }
+
     private func importBoard() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json]
