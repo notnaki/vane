@@ -275,6 +275,61 @@ import XCTest
         XCTAssertEqual(colour.redComponent, try XCTUnwrap(from.colors[0].nsColor.usingColorSpace(.deviceRGB)).redComponent, accuracy: 0.001)
     }
 
+    func testRetargetedLandingPreservesPresentedWashForReversalAndNewDestination() async throws {
+        for targetIndex in [0, 2] {
+            let (store, spaces, window, monitor) = try fixture(defaultColours: true)
+            store.palette = nil
+            try await Task.sleep(for: .milliseconds(250))
+            let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+            let surface = try XCTUnwrap(colourSurface(in: host))
+            // Give a loaded CI runner a deterministic mid-flight interruption point;
+            // the replacement still uses the production click/return timing.
+            XCTAssertNotNil(store.beginSpaceSelection(spaces[1]))
+            monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store, duration: 0.8)
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            while (store.currentSpaceID != spaces[1].id || abs(host.spaceSlide?.offset ?? 0) / SidebarWidth.shared.width < 0.35),
+                  ProcessInfo.processInfo.systemUptime < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+            let previous = try XCTUnwrap(host.spaceSlide)
+            XCTAssertTrue(previous.isActive)
+            let before = try firstColour(of: surface, presented: true)
+            monitor.select(spaces[targetIndex], in: store)
+            if targetIndex == 0 {
+                XCTAssertTrue(host.spaceSlide === previous, "A reversal must keep the native surface under the fingers")
+                XCTAssertTrue(previous.outgoing.layer?.animation(forKey: "space-position") is CASpringAnimation)
+            }
+            let animation = try XCTUnwrap(surface.base.animation(forKey: "colors") as? CABasicAnimation)
+            let values = try XCTUnwrap(animation.fromValue as? [CGColor])
+            let from = try XCTUnwrap(NSColor(cgColor: XCTUnwrap(values.first))?.usingColorSpace(.deviceRGB))
+            let delta = abs(from.redComponent-before.redComponent)
+                + abs(from.greenComponent-before.greenComponent) + abs(from.blueComponent-before.blueComponent)
+            XCTAssertLessThan(delta, 0.02, "The replacement compositor animation must begin at the actual presented wash")
+            CATransaction.flush()
+            try await Task.sleep(for: .milliseconds(8))
+            XCTAssertTrue(try XCTUnwrap(host.spaceSlide).isActive, "The superseded animation must not finish its replacement")
+            if let slide = host.spaceSlide,
+               let position = slide.outgoing.layer?.animation(forKey: "space-position") as? CABasicAnimation,
+               let start = (position.fromValue as? NSValue)?.pointValue.x,
+               let end = (position.toValue as? NSValue)?.pointValue.x,
+               let x = slide.outgoing.layer?.presentation()?.position.x, end != start {
+                let fraction = max(0, min(1, (x-start)/(end-start)))
+                let colors = try XCTUnwrap(animation.toValue as? [CGColor])
+                let to = try XCTUnwrap(NSColor(cgColor: XCTUnwrap(colors.first))?.usingColorSpace(.deviceRGB))
+                let actual = try firstColour(of: surface, presented: true)
+                let expected = [from.redComponent+(to.redComponent-from.redComponent)*fraction,
+                                from.greenComponent+(to.greenComponent-from.greenComponent)*fraction,
+                                from.blueComponent+(to.blueComponent-from.blueComponent)*fraction]
+                let renderedError = abs(actual.redComponent-expected[0])+abs(actual.greenComponent-expected[1])+abs(actual.blueComponent-expected[2])
+                XCTAssertLessThan(renderedError, 0.02, "Retargeted presented colour must remain on the native sidebar's actual curve")
+            }
+            try await Task.sleep(for: .milliseconds(500))
+            XCTAssertEqual(store.currentSpaceID, spaces[targetIndex].id)
+            XCTAssertFalse(surface.nativeAnimating)
+        }
+    }
+
     func testFirstNativeDragReusesSurfacesPreparedWhileIdle() async throws {
         let (store, spaces, window, monitor) = try fixture()
         for space in spaces.prefix(2) {

@@ -19,7 +19,8 @@ import UniformTypeIdentifiers
         didSet { if footer.drag != nativeDrag { footer.drag = nativeDrag } }
     }
     var trackGround: ((Double) -> Void)?
-    var animateGround: ((Space, Space, Double, Double, CABasicAnimation) -> ((Space?) -> Void))?
+    var captureGround: (() -> ThemeWashPresentation?)?
+    var animateGround: ((Space, Space, Double, Double, CABasicAnimation, ThemeWashPresentation?) -> ((Space?) -> Void))?
     var colourDuration = Look.spaceSlideDuration
     @Published var pull: CGFloat = 0
     @Published var swiping = false
@@ -1107,9 +1108,14 @@ private struct SpaceSwipe: ViewModifier {
                 if let host = store.window?.contentView as? BrowserWindowHost,
                    let slide = host.spaceSlide {
                     store.spaceGesture.drag = slide.offset
-                    host.cancelSpaceSlide()
+                    // A clicked reversal returns the live native surface with its spring;
+                    // tearing it down would discard both presented position and wash.
+                    if !slide.isActive || !slide.isSource(store) { host.cancelSpaceSlide() }
                 }
-                if let origin = store.spaceGesture.outgoing?.space { store.switchTo(space: origin); rebuild() }
+                if let origin = store.spaceGesture.outgoing?.space {
+                    Motion.spaceHandoff { store.switchTo(space: origin) }
+                    rebuild()
+                }
                 settle(store)
                 return
             }
@@ -1461,7 +1467,7 @@ private struct SpaceSwipe: ViewModifier {
                       let prepared = takePreparedSlide(origin: origin, target: destination, direction: direction,
                                                        frame: frame, width: width, in: store) {
                 slide = prepared
-                host.beginSpaceSlide(slide)
+                host.beginSpaceSlide(slide, preservingGround: true)
                 slide.isHidden = false
                 // Idle captures already stand at zero. Keep in-flight retargets on
                 // their existing path and do not manufacture finger velocity for clicks.
@@ -1471,7 +1477,7 @@ private struct SpaceSwipe: ViewModifier {
                     incoming: store.swipePreview(in: destination), drag: drag,
                     direction: direction, source: store, includesFavorites: includesFavorites,
                     travelWidth: width)
-                host.beginSpaceSlide(slide)
+                host.beginSpaceSlide(slide, preservingGround: true)
             }
             // Keep native presentation as the footer/tint source across release. Updating
             // the hidden SwiftUI endpoint must not reset it to the first finger sample.

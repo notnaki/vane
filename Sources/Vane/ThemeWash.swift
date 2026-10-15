@@ -86,6 +86,12 @@ struct ThemeWashView: View, Animatable {
     }
 }
 
+/// Actual compositor values survive replacement even when the selected page is already
+/// the previous destination. A new landing must not infer them from that model selection.
+struct ThemeWashPresentation {
+    fileprivate let values: [String: Any]
+}
+
 /// Window-sized colour interpolation belongs on the compositor, alongside sidebar travel.
 /// Repeated updates with the same destination must leave an in-flight blend alone.
 struct NativeThemeWash: NSViewRepresentable {
@@ -105,11 +111,12 @@ struct NativeThemeWash: NSViewRepresentable {
             view?.apply(from.mixed(towards: to, fraction: fraction), duration: 0)
         }
         let fallback = fallback, profiles = profiles, systemDark = systemDark
-        gesture.animateGround = { [weak view] origin, destination, start, end, animation in
+        gesture.captureGround = { [weak view] in view?.capturePresentation() }
+        gesture.animateGround = { [weak view] origin, destination, start, end, animation, presentedStart in
             let from = ThemeWash.space(origin, fallback: fallback, profiles: profiles, systemDark: systemDark)
             let to = ThemeWash.space(destination, fallback: fallback, profiles: profiles, systemDark: systemDark)
             let token = view?.animateNative(from: from.mixed(towards: to, fraction: start),
-                                to: from.mixed(towards: to, fraction: end), animation: animation)
+                                to: from.mixed(towards: to, fraction: end), animation: animation, presentedStart: presentedStart)
             return { [weak view] current in
                 guard let view, let token else { return }
                 let final = current.map { ThemeWash.space($0, fallback: fallback, profiles: profiles, systemDark: systemDark) }
@@ -164,10 +171,23 @@ struct NativeThemeWash: NSViewRepresentable {
         for layer in [base, overlay, tint, grain.layer].compactMap({ $0 }) { layer.removeAllAnimations() }
     }
 
-    @discardableResult func animateNative(from: ThemeWash, to: ThemeWash, animation: CABasicAnimation) -> UUID {
+    func capturePresentation() -> ThemeWashPresentation {
+        var values: [String: Any] = [:]
+        for (layer, key, name) in [(base as CALayer, "colors", "base"), (overlay as CALayer, "colors", "overlay"),
+                                   (overlay as CALayer, "opacity", "overlay"), (tint, "opacity", "tint")] {
+            values["\(name).\(key)"] = layer.presentation()?.value(forKeyPath: key) ?? layer.value(forKeyPath: key)
+        }
+        if let layer = grain.layer {
+            values["grain.opacity"] = layer.presentation()?.opacity ?? layer.opacity
+        }
+        return ThemeWashPresentation(values: values)
+    }
+
+    @discardableResult func animateNative(from: ThemeWash, to: ThemeWash, animation: CABasicAnimation,
+                                         presentedStart: ThemeWashPresentation? = nil) -> UUID {
         nativeToken = nil
-        apply(from, duration: 0)
-        apply(to, duration: animation.duration, native: animation, start: from)
+        if presentedStart == nil { apply(from, duration: 0) }
+        apply(to, duration: animation.duration, native: animation, start: from, presentedStart: presentedStart)
         let token = UUID()
         nativeToken = token
         return token
@@ -179,13 +199,13 @@ struct NativeThemeWash: NSViewRepresentable {
         apply(wash, duration: 0)
     }
 
-    func apply(_ wash: ThemeWash, duration: TimeInterval, native: CABasicAnimation? = nil, start: ThemeWash? = nil) {
+    func apply(_ wash: ThemeWash, duration: TimeInterval, native: CABasicAnimation? = nil, start: ThemeWash? = nil, presentedStart: ThemeWashPresentation? = nil) {
         guard !nativeAnimating, target != wash || native != nil else { return }
-        let animate = target != nil && duration > 0
+        let animate = duration > 0 && (target != nil || native != nil)
         target = wash
         let rate = Float(window?.screen?.maximumFramesPerSecond ?? 60)
-        func set(_ layer: CALayer, _ key: String, _ value: Any, _ initial: Any?) {
-            let from = initial ?? layer.presentation()?.value(forKeyPath: key) ?? layer.value(forKeyPath: key)
+        func set(_ layer: CALayer, _ key: String, _ name: String, _ value: Any, _ initial: Any?) {
+            let from = presentedStart?.values["\(name).\(key)"] ?? initial ?? layer.presentation()?.value(forKeyPath: key) ?? layer.value(forKeyPath: key)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer.setValue(value, forKeyPath: key)
@@ -202,13 +222,13 @@ struct NativeThemeWash: NSViewRepresentable {
             }
             CATransaction.commit()
         }
-        set(base, "colors", [wash.colors[0].nsColor.cgColor, wash.baseEnd.nsColor.cgColor],
+        set(base, "colors", "base", [wash.colors[0].nsColor.cgColor, wash.baseEnd.nsColor.cgColor],
             start.map { [$0.colors[0].nsColor.cgColor, $0.baseEnd.nsColor.cgColor] })
-        set(overlay, "colors", [NSColor.clear.cgColor, wash.colors[2].nsColor.cgColor],
+        set(overlay, "colors", "overlay", [NSColor.clear.cgColor, wash.colors[2].nsColor.cgColor],
             start.map { [NSColor.clear.cgColor, $0.colors[2].nsColor.cgColor] })
-        set(overlay, "opacity", Float(wash.overlay), start.map { Float($0.overlay) })
-        set(tint, "opacity", Float(wash.opacity), start.map { Float($0.opacity) })
-        if let layer = grain.layer { set(layer, "opacity", Float(wash.grain * Look.grainMax), start.map { Float($0.grain * Look.grainMax) }) }
+        set(overlay, "opacity", "overlay", Float(wash.overlay), start.map { Float($0.overlay) })
+        set(tint, "opacity", "tint", Float(wash.opacity), start.map { Float($0.opacity) })
+        if let layer = grain.layer { set(layer, "opacity", "grain", Float(wash.grain * Look.grainMax), start.map { Float($0.grain * Look.grainMax) }) }
     }
 }
 

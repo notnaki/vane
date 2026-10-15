@@ -838,8 +838,12 @@ extension VaneWindow {
     private var subscription: AnyCancellable?
     private(set) var spaceSlide: ProfileSpaceSlide?
 
-    func beginSpaceSlide(_ slide: ProfileSpaceSlide) {
+    func beginSpaceSlide(_ slide: ProfileSpaceSlide, preservingGround: Bool = false) {
+        // Capture before cancel resolves the old selection's final wash. The replacement
+        // sidebar continues its presentation, so its background must continue it too.
+        let ground = preservingGround ? spaceSlide.flatMap { $0.isActive ? $0.captureGroundPresentation() : nil } : nil
         cancelSpaceSlide()
+        slide.groundStart = ground
         spaceSlide = slide
         addSubview(slide)
     }
@@ -1008,11 +1012,18 @@ extension VaneWindow {
         incoming.layoutSubtreeIfNeeded()
     }
 
+    fileprivate var groundStart: ThemeWashPresentation?
+    fileprivate func captureGroundPresentation() -> ThemeWashPresentation? { source?.spaceGesture.captureGround?() }
     private var finishGround: ((Space?) -> Void)?
+    private var animationID: UUID?
 
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
         self.completion = completion
+        let animationID = UUID()
+        self.animationID = animationID
+        let presentedGround = groundStart ?? (finishGround != nil ? captureGroundPresentation() : nil)
+        groundStart = nil
         sidebarAcknowledgements.removeAll()
         publishProgress(offset)
         source?.spaceGesture.profileSlidesFavorites = includesFavorites
@@ -1035,7 +1046,10 @@ extension VaneWindow {
         CATransaction.begin()
         CATransaction.setAnimationDuration(duration)
         CATransaction.setCompletionBlock { [weak self] in
-            MainActor.assumeIsolated { self?.finish() }
+            MainActor.assumeIsolated {
+                guard let self, self.animationID == animationID else { return }
+                self.finish()
+            }
         }
         for (layer, from) in [(outgoingLayer, fromOutgoing), (incomingLayer, fromIncoming)] {
             let animation: CABasicAnimation
@@ -1072,7 +1086,7 @@ extension VaneWindow {
                 finishGround?((destination ?? source)?.swipeSpace)
                 let start = Double(min(1, abs((from.x - outgoingLayer.bounds.width * outgoingLayer.anchorPoint.x - contentInset) / travelWidth)))
                 finishGround = source?.spaceGesture.animateGround?(preparedOrigin, preparedTarget,
-                    start, returning ? 0 : 1, animation)
+                    start, returning ? 0 : 1, animation, presentedGround)
             }
         }
         CATransaction.commit()
@@ -1129,6 +1143,7 @@ extension VaneWindow {
     func finish() {
         guard !finished else { return }
         finished = true
+        animationID = nil
         progressLink?.invalidate()
         progressLink = nil
         if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
