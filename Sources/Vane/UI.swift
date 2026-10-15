@@ -2833,17 +2833,11 @@ private struct SpaceDots: View {
         .accessibilityHidden(!store.creatingSpace)
     }
 
-    /// Both shapes are always in the tree, cross-fading on one number, so a live swipe can
-    /// hand the icon over a fraction at a time. A transition can only be all or nothing, and
-    /// mid-swipe the answer to "which Space are you in" genuinely is "between two".
+    /// Hand the selected symbol to the neighbour halfway through the visible travel.
+    /// Each glyph owns its replacement animation, including a reversal on cancellation.
     @ViewBuilder private func dot(_ space: Space, lit: Double) -> some View {
         let here = store.currentSpaceID == space.id
         let icon = space.icon ?? "cloud"
-        // Grow the dot's footprint into the icon while cross-fading their shapes.
-        // Use the native travel fraction directly, so cancellation retraces the morph
-        // instead of starting a second animation behind the fingers.
-        let progress = reduceMotion || batterySaver.isActive ? (here ? 1.0 : 0.0) : lit
-        let diameter = layout.dotSize + (layout.iconSize - layout.dotSize) * progress
         let over = Binding(get: { dropTarget == space.id },
                            set: { dropTarget = $0 ? space.id : nil })
         let showIcons = Binding(get: { icons == space.id },
@@ -2852,18 +2846,11 @@ private struct SpaceDots: View {
                                 set: { theme = $0 ? space.id : nil })
         let showLive = Binding(get: { live == space.id },
                                set: { live = $0 ? space.id : nil })
-        ZStack {
-            Circle().fill(hovered == space.id && !layout.showsButtonBackground ? Look.inkSecondary : Look.dotFill)
-                .frame(width: layout.dotSize, height: layout.dotSize)
-                .opacity(1 - progress)
-                .scaleEffect(diameter / layout.dotSize)
-            Image(systemName: icon == "cloud" ? "cloud.fill" : icon)
-                .font(.system(size: layout.iconSize))
-                .foregroundStyle(Look.inkPrimary)
-                .opacity(progress)
-                .scaleEffect(diameter / layout.iconSize)
-        }
-        .animation(gesture.swiping ? nil : animation, value: here)
+        SpaceIndicatorGlyph(icon: icon == "cloud" ? "cloud.fill" : icon,
+                            selected: lit >= 0.5, layout: layout,
+                            dotColor: hovered == space.id && !layout.showsButtonBackground ? Look.inkSecondary : Look.dotFill,
+                            reduced: reduceMotion || batterySaver.isActive)
+        .equatable()
         .frame(width: layout.itemWidth, height: Look.spaceDotHit)
         .background(!layout.showsButtonBackground ? .clear : dropTarget == space.id ? chromeTheme.selected : hovered == space.id ? chromeTheme.hovered : .clear,
                     in: .rect(cornerRadius: Look.pillRadius))
@@ -2916,6 +2903,30 @@ private struct SpaceDots: View {
         guard drag != 0, width > 0, let target = gesture.neighbour else { return [current: 1] }
         let f = Double(min(1, abs(drag / width)))
         return SpaceDotBlend.weights(current: current, target: target.id, fraction: f)
+    }
+}
+
+/// One persistent symbol image lets SF Symbols animate the actual dot/icon replacement.
+/// Native progress is deliberately published without animations to keep the sidebar
+/// attached to the fingers; only this small glyph opts back into its brief transition.
+struct SpaceIndicatorGlyph: View, Equatable {
+    let icon: String
+    let selected: Bool
+    let layout: SpaceStripLayout
+    let dotColor: Color
+    let reduced: Bool
+
+    var body: some View {
+        Image(systemName: selected ? icon : "circle.fill")
+            .font(.system(size: layout.iconSize))
+            .foregroundStyle(selected ? Look.inkPrimary : dotColor)
+            .scaleEffect(selected ? 1 : layout.dotSize / layout.iconSize)
+            .contentTransition(reduced ? .identity : .symbolEffect(.replace.magic(fallback: .replace.downUp)))
+            .animation(reduced ? nil : Look.quick, value: selected)
+            .transaction {
+                // Do not propagate this override to the sidebar or the native cover.
+                $0.disablesAnimations = reduced
+            }
     }
 }
 
