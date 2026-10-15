@@ -814,7 +814,7 @@ extension TabStore {
         guard let target = list.first(where: { $0.id == requested.id }),
               list.contains(where: { $0.id == origin }) else { return nil }
         let direction = Spaces.direction(from: origin, to: target.id, in: list.map(\.id))
-        creatingSpace = false
+        if creatingSpace { creatingSpace = false }
         spaceSwiping = true
         spaceGesture.strip = list
         spaceGesture.neighbour = target
@@ -951,6 +951,29 @@ private struct SpaceSwipe: ViewModifier {
         preparation?.cancel()
         preparation = nil
         discardPreparation()
+    }
+
+    /// Consume one validated idle capture for either a finger claim or a button click.
+    /// Tracking already owns its surface before subsequent per-event updates reach here.
+    private func takePreparedSlide(origin: Space, target: Space, direction: Int,
+                                   frame: NSRect, width: CGFloat, in store: TabStore) -> ProfileSpaceSlide? {
+        guard let slide = preparedSlides[target.id], self.store === store,
+              !Motion.spaceReduced, !store.libraryOpen, store.librarySwipeProgress == nil,
+              store.sidebarShown || (store.window as? VaneWindow)?.peekingSidebar == true else { return nil }
+        // A newly created/removed supplier has no matching subscription yet. Validate at
+        // consumption even when button selection has already marked the store swiping.
+        let peers = Set(TabStore.all.filter {
+            $0 !== store && preparationProfiles.contains($0.profileID)
+        }.map(ObjectIdentifier.init))
+        guard peers == Set(preparationPeers.keys) else {
+            invalidatePreparation()
+            return nil
+        }
+        guard slide.follows(target, direction: direction),
+              slide.preparedFor(origin: origin, target: target, frame: frame, width: width) else { return nil }
+        preparedSlides.removeValue(forKey: target.id)
+        preparation?.cancel()
+        return slide
     }
 
     /// Build adjacent sidebar surfaces while idle, never in the first directional sample.
@@ -1339,14 +1362,6 @@ private struct SpaceSwipe: ViewModifier {
     /// asking SwiftUI to render a translated list for every event.
     func track(_ offset: CGFloat, width: CGFloat, in store: TabStore) {
         guard width > 0 else { return }
-        if !store.spaceSwiping, !preparedSlides.isEmpty {
-            // A store created since idle preparation has no subscription yet. Validate
-            // suppliers once at claim, never on the per-event native tracking path.
-            let peers = Set(TabStore.all.filter {
-                $0 !== store && preparationProfiles.contains($0.profileID)
-            }.map(ObjectIdentifier.init))
-            if peers != Set(preparationPeers.keys) { invalidatePreparation() }
-        }
         store.spaceSwiping = true
         if offset == 0, let slide = (store.window?.contentView as? BrowserWindowHost)?.spaceSlide,
            slide.isSource(store) {
@@ -1375,10 +1390,8 @@ private struct SpaceSwipe: ViewModifier {
         let includesFavorites = target.profileID != store.profileID
         guard let anchor = includesFavorites ? store.spaceGesture.stripView : store.spaceGesture.sectionsView else { return }
         let frame = anchor.convert(anchor.bounds, to: host)
-        if let slide = preparedSlides[target.id],
-           slide.preparedFor(origin: origin, target: target, frame: frame, width: width) {
-            preparedSlides.removeValue(forKey: target.id)
-            preparation?.cancel()
+        if let slide = takePreparedSlide(origin: origin, target: target, direction: direction,
+                                         frame: frame, width: width, in: store) {
             host.beginSpaceSlide(slide)
             slide.isHidden = false
             slide.track(drag: offset)
@@ -1442,6 +1455,14 @@ private struct SpaceSwipe: ViewModifier {
             let slide: ProfileSpaceSlide
             if let tracking = host.spaceSlide, tracking.follows(destination, direction: direction) {
                 slide = tracking
+            } else if drag == 0,
+                      let prepared = takePreparedSlide(origin: origin, target: destination, direction: direction,
+                                                       frame: frame, width: width, in: store) {
+                slide = prepared
+                host.beginSpaceSlide(slide)
+                slide.isHidden = false
+                // Idle captures already stand at zero. Keep in-flight retargets on
+                // their existing path and do not manufacture finger velocity for clicks.
             } else {
                 slide = ProfileSpaceSlide(frame: frame,
                     outgoing: store.swipePreview(in: origin, includingFavorites: includesFavorites),

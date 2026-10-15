@@ -128,6 +128,71 @@ import XCTest
         }
     }
 
+    func testAdjacentButtonSelectionReusesPreparedPopulatedNativeSurfaceWithoutChangingTiming() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        for space in spaces.prefix(2) {
+            store.switchTo(space: space)
+            for index in 0..<10 {
+                let tab = store.newBlankTab(focus: false)
+                tab.park(url: URL(string: "https://example.test/\(index)")!, Parked(title: "Document \(index)"))
+            }
+        }
+        store.switchTo(space: spaces[0])
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(250))
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while monitor.preparedSlides[spaces[1].id] == nil, ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let prepared = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+        monitor.select(spaces[1], in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared,
+                      "An adjacent button click must reuse the hosting trees prepared while idle")
+        XCTAssertNil(monitor.preparedSlides[spaces[1].id], "The active surface must leave the idle cache")
+        XCTAssertFalse(prepared.isHidden)
+        let animation = try XCTUnwrap(prepared.outgoing.layer?.animation(forKey: "space-position"))
+        XCTAssertEqual(animation.duration, Look.spaceSlideDuration)
+        let timing = try XCTUnwrap(animation.timingFunction)
+        var actual: [Float] = [0, 0], expected: [Float] = [0, 0]
+        timing.getControlPoint(at: 1, values: &actual)
+        CAMediaTimingFunction(name: .easeInEaseOut).getControlPoint(at: 1, values: &expected)
+        XCTAssertEqual(actual, expected, "Prepared button travel must retain the approved click easing")
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
+    func testCrossProfileButtonSelectionReusesPreparedNativeSurface() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        let (profile, target) = adjacentProfile(to: store, after: spaces.last!)
+        let peer = TabStore(profileID: profile, space: target, session: [])
+        _ = peer.newBlankTab(focus: false)
+        window.contentView?.layoutSubtreeIfNeeded()
+        monitor.schedulePreparation(in: store)
+        try await Task.sleep(for: .milliseconds(250))
+        let prepared = try XCTUnwrap(monitor.preparedSlides[target.id])
+        monitor.select(target, in: store)
+        XCTAssertTrue((window.contentView as? BrowserWindowHost)?.spaceSlide === prepared,
+                      "Profile-boundary buttons must reuse the prepared favorites and sections")
+        XCTAssertNil(monitor.preparedSlides[target.id])
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
+    func testButtonSelectionRejectsCaptureFromBeforeANewPreviewSupplier() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        let (profile, target) = adjacentProfile(to: store, after: spaces.last!)
+        window.contentView?.layoutSubtreeIfNeeded()
+        monitor.schedulePreparation(in: store)
+        try await Task.sleep(for: .milliseconds(250))
+        let stale = try XCTUnwrap(monitor.preparedSlides[target.id])
+        let peer = TabStore(profileID: profile, space: target, session: [])
+        _ = peer.newBlankTab(focus: false)
+        monitor.select(target, in: store)
+        let active = try XCTUnwrap((window.contentView as? BrowserWindowHost)?.spaceSlide)
+        XCTAssertFalse(active === stale, "Button claims must validate newly live snapshot suppliers too")
+        XCTAssertNil(stale.superview)
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
     func testPeekingSidebarPreparesAndReusesItsNativeSurface() async throws {
         let (store, spaces, window, monitor) = try fixture(floatingWindow: true)
         // Separate the docked sidebar's disappearance from the floating mount. Instant
