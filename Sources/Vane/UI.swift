@@ -589,7 +589,8 @@ struct SpaceGround: View {
         ZStack {
             if store.isPrivate { Color(hex: Profile.incognito.colorHex) }
             NativeThemeWash(wash: wash, reduced: reduceMotion, gesture: gesture,
-                            origin: mine, destination: pull.surface)
+                            origin: mine, destination: pull.surface, fallback: store.profile,
+                            profiles: profiles.profiles, systemDark: systemDark)
         }
         // Gesture transactions already own the travel and cancellation timing. Only a
         // direct Space change or a theme edit needs a local animation.
@@ -600,31 +601,7 @@ struct SpaceGround: View {
     }
 
     private func surface(of space: Space?, systemDark: Bool) -> ThemeWash {
-        let dark: Bool
-        switch space?.appearance {
-        case "dark": dark = true
-        case "light": dark = false
-        default:
-            // A neighbour following the system must not inherit the departing Space's
-            // pinned appearance. The environment still invalidates us on system changes.
-            dark = systemDark
-        }
-        return ThemeWash(colors: colors(of: space), strength: space?.tint ?? Look.defaultTint,
-                         opacity: Look.groundOpacity(dark: dark, strength: space?.tint ?? Look.defaultTint),
-                         grain: space?.grain ?? 0, dark: dark)
-    }
-
-    /// A Space's colours, falling back to its profile's — Arc has no colourless space, and a
-    /// grey slab was what the old fallback amounted to.
-    ///
-    /// Its *own* profile's, which need not be this window's: the strip crosses profiles, and
-    /// the wash a swipe pulls in has to be the neighbour's colour or the window would slide to
-    /// one ground and then cut to another on landing.
-    private func colors(of space: Space?) -> [ThemeColor] {
-        let list = space.map(Spaces.palette(of:)) ?? []
-        guard list.isEmpty else { return list }
-        let owner = space.flatMap { s in profiles.profiles.first { $0.id == s.profileID } }
-        return [ThemeColor(hex: (owner ?? store.profile).colorHex)!]
+        ThemeWash.space(space, fallback: store.profile, profiles: profiles.profiles, systemDark: systemDark)
     }
 
     /// The Space the fingers are pulling in, its grain, and how much of it is already

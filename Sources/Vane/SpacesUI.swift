@@ -19,6 +19,7 @@ import UniformTypeIdentifiers
         didSet { if footer.drag != nativeDrag { footer.drag = nativeDrag } }
     }
     var trackGround: ((Double) -> Void)?
+    var animateGround: ((Space, Space, Double, Double, CABasicAnimation) -> ((Space?) -> Void))?
     var colourDuration = Look.spaceSlideDuration
     @Published var pull: CGFloat = 0
     @Published var swiping = false

@@ -19,6 +19,21 @@ struct ThemeWash: VectorArithmetic {
         values += [opacity, grain, colors.count == 3 ? 1 : 0]
     }
 
+    /// Resolve gesture endpoints from their captured Spaces, even before SwiftUI has
+    /// rendered the first input sample or the newly selected page.
+    static func space(_ space: Space?, fallback: Profile, profiles: [Profile], systemDark: Bool) -> Self {
+        let dark = space?.appearance == "dark" ? true : space?.appearance == "light" ? false : systemDark
+        var palette = space.map(Spaces.palette(of:)) ?? []
+        if palette.isEmpty {
+            let owner = space.flatMap { item in profiles.first { $0.id == item.profileID } } ?? fallback
+            palette = [ThemeColor(hex: owner.colorHex)!]
+        }
+        let strength = space?.tint ?? Look.defaultTint
+        return Self(colors: palette, strength: strength,
+                    opacity: Look.groundOpacity(dark: dark, strength: strength),
+                    grain: space?.grain ?? 0, dark: dark)
+    }
+
     private init(values: [Double]) { self.values = values }
     static var zero: Self { Self(values: Array(repeating: 0, count: 12)) }
     static func + (lhs: Self, rhs: Self) -> Self { Self(values: zip(lhs.values, rhs.values).map(+)) }
@@ -79,12 +94,28 @@ struct NativeThemeWash: NSViewRepresentable {
     let gesture: SpaceGesture
     let origin: ThemeWash
     let destination: ThemeWash
+    let fallback: Profile
+    let profiles: [Profile]
+    let systemDark: Bool
 
     func makeNSView(context: Context) -> ThemeWashSurface { ThemeWashSurface() }
     func updateNSView(_ view: ThemeWashSurface, context: Context) {
         let from = origin, to = destination
         gesture.trackGround = { [weak view] fraction in
             view?.apply(from.mixed(towards: to, fraction: fraction), duration: 0)
+        }
+        let fallback = fallback, profiles = profiles, systemDark = systemDark
+        gesture.animateGround = { [weak view] origin, destination, start, end, animation in
+            let from = ThemeWash.space(origin, fallback: fallback, profiles: profiles, systemDark: systemDark)
+            let to = ThemeWash.space(destination, fallback: fallback, profiles: profiles, systemDark: systemDark)
+            let token = view?.animateNative(from: from.mixed(towards: to, fraction: start),
+                                to: from.mixed(towards: to, fraction: end), animation: animation)
+            return { [weak view] current in
+                guard let view, let token else { return }
+                let final = current.map { ThemeWash.space($0, fallback: fallback, profiles: profiles, systemDark: systemDark) }
+                    ?? from.mixed(towards: to, fraction: end)
+                view.finishNative(token: token, wash: final)
+            }
         }
         if reduced { view.finishAnimations() }
         view.apply(wash, duration: !reduced && context.transaction.animation != nil
@@ -98,6 +129,8 @@ struct NativeThemeWash: NSViewRepresentable {
     private let tint = CALayer()
     private let grain = ThemeGrainSurface()
     private var target: ThemeWash?
+    private var nativeToken: UUID?
+    var nativeAnimating: Bool { nativeToken != nil }
     override var isFlipped: Bool { true }
 
     init() {
@@ -127,36 +160,55 @@ struct NativeThemeWash: NSViewRepresentable {
     }
 
     func finishAnimations() {
+        nativeToken = nil
         for layer in [base, overlay, tint, grain.layer].compactMap({ $0 }) { layer.removeAllAnimations() }
     }
 
-    func apply(_ wash: ThemeWash, duration: TimeInterval) {
-        guard target != wash else { return }
+    @discardableResult func animateNative(from: ThemeWash, to: ThemeWash, animation: CABasicAnimation) -> UUID {
+        nativeToken = nil
+        apply(from, duration: 0)
+        apply(to, duration: animation.duration, native: animation, start: from)
+        let token = UUID()
+        nativeToken = token
+        return token
+    }
+
+    func finishNative(token: UUID, wash: ThemeWash) {
+        guard nativeToken == token else { return }
+        finishAnimations()
+        apply(wash, duration: 0)
+    }
+
+    func apply(_ wash: ThemeWash, duration: TimeInterval, native: CABasicAnimation? = nil, start: ThemeWash? = nil) {
+        guard !nativeAnimating, target != wash || native != nil else { return }
         let animate = target != nil && duration > 0
         target = wash
         let rate = Float(window?.screen?.maximumFramesPerSecond ?? 60)
-        func set(_ layer: CALayer, _ key: String, _ value: Any) {
-            let from = layer.presentation()?.value(forKeyPath: key) ?? layer.value(forKeyPath: key)
+        func set(_ layer: CALayer, _ key: String, _ value: Any, _ initial: Any?) {
+            let from = initial ?? layer.presentation()?.value(forKeyPath: key) ?? layer.value(forKeyPath: key)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             layer.setValue(value, forKeyPath: key)
             layer.removeAnimation(forKey: key)
             if animate {
-                let animation = CABasicAnimation(keyPath: key)
+                let animation = (native?.copy() as? CABasicAnimation) ?? CABasicAnimation(keyPath: key)
+                animation.keyPath = key
                 animation.fromValue = from
                 animation.toValue = value
                 animation.duration = duration
-                animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                if native == nil { animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut) }
                 animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
                 layer.add(animation, forKey: key)
             }
             CATransaction.commit()
         }
-        set(base, "colors", [wash.colors[0].nsColor.cgColor, wash.baseEnd.nsColor.cgColor])
-        set(overlay, "colors", [NSColor.clear.cgColor, wash.colors[2].nsColor.cgColor])
-        set(overlay, "opacity", Float(wash.overlay))
-        set(tint, "opacity", Float(wash.opacity))
-        if let layer = grain.layer { set(layer, "opacity", Float(wash.grain * Look.grainMax)) }
+        set(base, "colors", [wash.colors[0].nsColor.cgColor, wash.baseEnd.nsColor.cgColor],
+            start.map { [$0.colors[0].nsColor.cgColor, $0.baseEnd.nsColor.cgColor] })
+        set(overlay, "colors", [NSColor.clear.cgColor, wash.colors[2].nsColor.cgColor],
+            start.map { [NSColor.clear.cgColor, $0.colors[2].nsColor.cgColor] })
+        set(overlay, "opacity", Float(wash.overlay), start.map { Float($0.overlay) })
+        set(tint, "opacity", Float(wash.opacity), start.map { Float($0.opacity) })
+        if let layer = grain.layer { set(layer, "opacity", Float(wash.grain * Look.grainMax), start.map { Float($0.grain * Look.grainMax) }) }
     }
 }
 

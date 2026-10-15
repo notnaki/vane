@@ -1008,6 +1008,8 @@ extension VaneWindow {
         incoming.layoutSubtreeIfNeeded()
     }
 
+    private var finishGround: ((Space?) -> Void)?
+
     func start(duration: TimeInterval, returning: Bool = false, completion: @escaping () -> Void) {
         guard isActive else { return }
         self.completion = completion
@@ -1066,6 +1068,12 @@ extension VaneWindow {
             animation.toValue = NSValue(point: layer.position)
             animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
             layer.add(animation, forKey: "space-position")
+            if layer === outgoingLayer {
+                finishGround?((destination ?? source)?.swipeSpace)
+                let start = Double(min(1, abs((from.x - outgoingLayer.bounds.width * outgoingLayer.anchorPoint.x - contentInset) / travelWidth)))
+                finishGround = source?.spaceGesture.animateGround?(preparedOrigin, preparedTarget,
+                    start, returning ? 0 : 1, animation)
+            }
         }
         CATransaction.commit()
         if let screen = window?.screen ?? NSScreen.main {
@@ -1109,6 +1117,8 @@ extension VaneWindow {
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
         finished = true
+        finishGround?((destination ?? source)?.swipeSpace)
+        finishGround = nil
         progressLink?.invalidate()
         progressLink = nil
         if let motionObserver { NSWorkspace.shared.notificationCenter.removeObserver(motionObserver) }
@@ -1128,6 +1138,8 @@ extension VaneWindow {
         completingSelection = true
         complete?()
         completingSelection = false
+        finishGround?((destination ?? source)?.swipeSpace)
+        finishGround = nil
         Motion.spaceHandoff {
             source?.spaceGesture.profileSliding = false
             destination?.spaceGesture.profileSliding = false

@@ -4,14 +4,14 @@ import XCTest
 @testable import vane
 
 @MainActor final class SpaceNativeRenderingTests: XCTestCase {
-    private func fixture(floatingWindow: Bool = false, coloured: Bool = false) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
+    private func fixture(floatingWindow: Bool = false, coloured: Bool = false, defaultColours: Bool = false) throws -> (TabStore, [Space], NSWindow, SwipeMonitor) {
         TestEnvironment.prepare()
         try XCTSkipIf(Motion.spaceReduced, "Animated interruption requires motion")
         let profile = ProfileManager.shared.create(name: "Continuity fixture").id
         let spaces = ["First", "Second", "Third", "Fourth"].enumerated().map { index, name in
             coloured ? Space(name: name, profileID: profile,
                              colorHex: index == 0 ? "#FF0000" : "#0000FF", appearance: "dark", tint: 1)
-                : Space(name: name, profileID: profile)
+                : Space(name: name, profileID: profile, colorHex: defaultColours ? ["#6E7DD2", "#678575", "#B08068", "#6E7DD2"][index] : nil)
         }
         XCTAssertTrue(ProfileManager.shared.saveSpaces(spaces, for: profile))
         let store = TabStore(profileID: profile, space: spaces[0], session: [])
@@ -106,6 +106,7 @@ import XCTest
         window.contentView?.layoutSubtreeIfNeeded()
         try await Task.sleep(for: .milliseconds(250))
         let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let surface = try XCTUnwrap(colourSurface(in: host))
         func capture() throws -> NSBitmapImageRep {
             let image = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
             host.cacheDisplay(in: host.bounds, to: image)
@@ -148,6 +149,8 @@ import XCTest
         NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
         try await Task.sleep(for: .milliseconds(700))
         XCTAssertTrue(queuedRepeat)
+        XCTAssertFalse(surface.nativeAnimating)
+        XCTAssertNil(surface.base.animation(forKey: "colors"))
         XCTAssertEqual(store.currentSpaceID, spaces[0].id)
         XCTAssertFalse(store.spaceSwiping)
         XCTAssertFalse(store.spaceGesture.profileSliding)
@@ -161,6 +164,115 @@ import XCTest
         XCTAssertGreaterThan(beforeEdges, 1, "The pre-gesture fixture must render sidebar content")
         XCTAssertGreaterThan(afterEdges, beforeEdges * 0.7,
                              "Canceled swipe must restore visible text and rows instead of a blank sidebar")
+    }
+
+    func testRealSwipePresentedColourFollowsNativeLandingPosition() async throws {
+        let (store, spaces, window, _) = try fixture(defaultColours: true)
+        store.palette = nil
+        try await Task.sleep(for: .milliseconds(250))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let surface = try XCTUnwrap(colourSurface(in: host))
+        let start = try firstColour(of: surface, presented: true)
+        let sampler = SwipeColourSampler(host: host, surface: surface)
+        sampler.start(on: try XCTUnwrap(window.screen))
+        defer { sampler.stop() }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
+        for _ in 0..<10 {
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: -12))
+            try await Task.sleep(for: .milliseconds(8))
+        }
+        NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
+        // Page activation measured a 147ms main-turn stall in the original regression.
+        // Commit first, then model a bounded synchronous restore while CA keeps rendering.
+        DispatchQueue.main.async {
+            CATransaction.flush()
+            Thread.sleep(forTimeInterval: 0.08)
+        }
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+        let end = try firstColour(of: surface, presented: true)
+        let vector = [end.redComponent-start.redComponent, end.greenComponent-start.greenComponent, end.blueComponent-start.blueComponent]
+        let length = vector.reduce(0) { $0 + $1*$1 }
+        XCTAssertGreaterThan(length, 0.001)
+        var worst: Double = 0
+        for sample in sampler.samples {
+            let delta = [sample.colour.redComponent-start.redComponent, sample.colour.greenComponent-start.greenComponent, sample.colour.blueComponent-start.blueComponent]
+            let fraction = zip(vector, delta).reduce(0) { $0 + $1.0*$1.1 } / length
+            let expected = min(1, abs(sample.offset / SidebarWidth.shared.width))
+            worst = max(worst, abs(fraction-expected))
+        }
+        XCTAssertGreaterThan(sampler.samples.count, 5)
+        XCTAssertLessThan(worst, 0.16, "Presented colour must follow the compositor's sidebar position through release")
+    }
+
+    func testNativeWashUsesLandingCurveAndReleasesOwnershipForReducedMotion() async throws {
+        let (store, spaces, window, monitor) = try fixture(defaultColours: true)
+        store.palette = nil
+        try await Task.sleep(for: .milliseconds(250))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let surface = try XCTUnwrap(colourSurface(in: host))
+        monitor.track(-40, width: SidebarWidth.shared.width, in: store)
+        try await Task.sleep(for: .milliseconds(20))
+        monitor.track(-60, width: SidebarWidth.shared.width, in: store)
+        monitor.land(1, to: spaces[1], width: SidebarWidth.shared.width, store: store)
+        let position = try XCTUnwrap(host.spaceSlide?.outgoing.layer?.animation(forKey: "space-position") as? CABasicAnimation)
+        let colour = try XCTUnwrap(surface.base.animation(forKey: "colors") as? CABasicAnimation)
+        XCTAssertEqual(position.duration, colour.duration)
+        for index in 1...2 {
+            var a: [Float] = [0, 0], b: [Float] = [0, 0]
+            position.timingFunction?.getControlPoint(at: index, values: &a)
+            colour.timingFunction?.getControlPoint(at: index, values: &b)
+            XCTAssertEqual(a, b)
+        }
+        XCTAssertTrue(surface.nativeAnimating)
+        monitor.finishForReducedMotion()
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertFalse(surface.nativeAnimating)
+        XCTAssertNil(surface.base.animation(forKey: "colors"))
+        XCTAssertEqual(store.currentSpaceID, spaces[1].id)
+    }
+
+    func testNativeWashCancellationCopiesSpringAndCanRestoreOriginImmediately() throws {
+        let surface = ThemeWashSurface()
+        let from = ThemeWash(colors: [ThemeColor(hex: "#6E7DD2")!], strength: 1, opacity: 1, grain: 0)
+        let to = ThemeWash(colors: [ThemeColor(hex: "#678575")!], strength: 1, opacity: 1, grain: 0)
+        let animation = CASpringAnimation(keyPath: "position")
+        animation.mass = 1
+        animation.stiffness = 1542
+        animation.damping = 70
+        animation.initialVelocity = 2
+        animation.duration = animation.settlingDuration
+        let token = surface.animateNative(from: from, to: to, animation: animation)
+        let colour = try XCTUnwrap(surface.base.animation(forKey: "colors") as? CASpringAnimation)
+        XCTAssertEqual(colour.mass, animation.mass)
+        XCTAssertEqual(colour.stiffness, animation.stiffness)
+        XCTAssertEqual(colour.damping, animation.damping)
+        XCTAssertEqual(colour.initialVelocity, animation.initialVelocity)
+        surface.finishNative(token: token, wash: from)
+        XCTAssertFalse(surface.nativeAnimating)
+        XCTAssertNil(surface.base.animation(forKey: "colors"))
+        XCTAssertEqual(try firstColour(of: surface).redComponent,
+                       try XCTUnwrap(from.colors[0].nsColor.usingColorSpace(.deviceRGB)).redComponent, accuracy: 0.001)
+    }
+
+    func testOldNativeWashCompletionCannotCancelReplacementAnimation() throws {
+        let surface = ThemeWashSurface()
+        let from = ThemeWash(colors: [ThemeColor(hex: "#6E7DD2")!], strength: 1, opacity: 1, grain: 0)
+        let to = ThemeWash(colors: [ThemeColor(hex: "#678575")!], strength: 1, opacity: 1, grain: 0)
+        let animation = CABasicAnimation(keyPath: "position")
+        animation.duration = 0.18
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        let old = surface.animateNative(from: from, to: to, animation: animation)
+        let replacement = surface.animateNative(from: to, to: from, animation: animation)
+        surface.finishNative(token: old, wash: to)
+        XCTAssertTrue(surface.nativeAnimating)
+        XCTAssertNotNil(surface.base.animation(forKey: "colors"))
+        surface.finishNative(token: replacement, wash: from)
+        XCTAssertFalse(surface.nativeAnimating)
+        XCTAssertNil(surface.base.animation(forKey: "colors"))
+        let colour = try firstColour(of: surface)
+        XCTAssertEqual(colour.redComponent, try XCTUnwrap(from.colors[0].nsColor.usingColorSpace(.deviceRGB)).redComponent, accuracy: 0.001)
     }
 
     func testFirstNativeDragReusesSurfacesPreparedWhileIdle() async throws {
@@ -799,5 +911,28 @@ import XCTest
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertTrue(source.window === window)
         XCTAssertEqual(source.currentSpaceID, local.id, "The superseded profile activation must not fire")
+    }
+}
+
+@MainActor private final class SwipeColourSampler: NSObject {
+    struct Sample { let time: TimeInterval; let offset: CGFloat; let colour: NSColor }
+    weak var host: BrowserWindowHost?
+    weak var surface: ThemeWashSurface?
+    var samples: [Sample] = []
+    var link: CADisplayLink?
+    init(host: BrowserWindowHost, surface: ThemeWashSurface) { self.host=host; self.surface=surface }
+    func start(on screen: NSScreen) {
+        let link = screen.displayLink(target: self, selector: #selector(tick(_:)))
+        let rate = Float(screen.maximumFramesPerSecond)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        link.add(to: .main, forMode: .common)
+        self.link = link
+    }
+    func stop() { link?.invalidate(); link=nil }
+    @objc func tick(_ link: CADisplayLink) {
+        guard let slide=host?.spaceSlide, let surface,
+              let color=(surface.base.presentation()?.colors as? [CGColor])?.first,
+              let rgb=NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else { return }
+        samples.append(Sample(time: ProcessInfo.processInfo.systemUptime, offset: slide.offset, colour: rgb))
     }
 }
