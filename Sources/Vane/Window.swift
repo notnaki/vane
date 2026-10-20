@@ -1128,7 +1128,7 @@ extension VaneWindow {
             animation.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
             layer.add(animation, forKey: "space-position")
             if layer === outgoingLayer {
-                finishGround?((destination ?? source)?.swipeSpace)
+                finishGround?(source?.swipeSpace)
                 let start = Double(min(1, abs((from.x - outgoingLayer.bounds.width * outgoingLayer.anchorPoint.x - contentInset) / travelWidth)))
                 finishGround = source?.spaceGesture.animateGround?(preparedOrigin, preparedTarget,
                     start, returning ? 0 : 1, animation, presentedGround)
@@ -1177,7 +1177,7 @@ extension VaneWindow {
     /// An unused idle surface has never owned the gesture's visibility state.
     func discardPreparation() {
         finished = true
-        finishGround?((destination ?? source)?.swipeSpace)
+        finishGround?(source?.swipeSpace)
         finishGround = nil
         progressLink?.invalidate()
         progressLink = nil
@@ -1199,7 +1199,10 @@ extension VaneWindow {
         completingSelection = true
         complete?()
         completingSelection = false
-        finishGround?((destination ?? source)?.swipeSpace)
+        // The wash belongs to the source host. A profile hop parks that host for
+        // reuse, so restore its own Space rather than caching the arriving profile's
+        // colour. Within one profile, source already selects the destination Space.
+        finishGround?(source?.swipeSpace)
         finishGround = nil
         Motion.spaceHandoff {
             source?.spaceGesture.profileSliding = false

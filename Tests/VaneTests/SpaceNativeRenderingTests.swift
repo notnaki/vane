@@ -98,6 +98,62 @@ import XCTest
                           "The background must blend during native travel instead of cutting at handoff")
     }
 
+    func testProfileClickDoesNotRestoreItsDepartureColour() async throws {
+        try await checkProfileColourReturn(swipe: false)
+    }
+
+    func testProfileSwipeDoesNotRestoreItsDepartureColour() async throws {
+        try await checkProfileColourReturn(swipe: true)
+    }
+
+    private func checkProfileColourReturn(swipe: Bool) async throws {
+        TestEnvironment.prepare()
+        try XCTSkipIf(Motion.spaceReduced, "Requires animated profile navigation")
+        let manager = ProfileManager.shared
+        let previous = manager.active
+        let blackProfile = manager.create(name: "Black profile")
+        let blueProfile = manager.create(name: "Blue profile")
+        var black = manager.createSpace(name: "Black", in: blackProfile.id)
+        black.colorHex = "#000000"; black.tint = 1; black.appearance = "dark"
+        manager.updateSpace(black)
+        var blue = manager.createSpace(name: "Blue", in: blueProfile.id)
+        blue.colorHex = "#0000FF"; blue.tint = 1; blue.appearance = "dark"
+        manager.updateSpace(blue)
+        let source = Windows.open(profile: blackProfile, space: black, focus: false)
+        let window = try XCTUnwrap(source.window)
+        defer {
+            window.close()
+            _ = manager.delete(blackProfile.id)
+            _ = manager.delete(blueProfile.id)
+            manager.active = previous
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        let host = try XCTUnwrap(window.contentView as? BrowserWindowHost)
+        let blackSurface = try XCTUnwrap(colourSurface(in: host))
+        XCTAssertEqual(try firstColour(of: blackSurface).blueComponent, 0, accuracy: 0.001)
+        source.spaceGesture.monitor.select(blue, in: source)
+        try await Task.sleep(for: .milliseconds(500))
+        let destination = try XCTUnwrap(TabStore.all.first { $0.window === window })
+        XCTAssertEqual(destination.profileID, blueProfile.id)
+        XCTAssertNil(blackSurface.window)
+        XCTAssertEqual(try firstColour(of: blackSurface).blueComponent, 0, accuracy: 0.001,
+                       "A cached profile must retain its own black wash, ready for the return handoff")
+        if swipe {
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .began))
+            for _ in 0..<10 {
+                NSApplication.shared.sendEvent(ScrollEvent(window: window, dx: 12))
+                try await Task.sleep(for: .milliseconds(8))
+            }
+            NSApplication.shared.sendEvent(ScrollEvent(window: window, phase: .ended))
+        } else {
+            destination.spaceGesture.monitor.select(black, in: destination)
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(source.window === window)
+        XCTAssertTrue(blackSurface.window === window)
+        XCTAssertEqual(try firstColour(of: blackSurface, presented: true).blueComponent, 0, accuracy: 0.001)
+    }
+
     func testRealShortSwipeRestoresLiveSidebarAfterCancellation() async throws {
         let (store, spaces, window, _) = try fixture()
         let tab = store.newBlankTab(focus: false)
