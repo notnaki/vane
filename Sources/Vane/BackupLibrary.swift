@@ -165,7 +165,11 @@ struct BackupLibrary: @unchecked Sendable {
             let url = directory.appendingPathComponent(name)
             let data: Data
             if name.hasSuffix(".db") {
-                do { data = try BackupSQLite.snapshot(at: url) }
+                do {
+                    data = try allowDamaged
+                        ? BackupSQLite.snapshot(originals: originals, database: name)
+                        : BackupSQLite.snapshotPreservingSource(at: url)
+                }
                 catch {
                     guard allowDamaged else { throw error }
                     data = try BackupIO.read(url)

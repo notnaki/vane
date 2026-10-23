@@ -100,6 +100,28 @@ struct BackupRecovery: Sendable {
         let retained = Set(kept.map(\.id))
         for stale in all where !retained.contains(stale.id) { try remover(stale.url) }
     }
+    /// SHM is a transient SQLite index, not a committed user-data generation. Keep
+    /// the earliest raw evidence when repeated inspection changed only that index.
+    /// A real database/WAL, file or preference edit still earns a separate point.
+    func beforeRestorePointIfChanged(_ archive: BackupArchive) throws -> BackupPoint? {
+        guard archive.damage != nil else { return try automaticPointIfChanged(archive) }
+        if let latest = try points().first(where: { $0.reason == .beforeRestore }),
+           let previous = try? BackupCodec.read(latest.url), previous.damage != nil,
+           try Self.rawEvidenceDigest(previous) == Self.rawEvidenceDigest(archive) {
+            try reconcileRetention(keeping: latest.id)
+            return nil
+        }
+        return try save(archive)
+    }
+    private static func rawEvidenceDigest(_ archive: BackupArchive) throws -> Data {
+        var hash = SHA256()
+        try hashValue(PropertyListSerialization.propertyList(from: archive.preferences, format: nil), into: &hash)
+        for file in archive.files.sorted(by: { $0.name < $1.name }) where !file.name.hasSuffix(".db-shm") {
+            try hashValue(file.name, into: &hash)
+            try hashValue(file.data, into: &hash)
+        }
+        return Data(hash.finalize())
+    }
     func automaticPointIfChanged(_ archive: BackupArchive) throws -> BackupPoint? {
         _ = try library.validate(archive)
         let digest = try Self.contentDigest(archive)

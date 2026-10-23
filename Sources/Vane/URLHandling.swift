@@ -36,7 +36,14 @@ import AppKit
     ///
     /// The rules are asked per url rather than for the batch: three links arriving together
     /// can perfectly well belong in three different places, which is the point of having them.
-    static func open(_ urls: [URL]) {
+    static func open(_ urls: [URL], onReady: (@MainActor ([URL]) -> Void)? = nil) {
+        AppLifecycle.shared.afterBootstrap {
+            if let onReady { onReady(urls) }
+            else { openReady(urls) }
+        }
+    }
+
+    private static func openReady(_ urls: [URL]) {
         // A local file only if Vane can draw it. A GetURL/odoc event is attacker-reachable
         // and Launch Services is not the only thing that can send one, so `open -a Vane
         // archive.zip` must not reach a tab — WebKit would treat an unrenderable file as a

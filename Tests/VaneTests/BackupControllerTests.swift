@@ -78,7 +78,8 @@ import XCTest
         try BackupCodec.write(source.library.capture(reason: .manual), to: file)
         try Data("damaged".utf8).write(to: target.root.appendingPathComponent("profiles.json"))
         var restarted = false
-        let controller = BackupController(library: target.library, flush: { false }, restart: { restarted = true })
+        let controller = BackupController(library: target.library, flush: { false }, restart: { restarted = true },
+            finalDrain: { repairing in repairing })
         await controller.previewRestore(from: file)
         XCTAssertNotNil(controller.preview)
         XCTAssertNotNil(controller.preview?.currentError)

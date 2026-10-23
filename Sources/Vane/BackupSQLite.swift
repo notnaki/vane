@@ -16,6 +16,36 @@ enum BackupSQLite {
         sqlite3_exec(db, "PRAGMA trusted_schema=OFF", nil, nil, nil)
         return db
     }
+    /// Normal preview/export also inspects untrusted, potentially damaged SQLite.
+    /// Copy companions without opening SQLite against the live source. The caller's
+    /// before/after generation check rejects a copy racing a committed write.
+    static func snapshotPreservingSource(at url: URL) throws -> Data {
+        try withTemporaryDatabase { source in
+            for suffix in ["", "-wal"] {
+                let original = URL(fileURLWithPath: url.path + suffix)
+                guard FileManager.default.fileExists(atPath: original.path) else { continue }
+                try BackupIO.checkFile(original)
+                guard (try original.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= BackupCodec.limit else {
+                    throw BackupError.tooLarge
+                }
+                let copied = URL(fileURLWithPath: source.path + suffix)
+                try FileManager.default.copyItem(at: original, to: copied)
+                try BackupIO.checkFile(copied)
+            }
+            return try snapshot(at: source)
+        }
+    }
+    /// Reuse captured evidence bytes without reading the source again. SHM remains
+    /// preserved in the evidence archive; SQLite rebuilds its transient index here.
+    static func snapshot(originals: [BackupArchive.File], database name: String) throws -> Data {
+        try withTemporaryDatabase { source in
+            for suffix in ["", "-wal"] {
+                guard let file = originals.first(where: { $0.name == name + suffix }) else { continue }
+                try BackupIO.write(file.data, URL(fileURLWithPath: source.path + suffix))
+            }
+            return try snapshot(at: source)
+        }
+    }
     static func snapshot(at url: URL) throws -> Data {
         let source = try connection(url)
         defer { sqlite3_close(source) }

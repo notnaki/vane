@@ -13,15 +13,28 @@ struct BackupCandidate: Identifiable, Sendable {
 @MainActor final class BackupController: ObservableObject {
     static let shared = BackupController(library: BackupLibrary(directory: Store.directory,
         defaults: .vane, domain: UserDefaults.vaneDomain), flush: {
-            let profiles = ProfileManager.shared.retryProfileSave()
-            Session.enqueueSave()
-            let session = await Session.flushPersistence()
-            do {
-                try await EaselStore.flushAll(directory: Store.directory)
-                try await Store.flushAllPendingWrites()
-            } catch { return false }
-            return profiles && session && ProfileManager.shared.saveFailures.isEmpty
-        }, restart: BackupRestart.run)
+            await flushPersistence(allowDamagedOriginals: false)
+        }, restart: BackupRestart.run, finalDrain: flushPersistence)
+
+    /// Drain accepted edits before capturing the final session. An unreadable original
+    /// with no admitted edit can be preserved for repair; a failed write cannot.
+    private static func flushPersistence(allowDamagedOriginals: Bool) async -> Bool {
+        await PendingSessionTransactions.drain()
+        await ProfileManager.shared.waitForTransactions()
+        await Library.waitForMoves()
+        let profiles = ProfileManager.shared.retryProfileSave()
+        do {
+            if allowDamagedOriginals { try await EaselStore.drainAllPendingWrites(directory: Store.directory) }
+            else { try await EaselStore.flushAll(directory: Store.directory) }
+            try await Store.flushAllPendingWrites()
+        } catch { return false }
+        let captured = Session.enqueueSave()
+        let persisted = await Session.flushPersistence()
+        let failures = ProfileManager.shared.saveFailures
+        let originalsOnly = allowDamagedOriginals && !ProfileManager.shared.hasUnsavedProfileChanges
+            && failures.allSatisfy { $0.id == .profiles && !$0.canRetry }
+        return profiles && captured && persisted && (failures.isEmpty || originalsOnly)
+    }
 
     @Published private(set) var busy = false
     @Published private(set) var progress = ""
@@ -33,14 +46,16 @@ struct BackupCandidate: Identifiable, Sendable {
     private let library: BackupLibrary
     private let flush: @MainActor () async -> Bool
     private let worker: BackupWorker
+    private let finalDrain: @MainActor (Bool) async -> Bool
     private let restart: @MainActor () throws -> Void
     private var timer: Timer?
     private var lastAttempt: Date?
     private var restorePending = false
 
     init(library: BackupLibrary, flush: @escaping @MainActor () async -> Bool, restart: @escaping @MainActor () throws -> Void,
-         worker: BackupWorker = .shared) {
+         worker: BackupWorker = .shared, finalDrain: (@MainActor (Bool) async -> Bool)? = nil) {
         self.library = library; self.flush = flush; self.restart = restart; self.worker = worker
+        self.finalDrain = finalDrain ?? { _ in await flush() }
     }
     func begin() {
         guard timer == nil else { return }
@@ -100,16 +115,38 @@ struct BackupCandidate: Identifiable, Sendable {
         defer { finish() }
         let library = library
         var staged = false
+        var quiescent = false
+        var repairingDamagedOriginals = false
+        defer { if quiescent { AppLifecycle.shared.endPersistenceExit() } }
         do {
             if !(await flush()) {
                 // A healthy library with unsaved changes must not be silently discarded.
                 // Damaged disk originals must still be repairable with a valid backup.
                 let current = try await worker.run { try library.capture(reason: .manual, allowDamaged: true) }
                 guard current.damage != nil else { throw BackupError.saveFailed }
+                repairingDamagedOriginals = true
             }
             try await worker.run { try BackupRestore(library: library).prepare(candidate.archive) }
             staged = true
             restorePending = true
+            guard AppLifecycle.shared.beginPersistenceExit() else { throw BackupError.saveFailed }
+            quiescent = true
+            Motion.list { progress = "Finishing saved changes…" }
+            var drained = false
+            for _ in 0..<3 {
+                guard await finalDrain(repairingDamagedOriginals) else { throw BackupError.saveFailed }
+                // Accepted pre-gate intents have finished. Capture the last durable
+                // generation; native input and external ingress stay closed.
+                try await worker.run {
+                    let original = try library.capture(reason: .beforeRestore, allowDamaged: true)
+                    let recovery = BackupRecovery(library: library)
+                    _ = try recovery.beforeRestorePointIfChanged(original)
+                }
+                // Late page callbacks can queue history behind the Store admission
+                // pause. Recheck on the same actor turn as restart's process exit.
+                if !Store.hasUnflushedWrites { drained = true; break }
+            }
+            guard drained else { throw BackupError.saveFailed }
             try restart()
             Motion.list { preview = nil; status = "Restore prepared. Vane is restarting." }
         } catch {

@@ -41,7 +41,7 @@ if args.first == "import" {
 // The event loop starts before disk recovery, while browser/storage bootstrap
 // remains ordered behind it. Slow bundle verification cannot monopolize AppKit.
 @MainActor func launchBrowser() async {
-    defer { AppLifecycle.shared.bootstrapTask = nil }
+    defer { AppLifecycle.shared.completeBootstrap() }
     // A replacement that failed before its first healthy launch restores the prior app and
     // relaunches it. This must happen before any browser window or storage migration begins.
     await Updater.recoverAtLaunch()
@@ -120,7 +120,6 @@ if args.first == "import" {
         }
     }
     Updater.shared.begin() // a first look five seconds in, then a conditional one on a tick
-    URLHandling.registerAppleEventHandler()
     app.mainMenu = buildMenu()
     // Rebound keys are resolved here, before AppKit dispatches menu key equivalents. Commands
     // with no registered action fall through untouched. A Little Arc gets first refusal: three
@@ -138,5 +137,7 @@ if args.first == "import" {
     if !FirstLaunch.presentIfNeeded() { URLHandling.promptIfNotDefaultOnce() }
 
 }
+// Install GetURL before starting AppKit: early launch events join the recovery gate.
+URLHandling.registerAppleEventHandler()
 AppLifecycle.shared.bootstrapTask = Task { @MainActor in await launchBrowser() }
 app.run()

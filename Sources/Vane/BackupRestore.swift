@@ -100,8 +100,7 @@ final class BackupRestore {
             // This preserves edits made after the preparation recovery point.
             let finalPoint = try library.capture(reason: .beforeRestore, allowDamaged: true)
             let recovery = BackupRecovery(library: library)
-            if finalPoint.damage == nil { _ = try recovery.automaticPointIfChanged(finalPoint) }
-            else { try recovery.save(finalPoint) }
+            _ = try recovery.beforeRestorePointIfChanged(finalPoint)
             let originals = try preserveOriginals()
             let data = try plist(originals)
             guard data.count <= BackupCodec.limit else { throw BackupError.tooLarge }

@@ -126,3 +126,140 @@ extension BackupWorkerTests {
             .contains(where: { $0.hasPrefix(".Vane.app.vane-stage-") }))
     }
 }
+
+extension BackupWorkerTests {
+    func testRestoreFinalGateDrainsEaselEditAdmittedDuringPreparationAndRejectsNewEdits() async throws {
+        TestEnvironment.prepare()
+        let source = try fixture(), target = try fixture(), worker = BackupWorker()
+        let file = source.root.appendingPathComponent("incoming.vanebackup")
+        try BackupCodec.write(source.library.capture(reason: .manual), to: file)
+        let saveGate = EaselWorkerGate("save")
+        let easels = EaselStore(profileID: ProfileManager.defaultID, directory: target.root,
+                                background: true, inspection: saveGate.inspect)
+        await easels.waitUntilReady()
+        let finalDrainEntered = expectation(description: "quiescent final drain")
+        var restarted = false
+        let controller = BackupController(library: target.library, flush: { true }, restart: {
+            XCTAssertTrue(AppLifecycle.shared.persistenceExitInProgress)
+            XCTAssertEqual(easels.boards.first?.title, "Accepted during preparation")
+            restarted = true
+        }, worker: worker, finalDrain: { _ in
+            finalDrainEntered.fulfill()
+            do { try await easels.flush(); return true } catch { return false }
+        })
+        await controller.previewRestore(from: file)
+        let entered = expectation(description: "preparation worker blocked")
+        let release = DispatchSemaphore(value: 0)
+        let blocking = Task { await worker.run { entered.fulfill(); release.wait() } }
+        await fulfillment(of: [entered], timeout: 3)
+        let restore = Task { await controller.restorePreview() }
+        // The edit is admitted while the preparation worker is occupied.
+        let edit = Task { try await easels.createAsync(title: "Accepted during preparation") }
+        await saveGate.waitForEntry()
+        release.signal(); await blocking.value
+        await fulfillment(of: [finalDrainEntered], timeout: 3)
+        XCTAssertTrue(AppLifecycle.shared.persistenceExitInProgress)
+        do { _ = try await easels.createAsync(title: "Too late"); XCTFail("new edit admitted during exit") }
+        catch { XCTAssertEqual(error.localizedDescription, EaselStore.Failure.exiting.localizedDescription) }
+        XCTAssertFalse(restarted)
+        saveGate.resume()
+        _ = try await edit.value
+        await restore.value
+        XCTAssertTrue(restarted)
+        XCTAssertNil(controller.error)
+        XCTAssertFalse(AppLifecycle.shared.persistenceExitInProgress)
+        let points = try BackupRecovery(library: target.library).points()
+        let preserved = try points.contains { point in
+            let archive = try BackupCodec.read(point.url)
+            let name = "easels-\(ProfileManager.defaultID.uuidString).json"
+            guard let bytes = archive.files.first(where: { $0.name == name })?.data else { return false }
+            return try JSONDecoder().decode(EaselStore.Archive.self, from: bytes).boards
+                .contains(where: { $0.title == "Accepted during preparation" })
+        }
+        XCTAssertTrue(preserved)
+    }
+
+    func testRestoreFinalWriteFailureCancelsPendingBeforeReleasingQueuedIngress() async throws {
+        TestEnvironment.prepare()
+        let source = try fixture(), target = try fixture(), worker = BackupWorker()
+        let file = source.root.appendingPathComponent("incoming.vanebackup")
+        try BackupCodec.write(source.library.capture(reason: .manual), to: file)
+        let saveEntered = expectation(description: "accepted write blocked")
+        let releaseSave = DispatchSemaphore(value: 0)
+        let easels = EaselStore(profileID: ProfileManager.defaultID, directory: target.root, background: true,
+            inspection: { stage in
+                if stage == "save" {
+                    saveEntered.fulfill(); releaseSave.wait()
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+            })
+        await easels.waitUntilReady()
+        let finalDrainEntered = expectation(description: "final drain waits failed write")
+        var restarted = false, replayed = false
+        let controller = BackupController(library: target.library, flush: { true }, restart: { restarted = true },
+            worker: worker, finalDrain: { _ in
+                finalDrainEntered.fulfill()
+                AppLifecycle.shared.afterBootstrap {
+                    XCTAssertFalse(FileManager.default.fileExists(atPath: target.root.appendingPathComponent("Recovery/Pending").path))
+                    replayed = true
+                }
+                do { try await easels.flush(); return true } catch { return false }
+            })
+        await controller.previewRestore(from: file)
+        let entered = expectation(description: "preparation worker blocked")
+        let release = DispatchSemaphore(value: 0)
+        let blocking = Task { await worker.run { entered.fulfill(); release.wait() } }
+        await fulfillment(of: [entered], timeout: 3)
+        let restore = Task { await controller.restorePreview() }
+        let edit = Task { try await easels.createAsync(title: "Cannot persist") }
+        await fulfillment(of: [saveEntered], timeout: 3)
+        release.signal(); await blocking.value
+        await fulfillment(of: [finalDrainEntered], timeout: 3)
+        XCTAssertTrue(AppLifecycle.shared.persistenceExitInProgress)
+        XCTAssertFalse(replayed)
+        releaseSave.signal()
+        do { _ = try await edit.value; XCTFail("write failure lost") } catch {}
+        await restore.value
+        XCTAssertFalse(restarted)
+        XCTAssertNotNil(controller.error)
+        XCTAssertTrue(replayed)
+        XCTAssertFalse(AppLifecycle.shared.persistenceExitInProgress)
+        XCTAssertEqual(try BackupRestore(library: target.library).recoverAtLaunch(), .none)
+    }
+}
+
+extension BackupWorkerTests {
+    func testDamagedEvidenceCaptureDoesNotRebuildOriginalSHMAndRefreshKeepsRawProof() throws {
+        let fixture = try fixture()
+        let originals = ["vane.db": Data("broken db".utf8),
+                         "vane.db-wal": Data("original wal".utf8),
+                         "vane.db-shm": Data("original shm".utf8)]
+        for (name, bytes) in originals { try bytes.write(to: fixture.root.appendingPathComponent(name)) }
+        // Preview's ordinary healthy-only capture must not destroy proof before
+        // restore preparation gets the chance to preserve it.
+        XCTAssertThrowsError(try fixture.library.capture(reason: .manual))
+        let captured = try fixture.library.capture(reason: .beforeRestore, allowDamaged: true)
+        XCTAssertNotNil(captured.damage)
+        for (name, bytes) in originals {
+            XCTAssertEqual(try Data(contentsOf: fixture.root.appendingPathComponent(name)), bytes, name)
+            XCTAssertEqual(captured.files.first(where: { $0.name == name })?.data, bytes, name)
+        }
+        let recovery = BackupRecovery(library: fixture.library)
+        try recovery.save(captured)
+        // Older read-only SQLite inspection can rebuild SHM without changing data.
+        try Data(repeating: 0, count: 32768).write(to: fixture.root.appendingPathComponent("vane.db-shm"))
+        let refreshed = try fixture.library.capture(reason: .beforeRestore, allowDamaged: true)
+        XCTAssertNil(try recovery.beforeRestorePointIfChanged(refreshed))
+        XCTAssertEqual(try recovery.points().count, 1)
+        let preserved = try BackupCodec.read(XCTUnwrap(recovery.points().first?.url))
+        XCTAssertEqual(preserved.files.first(where: { $0.name == "vane.db-shm" })?.data, originals["vane.db-shm"])
+        // A real preference change still gets a distinct point; initial proof survives.
+        fixture.defaults.set("new saved setting", forKey: "homepage")
+        let changed = try fixture.library.capture(reason: .beforeRestore, allowDamaged: true)
+        XCTAssertNotNil(try recovery.beforeRestorePointIfChanged(changed))
+        XCTAssertEqual(try recovery.points().count, 2)
+        XCTAssertTrue(try recovery.points().contains { point in
+            try BackupCodec.read(point.url).files.first(where: { $0.name == "vane.db-shm" })?.data == originals["vane.db-shm"]
+        })
+    }
+}
