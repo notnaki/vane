@@ -1349,6 +1349,44 @@ import XCTest
         XCTAssertFalse(monitor.preparedSlides.isEmpty)
     }
 
+    func testFolderDisclosureDefersHiddenSpacePreparationAndDisposal() async throws {
+        let (store, spaces, window, monitor) = try fixture()
+        try XCTSkipIf(Motion.reduced, "Requires the folder's animated disclosure interval")
+        store.sharingReady = false
+        // Match the reported outline: four favourites, four loose pins, seven folder
+        // children, and eleven Today rows, inside the production native browser host.
+        let tabs = (0..<26).map { index in
+            let tab = Tab(profileID: store.profileID)
+            tab.kind = index < 4 ? .favourite : (index < 15 ? .pinned : .today)
+            tab.park(url: URL(string: "about:blank#folder-\(index)")!, Parked(title: "Document \(index)"))
+            return tab
+        }
+        store.tabs = tabs
+        let folder = Folder(name: "Documents", collapsed: true)
+        store.pins = Pins(entries: tabs[4..<8].map { .init(row: .tab($0.id.uuidString)) }
+            + [.init(row: .folder(folder))]
+            + tabs[8..<15].map { .init(row: .tab($0.id.uuidString), parent: folder.id) })
+        store.todayShape = Pins(entries: tabs[15...].map { .init(row: .tab($0.id.uuidString)) })
+        store.palette = nil
+        window.contentView?.layoutSubtreeIfNeeded()
+        try await waitForPreparation(monitor, target: spaces[1].id)
+        for _ in 0..<2 {
+            let stale = try XCTUnwrap(monitor.preparedSlides[spaces[1].id])
+            store.toggleFolder(folder.id)
+            XCTAssertTrue(monitor.preparedSlides.isEmpty, "Old disclosure geometry cannot be reused")
+            XCTAssertNotNil(stale.superview,
+                            "Disposing hidden hosting trees must not block the disclosure input")
+            try await Task.sleep(for: .milliseconds(120))
+            XCTAssertTrue(monitor.preparedSlides.isEmpty,
+                          "Hidden neighbouring lists must not be built in the folder's middle frames")
+            XCTAssertNotNil(stale.superview)
+            try await waitForPreparation(monitor, target: spaces[1].id)
+            XCTAssertNotNil(monitor.preparedSlides[spaces[1].id], "Preparation resumes after disclosure settles")
+            XCTAssertNil(stale.superview, "Idle preparation must drain the old hosting trees")
+        }
+        XCTAssertTrue(tabs.allSatisfy { $0.existingWeb == nil })
+    }
+
     func testScrollingRetiresStaleSurfacesOnlyAfterIdle() async throws {
         let (_, spaces, window, monitor) = try fixture()
         let deadline = ProcessInfo.processInfo.systemUptime + 2

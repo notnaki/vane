@@ -1396,11 +1396,13 @@ extension TabStore {
                 guard success, let currentShape = holder(of: id) else {
                     Toasts.show("Folder remains locked.", in: self); return
                 }
+                postponeFolderPreparation()
                 Motion.list { self[keyPath: currentShape].edit(folder: id) { $0.collapsed = false } }
                 savePins()
             }
             return
         }
+        postponeFolderPreparation()
         Motion.list { self[keyPath: shape].toggle(folder: id) }
         savePins()
         // Unfolding a live folder refreshes it: what you are about to look at is the one
@@ -1408,6 +1410,13 @@ extension TabStore {
         if self[keyPath: shape].folder(id)?.collapsed == false {
             LiveFolders.shared(for: profileID).expanded(id)
         }
+    }
+
+    /// Preview hosting trees share the input thread. Keep both their teardown and
+    /// replacement outside disclosure, including the list spring's settling tail.
+    private func postponeFolderPreparation() {
+        spaceGesture.monitor.postponePreparation(in: self,
+            by: Motion.reduced ? 0 : Look.listSeconds * 2)
     }
 
     /// Arc's "Delete Folder": the folder goes, the tabs stay where they were sitting and

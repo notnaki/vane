@@ -208,6 +208,11 @@ VANE_UI_PERFORMANCE=1 swift test --filter SidebarRowRetentionTests
 Sidebars with at most 40 tabs and folders retain unlocked row controls between disclosure
 changes. Larger outlines keep viewport-only mounting. This fixture uses parked local pages;
 use the affected profile and active website as well when investigating reported stutter.
+The native-host regression
+`SpaceNativeRenderingTests.testFolderDisclosureDefersHiddenSpacePreparationAndDisposal`
+uses the reported 26-tab outline with adjacent Spaces. It checks that hidden preview
+hosting trees are retired and rebuilt after folder disclosure settles, rather than
+competing with the input or animation frames.
 
 Search opening and typing diagnostics use the production native browser window with
 20 and 300 parked tabs. They report forced opening layout, the largest 2 ms input
